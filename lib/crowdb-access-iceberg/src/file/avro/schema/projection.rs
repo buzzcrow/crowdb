@@ -1,6 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use super::{binary::Input, AvroContainerError, AvroDatumLimits, AvroSchema, Node};
+
+mod compile;
+
+#[derive(Clone, Copy)]
+pub struct AvroFieldPath<'path> {
+    pub ids: &'path [i32],
+    pub required: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AvroScalar<'data> {
@@ -19,9 +25,20 @@ pub enum AvroScalarType {
 
 pub struct AvroProjection<'schema> {
     schema: &'schema AvroSchema,
-    slots: Vec<Option<usize>>,
+    root: RecordSelection,
     count: usize,
     types: Vec<Option<AvroScalarType>>,
+}
+
+struct RecordSelection {
+    node: usize,
+    fields: Vec<Selection>,
+}
+
+enum Selection {
+    Skip(usize),
+    Scalar { node: usize, slot: usize },
+    Record(RecordSelection),
 }
 
 pub struct AvroProjectedRecords<'projection, 'schema, 'data> {
@@ -49,48 +66,29 @@ impl<'schema> AvroProjection<'schema> {
         required: &[i32],
         optional: &[i32],
     ) -> Result<Self, AvroContainerError> {
-        let count = required
-            .len()
-            .checked_add(optional.len())
-            .ok_or(AvroContainerError::Bounds)?;
-        if count == 0 || count > 64 {
+        if required.len().saturating_add(optional.len()) > 64 {
             return Err(AvroContainerError::Bounds);
         }
-        let Node::Record(fields) = &schema.nodes[schema.root] else {
-            return Err(AvroContainerError::Schema);
-        };
-        let mut requested = BTreeMap::new();
-        for (slot, id) in required.iter().chain(optional).enumerate() {
-            if *id < 0 || requested.insert(*id, slot).is_some() {
-                return Err(AvroContainerError::Schema);
-            }
-        }
-        let mut seen = BTreeSet::new();
-        let mut slots = Vec::with_capacity(fields.len());
-        let mut types = vec![None; count];
-        for field in fields {
-            let id = field.id.filter(|id| *id >= 0).ok_or(AvroContainerError::Schema)?;
-            if !seen.insert(id) {
-                return Err(AvroContainerError::Schema);
-            }
-            let slot = requested.remove(&id);
-            if slot.is_some() && !scalar_layout(schema, field.node) {
-                return Err(AvroContainerError::Schema);
-            }
-            if let Some(slot) = slot {
-                types[slot] = scalar_type(schema, field.node);
-            }
-            slots.push(slot);
-        }
-        if requested.values().any(|slot| *slot < required.len()) {
-            return Err(AvroContainerError::Schema);
-        }
-        Ok(Self {
-            schema,
-            slots,
-            count,
-            types,
-        })
+        let paths: Vec<_> = required
+            .iter()
+            .chain(optional)
+            .enumerate()
+            .map(|(slot, id)| AvroFieldPath {
+                ids: std::slice::from_ref(id),
+                required: slot < required.len(),
+            })
+            .collect();
+        Self::paths(schema, &paths)
+    }
+
+    /// Selects at most 64 scalar paths through records and nullable records, up to 16 IDs deep.
+    /// # Errors
+    /// Rejects ambiguous paths, missing required fields and independently excessive compiled work.
+    pub fn paths(
+        schema: &'schema AvroSchema,
+        paths: &[AvroFieldPath<'_>],
+    ) -> Result<Self, AvroContainerError> {
+        compile::projection(schema, paths)
     }
 
     #[must_use]
@@ -138,27 +136,48 @@ impl<'data> AvroProjectedRecords<'_, '_, 'data> {
             return Ok(None);
         }
         self.failed = true;
-        self.input.consume_value(1)?;
-        let schema = self.projection.schema;
-        let Node::Record(fields) = &schema.nodes[schema.root] else {
-            return Err(AvroContainerError::Schema);
-        };
         let mut values = vec![AvroScalar::Null; self.projection.count];
-        for (field, slot) in fields.iter().zip(&self.projection.slots) {
-            let start = self.input.position();
-            self.input.datum(schema, field.node, 2)?;
-            if let Some(slot) = slot {
-                let mut value = Input::new(&self.bytes[start..self.input.position()], self.limits);
-                values[*slot] = read_scalar(schema, field.node, &mut value)?;
-                value.finish()?;
-            }
-        }
+        self.project_record(&self.projection.root, 1, &mut values)?;
         self.remaining -= 1;
         if self.remaining == 0 {
             self.input.finish()?;
         }
         self.failed = false;
         Ok(Some(values))
+    }
+
+    fn project_record(
+        &mut self,
+        record: &RecordSelection,
+        mut depth: usize,
+        values: &mut [AvroScalar<'data>],
+    ) -> Result<(), AvroContainerError> {
+        let schema = self.projection.schema;
+        self.input.consume_value(depth)?;
+        if let Node::Union(branches) = &schema.nodes[record.node] {
+            let branch = *branches
+                .get(self.input.size()?)
+                .ok_or(AvroContainerError::Schema)?;
+            depth += 1;
+            self.input.consume_value(depth)?;
+            if matches!(schema.nodes[branch], Node::Null) {
+                return Ok(());
+            }
+        }
+        for field in &record.fields {
+            match field {
+                Selection::Skip(node) => self.input.datum(schema, *node, depth + 1)?,
+                Selection::Record(record) => self.project_record(record, depth + 1, values)?,
+                Selection::Scalar { node, slot } => {
+                    let start = self.input.position();
+                    self.input.datum(schema, *node, depth + 1)?;
+                    let mut value = Input::new(&self.bytes[start..self.input.position()], self.limits);
+                    values[*slot] = read_scalar(schema, *node, &mut value)?;
+                    value.finish()?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

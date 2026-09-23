@@ -223,8 +223,14 @@ integration. Independent FileIO work proceeds under the approved ordering.
   sequence ordering, version-dependent required/unknown counts and v3 delete/data
   row-ID separation. Four tests cover renamed/reordered fields, missing/null
   values, empty-list schema types and poisoned cursors. Partition-summary semantics,
-  table spec membership, nested data-file projection and inheritance integration
+  table spec membership and typed data-file/inheritance integration
   remain separate; list decoding does not yet prove those cross-file invariants.
+  Nested scalar paths now traverse records and nullable records, with at most 64
+  selections, 16 IDs per path and 16,384 compiled field visits. Shared named record
+  layouts cannot expand the projection without a bound. Selected and skipped
+  fields share one block-wide work/depth budget; null parents clear child slots
+  without retaining prior-record values. Four nested tests pass. Array/map semantic
+  projection is not implemented; their binary layout is still fully validated.
   Reader-schema resolution, logical/manifest field semantics and optional codecs
   remain separate; this does not advertise complete manifest v1/v2/v3 validation.
   A constant-state manifest inheritance resolver now handles v1 zero sequences,
@@ -252,7 +258,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 219 library tests pass, covering namespace, file records, range/streaming,
+- 223 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass
@@ -274,6 +280,120 @@ integration. Independent FileIO work proceeds under the approved ordering.
   the real worker settling its part, aborting, releasing credits exactly once and
   retaining its part authority. The expanded fixture passes in 37.40 seconds.
 - Command: `pixi run clean-env && CROWDB_RUNTIME_ROOT="$PWD/.crowdb-runtime/ephemeral/iceberg-file-storage" pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_storage_test -- --nocapture`.
+
+## Handover — 2026-09-23
+
+Stop at the verified nested-projection task boundary at the user's request, so a
+cheaper mode can resume. This is not requirement completion or a new blocker.
+No user-guide edits, public FileIO exposure, new unsafe exceptions, locks or
+physical deletion were added. Resume with the next task below, not a rewrite of
+the landed storage primitives. The broader ordering is in
+`plan-iceberg-functional-catalog.md`; human choices remain in R177.
+
+### Immediate continuation
+
+- [ ] **Typed manifest entries**: add `src/manifest/entry.rs` and
+  `tests/manifest_entry_test.rs`. Reuse `AvroProjection::paths`,
+  `AvroFieldPath { ids, required }`, `field_types()` and `ManifestInheritance`.
+  Root IDs are status `0`, snapshot `1`, data-file record `2`, data sequence `3`,
+  file sequence `4`. Nested paths include `[2, 134]` content, `[2, 100]` path,
+  `[2, 101]` format, `[2, 103]` record count, `[2, 104]` byte length,
+  `[2, 140]` sort order, `[2, 142]` first row ID, `[2, 143]` referenced file,
+  `[2, 144]` DV offset, and `[2, 145]` DV size. Check required/null/type rules
+  against each writer version before consuming data; bind paths to the expected
+  native table. Keep one entry, not a growing vector. Resolve inheritance only
+  after all checks for that entry pass, so a failed entry never advances row IDs.
+  Do not guess semantic file kind from extension. Test v1 missing sequence/content,
+  v2 added-only inheritance, v3 row IDs, malformed status/content, foreign paths,
+  null required values, poison-after-error and unchanged resolver on failure.
+- [ ] **Collections and manifest metadata**: scalar projection does not yet
+  expose equality IDs, metrics maps, partition tuples or partition summaries.
+  Extend bounded traversal only as needed; do not deserialize full datum graphs.
+  Check field IDs plus array `element-id` and map `key-id`/`value-id` metadata,
+  including Iceberg's logical-map array representation. Decode equality IDs and
+  metrics under independent entry/work bounds, checking against the table schema.
+  Validate OCF version/schema/partition-spec/content metadata; the actual manifest
+  version is not necessarily the table or enclosing manifest-list version.
+  Position deletes ignore sort order; do not reject solely for a non-null value.
+  Files: Avro schema/projection children, manifest modules, focused fixtures.
+- [ ] **End-to-end block semantics**: compose `AvroRecords::next()` with the typed
+  projections over each decoded block; retain the inheritance resolver across
+  blocks. `AvroRecords::schema()` borrows the reader, so drop a borrowed projection
+  before the next mutable pull, or design an owned bounded compilation handle
+  rather than using unsafe/self-referential state. Add native leaf-crossing OCF
+  tests, null/deflate blocks, renamed/reordered fields, cancellation and corruption.
+  Existing `file_avro_test.rs`, `common/file_blocks.rs` and
+  `common/manifest_list.rs` are fixtures to reuse. Do not report complete manifest
+  acceptance while collection or cross-file checks remain missing.
+- [ ] **DV cross-file checks**: reuse `read_puffin_metadata` and
+  `validate_deletion_vector`; those already verify exact descriptor reference,
+  span, cardinality, portable bitmap structure, maximum position and CRC.
+  Still connect manifest fields to that validator, compare maximum position with
+  the referenced data-file row count, and enforce one DV per data file per
+  snapshot using bounded cross-file state. Snapshot-wide validation belongs in
+  commit admission, not a whole-snapshot in-memory collection in the file reader.
+- [ ] **Finish other independent FileIO work**: metadata projection fallback,
+  semantic seal orchestration, delegation vending, multipart HTTP composition and
+  official client acceptance remain unfinished. Use the existing execution tasks
+  above; the standard-PUT semantic-kind decision blocks only its dependent wiring.
+
+### Reuse and integration boundaries
+
+- `src/file/avro/schema/projection.rs` and `projection/compile.rs`: root or nested
+  scalar cursor; required means schema presence, not a non-null runtime value.
+  Missing optional paths and null parent records produce `AvroScalar::Null`.
+  Consumers enforce typed required values; skipped fields still undergo binary
+  validation. Malformed/duplicate IDs in traversed records fail closed. Primitive
+  strings borrow the current bounded block. This is not general schema evolution
+  or complete global Iceberg field-ID validation.
+- `src/manifest/list.rs`: typed manifest-list cursor, canonical same-table paths,
+  length/spec-ID checks, v1 zero sequences, v2/v3 required counts, v3 optional row
+  IDs and delete separation. It does not verify spec membership, summaries,
+  referenced file existence or snapshot-wide lineage. The list writer version is
+  explicit; do not infer it from the current table version.
+- `src/file/multipart_credits.rs`: durable global session/reserved-byte admission
+  with a single pending CAS journal; `settle` repairs uncertain reservation or
+  terminal release. `MultipartRecovery` helps that journal before scanning four
+  sessions. Call admission before exposing an upload; low-level repository test
+  fixtures can still be uncredited. Release only retained terminal receipts.
+  These are logical active credits, not cumulative orphan/disk capacity accounting.
+- `src/file/multipart_repository/` and recovery/list modules already implement
+  journaled part replacement, frozen selection, resumable assembly, frozen seal
+  publication/replay, bounded listing and native background recovery. Do not
+  implement a second state machine in HTTP handlers. Public XML/error wiring,
+  LastModified, grant/byte intersections and standard-client completion retry
+  details still need work; an invalid frozen selection currently requires abort.
+- Server `src/iceberg/file_upload.rs`, `file_body.rs`, `file_auth.rs` and
+  `file_request.rs` provide bounded transport, SigV4 grant authentication and
+  operation parsing. They are not a publicly composed FileIO service. Upload
+  rejects trailers and does not yet support AWS streaming-checksum framing.
+- Formats: JSON validation is structural; Parquet/ORC probes verify framing and
+  fixed-size hints, not complete footer semantics. Puffin metadata is bounded
+  plain JSON or one sized LZ4 frame. Avro only has null/raw-deflate codecs.
+  Canonical bytes remain authority; missing/corrupt projections must fall back.
+- Preserve the R179 500-ms acceptance blocker; do not increase timeouts or add
+  caller retries to claim it passes. R177 also records standard PUT kind binding,
+  release engine profiles and no-GC deployment capacity policy. No new human
+  decision was needed for the Avro projection tasks.
+
+### Resume verification
+
+- Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
+  passes 223 tests. `pixi run rs-lint` and
+  `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
+  and test code only; the previously recorded native E2E run is not a new run.
+- Start the next change with focused `--test avro_nested_projection_test`,
+  `--test avro_projection_test`, `--test manifest_list_test`,
+  `--test manifest_inheritance_test` and the new entry target, then the full library
+  gate and separate lint/fmt gates. Use `pixi run` for every executable.
+- For server transport changes, run
+  `pixi run -- cargo test -p crowdb-access-server --no-default-features --features iceberg --test iceberg_file_upload_test --test iceberg_file_body_test --test iceberg_file_auth_test --test iceberg_file_request_test`.
+  Native worker/storage changes also require the real-stack command in the
+  checkpoint and `pixi run -- cargo clippy -p crowdb-access-server --features iceberg-e2e --all-targets -- -D warnings`.
+- The declared workspace MSRV is 1.75, but the already locked `lz4_flex 0.11.6`
+  and its newly enabled frame dependency `twox-hash 2.1.3` declare 1.81. Current
+  Pixi toolchain gates pass; Rust 1.75 was not verified. Do not silently claim
+  that older toolchain or downgrade unrelated dependencies as part of the decoder.
 
 ## Blocked
 

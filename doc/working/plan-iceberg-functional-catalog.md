@@ -19,6 +19,13 @@ Status: the user approved this ordering and implementation of independent work.
 Collect unresolved human decisions in R177 for confirmation when the user returns;
 do not stop unrelated tasks. No user-guide tasks.
 
+Handover checkpoint (2026-09-23): the user now requests stopping after the current
+verified task to switch to a cheaper mode. Nested Avro field-ID projection is
+that task boundary. Resume instructions, exact next implementation slices,
+landed APIs, remaining integration gaps and test commands are in
+`plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this
+pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
+
 ## Review checkpoint
 
 - R178 supplies catalog management, authentication, recovery, and config. The
