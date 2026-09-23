@@ -1,5 +1,6 @@
 //! Native immutable file identity and storage, independent of general S3 metadata.
 
+mod assembly;
 mod avro;
 mod blocks;
 mod content;
@@ -16,6 +17,7 @@ mod record;
 mod repository;
 mod writer;
 
+pub use assembly::{AssemblyPart, AssemblyProgress, FileAssembly, PartFingerprint};
 pub use avro::{AvroBlock, AvroBlocks, AvroCodec, AvroContainerError, AvroLimits};
 pub use blocks::{FileBlockStore, FileIoError, NativeFileBlocks, MAX_FILE_BLOCK_BYTES};
 pub use content::{ChunkRoot, FileContent, InlineCodec, MAX_COMPRESSION_INPUT_BYTES, MAX_INLINE_BYTES};

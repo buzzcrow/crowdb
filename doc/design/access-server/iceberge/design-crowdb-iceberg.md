@@ -223,6 +223,13 @@ poison the current writer without invalidating earlier durable checkpoints.
 Staged-tree readers validate physical roots, byte lengths and digests without
 assigning a semantic file kind or declaring an incomplete multipart fragment to
 be a valid complete-format file. Published-file reads retain record validation.
+The assembly byte engine consumes a previously frozen part selection in ordinal
+order. Each step copies at most one bounded window, persists target-writer progress
+and checkpoints the current part digest. This verifies complete part digests even
+when recovery spans many windows. Lost replies can repeat old progress without
+duplicating bytes in the selected output; losing physical writes remain retained.
+The engine requires a durable selection/progress journal and does not itself
+authorize multipart operations or publish file locations.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

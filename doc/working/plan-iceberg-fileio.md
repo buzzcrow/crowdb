@@ -100,6 +100,12 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Staged-tree reads now validate physical identity/bytes without constructing a
   fictitious complete-file format record. Two tests cover multipart fragments,
   ranges, wrong owners, empty digests and invalid bounds.
+  The assembly byte engine now copies at most one configured window from one
+  selected part, checkpoints both target and current-part SHA-256 progress and
+  binds resumptions to selection/part identity. Four tests verify recovery,
+  empty parts, exact concatenation, part-digest mismatch, lost writes and caps.
+  This engine requires a frozen selection and CAS journal supplied by the next
+  persistence layer; it does not yet authorize or publish multipart uploads.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,

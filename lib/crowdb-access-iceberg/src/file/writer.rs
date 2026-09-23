@@ -52,6 +52,11 @@ impl FileTreeWriter {
     }
 
     #[must_use]
+    pub const fn length(&self) -> u64 {
+        self.length
+    }
+
+    #[must_use]
     pub fn retained_bytes(&self) -> usize {
         self.pending.capacity()
             + self
