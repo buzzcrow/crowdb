@@ -101,7 +101,7 @@ pub(super) fn decode(value: FBFileRecord<'_>) -> Result<FileRecord, ValidationEr
     Ok(record)
 }
 
-fn encode_root<'buffer>(
+pub(super) fn encode_root<'buffer>(
     builder: &mut FlatBufferBuilder<'buffer>,
     root: &ChunkRoot,
 ) -> WIPOffset<FBFileChunkRoot<'buffer>> {
@@ -121,7 +121,7 @@ fn encode_root<'buffer>(
     )
 }
 
-fn decode_root(root: FBFileChunkRoot<'_>) -> Result<ChunkRoot, ValidationError> {
+pub(super) fn decode_root(root: FBFileChunkRoot<'_>) -> Result<ChunkRoot, ValidationError> {
     Ok(ChunkRoot {
         chunk: ChunkId {
             high: root.chunk_high(),

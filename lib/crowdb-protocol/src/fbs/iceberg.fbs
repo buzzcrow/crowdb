@@ -177,7 +177,70 @@ table FBFileMapping {
     file_id:[ubyte] (required);
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping }
+table FBFileIdentity {
+    catalog:[ubyte] (required);
+    table_id:[ubyte] (required);
+    file_id:[ubyte] (required);
+}
+
+table FBFileTree {
+    length:ulong;
+    digest:[ubyte] (required);
+    root:FBFileChunkRoot;
+}
+
+table FBPartFingerprint {
+    owner:FBFileIdentity (required);
+    length:ulong;
+    digest:[ubyte] (required);
+}
+
+table FBMultipartLimits {
+    max_parts:ushort;
+    max_part_bytes:ulong;
+    max_file_bytes:ulong;
+    max_staged_bytes:ulong;
+    ttl_ms:ulong;
+}
+
+table FBMultipartCompletion {
+    selection:FBPayloadReference (required);
+    selected_parts:ushort;
+    next_part:ushort;
+    part_offset:ulong;
+    completed_bytes:ulong;
+    writer:FBFileChunkRoot;
+    active:FBPartFingerprint;
+    part_digest:[ubyte];
+    candidate:FBFileTree;
+}
+
+table FBMultipartSession {
+    activation_epoch:ulong;
+    upload:[ubyte] (required);
+    owner:FBFileIdentity (required);
+    location:string (required);
+    principal:[ubyte] (required);
+    revision:ulong;
+    created_ms:ulong;
+    expires_ms:ulong;
+    limits:FBMultipartLimits (required);
+    phase:ubyte = 255;
+    part_count:ushort;
+    staged_bytes:ulong;
+    completion:FBMultipartCompletion;
+    published:[ubyte];
+}
+
+table FBMultipartPart {
+    upload:[ubyte] (required);
+    number:ushort;
+    revision:ulong;
+    owner:FBFileIdentity (required);
+    tree:FBFileTree (required);
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart }
 
 table FBIcebergRecord {
     schema_version:ushort;

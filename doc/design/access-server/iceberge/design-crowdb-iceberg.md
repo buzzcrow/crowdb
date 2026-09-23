@@ -233,7 +233,10 @@ authorize multipart operations or publish file locations.
 Multipart session/part models retain independent resource limits and validate
 phase coherence: publishing requires complete candidate bytes, published outcomes
 require a selected FileId, and abort retains completion evidence without claiming
-publication. These models are not yet persisted by a multipart authority driver.
+publication. Their FlatBuffers envelopes bind session and part identities to
+separate catalog key scopes, retaining only bounded checkpoint references and
+current-part digest state. Unknown phases and invalid revisions fail closed.
+A multipart authority driver and runtime admission are not yet connected.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

@@ -4,6 +4,7 @@ mod authority;
 mod envelope;
 mod file;
 mod management;
+mod multipart;
 mod namespace;
 mod namespace_operation;
 mod payload;

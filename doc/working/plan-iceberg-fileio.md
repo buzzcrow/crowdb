@@ -109,7 +109,11 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Session/part models now validate separate part/file/staged-byte limits, TTL,
   identity/revision, selection binding and Open/Completing/Publishing/Published/
   Aborted phase coherence. Four model tests cover normal and invalid transitions;
-  FlatBuffers persistence, CAS mutation journals and runtime admission are next.
+  Session/part FlatBuffers records now use independent catalog key scopes, bind
+  decoded identities to keys and reject unknown phases, invalid revisions and
+  oversized digest checkpoints. Three persistence tests cover every phase,
+  partial assembly, corruption and cross-domain keys. CAS mutation journals and
+  runtime admission remain next; codecs alone do not admit uploads.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
@@ -153,8 +157,9 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 142 library tests pass, covering namespace, file records, range/streaming,
-  credentials, JSON, format framing, Avro blocks/codecs and manifest inheritance.
+- 161 library tests pass, covering namespace, file records, range/streaming,
+  credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
+  digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass
   with Iceberg enabled and the general S3 listener feature disabled.
 - Native file-tree publication, full read, a range crossing leaf boundaries and

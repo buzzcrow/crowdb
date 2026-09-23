@@ -1,6 +1,6 @@
 use crate::catalog::CatalogContext;
 use crate::error::ValidationError;
-use crate::key::{FileId, OperationId};
+use crate::key::{CatalogScope, FileId, IcebergKey, OperationId};
 use crate::operation::PayloadReference;
 
 use super::{AssemblyProgress, FileContent, FileDigest, FileIdentity, FileLocation, FileTree};
@@ -69,6 +69,15 @@ pub struct MultipartSession {
 }
 
 impl MultipartSession {
+    #[must_use]
+    pub fn key(&self) -> IcebergKey {
+        IcebergKey::Catalog {
+            catalog: self.context.catalog,
+            scope: CatalogScope::MultipartSession,
+            suffix: self.upload.as_bytes().to_vec(),
+        }
+    }
+
     /// # Errors
     /// Rejects mismatched identities, invalid bounds and incoherent durable phases.
     pub fn validate(&self) -> Result<(), ValidationError> {
@@ -169,6 +178,17 @@ pub struct MultipartPart {
 }
 
 impl MultipartPart {
+    #[must_use]
+    pub fn key(&self) -> IcebergKey {
+        let mut suffix = self.upload.as_bytes().to_vec();
+        suffix.extend_from_slice(&self.number.to_be_bytes());
+        IcebergKey::Catalog {
+            catalog: self.owner.table.catalog,
+            scope: CatalogScope::MultipartPart,
+            suffix,
+        }
+    }
+
     /// # Errors
     /// Rejects invalid part numbers, revisions and inconsistent physical bytes.
     pub fn validate(&self) -> Result<(), ValidationError> {

@@ -31,6 +31,8 @@ pub enum CatalogScope {
     OperationPayload = 8,
     NamespaceOperation = 9,
     FileLocation = 10,
+    MultipartSession = 11,
+    MultipartPart = 12,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -160,6 +162,8 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         8 => Ok(CatalogScope::OperationPayload),
         9 => Ok(CatalogScope::NamespaceOperation),
         10 => Ok(CatalogScope::FileLocation),
+        11 => Ok(CatalogScope::MultipartSession),
+        12 => Ok(CatalogScope::MultipartPart),
         _ => Err(ValidationError::Key),
     }
 }
@@ -182,7 +186,14 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
         | CatalogScope::TableHead
         | CatalogScope::File
         | CatalogScope::Operation
-        | CatalogScope::NamespaceOperation => super::OperationId::from_bytes(suffix).map(|_| ()),
+        | CatalogScope::NamespaceOperation
+        | CatalogScope::MultipartSession => super::OperationId::from_bytes(suffix).map(|_| ()),
+        CatalogScope::MultipartPart => {
+            if suffix.len() != 18 || !(1..=10_000).contains(&u16::from_be_bytes([suffix[16], suffix[17]])) {
+                return Err(ValidationError::Key);
+            }
+            super::OperationId::from_bytes(&suffix[..16]).map(|_| ())
+        }
         CatalogScope::NamespaceName | CatalogScope::TableName => {
             let name = super::NameSuffix::decode(suffix)?;
             if scope == CatalogScope::TableName && name.parent.is_none() {
