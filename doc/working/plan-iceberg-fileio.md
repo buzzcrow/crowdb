@@ -50,9 +50,17 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Files: chunk shared writer/pipeline publication and small-object tests.
 - [ ] **Streaming HTTP integration**: bound response credits and cancellation
   over the native pull reader. Files: server FileIO body path.
+- [x] **Delegation tokens**: sign bounded claims for catalog/activation epoch,
+  table, principal, nonce, exact operations, expiry and separate request/file byte
+  limits. Derive per-grant S3 credential material without a credential registry;
+  reject altered tokens and stale contexts before authorization. Four focused
+  tests verify cross-server reconstruction, scope, expiry and independent limits.
+  Files: file credential/token modules and credential tests.
 - [ ] **Delegation and HTTP**: short-lived catalog/table/prefix-scoped operation
   and byte limits, no DELETE; isolated S3-shaped routing and errors. Files: file
   credentials/S3 compatibility and server FileIO modules, real HTTP tests.
+  Token primitives are verified; SigV4 request verification, streaming enforcement
+  and credential vending through authorized table endpoints remain unimplemented.
 - [ ] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
   recover completion, duplicate uploads and logical abort without physical delete.
   Files: file multipart modules, record schema and crash/restart tests.

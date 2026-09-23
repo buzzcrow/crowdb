@@ -210,6 +210,13 @@ Pull readers retain one leaf, verify directory/leaf digests and read no future
 block until requested; full-file reads also verify the canonical digest. Range
 parsing accepts one contiguous interval and rejects multiple ranges explicitly.
 
+Delegation tokens carry catalog activation epoch, table, principal fingerprint,
+nonce, exact operation set, issue/expiry times and independent request/file byte
+limits. Domain-separated HMAC authenticates bounded claims and derives per-grant
+S3 credential material without a mutable credential registry. Verification requires
+a freshly checked Ready context; file DELETE is not representable. These token
+primitives are not yet credential vending or FileIO request-signature verification.
+
 Writes and reads stream through bounded CROWDB storage clients. Delegated FileIO
 access may move immutable ranges without an Access Server payload bounce, but
 cannot overwrite published files or bypass table reachability.
