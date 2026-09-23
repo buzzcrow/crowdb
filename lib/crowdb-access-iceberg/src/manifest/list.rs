@@ -123,6 +123,10 @@ impl<'schema> ManifestListProjection<'schema> {
 }
 
 impl ManifestListRecords<'_, '_, '_> {
+    pub(super) fn last_record_length(&self) -> usize {
+        self.records.last_record_bytes().len()
+    }
+
     /// Checks primitive semantics and binds each manifest location to the expected native table.
     /// # Errors
     /// Permanently stops on bad fields, negative counts, invalid sequences or foreign locations.

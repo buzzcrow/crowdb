@@ -97,6 +97,7 @@ impl FileRecord {
     /// # Errors
     /// Rejects an incompatible kind, format or storage variant.
     pub fn bind_kind(&self, kind: FileKind) -> Result<Self, ValidationError> {
+        self.validate()?;
         if kind == FileKind::Unbound || (self.kind != FileKind::Unbound && self.kind != kind) {
             return Err(ValidationError::Record);
         }

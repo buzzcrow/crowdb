@@ -48,6 +48,10 @@ impl TestManifestList {
     }
 
     pub fn schema(&self) -> AvroSchema {
+        AvroSchema::parse(&self.schema_bytes()).unwrap()
+    }
+
+    pub fn schema_bytes(&self) -> Vec<u8> {
         let mut fields: Vec<_> = self
             .fields
             .iter()
@@ -56,10 +60,7 @@ impl TestManifestList {
         if let Some(schema) = &self.summary_schema {
             fields.push(json!({"name":"partitions","field-id":507,"type":schema}));
         }
-        AvroSchema::parse(
-            &serde_json::to_vec(&json!({"type":"record","name":"List","fields":fields})).unwrap(),
-        )
-        .unwrap()
+        serde_json::to_vec(&json!({"type":"record","name":"List","fields":fields})).unwrap()
     }
 
     pub fn bytes(&self) -> Vec<u8> {

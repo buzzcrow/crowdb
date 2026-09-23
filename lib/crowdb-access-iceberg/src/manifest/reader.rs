@@ -41,11 +41,11 @@ impl ManifestReader {
     ) -> Result<Self, Error> {
         if record.location != list.location
             || record.length != list.length
-            || record.kind != FileKind::Manifest
             || record.format != ContentFormat::Avro
         {
             return Err(Error::Field);
         }
+        let record = record.bind_kind(FileKind::Manifest).map_err(|_| Error::Field)?;
         if list.min_sequence < 0
             || list.min_sequence > list.sequence
             || list.file_counts.iter().flatten().any(|value| *value < 0)

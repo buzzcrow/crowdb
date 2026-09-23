@@ -5,6 +5,7 @@ mod deletion_vectors;
 mod entry;
 mod inheritance;
 mod list;
+mod list_reader;
 mod metadata;
 mod reader;
 mod summary;
@@ -14,6 +15,7 @@ pub use context::{
 pub use deletion_vectors::{
     SnapshotDvError, SnapshotDvLimits, SnapshotDvScope, SnapshotDvSummary, SnapshotDvValidator, SnapshotFile,
 };
+pub use list_reader::ManifestListReader;
 pub use reader::ManifestReader;
 pub use summary::PartitionSummary;
 

@@ -156,6 +156,18 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
 - [~] **Selected-use validation**: complete format semantics and validate
   canonical unbound files against trusted metadata/manifest declarations. Do not
   infer use from names, headers or upload container bytes.
+  First slice: `ManifestReader` binds unbound canonical uploads only to the
+  selected manifest declaration; `ManifestListReader` streams the selected list
+  with one bounded decoded block, exact location/kind checks and cancellation
+  poisoning. Both require EOF before claiming completion. `bind_kind` must
+  validate the original authority before constructing any derived view.
+  Keep historical writer-version selection, snapshot enumeration completeness,
+  cross-manifest invariants and Parquet/ORC data/delete semantic checks separate;
+  this streaming slice does not establish a publishable table generation.
+  Verified the streaming slice with library all-target tests and focused
+  canonical-corruption/invalid-authority tests, fmt and workspace lint. No table
+  capability is advertised by these helpers; production credential endpoints
+  remain dependent on live table authority, not arbitrary caller TableIds.
 - [ ] **Selected table metadata**: implement bounded table heads/mappings,
   metadata version validation and generation-consistent load/projection fallback.
   Wire credential vending only after table authorization and lifecycle checks.

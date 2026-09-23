@@ -79,6 +79,22 @@ fn inline_selection_enforces_kind_stored_size_and_compression_input_bounds() {
 }
 
 #[test]
+fn binding_a_use_cannot_repair_invalid_immutable_authority() {
+    let mut invalid = record(b"avro");
+    invalid.kind = FileKind::Unbound;
+    invalid.format = ContentFormat::Avro;
+    assert!(invalid.validate().is_err());
+    assert!(invalid.bind_kind(FileKind::Manifest).is_err());
+    assert!(invalid.bind_kind(FileKind::ManifestList).is_err());
+    let mut valid = record(b"avro");
+    valid.kind = FileKind::Manifest;
+    valid.format = ContentFormat::Avro;
+    assert_eq!(valid.bind_kind(FileKind::Manifest).unwrap(), valid);
+    assert!(valid.bind_kind(FileKind::ManifestList).is_err());
+    assert!(valid.bind_kind(FileKind::Unbound).is_err());
+}
+
+#[test]
 fn file_records_and_exact_location_mappings_are_key_bound() {
     for input in [b"{}".to_vec(), vec![b' '; MAX_COMPRESSION_INPUT_BYTES]] {
         let file = record(&input);

@@ -78,6 +78,35 @@ async fn wrong_file_identity_length_kind_or_history_fails_before_entries() {
 }
 
 #[tokio::test]
+async fn unbound_uploads_require_full_selected_manifest_validation_without_mutating_authority() {
+    use crowdb_access_iceberg::file::FileKind;
+
+    for version in [ManifestVersion::V1, ManifestVersion::V2, ManifestVersion::V3] {
+        for corrupt in [false, true] {
+            let (store, mut record) = stream::stored(version, true, corrupt).await;
+            record.kind = FileKind::Unbound;
+            record.validate().unwrap();
+            let original = record.clone();
+            let mut reader = open(store, record.clone(), stream::list(&record), version)
+                .await
+                .unwrap();
+            assert!(reader.next_entry().await.unwrap().is_some());
+            if corrupt {
+                assert!(reader.next_entry().await.is_err());
+                assert!(!reader.is_complete());
+                assert!(reader.next_entry().await.is_err());
+            } else {
+                assert!(reader.next_entry().await.unwrap().is_some());
+                assert!(!reader.is_complete());
+                assert!(reader.next_entry().await.unwrap().is_none());
+                assert!(reader.is_complete());
+            }
+            assert_eq!(record, original);
+        }
+    }
+}
+
+#[tokio::test]
 async fn later_semantic_errors_and_list_count_overruns_preserve_last_good_inheritance() {
     let version = ManifestVersion::V3;
     for corrupt in [false, true] {
