@@ -9,6 +9,7 @@ mod list_reader;
 mod list_selection;
 mod metadata;
 mod reader;
+mod snapshot_identity;
 mod snapshot_reader;
 mod snapshot_rows;
 mod summary;
@@ -21,6 +22,7 @@ pub use deletion_vectors::{
 pub use list_reader::ManifestListReader;
 pub use list_selection::ManifestListSelection;
 pub use reader::ManifestReader;
+pub use snapshot_identity::{SnapshotIdentityError, SnapshotIdentityIndex, SnapshotIdentityLimits};
 pub use snapshot_reader::{
     SnapshotManifestError, SnapshotManifestLimits, SnapshotManifestReader, SnapshotManifestSource,
     SnapshotManifestSummary,

@@ -268,3 +268,20 @@ async fn reused_manifest_ranges_must_remain_below_new_snapshot_allocation() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_live_file_in_two_manifests_prevents_snapshot_completion() {
+    let (store, source, record, selection) = snapshot::stored_with_duplicates().await;
+    let mut reader = SnapshotManifestReader::open(store, source, record, selection, snapshot::limits())
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        assert!(reader.next_entry().await.unwrap().is_some());
+    }
+    assert!(matches!(
+        reader.next_entry().await,
+        Err(SnapshotManifestError::Identity(_))
+    ));
+    assert!(reader.finish().is_err());
+    assert!(reader.next_entry().await.is_err());
+}

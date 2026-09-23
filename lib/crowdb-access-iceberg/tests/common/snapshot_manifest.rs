@@ -66,6 +66,10 @@ pub fn limits() -> SnapshotManifestLimits {
         manifests: 2,
         entries: 4,
         manifest_bytes: 32 * 1024,
+        identity: crowdb_access_iceberg::manifest::SnapshotIdentityLimits {
+            keys: 100,
+            key_bytes: 8192,
+        },
     }
 }
 
@@ -79,7 +83,7 @@ pub async fn stored(
     FileRecord,
     ManifestListSelection,
 ) {
-    stored_impl(count, corrupt, wrong_totals, None, 99).await
+    stored_impl(count, corrupt, wrong_totals, None, 99, false).await
 }
 
 pub async fn stored_with_lineage(
@@ -97,8 +101,18 @@ pub async fn stored_with_lineage(
         false,
         Some(first_rows),
         added_snapshot_id,
+        false,
     )
     .await
+}
+
+pub async fn stored_with_duplicates() -> (
+    Arc<TestBlocks>,
+    Arc<TestSource>,
+    FileRecord,
+    ManifestListSelection,
+) {
+    stored_impl(2, false, false, None, 99, true).await
 }
 
 async fn stored_impl(
@@ -107,6 +121,7 @@ async fn stored_impl(
     wrong_totals: bool,
     first_rows: Option<&[Option<i64>]>,
     added_snapshot_id: i64,
+    duplicates: bool,
 ) -> (
     Arc<TestBlocks>,
     Arc<TestSource>,
@@ -139,7 +154,12 @@ async fn stored_impl(
     bytes.extend([42; 16]);
     let mut records = Vec::new();
     for index in 0..count {
-        let mut candidate = copy_record(store.clone(), record.clone()).await;
+        let mut candidate = copy_record(
+            store.clone(),
+            record.clone(),
+            if duplicates { 0 } else { index * 2 },
+        )
+        .await;
         candidate.location = candidate
             .location
             .table()
@@ -198,8 +218,23 @@ async fn stored_impl(
     (store, source, list, selection)
 }
 
-async fn copy_record(store: Arc<TestBlocks>, record: FileRecord) -> FileRecord {
+async fn copy_record(store: Arc<TestBlocks>, record: FileRecord, first_file: usize) -> FileRecord {
     let mut reader = FileReader::new(store.clone(), record.clone(), None, 256).unwrap();
+    let mut bytes = Vec::new();
+    while let Some(frame) = reader.next().await.unwrap() {
+        bytes.extend(frame);
+    }
+    let pattern = b"data/file.parquet";
+    let offsets: Vec<_> = bytes
+        .windows(pattern.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == pattern).then_some(index))
+        .collect();
+    for (file, offset) in offsets.into_iter().enumerate() {
+        let replacement = format!("data/{:04}.parquet", first_file + file);
+        assert_eq!(replacement.len(), pattern.len());
+        bytes[offset..offset + pattern.len()].copy_from_slice(replacement.as_bytes());
+    }
     let mut candidate = record;
     candidate.file = FileId::random();
     let owner = FileIdentity {
@@ -207,11 +242,10 @@ async fn copy_record(store: Arc<TestBlocks>, record: FileRecord) -> FileRecord {
         file: candidate.file,
     };
     let mut writer = FileTreeWriter::new(store, owner, 64).unwrap();
-    while let Some(bytes) = reader.next().await.unwrap() {
-        writer.push(&bytes).await.unwrap();
-    }
+    writer.push(&bytes).await.unwrap();
     let tree = writer.finish().await.unwrap();
     candidate.content = FileContent::Chunks { root: tree.root };
+    candidate.digest = tree.digest;
     candidate
 }
 

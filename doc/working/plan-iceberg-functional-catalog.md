@@ -186,13 +186,13 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
   Enumeration slice: `SnapshotManifestReader` owns a fresh selected list and
   sequentially resolves each canonical manifest plus trusted historical context.
   It cannot skip missing/corrupt manifests or bypass EOF totals. Retain one list
-  block and one manifest reader; separately cap manifests, entries and aggregate
+  block, one manifest reader and a separately budgeted identity index; cap manifests, entries and aggregate
   manifest bytes. `finish` exposes counts only after the list and every manifest
   reached verified EOF. Cancellation during authority resolution or inner reads
   poisons the outer cursor. `SnapshotManifestSource` implementations must fence
   the candidate generation; none is wired to production table authority yet.
-  Enumeration completion is not cross-manifest uniqueness, row-ID allocation,
-  data/delete byte validation, DV enumeration binding, or publication proof.
+  Enumeration completion is not data/delete byte validation, DV bitmap/data-row
+  binding, historical row-ID preservation, or publication proof.
   Verification: 12 added selection/enumeration tests pass; library all-target
   tests, workspace fmt check and workspace clippy pass. Fixture chunk copies
   preserve owner binding by writing fresh trees rather than relabeling FileIds.
@@ -224,6 +224,20 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      escaping `first-row-id + added-rows`, and reused ranges crossing into the new
      allocation. Gaps and unused allocation remain valid. Scope checks do not
      replace comparison against prior metadata to prove preservation of old IDs.
+     Exact identity slice: `SnapshotIdentityIndex` rejects repeated manifests and
+     live ordinary paths, checks shared Puffin physical lengths, disjoint DV spans
+     and unique DV targets. Deleted entries do not count as live references.
+     Distinct DVs in the same Puffin file are valid (specification Row-level Deletes).
+     Integrate checks before entries escape `SnapshotManifestReader`; EOF summary
+     is unavailable after index failure. Independent node and retained-key-byte
+     limits bound transient memory (hard ceilings: one million keys and 64 MiB of
+     key bytes); no eviction, probabilistic membership or unbounded collection.
+     Larger snapshots currently fail the configured budget rather than spilling;
+     future external-memory optimization must retain exactness and orphan evidence.
+     These limits are not service-wide admission until production wiring lands.
+     Verified 17 identity/snapshot tests plus workspace fmt/clippy; the earlier
+     row-ID slice passed 11 snapshot tests. Remaining historical-preservation and
+     physical-file checks require prior selected metadata and canonical readers.
   3. Canonical Parquet schema/field-ID/row-count and selected data/delete checks.
   4. Canonical ORC equivalent checks with bounded decoding.
   5. Bind complete snapshot enumeration, actual file row counts and DV validation.

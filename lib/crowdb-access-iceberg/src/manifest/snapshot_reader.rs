@@ -17,6 +17,7 @@ pub struct SnapshotManifestLimits {
     pub manifests: u64,
     pub entries: u64,
     pub manifest_bytes: u64,
+    pub identity: super::SnapshotIdentityLimits,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -36,6 +37,8 @@ pub enum SnapshotManifestError {
     Bounds,
     #[error("snapshot manifest row-ID assignments overlap or escape the allocated range")]
     RowIds,
+    #[error(transparent)]
+    Identity(#[from] super::SnapshotIdentityError),
     #[error("snapshot manifest enumeration failed, was cancelled or is incomplete")]
     Incomplete,
     #[error("selected manifest authority or historical context is unavailable")]
@@ -64,11 +67,13 @@ pub struct SnapshotManifestReader {
     failed: bool,
     complete: bool,
     rows: super::snapshot_rows::SnapshotRowAssignments,
+    identity: super::SnapshotIdentityIndex,
 }
 
 impl SnapshotManifestReader {
     /// Enumerates every entry of every selected manifest, including deleted entries.
-    /// Retains one list block and one manifest reader, never a snapshot-sized vector.
+    /// Retains one list block, one manifest reader and a separately budgeted exact
+    /// identity index; no snapshot-sized entry vector or file contents are retained.
     /// # Errors
     /// Rejects invalid budgets, snapshot selection or canonical manifest-list bytes.
     pub async fn open(
@@ -82,6 +87,7 @@ impl SnapshotManifestReader {
             return Err(SnapshotManifestError::Bounds);
         }
         let rows = super::snapshot_rows::SnapshotRowAssignments::new(&selection)?;
+        let identity = super::SnapshotIdentityIndex::new(selection.location.table(), limits.identity)?;
         let list = ManifestListReader::open_selected(
             store.clone(),
             record,
@@ -101,6 +107,7 @@ impl SnapshotManifestReader {
             failed: false,
             complete: false,
             rows,
+            identity,
         })
     }
 
@@ -110,7 +117,7 @@ impl SnapshotManifestReader {
     }
 
     /// Returns enumeration totals only after both the list and every manifest reached EOF.
-    /// This is not a data-file, cross-manifest uniqueness or commit-publication proof.
+    /// This is not a data-file semantic or commit-publication proof.
     /// # Errors
     /// Rejects partial, failed or cancelled enumeration.
     pub fn finish(&self) -> Result<SnapshotManifestSummary, SnapshotManifestError> {
@@ -135,6 +142,7 @@ impl SnapshotManifestReader {
             if let Some(manifest) = &mut self.manifest {
                 if let Some(entry) = manifest.next_entry().await? {
                     self.rows.check(manifest.next_row_id())?;
+                    self.identity.observe_entry(&entry)?;
                     self.summary.entries = bounded_add(self.summary.entries, 1, self.limits.entries)?;
                     self.failed = false;
                     return Ok(Some(entry));
@@ -149,6 +157,7 @@ impl SnapshotManifestReader {
             };
             let manifests = bounded_add(self.summary.manifests, 1, self.limits.manifests)?;
             self.rows.begin(&reference)?;
+            self.identity.observe_manifest(&reference.location)?;
             let bytes = bounded_add(
                 self.summary.manifest_bytes,
                 reference.length,
