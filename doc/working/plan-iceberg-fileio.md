@@ -154,6 +154,15 @@ integration. Independent FileIO work proceeds under the approved ordering.
   closed rather than returning mixed part state. Five tests cover pagination,
   independent limits, adjacent uploads and a session mutation during the scan.
   S3 XML response encoding and per-part LastModified capture remain HTTP work.
+  Global admission now persists independent session/byte limits and one bounded
+  CAS journal. A session reserves its staged-byte ceiling before authority creation;
+  only terminal sessions release it, retaining a policy/sequence-bound receipt.
+  Recovery helps a pending precreation journal before scanning and later returns
+  terminal credits, without deleting parts or introducing process-local locks.
+  Nine model/record/driver tests cover separate limits, every create/release lost
+  write, concurrent admission, policy mismatch, duplicate release and stale helpers.
+  Public HTTP admission/configuration remains to be connected. Capacity of retained
+  physical orphans remains the separate R177 trial-policy decision.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
@@ -197,7 +206,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 181 library tests pass, covering namespace, file records, range/streaming,
+- 195 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass
@@ -215,6 +224,9 @@ integration. Independent FileIO work proceeds under the approved ordering.
   and aborting an expired pending upload without client recovery calls. The first
   attempt exposed a synthetic root with no management journal; initialization now
   uses the real management repository. The expanded fixture passes in 35.92 seconds.
+  It now admits the expired upload through durable global credits and observes
+  the real worker settling its part, aborting, releasing credits exactly once and
+  retaining its part authority. The expanded fixture passes in 37.40 seconds.
 - Command: `pixi run clean-env && CROWDB_RUNTIME_ROOT="$PWD/.crowdb-runtime/ephemeral/iceberg-file-storage" pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_storage_test -- --nocapture`.
 
 ## Blocked

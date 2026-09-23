@@ -39,6 +39,7 @@ pub fn session() -> MultipartSession {
         completion: None,
         published: None,
         pending: None,
+        credit: None,
     }
 }
 

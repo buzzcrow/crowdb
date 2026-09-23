@@ -9,8 +9,8 @@ use crate::key::{IcebergKey, OperationId};
 use crate::record::{StorageRecord, MAX_RECORD_BYTES};
 
 use super::{
-    FileBlockStore, MultipartPhase, MultipartRepository, MultipartSession, MultipartWorkError,
-    MAX_FILE_BLOCK_BYTES,
+    FileBlockStore, MultipartAdmission, MultipartPhase, MultipartRepository, MultipartSession,
+    MultipartWorkError, MAX_FILE_BLOCK_BYTES,
 };
 
 mod scan;
@@ -18,6 +18,7 @@ pub use scan::{MultipartRecoveryScan, MultipartRecoveryStore};
 
 pub struct MultipartRecovery {
     repository: MultipartRepository,
+    admission: MultipartAdmission,
     store: Arc<dyn MultipartRecoveryStore>,
     blocks: Arc<dyn FileBlockStore>,
     step_bytes: usize,
@@ -53,6 +54,7 @@ impl MultipartRecovery {
         }
         Ok(Self {
             repository: MultipartRepository::new(store.clone()),
+            admission: MultipartAdmission::new(store.clone()),
             store,
             blocks,
             step_bytes,
@@ -82,6 +84,14 @@ impl MultipartRecovery {
         now_ms: u64,
     ) -> Result<MultipartRecoveryPage, CatalogError> {
         self.repository.check_context(context).await?;
+        let work = self.recover_admission(context);
+        let admission = if let Some(timeout) = self.session_timeout {
+            tokio::time::timeout(timeout, work)
+                .await
+                .unwrap_or(Ok(RecoveryAction::Deferred))?
+        } else {
+            work.await?
+        };
         let scan = MultipartRecoveryScan {
             catalog: context.catalog,
             continuation,
@@ -91,8 +101,8 @@ impl MultipartRecovery {
         let sessions = validate_page(context, &scan, &page)?;
         let mut report = MultipartRecoveryPage {
             continuation: page.continuation,
-            progressed: 0,
-            deferred: 0,
+            progressed: usize::from(matches!(admission, RecoveryAction::Progressed)),
+            deferred: usize::from(matches!(admission, RecoveryAction::Deferred)),
             retained: 0,
             awaiting_seal: Vec::new(),
             failures: Vec::new(),
@@ -139,10 +149,39 @@ impl MultipartRecovery {
                 .await?
         } else if session.phase == MultipartPhase::Publishing {
             self.repository.publish(session).await?.is_some()
+        } else if session.credit.is_some_and(|credit| !credit.released)
+            && matches!(
+                session.phase,
+                MultipartPhase::Published | MultipartPhase::Aborted | MultipartPhase::Conflicted
+            )
+        {
+            let record = self
+                .admission
+                .load(session.context)
+                .await?
+                .ok_or(ValidationError::Record)?;
+            if record.pending.is_some() {
+                return Ok(RecoveryAction::Deferred);
+            }
+            self.admission.release(&record, session).await?
         } else {
             return Ok(RecoveryAction::Retained);
         };
         Ok(if changed {
+            RecoveryAction::Progressed
+        } else {
+            RecoveryAction::Deferred
+        })
+    }
+
+    async fn recover_admission(&self, context: CatalogContext) -> Result<RecoveryAction, CatalogError> {
+        let Some(record) = self.admission.load(context).await? else {
+            return Ok(RecoveryAction::Retained);
+        };
+        if record.pending.is_none() {
+            return Ok(RecoveryAction::Retained);
+        }
+        Ok(if self.admission.settle(&record).await? {
             RecoveryAction::Progressed
         } else {
             RecoveryAction::Deferred

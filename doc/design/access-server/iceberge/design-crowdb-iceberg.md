@@ -236,6 +236,13 @@ require a selected FileId, and abort retains completion evidence without claimin
 publication. Their FlatBuffers envelopes bind session and part identities to
 separate catalog key scopes, retaining only bounded checkpoint references and
 current-part digest state. Unknown phases and invalid revisions fail closed.
+Catalog-scoped admission reserves an upload's entire staged-byte ceiling and one
+session credit before creating its authority. Independent persisted limits cannot
+be widened by another server's local configuration. A bounded CAS journal stores
+immutable before/after session references; policy-bound sequence receipts make
+create and terminal release recoverable without double accounting. Released
+receipts remain in terminal sessions. These logical credits are not physical disk
+reclamation or accounting for retained orphan bytes.
 The native multipart repository reserves one part mutation in the session before
 changing its part authority. A bounded before/after snapshot and monotonically
 increasing revisions make the write and fence release recoverable across servers.
@@ -251,7 +258,7 @@ replies reload progress without appending selected bytes twice. Assembled bytes
 remain unexposed until semantic sealing and immutable location publication.
 A recovery page scans at most four session authorities and performs one pending
 part settlement, logical expiry or assembly byte window per session. It validates
-the complete scan page before mutations, rejects foreign continuations and reports
+the complete scan page before session mutations, rejects foreign continuations and reports
 finished assembly as awaiting semantic sealing. Expiry never deletes physical
 parts and cannot bypass an unresolved part mutation or a publication fence.
 Publication freezes a caller-validated sealed file record in immutable payload
@@ -264,8 +271,10 @@ Each native listener schedules the multipart sweep independently of namespace
 recovery. It resets its cursor when the active context changes and bounds each
 session by the persisted catalog request deadline. Timeout defers only that session,
 allowing later entries in the page to progress. A separate outer budget bounds the
-whole page and context/scan work. Global admission and FileIO HTTP integration remain
-separate.
+whole page and context/scan work. One separately bounded admission-journal recovery
+step runs before scanning, including a reservation whose session is not yet present.
+Terminal sessions return their credits on a later visit while retaining all parts.
+FileIO HTTP integration remains separate.
 
 Multipart part listing uses one upload-scoped scan with at most 256 records per
 page. Numeric markers preserve gaps and resume strictly after the returned part

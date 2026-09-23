@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::file::{
-    FileIdentity, FileTree, MultipartLimits, MultipartPart, MultipartPhase, MultipartRepository,
-    MultipartSession, TableLocation,
+    FileIdentity, FileTree, MultipartAdmission, MultipartAdmissionLimits, MultipartLimits, MultipartPart,
+    MultipartPhase, MultipartRepository, MultipartSession, TableLocation,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
 use sha2::{Digest, Sha256};
@@ -39,9 +39,22 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, table: Ta
         completion: None,
         published: None,
         pending: None,
+        credit: None,
     };
+    let admission = MultipartAdmission::new(store.clone());
+    let policy = admission
+        .initialize(
+            context,
+            MultipartAdmissionLimits {
+                max_sessions: 2,
+                max_reserved_bytes: 200,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(admission.reserve(&policy, &initial, 1).await.unwrap());
     let repository = MultipartRepository::new(store);
-    repository.begin(&initial, 1).await.unwrap();
+    let admitted = repository.load(context, initial.upload).await.unwrap().unwrap();
     let part = MultipartPart {
         upload: initial.upload,
         number: 1,
@@ -56,16 +69,24 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, table: Ta
             digest: Sha256::digest([]).into(),
         },
     };
-    assert!(repository.reserve_part(&initial, &part, 2).await.unwrap());
+    assert!(repository.reserve_part(&admitted, &part, 2).await.unwrap());
     let mut worker = TestWorker::start(&stack.cluster.mgmt_endpoints);
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             assert!(worker.0.try_wait().unwrap().is_none(), "Iceberg worker exited");
             let current = repository.load(context, initial.upload).await.unwrap().unwrap();
-            if current.phase == MultipartPhase::Aborted {
+            if current.phase == MultipartPhase::Aborted
+                && current.credit.is_some_and(|credit| credit.released)
+            {
                 assert!(current.pending.is_none());
                 assert_eq!((current.part_count, current.staged_bytes), (1, 0));
-                assert_eq!(repository.part(&current, 1).await.unwrap(), Some(part));
+                assert_eq!(repository.part(&current, 1).await.unwrap().as_ref(), Some(&part));
+                let policy = admission.load(context).await.unwrap().unwrap();
+                if policy.pending.is_some() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+                assert_eq!((policy.sessions, policy.reserved_bytes), (0, 0));
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

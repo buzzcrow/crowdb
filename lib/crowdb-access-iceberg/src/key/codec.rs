@@ -33,6 +33,7 @@ pub enum CatalogScope {
     FileLocation = 10,
     MultipartSession = 11,
     MultipartPart = 12,
+    MultipartAdmission = 13,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -164,6 +165,7 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         10 => Ok(CatalogScope::FileLocation),
         11 => Ok(CatalogScope::MultipartSession),
         12 => Ok(CatalogScope::MultipartPart),
+        13 => Ok(CatalogScope::MultipartAdmission),
         _ => Err(ValidationError::Key),
     }
 }
@@ -180,8 +182,8 @@ fn validate_system(scope: SystemScope, suffix: &[u8]) -> Result<(), ValidationEr
 
 fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), ValidationError> {
     match scope {
-        CatalogScope::Authority if suffix.is_empty() => Ok(()),
-        CatalogScope::Authority => Err(ValidationError::Key),
+        CatalogScope::Authority | CatalogScope::MultipartAdmission if suffix.is_empty() => Ok(()),
+        CatalogScope::Authority | CatalogScope::MultipartAdmission => Err(ValidationError::Key),
         CatalogScope::NamespaceAuthority
         | CatalogScope::TableHead
         | CatalogScope::File

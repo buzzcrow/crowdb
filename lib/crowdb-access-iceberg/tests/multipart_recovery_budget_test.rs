@@ -43,6 +43,7 @@ fn session(fixture: &file::TestFile, identity: u8, ttl_ms: u64) -> MultipartSess
         completion: None,
         published: None,
         pending: None,
+        credit: None,
     }
 }
 

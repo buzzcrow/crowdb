@@ -232,6 +232,13 @@ table FBMultipartSession {
     completion:FBMultipartCompletion;
     published:[ubyte];
     pending:FBMultipartPartMutation;
+    credit:FBMultipartCredit;
+}
+
+table FBMultipartCredit {
+    policy:[ubyte] (required);
+    sequence:ulong;
+    released:bool;
 }
 
 table FBMultipartPartMutation {
@@ -247,7 +254,27 @@ table FBMultipartPart {
     tree:FBFileTree (required);
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart }
+table FBMultipartCreditMutation {
+    action:ubyte;
+    upload:[ubyte] (required);
+    reservation_bytes:ulong;
+    before:FBPayloadReference;
+    after:FBPayloadReference (required);
+}
+
+table FBMultipartAdmission {
+    catalog:[ubyte] (required);
+    activation_epoch:ulong;
+    policy:[ubyte] (required);
+    revision:ulong;
+    max_sessions:uint;
+    max_reserved_bytes:ulong;
+    sessions:uint;
+    reserved_bytes:ulong;
+    pending:FBMultipartCreditMutation;
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission }
 
 table FBIcebergRecord {
     schema_version:ushort;

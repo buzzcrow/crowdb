@@ -46,7 +46,7 @@ pub(super) async fn run(
             tracing::error!("multipart recovery clock invalid; deferring expiry processing");
             continue;
         };
-        let page_budget = budget.saturating_mul(4).saturating_add(Duration::from_secs(2));
+        let page_budget = budget.saturating_mul(5).saturating_add(Duration::from_secs(2));
         let result = tokio::time::timeout(
             page_budget,
             recovery.recover_page(root.context, continuation.clone(), now_ms),

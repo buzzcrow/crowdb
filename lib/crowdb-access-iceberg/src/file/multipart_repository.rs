@@ -143,7 +143,7 @@ fn increment(session: &MultipartSession) -> Result<MultipartSession, CatalogErro
     Ok(next)
 }
 
-fn matching_request(
+pub(super) fn matching_request(
     request: &MultipartSession,
     existing: MultipartSession,
 ) -> Result<MultipartSession, CatalogError> {

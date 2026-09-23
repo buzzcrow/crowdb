@@ -38,6 +38,7 @@ pub async fn verify_restart(stack: &mut TestIcebergStack, context: CatalogContex
         completion: None,
         published: None,
         pending: None,
+        credit: None,
     };
     let repository = MultipartRepository::new(stack.store().await);
     repository.begin(&initial, 100).await.unwrap();

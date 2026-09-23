@@ -69,6 +69,7 @@ pub struct MultipartSession {
     pub completion: Option<MultipartCompletion>,
     pub published: Option<FileId>,
     pub pending: Option<MultipartPartMutation>,
+    pub credit: Option<super::MultipartCredit>,
 }
 
 impl MultipartSession {
@@ -86,6 +87,16 @@ impl MultipartSession {
     pub fn validate(&self) -> Result<(), ValidationError> {
         self.context.validate()?;
         self.limits.validate()?;
+        if self.credit.is_some_and(|credit| {
+            credit.sequence < 2
+                || (credit.released
+                    && !matches!(
+                        self.phase,
+                        MultipartPhase::Published | MultipartPhase::Aborted | MultipartPhase::Conflicted
+                    ))
+        }) {
+            return Err(ValidationError::Record);
+        }
         if self.owner.table != self.location.table()
             || self.owner.table.catalog != self.context.catalog
             || self.revision == 0

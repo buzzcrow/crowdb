@@ -3,7 +3,10 @@ use flatbuffers::FlatBufferBuilder;
 
 use crate::catalog::{ActiveCatalogRecord, CatalogAuthority};
 use crate::error::ValidationError;
-use crate::file::{file_key, location_key, FileMapping, FileRecord, MultipartPart, MultipartSession};
+use crate::file::{
+    file_key, location_key, FileMapping, FileRecord, MultipartAdmissionRecord, MultipartPart,
+    MultipartSession,
+};
 use crate::key::{CatalogScope, IcebergKey, SystemScope};
 use crate::namespace::{authority_key, name_key, NamespaceAuthority, NamespaceMapping, NamespaceOperation};
 use crate::operation::{ledger_key, ManagementOperation, PayloadPage, RetryRecord, RetryResult};
@@ -26,6 +29,7 @@ pub enum StorageRecord {
     FileMapping(FileMapping),
     MultipartSession(Box<MultipartSession>),
     MultipartPart(Box<MultipartPart>),
+    MultipartAdmission(Box<MultipartAdmissionRecord>),
 }
 
 impl StorageRecord {
@@ -34,6 +38,10 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::MultipartAdmission(record) => (
+                FBRecordValue::FBMultipartAdmission,
+                super::multipart_admission::encode(&mut builder, record)?.as_union_value(),
+            ),
             Self::MultipartSession(session) => (
                 FBRecordValue::FBMultipartSession,
                 super::multipart::encode_session(&mut builder, session)?.as_union_value(),
@@ -117,6 +125,13 @@ impl StorageRecord {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
         let record = match envelope.value_type() {
+            FBRecordValue::FBMultipartAdmission => {
+                Self::MultipartAdmission(Box::new(super::multipart_admission::decode(
+                    envelope
+                        .value_as_fbmultipart_admission()
+                        .ok_or(ValidationError::Record)?,
+                )?))
+            }
             FBRecordValue::FBMultipartSession => {
                 Self::MultipartSession(Box::new(super::multipart::decode_session(
                     envelope
@@ -194,6 +209,7 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::MultipartAdmission(record), key) if *key == record.key() => Ok(()),
             (Self::MultipartSession(session), key) if *key == session.key() => Ok(()),
             (Self::MultipartPart(part), key) if *key == part.key() => Ok(()),
             (Self::File(record), key) if *key == file_key(record.location.table().catalog, record.file) => {

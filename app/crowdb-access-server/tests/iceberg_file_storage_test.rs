@@ -146,6 +146,6 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     assert_eq!(repository.publish(context, &candidate).await.unwrap(), candidate);
     client.shutdown_small_writes().await.unwrap();
     drop(client);
-    multipart::verify_restart(&mut stack, context, owner.table).await;
+    Box::pin(multipart::verify_restart(&mut stack, context, owner.table)).await;
     worker::verify(&stack, context, owner.table).await;
 }

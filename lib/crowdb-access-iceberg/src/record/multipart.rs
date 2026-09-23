@@ -10,6 +10,7 @@ use crate::file::{MultipartLimits, MultipartPart, MultipartPartMutation, Multipa
 use crate::key::{FileId, OperationId};
 
 mod completion;
+mod credit;
 mod fields;
 
 pub(super) fn encode_session<'buffer>(
@@ -58,6 +59,7 @@ pub(super) fn encode_session<'buffer>(
             ))
         })
         .transpose()?;
+    let credit = session.credit.map(|value| credit::encode(builder, value));
     Ok(FBMultipartSession::create(
         builder,
         &FBMultipartSessionArgs {
@@ -83,6 +85,7 @@ pub(super) fn encode_session<'buffer>(
             completion,
             published,
             pending,
+            credit,
         },
     ))
 }
@@ -104,6 +107,7 @@ pub(super) fn decode_session(value: FBMultipartSession<'_>) -> Result<MultipartS
             .try_into()
             .map_err(|_| ValidationError::Record)?,
         revision: value.revision(),
+        credit: value.credit().map(credit::decode).transpose()?,
         created_ms: value.created_ms(),
         expires_ms: value.expires_ms(),
         limits: MultipartLimits {
