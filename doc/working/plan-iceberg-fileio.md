@@ -41,6 +41,14 @@ integration. Independent FileIO work proceeds under the approved ordering.
   digest, child heights and byte coverage. Pull reads keep one leaf and produce
   at most 64-KiB frames without speculative reads. Full reads verify the file digest.
   Files: file blocks/directory/range/reader/writer and streaming tests.
+- [x] **Streaming JSON structure**: validate metadata JSON through a bounded
+  pull-reader bridge and serde's ignored-value parser, never materializing the
+  metadata graph. Independently enforce file bytes, active workers, raw UTF-8,
+  object root and nesting before parser scratch can grow. Cancellation preserves
+  admission until the worker exits; no new locks or whole-file allocation.
+  Three tests cover large strings, split Unicode, malformed input, caps and
+  cancellation. This does not replace table/schema semantic validation.
+  Files: file JSON sealer/reader/scan modules and JSON tests.
 - [x] **Durable chunk publication boundary**: native blocks call opt-in
   `SharedObjectWriter::finish_durable`; existing small-write completion remains
   asynchronous. Confirm the readable cursor before exposing each block. The real
@@ -90,7 +98,8 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 116 library tests pass, including range and multi-level streaming boundaries.
+- 123 library tests cover namespace, file records, range/streaming, credentials
+  and streaming JSON boundaries; focused credential and JSON gates pass.
 - Native file-tree publication, full read, a range crossing leaf boundaries and
   Chunk-KV restart pass against real ChunkDB/DiskIO using the separate
   `iceberg_file_storage_test` target. This verifies storage bytes, not Parquet

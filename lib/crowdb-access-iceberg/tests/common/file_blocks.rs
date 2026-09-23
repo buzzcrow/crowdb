@@ -18,6 +18,9 @@ pub struct TestBlocks {
     pub max_input: AtomicUsize,
     pub fail_after: AtomicUsize,
     pub corrupt_reads: AtomicBool,
+    pub pause_reads: AtomicBool,
+    pub read_entered: tokio::sync::Notify,
+    pub read_release: tokio::sync::Notify,
 }
 
 #[async_trait]
@@ -48,6 +51,10 @@ impl FileBlockStore for TestBlocks {
     }
 
     async fn read(&self, root: &ChunkRoot) -> Result<Vec<u8>, FileIoError> {
+        if self.pause_reads.load(Ordering::SeqCst) {
+            self.read_entered.notify_one();
+            self.read_release.notified().await;
+        }
         self.reads.fetch_add(1, Ordering::SeqCst);
         let mut bytes = self
             .values

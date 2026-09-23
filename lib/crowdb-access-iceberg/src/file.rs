@@ -4,6 +4,7 @@ mod blocks;
 mod content;
 mod credentials;
 mod directory;
+mod json;
 mod key;
 mod location;
 mod range;
@@ -18,6 +19,7 @@ pub use credentials::{
     FileCredentials, FileGrant, FileGrantError, FileGrantIssuer, FileOperation, FileOperations,
 };
 pub use directory::{ChunkDirectory, ChunkEntry, FileIdentity, MAX_DIRECTORY_ENTRIES};
+pub use json::{JsonSealError, JsonSealer};
 pub use key::{file_key, location_key};
 pub(crate) use location::validate_relative_key;
 pub use location::{FileLocation, TableLocation, MAX_OBJECT_KEY_BYTES};

@@ -210,6 +210,12 @@ Pull readers retain one leaf, verify directory/leaf digests and read no future
 block until requested; full-file reads also verify the canonical digest. Range
 parsing accepts one contiguous interval and rejects multiple ranges explicitly.
 
+Metadata JSON structural validation uses a bounded pull-reader bridge and an
+ignored-value parser rather than retaining the metadata graph. A separate scanner
+bounds nesting and verifies raw UTF-8 before parser scratch can grow. Admission
+caps blocking workers; cancellation keeps its permit until the worker exits.
+This structural check does not replace Iceberg schema or commit validation.
+
 Delegation tokens carry catalog activation epoch, table, principal fingerprint,
 nonce, exact operation set, issue/expiry times and independent request/file byte
 limits. Domain-separated HMAC authenticates bounded claims and derives per-grant
