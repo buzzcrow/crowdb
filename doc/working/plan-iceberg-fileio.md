@@ -188,8 +188,15 @@ integration. Independent FileIO work proceeds under the approved ordering.
   bad checksums and expansion beyond the output ceiling fail closed. The existing
   LZ4 dependency's frame feature supplies checksum verification. Four tests cover
   canonical reads, compression, resource caps and exact manifest-to-footer
-  offset/length/referenced-file/cardinality matching. Bitmap/CRC validation and
-  snapshot-wide deletion-vector uniqueness remain separate pending work.
+  offset/length/referenced-file/cardinality matching.
+  Deletion-vector validation now re-reads the canonical descriptor and streams
+  portable Roaring arrays, bitsets and runs without collecting deleted positions.
+  It validates lengths, magic, CRC-32, ordered keys, container offsets, signed
+  64-bit position bounds and exact cardinality. One bounded container directory
+  and a 16-KiB input frame suffice; independent blob/bitmap caps bound work.
+  Four tests cover each container family, boundaries, corruption with valid CRCs,
+  descriptor count mismatch and resource caps. Snapshot-wide uniqueness, matching
+  actual data-file row counts and commit/sealing integration remain pending.
   ORC probing reads at most 255 postscript bytes and validates protobuf framing,
   footer/metadata spans and optional postscript magic. Three additional tests cover
   unknown fields, legacy header magic, maximum size and malformed wire inputs.
@@ -232,7 +239,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 207 library tests pass, covering namespace, file records, range/streaming,
+- 211 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass

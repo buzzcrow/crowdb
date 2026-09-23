@@ -313,8 +313,12 @@ Puffin metadata parsing separately caps encoded and decoded footer payloads at
 one sized, checksum-verified LZ4 frame and rejects overlapping blob ranges. Footer
 deletion-vector descriptors validate their reserved snapshot/sequence markers,
 uncompressed storage, referenced file and cardinality; manifest checks require
-exact offset/length and referenced-file/cardinality agreement. Bitmap bytes and
-snapshot-wide deletion-vector uniqueness remain separate validation stages.
+exact offset/length and referenced-file/cardinality agreement. The deletion-vector
+reader then streams Roaring array, bitset and run containers, validates their
+directories and cardinalities, and checks the blob's framing and CRC-32. It retains
+one bounded container directory, not the deleted-position set; byte and bitmap
+limits independently bound work. Snapshot-wide uniqueness and referenced data-file
+row-count checks remain commit-level validation stages.
 ORC probing retains at most 255 postscript bytes, checks protobuf wire framing
 and resolves footer/metadata spans without decoding stripe directories. It accepts
 legacy header-only magic and skips bounded unknown protobuf fields.

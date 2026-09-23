@@ -5,6 +5,7 @@ mod avro;
 mod blocks;
 mod content;
 mod credentials;
+mod deletion_vector;
 mod digest;
 mod directory;
 mod format;
@@ -34,6 +35,10 @@ pub use blocks::{FileBlockStore, FileIoError, NativeFileBlocks, MAX_FILE_BLOCK_B
 pub use content::{ChunkRoot, FileContent, InlineCodec, MAX_COMPRESSION_INPUT_BYTES, MAX_INLINE_BYTES};
 pub use credentials::{
     FileCredentials, FileGrant, FileGrantError, FileGrantIssuer, FileOperation, FileOperations,
+};
+pub use deletion_vector::{
+    validate_deletion_vector, DeletionVectorError, DeletionVectorLimits, DeletionVectorReference,
+    DeletionVectorStats,
 };
 pub use digest::FileDigest;
 pub use directory::{ChunkDirectory, ChunkEntry, FileIdentity, MAX_DIRECTORY_ENTRIES};
