@@ -8,7 +8,10 @@ use crate::record::StorageRecord;
 
 use super::{MultipartPhase, MultipartSession};
 
+mod completion;
 mod parts;
+
+pub use completion::MultipartWorkError;
 
 pub struct MultipartRepository {
     store: Arc<dyn CatalogStore>,

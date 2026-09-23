@@ -89,12 +89,12 @@ integration. Independent FileIO work proceeds under the approved ordering.
   unsafe code or toolchain requirement. Three digest tests compare padding,
   update/restart boundaries and a million-byte vector against the standard hasher.
   Three writer tests cover resumed partial leaves, directories, orphan retention,
-  failed checkpoint writes, corruption and wrong identities. Completion freezing
-  and recovery workers remain unimplemented.
+  failed checkpoint writes, corruption and wrong identities. Autonomous recovery
+  workers remain unimplemented.
   Real native storage also passes checkpoint restoration through a newly connected
   chunk client before final publication and the existing Chunk-KV restart checks.
-  Next steps: reserve global admission; freeze bounded completion pages; checkpoint completion
-  progress by byte budget; recover abandoned sessions without physical deletion.
+  Next steps: reserve global admission; connect semantic sealing/publication;
+  recover abandoned sessions without physical deletion.
   Staged-tree reads now validate physical identity/bytes without constructing a
   fictitious complete-file format record. Two tests cover multipart fragments,
   ranges, wrong owners, empty digests and invalid bounds.
@@ -102,8 +102,8 @@ integration. Independent FileIO work proceeds under the approved ordering.
   selected part, checkpoints both target and current-part SHA-256 progress and
   binds resumptions to selection/part identity. Four tests verify recovery,
   empty parts, exact concatenation, part-digest mismatch, lost writes and caps.
-  This engine requires a frozen selection and CAS journal supplied by the next
-  persistence layer; it does not yet authorize or publish multipart uploads.
+  This engine uses the frozen selection and CAS journal below; it does not itself
+  authorize or publish multipart uploads.
   Session/part models now validate separate part/file/staged-byte limits, TTL,
   identity/revision, selection binding and Open/Completing/Publishing/Published/
   Aborted phase coherence. Four model tests cover normal and invalid transitions.
@@ -119,7 +119,15 @@ integration. Independent FileIO work proceeds under the approved ordering.
   before fencing further writes. Five tests cover insert/replacement crash points,
   competing abort, exact expiry, resource limits and retained completion evidence.
   This is not public admission: global credits, upload streaming, duplicate-part
-  HTTP responses, frozen selection and autonomous sweeps remain to be connected.
+  HTTP responses and autonomous sweeps remain to be connected.
+  Completion now freezes an ordered revision/digest selection in immutable payload
+  pages before a session CAS fences further part replacement. At most 10,000 entries
+  occupy 420,007 encoded bytes; each work step verifies that bounded selection and
+  one selected part, copies one configured byte window and CASes its checkpoint.
+  Four tests cover maximum selection framing, missing/changed parts, abort, invalid
+  work limits and lost replies at selection and every progress boundary across
+  repository instances. The assembled tree remains private pending semantic
+  sealing; this does not implement the final HTTP Complete response or publication.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
@@ -163,7 +171,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 166 library tests pass, covering namespace, file records, range/streaming,
+- 170 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass

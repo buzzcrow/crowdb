@@ -242,7 +242,14 @@ increasing revisions make the write and fence release recoverable across servers
 Counts and current staged bytes are reserved once at the session CAS. Abort cannot
 bypass an unresolved mutation; stale helpers cannot restore an older part. Abort
 retains parts and completion evidence rather than deleting physical storage.
-Global runtime admission, completion selection and HTTP integration remain separate.
+Completion freezes an ordered part-number/revision/digest selection in immutable
+payload pages, then changes the session phase by CAS to fence part replacement.
+Selections are independently bounded to 10,000 entries and 420,007 encoded bytes.
+Each completion step verifies that bounded selection and one selected part before
+copying a bounded byte window and publishing its checkpoint by session CAS. Lost
+replies reload progress without appending selected bytes twice. Assembled bytes
+remain unexposed until semantic sealing and immutable location publication.
+Global runtime admission, autonomous recovery and HTTP integration remain separate.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

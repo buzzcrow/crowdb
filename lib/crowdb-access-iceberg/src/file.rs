@@ -13,6 +13,7 @@ mod key;
 mod location;
 mod multipart;
 mod multipart_repository;
+mod multipart_selection;
 mod range;
 mod reader;
 mod record;
@@ -39,7 +40,8 @@ pub use multipart::{
     MultipartCompletion, MultipartLimits, MultipartPart, MultipartPartMutation, MultipartPhase,
     MultipartSession,
 };
-pub use multipart_repository::MultipartRepository;
+pub use multipart_repository::{MultipartRepository, MultipartWorkError};
+pub use multipart_selection::{MultipartSelection, SelectedPart};
 pub use range::{resolve_range, ByteRange, RangeError};
 pub use reader::{FileReader, MAX_READ_FRAME_BYTES};
 pub use record::{ContentFormat, FileKind, FileMapping, FileRecord, FormatHint};
