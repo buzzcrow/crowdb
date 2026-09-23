@@ -12,6 +12,7 @@ mod json;
 mod key;
 mod location;
 mod multipart;
+mod multipart_recovery;
 mod multipart_repository;
 mod multipart_selection;
 mod range;
@@ -39,6 +40,9 @@ pub use location::{FileLocation, TableLocation, MAX_OBJECT_KEY_BYTES};
 pub use multipart::{
     MultipartCompletion, MultipartLimits, MultipartPart, MultipartPartMutation, MultipartPhase,
     MultipartSession,
+};
+pub use multipart_recovery::{
+    MultipartRecovery, MultipartRecoveryPage, MultipartRecoveryScan, MultipartRecoveryStore,
 };
 pub use multipart_repository::{MultipartRepository, MultipartWorkError};
 pub use multipart_selection::{MultipartSelection, SelectedPart};

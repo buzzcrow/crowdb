@@ -249,7 +249,12 @@ Each completion step verifies that bounded selection and one selected part befor
 copying a bounded byte window and publishing its checkpoint by session CAS. Lost
 replies reload progress without appending selected bytes twice. Assembled bytes
 remain unexposed until semantic sealing and immutable location publication.
-Global runtime admission, autonomous recovery and HTTP integration remain separate.
+A recovery page scans at most four session authorities and performs one pending
+part settlement, logical expiry or assembly byte window per session. It validates
+the complete scan page before mutations, rejects foreign continuations and reports
+finished assembly as awaiting semantic sealing. Expiry never deletes physical
+parts and cannot bypass an unresolved part mutation or a publication fence.
+Global runtime admission, server scheduling and HTTP integration remain separate.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

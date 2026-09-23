@@ -89,8 +89,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   unsafe code or toolchain requirement. Three digest tests compare padding,
   update/restart boundaries and a million-byte vector against the standard hasher.
   Three writer tests cover resumed partial leaves, directories, orphan retention,
-  failed checkpoint writes, corruption and wrong identities. Autonomous recovery
-  workers remain unimplemented.
+  failed checkpoint writes, corruption and wrong identities.
   Real native storage also passes checkpoint restoration through a newly connected
   chunk client before final publication and the existing Chunk-KV restart checks.
   Next steps: reserve global admission; connect semantic sealing/publication;
@@ -119,7 +118,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   before fencing further writes. Five tests cover insert/replacement crash points,
   competing abort, exact expiry, resource limits and retained completion evidence.
   This is not public admission: global credits, upload streaming, duplicate-part
-  HTTP responses and autonomous sweeps remain to be connected.
+  HTTP responses and runtime scheduling remain to be connected.
   Completion now freezes an ordered revision/digest selection in immutable payload
   pages before a session CAS fences further part replacement. At most 10,000 entries
   occupy 420,007 encoded bytes; each work step verifies that bounded selection and
@@ -128,6 +127,13 @@ integration. Independent FileIO work proceeds under the approved ordering.
   work limits and lost replies at selection and every progress boundary across
   repository instances. The assembled tree remains private pending semantic
   sealing; this does not implement the final HTTP Complete response or publication.
+  A four-session recovery scan now settles one pending part mutation or performs
+  one assembly byte window per visit. Expired open/completing sessions are logically
+  aborted after pending part mutations settle; parts and checkpoints remain intact.
+  Finished assembly is reported as awaiting semantic sealing, not as published.
+  Four sweep tests cover multi-page progress, cross-instance visits, exact expiry,
+  retained bytes, invalid/foreign cursors and corrupt pages before any mutation.
+  The native scan adapter is implemented; server scheduling remains next.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
@@ -171,7 +177,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 170 library tests pass, covering namespace, file records, range/streaming,
+- 174 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass

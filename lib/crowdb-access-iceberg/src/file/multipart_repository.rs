@@ -23,6 +23,10 @@ impl MultipartRepository {
         Self { store }
     }
 
+    pub(super) async fn check_context(&self, context: CatalogContext) -> Result<(), CatalogError> {
+        check_context(self.store.as_ref(), context).await
+    }
+
     /// Persists a session after the caller has reserved global admission credits.
     /// # Errors
     /// Rejects noninitial sessions, expired admission and conflicting upload identities.
