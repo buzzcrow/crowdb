@@ -234,6 +234,15 @@ Null and raw-deflate block decoding enforce an independent decoded-byte cap;
 truncated compressed data or unused suffixes fail closed. This layer does not
 resolve Avro schemas or validate Iceberg manifest fields.
 
+Manifest inheritance is a separate constant-state semantic layer. It distinguishes
+the manifest version from the containing table version: v1 sequences default to
+zero, while new snapshots can assign row IDs to older manifests. Only added files
+inherit missing sequence numbers; explicit file ages are preserved. Unassigned
+data files advance the row-ID cursor in manifest order, including existing files
+after an upgrade; delete files cannot carry row IDs. Invalid entries and arithmetic
+overflow leave the cursor unchanged. Avro decoding and commit admission are not
+yet connected to this resolver.
+
 Delegation tokens carry catalog activation epoch, table, principal fingerprint,
 nonce, exact operation set, issue/expiry times and independent request/file byte
 limits. Domain-separated HMAC authenticates bounded claims and derives per-grant

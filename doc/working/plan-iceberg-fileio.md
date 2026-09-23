@@ -90,6 +90,10 @@ integration. Independent FileIO work proceeds under the approved ordering.
   are checked across leaf boundaries. Null and raw-deflate codecs now enforce an
   independent decoded-byte cap and reject truncated or concatenated streams.
   Schema resolution, optional codecs and manifest v1/v2/v3 validation remain.
+  A constant-state manifest inheritance resolver now handles v1 zero sequences,
+  added-only sequence inheritance, explicit ages, upgraded existing-file row IDs,
+  data/delete separation and checked row-ID advancement. Five semantic tests pass.
+  It is not yet connected to Avro schema decoding or table commit admission.
 - [ ] **Acceptance**: official FileIO, real chunks/restarts, concurrency/lost
   responses, all boundary tests; run fmt and lint independently. No full feature
   advertisement or closure until the complete requirement passes.
