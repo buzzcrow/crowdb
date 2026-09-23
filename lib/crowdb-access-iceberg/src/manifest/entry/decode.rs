@@ -1,5 +1,6 @@
 use crate::file::{AvroScalar, ContentFormat, FileLocation, FormatHint, TableLocation};
 use crate::manifest::{EntryStatus, FileContentKind, ManifestEntry, ManifestVersion};
+use std::collections::BTreeSet;
 
 use super::{ManifestEntryError, ManifestFileFields};
 
@@ -112,6 +113,19 @@ fn file(
         }
         None
     };
+    let equality_ids = match (content, values[15]) {
+        (FileContentKind::EqualityDeletes, AvroScalar::IntList(list)) => {
+            let ids = list.values(4096)?;
+            let mut unique = BTreeSet::new();
+            if ids.is_empty() || ids.iter().any(|id| *id <= 0 || !unique.insert(*id)) {
+                return Err(ManifestEntryError::Field);
+            }
+            Some(ids)
+        }
+        (FileContentKind::EqualityDeletes, _) => return Err(ManifestEntryError::Field),
+        (_, AvroScalar::Null) => None,
+        _ => return Err(ManifestEntryError::Field),
+    };
     Ok(ManifestFileFields {
         location,
         format,
@@ -119,6 +133,7 @@ fn file(
         sort_order_id,
         referenced_data_file,
         deletion_vector,
+        equality_ids,
     })
 }
 

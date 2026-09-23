@@ -19,9 +19,8 @@ Status: the user approved this ordering and implementation of independent work.
 Collect unresolved human decisions in R177 for confirmation when the user returns;
 do not stop unrelated tasks. No user-guide tasks.
 
-Handover checkpoint (2026-09-23): the user requested a cheaper-mode handover,
-then asked to finish a complex independent task first. Typed scalar manifest-entry
-decoding and cross-block inheritance are now the verified task boundary, following
+Handover checkpoint (2026-09-23): typed scalar manifest-entry decoding,
+cross-block inheritance and bounded equality-ID lists are verified, following
 nested Avro field-ID projection. Resume instructions, exact next implementation slices,
 landed APIs, remaining integration gaps and test commands are in
 `plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this
@@ -40,9 +39,9 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   deletion disabled; this is not a cleanup job that can safely use only TTL.
 - **High: remaining FileIO semantics (R180)**. Collection schemas, equality IDs,
   partition/metric validation and snapshot-wide DV/row-lineage checks require
-  bounded traversal plus table context. The difficult scalar bridge is now landed:
+  bounded traversal plus table context. The scalar bridge and equality-ID lists are landed:
   typed IDs/paths, v1/v2/v3 inheritance, atomic failure behavior and cross-block
-  state have focused tests. Next implement bounded collections; do not rebuild
+  state have focused tests. Next implement remaining bounded collections; do not rebuild
   the Avro parser or conflate scalar validation with full manifest acceptance.
 - **High: multipart/HTTP composition (R180)**. Durable credits, parts, completion,
   publication and recovery primitives exist. Wire official retry/error/XML

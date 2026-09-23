@@ -84,7 +84,7 @@ impl<'data> Input<'data> {
                     self.datum(schema, field.node, depth + 1)?;
                 }
             }
-            Node::Array(child) => self.collection(schema, *child, false, depth)?,
+            Node::Array(child, _) => self.collection(schema, *child, false, depth)?,
             Node::Map(child) => self.collection(schema, *child, true, depth)?,
             Node::Union(branches) => {
                 let branch = *branches.get(self.size()?).ok_or(AvroContainerError::Schema)?;
@@ -150,6 +150,10 @@ impl<'data> Input<'data> {
             .ok_or(AvroContainerError::Schema)?;
         self.offset = end;
         Ok(value)
+    }
+
+    pub(super) fn take_remaining(&mut self) -> Result<&'data [u8], AvroContainerError> {
+        self.take(self.bytes.len() - self.offset)
     }
 
     pub(super) fn long(&mut self) -> Result<i64, AvroContainerError> {

@@ -41,12 +41,15 @@ impl TestManifestEntry {
                 (144, "long", json!(null)),
                 (145, "long", json!(null)),
                 (105, "long", json!(0)),
+                (135, "int-array", json!(null)),
             ],
             null_file: false,
         };
         if version == ManifestVersion::V1 {
             fixture.root.retain(|field| field.0 < 3);
-            fixture.file.retain(|field| !matches!(field.0, 134 | 142..=145));
+            fixture
+                .file
+                .retain(|field| !matches!(field.0, 134 | 135 | 142..=145));
         } else {
             fixture.file.retain(|field| field.0 != 105);
         }
@@ -67,7 +70,14 @@ impl TestManifestEntry {
     }
 
     pub fn schema_bytes(&self) -> Vec<u8> {
-        let field = |(id, kind, _): &(i32, &'static str, Value)| json!({"name":format!("renamed{id}"),"field-id":id,"type":["null",kind]});
+        let field = |(id, kind, _): &(i32, &'static str, Value)| {
+            let kind = if *kind == "int-array" {
+                json!({"type":"array","items":"int","element-id":136})
+            } else {
+                json!(kind)
+            };
+            json!({"name":format!("renamed{id}"),"field-id":id,"type":["null",kind]})
+        };
         let mut root: Vec<_> = self.root.iter().map(field).collect();
         let mut file: Vec<_> = self.file.iter().map(field).collect();
         file.push(json!({"name":"partition","field-id":102,"type":{"type":"record","name":"Partition","fields":[]}}));
@@ -102,6 +112,13 @@ fn encode((_, kind, value): &(i32, &'static str, Value), bytes: &mut Vec<u8>) {
         let string = value.as_str().unwrap();
         long(i64::try_from(string.len()).unwrap(), bytes);
         bytes.extend_from_slice(string.as_bytes());
+    } else if *kind == "int-array" {
+        let values = value.as_array().unwrap();
+        long(i64::try_from(values.len()).unwrap(), bytes);
+        for item in values {
+            long(item.as_i64().unwrap(), bytes);
+        }
+        bytes.push(0);
     } else {
         long(value.as_i64().unwrap(), bytes);
     }

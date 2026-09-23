@@ -11,8 +11,8 @@ pub use codec::AvroCodec;
 use input::Input;
 pub use records::{AvroDecodedBlock, AvroRecords};
 pub use schema::{
-    AvroDatumLimits, AvroFieldPath, AvroProjectedRecords, AvroProjection, AvroScalar, AvroScalarType,
-    AvroSchema,
+    AvroDatumLimits, AvroFieldPath, AvroIntList, AvroProjectedRecords, AvroProjection, AvroScalar,
+    AvroScalarType, AvroSchema,
 };
 
 #[derive(Debug, thiserror::Error)]

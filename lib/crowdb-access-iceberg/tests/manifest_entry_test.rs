@@ -221,3 +221,102 @@ fn schema_context_null_record_and_trailing_bytes_fail_without_advancing_state() 
     v1.root.retain(|field| field.0 != 1);
     assert!(ManifestEntryProjection::new(&v1.schema(), ManifestVersion::V1, table()).is_err());
 }
+
+#[test]
+fn equality_ids_require_a_bounded_unique_list_and_matching_element_id() {
+    let mut fixture = TestManifestEntry::new(ManifestVersion::V2);
+    fixture.set(134, json!(2));
+    fixture.set(135, json!([3, 8]));
+    let schema = fixture.schema();
+    let projection = ManifestEntryProjection::new(&schema, ManifestVersion::V2, table()).unwrap();
+    let mut state = ManifestEntryState::new(
+        ManifestVersion::V2,
+        table(),
+        ManifestContent::Deletes,
+        50,
+        9,
+        None,
+    )
+    .unwrap();
+    let entry = projection
+        .records(&fixture.bytes(), 1, limits(), &mut state)
+        .unwrap()
+        .next_entry()
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.file.equality_ids, Some(vec![3, 8]));
+
+    for ids in [json!(null), json!([]), json!([3, 3]), json!([0]), json!([-1])] {
+        fixture.set(135, ids);
+        assert!(projection
+            .records(&fixture.bytes(), 1, limits(), &mut state)
+            .unwrap()
+            .next_entry()
+            .is_err());
+    }
+    fixture.set(135, json!([3, 8]));
+    fixture.set(134, json!(0));
+    assert!(projection
+        .records(&fixture.bytes(), 1, limits(), &mut state)
+        .unwrap()
+        .next_entry()
+        .is_err());
+
+    let schema = String::from_utf8(fixture.schema_bytes()).unwrap();
+    for replacement in ["\"element-id\":137", "\"element-id\":-1", "\"other-id\":136"] {
+        let schema = schema.replace("\"element-id\":136", replacement);
+        let schema = crowdb_access_iceberg::file::AvroSchema::parse(schema.as_bytes()).unwrap();
+        assert!(ManifestEntryProjection::new(&schema, ManifestVersion::V2, table()).is_err());
+    }
+}
+
+#[test]
+fn equality_ids_accept_sized_avro_blocks_and_reject_excess_work() {
+    let mut fixture = TestManifestEntry::new(ManifestVersion::V2);
+    fixture.set(134, json!(2));
+    fixture.set(135, json!([3, 8]));
+    let schema = fixture.schema();
+    let projection = ManifestEntryProjection::new(&schema, ManifestVersion::V2, table()).unwrap();
+    let mut state = ManifestEntryState::new(
+        ManifestVersion::V2,
+        table(),
+        ManifestContent::Deletes,
+        50,
+        9,
+        None,
+    )
+    .unwrap();
+    let mut bytes = fixture.bytes();
+    bytes.truncate(bytes.len() - 5);
+    bytes.extend_from_slice(&[2, 3, 4, 6, 16, 0]);
+    let entry = projection
+        .records(&bytes, 1, limits(), &mut state)
+        .unwrap()
+        .next_entry()
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.file.equality_ids, Some(vec![3, 8]));
+    assert_eq!(state.next_row_id(), None);
+
+    let block_length = bytes.len() - 4;
+    bytes[block_length] = 6;
+    assert!(projection
+        .records(&bytes, 1, limits(), &mut state)
+        .unwrap()
+        .next_entry()
+        .is_err());
+
+    fixture.set(135, json!(vec![1; 4097]));
+    let generous = AvroDatumLimits {
+        depth: 64,
+        values: 20_000,
+        value_bytes: 8 * 1024 * 1024,
+    };
+    assert!(matches!(
+        projection
+            .records(&fixture.bytes(), 1, generous, &mut state)
+            .unwrap()
+            .next_entry(),
+        Err(ManifestEntryError::Avro(AvroContainerError::Bounds))
+    ));
+}

@@ -10,7 +10,7 @@ use super::{
 
 mod decode;
 
-const PATHS: [&[i32]; 15] = [
+const PATHS: [&[i32]; 16] = [
     &[0],
     &[1],
     &[3],
@@ -26,6 +26,7 @@ const PATHS: [&[i32]; 15] = [
     &[2, 144],
     &[2, 145],
     &[2, 105],
+    &[2, 135],
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +47,7 @@ pub struct ManifestFileFields {
     pub sort_order_id: Option<i32>,
     pub referenced_data_file: Option<FileLocation>,
     pub deletion_vector: Option<FormatHint>,
+    pub equality_ids: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -121,7 +123,22 @@ impl<'schema> ManifestEntryProjection<'schema> {
             .collect();
         let projection = AvroProjection::paths(schema, &paths)?;
         let types = [
-            Int, Long, Long, Long, Int, String, String, Long, Long, Int, Long, String, Long, Long, Long,
+            Int,
+            Long,
+            Long,
+            Long,
+            Int,
+            String,
+            String,
+            Long,
+            Long,
+            Int,
+            Long,
+            String,
+            Long,
+            Long,
+            Long,
+            AvroScalarType::IntList,
         ];
         if projection
             .field_types()
@@ -129,6 +146,9 @@ impl<'schema> ManifestEntryProjection<'schema> {
             .zip(types)
             .any(|(actual, expected)| actual.is_some_and(|actual| actual != expected))
         {
+            return Err(ManifestEntryError::Field);
+        }
+        if projection.field_types()[15].is_some() && projection.element_ids()[15] != Some(136) {
             return Err(ManifestEntryError::Field);
         }
         Ok(Self {

@@ -25,6 +25,7 @@ pub(super) fn projection<'schema>(
         schema,
         remaining: 16_384,
         types: vec![None; paths.len()],
+        element_ids: vec![None; paths.len()],
     };
     let selections: Vec<_> = paths.iter().copied().enumerate().collect();
     let root = compiler.record(schema.root, &selections)?;
@@ -33,6 +34,7 @@ pub(super) fn projection<'schema>(
         root,
         count: paths.len(),
         types: compiler.types,
+        element_ids: compiler.element_ids,
     })
 }
 
@@ -40,6 +42,7 @@ struct Compiler<'schema> {
     schema: &'schema AvroSchema,
     remaining: usize,
     types: Vec<Option<AvroScalarType>>,
+    element_ids: Vec<Option<i32>>,
 }
 
 impl Compiler<'_> {
@@ -99,10 +102,21 @@ impl Compiler<'_> {
             }
             let slot = paths[0].0;
             self.types[slot] = scalar_type(self.schema, node);
+            self.element_ids[slot] = array_element_id(self.schema, node);
             Ok(Selection::Scalar { node, slot })
         } else {
             Ok(Selection::Record(self.record(node, paths)?))
         }
+    }
+}
+
+fn array_element_id(schema: &AvroSchema, index: usize) -> Option<i32> {
+    match &schema.nodes[index] {
+        Node::Array(_, id) => *id,
+        Node::Union(branches) => branches
+            .iter()
+            .find_map(|branch| array_element_id(schema, *branch)),
+        _ => None,
     }
 }
 

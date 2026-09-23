@@ -1,6 +1,9 @@
 use super::{binary::Input, AvroContainerError, AvroDatumLimits, AvroSchema, Node};
 
 mod compile;
+mod int_list;
+
+pub use int_list::AvroIntList;
 
 #[derive(Clone, Copy)]
 pub struct AvroFieldPath<'path> {
@@ -14,6 +17,7 @@ pub enum AvroScalar<'data> {
     Int(i32),
     Long(i64),
     String(&'data str),
+    IntList(AvroIntList<'data>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,6 +25,7 @@ pub enum AvroScalarType {
     Int,
     Long,
     String,
+    IntList,
 }
 
 pub struct AvroProjection<'schema> {
@@ -28,6 +33,7 @@ pub struct AvroProjection<'schema> {
     root: RecordSelection,
     count: usize,
     types: Vec<Option<AvroScalarType>>,
+    element_ids: Vec<Option<i32>>,
 }
 
 struct RecordSelection {
@@ -94,6 +100,11 @@ impl<'schema> AvroProjection<'schema> {
     #[must_use]
     pub fn field_types(&self) -> &[Option<AvroScalarType>] {
         &self.types
+    }
+
+    #[must_use]
+    pub fn element_ids(&self) -> &[Option<i32>] {
+        &self.element_ids
     }
 
     /// Opens a bounded cursor; each successful pull validates every field in that record.
@@ -181,8 +192,9 @@ impl<'data> AvroProjectedRecords<'_, '_, 'data> {
     }
 }
 
-fn primitive(node: &Node) -> bool {
+fn primitive(schema: &AvroSchema, node: &Node) -> bool {
     matches!(node, Node::Int | Node::Long | Node::String)
+        || matches!(node, Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int))
 }
 
 fn scalar_type(schema: &AvroSchema, index: usize) -> Option<AvroScalarType> {
@@ -190,6 +202,7 @@ fn scalar_type(schema: &AvroSchema, index: usize) -> Option<AvroScalarType> {
         Node::Int => Some(AvroScalarType::Int),
         Node::Long => Some(AvroScalarType::Long),
         Node::String => Some(AvroScalarType::String),
+        Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int) => Some(AvroScalarType::IntList),
         Node::Union(branches) => branches.iter().find_map(|branch| scalar_type(schema, *branch)),
         _ => None,
     }
@@ -205,11 +218,11 @@ fn scalar_layout(schema: &AvroSchema, index: usize) -> bool {
                 == 1
                 && branches
                     .iter()
-                    .filter(|branch| primitive(&schema.nodes[**branch]))
+                    .filter(|branch| primitive(schema, &schema.nodes[**branch]))
                     .count()
                     == 1
         }
-        node => primitive(node),
+        node => primitive(schema, node),
     }
 }
 
@@ -227,6 +240,9 @@ fn read_scalar<'data>(
             AvroScalar::String(
                 std::str::from_utf8(input.take(length)?).map_err(|_| AvroContainerError::Schema)?,
             )
+        }
+        Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int) => {
+            AvroScalar::IntList(AvroIntList(input.take_remaining()?))
         }
         Node::Union(branches) => {
             let branch = *branches.get(input.size()?).ok_or(AvroContainerError::Schema)?;

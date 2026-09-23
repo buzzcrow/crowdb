@@ -4,7 +4,9 @@ mod binary;
 mod parse;
 mod projection;
 
-pub use projection::{AvroFieldPath, AvroProjectedRecords, AvroProjection, AvroScalar, AvroScalarType};
+pub use projection::{
+    AvroFieldPath, AvroIntList, AvroProjectedRecords, AvroProjection, AvroScalar, AvroScalarType,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AvroDatumLimits {
@@ -46,7 +48,7 @@ enum Node {
     Fixed(usize),
     Enum(usize),
     Record(Vec<Field>),
-    Array(usize),
+    Array(usize, Option<i32>),
     Map(usize),
     Union(Vec<usize>),
 }

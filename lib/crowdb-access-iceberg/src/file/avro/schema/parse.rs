@@ -58,7 +58,7 @@ impl Parser {
                             depth + 1,
                         )?;
                         self.insert(if kind == "array" {
-                            Node::Array(child)
+                            Node::Array(child, field_id(object, "element-id"))
                         } else {
                             Node::Map(child)
                         })
@@ -138,12 +138,7 @@ impl Parser {
                 namespace,
                 depth + 1,
             )?;
-            let id = field.get("field-id").map(|value| {
-                value
-                    .as_i64()
-                    .and_then(|value| i32::try_from(value).ok())
-                    .unwrap_or(-1)
-            });
+            let id = field_id(field, "field-id");
             nodes.push(Field { node, id });
         }
         Ok(nodes)
@@ -171,7 +166,7 @@ impl Parser {
                 Node::Double => (5, 0),
                 Node::Bytes => (6, 0),
                 Node::String => (7, 0),
-                Node::Array(_) => (8, 0),
+                Node::Array(_, _) => (8, 0),
                 Node::Map(_) => (9, 0),
                 Node::Record(_) | Node::Enum(_) | Node::Fixed(_) => (10, index),
                 Node::Union(_) => return Err(AvroContainerError::Schema),
@@ -204,6 +199,15 @@ fn text<'value>(object: &'value Map<String, Value>, field: &str) -> Result<&'val
         .get(field)
         .and_then(Value::as_str)
         .ok_or(AvroContainerError::Schema)
+}
+
+fn field_id(object: &Map<String, Value>, name: &str) -> Option<i32> {
+    object.get(name).map(|value| {
+        value
+            .as_i64()
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or(-1)
+    })
 }
 
 fn enum_symbols(object: &Map<String, Value>) -> Result<usize, AvroContainerError> {

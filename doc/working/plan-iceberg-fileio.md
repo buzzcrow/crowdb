@@ -288,10 +288,9 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Handover — 2026-09-23
 
-The user requested a handover for a cheaper mode, then asked to finish a complex
-independent task first. That boundary is now typed scalar manifest-entry decoding
-plus cross-block inheritance, built on the verified nested projection. This is
-not requirement completion or a new blocker.
+The initial handover boundary was typed scalar manifest-entry decoding plus
+cross-block inheritance. Subsequent work added bounded equality-ID list decoding
+and schema element-ID checks. This is not requirement completion or a new blocker.
 No user-guide edits, public FileIO exposure, new unsafe exceptions, locks or
 physical deletion were added. Resume with the next task below, not a rewrite of
 the landed storage primitives. The broader ordering is in
@@ -317,12 +316,20 @@ the landed storage primitives. The broader ordering is in
   When adding those checks, perform them before `inheritance.resolve`, not after
   yielding the entry. Five tests cover versions, malformed values, null records,
   explicit versus inherited row IDs, overflow, descriptors and poisoned cursors.
-- [ ] **Collections and manifest metadata**: scalar projection does not yet
-  expose equality IDs, metrics maps, partition tuples or partition summaries.
+- [x] **Bounded equality-ID lists**: array projection now retains `element-id`
+  and exposes a validated encoded integer list. The manifest entry projection
+  requires element ID 136 when field 135 exists. Equality deletes require a
+  nonempty list of at most 4096 positive, unique IDs; other content rejects a
+  non-null list. Positive and sized negative Avro blocks, over-limit lists,
+  wrong schema IDs and inheritance-safe failures have focused tests. Membership
+  in the table schema and presence in the delete file still need table/file
+  context; this is partial collection validation.
+- [ ] **Remaining collections and manifest metadata**: scalar projection does not yet
+  expose metrics maps, partition tuples or partition summaries.
   Extend bounded traversal only as needed; do not deserialize full datum graphs.
   Check field IDs plus array `element-id` and map `key-id`/`value-id` metadata,
-  including Iceberg's logical-map array representation. Decode equality IDs and
-  metrics under independent entry/work bounds, checking against the table schema.
+  including Iceberg's logical-map array representation. Decode metrics under
+  independent entry/work bounds and check equality-ID membership against the table schema.
   Validate OCF version/schema/partition-spec/content metadata; the actual manifest
   version is not necessarily the table or enclosing manifest-list version.
   Position deletes ignore sort order; do not reject solely for a non-null value.
@@ -393,7 +400,7 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 230 tests. `pixi run rs-lint` and
+  passes 232 tests. `pixi run rs-lint` and
   `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
   and test code only; the previously recorded native E2E run is not a new run.
 - Start the next change with focused `--test avro_nested_projection_test`,
