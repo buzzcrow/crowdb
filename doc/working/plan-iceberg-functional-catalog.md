@@ -471,6 +471,17 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      factory only: canonical file resolution, reused-manifest provenance after
      schema expiration, complete snapshot validation and publication fencing
      remain to be composed by the evaluator/source layer.
+     Nonempty pinned SDK fixtures now cover all three table versions. The Java
+     generator `TestSnapshotMetadataFixtures` adds two snapshots, moves main,
+     tags the first snapshot and round-trips the canonical JSON through Iceberg
+     1.11.0. Rust verifies original bytes, parents, v1 sequence-zero inheritance,
+     refs and v3 row allocations against the generated documents. This fixture
+     validates metadata interoperability, not the referenced Avro files or REST
+     E2E. Regenerate with the existing Maven harness using
+     `-Dexec.mainClass=TestSnapshotMetadataFixtures` and the native test table URI.
+     Verification: the Maven generator succeeds (existing SLF4J provider warnings
+     are nonfatal); complete library `--all-targets`, workspace fmt and clippy
+     pass after these transition/context/SDK-fixture checkpoints.
      Keep `TableMetadataDocument` explicitly documented as a partial validation
      result, not a publishable generation or a REST capability. No endpoint is
      advertised by this checkpoint. Files: `src/table/metadata.rs`, its children,
