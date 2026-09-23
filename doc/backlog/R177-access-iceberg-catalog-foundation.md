@@ -37,6 +37,12 @@ needed by those features. Optional behavior is capability-gated where the table
 spec permits it. A server must not advertise write support for a version while
 ignoring a mandatory field, inheritance rule, validation, or file encoding.
 
+The initial functional checkpoint selects Parquet data/delete files and Puffin
+deletion vectors. Selected ORC validation is explicitly deferred to R186 by user
+decision; ORC byte storage is not a selected-file validation capability. ORC is
+not a prerequisite for this checkpoint, and unsupported selected formats fail
+explicitly. This narrows the initial checkpoint, not the eventual format profile.
+
 The milestone does not advertise views, multi-table transactions, register-table,
 server-side scan planning, multiple active catalogs, tenants, or warehouses.
 Unsupported endpoints and optional features return the precise standard

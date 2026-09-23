@@ -32,7 +32,7 @@ pub(super) fn reference(
     })
 }
 
-fn validate_file(scope: SnapshotDvScope, file: SnapshotFile<'_>) -> Result<(), Error> {
+pub(crate) fn validate_file(scope: SnapshotDvScope, file: SnapshotFile<'_>) -> Result<(), Error> {
     let raw = &file.entry.entry;
     let inherited = &file.entry.inherited;
     if file.record.validate().is_err()
@@ -64,7 +64,7 @@ fn validate_file(scope: SnapshotDvScope, file: SnapshotFile<'_>) -> Result<(), E
     Ok(())
 }
 
-fn partitions(vector: SnapshotFile<'_>, data: SnapshotFile<'_>) -> Result<(), Error> {
+pub(crate) fn partitions(vector: SnapshotFile<'_>, data: SnapshotFile<'_>) -> Result<(), Error> {
     let left = vector.entry.file.partition.as_ref().ok_or(Error::Binding)?;
     let right = data.entry.file.partition.as_ref().ok_or(Error::Binding)?;
     let left_spec = vector.context.partitions();

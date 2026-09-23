@@ -113,6 +113,33 @@ impl ManifestContext {
         self.version
     }
 
+    pub(crate) fn retained_bytes(&self) -> usize {
+        let fields: usize = self
+            .fields
+            .values()
+            .chain(self.historical_fields.values())
+            .map(|field| field_bytes(field) + 128)
+            .sum();
+        let partitions: usize = self
+            .partitions
+            .iter()
+            .map(|field| {
+                std::mem::size_of::<PartitionField>()
+                    + field.name.len()
+                    + field.sources.len() * 4
+                    + match &field.transform {
+                        PartitionTransform::Unknown(value) => value.len(),
+                        _ => 0,
+                    }
+                    + match &field.result {
+                        Some(PrimitiveType::Geometry(value) | PrimitiveType::Geography(value)) => value.len(),
+                        _ => 0,
+                    }
+            })
+            .sum();
+        std::mem::size_of::<Self>() + fields + partitions
+    }
+
     /// Adds trusted historical columns retained in metrics after a column was dropped.
     /// # Errors
     /// Rejects excessive history or incompatible type reuse of a dropped field ID.

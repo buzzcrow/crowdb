@@ -13,6 +13,7 @@ mod reader;
 mod snapshot_identity;
 mod snapshot_reader;
 mod snapshot_rows;
+mod snapshot_validation;
 mod summary;
 pub use context::{
     ManifestContext, ManifestContextError, PartitionField, PartitionTransform, PrimitiveType, SchemaDefault,
@@ -28,6 +29,10 @@ pub use snapshot_identity::{SnapshotIdentityError, SnapshotIdentityIndex, Snapsh
 pub use snapshot_reader::{
     SnapshotManifestError, SnapshotManifestLimits, SnapshotManifestReader, SnapshotManifestSource,
     SnapshotManifestSummary,
+};
+pub use snapshot_validation::{
+    validate_snapshot_files, SnapshotFileLimits, SnapshotFileSource, SnapshotFileSummary,
+    SnapshotValidationError, SnapshotValidationInput,
 };
 pub use summary::PartitionSummary;
 

@@ -16,6 +16,8 @@ const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageRecord {
+    TableHead(Box<crate::table::TableHead>),
+    TableMapping(crate::table::TableMapping),
     Active(ActiveCatalogRecord),
     Authority(CatalogAuthority),
     Management(Box<ManagementOperation>),
@@ -38,6 +40,14 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::TableHead(head) => (
+                FBRecordValue::FBTableHead,
+                super::table::encode_head(&mut builder, head)?.as_union_value(),
+            ),
+            Self::TableMapping(mapping) => (
+                FBRecordValue::FBTableMapping,
+                super::table::encode_mapping(&mut builder, mapping)?.as_union_value(),
+            ),
             Self::MultipartAdmission(record) => (
                 FBRecordValue::FBMultipartAdmission,
                 super::multipart_admission::encode(&mut builder, record)?.as_union_value(),
@@ -125,6 +135,14 @@ impl StorageRecord {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
         let record = match envelope.value_type() {
+            FBRecordValue::FBTableHead => Self::TableHead(Box::new(super::table::decode_head(
+                envelope.value_as_fbtable_head().ok_or(ValidationError::Record)?,
+            )?)),
+            FBRecordValue::FBTableMapping => Self::TableMapping(super::table::decode_mapping(
+                envelope
+                    .value_as_fbtable_mapping()
+                    .ok_or(ValidationError::Record)?,
+            )?),
             FBRecordValue::FBMultipartAdmission => {
                 Self::MultipartAdmission(Box::new(super::multipart_admission::decode(
                     envelope
@@ -209,6 +227,14 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::TableHead(head), key) if *key == crate::table::head_key(head.catalog, head.table) => {
+                Ok(())
+            }
+            (Self::TableMapping(mapping), key)
+                if *key == crate::table::name_key(mapping.catalog, mapping.namespace, &mapping.name)? =>
+            {
+                Ok(())
+            }
             (Self::MultipartAdmission(record), key) if *key == record.key() => Ok(()),
             (Self::MultipartSession(session), key) if *key == session.key() => Ok(()),
             (Self::MultipartPart(part), key) if *key == part.key() => Ok(()),

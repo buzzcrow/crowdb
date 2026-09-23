@@ -9,4 +9,5 @@ pub mod metadata_projection;
 pub mod namespace;
 pub mod operation;
 pub mod record;
+pub mod table;
 pub mod wire;

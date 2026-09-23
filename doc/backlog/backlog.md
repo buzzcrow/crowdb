@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R186** — Bump this line in the same commit when adding a new item.
+**Next R number: R187** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -92,6 +92,11 @@ correctness milestone; R185 is a later cache optimization.
   invalidation — Area: access server / Iceberg / Group 0 / Chunk-KV — **Deferred
   until R178–R184 stabilize and establish an uncached baseline.** Add one budgeted
   cache manager, qualified entries, internal-RPC invalidation, and TTL safety nets.
+
+- **[R186](R186-access-iceberg-orc-validation.md)** — selected ORC validation —
+  Area: access server / Iceberg — **Deferred until the Parquet catalog path is
+  functional.** Add bounded canonical ORC schema, row-count and delete validation
+  with official-client fixtures; not a prerequisite for the initial catalog.
 
 ### High Priority
 

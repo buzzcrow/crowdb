@@ -330,7 +330,7 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
        general data-page validation is outside this reserved-column decoder.
      - Connect the resulting validation to full selected snapshot traversal;
        a standalone metadata-returning function must not become a commit proof.
-  4. Canonical ORC equivalent checks with bounded decoding.
+  4. Deferred to R186: canonical ORC equivalent checks with bounded decoding.
      Consult the current
      [ORC protobuf](https://github.com/apache/orc-format/blob/main/src/main/proto/orc/proto/orc_proto.proto)
      alongside pinned Iceberg ORC mapping and official writer/reader code. The
@@ -340,9 +340,59 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      independently. Compression framing uses independent three-byte chunks;
      codec/column encryption support must be explicit, not silently ignored.
   5. Bind complete snapshot enumeration, actual file row counts and DV validation.
+     Current user-approved sequence skips deferred ORC: finish this integration,
+     then items 6, 7 and 8. Reject unsupported selected formats explicitly.
+     Library orchestration implemented as `manifest::validate_snapshot_files`:
+     three complete bounded enumerations validate data first, DVs second and
+     remaining deletes last. Canonical Parquet footer rows/schema populate an
+     independently count/byte-bounded index; retained historical contexts are
+     shared per manifest and charged to that index. No metrics maps are retained.
+     Position deletes apply only to selected data with matching spec/partition
+     and a data sequence no greater than the delete sequence, unless superseded
+     by an applicable DV. Removed or otherwise inapplicable targets do not borrow
+     another file's row count. Every DV still validates its canonical descriptor
+     and bitmap; applicable DVs additionally check the canonical data row bound.
+     Independent aggregate delete-row, DV-count/blob-byte and index budgets fail
+     closed; errors/cancellation return no completion result or authority mutation.
+     Six integration tests cover actual SDK position-delete pages, manifest
+     ordering, stale targets, false footer counts, missing authorities, deferred
+     ORC, index limits, aggregate equality-delete work, DV supersession and DV row overflow. Canonical data footer
+     fixtures intentionally do not claim general data-page scanning.
+     Remaining: generation-trusted source wiring from item 7, prior-snapshot
+     delete/DV preservation in commit validation, and production table publication.
+     The summary is not a full commit proof or equality-value scan.
   6. Bounded TableHead/name mappings and generation-qualified repository.
+     Library core implemented in `src/table/`: separate bounded head and name
+     mapping records, append-only FlatBuffers union tags, strict key binding,
+     stable TableId versus optional v1 Iceberg UUID, namespace/name epoch,
+     lifecycle, metadata generation/location/FileId/digest and operation fences.
+     `TableRepository::select` resolves only published head-qualified names and
+     binds one immutable JSON record without rereading a newer head midway.
+     `ensure_current` compares the complete head and active catalog context; it
+     is explicitly a read check, never a replacement for publication CAS.
+     Four tests cover record bounds/key/version checks, stale reservations/names,
+     tombstones, metadata corruption, catalog retirement and generation changes.
+     Tests install fixture records only; no alternate production publisher or
+     new unsafe exception/lock is introduced. Full namespace/REST composition,
+     JSON validation and ALL/REFS responses remain in items 7 and 8.
+     Checkpoint gates: both `crowdb-access-iceberg` and `crowdb-protocol`
+     `--all-targets` tests pass; the final added equality-work case also passes
+     its focused gate. Workspace `rs-fmt-check` and `rs-lint` pass. No server
+     endpoint or complete table metadata acceptance is claimed by this checkpoint.
   7. Full v1/v2/v3 table metadata validation, preserving original JSON.
+     Next complex slice: bounded duplicate-rejecting JSON decoding; mandatory
+     version fields and UUID/location binding; schema history/default values and
+     name mapping; partition/sort evolution; snapshots/refs/row lineage; logs,
+     statistics and encryption-key metadata. Reuse canonical bytes for responses.
+     Cross-check pinned spec and official SDK fixtures before accepting historical
+     schema/spec combinations; do not treat manifest header claims as trusted
+     table metadata or assume all historical schemas remain in current metadata.
   8. Generation-consistent load/list/exists, ALL/REFS, ETags and fallback.
+     Depends on item 7. Qualify namespace identity and table visibility; use one
+     selected head for canonical JSON and projection fallback, bind conditional
+     ETags to table/generation/digest and preserve absent versus empty page tokens.
+     Neither this item nor full metadata validation is implemented by the new
+     `TableRepository::select` foundation alone.
   9. Production credentials with live table authorization and timed SDK refresh.
   10. Durable rename/drop and namespace races/recovery, retaining purge intent.
 - [ ] **Selected table metadata**: implement bounded table heads/mappings,

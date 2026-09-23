@@ -84,6 +84,10 @@ owns physical reclamation.
 - R183 owns staged, orphan, expired, and unreachable physical cleanup. Before R183,
   such data may leak but can never become visible through a published location.
 - R185 owns decoded caches. All reads remain correct when every cache is disabled.
+- R186 owns deferred selected ORC schema/row/delete validation. Initial catalog
+  acceptance is Parquet-only for selected data/delete files; immutable ORC upload
+  does not imply successful table selection. Unsupported selected formats fail
+  explicitly rather than being accepted on container hints alone.
 
 ## Acceptance
 

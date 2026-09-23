@@ -11,5 +11,6 @@ mod namespace_operation;
 mod payload;
 mod retry;
 mod root;
+mod table;
 
 pub use envelope::{StorageRecord, MAX_RECORD_BYTES};

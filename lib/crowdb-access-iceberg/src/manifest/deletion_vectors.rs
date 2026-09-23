@@ -9,6 +9,7 @@ use crate::file::{
 use crate::key::FileId;
 
 mod binding;
+pub(super) use binding::{partitions, validate_file};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotDvScope {
