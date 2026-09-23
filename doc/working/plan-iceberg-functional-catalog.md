@@ -272,6 +272,13 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      repeated columns are not incorrectly constrained to that equality. Four
      column tests cover swapped same-type siblings, paths, counts and ancestry;
      all 14 focused Parquet tests and workspace fmt/clippy pass.
+     Selected footer binding: `manifest::read_selected_parquet_metadata` checks
+     table/location/format/length and live entry status before storage access,
+     binds content kind from the manifest without changing the upload, and compares
+     canonical footer rows with manifest `record_count`. Its result is metadata,
+     not a schema/delete/page-validation proof. Three tests cover all content kinds,
+     incompatible prebound kinds, no-I/O descriptor rejection and false row counts.
+     Full selected schema and delete validation remains pending.
   4. Canonical ORC equivalent checks with bounded decoding.
   5. Bind complete snapshot enumeration, actual file row counts and DV validation.
   6. Bounded TableHead/name mappings and generation-qualified repository.

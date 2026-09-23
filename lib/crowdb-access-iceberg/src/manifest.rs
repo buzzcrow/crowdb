@@ -8,6 +8,7 @@ mod list;
 mod list_reader;
 mod list_selection;
 mod metadata;
+mod parquet;
 mod reader;
 mod snapshot_identity;
 mod snapshot_reader;
@@ -36,6 +37,7 @@ pub use entry::{
 
 pub use list::{ManifestListEntry, ManifestListError, ManifestListProjection, ManifestListRecords};
 pub use metadata::{ManifestMetadata, ManifestMetadataError};
+pub use parquet::{read_selected_parquet_metadata, SelectedParquetError};
 
 pub use inheritance::{
     EntryStatus, FileContentKind, InheritedEntry, ManifestContent, ManifestEntry, ManifestInheritance,
