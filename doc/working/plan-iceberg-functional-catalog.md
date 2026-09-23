@@ -266,6 +266,12 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      workspace fmt/clippy pass. Current Parquet IDL supplies Variant/spatial
      annotations; Iceberg's pinned mapping and Java `TypeToMessageType` remain
      the selected-use compatibility contract, not generic Parquet permissiveness.
+     Column checkpoint: match every ordered column path to its schema leaf,
+     excluding the root and retaining nested/repeated ancestry. Non-repeated
+     column value counts (including nulls) must equal row-group row counts;
+     repeated columns are not incorrectly constrained to that equality. Four
+     column tests cover swapped same-type siblings, paths, counts and ancestry;
+     all 14 focused Parquet tests and workspace fmt/clippy pass.
   4. Canonical ORC equivalent checks with bounded decoding.
   5. Bind complete snapshot enumeration, actual file row counts and DV validation.
   6. Bounded TableHead/name mappings and generation-qualified repository.

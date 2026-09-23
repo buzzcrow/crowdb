@@ -18,6 +18,40 @@ pub struct ParquetSchemaElement {
     pub logical_type: Option<ParquetLogicalType>,
 }
 
+pub(super) struct ColumnSchema<'schema> {
+    pub physical_type: i32,
+    pub path: Vec<&'schema str>,
+    pub repeated: bool,
+}
+
+pub(super) fn columns(schema: &[ParquetSchemaElement]) -> Result<Vec<ColumnSchema<'_>>, Error> {
+    let mut parents = vec![(&schema[0], schema[0].children)];
+    let mut columns = Vec::new();
+    for field in &schema[1..] {
+        while parents.last().is_some_and(|(_, count)| *count == 0) {
+            parents.pop();
+        }
+        parents.last_mut().ok_or(Error::Invalid)?.1 -= 1;
+        if let Some(physical_type) = field.physical_type {
+            let mut path: Vec<_> = parents
+                .iter()
+                .skip(1)
+                .map(|(field, _)| field.name.as_str())
+                .collect();
+            path.push(field.name.as_str());
+            columns.push(ColumnSchema {
+                physical_type,
+                path,
+                repeated: field.repetition == Some(2)
+                    || parents.iter().any(|(field, _)| field.repetition == Some(2)),
+            });
+        } else if field.children > 0 {
+            parents.push((field, field.children));
+        }
+    }
+    Ok(columns)
+}
+
 pub(super) fn decode(
     value: &Value<'_>,
     limits: ParquetMetadataLimits,

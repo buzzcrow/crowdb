@@ -23,7 +23,7 @@ pub(super) fn decode(
     if groups.len() > limits.row_groups {
         return Err(Error::Bounds);
     }
-    let leaves: Vec<_> = schema.iter().filter_map(|field| field.physical_type).collect();
+    let leaves = schema::columns(&schema)?;
     let mut total_rows = 0_u64;
     for group in groups {
         total_rows = total_rows
@@ -40,7 +40,11 @@ pub(super) fn decode(
     })
 }
 
-fn row_group(group: &Value<'_>, leaves: &[i32], footer_start: u64) -> Result<u64, Error> {
+fn row_group(
+    group: &Value<'_>,
+    leaves: &[schema::ColumnSchema<'_>],
+    footer_start: u64,
+) -> Result<u64, Error> {
     let fields = group.fields()?;
     let columns = required(fields, 1)?.list(12)?;
     if columns.len() != leaves.len() {
@@ -49,18 +53,14 @@ fn row_group(group: &Value<'_>, leaves: &[i32], footer_start: u64) -> Result<u64
     let expected_bytes = nonnegative(required(fields, 2)?)?;
     let rows = nonnegative(required(fields, 3)?)?;
     let mut total_bytes = 0_u64;
-    for (column, physical_type) in columns.iter().zip(leaves) {
+    for (column, leaf) in columns.iter().zip(leaves) {
         let fields = column.fields()?;
         if fields.contains_key(&1) || fields.contains_key(&8) || fields.contains_key(&9) {
             return Err(Error::Unsupported);
         }
         nonnegative(required(fields, 2)?)?;
         total_bytes = total_bytes
-            .checked_add(column_metadata(
-                required(fields, 3)?,
-                *physical_type,
-                footer_start,
-            )?)
+            .checked_add(column_metadata(required(fields, 3)?, leaf, rows, footer_start)?)
             .ok_or(Error::Invalid)?;
     }
     if total_bytes != expected_bytes {
@@ -69,9 +69,14 @@ fn row_group(group: &Value<'_>, leaves: &[i32], footer_start: u64) -> Result<u64
     Ok(rows)
 }
 
-fn column_metadata(value: &Value<'_>, physical_type: i32, footer_start: u64) -> Result<u64, Error> {
+fn column_metadata(
+    value: &Value<'_>,
+    leaf: &schema::ColumnSchema<'_>,
+    rows: u64,
+    footer_start: u64,
+) -> Result<u64, Error> {
     let fields = value.fields()?;
-    if required(fields, 1)?.integer(5)? != i64::from(physical_type) {
+    if required(fields, 1)?.integer(5)? != i64::from(leaf.physical_type) {
         return Err(Error::Invalid);
     }
     let encodings = required(fields, 2)?.list(5)?;
@@ -82,16 +87,21 @@ fn column_metadata(value: &Value<'_>, physical_type: i32, footer_start: u64) -> 
         encoding.integer(5)?;
     }
     let path = required(fields, 3)?.list(8)?;
-    if path.is_empty() {
+    if path.len() != leaf.path.len() {
         return Err(Error::Invalid);
     }
-    for name in path {
-        std::str::from_utf8(name.bytes()?).map_err(|_| Error::Invalid)?;
+    for (name, expected) in path.iter().zip(&leaf.path) {
+        if name.bytes()? != expected.as_bytes() {
+            return Err(Error::Invalid);
+        }
     }
     if !(0..=7).contains(&required(fields, 4)?.integer(5)?) {
         return Err(Error::Unsupported);
     }
-    nonnegative(required(fields, 5)?)?;
+    let values = nonnegative(required(fields, 5)?)?;
+    if !leaf.repeated && values != rows {
+        return Err(Error::Invalid);
+    }
     let uncompressed = nonnegative(required(fields, 6)?)?;
     let compressed = nonnegative(required(fields, 7)?)?;
     let data = nonnegative(required(fields, 9)?)?;
