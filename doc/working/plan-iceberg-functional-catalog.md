@@ -429,6 +429,16 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      ordered updates and CAS/recovery are still separate unfinished phases.
      Eight transition/requirement tests plus metadata/load/list regression tests
      pass, with workspace fmt/clippy gates. Do not advertise commit support yet.
+     Next wire checkpoint: `CommitRequest::decode` bounds complete JSON and both
+     union counts before returning typed requirements and all 23 table update
+     variants. Unknown/view actions, duplicate keys at any depth, malformed
+     payload shapes and route/body identifier mismatch fail closed. Nested schema,
+     layout, snapshot and auxiliary payloads retain original raw JSON separately
+     from their decoded fields so future optional numbers are not rounded during
+     candidate construction. Four request tests cover this layer; decoding is
+     not update evaluation or semantic admission. Direct v1-to-v3 upgrade policy
+     conflicts with the pinned SDK and is now a human decision in R177; other
+     work continues without exposing that unsupported path.
      Keep `TableMetadataDocument` explicitly documented as a partial validation
      result, not a publishable generation or a REST capability. No endpoint is
      advertised by this checkpoint. Files: `src/table/metadata.rs`, its children,

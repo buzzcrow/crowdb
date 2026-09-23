@@ -87,7 +87,7 @@ impl TableMetadataDocument {
         if head.validate().is_err() || <[u8; 32]>::from(Sha256::digest(&canonical)) != head.metadata_digest {
             return Err(TableMetadataError::Binding);
         }
-        let root = json::parse(&canonical, limits)?;
+        let root = decode_bounded_json(&canonical, limits)?;
         let envelope = root::validate(&root, head, limits)?;
         let schema = schemas::validate(&root, head.format_version, limits)?;
         layout::validate(&root, &schema, limits)?;
@@ -131,6 +131,17 @@ impl TableMetadataDocument {
     pub(crate) fn selected_head(&self) -> &TableHead {
         &self.head
     }
+}
+
+pub(crate) fn decode_bounded_json(
+    bytes: &[u8],
+    limits: TableMetadataLimits,
+) -> Result<Value, TableMetadataError> {
+    limits.validate()?;
+    if bytes.len() > limits.bytes {
+        return Err(TableMetadataError::Bounds);
+    }
+    json::parse(bytes, limits)
 }
 
 /// Reads and verifies the entire selected immutable JSON, preserving original bytes.

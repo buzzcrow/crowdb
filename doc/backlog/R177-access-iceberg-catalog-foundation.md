@@ -294,6 +294,18 @@ All unresolved human decisions for R179 through R184 are collected here. Continu
 independent implementation while awaiting confirmation; settled contracts and
 ordinary implementation tasks are not open questions.
 
+- **Direct format upgrades:** should R182 allow an explicit v1-to-v3 upgrade,
+  applying both intermediate version rules internally, or retain its current
+  adjacent-only contract? The pinned official
+  [TableMetadata.Builder](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/TableMetadata.java)
+  `upgradeFormatVersion` rejects downgrades and unsupported targets but does not
+  reject skipped versions. Allowing a direct supported target is recommended for
+  official-client compatibility; retaining adjacent-only upgrades requires an
+  explicit compatibility limitation and a two-step client workflow. Current
+  unadvertised transition checks follow R182's existing restriction, not an
+  asserted Iceberg standard prohibition. Continue other validation and evaluator
+  work; do not advertise direct-upgrade conformance before resolving this conflict.
+
 - **Namespace latency acceptance:** should every uncontended native namespace
   mutation complete within the existing real-stack fixture's 500-ms admission
   bound, or should functional CRUD use a separate bounded deployment profile

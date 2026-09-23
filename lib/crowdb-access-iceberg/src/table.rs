@@ -10,6 +10,7 @@ mod repository;
 pub use key::{head_key, name_key};
 pub use list::{TableListLimits, TableListPage, TableLister};
 pub use load::{SnapshotLoadingMode, TableLoad, TableLoadError, TableLoader};
+pub(crate) use metadata::decode_bounded_json;
 pub use metadata::{
     read_table_metadata_document, TableMetadataDocument, TableMetadataError, TableMetadataLimits,
     TableSnapshot,
