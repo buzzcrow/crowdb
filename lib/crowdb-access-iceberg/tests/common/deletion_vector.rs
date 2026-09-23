@@ -72,20 +72,42 @@ pub async fn record(
         catalog: CatalogId::random(),
         table: TableId::random(),
     };
-    let reference = DeletionVectorReference {
-        referenced: table.file("data.parquet").unwrap(),
-        span: FormatHint {
-            offset: 4,
-            length: blob.len() as u64,
-        },
-        cardinality,
-    };
-    let footer = serde_json::to_vec(&serde_json::json!({"blobs":[{
-        "type":"deletion-vector-v1", "fields":[], "snapshot-id":-1,"sequence-number":-1,
-        "offset":4,"length":blob.len(),"properties":{"referenced-data-file":reference.referenced.to_string(),"cardinality":cardinality.to_string()}
-    }]})).unwrap();
+    let (record, mut references) = record_with_references(
+        store,
+        table,
+        "delete.puffin",
+        &[("data.parquet", blob, cardinality)],
+    )
+    .await;
+    (record, references.remove(0))
+}
+
+pub async fn record_with_references(
+    store: Arc<TestBlocks>,
+    table: TableLocation,
+    key: &str,
+    blobs: &[(&str, &[u8], u64)],
+) -> (FileRecord, Vec<DeletionVectorReference>) {
     let mut bytes = b"PFA1".to_vec();
-    bytes.extend(blob);
+    let mut references = Vec::new();
+    let mut metadata = Vec::new();
+    for (target, blob, cardinality) in blobs {
+        let reference = DeletionVectorReference {
+            referenced: table.file(target).unwrap(),
+            span: FormatHint {
+                offset: bytes.len() as u64,
+                length: blob.len() as u64,
+            },
+            cardinality: *cardinality,
+        };
+        metadata.push(serde_json::json!({
+        "type":"deletion-vector-v1", "fields":[], "snapshot-id":-1,"sequence-number":-1,
+        "offset":reference.span.offset,"length":blob.len(),"properties":{"referenced-data-file":reference.referenced.to_string(),"cardinality":cardinality.to_string()}
+        }));
+        references.push(reference);
+        bytes.extend_from_slice(blob);
+    }
+    let footer = serde_json::to_vec(&serde_json::json!({"blobs":metadata})).unwrap();
     bytes.extend(b"PFA1");
     bytes.extend(&footer);
     bytes.extend(i32::try_from(footer.len()).unwrap().to_le_bytes());
@@ -101,7 +123,7 @@ pub async fn record(
     (
         FileRecord {
             file: owner.file,
-            location: table.file("delete.puffin").unwrap(),
+            location: table.file(key).unwrap(),
             kind: FileKind::DeletionVector,
             format: ContentFormat::Puffin,
             length: tree.length,
@@ -109,6 +131,6 @@ pub async fn record(
             content: FileContent::Chunks { root: tree.root },
             hint: None,
         },
-        reference,
+        references,
     )
 }

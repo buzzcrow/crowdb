@@ -25,6 +25,8 @@ a list-bound reader with EOF totals and cancellation poisoning. Generation-local
 metadata projection pages and canonical streaming fallback are also implemented;
 multipart part LastModified, S3-shaped response serialization and intersected
 grant/service/session byte limits are implemented as separate components;
+partition summaries, bounded Variant bounds and a scoped streaming DV cross-file
+validator are now implemented. Candidate snapshot enumeration/admission and
 table load/commit wiring remains pending. Resume instructions, exact next implementation slices,
 landed APIs, remaining integration gaps and test commands are in
 `plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this
@@ -50,8 +52,11 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   typed scalar/geospatial bounds and a list-bound streaming reader are now implemented.
   Partition summary decoding and reader containment/EOF validation are implemented.
   Variant bound objects also have bounded decoding and typed ordering checks.
-  Remaining complex work includes snapshot/file validation. Use the contextual
-  reader; do not conflate it with full seal acceptance.
+  The DV validator binds Puffin bytes to live manifest/data records, checks row
+  range, partition/sequence applicability and uniqueness over sorted inputs.
+  Remaining complex work includes complete candidate snapshot enumeration,
+  prior-delete replacement and actual data-file semantics. Use these components;
+  do not conflate them with full seal or commit acceptance.
 - **High: multipart/HTTP composition (R180)**. Durable credits, parts, completion,
   publication and recovery primitives exist. Response formatting and limit
   intersection helpers are present. Wire actual HTTP operations, official retry

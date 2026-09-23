@@ -457,13 +457,26 @@ the landed storage primitives. The broader ordering is in
   Tests cover v1/v2/v3, null/deflate, 64-byte leaves, multiple records per block,
   multiple blocks, bad later entries, wrong identity/spec, totals and cancellation.
   These are chunk-backed library tests, not new real-server or client E2E acceptance.
-- [ ] **DV cross-file checks (task 5)**: reuse `read_puffin_metadata` and
-  `validate_deletion_vector`; those already verify exact descriptor reference,
-  span, cardinality, portable bitmap structure, maximum position and CRC.
-  Still connect manifest fields to that validator, compare maximum position with
-  the referenced data-file row count, and enforce one DV per data file per
-  snapshot using bounded cross-file state. Snapshot-wide validation belongs in
-  commit admission, not a whole-snapshot in-memory collection in the file reader.
+- [x] **DV cross-file validator (task 5)**: `SnapshotDvValidator` connects live
+  manifest entries and immutable FileRecords to canonical Puffin descriptor and
+  bitmap verification. It checks exact reference/span/cardinality, sequence and
+  partition applicability, and maximum position strictly below data record count.
+  Partition equality normalizes NaNs, preserves signed zero, and handles numeric
+  precision promotion. Inputs are sorted by referenced canonical key; one previous
+  key detects duplicate/out-of-order targets even across different Puffin files.
+  Catalog epoch, table, snapshot, sequence and manifest-list FileId bind the scope.
+  Count/aggregate-byte/per-blob/per-bitmap limits are independent. Early finish,
+  corruption, errors and cancellation cannot return success or advance progress.
+  Eight new tests include contextual manifest decoding, chunk-backed canonical
+  Puffin reads, multiple blobs, cancellation and boundary failures.
+- [ ] **Snapshot admission integration**: the future commit enumerator must
+  exhaust all candidate manifest readers, produce every live DV/data pair in
+  referenced-key order under bounded external storage, and supply the trusted
+  exact total to `SnapshotDvValidator`. Recheck catalog/head fencing before CAS.
+  Do not derive that total from an untrusted summary or count all position-delete
+  entries as DVs. Merge/replace prior position deletes and verify actual data-file
+  row counts through format context. These are R182 composition work, not a
+  whole-snapshot in-memory collection or a second file-reader state machine.
 - [ ] **Finish other independent FileIO work**: metadata projection load/commit integration,
   semantic seal orchestration, delegation vending, multipart HTTP composition and
   official client acceptance remain unfinished. Use the existing execution tasks
@@ -484,8 +497,9 @@ the landed storage primitives. The broader ordering is in
   admission must reject unknown transforms. Variant bounds now decode bounded
   primitive-valued objects; actual bound truth still requires data-file context.
 - Full delete-file column presence and actual bound correctness require file
-  context, not only manifest schema. Keep snapshot-wide DV uniqueness in commit
-  admission. These remain complex tasks, not ordinary wiring for a cheaper model.
+  context, not only manifest schema. The sorted DV validator is implemented;
+  snapshot enumeration, prior-delete replacement and admission still belong in
+  commit processing and remain complex work.
 - Multipart response formatting, durable part LastModified and grant/service
   limit intersection are implemented as bounded server/library components.
   Metadata projection storage/fallback is also implemented; table-load wiring
@@ -532,8 +546,38 @@ the landed storage primitives. The broader ordering is in
   composition using the existing durable repository and response helpers, and
   exact error/status mapping. Semantic sealing, standard PUT kind binding and
   official client/retry acceptance remain separate R180 work. Continue with
-  task 5 (DV cross-file checks); summaries and Variant bounds now flow through
-  contextual readers.
+  the remaining HTTP tasks; tasks 3–5 are implemented at the boundaries below.
+
+#### Handover after partition summaries, Variant bounds and DV binding
+
+- Summaries are decoded by `AvroRecordArray` and `ManifestListProjection` and
+  validated against historical spec order/types by `ManifestReader`. Exhaust to
+  EOF before treating totals or null/NaN flags as verified. Unknown transforms
+  retain bounded values but do not supply filtering semantics.
+- Contextual entry projections now validate Variant bound objects automatically.
+  They retain canonical bytes in metrics and do not expose a general-purpose
+  Variant document materializer. Bound accuracy against actual data remains a
+  separate format-level check.
+- Use `SnapshotFile { entry, record, context }` only for fully validated live
+  entries and canonical records loaded from the selected snapshot. Construct one
+  `SnapshotDvValidator` per frozen `SnapshotDvScope`, pass matching scope on each
+  `check`, and require `finish`. Sort by native relative-key UTF-8 byte order.
+  The validator keeps one key, counters, one bounded footer and bitmap window;
+  its success covers supplied pairs, not enumeration completeness or publication.
+  Caller-provided row counts currently come from manifests, not Parquet/ORC
+  footer decoding. No public seal/commit endpoint is enabled by these helpers.
+- Changed modules: `src/file/avro/schema/{record_array,projection}.rs`,
+  `src/manifest/{list,summary,reader,deletion_vectors}.rs`,
+  `src/manifest/deletion_vectors/binding.rs`, and
+  `src/manifest/entry/variant.rs` with `variant/{path,primitive}.rs`.
+  Focused tests: `manifest_summary_test`, `manifest_reader_test`,
+  `manifest_variant_test`, `manifest_dv_test`, `manifest_dv_partition_test`,
+  `deletion_vector_test` and `puffin_metadata_test`.
+- Next ordinary slices: bounded Complete request XML parsing and exact error
+  mapping, then public HTTP composition using the existing durable multipart
+  state machine. Next complex slices: semantic seal orchestration, candidate
+  snapshot enumeration/admission, selected table heads and atomic commits.
+  Existing standard-PUT kind binding and R179 latency decisions remain in R177.
 
 - `src/file/avro/schema/projection.rs` and `projection/compile.rs`: root or nested
   scalar cursor; required means schema presence, not a non-null runtime value.
@@ -578,7 +622,7 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 282 tests (including partition-summary and Variant-bound tests). Protocol
+  passes 290 tests (including partition-summary, Variant and DV-boundary tests). Protocol
   `--all-targets` passes after the schema addition. Fmt, workspace lint, and
   Iceberg-feature clippy pass.
 - Server compatibility gates also pass: default `--all-targets` (2 tests) and

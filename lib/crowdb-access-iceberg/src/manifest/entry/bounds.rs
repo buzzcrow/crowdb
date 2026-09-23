@@ -101,7 +101,7 @@ fn integer32(bytes: &[u8]) -> Result<i32, Error> {
     Ok(i32::from_le_bytes(bytes.try_into().map_err(|_| Error::Field)?))
 }
 
-pub(super) fn decimal(bytes: &[u8], precision: u32) -> Result<i128, Error> {
+pub(in crate::manifest) fn decimal(bytes: &[u8], precision: u32) -> Result<i128, Error> {
     if bytes.is_empty() || bytes.len() > 16 {
         return Err(Error::Field);
     }
