@@ -1,9 +1,13 @@
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.iceberg.aws.s3.S3FileIO;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.PositionOutputStream;
@@ -19,13 +23,30 @@ public class TestIcebergFileIO {
     configuration.load(System.in);
     Map<String, String> properties = new HashMap<>();
     properties.put("s3.endpoint", configuration.getProperty("endpoint"));
-    properties.put("s3.access-key-id", configuration.getProperty("access"));
-    properties.put("s3.secret-access-key", configuration.getProperty("secret"));
-    properties.put("s3.session-token", configuration.getProperty("token"));
     properties.put("client.region", "us-east-1");
     properties.put("s3.path-style-access", "true");
     properties.put("s3.multipart.part-size-bytes", "5242880");
     properties.put("s3.multipart.threshold", "1.0");
+    AtomicInteger credentialRequests = new AtomicInteger();
+    HttpServer credentials = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    byte[] credentialResponse = Base64.getDecoder().decode(configuration.getProperty("credentials"));
+    credentials.createContext("/v1/namespaces/test/tables/test/credentials", exchange -> {
+      if (!"GET".equals(exchange.getRequestMethod())) {
+        exchange.sendResponseHeaders(405, -1);
+        exchange.close();
+        return;
+      }
+      credentialRequests.incrementAndGet();
+      exchange.getResponseHeaders().set("Content-Type", "application/json");
+      exchange.sendResponseHeaders(200, credentialResponse.length);
+      try (var output = exchange.getResponseBody()) {
+        output.write(credentialResponse);
+      }
+    });
+    credentials.start();
+    properties.put("uri", "http://127.0.0.1:" + credentials.getAddress().getPort());
+    properties.put("client.refresh-credentials-endpoint", "/v1/namespaces/test/tables/test/credentials");
+    properties.put("rest.auth.type", "none");
     try (S3FileIO files = new S3FileIO()) {
       files.initialize(properties);
       String prefix = configuration.getProperty("location");
@@ -39,6 +60,11 @@ public class TestIcebergFileIO {
       large[large.length - 1] = '}';
       verify(files, prefix + "metadata/sdk-multipart.json", large);
       verifyLateError(files.client(), prefix + "metadata/sdk-invalid.json");
+      if (credentialRequests.get() != 1) {
+        throw new AssertionError("SDK did not fetch and cache the delegated credential response");
+      }
+    } finally {
+      credentials.stop(0);
     }
     System.out.println("Apache Iceberg 1.11.0 S3FileIO PUT, multipart, HEAD, GET, seek and embedded error passed");
   }

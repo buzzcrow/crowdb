@@ -2,8 +2,10 @@
 
 mod auth;
 mod config;
+mod credentials;
 mod retry;
 
 pub use auth::{BearerAuthenticator, Principal};
 pub use config::{CatalogConfig, IcebergErrorResponse};
+pub use credentials::{FileDelegationLimits, LoadCredentialsResponse, StorageCredential};
 pub use retry::RequestKey;

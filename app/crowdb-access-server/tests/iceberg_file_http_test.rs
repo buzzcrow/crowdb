@@ -285,16 +285,17 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Maven and the pinned Apache Iceberg Java dependencies"]
 async fn official_java_s3_fileio_uploads_and_reads_native_files() {
+    use base64::Engine as _;
+    use crowdb_access_iceberg::wire::LoadCredentialsResponse;
     use std::io::Write as _;
     use std::process::{Command, Stdio};
 
     let (_stack, _process, client, table) = setup().await;
+    let response = serde_json::to_vec(&LoadCredentialsResponse::from(client.credentials)).unwrap();
     let configuration = format!(
-        "endpoint=http://{}\naccess={}\nsecret={}\ntoken={}\nlocation={}\n",
+        "endpoint=http://{}\ncredentials={}\nlocation={}\n",
         client.address,
-        client.credentials.access_key_id(),
-        client.credentials.secret_access_key(),
-        client.credentials.session_token(),
+        base64::engine::general_purpose::STANDARD.encode(response),
         table
             .file("placeholder")
             .unwrap()

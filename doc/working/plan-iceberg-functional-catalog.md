@@ -135,7 +135,25 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
   `FileGrantIssuer`; derive operations from the authenticated read/write role.
   Its live endpoint depends on the selected table identity/lifecycle below;
   implement the wire/issuer slice first, then attach it with table loads.
-- [ ] **Selected-use validation**: complete format semantics and validate
+  Wire slice: `wire/credentials.rs` serializes one exact table prefix and the
+  SDK's access key, secret, session token and decimal millisecond expiry. Keep
+  secrets out of Debug. Issuance binds authenticated principal, fresh nonce and
+  server byte/TTL limits; only the independent writer receives mutations.
+  Test all four roles, refresh rotation, expiry/overflow and cross-table denial.
+  Standard evidence: pinned OpenAPI `StorageCredential`/`LoadCredentialsResponse`
+  and Apache Iceberg 1.11.0 `VendedCredentialsProvider` (requires the expiry
+  property, refreshes five minutes before expiry, accepts exactly one S3 grant).
+  SDK factory activation uses `client.refresh-credentials-endpoint`, not the
+  provider-internal `credentials.uri`; verified against pinned
+  [AwsClientProperties](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/aws/src/main/java/org/apache/iceberg/aws/AwsClientProperties.java)
+  and [VendedCredentialsProvider](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/aws/src/main/java/org/apache/iceberg/aws/s3/VendedCredentialsProvider.java).
+  Wire/issuer slice verified: library all-target tests, fmt, workspace lint and
+  explicit server `iceberg-e2e` lint pass. Official Java FileIO fetched the Rust
+  response from a test HTTP endpoint, cached it, and completed real native PUT,
+  multipart, HEAD, GET, seek and embedded-error checks (178.19 s). This is not
+  a production catalog credentials endpoint or a timed refresh acceptance test.
+  Maven reports the existing SDK daemon-thread cleanup warnings with exit 0.
+- [~] **Selected-use validation**: complete format semantics and validate
   canonical unbound files against trusted metadata/manifest declarations. Do not
   infer use from names, headers or upload container bytes.
 - [ ] **Selected table metadata**: implement bounded table heads/mappings,
