@@ -12,6 +12,14 @@ pub(super) enum Value<'data> {
 }
 
 pub(super) fn decode(bytes: &[u8], limits: ParquetMetadataLimits) -> Result<Value<'_>, Error> {
+    let (value, consumed) = prefix(bytes, limits)?;
+    if consumed != bytes.len() {
+        return Err(Error::Invalid);
+    }
+    Ok(value)
+}
+
+pub(super) fn prefix(bytes: &[u8], limits: ParquetMetadataLimits) -> Result<(Value<'_>, usize), Error> {
     let mut input = Input {
         bytes,
         offset: 0,
@@ -19,10 +27,7 @@ pub(super) fn decode(bytes: &[u8], limits: ParquetMetadataLimits) -> Result<Valu
         depth: limits.depth,
     };
     let value = input.value(12, 0, false)?;
-    if input.offset != bytes.len() {
-        return Err(Error::Invalid);
-    }
-    Ok(value)
+    Ok((value, input.offset))
 }
 
 struct Input<'data> {

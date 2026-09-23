@@ -19,6 +19,7 @@ pub struct ParquetSchemaElement {
 }
 
 pub(super) struct ColumnSchema<'schema> {
+    pub index: usize,
     pub physical_type: i32,
     pub path: Vec<&'schema str>,
     pub repeated: bool,
@@ -27,7 +28,7 @@ pub(super) struct ColumnSchema<'schema> {
 pub(super) fn columns(schema: &[ParquetSchemaElement]) -> Result<Vec<ColumnSchema<'_>>, Error> {
     let mut parents = vec![(&schema[0], schema[0].children)];
     let mut columns = Vec::new();
-    for field in &schema[1..] {
+    for (index, field) in schema.iter().enumerate().skip(1) {
         while parents.last().is_some_and(|(_, count)| *count == 0) {
             parents.pop();
         }
@@ -40,6 +41,7 @@ pub(super) fn columns(schema: &[ParquetSchemaElement]) -> Result<Vec<ColumnSchem
                 .collect();
             path.push(field.name.as_str());
             columns.push(ColumnSchema {
+                index,
                 physical_type,
                 path,
                 repeated: field.repetition == Some(2)

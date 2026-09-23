@@ -76,6 +76,14 @@ impl Parser {
                 repeated,
                 depth + 1,
             )?;
+            self.fields
+                .get_mut(&id(&field["id"])?)
+                .ok_or(Error::Invalid)?
+                .initial_default = if field.get("initial-default").is_some_and(|value| !value.is_null()) {
+                super::SchemaDefault::NonNull
+            } else {
+                super::SchemaDefault::Absent
+            };
             if matches!(
                 primitive,
                 Some(
@@ -134,6 +142,7 @@ impl Parser {
             parent,
             primitive: primitive.clone(),
             required,
+            initial_default: super::SchemaDefault::Absent,
             required_path,
             repeated,
             kind,

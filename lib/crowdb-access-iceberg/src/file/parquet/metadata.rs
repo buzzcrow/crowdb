@@ -1,6 +1,7 @@
 use super::{
     compact::{self, Value},
-    schema, ParquetMetadata, ParquetMetadataError as Error, ParquetMetadataLimits,
+    schema, ParquetColumnChunk, ParquetMetadata, ParquetMetadataError as Error, ParquetMetadataLimits,
+    ParquetRowGroup,
 };
 
 pub(super) fn decode(
@@ -25,10 +26,11 @@ pub(super) fn decode(
     }
     let leaves = schema::columns(&schema)?;
     let mut total_rows = 0_u64;
+    let mut decoded_groups = Vec::new();
     for group in groups {
-        total_rows = total_rows
-            .checked_add(row_group(group, &leaves, footer_start)?)
-            .ok_or(Error::Invalid)?;
+        let group = row_group(group, &leaves, footer_start)?;
+        total_rows = total_rows.checked_add(group.rows).ok_or(Error::Invalid)?;
+        decoded_groups.push(group);
     }
     if total_rows != rows {
         return Err(Error::Invalid);
@@ -37,6 +39,7 @@ pub(super) fn decode(
         rows,
         row_groups: groups.len(),
         schema,
+        groups: decoded_groups,
     })
 }
 
@@ -44,7 +47,7 @@ fn row_group(
     group: &Value<'_>,
     leaves: &[schema::ColumnSchema<'_>],
     footer_start: u64,
-) -> Result<u64, Error> {
+) -> Result<ParquetRowGroup, Error> {
     let fields = group.fields()?;
     let columns = required(fields, 1)?.list(12)?;
     if columns.len() != leaves.len() {
@@ -53,20 +56,24 @@ fn row_group(
     let expected_bytes = nonnegative(required(fields, 2)?)?;
     let rows = nonnegative(required(fields, 3)?)?;
     let mut total_bytes = 0_u64;
+    let mut decoded_columns = Vec::new();
     for (column, leaf) in columns.iter().zip(leaves) {
         let fields = column.fields()?;
         if fields.contains_key(&1) || fields.contains_key(&8) || fields.contains_key(&9) {
             return Err(Error::Unsupported);
         }
         nonnegative(required(fields, 2)?)?;
-        total_bytes = total_bytes
-            .checked_add(column_metadata(required(fields, 3)?, leaf, rows, footer_start)?)
-            .ok_or(Error::Invalid)?;
+        let (column, bytes) = column_metadata(required(fields, 3)?, leaf, rows, footer_start)?;
+        total_bytes = total_bytes.checked_add(bytes).ok_or(Error::Invalid)?;
+        decoded_columns.push(column);
     }
     if total_bytes != expected_bytes {
         return Err(Error::Invalid);
     }
-    Ok(rows)
+    Ok(ParquetRowGroup {
+        rows,
+        columns: decoded_columns,
+    })
 }
 
 fn column_metadata(
@@ -74,7 +81,7 @@ fn column_metadata(
     leaf: &schema::ColumnSchema<'_>,
     rows: u64,
     footer_start: u64,
-) -> Result<u64, Error> {
+) -> Result<(ParquetColumnChunk, u64), Error> {
     let fields = value.fields()?;
     if required(fields, 1)?.integer(5)? != i64::from(leaf.physical_type) {
         return Err(Error::Invalid);
@@ -116,7 +123,17 @@ fn column_metadata(
     {
         return Err(Error::Invalid);
     }
-    Ok(uncompressed)
+    Ok((
+        ParquetColumnChunk {
+            schema_index: leaf.index,
+            offset: start,
+            length: compressed,
+            data_offset: data,
+            compression: i32::try_from(required(fields, 4)?.integer(5)?).map_err(|_| Error::Invalid)?,
+            values,
+        },
+        uncompressed,
+    ))
 }
 
 fn required<'value, 'data>(

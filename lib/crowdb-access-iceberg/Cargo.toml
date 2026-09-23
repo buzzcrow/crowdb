@@ -27,6 +27,8 @@ sha2 = { version = "0.10", features = ["compress"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 subtle = "2"
+snap = "1.1"
+zstd = { version = "0.13", default-features = false }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 uuid = { version = "1", features = ["v4"] }

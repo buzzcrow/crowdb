@@ -15,7 +15,8 @@ mod snapshot_reader;
 mod snapshot_rows;
 mod summary;
 pub use context::{
-    ManifestContext, ManifestContextError, PartitionField, PartitionTransform, PrimitiveType, SchemaField,
+    ManifestContext, ManifestContextError, PartitionField, PartitionTransform, PrimitiveType, SchemaDefault,
+    SchemaField,
 };
 pub use deletion_vectors::{
     SnapshotDvError, SnapshotDvLimits, SnapshotDvScope, SnapshotDvSummary, SnapshotDvValidator, SnapshotFile,
@@ -37,7 +38,11 @@ pub use entry::{
 
 pub use list::{ManifestListEntry, ManifestListError, ManifestListProjection, ManifestListRecords};
 pub use metadata::{ManifestMetadata, ManifestMetadataError};
-pub use parquet::{read_selected_parquet_metadata, SelectedParquetError};
+pub use parquet::{
+    read_parquet_selection, read_selected_parquet_metadata, validate_parquet_position_deletes,
+    validate_parquet_schema, ParquetFieldMapping, ParquetSelection, PositionDeleteLimits,
+    PositionDeleteSummary, PositionDeleteTargets, SelectedParquetError, SelectedParquetSchema,
+};
 
 pub use inheritance::{
     EntryStatus, FileContentKind, InheritedEntry, ManifestContent, ManifestEntry, ManifestInheritance,

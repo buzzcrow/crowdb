@@ -118,16 +118,24 @@ pub async fn stored(footer: &[u8], body_bytes: usize) -> (Arc<TestBlocks>, FileR
     bytes.extend(footer);
     bytes.extend(u32::try_from(footer.len()).unwrap().to_le_bytes());
     bytes.extend(b"PAR1");
-    let store = Arc::new(TestBlocks::default());
-    let owner = FileIdentity {
-        table: TableLocation {
+    stored_content(
+        &bytes,
+        TableLocation {
             catalog: CatalogId::random(),
             table: TableId::random(),
         },
+    )
+    .await
+}
+
+pub async fn stored_content(bytes: &[u8], table: TableLocation) -> (Arc<TestBlocks>, FileRecord) {
+    let store = Arc::new(TestBlocks::default());
+    let owner = FileIdentity {
+        table,
         file: FileId::random(),
     };
     let mut writer = FileTreeWriter::new(store.clone(), owner, 37).unwrap();
-    writer.push(&bytes).await.unwrap();
+    writer.push(bytes).await.unwrap();
     let tree = writer.finish().await.unwrap();
     let record = FileRecord {
         file: owner.file,

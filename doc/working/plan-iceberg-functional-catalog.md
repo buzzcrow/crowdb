@@ -278,22 +278,56 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      canonical footer rows with manifest `record_count`. Its result is metadata,
      not a schema/delete/page-validation proof. Three tests cover all content kinds,
      incompatible prebound kinds, no-I/O descriptor rejection and false row counts.
-     Full selected schema and delete validation remains pending.
+     Selected schema/delete slice now implemented through `read_parquet_selection`,
+     `validate_parquet_schema` and `validate_parquet_position_deletes`:
+     - Field IDs bind to retained historical fields and logical parents; explicit
+       bounded name mappings normalize collection paths. No-ID files use the SDK's
+       top-level ordinal fallback. Missing required fields accept non-null initial
+       defaults; default value interpretation remains the table/read planner's job.
+     - Validate primitive/logical mappings, numeric and decimal promotions,
+       v3 date promotion, nested/legacy LIST, MAP key/value identity, and Variant
+       unshredded/shredded schema layouts. Variant payloads are not decoded here.
+     - Equality-delete IDs must be present, unique, eligible primitive fields
+       outside collections. Position-delete reserved columns and optional row
+       projection bind separately; optional row payloads are not decoded here.
+     - Canonical position-delete pages validate every path/position pair, sorted
+       order, referenced-file binding and applicable target row bounds. Duplicate
+       pairs are permitted. The caller resolves selected-scope applicability;
+       old delete files may reference removed data files. Results publish only
+       after exact EOF; these functions change no catalog authority.
+     - Page V1/V2, PLAIN, dictionary RLE/bitpacking, delta integer/string and
+       byte-stream-split encodings are bounded independently by page bytes,
+       decoded values, page count and total rows. Supported codecs: uncompressed,
+       Snappy, Gzip, Zstd and LZ4_RAW. Unsupported codecs/encodings fail explicitly;
+       this is not an unrestricted Parquet reader. Maximum decoded page 8 MiB;
+       Zstd windows also capped at 8 MiB. CRC is checked when present.
+     - `parquet_iceberg_fixture.rs` contains complete files produced by Iceberg
+       Java 1.11.0 / parquet-mr 1.17.1, Zstd, both page versions, 100 deletes each.
+       Tests read their actual body bytes, including corruption rejection.
+       Reproduction source and pinned Maven dependencies are in
+       `tests/common/parquet_java/`; run Maven through `pixi run -e iceberg-e2e`
+       with `JAVA_HOME="$CONDA_PREFIX/lib/jvm"`, goal `compile exec:java` and
+       `-Dexec.args="s3://iceberg-aeaqcaibaeaqcaibaeaqcaibae/t/02020202020202020202020202020202/data/target.parquet"`.
+       The normal Rust gate uses embedded fixtures and does not require Maven.
+     - Added safe Snappy/Zstd dependencies; lockfile pins jobserver 0.1.32 instead
+       of 0.1.35 to preserve the workspace's Rust 1.75 compatibility floor.
+       No new local unsafe exception or production lock is introduced.
+     Schema/delete checkpoint: 22 new tests pass, including complete official SDK
+     page fixtures and corrupt-body rejection. Library `--all-targets`, workspace
+     `rs-fmt-check` and `rs-lint` pass. Compatibility decisions follow Iceberg
+     1.11.0 `ParquetSchemaUtil`, `TypeToMessageType`, `ApplyNameMapping` and
+     `BaseParquetReaders`, plus Parquet encoding and Variant shredding contracts.
      Combined checkpoint: `pixi run -- cargo test -p crowdb-access-iceberg
      --all-targets`, `pixi run rs-fmt-check` and `pixi run rs-lint` pass. These are
      library gates; no production table API or new server acceptance is claimed.
-     Next dependency-ordered slices within this task:
-     - Bind physical field IDs and nesting to trusted historical schema contexts;
-       retain schema evolution/read compatibility rather than requiring every
-       current required column in an older file. Name mapping and defaults need
-       selected table metadata, not assumptions based on the current manifest.
-     - Validate logical/physical mappings and promotions against pinned Iceberg
-       rules and official Java `ParquetSchemaUtil`/`TypeToMessageType`, including
-       legacy annotations and accepted list encodings. Distinguish native writer
-       requirements from compatible reader behavior.
-     - Validate equality-delete columns and reserved position-delete columns;
-       then implement bounded body checks needed for delete targets/positions.
-       Variant shredding and spatial mappings need their own format fixtures.
+     Remaining integration/coverage within this task:
+     - Supply trusted historical contexts, default values and name mappings from
+       selected table metadata. Unknown-to-concrete promotion remains explicitly
+       unsupported; full default-value validation belongs to metadata validation.
+       Expand official SDK fixtures for nested data, Variant and spatial fields;
+       current schema cases use synthetic structures, not official body readers.
+     - Equality values and optional position-delete row payloads are not scanned;
+       general data-page validation is outside this reserved-column decoder.
      - Connect the resulting validation to full selected snapshot traversal;
        a standalone metadata-returning function must not become a commit proof.
   4. Canonical ORC equivalent checks with bounded decoding.

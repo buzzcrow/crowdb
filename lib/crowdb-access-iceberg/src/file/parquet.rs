@@ -7,6 +7,9 @@ use super::{
 mod compact;
 mod logical;
 mod metadata;
+mod pages;
+pub use pages::ParquetPageLimits;
+pub(crate) use pages::{ParquetColumnReader, ParquetColumnValue};
 mod schema;
 
 pub use logical::{ParquetLogicalType, ParquetTimeUnit};
@@ -31,7 +34,7 @@ pub enum ParquetMetadataError {
     Invalid,
     #[error("Parquet metadata resource limit exceeded")]
     Bounds,
-    #[error("encrypted or external Parquet column metadata is unsupported")]
+    #[error("unsupported Parquet encryption, codec or encoding")]
     Unsupported,
 }
 
@@ -40,6 +43,23 @@ pub struct ParquetMetadata {
     pub rows: u64,
     pub row_groups: usize,
     pub schema: Vec<ParquetSchemaElement>,
+    pub groups: Vec<ParquetRowGroup>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ParquetRowGroup {
+    pub rows: u64,
+    pub columns: Vec<ParquetColumnChunk>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParquetColumnChunk {
+    pub schema_index: usize,
+    pub offset: u64,
+    pub length: u64,
+    pub data_offset: u64,
+    pub compression: i32,
+    pub values: u64,
 }
 
 /// Decodes bounded plaintext footer metadata from canonical bytes, ignoring cached hints.

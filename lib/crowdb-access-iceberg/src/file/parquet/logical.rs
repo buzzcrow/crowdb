@@ -7,7 +7,7 @@ pub enum ParquetTimeUnit {
     Nanos,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParquetLogicalType {
     String,
     Map,

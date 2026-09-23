@@ -1,13 +1,51 @@
 use std::sync::Arc;
 
+mod deletes;
+mod primitive;
+mod variant;
+pub use deletes::{
+    validate_parquet_position_deletes, PositionDeleteLimits, PositionDeleteSummary, PositionDeleteTargets,
+};
+mod schema;
+pub use schema::{validate_parquet_schema, ParquetFieldMapping, SelectedParquetSchema};
+
 use super::{EntryStatus, FileContentKind, ManifestScalarEntry};
 use crate::file::{
     read_parquet_metadata, ContentFormat, FileBlockStore, FileKind, FileRecord, ParquetMetadata,
     ParquetMetadataError, ParquetMetadataLimits, TableLocation,
 };
 
+pub struct ParquetSelection<'selection> {
+    pub entry: &'selection ManifestScalarEntry,
+    pub context: &'selection super::ManifestContext,
+    pub table: TableLocation,
+    pub mapping: Option<&'selection ParquetFieldMapping>,
+}
+
+/// Binds canonical footer metadata and its field projection to one selected use.
+/// Does not decode arbitrary data values or establish snapshot membership.
+/// # Errors
+/// Rejects descriptor, row-count and schema incompatibilities.
+pub async fn read_parquet_selection(
+    store: Arc<dyn FileBlockStore>,
+    record: &FileRecord,
+    selection: &ParquetSelection<'_>,
+    limits: ParquetMetadataLimits,
+) -> Result<(ParquetMetadata, SelectedParquetSchema), SelectedParquetError> {
+    let metadata =
+        read_selected_parquet_metadata(store, record, selection.entry, selection.table, limits).await?;
+    let schema = validate_parquet_schema(&metadata, selection.context, selection.entry, selection.mapping)?;
+    Ok((metadata, schema))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SelectedParquetError {
+    #[error("invalid position delete target, position or ordering")]
+    Delete,
+    #[error("Parquet fields are incompatible with the selected Iceberg schema")]
+    Schema,
+    #[error("selected Parquet representation is unsupported")]
+    Unsupported,
     #[error("selected manifest descriptor does not match the Parquet file")]
     Binding,
     #[error("Parquet footer row count disagrees with the manifest")]

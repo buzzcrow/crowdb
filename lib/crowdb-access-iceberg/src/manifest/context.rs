@@ -19,12 +19,19 @@ pub enum ManifestContextError {
     Unsupported,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SchemaDefault {
+    Absent,
+    NonNull,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaField {
     pub name: String,
     pub parent: Option<i32>,
     pub primitive: Option<PrimitiveType>,
     pub required: bool,
+    pub initial_default: SchemaDefault,
     pub required_path: bool,
     pub repeated: bool,
     pub kind: &'static str,
@@ -32,6 +39,7 @@ pub struct SchemaField {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestContext {
+    version: ManifestVersion,
     schema_id: i32,
     spec_id: i32,
     fields: BTreeMap<i32, SchemaField>,
@@ -56,6 +64,7 @@ impl ManifestContext {
         let fields = schema::parse(schema, version, schema_id)?;
         let partitions = partition::parse(partition_spec, version, &fields)?;
         Ok(Self {
+            version,
             schema_id,
             spec_id,
             fields,
@@ -94,6 +103,14 @@ impl ManifestContext {
     #[must_use]
     pub fn field(&self, id: i32) -> Option<&SchemaField> {
         self.fields.get(&id)
+    }
+
+    pub(crate) fn fields(&self) -> impl Iterator<Item = (&i32, &SchemaField)> {
+        self.fields.iter()
+    }
+
+    pub(crate) fn version(&self) -> ManifestVersion {
+        self.version
     }
 
     /// Adds trusted historical columns retained in metrics after a column was dropped.

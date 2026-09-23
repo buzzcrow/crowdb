@@ -20,6 +20,8 @@ mod multipart_recovery;
 mod multipart_repository;
 mod multipart_selection;
 mod parquet;
+pub use parquet::ParquetPageLimits;
+pub(crate) use parquet::{ParquetColumnReader, ParquetColumnValue};
 mod puffin;
 mod range;
 mod reader;
@@ -70,8 +72,8 @@ pub use multipart_recovery::{
 pub use multipart_repository::{MultipartRepository, MultipartWorkError};
 pub use multipart_selection::{MultipartSelection, SelectedPart};
 pub use parquet::{
-    read_parquet_metadata, ParquetLogicalType, ParquetMetadata, ParquetMetadataError, ParquetMetadataLimits,
-    ParquetSchemaElement, ParquetTimeUnit,
+    read_parquet_metadata, ParquetColumnChunk, ParquetLogicalType, ParquetMetadata, ParquetMetadataError,
+    ParquetMetadataLimits, ParquetRowGroup, ParquetSchemaElement, ParquetTimeUnit,
 };
 pub use puffin::{read_puffin_metadata, PuffinBlob, PuffinMetadata, PuffinMetadataError};
 pub use range::{resolve_range, ByteRange, RangeError};
