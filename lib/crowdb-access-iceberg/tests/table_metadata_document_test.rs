@@ -1,5 +1,7 @@
 #[path = "common/file_blocks.rs"]
 mod blocks;
+#[path = "common/metadata_evolved_fixture.rs"]
+mod evolved;
 #[path = "common/table_metadata.rs"]
 #[allow(dead_code)]
 mod fixture;
@@ -16,7 +18,7 @@ use std::sync::{atomic::Ordering, Arc};
 
 #[test]
 fn official_java_metadata_roundtrips_without_rewriting() {
-    for bytes in official::files() {
+    for bytes in official::files().into_iter().chain(evolved::files()) {
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let version = u8::try_from(value["format-version"].as_u64().unwrap()).unwrap();
         let uuid = uuid::Uuid::parse_str(value["table-uuid"].as_str().unwrap()).unwrap();
@@ -66,6 +68,7 @@ fn legacy_v1_fallback_and_upgraded_snapshots_do_not_invent_lineage() {
         value.as_object_mut().unwrap().remove(field);
     }
     let legacy = json!({"snapshot-id":10,"timestamp-ms":1000,"manifests":[fixture::table().file("metadata/old.avro").unwrap().to_string()]});
+    value["schema"]["schema-id"] = json!(7);
     value["snapshots"] = json!([legacy]);
     value["current-snapshot-id"] = json!(10);
     assert!(fixture::parse(&value).unwrap().snapshots()[&10]

@@ -84,7 +84,7 @@ pub(super) fn parse(
 }
 
 impl PartitionTransform {
-    fn parse(name: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(name: &str) -> Result<Self, Error> {
         Ok(match name {
             "identity" => Self::Identity,
             "year" => Self::Year,
@@ -120,7 +120,7 @@ impl PartitionTransform {
         })
     }
 
-    fn result(&self, source: &PrimitiveType) -> Result<Option<PrimitiveType>, Error> {
+    pub(crate) fn result(&self, source: &PrimitiveType) -> Result<Option<PrimitiveType>, Error> {
         use PrimitiveType::{
             Binary, Date, Decimal, Fixed, Int, Long, String, Time, Timestamp, TimestampNs, Timestamptz,
             TimestamptzNs, Uuid,

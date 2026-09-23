@@ -25,7 +25,7 @@ pub enum PrimitiveType {
 }
 
 impl PrimitiveType {
-    pub(super) fn parse(name: &str, version: ManifestVersion) -> Result<Self, ManifestContextError> {
+    pub(crate) fn parse(name: &str, version: ManifestVersion) -> Result<Self, ManifestContextError> {
         let primitive = match name {
             "boolean" => Self::Boolean,
             "int" => Self::Int,

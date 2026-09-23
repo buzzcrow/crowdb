@@ -7,7 +7,10 @@ use super::{SelectedTable, TableHead};
 use crate::file::{ContentFormat, FileBlockStore, FileIoError, FileKind, FileReader};
 
 mod auxiliary;
+mod defaults;
 mod json;
+mod layout;
+mod name_mapping;
 mod root;
 mod schemas;
 mod snapshots;
@@ -57,7 +60,7 @@ pub enum TableMetadataError {
 }
 
 /// Canonical document with validated envelope, snapshot graph and reference linkage.
-/// Default values, schema evolution, partition/sort and file semantics remain separate phases;
+/// Cross-generation evolution and file semantics remain separate validation phases;
 /// possession of this document is not a table publication or full metadata proof.
 #[derive(Debug)]
 pub struct TableMetadataDocument {
@@ -85,7 +88,9 @@ impl TableMetadataDocument {
         }
         let root = json::parse(&canonical, limits)?;
         let envelope = root::validate(&root, head, limits)?;
-        schemas::validate(&root, head.format_version, limits)?;
+        let schema = schemas::validate(&root, head.format_version, limits)?;
+        layout::validate(&root, &schema, limits)?;
+        name_mapping::validate(&root, limits)?;
         let snapshots = snapshots::parse(&root, head, &envelope, limits)?;
         snapshots::references(&root, envelope.current_snapshot, &snapshots, limits)?;
         snapshots::logs(&root, head, &snapshots, limits)?;

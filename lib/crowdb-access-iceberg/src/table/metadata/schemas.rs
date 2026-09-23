@@ -3,7 +3,11 @@ use serde_json::Value;
 use super::{array, id, TableMetadataError as Error, TableMetadataLimits};
 use crate::manifest::{ManifestContext, ManifestContextError, ManifestVersion};
 
-pub(super) fn validate(root: &Value, version: u8, limits: TableMetadataLimits) -> Result<(), Error> {
+pub(super) fn validate(
+    root: &Value,
+    version: u8,
+    limits: TableMetadataLimits,
+) -> Result<ManifestContext, Error> {
     let version = match version {
         1 => ManifestVersion::V1,
         2 => ManifestVersion::V2,
@@ -15,6 +19,17 @@ pub(super) fn validate(root: &Value, version: u8, limits: TableMetadataLimits) -
         None => std::slice::from_ref(&root["schema"]),
     };
     let last_column = id(&root["last-column-id"], "last-column-id")?;
+    let mut work = limits.values;
+    let current_id = root
+        .get("current-schema-id")
+        .or_else(|| {
+            root.get("schemas")
+                .is_none()
+                .then(|| root["schema"].get("schema-id"))
+                .flatten()
+        })
+        .map_or(Ok(0), |value| id(value, "current-schema-id"))?;
+    let mut current = None;
     for schema in schemas {
         let schema_id = schema
             .get("schema-id")
@@ -28,6 +43,10 @@ pub(super) fn validate(root: &Value, version: u8, limits: TableMetadataLimits) -
         if context.fields().any(|(field_id, _)| *field_id > last_column) {
             return Err(Error::Field("last-column-id"));
         }
+        super::defaults::validate(schema, version, &mut work)?;
+        if context.schema_id() == current_id {
+            current = Some(context);
+        }
     }
-    Ok(())
+    current.ok_or(Error::Field("current-schema-id"))
 }
