@@ -25,6 +25,7 @@ pub struct SharedObjectWriter {
     retained_size: usize,
     fragments: Vec<Bytes>,
     finished: bool,
+    durable_completion: bool,
 }
 
 impl SharedObjectWriter {
@@ -44,6 +45,7 @@ impl SharedObjectWriter {
             retained_size: 0,
             fragments: Vec::new(),
             finished: false,
+            durable_completion: false,
         }
     }
 
@@ -57,6 +59,7 @@ impl SharedObjectWriter {
             retained_size: 0,
             fragments: Vec::new(),
             finished: false,
+            durable_completion: false,
         }
     }
 
@@ -66,6 +69,14 @@ impl SharedObjectWriter {
         } else {
             Ok(())
         }
+    }
+
+    /// Completes only after the readable chunk cursor covers this object's bytes.
+    /// # Errors
+    /// Returns admission, physical write, metadata confirmation or size failures.
+    pub async fn finish_durable(&mut self) -> Result<Vec<ProtoLocation>> {
+        self.durable_completion = true;
+        self.on_finish().await
     }
 
     fn fail_size(&mut self, actual: usize) -> IoError {
@@ -119,6 +130,7 @@ impl ChunkIoWriter for SharedObjectWriter {
             .ok_or_else(|| IoError::Internal("small writer missing route charge".into()))?;
         let (completion, result) = oneshot::channel();
         let object = PendingObject {
+            durable_completion: self.durable_completion,
             route_hash: self.route_hash,
             route: self
                 .route

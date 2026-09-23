@@ -32,8 +32,9 @@ and orphan sealing.
 One client-owned pool multiplexes small objects across a bounded set of
 pipelines. Each pipeline exclusively owns one active Repo chunk containing
 mirror strips and may own one empty prepared replacement. A pipeline batches
-whole objects, writes the physical range to every mirror, durably advances the
-chunk cursor, then returns an independent `Location` to each caller.
+whole objects and writes the physical range to every mirror. Ordinary completion
+returns independent locations while cursor progress runs asynchronously; callers
+can opt into completion after the readable cursor is durably confirmed.
 
 The shared path can incrementally form 8+4 EC groups while writing mirrors.
 It retains one open-strip image and four parity accumulators, but never retains
@@ -151,6 +152,13 @@ No location is visible before its complete physical range exists on every
 configured mirror. Cursor persistence is an asynchronous availability and
 orphan-recovery checkpoint; readers can transiently report `NotYetAvailable`
 until it catches up.
+
+Callers publishing immediately readable immutable authorities use
+`SharedObjectWriter::finish_durable`. A batch containing a durable-completion
+request waits for the existing metadata chain, then confirms any remaining
+cursor suffix before delivering locations. Metadata failure fails that batch
+instead of exposing an unreadable reference. Ordinary `on_finish` retains its
+asynchronous cursor behavior; no additional lock or reader-side retry is needed.
 
 ## 6. Chunk Lifecycle and Recovery
 

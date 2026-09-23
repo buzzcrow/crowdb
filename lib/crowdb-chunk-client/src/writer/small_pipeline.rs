@@ -717,6 +717,8 @@ async fn close_and_prefetch(
     append_mirror_strips(&*allocator, chunk, strip_count, copy_count).await
 }
 
+mod publication;
+
 struct OwnedChunk {
     allocator: Arc<dyn ChunkAllocator>,
     disk_writer: Arc<dyn DiskWriter>,
@@ -1207,6 +1209,7 @@ impl OwnedChunk {
             self.refresh_pending_advance().await?;
             self.start_pending_advance(end)?;
         }
+        self.confirm_batch_publication(batch, end).await?;
         metrics.record_batch(batch.len(), logical_bytes);
         Ok(locations)
     }
