@@ -24,6 +24,11 @@ pub struct AvroRecords {
 
 impl AvroRecords {
     #[must_use]
+    pub fn schema(&self) -> &AvroSchema {
+        &self.schema
+    }
+
+    #[must_use]
     pub fn metadata(&self) -> &BTreeMap<String, Vec<u8>> {
         self.blocks.metadata()
     }

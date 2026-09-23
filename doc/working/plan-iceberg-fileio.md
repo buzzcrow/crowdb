@@ -212,6 +212,13 @@ integration. Independent FileIO work proceeds under the approved ordering.
   even zero-byte recursive or huge null collections. Six layout tests pass.
   `AvroRecords` compiles the container's own schema once and validates one decoded
   block per pull; two integration tests verify corruption, bounds and cancellation.
+  Root scalar projection now selects at most 64 int/long/string fields by Iceberg
+  field ID, not writer names/order, and borrows strings from one decoded block.
+  Nullable unions work in either branch order. Every skipped field still receives
+  binary validation under the same block-wide work/depth limits; malformed IDs,
+  duplicate IDs, missing selections and trailing bytes fail closed. Four cursor
+  tests pass. Nested data-file projection and typed manifest-list interpretation
+  remain to be connected to the inheritance resolver.
   Reader-schema resolution, logical/manifest field semantics and optional codecs
   remain separate; this does not advertise complete manifest v1/v2/v3 validation.
   A constant-state manifest inheritance resolver now handles v1 zero sequences,
@@ -239,7 +246,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 211 library tests pass, covering namespace, file records, range/streaming,
+- 215 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass

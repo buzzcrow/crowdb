@@ -17,10 +17,22 @@ impl<'data> Input<'data> {
         }
     }
 
-    pub(super) fn finish(self) -> Result<(), AvroContainerError> {
+    pub(super) fn finish(&self) -> Result<(), AvroContainerError> {
         if self.offset != self.bytes.len() {
             return Err(AvroContainerError::Schema);
         }
+        Ok(())
+    }
+
+    pub(super) fn position(&self) -> usize {
+        self.offset
+    }
+
+    pub(super) fn consume_value(&mut self, depth: usize) -> Result<(), AvroContainerError> {
+        if depth > self.limits.depth {
+            return Err(AvroContainerError::Bounds);
+        }
+        self.remaining = self.remaining.checked_sub(1).ok_or(AvroContainerError::Bounds)?;
         Ok(())
     }
 
@@ -30,10 +42,7 @@ impl<'data> Input<'data> {
         index: usize,
         depth: usize,
     ) -> Result<(), AvroContainerError> {
-        if depth > self.limits.depth {
-            return Err(AvroContainerError::Bounds);
-        }
-        self.remaining = self.remaining.checked_sub(1).ok_or(AvroContainerError::Bounds)?;
+        self.consume_value(depth)?;
         match &schema.nodes[index] {
             Node::Null => {}
             Node::Boolean => {
@@ -72,7 +81,7 @@ impl<'data> Input<'data> {
             }
             Node::Record(fields) => {
                 for field in fields {
-                    self.datum(schema, *field, depth + 1)?;
+                    self.datum(schema, field.node, depth + 1)?;
                 }
             }
             Node::Array(child) => self.collection(schema, *child, false, depth)?,
@@ -130,7 +139,7 @@ impl<'data> Input<'data> {
         }
     }
 
-    fn take(&mut self, length: usize) -> Result<&'data [u8], AvroContainerError> {
+    pub(super) fn take(&mut self, length: usize) -> Result<&'data [u8], AvroContainerError> {
         let end = self
             .offset
             .checked_add(length)
@@ -143,7 +152,7 @@ impl<'data> Input<'data> {
         Ok(value)
     }
 
-    fn long(&mut self) -> Result<i64, AvroContainerError> {
+    pub(super) fn long(&mut self) -> Result<i64, AvroContainerError> {
         let mut value = 0_u64;
         for shift in (0..70).step_by(7) {
             let byte = self.take(1)?[0];
@@ -159,7 +168,7 @@ impl<'data> Input<'data> {
         Err(AvroContainerError::Schema)
     }
 
-    fn size(&mut self) -> Result<usize, AvroContainerError> {
+    pub(super) fn size(&mut self) -> Result<usize, AvroContainerError> {
         usize::try_from(self.long()?).map_err(|_| AvroContainerError::Schema)
     }
 

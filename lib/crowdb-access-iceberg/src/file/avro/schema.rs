@@ -2,6 +2,9 @@ use super::AvroContainerError;
 
 mod binary;
 mod parse;
+mod projection;
+
+pub use projection::{AvroProjectedRecords, AvroProjection, AvroScalar};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AvroDatumLimits {
@@ -42,10 +45,16 @@ enum Node {
     String,
     Fixed(usize),
     Enum(usize),
-    Record(Vec<usize>),
+    Record(Vec<Field>),
     Array(usize),
     Map(usize),
     Union(Vec<usize>),
+}
+
+#[derive(Debug)]
+struct Field {
+    node: usize,
+    id: Option<i32>,
 }
 
 impl AvroSchema {

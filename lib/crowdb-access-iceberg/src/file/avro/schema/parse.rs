@@ -1,7 +1,7 @@
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{AvroContainerError, AvroSchema, Node};
+use super::{AvroContainerError, AvroSchema, Field, Node};
 
 mod names;
 
@@ -116,7 +116,7 @@ impl Parser {
         object: &Map<String, Value>,
         namespace: &str,
         depth: usize,
-    ) -> Result<Vec<usize>, AvroContainerError> {
+    ) -> Result<Vec<Field>, AvroContainerError> {
         let fields = object
             .get("fields")
             .and_then(Value::as_array)
@@ -133,11 +133,18 @@ impl Parser {
             if !names.insert(name) {
                 return Err(AvroContainerError::Schema);
             }
-            nodes.push(self.schema(
+            let node = self.schema(
                 field.get("type").ok_or(AvroContainerError::Schema)?,
                 namespace,
                 depth + 1,
-            )?);
+            )?;
+            let id = field.get("field-id").map(|value| {
+                value
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                    .unwrap_or(-1)
+            });
+            nodes.push(Field { node, id });
         }
         Ok(nodes)
     }
