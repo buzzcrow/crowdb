@@ -37,6 +37,7 @@ impl ChunkRoot {
             || self.offset.checked_add(self.physical_length).is_none()
             || self.logical_offset.checked_add(self.logical_length).is_none()
             || self.height > MAX_CHUNK_TREE_HEIGHT
+            || (self.height == 0 && self.logical_length > super::blocks::MAX_FILE_BLOCK_BYTES as u64)
             || (self.height > 0 && self.logical_length > MAX_CHUNK_DIRECTORY_BYTES)
         {
             return Err(ValidationError::Record);

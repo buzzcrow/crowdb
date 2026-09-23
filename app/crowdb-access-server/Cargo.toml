@@ -91,3 +91,8 @@ required-features = ["iceberg"]
 name = "iceberg_full_stack_test"
 path = "tests/iceberg_full_stack_test.rs"
 required-features = ["iceberg-e2e"]
+
+[[test]]
+name = "iceberg_file_storage_test"
+path = "tests/iceberg_file_storage_test.rs"
+required-features = ["iceberg-e2e"]

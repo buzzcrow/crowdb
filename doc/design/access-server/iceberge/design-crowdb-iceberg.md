@@ -201,6 +201,15 @@ the exact-location CAS; equal-content retries return the selected FileId, while
 conflicts retain losing candidates without overwriting or physical deletion.
 Streaming format sealing and the native FileIO HTTP surface remain unexposed.
 
+Chunk-backed files use bounded leaf blocks and immutable chunk-resident directory
+pages, with at most 256 children per page and eight directory levels. Each page
+binds its catalog, table and file identity, child heights and covered byte count.
+The writer retains only one partial leaf and bounded per-level frontiers. Native
+block completion waits for the readable chunk cursor before publishing a root.
+Pull readers retain one leaf, verify directory/leaf digests and read no future
+block until requested; full-file reads also verify the canonical digest. Range
+parsing accepts one contiguous interval and rejects multiple ranges explicitly.
+
 Writes and reads stream through bounded CROWDB storage clients. Delegated FileIO
 access may move immutable ranges without an Access Server payload bounce, but
 cannot overwrite published files or bypass table reachability.

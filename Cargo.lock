@@ -597,6 +597,8 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "base64",
+ "bytes",
+ "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-protocol",
  "data-encoding",

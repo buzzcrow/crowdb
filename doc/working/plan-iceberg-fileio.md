@@ -33,8 +33,21 @@ integration. Independent FileIO work proceeds under the approved ordering.
   the chunk variant. Five record tests cover codec/key/tag/corruption boundaries.
   The publication primitive requires already sealed chunk input; no HTTP route
   exposes it until the streaming seal pipeline verifies canonical bytes/formats.
-- [ ] **Streaming reads**: bounded chunk writes, full and single-range reads,
-  response credits and cancellation. Files: file reader/writer, server body path.
+- [x] **Bounded chunk streaming**: store at most 256-KiB leaves and 256 child
+  references per directory, with at most eight directory levels. Persist directory
+  bytes in chunks, not KV; bind every directory to file/catalog/table identity,
+  digest, child heights and byte coverage. Pull reads keep one leaf and produce
+  at most 64-KiB frames without speculative reads. Full reads verify the file digest.
+  Files: file blocks/directory/range/reader/writer and streaming tests.
+- [x] **Durable chunk publication boundary**: native blocks call opt-in
+  `SharedObjectWriter::finish_durable`; existing small-write completion remains
+  asynchronous. Confirm the readable cursor before exposing each block. The real
+  file-tree test exposed the old early-completion mismatch; no reader retry or
+  timeout change was used. Three focused chunk tests verify waiting, an older
+  pending advance and metadata failure; old asynchronous tests remain required.
+  Files: chunk shared writer/pipeline publication and small-object tests.
+- [ ] **Streaming HTTP integration**: bound response credits and cancellation
+  over the native pull reader. Files: server FileIO body path.
 - [ ] **Delegation and HTTP**: short-lived catalog/table/prefix-scoped operation
   and byte limits, no DELETE; isolated S3-shaped routing and errors. Files: file
   credentials/S3 compatibility and server FileIO modules, real HTTP tests.
@@ -64,3 +77,12 @@ integration. Independent FileIO work proceeds under the approved ordering.
 - Gates: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`, affected
   server/protocol tests, `pixi run -- cargo fmt --all -- --check`, `pixi run rs-lint`.
   Prefix server-spawning tests with `pixi run clean-env &&`.
+
+## Verified Checkpoint
+
+- 116 library tests pass, including range and multi-level streaming boundaries.
+- Native file-tree publication, full read, a range crossing leaf boundaries and
+  Chunk-KV restart pass against real ChunkDB/DiskIO using the separate
+  `iceberg_file_storage_test` target. This verifies storage bytes, not Parquet
+  semantics or the pending FileIO HTTP and official-client contract.
+- Command: `pixi run clean-env && CROWDB_RUNTIME_ROOT="$PWD/.crowdb-runtime/ephemeral/iceberg-file-storage" pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_storage_test -- --nocapture`.
