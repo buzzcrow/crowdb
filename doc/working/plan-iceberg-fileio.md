@@ -289,8 +289,9 @@ integration. Independent FileIO work proceeds under the approved ordering.
 ## Handover — 2026-09-23
 
 The initial handover boundary was typed scalar manifest-entry decoding plus
-cross-block inheritance. Subsequent work added bounded equality-ID list decoding
-and schema element-ID checks. This is not requirement completion or a new blocker.
+cross-block inheritance. Subsequent work added bounded equality-ID list decoding,
+schema element-ID checks and typed OCF manifest metadata. This is not requirement
+completion or a new blocker.
 No user-guide edits, public FileIO exposure, new unsafe exceptions, locks or
 physical deletion were added. Resume with the next task below, not a rewrite of
 the landed storage primitives. The broader ordering is in
@@ -324,14 +325,21 @@ the landed storage primitives. The broader ordering is in
   wrong schema IDs and inheritance-safe failures have focused tests. Membership
   in the table schema and presence in the delete file still need table/file
   context; this is partial collection validation.
+- [x] **Typed manifest writer metadata**: `ManifestMetadata::parse` reads bounded
+  OCF properties, derives the writer's v1/v2/v3 version and data/delete content,
+  requires version-specific schema/spec IDs and checks the bounded schema and
+  partition-spec JSON roots. It rejects mismatched schema IDs. The existing
+  chunk-backed, two-block stream fixture now carries and parses real OCF manifest
+  properties before constructing inheritance state. Table schema/spec membership,
+  nested JSON semantics and list-to-manifest consistency still need table context.
 - [ ] **Remaining collections and manifest metadata**: scalar projection does not yet
   expose metrics maps, partition tuples or partition summaries.
   Extend bounded traversal only as needed; do not deserialize full datum graphs.
   Check field IDs plus array `element-id` and map `key-id`/`value-id` metadata,
   including Iceberg's logical-map array representation. Decode metrics under
   independent entry/work bounds and check equality-ID membership against the table schema.
-  Validate OCF version/schema/partition-spec/content metadata; the actual manifest
-  version is not necessarily the table or enclosing manifest-list version.
+  Validate complete schema/partition-spec semantics and list-to-manifest context;
+  the actual manifest version is not necessarily the table or enclosing manifest-list version.
   Position deletes ignore sort order; do not reject solely for a non-null value.
   Files: Avro schema/projection children, manifest modules, focused fixtures.
 - [x] **Scalar block integration**: `manifest_entry_stream_test.rs` composes
@@ -400,7 +408,7 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 232 tests. `pixi run rs-lint` and
+  passes 234 tests. `pixi run rs-lint` and
   `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
   and test code only; the previously recorded native E2E run is not a new run.
 - Start the next change with focused `--test avro_nested_projection_test`,

@@ -20,7 +20,7 @@ Collect unresolved human decisions in R177 for confirmation when the user return
 do not stop unrelated tasks. No user-guide tasks.
 
 Handover checkpoint (2026-09-23): typed scalar manifest-entry decoding,
-cross-block inheritance and bounded equality-ID lists are verified, following
+cross-block inheritance, bounded equality-ID lists and typed writer metadata are verified, following
 nested Avro field-ID projection. Resume instructions, exact next implementation slices,
 landed APIs, remaining integration gaps and test commands are in
 `plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this

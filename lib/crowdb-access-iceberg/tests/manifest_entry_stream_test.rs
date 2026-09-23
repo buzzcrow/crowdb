@@ -12,7 +12,7 @@ use crowdb_access_iceberg::file::{
 };
 use crowdb_access_iceberg::key::FileId;
 use crowdb_access_iceberg::manifest::{
-    ManifestContent, ManifestEntryProjection, ManifestEntryState, ManifestVersion,
+    ManifestContent, ManifestEntryProjection, ManifestEntryState, ManifestMetadata, ManifestVersion,
 };
 use fixture::{table, TestManifestEntry};
 
@@ -42,11 +42,44 @@ async fn reader(version: ManifestVersion, deflate: bool, corrupt: bool) -> AvroR
     let mut fixture = TestManifestEntry::new(version);
     ManifestEntryProjection::new(&fixture.schema(), version, table()).unwrap();
     let mut bytes = b"Obj\x01".to_vec();
-    long(2, &mut bytes);
-    sized(b"avro.schema", &mut bytes);
-    sized(&fixture.schema_bytes(), &mut bytes);
-    sized(b"avro.codec", &mut bytes);
-    sized(if deflate { b"deflate" } else { b"null" }, &mut bytes);
+    let mut metadata = vec![
+        (b"avro.schema".as_slice(), fixture.schema_bytes()),
+        (
+            b"avro.codec".as_slice(),
+            if deflate {
+                b"deflate".as_slice()
+            } else {
+                b"null".as_slice()
+            }
+            .to_vec(),
+        ),
+        (
+            b"schema".as_slice(),
+            br#"{"type":"struct","schema-id":0,"fields":[]}"#.to_vec(),
+        ),
+        (b"partition-spec".as_slice(), b"[]".to_vec()),
+    ];
+    if version != ManifestVersion::V1 {
+        metadata.extend([
+            (b"schema-id".as_slice(), b"0".to_vec()),
+            (b"partition-spec-id".as_slice(), b"0".to_vec()),
+            (
+                b"format-version".as_slice(),
+                if version == ManifestVersion::V2 {
+                    b"2"
+                } else {
+                    b"3"
+                }
+                .to_vec(),
+            ),
+            (b"content".as_slice(), b"data".to_vec()),
+        ]);
+    }
+    long(i64::try_from(metadata.len()).unwrap(), &mut bytes);
+    for (key, value) in metadata {
+        sized(key, &mut bytes);
+        sized(&value, &mut bytes);
+    }
     long(0, &mut bytes);
     bytes.extend([42; 16]);
     for index in 0..2 {
@@ -103,8 +136,12 @@ async fn manifest_inheritance_survives_leaf_and_avro_block_boundaries_for_each_w
     for version in [ManifestVersion::V1, ManifestVersion::V2, ManifestVersion::V3] {
         for deflate in [false, true] {
             let mut reader = reader(version, deflate, false).await;
+            let metadata = ManifestMetadata::parse(reader.metadata()).unwrap();
+            assert_eq!(metadata.version, version);
+            assert_eq!(metadata.content, ManifestContent::Data);
             let mut state =
-                ManifestEntryState::new(version, table(), ManifestContent::Data, 50, 9, Some(100)).unwrap();
+                ManifestEntryState::new(metadata.version, table(), metadata.content, 50, 9, Some(100))
+                    .unwrap();
             for first in [100, 110] {
                 let block = reader.next().await.unwrap().unwrap();
                 let projection = ManifestEntryProjection::new(reader.schema(), version, table()).unwrap();
