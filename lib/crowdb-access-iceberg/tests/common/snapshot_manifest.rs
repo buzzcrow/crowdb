@@ -79,9 +79,44 @@ pub async fn stored(
     FileRecord,
     ManifestListSelection,
 ) {
+    stored_impl(count, corrupt, wrong_totals, None, 99).await
+}
+
+pub async fn stored_with_lineage(
+    first_rows: &[Option<i64>],
+    added_snapshot_id: i64,
+) -> (
+    Arc<TestBlocks>,
+    Arc<TestSource>,
+    FileRecord,
+    ManifestListSelection,
+) {
+    stored_impl(
+        first_rows.len(),
+        false,
+        false,
+        Some(first_rows),
+        added_snapshot_id,
+    )
+    .await
+}
+
+async fn stored_impl(
+    count: usize,
+    corrupt: bool,
+    wrong_totals: bool,
+    first_rows: Option<&[Option<i64>]>,
+    added_snapshot_id: i64,
+) -> (
+    Arc<TestBlocks>,
+    Arc<TestSource>,
+    FileRecord,
+    ManifestListSelection,
+) {
     let (store, mut record) = stream::stored(ManifestVersion::V3, false, corrupt).await;
     record.kind = FileKind::Unbound;
     let mut fixture = TestManifestList::new();
+    fixture.set(503, serde_json::json!(added_snapshot_id));
     for (id, value) in [
         (501, i64::try_from(record.length).unwrap()),
         (515, 9),
@@ -111,7 +146,12 @@ pub async fn stored(
             .file(&format!("metadata/{index}.avro"))
             .unwrap();
         fixture.set(500, serde_json::json!(candidate.location.to_string()));
-        fixture.set(520, serde_json::json!(100 + index * 20));
+        fixture.set(
+            520,
+            serde_json::json!(
+                first_rows.map_or(Some(100 + i64::try_from(index).unwrap() * 20), |rows| rows[index])
+            ),
+        );
         if wrong_totals && index + 1 == count {
             fixture.set(504, serde_json::json!(3));
             fixture.set(512, serde_json::json!(30));

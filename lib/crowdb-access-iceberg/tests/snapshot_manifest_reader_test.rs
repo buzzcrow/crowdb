@@ -206,3 +206,65 @@ async fn resolved_authority_must_match_the_canonical_list_declaration() {
     assert!(reader.next_entry().await.is_err());
     assert_eq!(source.calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn row_id_ranges_use_actual_inheritance_and_allow_unused_allocation() {
+    for (first_rows, added_rows) in [([Some(100), Some(120)], 40), ([Some(105), Some(140)], 70)] {
+        let (store, source, record, mut selection) = snapshot::stored_with_lineage(&first_rows, 99).await;
+        selection.added_rows = Some(added_rows);
+        let mut reader = SnapshotManifestReader::open(store, source, record, selection, snapshot::limits())
+            .await
+            .unwrap();
+        while reader.next_entry().await.unwrap().is_some() {}
+        assert_eq!(reader.finish().unwrap().entries, 4);
+    }
+}
+
+#[tokio::test]
+async fn overlapping_missing_and_out_of_allocation_row_ids_poison_enumeration() {
+    for first_rows in [
+        [Some(100), Some(119)],
+        [Some(100), Some(130)],
+        [Some(100), Some(141)],
+        [Some(99), Some(120)],
+        [None, Some(120)],
+        [Some(120), Some(100)],
+    ] {
+        let (store, source, record, selection) = snapshot::stored_with_lineage(&first_rows, 99).await;
+        let mut reader = SnapshotManifestReader::open(store, source, record, selection, snapshot::limits())
+            .await
+            .unwrap();
+        loop {
+            match reader.next_entry().await {
+                Ok(Some(_)) => {}
+                Err(SnapshotManifestError::RowIds) => break,
+                other => panic!("unexpected result for {first_rows:?}: {other:?}"),
+            }
+        }
+        assert!(reader.finish().is_err());
+        assert!(reader.next_entry().await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn reused_manifest_ranges_must_remain_below_new_snapshot_allocation() {
+    for (old_first, accepted) in [(80, true), (90, false)] {
+        let (store, source, record, mut selection) =
+            snapshot::stored_with_lineage(&[Some(old_first), Some(100)], 98).await;
+        selection.sequence = 10;
+        let mut reader = SnapshotManifestReader::open(store, source, record, selection, snapshot::limits())
+            .await
+            .unwrap();
+        assert!(reader.next_entry().await.unwrap().is_some());
+        if accepted {
+            while reader.next_entry().await.unwrap().is_some() {}
+            assert_eq!(reader.finish().unwrap().entries, 4);
+        } else {
+            assert!(matches!(
+                reader.next_entry().await,
+                Err(SnapshotManifestError::RowIds)
+            ));
+            assert!(reader.finish().is_err());
+        }
+    }
+}

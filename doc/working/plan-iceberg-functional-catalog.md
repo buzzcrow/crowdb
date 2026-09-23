@@ -218,6 +218,12 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
 
   Remaining execution slices from the ten-task batch, in dependency order:
   2. Cross-manifest identity/descriptor consistency and row-ID assignment ranges.
+     Row-ID slice implemented: keep only the snapshot allocation and current/next
+     manifest cursor; use actual inherited counts, not row-count estimates.
+     Reject missing assignments, overlapping newly assigned intervals, new ranges
+     escaping `first-row-id + added-rows`, and reused ranges crossing into the new
+     allocation. Gaps and unused allocation remain valid. Scope checks do not
+     replace comparison against prior metadata to prove preservation of old IDs.
   3. Canonical Parquet schema/field-ID/row-count and selected data/delete checks.
   4. Canonical ORC equivalent checks with bounded decoding.
   5. Bind complete snapshot enumeration, actual file row counts and DV validation.

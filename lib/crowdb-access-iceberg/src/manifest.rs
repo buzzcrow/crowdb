@@ -10,6 +10,7 @@ mod list_selection;
 mod metadata;
 mod reader;
 mod snapshot_reader;
+mod snapshot_rows;
 mod summary;
 pub use context::{
     ManifestContext, ManifestContextError, PartitionField, PartitionTransform, PrimitiveType, SchemaField,

@@ -34,6 +34,8 @@ pub enum SnapshotManifestError {
     Manifest(#[from] ManifestEntryError),
     #[error("snapshot manifest enumeration work limit exceeded")]
     Bounds,
+    #[error("snapshot manifest row-ID assignments overlap or escape the allocated range")]
+    RowIds,
     #[error("snapshot manifest enumeration failed, was cancelled or is incomplete")]
     Incomplete,
     #[error("selected manifest authority or historical context is unavailable")]
@@ -61,6 +63,7 @@ pub struct SnapshotManifestReader {
     summary: SnapshotManifestSummary,
     failed: bool,
     complete: bool,
+    rows: super::snapshot_rows::SnapshotRowAssignments,
 }
 
 impl SnapshotManifestReader {
@@ -78,6 +81,7 @@ impl SnapshotManifestReader {
         if limits.manifests == 0 || limits.entries == 0 || limits.manifest_bytes == 0 {
             return Err(SnapshotManifestError::Bounds);
         }
+        let rows = super::snapshot_rows::SnapshotRowAssignments::new(&selection)?;
         let list = ManifestListReader::open_selected(
             store.clone(),
             record,
@@ -96,6 +100,7 @@ impl SnapshotManifestReader {
             summary: SnapshotManifestSummary::default(),
             failed: false,
             complete: false,
+            rows,
         })
     }
 
@@ -129,10 +134,12 @@ impl SnapshotManifestReader {
         loop {
             if let Some(manifest) = &mut self.manifest {
                 if let Some(entry) = manifest.next_entry().await? {
+                    self.rows.check(manifest.next_row_id())?;
                     self.summary.entries = bounded_add(self.summary.entries, 1, self.limits.entries)?;
                     self.failed = false;
                     return Ok(Some(entry));
                 }
+                self.rows.finish_manifest(manifest.next_row_id())?;
                 self.manifest = None;
             }
             let Some(reference) = self.list.next_entry().await? else {
@@ -141,6 +148,7 @@ impl SnapshotManifestReader {
                 return Ok(None);
             };
             let manifests = bounded_add(self.summary.manifests, 1, self.limits.manifests)?;
+            self.rows.begin(&reference)?;
             let bytes = bounded_add(
                 self.summary.manifest_bytes,
                 reference.length,
