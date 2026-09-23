@@ -225,6 +225,13 @@ ORC probing retains at most 255 postscript bytes, checks protobuf wire framing
 and resolves footer/metadata spans without decoding stripe directories. It accepts
 legacy header-only magic and skips bounded unknown protobuf fields.
 
+Avro OCF framing uses a bounded header map and pull-based encoded blocks. Header
+bytes, metadata count, block bytes and records per block have independent caps;
+negative map blocks must match their declared byte lengths. Sync markers and
+canonical block integrity are verified before a block returns. Errors or cancelled
+reads poison the cursor rather than resuming at an ambiguous record boundary.
+This layer does not decode compressed records or validate Iceberg manifest fields.
+
 Delegation tokens carry catalog activation epoch, table, principal fingerprint,
 nonce, exact operation set, issue/expiry times and independent request/file byte
 limits. Domain-separated HMAC authenticates bounded claims and derives per-grant

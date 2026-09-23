@@ -84,6 +84,11 @@ integration. Independent FileIO work proceeds under the approved ordering.
   ORC probing reads at most 255 postscript bytes and validates protobuf framing,
   footer/metadata spans and optional postscript magic. Three additional tests cover
   unknown fields, legacy header magic, maximum size and malformed wire inputs.
+  Avro OCF framing now pulls one encoded block at a time with independent header
+  bytes, metadata entries, encoded block bytes and record-count limits. Positive
+  and sized negative metadata maps, sync markers, overflow and cancelled readers
+  are checked across leaf boundaries. Schema resolution, decompression and
+  manifest v1/v2/v3 semantic validation are still pending.
 - [ ] **Acceptance**: official FileIO, real chunks/restarts, concurrency/lost
   responses, all boundary tests; run fmt and lint independently. No full feature
   advertisement or closure until the complete requirement passes.
