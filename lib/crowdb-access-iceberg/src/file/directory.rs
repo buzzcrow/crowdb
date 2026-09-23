@@ -33,8 +33,16 @@ impl ChunkDirectory {
     /// # Errors
     /// Rejects unbounded fanout, invalid child heights and overflowing file spans.
     pub fn length(&self) -> Result<u64, ValidationError> {
+        self.length_with_limit(MAX_CHUNK_TREE_HEIGHT)
+    }
+
+    pub(crate) fn frontier_length(&self) -> Result<u64, ValidationError> {
+        self.length_with_limit(MAX_CHUNK_TREE_HEIGHT + 1)
+    }
+
+    fn length_with_limit(&self, max_height: u8) -> Result<u64, ValidationError> {
         if self.height == 0
-            || self.height > MAX_CHUNK_TREE_HEIGHT
+            || self.height > max_height
             || self.entries.is_empty()
             || self.entries.len() > MAX_DIRECTORY_ENTRIES
         {
@@ -58,6 +66,11 @@ impl ChunkDirectory {
     /// Rejects invalid directories before allocating their encoded representation.
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         self.length()?;
+        self.encode_frontier()
+    }
+
+    pub(crate) fn encode_frontier(&self) -> Result<Vec<u8>, ValidationError> {
+        self.frontier_length()?;
         let mut bytes = Vec::with_capacity(HEADER_BYTES + ENTRY_BYTES * self.entries.len());
         bytes.extend_from_slice(b"ICEN\x01");
         bytes.extend_from_slice(self.owner.table.catalog.as_bytes());
@@ -91,6 +104,18 @@ impl ChunkDirectory {
         owner: FileIdentity,
         height: u8,
         length: u64,
+    ) -> Result<Self, ValidationError> {
+        let directory = Self::decode_frontier(bytes, owner, height)?;
+        if directory.length()? != length {
+            return Err(ValidationError::Record);
+        }
+        Ok(directory)
+    }
+
+    pub(crate) fn decode_frontier(
+        bytes: &[u8],
+        owner: FileIdentity,
+        height: u8,
     ) -> Result<Self, ValidationError> {
         if bytes.len() < HEADER_BYTES || bytes.len() as u64 > MAX_CHUNK_DIRECTORY_BYTES {
             return Err(ValidationError::RecordTooLarge);
@@ -136,9 +161,7 @@ impl ChunkDirectory {
             height,
             entries,
         };
-        if directory.length()? != length {
-            return Err(ValidationError::Record);
-        }
+        directory.frontier_length()?;
         Ok(directory)
     }
 }

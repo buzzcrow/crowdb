@@ -213,6 +213,13 @@ The HTTP pull-body adapter adds shared response admission and 16-KiB frames.
 Only body polling starts a storage read; cancellation drops the in-flight read
 before releasing admission. Exact remaining-byte hints track delivery, and storage
 errors terminate the body rather than returning a successful truncated stream.
+Writer checkpoints flush partial leaves and store the bounded directory frontier
+plus resumable digest state in a chunk; durable journals need retain only one root.
+Restoration checks owner identity, checksum, frontier heights and total byte
+coverage. SHA-256 compression uses RustCrypto; versioned digest checkpoints retain
+only chaining state, byte length and a partial block. They are trusted-storage
+recovery records, not client authentication assertions. Failed checkpoint writes
+poison the current writer without invalidating earlier durable checkpoints.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

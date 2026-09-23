@@ -87,7 +87,20 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     let bytes: Vec<u8> = (0..50_000)
         .map(|index| u8::try_from(index % 251).unwrap())
         .collect();
-    for piece in bytes.chunks(3000) {
+    for piece in bytes[..25_000].chunks(3000) {
+        writer.push(piece).await.unwrap();
+    }
+    let checkpoint = writer.checkpoint().await.unwrap();
+    drop(writer);
+    client.shutdown_small_writes().await.unwrap();
+    drop(blocks);
+    drop(client);
+    let client = chunks(&stack).await;
+    let blocks = Arc::new(NativeFileBlocks::new(client.clone()));
+    let mut writer = FileTreeWriter::restore(blocks.clone(), owner, 16 * 1024, &checkpoint)
+        .await
+        .unwrap();
+    for piece in bytes[25_000..].chunks(3000) {
         writer.push(piece).await.unwrap();
     }
     let tree = writer.finish().await.unwrap();

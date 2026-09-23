@@ -4,6 +4,7 @@ mod avro;
 mod blocks;
 mod content;
 mod credentials;
+mod digest;
 mod directory;
 mod format;
 mod json;
@@ -21,6 +22,7 @@ pub use content::{ChunkRoot, FileContent, InlineCodec, MAX_COMPRESSION_INPUT_BYT
 pub use credentials::{
     FileCredentials, FileGrant, FileGrantError, FileGrantIssuer, FileOperation, FileOperations,
 };
+pub use digest::FileDigest;
 pub use directory::{ChunkDirectory, ChunkEntry, FileIdentity, MAX_DIRECTORY_ENTRIES};
 pub use format::{
     probe_orc_footer, probe_parquet_footer, probe_puffin_footer, FormatProbeError, OrcFooter, PuffinFooter,
@@ -33,4 +35,4 @@ pub use range::{resolve_range, ByteRange, RangeError};
 pub use reader::{FileReader, MAX_READ_FRAME_BYTES};
 pub use record::{ContentFormat, FileKind, FileMapping, FileRecord, FormatHint};
 pub use repository::FileRepository;
-pub use writer::{FileTree, FileTreeWriter};
+pub use writer::{FileTree, FileTreeWriter, FileWriterCheckpoint};

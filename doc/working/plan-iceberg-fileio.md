@@ -83,6 +83,20 @@ integration. Independent FileIO work proceeds under the approved ordering.
 - [ ] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
   recover completion, duplicate uploads and logical abort without physical delete.
   Files: file multipart modules, record schema and crash/restart tests.
+  Resumable writer foundations persist a bounded frontier in a chunk and return
+  one fixed-size checkpoint root. Digest checkpoints bind file identity and use
+  the existing RustCrypto SHA-256 compression function; no new crypto dependency,
+  unsafe code or toolchain requirement. Three digest tests compare padding,
+  update/restart boundaries and a million-byte vector against the standard hasher.
+  Three writer tests cover resumed partial leaves, directories, orphan retention,
+  failed checkpoint writes, corruption and wrong identities. Durable session/part
+  authority, completion freezing and recovery workers remain unimplemented.
+  Real native storage also passes checkpoint restoration through a newly connected
+  chunk client before final publication and the existing Chunk-KV restart checks.
+  Next steps: define immutable per-session limits and phase invariants; add scoped
+  session/part authority codecs; serialize admission and part replacement through
+  durable CAS journals; freeze bounded completion pages; checkpoint completion
+  progress by byte budget; recover abandoned sessions without physical deletion.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,

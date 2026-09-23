@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
-
 use super::blocks::verify_block;
 use super::content::MAX_CHUNK_TREE_HEIGHT;
 use super::{
-    ChunkDirectory, ChunkEntry, ChunkRoot, FileBlockStore, FileIdentity, FileIoError, MAX_DIRECTORY_ENTRIES,
-    MAX_FILE_BLOCK_BYTES,
+    ChunkDirectory, ChunkEntry, ChunkRoot, FileBlockStore, FileDigest, FileIdentity, FileIoError,
+    MAX_DIRECTORY_ENTRIES, MAX_FILE_BLOCK_BYTES,
 };
+
+mod checkpoint;
+pub use checkpoint::FileWriterCheckpoint;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileTree {
@@ -23,7 +24,7 @@ pub struct FileTreeWriter {
     pending: Vec<u8>,
     levels: Vec<Vec<ChunkEntry>>,
     length: u64,
-    digest: Sha256,
+    digest: FileDigest,
     failed: bool,
 }
 
@@ -45,7 +46,7 @@ impl FileTreeWriter {
             pending: Vec::with_capacity(block_bytes),
             levels: vec![Vec::new(); usize::from(MAX_CHUNK_TREE_HEIGHT) + 1],
             length: 0,
-            digest: Sha256::new(),
+            digest: FileDigest::new(owner),
             failed: false,
         })
     }
@@ -71,7 +72,7 @@ impl FileTreeWriter {
             .length
             .checked_add(bytes.len() as u64)
             .ok_or(FileIoError::Bounds)?;
-        self.digest.update(bytes);
+        self.digest.update(bytes)?;
         while !bytes.is_empty() {
             let count = bytes.len().min(self.block_bytes - self.pending.len());
             self.pending.extend_from_slice(&bytes[..count]);
@@ -105,7 +106,7 @@ impl FileTreeWriter {
                 return Ok(FileTree {
                     root: Some(entry.root),
                     length: self.length,
-                    digest: self.digest.finalize().into(),
+                    digest: self.digest.finish(),
                 });
             }
             let entry = self.flush_directory(level).await?;
@@ -117,7 +118,7 @@ impl FileTreeWriter {
         Ok(FileTree {
             root: None,
             length: 0,
-            digest: self.digest.finalize().into(),
+            digest: self.digest.finish(),
         })
     }
 
