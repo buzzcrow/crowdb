@@ -40,6 +40,37 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
 
 ## Remaining Complexity Review
 
+Current requested sequence (tasks 1–3):
+
+- [ ] **Ordered candidate evaluation**: apply updates against one input document;
+  validate schema evolution at each actual update, server-assigned definition IDs,
+  last-added selectors, defaults, layouts, snapshot logs and bounded raw JSON.
+  Keep the evaluator pure and separate from publication authority.
+  Library checkpoint implemented and verified: all 23 update actions execute in
+  order; requirements precede mutation; bounded raw JSON preserves unknown large
+  numbers. Schema IDs are server-assigned, last-added selectors track transaction
+  state, field IDs/defaults/promotions/collection identities are checked, and
+  layouts bind the schema selected at the actual add operation. Snapshot/ref,
+  auxiliary metadata, log suppression/expiration and allocation high-water marks
+  are evaluated without writing storage. Direct v1-to-v3 expands to two internal
+  transitions after the user's 2026-09-24 confirmation. Candidate admission also
+  compiles the confirmed SDK-safe name-mapping profile into segmented Parquet paths.
+  Files: `src/commit/evaluator.rs`, `src/commit/evaluator/`, and
+  `src/table/metadata/name_mapping/compile.rs` in `crowdb-access-iceberg`.
+  Twenty-two focused tests pass, including generated Java 1.11.0 v1/v2/v3
+  differential schema/layout/property fixtures and raw-number preservation.
+  Complete library tests passed before the final focused additions; final focused
+  tests and workspace `rs-fmt-check` / `rs-lint` pass. No HTTP writes are enabled.
+  Keep this item open for broader SDK differential coverage and integration with
+  file proofs: `EvaluatedMetadata` is explicitly not a publishable proof.
+- [ ] **Commit file proof**: bind candidate snapshots and canonical file resolution
+  to the selected generation, including reused-manifest provenance after schema
+  expiration and prior-delete preservation. Structural metadata is not this proof.
+- [ ] **Create and atomic publication**: compose durable request identity,
+  namespace reservations, immutable candidate writes, one head CAS and recovery;
+  cover immediate/staged create, concurrent losers and response-loss replay.
+  Do not enable HTTP writes before the preceding proofs and crash tests pass.
+
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,
   lost-response replay and v1/v2/v3 evolution must agree on a single generation.
@@ -436,9 +467,9 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      layout, snapshot and auxiliary payloads retain original raw JSON separately
      from their decoded fields so future optional numbers are not rounded during
      candidate construction. Four request tests cover this layer; decoding is
-     not update evaluation or semantic admission. Direct v1-to-v3 upgrade policy
-     conflicts with the pinned SDK and is now a human decision in R177; other
-     work continues without exposing that unsupported path.
+     not update evaluation or semantic admission. The direct v1-to-v3 policy was
+     subsequently confirmed in R177: the ordered evaluator expands it into both
+     adjacent internal transitions, rather than rejecting the client request.
      Scalar admission now rejects malformed UUIDs, unsupported target versions,
      invalid schema/spec/order selectors and invalid branch/tag retention values.
      The `-1` last-added selector remains legal; actual existence, source-version

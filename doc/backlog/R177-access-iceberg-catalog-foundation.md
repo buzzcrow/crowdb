@@ -241,6 +241,29 @@ and must not carry independent open questions.
     not finalize the operation. Requests without a key have internal recovery
     identities but no cross-request exactly-once guarantee.
 
+### Confirmed Compatibility Decisions
+
+- **Name-mapping interoperability profile (confirmed 2026-09-24):** selected-use
+  admission uses the pinned Java 1.11.0 SDK-safe intersection. Reject colliding
+  dotted paths and multiple ID-less mapping nodes; preserve segmented paths and
+  literal dots for accepted mappings. This is an input-profile restriction, not
+  a claim that the table specification bans those cases. The pinned SDK's
+  [MappingUtil](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/mapping/MappingUtil.java)
+  flattens nested paths with dots into unique map keys, and its ID index treats
+  repeated null IDs as duplicates. Thus a literal `a.b` alongside child `b` of
+  `a`, or multiple ID-less imported fields, can fail SDK indexing even when
+  structurally valid under the table format. Structural parsing remains separate
+  from selected-use compatibility validation; never flatten an ambiguous path
+  into a different field binding.
+
+- **Direct format upgrades (confirmed 2026-09-24):** allow explicit v1-to-v3,
+  applying both intermediate version rules internally. The pinned official
+  [TableMetadata.Builder](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/TableMetadata.java)
+  `upgradeFormatVersion` rejects downgrades and unsupported targets but does not
+  reject skipped versions. The evaluator expands the request into adjacent
+  internal steps; transition checking consumes that expanded trace. This does
+  not relax downgrade, unsupported-version or semantic-preservation checks.
+
 ## Dependencies
 
 - Depends on routed Chunk-KV compare-exchange and scans, chunk streaming and range
@@ -293,36 +316,6 @@ Required gates:
 All unresolved human decisions for R179 through R184 are collected here. Continue
 independent implementation while awaiting confirmation; settled contracts and
 ordinary implementation tasks are not open questions.
-
-- **Name-mapping interoperability profile:** should selected-use admission reject
-  otherwise spec-valid mappings that the pinned Java SDK cannot index, or retain
-  their full standard semantics with an explicit Java compatibility limitation?
-  The backed-up table specification treats dots in a name as literal characters
-  and allows imported fields without IDs. The pinned SDK's
-  [MappingUtil](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/mapping/MappingUtil.java)
-  flattens nested paths with dots into unique map keys, and its ID index treats
-  repeated null IDs as duplicates. Thus a literal `a.b` alongside child `b` of
-  `a`, or multiple ID-less imported fields, can fail SDK indexing even when
-  structurally valid under the table format. The SDK-safe intersection is
-  recommended for the initial official-client profile; it needs a documented
-  input restriction, not a claim that the table specification bans those cases.
-  The alternative preserves segmented paths and optional IDs but cannot claim
-  pinned-Java compatibility for those mappings. Never flatten ambiguous paths
-  into a different field binding. Current structural metadata parsing is not
-  changed by this question; defer this selected-use mapping edge while other
-  validation, commit and read work continues.
-
-- **Direct format upgrades:** should R182 allow an explicit v1-to-v3 upgrade,
-  applying both intermediate version rules internally, or retain its current
-  adjacent-only contract? The pinned official
-  [TableMetadata.Builder](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/TableMetadata.java)
-  `upgradeFormatVersion` rejects downgrades and unsupported targets but does not
-  reject skipped versions. Allowing a direct supported target is recommended for
-  official-client compatibility; retaining adjacent-only upgrades requires an
-  explicit compatibility limitation and a two-step client workflow. Current
-  unadvertised transition checks follow R182's existing restriction, not an
-  asserted Iceberg standard prohibition. Continue other validation and evaluator
-  work; do not advertise direct-upgrade conformance before resolving this conflict.
 
 - **Namespace latency acceptance:** should every uncontended native namespace
   mutation complete within the existing real-stack fixture's 500-ms admission

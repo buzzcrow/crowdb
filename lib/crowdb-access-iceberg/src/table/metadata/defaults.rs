@@ -98,7 +98,7 @@ fn charge(work: &mut usize) -> Result<(), Error> {
     Ok(())
 }
 
-fn identity(
+pub(super) fn identity(
     schema: &Value,
     value: &Value,
     version: ManifestVersion,

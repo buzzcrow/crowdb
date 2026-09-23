@@ -49,10 +49,11 @@ conflicts, idempotency, and crash recovery without a table-wide lock.
    partition specs, sort orders, properties, locations, snapshots and references,
    statistics, sequence and row-ID inheritance, row lineage, delete semantics,
    encryption-key metadata, and version-specific fields.
-5. Support v1-to-v2 and v2-to-v3 upgrades as explicit transitions. Validate the
-   source before applying transition rules and validate the result under the target
-   version. Reject downgrades, skipped transitions, and any upgrade that would lose
-   active metadata semantics.
+5. Support any explicit higher supported target, including direct v1-to-v3.
+   Expand direct upgrades into v1-to-v2 and v2-to-v3 internal transitions; validate
+   the source and preserve each intermediate version's rules before validating
+   the result under the target version. Reject downgrades, unsupported targets,
+   and any upgrade that would lose active metadata semantics.
 6. Classify a failed requirement, stale generation, name/lifecycle fence, duplicate
    create, unsupported operation, malformed metadata, and head CAS loss into their
    precise REST conflict or validation response. A CAS loser never retries against
@@ -89,9 +90,10 @@ conflicts, idempotency, and crash recovery without a table-wide lock.
   variants, when evaluated against reference fixtures, assert supported results
   match the spec and unknown or disabled input fails before candidate publication.
   Invariant: COMMIT-I3. Unit test.
-- Given valid and invalid v1-to-v2 and v2-to-v3 upgrades, when committed, assert all
+- Given valid and invalid v1-to-v2, v2-to-v3 and direct v1-to-v3 upgrades, when committed, assert all
   transition defaults and inheritance rules are applied, invalid or lossy upgrades
-  fail, and downgrade or skipped-version requests do not mutate the head. Invariant:
+  fail, direct upgrades apply both internal transitions, and downgrade or unsupported-version
+  requests do not mutate the head. Invariant:
   COMMIT-I3. Integration test.
 - Given crashes at every create, staged-create, candidate-write, operation-phase,
   and head-CAS boundary, when another server resumes with the same request identity,

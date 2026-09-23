@@ -16,6 +16,48 @@ mod root;
 mod schemas;
 mod snapshots;
 
+pub(crate) fn validate_schema_definition(
+    schema: &Value,
+    version: crate::manifest::ManifestVersion,
+    mut work: usize,
+) -> Result<(), TableMetadataError> {
+    defaults::validate(schema, version, &mut work)
+}
+
+pub(crate) fn schema_default_identity(
+    schema: &Value,
+    value: &Value,
+    version: crate::manifest::ManifestVersion,
+) -> Result<String, TableMetadataError> {
+    defaults::identity(schema, value, version, &mut 1_000_000)
+}
+
+pub(crate) fn validate_layout_definitions(
+    root: &Value,
+    schema: &crate::manifest::ManifestContext,
+    limits: TableMetadataLimits,
+) -> Result<(), TableMetadataError> {
+    layout::validate(root, schema, limits)
+}
+
+pub(crate) fn validate_metadata_payloads(
+    root: &Value,
+    head: &TableHead,
+    limits: TableMetadataLimits,
+) -> Result<(), TableMetadataError> {
+    let envelope = root::validate(root, head, limits)?;
+    snapshots::parse(root, head, &envelope, limits)?;
+    auxiliary::validate(root, head, limits)
+}
+
+pub(crate) fn validate_auxiliary_definition(
+    root: &Value,
+    head: &TableHead,
+    limits: TableMetadataLimits,
+) -> Result<(), TableMetadataError> {
+    auxiliary::validate(root, head, limits)
+}
+
 pub use snapshots::TableSnapshot;
 
 #[derive(Clone, Copy, Debug)]
@@ -28,7 +70,7 @@ pub struct TableMetadataLimits {
 }
 
 impl TableMetadataLimits {
-    fn validate(self) -> Result<(), TableMetadataError> {
+    pub(crate) fn validate(self) -> Result<(), TableMetadataError> {
         if self.bytes == 0
             || self.bytes > 64 * 1024 * 1024
             || self.values == 0
