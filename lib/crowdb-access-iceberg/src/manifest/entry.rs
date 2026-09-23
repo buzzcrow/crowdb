@@ -5,7 +5,7 @@ use crate::file::{
 
 use super::{
     InheritedEntry, ManifestContent, ManifestEntry, ManifestInheritance, ManifestInheritanceError,
-    ManifestVersion,
+    ManifestListEntry, ManifestMetadata, ManifestVersion,
 };
 
 mod decode;
@@ -64,6 +64,32 @@ pub struct ManifestEntryState {
 }
 
 impl ManifestEntryState {
+    /// Binds manifest header properties to the containing manifest-list entry.
+    /// # Errors
+    /// Rejects content, partition-spec or table mismatches before reading entries.
+    pub fn from_list(
+        metadata: ManifestMetadata<'_>,
+        list: &ManifestListEntry,
+        table: TableLocation,
+    ) -> Result<Self, ManifestEntryError> {
+        if list.location.table() != table
+            || list.content != metadata.content
+            || metadata
+                .partition_spec_id
+                .is_some_and(|id| id != list.partition_spec_id)
+        {
+            return Err(ManifestEntryError::Field);
+        }
+        Self::new(
+            metadata.version,
+            table,
+            metadata.content,
+            list.added_snapshot_id,
+            list.sequence,
+            list.first_row_id,
+        )
+    }
+
     /// Keeps inheritance across decoded blocks; version belongs to the manifest writer.
     /// # Errors
     /// Rejects invalid inheritance sources or content/version combinations.

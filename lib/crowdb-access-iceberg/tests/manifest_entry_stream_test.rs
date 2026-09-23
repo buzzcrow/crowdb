@@ -139,12 +139,13 @@ async fn manifest_inheritance_survives_leaf_and_avro_block_boundaries_for_each_w
             let metadata = ManifestMetadata::parse(reader.metadata()).unwrap();
             assert_eq!(metadata.version, version);
             assert_eq!(metadata.content, ManifestContent::Data);
+            let writer_version = metadata.version;
             let mut state =
-                ManifestEntryState::new(metadata.version, table(), metadata.content, 50, 9, Some(100))
-                    .unwrap();
+                ManifestEntryState::new(writer_version, table(), metadata.content, 50, 9, Some(100)).unwrap();
             for first in [100, 110] {
                 let block = reader.next().await.unwrap().unwrap();
-                let projection = ManifestEntryProjection::new(reader.schema(), version, table()).unwrap();
+                let projection =
+                    ManifestEntryProjection::new(reader.schema(), writer_version, table()).unwrap();
                 let mut records = projection
                     .records(&block.bytes, block.records, limits(), &mut state)
                     .unwrap();

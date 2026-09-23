@@ -331,7 +331,13 @@ the landed storage primitives. The broader ordering is in
   partition-spec JSON roots. It rejects mismatched schema IDs. The existing
   chunk-backed, two-block stream fixture now carries and parses real OCF manifest
   properties before constructing inheritance state. Table schema/spec membership,
-  nested JSON semantics and list-to-manifest consistency still need table context.
+  nested JSON semantics and full list-to-manifest consistency remain.
+- [x] **List/header inheritance context**: `ManifestEntryState::from_list` checks
+  same-table location, content and available partition-spec ID before using the
+  list's snapshot, sequence and row-ID sources. A v1 manifest can still use a
+  newer enclosing list; missing optional v1 spec ID cannot be compared. Exact
+  list location/length to opened file identity and table schema/spec membership
+  remain for full cross-file validation.
 - [ ] **Remaining collections and manifest metadata**: scalar projection does not yet
   expose metrics maps, partition tuples or partition summaries.
   Extend bounded traversal only as needed; do not deserialize full datum graphs.
@@ -408,7 +414,7 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 234 tests. `pixi run rs-lint` and
+  passes 235 tests. `pixi run rs-lint` and
   `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
   and test code only; the previously recorded native E2E run is not a new run.
 - Start the next change with focused `--test avro_nested_projection_test`,
