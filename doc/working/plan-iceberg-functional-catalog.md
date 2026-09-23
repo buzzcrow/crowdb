@@ -460,6 +460,17 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      final current schema. Seven transition tests cover this checkpoint. The
      legacy counter fixture now retains spec 0 instead of changing its meaning
      during an upgrade. No commit endpoint or publication path is enabled.
+     Generation-context checkpoint: `TableMetadataDocument::manifest_context`
+     selects retained schema/spec IDs from that document, binds the actual pair,
+     and optionally attaches bounded retained schema history for dropped-column
+     metrics. Lookup and nested reconstruction share an explicit work budget.
+     Current schema is never substituted for a requested historical schema;
+     missing history fails closed rather than trusting uploaded Avro headers.
+     Three tests cover historical partition sources, incompatible pairs, v1
+     implicit IDs, missing history and count/work limits. This is the context
+     factory only: canonical file resolution, reused-manifest provenance after
+     schema expiration, complete snapshot validation and publication fencing
+     remain to be composed by the evaluator/source layer.
      Keep `TableMetadataDocument` explicitly documented as a partial validation
      result, not a publishable generation or a REST capability. No endpoint is
      advertised by this checkpoint. Files: `src/table/metadata.rs`, its children,

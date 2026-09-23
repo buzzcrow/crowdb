@@ -7,6 +7,7 @@ use super::{SelectedTable, TableHead};
 use crate::file::{ContentFormat, FileBlockStore, FileIoError, FileKind, FileReader};
 
 mod auxiliary;
+mod context;
 mod defaults;
 mod json;
 mod layout;
