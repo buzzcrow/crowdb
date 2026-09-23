@@ -267,6 +267,12 @@ allowing later entries in the page to progress. A separate outer budget bounds t
 whole page and context/scan work. Global admission and FileIO HTTP integration remain
 separate.
 
+Multipart part listing uses one upload-scoped scan with at most 256 records per
+page. Numeric markers preserve gaps and resume strictly after the returned part
+number. Current-session checks bracket each scan; concurrent mutations invalidate
+the page rather than mixing pending counters with old part records. Expired or
+terminal sessions and malformed storage pages are not reported as successful lists.
+
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner
 bounds nesting and verifies raw UTF-8 before parser scratch can grow. Admission

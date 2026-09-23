@@ -24,7 +24,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   authoritative context checks fence retired catalog access. Four fault/concurrency
   tests cover lost stage/publication replies, collisions and corrupt bindings.
   Files: file repository, shared context helper and repository tests.
-- [~] **Seal and publication**: validate complete input and fixed-size hints;
+- [ ] **Seal and publication**: validate complete input and fixed-size hints;
   select inline only for eligible metadata within 16-KiB stored/64-KiB compression
   limits. Publish exact-location bindings conditionally, retaining losing uploads
   for future reclamation. Files: file repository/writer and fault tests.
@@ -80,7 +80,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   and multipart subresources, decodes percent escapes once and rejects duplicate
   parameters, path escape, ordinary buckets and file DELETE. Four parser tests
   pass; it is not yet attached to a public listener or durable multipart driver.
-- [ ] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
+- [~] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
   recover completion, duplicate uploads and logical abort without physical delete.
   Files: file multipart modules, record schema and crash/restart tests.
   Resumable writer foundations persist a bounded frontier in a chunk and return
@@ -147,6 +147,13 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Five publication tests cover all five lost-write boundaries, restart replay,
   equal/different locations, abort races, corrupt intent and lost conflict replies.
   This does not infer HTTP file kind or replace canonical format validation.
+  Native part listing now reads one upload-scoped storage page of at most 256
+  records, using numeric part markers and preserving gaps. A requested maximum up
+  to 1000 may return a smaller truncated page. Session checks bracket the scan;
+  pending mutations, expiry, terminal phases, stale snapshots and corruption fail
+  closed rather than returning mixed part state. Five tests cover pagination,
+  independent limits, adjacent uploads and a session mutation during the scan.
+  S3 XML response encoding and per-part LastModified capture remain HTTP work.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,

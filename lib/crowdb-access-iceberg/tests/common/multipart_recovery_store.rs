@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use crowdb_access_iceberg::catalog::StoreError;
-use crowdb_access_iceberg::file::{MultipartRecoveryScan, MultipartRecoveryStore};
-use crowdb_chunk_kv_client::{MultiScanContinuation, MultiScanPage};
+use crowdb_access_iceberg::file::{
+    MultipartPartScan, MultipartPartStore, MultipartRecoveryScan, MultipartRecoveryStore,
+};
+use crowdb_chunk_kv_client::{MultiScanContinuation, MultiScanPage, MultiScanRequest};
 use crowdb_protocol::chunk_kv::RpcValue;
 
 use crate::common::TestStore;
@@ -12,7 +14,19 @@ impl MultipartRecoveryStore for TestStore {
         &self,
         scan: MultipartRecoveryScan,
     ) -> Result<MultiScanPage, StoreError> {
-        let request = scan.request()?;
+        Ok(self.multipart_scan_page(scan.request()?))
+    }
+}
+
+#[async_trait]
+impl MultipartPartStore for TestStore {
+    async fn scan_multipart_parts(&self, scan: MultipartPartScan) -> Result<MultiScanPage, StoreError> {
+        Ok(self.multipart_scan_page(scan.request()?))
+    }
+}
+
+impl TestStore {
+    fn multipart_scan_page(&self, request: MultiScanRequest) -> MultiScanPage {
         let snapshot = self.values.load_full();
         let mut candidates = snapshot.iter().filter(|(key, _)| {
             *key >= request.start.as_ref().unwrap()
@@ -38,10 +52,10 @@ impl MultipartRecoveryStore for TestStore {
             last_key: items.last().unwrap().key.clone(),
             catalog_generation: 1,
         });
-        Ok(MultiScanPage {
+        MultiScanPage {
             items,
             continuation,
             terminal_failure: None,
-        })
+        }
     }
 }
