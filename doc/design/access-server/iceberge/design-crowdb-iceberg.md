@@ -220,6 +220,9 @@ coverage. SHA-256 compression uses RustCrypto; versioned digest checkpoints reta
 only chaining state, byte length and a partial block. They are trusted-storage
 recovery records, not client authentication assertions. Failed checkpoint writes
 poison the current writer without invalidating earlier durable checkpoints.
+Staged-tree readers validate physical roots, byte lengths and digests without
+assigning a semantic file kind or declaring an incomplete multipart fragment to
+be a valid complete-format file. Published-file reads retain record validation.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

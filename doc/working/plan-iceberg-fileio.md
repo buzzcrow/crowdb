@@ -97,6 +97,9 @@ integration. Independent FileIO work proceeds under the approved ordering.
   session/part authority codecs; serialize admission and part replacement through
   durable CAS journals; freeze bounded completion pages; checkpoint completion
   progress by byte budget; recover abandoned sessions without physical deletion.
+  Staged-tree reads now validate physical identity/bytes without constructing a
+  fictitious complete-file format record. Two tests cover multipart fragments,
+  ranges, wrong owners, empty digests and invalid bounds.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,

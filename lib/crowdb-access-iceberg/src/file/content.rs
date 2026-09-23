@@ -53,6 +53,26 @@ pub enum FileContent {
 }
 
 impl FileContent {
+    pub(crate) fn validate(&self, length: u64, digest: &[u8; 32]) -> Result<(), ValidationError> {
+        match self {
+            Self::Inline { .. } => {
+                self.inline_bytes(length, digest)?;
+            }
+            Self::Chunks { root: None } if length == 0 && *digest == <[u8; 32]>::from(Sha256::digest([])) => {
+            }
+            Self::Chunks { root: None } => return Err(ValidationError::Record),
+            Self::Chunks { root: Some(root) } => {
+                root.validate()?;
+                if length == 0
+                    || (root.height == 0 && (root.logical_length != length || root.digest != *digest))
+                {
+                    return Err(ValidationError::Record);
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn select_inline(kind: FileKind, input: &[u8]) -> Option<Self> {
         if !kind.allows_inline() || input.len() > MAX_COMPRESSION_INPUT_BYTES {

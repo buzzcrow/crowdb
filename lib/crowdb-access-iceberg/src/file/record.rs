@@ -1,6 +1,5 @@
 use crate::error::ValidationError;
 use crate::key::FileId;
-use sha2::{Digest, Sha256};
 
 use super::{FileContent, FileLocation};
 
@@ -71,26 +70,10 @@ impl FileRecord {
         if !valid_format {
             return Err(ValidationError::Record);
         }
-        match &self.content {
-            FileContent::Inline { .. } if self.kind.allows_inline() => {
-                self.content.inline_bytes(self.length, &self.digest)?;
-            }
-            FileContent::Chunks { root: None }
-                if self.length == 0 && self.digest == <[u8; 32]>::from(Sha256::digest([])) => {}
-            FileContent::Inline { .. } | FileContent::Chunks { root: None } => {
-                return Err(ValidationError::Record);
-            }
-            FileContent::Chunks { root: Some(root) } => {
-                root.validate()?;
-                if self.length == 0
-                    || (root.height == 0
-                        && (root.logical_length != self.length || root.digest != self.digest))
-                {
-                    return Err(ValidationError::Record);
-                }
-            }
+        if matches!(self.content, FileContent::Inline { .. }) && !self.kind.allows_inline() {
+            return Err(ValidationError::Record);
         }
-        Ok(())
+        self.content.validate(self.length, &self.digest)
     }
 
     #[must_use]

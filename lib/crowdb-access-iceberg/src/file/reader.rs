@@ -5,19 +5,28 @@ use sha2::{Digest, Sha256};
 use crate::error::ValidationError;
 
 use super::blocks::verify_block;
-use super::{ByteRange, ChunkDirectory, FileBlockStore, FileContent, FileIdentity, FileIoError, FileRecord};
+use super::{
+    ByteRange, ChunkDirectory, FileBlockStore, FileContent, FileIdentity, FileIoError, FileRecord, FileTree,
+};
 
 pub const MAX_READ_FRAME_BYTES: usize = 64 * 1024;
 
 pub struct FileReader {
     store: Arc<dyn FileBlockStore>,
-    record: FileRecord,
+    record: ReadSource,
     cursor: u64,
     end: u64,
     frame_bytes: usize,
     cached: Option<(u64, Vec<u8>)>,
     digest: Option<Sha256>,
     failed: bool,
+}
+
+struct ReadSource {
+    owner: FileIdentity,
+    length: u64,
+    digest: [u8; 32],
+    content: FileContent,
 }
 
 impl FileReader {
@@ -30,6 +39,44 @@ impl FileReader {
         frame_bytes: usize,
     ) -> Result<Self, FileIoError> {
         record.validate()?;
+        let source = ReadSource {
+            owner: FileIdentity {
+                table: record.location.table(),
+                file: record.file,
+            },
+            length: record.length,
+            digest: record.digest,
+            content: record.content,
+        };
+        Self::from_source(store, source, range, frame_bytes)
+    }
+
+    /// Reads staged bytes without pretending that an incomplete part has a file format.
+    /// # Errors
+    /// Rejects invalid physical trees, ranges and frame bounds; no publication is implied.
+    pub fn from_tree(
+        store: Arc<dyn FileBlockStore>,
+        owner: FileIdentity,
+        tree: FileTree,
+        range: Option<ByteRange>,
+        frame_bytes: usize,
+    ) -> Result<Self, FileIoError> {
+        let source = ReadSource {
+            owner,
+            length: tree.length,
+            digest: tree.digest,
+            content: FileContent::Chunks { root: tree.root },
+        };
+        source.content.validate(source.length, &source.digest)?;
+        Self::from_source(store, source, range, frame_bytes)
+    }
+
+    fn from_source(
+        store: Arc<dyn FileBlockStore>,
+        record: ReadSource,
+        range: Option<ByteRange>,
+        frame_bytes: usize,
+    ) -> Result<Self, FileIoError> {
         let range = range.unwrap_or(ByteRange {
             start: 0,
             end: record.length,
@@ -110,10 +157,7 @@ impl FileReader {
         let mut root = root.clone();
         let mut start = 0;
         let mut length = self.record.length;
-        let owner = FileIdentity {
-            table: self.record.location.table(),
-            file: self.record.file,
-        };
+        let owner = self.record.owner;
         while root.height > 0 {
             let bytes = self.store.read(&root).await?;
             verify_block(&root, &bytes)?;
