@@ -1,6 +1,6 @@
 use flate2::{Decompress, FlushDecompress, Status};
 
-use super::{AvroBlock, AvroContainerError};
+use super::{AvroBlock, AvroContainerError, AvroDatumLimits, AvroSchema};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AvroCodec {
@@ -21,6 +21,22 @@ impl AvroCodec {
 }
 
 impl AvroBlock {
+    /// Decodes and validates every writer-schema datum without materializing record values.
+    /// # Errors
+    /// Rejects codec failures, malformed records, excessive work and trailing bytes.
+    pub fn decode_validated(
+        self,
+        codec: AvroCodec,
+        max_decoded_bytes: usize,
+        schema: &AvroSchema,
+        limits: AvroDatumLimits,
+    ) -> Result<Vec<u8>, AvroContainerError> {
+        let records = self.records;
+        let bytes = self.decode(codec, max_decoded_bytes)?;
+        schema.validate_block(&bytes, records, limits)?;
+        Ok(bytes)
+    }
+
     /// Decodes at most one bounded block; this does not validate record semantics.
     /// # Errors
     /// Rejects expansion beyond the independent output cap, truncation and suffixes.

@@ -89,7 +89,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   and multipart subresources, decodes percent escapes once and rejects duplicate
   parameters, path escape, ordinary buckets and file DELETE. Four parser tests
   pass; it is not yet attached to a public listener or durable multipart driver.
-- [~] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
+- [ ] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
   recover completion, duplicate uploads and logical abort without physical delete.
   Files: file multipart modules, record schema and crash/restart tests.
   Resumable writer foundations persist a bounded frontier in a chunk and return
@@ -174,7 +174,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   physical orphans remains the separate R177 trial-policy decision.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
-- [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
+- [~] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
   deletion vectors and fixed-size Parquet/ORC/Avro/Puffin hints. Files: format
   validation/probing and streaming fixtures.
   Canonical Parquet and Puffin framing probes now derive bounded footer locations
@@ -189,7 +189,15 @@ integration. Independent FileIO work proceeds under the approved ordering.
   and sized negative metadata maps, sync markers, overflow and cancelled readers
   are checked across leaf boundaries. Null and raw-deflate codecs now enforce an
   independent decoded-byte cap and reject truncated or concatenated streams.
-  Schema resolution, optional codecs and manifest v1/v2/v3 validation remain.
+  Writer-schema binary layouts now compile to bounded graphs with named recursive
+  references. Decoded validation checks primitive widths/UTF-8, unions, enum indexes,
+  exact collection byte counts and complete block consumption without retaining
+  datum graphs. Independent schema-byte/node/edge and datum-depth/work limits reject
+  even zero-byte recursive or huge null collections. Six layout tests pass.
+  `AvroRecords` compiles the container's own schema once and validates one decoded
+  block per pull; two integration tests verify corruption, bounds and cancellation.
+  Reader-schema resolution, logical/manifest field semantics and optional codecs
+  remain separate; this does not advertise complete manifest v1/v2/v3 validation.
   A constant-state manifest inheritance resolver now handles v1 zero sequences,
   added-only sequence inheritance, explicit ages, upgraded existing-file row IDs,
   data/delete separation and checked row-ID advancement. Five semantic tests pass.
@@ -215,7 +223,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 195 library tests pass, covering namespace, file records, range/streaming,
+- 203 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass

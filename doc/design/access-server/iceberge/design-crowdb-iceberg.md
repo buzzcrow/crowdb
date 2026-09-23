@@ -295,6 +295,14 @@ bounds nesting and verifies raw UTF-8 before parser scratch can grow. Admission
 caps blocking workers; cancellation keeps its permit until the worker exits.
 This structural check does not replace Iceberg schema or commit validation.
 
+Avro writer-schema binary layouts compile to bounded named-reference graphs.
+Decoded block validation checks datum widths, UTF-8, collection byte counts,
+union/enum indexes and exact record consumption without retaining datum graphs.
+Independent graph, recursion and visited-value limits also bound zero-byte values.
+The record reader compiles its container's schema once, decodes one bounded block
+per pull and permanently stops after failure or cancelled reads. Reader-schema
+resolution and Iceberg logical/manifest semantics remain separate checks.
+
 Parquet and Puffin container probes derive footer ranges from canonical framing,
 ignoring stored hints even when those hints happen to be in bounds. Their reads
 retain one bounded leaf and only fixed-size framing bytes, independent of the

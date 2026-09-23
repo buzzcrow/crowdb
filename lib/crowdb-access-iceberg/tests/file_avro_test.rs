@@ -5,12 +5,20 @@ use std::sync::{atomic::Ordering, Arc};
 
 use blocks::TestBlocks;
 use crowdb_access_iceberg::file::{
-    AvroBlocks, AvroContainerError, AvroLimits, ContentFormat, FileContent, FileIdentity, FileKind,
-    FileRecord, FileTreeWriter, TableLocation,
+    AvroBlocks, AvroContainerError, AvroDatumLimits, AvroLimits, AvroRecords, ContentFormat, FileContent,
+    FileIdentity, FileKind, FileRecord, FileTreeWriter, TableLocation,
 };
 use crowdb_access_iceberg::key::{CatalogId, FileId, TableId};
 
 const SYNC: [u8; 16] = [42; 16];
+
+fn datum_limits() -> AvroDatumLimits {
+    AvroDatumLimits {
+        depth: 16,
+        values: 100,
+        value_bytes: 1024,
+    }
+}
 
 fn limits() -> AvroLimits {
     AvroLimits {
@@ -221,6 +229,61 @@ async fn cancelled_avro_block_read_cannot_resume_at_a_partial_record_boundary() 
     block(&mut bytes, 1, &[2; 100]);
     let record = record(store.clone(), &bytes).await;
     let mut reader = AvroBlocks::open(store.clone(), record, limits()).await.unwrap();
+    store.pause_reads.store(true, Ordering::SeqCst);
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::select! {
+            result = reader.next() => panic!("read unexpectedly completed: {result:?}"),
+            () = store.read_entered.notified() => {}
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(reader.next().await, Err(AvroContainerError::Failed)));
+}
+
+#[tokio::test]
+async fn container_record_reader_validates_its_own_writer_schema_and_stops_after_corrupt_data() {
+    let store = Arc::new(TestBlocks::default());
+    let mut bytes = header(false);
+    block(&mut bytes, 2, &[2, 4]);
+    block(&mut bytes, 1, &[2, 4]);
+    let record = record(store.clone(), &bytes).await;
+    let mut reader = AvroRecords::open(store.clone(), record, limits(), datum_limits(), 1024)
+        .await
+        .unwrap();
+    assert_eq!(reader.metadata()["avro.schema"], br#""long""#);
+    assert_eq!(reader.header_hint().offset, 0);
+    let first = reader.next().await.unwrap().unwrap();
+    assert_eq!(first.records, 2);
+    assert_eq!(first.bytes, [2, 4]);
+    let reads = store.reads.load(Ordering::SeqCst);
+    tokio::task::yield_now().await;
+    assert_eq!(store.reads.load(Ordering::SeqCst), reads);
+    assert!(matches!(reader.next().await, Err(AvroContainerError::Schema)));
+    assert!(matches!(reader.next().await, Err(AvroContainerError::Failed)));
+}
+
+#[tokio::test]
+async fn container_record_reader_rejects_bad_schema_limits_and_cancelled_partial_blocks() {
+    let store = Arc::new(TestBlocks::default());
+    let mut invalid = header(false);
+    let schema = invalid.windows(4).position(|bytes| bytes == b"long").unwrap();
+    invalid[schema..schema + 4].copy_from_slice(b"oops");
+    let invalid = record(store.clone(), &invalid).await;
+    assert!(matches!(
+        AvroRecords::open(store.clone(), invalid, limits(), datum_limits(), 1024).await,
+        Err(AvroContainerError::Schema)
+    ));
+    let mut bytes = header(false);
+    block(&mut bytes, 100, &[2; 100]);
+    let record = record(store.clone(), &bytes).await;
+    assert!(matches!(
+        AvroRecords::open(store.clone(), record.clone(), limits(), datum_limits(), 0).await,
+        Err(AvroContainerError::Bounds)
+    ));
+    let mut reader = AvroRecords::open(store.clone(), record, limits(), datum_limits(), 1024)
+        .await
+        .unwrap();
     store.pause_reads.store(true, Ordering::SeqCst);
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         tokio::select! {

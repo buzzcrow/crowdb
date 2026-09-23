@@ -5,8 +5,12 @@ use super::{ContentFormat, FileBlockStore, FileIoError, FileReader, FileRecord, 
 
 mod codec;
 mod input;
+mod records;
+mod schema;
 pub use codec::AvroCodec;
 use input::Input;
+pub use records::{AvroDecodedBlock, AvroRecords};
+pub use schema::{AvroDatumLimits, AvroSchema};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AvroContainerError {
@@ -20,6 +24,8 @@ pub enum AvroContainerError {
     Failed,
     #[error("unsupported Avro compression codec")]
     Codec,
+    #[error("invalid Avro writer schema or binary datum")]
+    Schema,
 }
 
 #[derive(Clone, Copy, Debug)]
