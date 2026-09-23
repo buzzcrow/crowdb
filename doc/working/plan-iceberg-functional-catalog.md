@@ -279,7 +279,32 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      not a schema/delete/page-validation proof. Three tests cover all content kinds,
      incompatible prebound kinds, no-I/O descriptor rejection and false row counts.
      Full selected schema and delete validation remains pending.
+     Combined checkpoint: `pixi run -- cargo test -p crowdb-access-iceberg
+     --all-targets`, `pixi run rs-fmt-check` and `pixi run rs-lint` pass. These are
+     library gates; no production table API or new server acceptance is claimed.
+     Next dependency-ordered slices within this task:
+     - Bind physical field IDs and nesting to trusted historical schema contexts;
+       retain schema evolution/read compatibility rather than requiring every
+       current required column in an older file. Name mapping and defaults need
+       selected table metadata, not assumptions based on the current manifest.
+     - Validate logical/physical mappings and promotions against pinned Iceberg
+       rules and official Java `ParquetSchemaUtil`/`TypeToMessageType`, including
+       legacy annotations and accepted list encodings. Distinguish native writer
+       requirements from compatible reader behavior.
+     - Validate equality-delete columns and reserved position-delete columns;
+       then implement bounded body checks needed for delete targets/positions.
+       Variant shredding and spatial mappings need their own format fixtures.
+     - Connect the resulting validation to full selected snapshot traversal;
+       a standalone metadata-returning function must not become a commit proof.
   4. Canonical ORC equivalent checks with bounded decoding.
+     Consult the current
+     [ORC protobuf](https://github.com/apache/orc-format/blob/main/src/main/proto/orc/proto/orc_proto.proto)
+     alongside pinned Iceberg ORC mapping and official writer/reader code. The
+     specification website's Footer field 11 differs from the current protobuf
+     (`calendar`); do not copy that example as the wire authority. Bound encoded
+     bytes, decoded bytes, protobuf work, type depth/count and stripe count
+     independently. Compression framing uses independent three-byte chunks;
+     codec/column encryption support must be explicit, not silently ignored.
   5. Bind complete snapshot enumeration, actual file row counts and DV validation.
   6. Bounded TableHead/name mappings and generation-qualified repository.
   7. Full v1/v2/v3 table metadata validation, preserving original JSON.
