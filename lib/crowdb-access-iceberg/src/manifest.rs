@@ -31,8 +31,8 @@ pub use snapshot_reader::{
     SnapshotManifestSummary,
 };
 pub use snapshot_validation::{
-    validate_snapshot_files, SnapshotFileLimits, SnapshotFileSource, SnapshotFileSummary,
-    SnapshotValidationError, SnapshotValidationInput,
+    validate_snapshot_delete_preservation, validate_snapshot_files, SnapshotFileLimits, SnapshotFileSource,
+    SnapshotFileSummary, SnapshotValidationError, SnapshotValidationInput,
 };
 pub use summary::PartitionSummary;
 

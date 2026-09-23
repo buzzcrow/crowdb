@@ -1,4 +1,4 @@
-use super::{input::Input, DeletionVectorError};
+use super::{input::Input, positions, DeletionVectorError};
 
 mod containers;
 
@@ -14,7 +14,11 @@ struct Container {
     offset: Option<u32>,
 }
 
-pub(super) async fn validate(input: &mut Input) -> Result<BitmapStats, DeletionVectorError> {
+pub(super) async fn validate(
+    input: &mut Input,
+    prefix: u64,
+    positions: &mut Option<positions::Collector>,
+) -> Result<BitmapStats, DeletionVectorError> {
     let start = input.position;
     let containers = header(input).await?;
     let mut stats = BitmapStats {
@@ -28,12 +32,13 @@ pub(super) async fn validate(input: &mut Input) -> Result<BitmapStats, DeletionV
         {
             return Err(DeletionVectorError::Invalid);
         }
+        let base = prefix | (u64::from(container.key) << 16);
         let maximum = if container.run {
-            containers::runs(input, container.cardinality).await?
+            containers::runs(input, container.cardinality, base, positions).await?
         } else if container.cardinality <= 4096 {
-            containers::array(input, container.cardinality).await?
+            containers::array(input, container.cardinality, base, positions).await?
         } else {
-            containers::bitset(input, container.cardinality).await?
+            containers::bitset(input, container.cardinality, base, positions).await?
         };
         stats.cardinality += u64::from(container.cardinality);
         stats.maximum = Some((u32::from(container.key) << 16) | u32::from(maximum));

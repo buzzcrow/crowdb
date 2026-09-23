@@ -11,7 +11,10 @@ use super::{
 };
 
 mod index;
+mod preservation;
 mod selected;
+
+pub use preservation::validate_snapshot_delete_preservation;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotValidationError {
@@ -85,7 +88,15 @@ pub async fn validate_snapshot_files(
     input: SnapshotValidationInput,
     limits: SnapshotFileLimits,
 ) -> Result<SnapshotFileSummary, SnapshotValidationError> {
-    validate_input(&input, limits)?;
+    Ok(validate(store, &input, limits).await?.1)
+}
+
+async fn validate(
+    store: Arc<dyn FileBlockStore>,
+    input: &SnapshotValidationInput,
+    limits: SnapshotFileLimits,
+) -> Result<(index::DataIndex, SnapshotFileSummary), SnapshotValidationError> {
+    validate_input(input, limits)?;
     let mut index = index::DataIndex::new(limits);
     let mut summary = SnapshotFileSummary {
         scope: input.scope,
@@ -100,7 +111,7 @@ pub async fn validate_snapshot_files(
         vectors: 0,
         vector_bytes: 0,
     };
-    let mut reader = open(store.clone(), &input, limits).await?;
+    let mut reader = open(store.clone(), input, limits).await?;
     while let Some(entry) = reader.next_entry().await? {
         if entry.entry.status == EntryStatus::Deleted {
             continue;
@@ -110,13 +121,13 @@ pub async fn validate_snapshot_files(
                 .current_manifest()
                 .ok_or(SnapshotValidationError::Binding)?;
             index
-                .data(store.clone(), &input, entry, manifest, context, &mut summary)
+                .data(store.clone(), input, entry, manifest, context, &mut summary)
                 .await?;
         }
     }
     summary.manifests = reader.finish()?;
     drop(reader);
-    let mut reader = open(store.clone(), &input, limits).await?;
+    let mut reader = open(store.clone(), input, limits).await?;
     while let Some(entry) = reader.next_entry().await? {
         if entry.entry.status == EntryStatus::Deleted || entry.file.format != ContentFormat::Puffin {
             continue;
@@ -126,7 +137,7 @@ pub async fn validate_snapshot_files(
             .ok_or(SnapshotValidationError::Binding)?;
         selected::vector(
             store.clone(),
-            &input,
+            input,
             &mut index,
             &entry,
             context,
@@ -139,7 +150,7 @@ pub async fn validate_snapshot_files(
         return Err(SnapshotValidationError::Binding);
     }
     drop(reader);
-    let mut reader = open(store.clone(), &input, limits).await?;
+    let mut reader = open(store.clone(), input, limits).await?;
     while let Some(entry) = reader.next_entry().await? {
         if entry.entry.status == EntryStatus::Deleted
             || entry.entry.content == FileContentKind::Data
@@ -152,7 +163,7 @@ pub async fn validate_snapshot_files(
             .ok_or(SnapshotValidationError::Binding)?;
         selected::delete(
             store.clone(),
-            &input,
+            input,
             &index,
             &entry,
             context,
@@ -164,7 +175,7 @@ pub async fn validate_snapshot_files(
     if reader.finish()? != summary.manifests {
         return Err(SnapshotValidationError::Binding);
     }
-    Ok(summary)
+    Ok((index, summary))
 }
 
 async fn open(

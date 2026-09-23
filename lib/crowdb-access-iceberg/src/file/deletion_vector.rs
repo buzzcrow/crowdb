@@ -7,6 +7,9 @@ use super::{
 
 mod bitmap;
 mod input;
+mod positions;
+
+pub use positions::{read_deletion_vector_positions, DeletionVectorPositions};
 
 #[derive(Clone, Debug)]
 pub struct DeletionVectorReference {
@@ -49,6 +52,16 @@ pub async fn validate_deletion_vector(
     reference: &DeletionVectorReference,
     limits: DeletionVectorLimits,
 ) -> Result<DeletionVectorStats, DeletionVectorError> {
+    decode(store, record, reference, limits, &mut None).await
+}
+
+async fn decode(
+    store: Arc<dyn FileBlockStore>,
+    record: &FileRecord,
+    reference: &DeletionVectorReference,
+    limits: DeletionVectorLimits,
+    positions: &mut Option<positions::Collector>,
+) -> Result<DeletionVectorStats, DeletionVectorError> {
     if limits.blob_bytes < 20
         || limits.blob_bytes > u64::from(u32::MAX) + 8
         || limits.bitmaps == 0
@@ -84,7 +97,7 @@ pub async fn validate_deletion_vector(
     if input.take::<4>().await? != [0xd1, 0xd3, 0x39, 0x64] {
         return Err(DeletionVectorError::Invalid);
     }
-    let stats = bitmaps(&mut input, limits.bitmaps).await?;
+    let stats = bitmaps(&mut input, limits.bitmaps, positions).await?;
     let actual_crc = input.crc();
     let expected_crc = u32::from_be_bytes(input.take::<4>().await?);
     if input.position != reference.span.length
@@ -96,7 +109,11 @@ pub async fn validate_deletion_vector(
     Ok(stats)
 }
 
-async fn bitmaps(input: &mut input::Input, limit: u32) -> Result<DeletionVectorStats, DeletionVectorError> {
+async fn bitmaps(
+    input: &mut input::Input,
+    limit: u32,
+    positions: &mut Option<positions::Collector>,
+) -> Result<DeletionVectorStats, DeletionVectorError> {
     let count = input.u64().await?;
     if count > u64::from(limit) {
         return Err(DeletionVectorError::Bounds);
@@ -113,7 +130,7 @@ async fn bitmaps(input: &mut input::Input, limit: u32) -> Result<DeletionVectorS
             return Err(DeletionVectorError::Invalid);
         }
         previous = Some(key);
-        let bitmap = bitmap::validate(input).await?;
+        let bitmap = bitmap::validate(input, u64::from(key) << 32, positions).await?;
         stats.cardinality = stats
             .cardinality
             .checked_add(bitmap.cardinality)

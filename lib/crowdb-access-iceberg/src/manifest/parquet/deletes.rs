@@ -14,6 +14,11 @@ pub trait PositionDeleteTargets: Send + Sync {
     /// Returns a canonical row count for a data file applicable in the selected scope.
     /// None means an unselected target; old delete files may refer to removed data files.
     async fn rows(&self, location: &FileLocation) -> Result<Option<u64>, Error>;
+
+    /// Checks a validated applicable position; callbacks must not publish partial progress.
+    async fn position(&self, _location: &FileLocation, _position: u64) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +65,7 @@ pub async fn validate_parquet_position_deletes(
         },
         previous: None,
         target_rows: None,
+        target_location: None,
     };
     for group in &metadata.groups {
         let path = group
@@ -96,6 +102,7 @@ struct State {
     summary: PositionDeleteSummary,
     previous: Option<(String, u64)>,
     target_rows: Option<u64>,
+    target_location: Option<FileLocation>,
 }
 
 impl State {
@@ -128,12 +135,16 @@ impl State {
                 return Err(Error::Delete);
             }
             self.target_rows = targets.rows(&location).await?;
+            self.target_location = Some(location);
             self.summary.targets += 1;
         }
         if let Some(rows) = self.target_rows {
             if position >= rows {
                 return Err(Error::Delete);
             }
+            targets
+                .position(self.target_location.as_ref().ok_or(Error::Delete)?, position)
+                .await?;
             self.summary.applicable_rows += 1;
         }
         self.summary.rows += 1;

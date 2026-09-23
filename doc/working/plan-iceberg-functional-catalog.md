@@ -66,6 +66,20 @@ Current requested sequence (tasks 1–3):
 - [ ] **Commit file proof**: bind candidate snapshots and canonical file resolution
   to the selected generation, including reused-manifest provenance after schema
   expiration and prior-delete preservation. Structural metadata is not this proof.
+  Implemented checkpoint: bounded checksum-validated DV position ranges and
+  direct-parent snapshot DV replacement checks. Both snapshots undergo complete
+  selected-file validation; surviving data retains immutable identity, sequence
+  and partition bindings. Replacements cover prior DVs and applicable position
+  deletes, including canonical Java SDK Parquet pages; removed data may drop its
+  DV, but candidate orphan DVs fail. Aggregate candidate ranges and each prior
+  vector are independently bounded. This is not the generation-bound publication
+  proof: trusted sources, historical manifest provenance, legacy v1 enumeration,
+  equality-delete rewrites and position-delete removal without a replacement DV
+  remain to compose. Files: `file/deletion_vector/positions.rs` and
+  `manifest/snapshot_validation/preservation.rs` in `crowdb-access-iceberg`.
+  Verification: eight new focused tests cover range encodings, CRC, budgets,
+  exact-target coverage, dropped/replaced DVs, immutable identity and SDK v1/v2
+  Parquet page fixtures. Complete library tests and workspace fmt/clippy pass.
 - [ ] **Create and atomic publication**: compose durable request identity,
   namespace reservations, immutable candidate writes, one head CAS and recovery;
   cover immediate/staged create, concurrent losers and response-loss replay.

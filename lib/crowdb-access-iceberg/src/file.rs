@@ -44,8 +44,8 @@ pub use credentials::{
     FileCredentials, FileGrant, FileGrantError, FileGrantIssuer, FileOperation, FileOperations,
 };
 pub use deletion_vector::{
-    validate_deletion_vector, DeletionVectorError, DeletionVectorLimits, DeletionVectorReference,
-    DeletionVectorStats,
+    read_deletion_vector_positions, validate_deletion_vector, DeletionVectorError, DeletionVectorLimits,
+    DeletionVectorPositions, DeletionVectorReference, DeletionVectorStats,
 };
 pub use digest::FileDigest;
 pub use directory::{ChunkDirectory, ChunkEntry, FileIdentity, MAX_DIRECTORY_ENTRIES};
