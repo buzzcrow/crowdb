@@ -449,6 +449,17 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      duplicate removal IDs. Deprecated last-column/statistics snapshot fields
      must not become authority: the pinned `MetadataUpdateParser` derives these
      from nested payloads instead. Nested payload semantics remain unfinished.
+     Retained-definition checkpoint: transitions now reject mutation of an
+     existing schema/spec/order ID, including changed field names, transforms,
+     sort direction and defaults. Definition comparison charges every nested JSON
+     value before cloning, under the shared transition work limit. Legacy v1
+     schema/spec envelopes and implicit partition IDs normalize to modern forms;
+     empty identifier-ID sets and their ordering do not invent a change.
+     Removed history and new definition IDs remain legal at this layer. New-ID
+     schema evolution still needs ordered validation and is not inferred from the
+     final current schema. Seven transition tests cover this checkpoint. The
+     legacy counter fixture now retains spec 0 instead of changing its meaning
+     during an upgrade. No commit endpoint or publication path is enabled.
      Keep `TableMetadataDocument` explicitly documented as a partial validation
      result, not a publishable generation or a REST capability. No endpoint is
      advertised by this checkpoint. Files: `src/table/metadata.rs`, its children,

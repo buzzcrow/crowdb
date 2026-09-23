@@ -2,6 +2,7 @@ use serde_json::Value;
 
 use crate::table::{TableLifecycle, TableMetadataDocument, TableMetadataError as Error};
 
+mod definitions;
 mod snapshots;
 
 #[derive(Clone, Copy, Debug)]
@@ -10,7 +11,7 @@ pub struct TransitionLimits {
     pub upgrade_steps: usize,
 }
 
-/// Checks table identity, explicit version transitions, high-water marks and snapshot retention.
+/// Checks identity, explicit version transitions, high-water marks and retained definitions/snapshots.
 /// `upgrades` is the evaluator's ordered list of applied upgrade operations, not inferred history.
 /// This does not replace ordered schema/layout update checks, file validation or publication CAS.
 /// # Errors
@@ -52,6 +53,7 @@ pub fn validate_metadata_transition(
         }
     }
     let mut work = limits.entries;
+    definitions::validate(prior, candidate, &mut work)?;
     snapshots::validate(prior, candidate, &mut work)
 }
 
