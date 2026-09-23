@@ -94,6 +94,7 @@ async fn send(address: std::net::SocketAddr, method: &str, path: &str) -> (u16, 
 #[tokio::test]
 async fn namespace_reads_preserve_single_decoding_and_page_token_semantics() {
     let (store, context, address, stop, server) = setup().await;
+    assert_eq!(send(address, "GET", "/v1/namespaces/parent/tables").await.0, 406);
     for names in [&["parent"][..], &["parent", "a+b"], &["parent", "%2F"]] {
         create(store.clone(), context, names).await;
     }

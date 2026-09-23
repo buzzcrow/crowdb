@@ -93,7 +93,7 @@ async fn table_list_has_complete_and_paged_modes_with_bound_tokens() {
 }
 
 #[tokio::test]
-async fn read_routes_authenticate_reject_bad_parameters_and_do_not_advertise_unfinished_support() {
+async fn read_routes_authenticate_reject_bad_parameters_and_advertise_only_test_reads() {
     let fixture = TestTableHttp::new().await;
     fixture.install("events").await;
     for role in ["r", "w", "m", "c"] {
@@ -135,7 +135,8 @@ async fn read_routes_authenticate_reject_bad_parameters_and_do_not_advertise_unf
         .text()
         .await
         .unwrap();
-    assert!(!config.contains("/tables"));
+    assert!(config.contains("GET /v1/{prefix}/namespaces/{namespace}/tables/{table}"));
+    assert!(!config.contains("POST /v1/{prefix}/namespaces/{namespace}/tables"));
     fixture.finish().await;
 }
 

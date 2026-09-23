@@ -29,6 +29,11 @@ pub struct TestTableHttp {
 }
 
 impl TestTableHttp {
+    #[cfg(feature = "iceberg-e2e")]
+    pub fn endpoint(&self) -> String {
+        format!("http://{}", self.address)
+    }
+
     pub async fn new() -> Self {
         let store = Arc::new(TestStore::default());
         let repository = Arc::new(CatalogRepository::new(store.clone(), ClearBounds::default()).unwrap());

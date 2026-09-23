@@ -527,6 +527,22 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      clippy, production-only `--no-default-features --features iceberg` library
      check, workspace fmt and `rs-lint`. The native/full-stack E2E feature is
      intentionally separate and is not claimed by this checkpoint.
+     Official Java RESTCatalog read acceptance now passes against the same TCP
+     fixture service: page-size-one listing, HEAD existence/missing table, ALL
+     and REFS loads, repeated conditional loads, tag/main state, escaped names
+     and REFS-to-ALL snapshot hydration. A test FileIO throws on every file
+     operation, proving hydration uses REST rather than hidden file access.
+     Fixture-installed handlers advertise exactly the three implemented read
+     endpoints so the pinned SDK endpoint checks run normally. Production cannot
+     install them yet; its config remains unchanged and disabled table routes
+     return the standard unsupported response. This is official-client protocol
+     acceptance over fixture authority, not native-backend or commit E2E.
+     Files: `tests/iceberg_table_sdk_test.rs` and
+     `tests/common/iceberg_java/src/main/java/TestIcebergCatalogReads.java`.
+     Run explicitly (the Maven-dependent test is ignored by ordinary suites):
+     `pixi run -e iceberg-e2e -- bash -c 'export JAVA_HOME="$CONDA_PREFIX/lib/jvm" CROWDB_ICEBERG_E2E_MVN="$CONDA_PREFIX/bin/mvn"; pixi run -e default -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_table_sdk_test -- --ignored --nocapture'`.
+     The explicit inner `-e default` is required: the Java environment has no
+     Cargo, and an unqualified nested `pixi run` inherits that environment.
      Gates for this read/default slice: library all-target tests and final focused
      metadata/load/list tests pass, as do workspace fmt/clippy; pinned Java fixture
      generation succeeds (nonfatal existing SLF4J binding warnings only).

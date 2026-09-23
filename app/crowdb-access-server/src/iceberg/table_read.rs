@@ -256,7 +256,7 @@ fn missing_table() -> IcebergErrorResponse {
     IcebergErrorResponse::new(404, "NoSuchTableException", "Table does not exist")
 }
 
-fn unsupported() -> IcebergErrorResponse {
+pub(super) fn unsupported() -> IcebergErrorResponse {
     IcebergErrorResponse::new(
         406,
         "UnsupportedOperationException",

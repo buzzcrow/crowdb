@@ -73,7 +73,7 @@ impl IcebergHttpService {
         Ok(self)
     }
 
-    /// Installs generation-qualified reads without advertising table capabilities.
+    /// Installs and advertises only generation-qualified reads for fixture-backed tests.
     /// Runtime activation awaits complete commit validation and credential vending.
     /// # Errors
     /// Rejects invalid table-list token signing configuration.
@@ -173,15 +173,26 @@ impl IcebergHttpService {
                 .to_vec();
                 config.idempotency_key_lifetime = Some("PT24H".into());
             }
+            if self.tables.is_some() {
+                config.endpoints.extend(
+                    [
+                        "GET /v1/{prefix}/namespaces/{namespace}/tables",
+                        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                        "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                    ]
+                    .map(str::to_owned),
+                );
+            }
             return Ok(response(
                 200,
                 serde_json::to_vec(&config).map_err(|_| service_unavailable())?,
             ));
         }
         if super::table_read::TableHttp::handles(request.uri().path()) {
-            if let Some(tables) = &self.tables {
-                return tables.read(root.context, &request).await;
-            }
+            return match &self.tables {
+                Some(tables) => tables.read(root.context, &request).await,
+                None => Err(super::table_read::unsupported()),
+            };
         }
         match &self.namespaces {
             Some(namespaces) => namespaces.dispatch(root.context, principal, request).await,
