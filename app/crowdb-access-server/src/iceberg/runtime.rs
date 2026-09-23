@@ -69,7 +69,14 @@ pub async fn run() -> Result<(), BoxError> {
     }
     let (repository, store, chunks) = connect(config.management_seeds).await?;
     let result = if arguments.is_empty() || arguments == ["serve"] {
-        start_listener(&config.listen, repository, store, config.authentication).await
+        start_listener(
+            &config.listen,
+            repository,
+            store,
+            config.authentication,
+            chunks.clone(),
+        )
+        .await
     } else {
         manage(&repository, &config.authentication, &arguments).await
     };
@@ -112,6 +119,7 @@ async fn start_listener(
     repository: Arc<CatalogRepository>,
     store: Arc<RoutedCatalogStore>,
     authentication: BearerAuthenticator,
+    chunks: ChunkIoClient,
 ) -> Result<(), BoxError> {
     for _ in 0..600 {
         match repository.recover(now_ms()?).await {
@@ -140,9 +148,15 @@ async fn start_listener(
     let serving = serve(listener, service, async {
         let _ = tokio::signal::ctrl_c().await;
     });
+    let multipart = Box::pin(super::file_recovery::run(
+        repository.clone(),
+        store.clone(),
+        Arc::new(crowdb_access_iceberg::file::NativeFileBlocks::new(chunks)),
+    ));
     tokio::select! {
         result = serving => result?,
         () = super::recovery::run(repository, crowdb_access_iceberg::namespace::NamespaceRecovery::new(store)) => {}
+        () = multipart => {}
     }
     tracing::info!("Iceberg listener drained");
     Ok(())

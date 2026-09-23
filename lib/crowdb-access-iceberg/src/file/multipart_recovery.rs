@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crowdb_chunk_kv_client::{MultiScanContinuation, MultiScanPage};
 
@@ -21,6 +22,7 @@ pub struct MultipartRecovery {
     blocks: Arc<dyn FileBlockStore>,
     step_bytes: usize,
     block_bytes: usize,
+    session_timeout: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -55,7 +57,19 @@ impl MultipartRecovery {
             blocks,
             step_bytes,
             block_bytes,
+            session_timeout: None,
         })
+    }
+
+    /// Bounds each session independently so a slow first session cannot starve its page.
+    /// # Errors
+    /// Rejects zero or excessively long recovery steps.
+    pub fn with_session_timeout(mut self, timeout: Duration) -> Result<Self, ValidationError> {
+        if timeout.is_zero() || timeout > Duration::from_secs(60) {
+            return Err(ValidationError::Deadline);
+        }
+        self.session_timeout = Some(timeout);
+        Ok(self)
     }
 
     /// Performs at most one recoverable mutation or byte window per scanned session.
@@ -84,7 +98,15 @@ impl MultipartRecovery {
             failures: Vec::new(),
         };
         for session in sessions {
-            match self.recover_session(&session, now_ms).await {
+            let work = self.recover_session(&session, now_ms);
+            let outcome = if let Some(timeout) = self.session_timeout {
+                tokio::time::timeout(timeout, work)
+                    .await
+                    .unwrap_or(Ok(RecoveryAction::Deferred))
+            } else {
+                work.await
+            };
+            match outcome {
                 Ok(RecoveryAction::Progressed) => report.progressed += 1,
                 Ok(RecoveryAction::Deferred) => report.deferred += 1,
                 Ok(RecoveryAction::Retained) => report.retained += 1,

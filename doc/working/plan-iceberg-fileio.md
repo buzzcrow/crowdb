@@ -118,7 +118,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   before fencing further writes. Five tests cover insert/replacement crash points,
   competing abort, exact expiry, resource limits and retained completion evidence.
   This is not public admission: global credits, upload streaming, duplicate-part
-  HTTP responses and runtime scheduling remain to be connected.
+  HTTP responses and global admission remain to be connected.
   Completion now freezes an ordered revision/digest selection in immutable payload
   pages before a session CAS fences further part replacement. At most 10,000 entries
   occupy 420,007 encoded bytes; each work step verifies that bounded selection and
@@ -133,7 +133,12 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Finished assembly is reported as awaiting semantic sealing, not as published.
   Four sweep tests cover multi-page progress, cross-instance visits, exact expiry,
   retained bytes, invalid/foreign cursors and corrupt pages before any mutation.
-  The native scan adapter is implemented; server scheduling remains next.
+  Each native listener now runs the multipart sweep alongside namespace recovery.
+  Per-session time budgets use the persisted catalog request bound; a timed-out
+  session is deferred without preventing later entries in the same page. The
+  outer page budget bounds scans and context checks; context changes reset cursors.
+  Two additional tests verify timeout limits and that a blocked first part read
+  cannot starve a later session's expiry or persist unfinished assembly bytes.
   A caller-provided sealed record is now frozen as an immutable payload before
   the publication phase CAS. Recovery replays the exact seal through immutable
   file publication and records the selected FileId, including an existing equal
@@ -185,7 +190,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 179 library tests pass, covering namespace, file records, range/streaming,
+- 181 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass
@@ -199,6 +204,10 @@ integration. Independent FileIO work proceeds under the approved ordering.
   After Chunk-KV restart and a new chunk client, recovery completes the exact bytes
   while the file location remains unpublished. Logical abort retains that state.
   The expanded fixture passes in 35.96 seconds; Iceberg E2E-feature clippy passes.
+  The fixture also starts the actual Iceberg listener and observes it settling
+  and aborting an expired pending upload without client recovery calls. The first
+  attempt exposed a synthetic root with no management journal; initialization now
+  uses the real management repository. The expanded fixture passes in 35.92 seconds.
 - Command: `pixi run clean-env && CROWDB_RUNTIME_ROOT="$PWD/.crowdb-runtime/ephemeral/iceberg-file-storage" pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_storage_test -- --nocapture`.
 
 ## Blocked

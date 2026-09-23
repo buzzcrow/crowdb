@@ -2,18 +2,19 @@
 mod common;
 #[path = "common/iceberg_multipart.rs"]
 mod multipart;
+#[path = "common/iceberg_file_worker.rs"]
+mod worker;
 
 use std::sync::Arc;
 
 use common::TestIcebergStack;
-use crowdb_access_iceberg::catalog::{ActiveCatalogRecord, CatalogContext, CatalogStore, RootState};
+use crowdb_access_iceberg::catalog::{CatalogContext, CatalogRepository, ClearBounds, ManagementPrivilege};
 use crowdb_access_iceberg::file::{
     ByteRange, ContentFormat, FileContent, FileIdentity, FileKind, FileReader, FileRecord, FileRepository,
     FileTreeWriter, NativeFileBlocks, TableLocation,
 };
-use crowdb_access_iceberg::key::{CatalogId, FileId, IcebergKey, OperationId, SystemScope, TableId};
-use crowdb_access_iceberg::operation::mutation_identity;
-use crowdb_access_iceberg::record::StorageRecord;
+use crowdb_access_iceberg::key::{FileId, OperationId, TableId};
+use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
 
 async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
@@ -34,26 +35,27 @@ async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
     .unwrap()
 }
 
-async fn seed_root(stack: &TestIcebergStack, context: CatalogContext) {
-    let key = IcebergKey::System {
-        scope: SystemScope::ActiveRoot,
-        suffix: Vec::new(),
-    }
-    .encode()
-    .unwrap();
-    let bytes = StorageRecord::Active(ActiveCatalogRecord {
-        context,
-        operation: OperationId::random(),
-        state: RootState::Ready,
-    })
-    .encode()
-    .unwrap();
-    stack
-        .store()
-        .await
-        .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+async fn seed_root(stack: &TestIcebergStack) -> CatalogContext {
+    let repository = CatalogRepository::new(stack.store().await, ClearBounds::default()).unwrap();
+    repository
+        .execute(
+            ManagementRequest {
+                identity: RequestIdentity {
+                    operation: OperationId::random(),
+                    issued_ms: 100,
+                },
+                principal: "manager".into(),
+                action: ManagementAction::Initialize,
+                expected_epoch: 0,
+                display_name: "native-files".into(),
+                confirmation: None,
+            },
+            ManagementPrivilege::Manage,
+            100,
+        )
         .await
         .unwrap();
+    repository.status().await.unwrap().0.context
 }
 
 async fn read_all(mut reader: FileReader) -> Vec<u8> {
@@ -71,11 +73,7 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
     let mut stack = TestIcebergStack::start().await;
-    let context = CatalogContext {
-        catalog: CatalogId::random(),
-        activation_epoch: 1,
-    };
-    seed_root(&stack, context).await;
+    let context = seed_root(&stack).await;
     let owner = FileIdentity {
         table: TableLocation {
             catalog: context.catalog,
@@ -149,4 +147,5 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     client.shutdown_small_writes().await.unwrap();
     drop(client);
     multipart::verify_restart(&mut stack, context, owner.table).await;
+    worker::verify(&stack, context, owner.table).await;
 }

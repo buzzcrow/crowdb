@@ -260,7 +260,12 @@ the immutable file repository and persists the selected FileId. Equal preexistin
 bytes retain their original identity. Only a proven incompatible immutable location
 permits the terminal Conflicted phase; uncertain writes and context failures do not
 become false aborts. Canonical format validation remains the seal caller's contract.
-Global runtime admission, server scheduling and HTTP integration remain separate.
+Each native listener schedules the multipart sweep independently of namespace
+recovery. It resets its cursor when the active context changes and bounds each
+session by the persisted catalog request deadline. Timeout defers only that session,
+allowing later entries in the page to progress. A separate outer budget bounds the
+whole page and context/scan work. Global admission and FileIO HTTP integration remain
+separate.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

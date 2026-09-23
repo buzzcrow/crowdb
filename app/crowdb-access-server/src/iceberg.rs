@@ -3,6 +3,7 @@
 mod body;
 mod file_auth;
 mod file_body;
+mod file_recovery;
 mod file_request;
 mod http;
 mod namespace_read;
