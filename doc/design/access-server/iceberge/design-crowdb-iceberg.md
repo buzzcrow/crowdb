@@ -259,6 +259,11 @@ bounded authentication input and reject duplicate authentication fields. Grant
 expiry remains exact even when signature timestamps allow clock skew. Table
 credential vending, routed operation checks and streaming enforcement remain
 separate integration work; a session token alone never authenticates a request.
+The native path-style request parser preserves decoded object-key bytes and limits
+operations to immutable object reads/writes and multipart subresources. Unknown
+query operations, duplicate parameters and general buckets fail closed. HTTP
+DELETE can identify an upload abort only; it cannot identify physical file deletion.
+These request primitives are not yet attached to the public listener.
 
 Writes and reads stream through bounded CROWDB storage clients. Delegated FileIO
 access may move immutable ranges without an Access Server payload bounce, but

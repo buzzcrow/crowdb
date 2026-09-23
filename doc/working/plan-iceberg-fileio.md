@@ -76,6 +76,10 @@ integration. Independent FileIO work proceeds under the approved ordering.
   authority. Three server tests cover header and presigned requests, exact grant
   expiry, tampering, duplicate fields and byte caps. HTTP routing, streaming limit
   enforcement and credential vending through table endpoints remain unimplemented.
+  Path-style request parsing now recognizes only native exact-object operations
+  and multipart subresources, decodes percent escapes once and rejects duplicate
+  parameters, path escape, ordinary buckets and file DELETE. Four parser tests
+  pass; it is not yet attached to a public listener or durable multipart driver.
 - [ ] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
   recover completion, duplicate uploads and logical abort without physical delete.
   Files: file multipart modules, record schema and crash/restart tests.
@@ -122,8 +126,10 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 123 library tests cover namespace, file records, range/streaming, credentials
-  and streaming JSON boundaries; focused credential and JSON gates pass.
+- 142 library tests pass, covering namespace, file records, range/streaming,
+  credentials, JSON, format framing, Avro blocks/codecs and manifest inheritance.
+  Focused native request authentication, pull-body and request parsing tests pass
+  with Iceberg enabled and the general S3 listener feature disabled.
 - Native file-tree publication, full read, a range crossing leaf boundaries and
   Chunk-KV restart pass against real ChunkDB/DiskIO using the separate
   `iceberg_file_storage_test` target. This verifies storage bytes, not Parquet
