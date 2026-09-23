@@ -209,6 +209,10 @@ block completion waits for the readable chunk cursor before publishing a root.
 Pull readers retain one leaf, verify directory/leaf digests and read no future
 block until requested; full-file reads also verify the canonical digest. Range
 parsing accepts one contiguous interval and rejects multiple ranges explicitly.
+The HTTP pull-body adapter adds shared response admission and 16-KiB frames.
+Only body polling starts a storage read; cancellation drops the in-flight read
+before releasing admission. Exact remaining-byte hints track delivery, and storage
+errors terminate the body rather than returning a successful truncated stream.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

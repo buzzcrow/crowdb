@@ -58,6 +58,10 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Files: chunk shared writer/pipeline publication and small-object tests.
 - [ ] **Streaming HTTP integration**: bound response credits and cancellation
   over the native pull reader. Files: server FileIO body path.
+  A verified Hyper body adapter now emits at most 16-KiB frames, starts storage
+  reads only on body polling and holds one shared admission credit until completion
+  or cancellation. Three tests cover partial ranges, exact size hints, bounded
+  reads, errors and dropping an in-flight response. Listener routing is pending.
 - [x] **Delegation tokens**: sign bounded claims for catalog/activation epoch,
   table, principal, nonce, exact operations, expiry and separate request/file byte
   limits. Derive per-grant S3 credential material without a credential registry;
