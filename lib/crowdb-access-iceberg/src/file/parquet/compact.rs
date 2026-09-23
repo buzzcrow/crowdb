@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use super::{ParquetMetadataError as Error, ParquetMetadataLimits};
 
 pub(super) enum Value<'data> {
+    Boolean(bool),
     Integer(u8, i64),
     Bytes(&'data [u8]),
     List(u8, u8, Vec<Self>),
@@ -78,15 +79,14 @@ impl<'data> Input<'data> {
         self.remaining -= 1;
         match kind {
             1 | 2 => {
-                if !field && !matches!(self.byte()?, 1 | 2) {
-                    return Err(Error::Invalid);
+                let boolean = if field { kind } else { self.byte()? };
+                match boolean {
+                    1 => Ok(Value::Boolean(true)),
+                    2 => Ok(Value::Boolean(false)),
+                    _ => Err(Error::Invalid),
                 }
-                Ok(Value::Other)
             }
-            3 => {
-                self.take(1)?;
-                Ok(Value::Other)
-            }
+            3 => Ok(Value::Integer(3, i64::from(i8::from_ne_bytes([self.byte()?])))),
             4..=6 => {
                 let value = self.integer()?;
                 if (kind == 4 && i16::try_from(value).is_err())
@@ -172,6 +172,13 @@ impl<'data> Input<'data> {
 }
 
 impl<'data> Value<'data> {
+    pub(super) fn boolean(&self) -> Result<bool, Error> {
+        if let Self::Boolean(value) = self {
+            Ok(*value)
+        } else {
+            Err(Error::Invalid)
+        }
+    }
     pub(super) fn fields(&self) -> Result<&BTreeMap<i16, Self>, Error> {
         if let Self::Struct(fields) = self {
             Ok(fields)

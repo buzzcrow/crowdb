@@ -70,7 +70,8 @@ pub use multipart_recovery::{
 pub use multipart_repository::{MultipartRepository, MultipartWorkError};
 pub use multipart_selection::{MultipartSelection, SelectedPart};
 pub use parquet::{
-    read_parquet_metadata, ParquetMetadata, ParquetMetadataError, ParquetMetadataLimits, ParquetSchemaElement,
+    read_parquet_metadata, ParquetLogicalType, ParquetMetadata, ParquetMetadataError, ParquetMetadataLimits,
+    ParquetSchemaElement, ParquetTimeUnit,
 };
 pub use puffin::{read_puffin_metadata, PuffinBlob, PuffinMetadata, PuffinMetadataError};
 pub use range::{resolve_range, ByteRange, RangeError};

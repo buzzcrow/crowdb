@@ -5,9 +5,11 @@ use super::{
 };
 
 mod compact;
+mod logical;
 mod metadata;
 mod schema;
 
+pub use logical::{ParquetLogicalType, ParquetTimeUnit};
 pub use schema::ParquetSchemaElement;
 
 #[derive(Clone, Copy, Debug)]

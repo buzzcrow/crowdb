@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use super::{compact::Value, ParquetMetadataError as Error, ParquetMetadataLimits};
+use super::{
+    compact::Value, logical, ParquetLogicalType, ParquetMetadataError as Error, ParquetMetadataLimits,
+};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ParquetSchemaElement {
@@ -13,7 +15,7 @@ pub struct ParquetSchemaElement {
     pub converted_type: Option<i32>,
     pub scale: Option<i32>,
     pub precision: Option<i32>,
-    pub logical_type_id: Option<i16>,
+    pub logical_type: Option<ParquetLogicalType>,
 }
 
 pub(super) fn decode(
@@ -87,18 +89,7 @@ fn element(value: &Value<'_>) -> Result<ParquetSchemaElement, Error> {
     {
         return Err(Error::Invalid);
     }
-    let logical_type_id = fields
-        .get(&10)
-        .map(|value| {
-            let union = value.fields()?;
-            if union.len() != 1 {
-                return Err(Error::Invalid);
-            }
-            let (id, value) = union.first_key_value().ok_or(Error::Invalid)?;
-            value.fields()?;
-            Ok(*id)
-        })
-        .transpose()?;
+    let logical_type = fields.get(&10).map(logical::decode).transpose()?;
     Ok(ParquetSchemaElement {
         name: name.to_owned(),
         field_id: number(9)?,
@@ -109,6 +100,6 @@ fn element(value: &Value<'_>) -> Result<ParquetSchemaElement, Error> {
         converted_type: number(6)?,
         scale: number(7)?,
         precision: number(8)?,
-        logical_type_id,
+        logical_type,
     })
 }

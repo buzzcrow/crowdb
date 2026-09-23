@@ -245,8 +245,12 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      field types, duplicate Thrift fields, schema preorder/IDs, row-group column
      counts and physical types, column byte spans, and aggregate rows/byte counts.
      Reject encrypted/external metadata explicitly. This is not page decoding or
-     complete Iceberg logical-type/equality/position-delete validation; logical
-     annotation IDs are retained but their parameters are not yet interpreted.
+     complete Iceberg logical-type/equality/position-delete validation. Typed
+     logical annotations now retain decimal parameters, integer width/signedness,
+     time units/UTC flags, Variant version and spatial CRS/algorithm. Validate
+     required annotation wire types and unions; unknown annotation IDs remain
+     explicit. Physical/logical compatibility and legacy annotation agreement
+     still require separate validation.
      Evidence: Apache
      [Parquet 2.10 IDL](https://github.com/apache/parquet-format/blob/apache-parquet-format-2.10.0/src/main/thrift/parquet.thrift)
      and [Compact protocol](https://github.com/apache/thrift/blob/master/doc/specs/thrift-compact-protocol.md).
@@ -258,6 +262,10 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      Footer checkpoint: library all-target tests, seven focused footer tests,
      workspace fmt and clippy pass. Collections grow only as decoded values arrive;
      nested advertised sizes cannot multiply speculative vector reservations.
+     Annotation checkpoint: three annotation tests and seven footer tests plus
+     workspace fmt/clippy pass. Current Parquet IDL supplies Variant/spatial
+     annotations; Iceberg's pinned mapping and Java `TypeToMessageType` remain
+     the selected-use compatibility contract, not generic Parquet permissiveness.
   4. Canonical ORC equivalent checks with bounded decoding.
   5. Bind complete snapshot enumeration, actual file row counts and DV validation.
   6. Bounded TableHead/name mappings and generation-qualified repository.
