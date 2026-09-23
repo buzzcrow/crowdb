@@ -294,6 +294,24 @@ All unresolved human decisions for R179 through R184 are collected here. Continu
 independent implementation while awaiting confirmation; settled contracts and
 ordinary implementation tasks are not open questions.
 
+- **Name-mapping interoperability profile:** should selected-use admission reject
+  otherwise spec-valid mappings that the pinned Java SDK cannot index, or retain
+  their full standard semantics with an explicit Java compatibility limitation?
+  The backed-up table specification treats dots in a name as literal characters
+  and allows imported fields without IDs. The pinned SDK's
+  [MappingUtil](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/mapping/MappingUtil.java)
+  flattens nested paths with dots into unique map keys, and its ID index treats
+  repeated null IDs as duplicates. Thus a literal `a.b` alongside child `b` of
+  `a`, or multiple ID-less imported fields, can fail SDK indexing even when
+  structurally valid under the table format. The SDK-safe intersection is
+  recommended for the initial official-client profile; it needs a documented
+  input restriction, not a claim that the table specification bans those cases.
+  The alternative preserves segmented paths and optional IDs but cannot claim
+  pinned-Java compatibility for those mappings. Never flatten ambiguous paths
+  into a different field binding. Current structural metadata parsing is not
+  changed by this question; defer this selected-use mapping edge while other
+  validation, commit and read work continues.
+
 - **Direct format upgrades:** should R182 allow an explicit v1-to-v3 upgrade,
   applying both intermediate version rules internally, or retain its current
   adjacent-only contract? The pinned official

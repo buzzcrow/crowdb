@@ -543,6 +543,12 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      `pixi run -e iceberg-e2e -- bash -c 'export JAVA_HOME="$CONDA_PREFIX/lib/jvm" CROWDB_ICEBERG_E2E_MVN="$CONDA_PREFIX/bin/mvn"; pixi run -e default -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_table_sdk_test -- --ignored --nocapture'`.
      The explicit inner `-e default` is required: the Java environment has no
      Cargo, and an unqualified nested `pixi run` inherits that environment.
+     SDK read gates pass: the explicit ignored Java test, server Iceberg-feature
+     all-target tests/clippy, the SDK-feature target clippy, workspace fmt/lint.
+     Selected-use name-mapping compilation remains pending. Inspection of the
+     pinned SDK found dot-flattening and repeated-null-ID indexing limitations
+     relative to the table specification; the compatibility policy is recorded
+     in R177 rather than silently adding a restriction or changing field binding.
      Gates for this read/default slice: library all-target tests and final focused
      metadata/load/list tests pass, as do workspace fmt/clippy; pinned Java fixture
      generation succeeds (nonfatal existing SLF4J binding warnings only).
