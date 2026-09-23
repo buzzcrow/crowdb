@@ -221,6 +221,9 @@ ignoring stored hints even when those hints happen to be in bounds. Their reads
 retain one bounded leaf and only fixed-size framing bytes, independent of the
 advertised footer size. Puffin probing also checks footer-start magic and reserved
 flags. Container framing does not validate footer contents or data semantics.
+ORC probing retains at most 255 postscript bytes, checks protobuf wire framing
+and resolves footer/metadata spans without decoding stripe directories. It accepts
+legacy header-only magic and skips bounded unknown protobuf fields.
 
 Delegation tokens carry catalog activation epoch, table, principal fingerprint,
 nonce, exact operation set, issue/expiry times and independent request/file byte

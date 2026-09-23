@@ -5,8 +5,8 @@ use std::sync::{atomic::Ordering, Arc};
 
 use blocks::TestBlocks;
 use crowdb_access_iceberg::file::{
-    probe_parquet_footer, probe_puffin_footer, ContentFormat, FileContent, FileIdentity, FileKind,
-    FileRecord, FileTreeWriter, FormatHint, TableLocation,
+    probe_orc_footer, probe_parquet_footer, probe_puffin_footer, ContentFormat, FileContent, FileIdentity,
+    FileKind, FileRecord, FileTreeWriter, FormatHint, TableLocation,
 };
 use crowdb_access_iceberg::key::{CatalogId, FileId, TableId};
 
@@ -31,6 +31,85 @@ async fn record(store: Arc<TestBlocks>, bytes: &[u8], block_size: usize) -> File
         content: FileContent::Chunks { root: tree.root },
         hint: None,
     }
+}
+
+async fn orc_record(store: Arc<TestBlocks>, postscript: &[u8]) -> FileRecord {
+    let mut bytes = b"ORCmetadatafooter".to_vec();
+    bytes.extend_from_slice(postscript);
+    bytes.push(u8::try_from(postscript.len()).unwrap());
+    let mut record = record(store, &bytes, 3).await;
+    record.format = ContentFormat::Orc;
+    record
+}
+
+#[tokio::test]
+async fn orc_probe_resolves_bounded_postscript_and_ignores_unknown_fields() {
+    let store = Arc::new(TestBlocks::default());
+    let postscript = b"\x08\x06\x10\x01\x18\x80\x80\x10\x22\x02\0\x0c\x28\x08\x82\xf4\x03\x03ORC\x30\x01";
+    let mut record = orc_record(store.clone(), postscript).await;
+    record.hint = Some(FormatHint { offset: 0, length: 1 });
+    let result = probe_orc_footer(store, &record).await.unwrap();
+    assert_eq!(
+        result.footer,
+        FormatHint {
+            offset: 11,
+            length: 6
+        }
+    );
+    assert_eq!(
+        result.postscript,
+        FormatHint {
+            offset: 17,
+            length: postscript.len() as u64
+        }
+    );
+    assert_eq!(result.metadata_length, 8);
+    assert_eq!(result.compression, 1);
+    assert_eq!(result.compression_block_size, 262_144);
+}
+
+#[tokio::test]
+async fn orc_probe_rejects_malformed_varints_wire_types_magic_and_escaped_spans() {
+    let store = Arc::new(TestBlocks::default());
+    for postscript in [
+        b"".as_slice(),
+        b"\x08",
+        b"\0",
+        b"\x08\0",
+        b"\x08\x0f",
+        b"\x08\x06\x28\x09",
+        b"\x08\xff\xff\xff\xff\xff\xff\xff\xff\xff\x02",
+        b"\x08\x06\x82\xf4\x03\x03BAD",
+        b"\x0a\0",
+        b"\x08\x06\x32\xff\x7f",
+        b"\x08\x06\x31\0",
+        b"\x08\x06\x35\0",
+        b"\x08\x06\x33",
+    ] {
+        let record = orc_record(store.clone(), postscript).await;
+        assert!(
+            probe_orc_footer(store.clone(), &record).await.is_err(),
+            "{postscript:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn orc_probe_handles_legacy_header_magic_and_maximum_postscript() {
+    let store = Arc::new(TestBlocks::default());
+    let mut postscript = vec![8, 6, 50, 250, 1];
+    postscript.resize(255, 0);
+    let record = orc_record(store.clone(), &postscript).await;
+    assert_eq!(
+        probe_orc_footer(store.clone(), &record)
+            .await
+            .unwrap()
+            .postscript
+            .length,
+        255
+    );
+    let record = orc_record(store.clone(), &[8, 6]).await;
+    assert_eq!(probe_orc_footer(store, &record).await.unwrap().footer.length, 6);
 }
 
 #[tokio::test]

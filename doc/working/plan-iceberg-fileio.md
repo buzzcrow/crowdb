@@ -81,6 +81,9 @@ integration. Independent FileIO work proceeds under the approved ordering.
   without trusting stored hints or allocating advertised footer sizes. They check
   magic, signed Puffin lengths, reserved flags and cross-leaf reads. Four tests
   pass; this is not footer decoding, semantic validation or complete file sealing.
+  ORC probing reads at most 255 postscript bytes and validates protobuf framing,
+  footer/metadata spans and optional postscript magic. Three additional tests cover
+  unknown fields, legacy header magic, maximum size and malformed wire inputs.
 - [ ] **Acceptance**: official FileIO, real chunks/restarts, concurrency/lost
   responses, all boundary tests; run fmt and lint independently. No full feature
   advertisement or closure until the complete requirement passes.

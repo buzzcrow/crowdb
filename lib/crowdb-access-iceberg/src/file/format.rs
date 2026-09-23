@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use super::{ByteRange, ContentFormat, FileBlockStore, FileIoError, FileReader, FileRecord, FormatHint};
 
+mod orc;
+pub use orc::{probe_orc_footer, OrcFooter};
+
 #[derive(Debug, thiserror::Error)]
 pub enum FormatProbeError {
     #[error(transparent)]

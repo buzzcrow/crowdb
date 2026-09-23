@@ -20,7 +20,9 @@ pub use credentials::{
     FileCredentials, FileGrant, FileGrantError, FileGrantIssuer, FileOperation, FileOperations,
 };
 pub use directory::{ChunkDirectory, ChunkEntry, FileIdentity, MAX_DIRECTORY_ENTRIES};
-pub use format::{probe_parquet_footer, probe_puffin_footer, FormatProbeError, PuffinFooter};
+pub use format::{
+    probe_orc_footer, probe_parquet_footer, probe_puffin_footer, FormatProbeError, OrcFooter, PuffinFooter,
+};
 pub use json::{JsonSealError, JsonSealer};
 pub use key::{file_key, location_key};
 pub(crate) use location::validate_relative_key;
