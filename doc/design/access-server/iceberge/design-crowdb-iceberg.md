@@ -230,7 +230,9 @@ bytes, metadata count, block bytes and records per block have independent caps;
 negative map blocks must match their declared byte lengths. Sync markers and
 canonical block integrity are verified before a block returns. Errors or cancelled
 reads poison the cursor rather than resuming at an ambiguous record boundary.
-This layer does not decode compressed records or validate Iceberg manifest fields.
+Null and raw-deflate block decoding enforce an independent decoded-byte cap;
+truncated compressed data or unused suffixes fail closed. This layer does not
+resolve Avro schemas or validate Iceberg manifest fields.
 
 Delegation tokens carry catalog activation epoch, table, principal fingerprint,
 nonce, exact operation set, issue/expiry times and independent request/file byte

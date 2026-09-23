@@ -87,8 +87,9 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Avro OCF framing now pulls one encoded block at a time with independent header
   bytes, metadata entries, encoded block bytes and record-count limits. Positive
   and sized negative metadata maps, sync markers, overflow and cancelled readers
-  are checked across leaf boundaries. Schema resolution, decompression and
-  manifest v1/v2/v3 semantic validation are still pending.
+  are checked across leaf boundaries. Null and raw-deflate codecs now enforce an
+  independent decoded-byte cap and reject truncated or concatenated streams.
+  Schema resolution, optional codecs and manifest v1/v2/v3 validation remain.
 - [ ] **Acceptance**: official FileIO, real chunks/restarts, concurrency/lost
   responses, all boundary tests; run fmt and lint independently. No full feature
   advertisement or closure until the complete requirement passes.

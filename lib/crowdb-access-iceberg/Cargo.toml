@@ -21,6 +21,7 @@ crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
 crowdb-chunk-client = { path = "../crowdb-chunk-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 flatbuffers = { workspace = true }
+flate2 = { workspace = true }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

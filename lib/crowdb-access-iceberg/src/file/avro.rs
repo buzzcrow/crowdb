@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use super::{ContentFormat, FileBlockStore, FileIoError, FileReader, FileRecord, FormatHint};
 
+mod codec;
 mod input;
+pub use codec::AvroCodec;
 use input::Input;
 
 #[derive(Debug, thiserror::Error)]
@@ -16,6 +18,8 @@ pub enum AvroContainerError {
     Bounds,
     #[error("Avro container reader previously failed or was cancelled")]
     Failed,
+    #[error("unsupported Avro compression codec")]
+    Codec,
 }
 
 #[derive(Clone, Copy, Debug)]

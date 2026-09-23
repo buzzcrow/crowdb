@@ -603,6 +603,7 @@ dependencies = [
  "crowdb-protocol",
  "data-encoding",
  "flatbuffers",
+ "flate2",
  "hmac",
  "lz4_flex",
  "serde",

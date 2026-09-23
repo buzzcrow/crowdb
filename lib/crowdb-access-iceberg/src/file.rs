@@ -15,7 +15,7 @@ mod record;
 mod repository;
 mod writer;
 
-pub use avro::{AvroBlock, AvroBlocks, AvroContainerError, AvroLimits};
+pub use avro::{AvroBlock, AvroBlocks, AvroCodec, AvroContainerError, AvroLimits};
 pub use blocks::{FileBlockStore, FileIoError, NativeFileBlocks, MAX_FILE_BLOCK_BYTES};
 pub use content::{ChunkRoot, FileContent, InlineCodec, MAX_COMPRESSION_INPUT_BYTES, MAX_INLINE_BYTES};
 pub use credentials::{
