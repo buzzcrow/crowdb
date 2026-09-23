@@ -38,8 +38,12 @@ fn sized(value: &[u8], bytes: &mut Vec<u8>) {
     bytes.extend_from_slice(value);
 }
 
-async fn reader(version: ManifestVersion, deflate: bool, corrupt: bool) -> AvroRecords {
+async fn reader(version: ManifestVersion, deflate: bool, corrupt: u8) -> AvroRecords {
     let mut fixture = TestManifestEntry::new(version);
+    fixture.file.extend([
+        (109, "long-map", serde_json::json!([[3, 10]])),
+        (110, "long-map", serde_json::json!([[3, 2]])),
+    ]);
     ManifestEntryProjection::new(&fixture.schema(), version, table()).unwrap();
     let mut bytes = b"Obj\x01".to_vec();
     let mut metadata = vec![
@@ -83,8 +87,12 @@ async fn reader(version: ManifestVersion, deflate: bool, corrupt: bool) -> AvroR
     long(0, &mut bytes);
     bytes.extend([42; 16]);
     for index in 0..2 {
-        if corrupt && index == 1 {
-            fixture.set(103, serde_json::json!(-1));
+        if index == 1 {
+            match corrupt {
+                1 => fixture.set(103, serde_json::json!(-1)),
+                2 => fixture.set(110, serde_json::json!([[3, 11]])),
+                _ => {}
+            }
         }
         let mut encoded = fixture.bytes();
         if deflate {
@@ -135,7 +143,7 @@ async fn reader(version: ManifestVersion, deflate: bool, corrupt: bool) -> AvroR
 async fn manifest_inheritance_survives_leaf_and_avro_block_boundaries_for_each_writer_version() {
     for version in [ManifestVersion::V1, ManifestVersion::V2, ManifestVersion::V3] {
         for deflate in [false, true] {
-            let mut reader = reader(version, deflate, false).await;
+            let mut reader = reader(version, deflate, 0).await;
             let metadata = ManifestMetadata::parse(reader.metadata()).unwrap();
             assert_eq!(metadata.version, version);
             assert_eq!(metadata.content, ManifestContent::Data);
@@ -163,9 +171,9 @@ async fn manifest_inheritance_survives_leaf_and_avro_block_boundaries_for_each_w
 
 #[tokio::test]
 async fn a_later_binary_valid_but_semantically_bad_block_never_consumes_row_ids() {
-    for deflate in [false, true] {
+    for (deflate, corrupt) in [(false, 1), (true, 1), (false, 2), (true, 2)] {
         let version = ManifestVersion::V3;
-        let mut reader = reader(version, deflate, true).await;
+        let mut reader = reader(version, deflate, corrupt).await;
         let mut state =
             ManifestEntryState::new(version, table(), ManifestContent::Data, 50, 9, Some(100)).unwrap();
         for valid in [true, false] {

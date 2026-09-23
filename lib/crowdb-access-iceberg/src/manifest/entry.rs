@@ -9,8 +9,10 @@ use super::{
 };
 
 mod decode;
+mod metrics;
+pub use metrics::ManifestMetrics;
 
-const PATHS: [&[i32]; 16] = [
+const PATHS: [&[i32]; 22] = [
     &[0],
     &[1],
     &[3],
@@ -27,6 +29,12 @@ const PATHS: [&[i32]; 16] = [
     &[2, 145],
     &[2, 105],
     &[2, 135],
+    &[2, 108],
+    &[2, 109],
+    &[2, 110],
+    &[2, 137],
+    &[2, 125],
+    &[2, 128],
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +56,7 @@ pub struct ManifestFileFields {
     pub referenced_data_file: Option<FileLocation>,
     pub deletion_vector: Option<FormatHint>,
     pub equality_ids: Option<Vec<i32>>,
+    pub metrics: ManifestMetrics,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -127,7 +136,7 @@ pub struct ManifestEntryRecords<'projection, 'schema, 'data, 'state> {
 }
 
 impl<'schema> ManifestEntryProjection<'schema> {
-    /// Compiles scalar entry fields; partition/metrics/equality-ID semantics require separate checks.
+    /// Compiles entry fields and bounded metrics; typed table/partition semantics require context.
     /// # Errors
     /// Rejects missing required scalar fields, bad IDs and incompatible writer types.
     pub fn new(
@@ -165,6 +174,12 @@ impl<'schema> ManifestEntryProjection<'schema> {
             Long,
             Long,
             AvroScalarType::IntList,
+            AvroScalarType::LongMap,
+            AvroScalarType::LongMap,
+            AvroScalarType::LongMap,
+            AvroScalarType::LongMap,
+            AvroScalarType::BytesMap,
+            AvroScalarType::BytesMap,
         ];
         if projection
             .field_types()
@@ -176,6 +191,21 @@ impl<'schema> ManifestEntryProjection<'schema> {
         }
         if projection.field_types()[15].is_some() && projection.element_ids()[15] != Some(136) {
             return Err(ManifestEntryError::Field);
+        }
+        for (slot, ids) in [
+            (117, 118),
+            (119, 120),
+            (121, 122),
+            (138, 139),
+            (126, 127),
+            (129, 130),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if projection.field_types()[16 + slot].is_some() && projection.map_ids()[16 + slot] != Some(ids) {
+                return Err(ManifestEntryError::Field);
+            }
         }
         Ok(Self {
             projection,

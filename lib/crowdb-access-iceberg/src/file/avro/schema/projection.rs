@@ -2,8 +2,10 @@ use super::{binary::Input, AvroContainerError, AvroDatumLimits, AvroSchema, Node
 
 mod compile;
 mod int_list;
+mod metric_map;
 
 pub use int_list::AvroIntList;
+pub use metric_map::{AvroMetricMap, AvroMetricValue};
 
 #[derive(Clone, Copy)]
 pub struct AvroFieldPath<'path> {
@@ -18,6 +20,7 @@ pub enum AvroScalar<'data> {
     Long(i64),
     String(&'data str),
     IntList(AvroIntList<'data>),
+    MetricMap(AvroMetricMap<'data>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +29,8 @@ pub enum AvroScalarType {
     Long,
     String,
     IntList,
+    LongMap,
+    BytesMap,
 }
 
 pub struct AvroProjection<'schema> {
@@ -34,6 +39,7 @@ pub struct AvroProjection<'schema> {
     count: usize,
     types: Vec<Option<AvroScalarType>>,
     element_ids: Vec<Option<i32>>,
+    map_ids: Vec<Option<(i32, i32)>>,
 }
 
 struct RecordSelection {
@@ -105,6 +111,11 @@ impl<'schema> AvroProjection<'schema> {
     #[must_use]
     pub fn element_ids(&self) -> &[Option<i32>] {
         &self.element_ids
+    }
+
+    #[must_use]
+    pub fn map_ids(&self) -> &[Option<(i32, i32)>] {
+        &self.map_ids
     }
 
     /// Opens a bounded cursor; each successful pull validates every field in that record.
@@ -195,6 +206,7 @@ impl<'data> AvroProjectedRecords<'_, '_, 'data> {
 fn primitive(schema: &AvroSchema, node: &Node) -> bool {
     matches!(node, Node::Int | Node::Long | Node::String)
         || matches!(node, Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int))
+        || metric_map::layout(schema, node).is_some()
 }
 
 fn scalar_type(schema: &AvroSchema, index: usize) -> Option<AvroScalarType> {
@@ -203,6 +215,7 @@ fn scalar_type(schema: &AvroSchema, index: usize) -> Option<AvroScalarType> {
         Node::Long => Some(AvroScalarType::Long),
         Node::String => Some(AvroScalarType::String),
         Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int) => Some(AvroScalarType::IntList),
+        node @ Node::LogicalMap(_) => metric_map::layout(schema, node).map(|(kind, _)| kind),
         Node::Union(branches) => branches.iter().find_map(|branch| scalar_type(schema, *branch)),
         _ => None,
     }
@@ -243,6 +256,10 @@ fn read_scalar<'data>(
         }
         Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int) => {
             AvroScalar::IntList(AvroIntList(input.take_remaining()?))
+        }
+        node @ Node::LogicalMap(_) => {
+            let (kind, _) = metric_map::layout(schema, node).ok_or(AvroContainerError::Schema)?;
+            AvroScalar::MetricMap(AvroMetricMap::new(input.take_remaining()?, kind))
         }
         Node::Union(branches) => {
             let branch = *branches.get(input.size()?).ok_or(AvroContainerError::Schema)?;

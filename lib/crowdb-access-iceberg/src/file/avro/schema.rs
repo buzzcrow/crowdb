@@ -5,7 +5,8 @@ mod parse;
 mod projection;
 
 pub use projection::{
-    AvroFieldPath, AvroIntList, AvroProjectedRecords, AvroProjection, AvroScalar, AvroScalarType,
+    AvroFieldPath, AvroIntList, AvroMetricMap, AvroMetricValue, AvroProjectedRecords, AvroProjection,
+    AvroScalar, AvroScalarType,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -49,6 +50,7 @@ enum Node {
     Enum(usize),
     Record(Vec<Field>),
     Array(usize, Option<i32>),
+    LogicalMap(usize),
     Map(usize),
     Union(Vec<usize>),
 }

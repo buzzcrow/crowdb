@@ -73,6 +73,21 @@ impl TestManifestEntry {
         let field = |(id, kind, _): &(i32, &'static str, Value)| {
             let kind = if *kind == "int-array" {
                 json!({"type":"array","items":"int","element-id":136})
+            } else if matches!(*kind, "long-map" | "bytes-map") {
+                let (key, value) = match id {
+                    108 => (117, 118),
+                    109 => (119, 120),
+                    110 => (121, 122),
+                    137 => (138, 139),
+                    125 => (126, 127),
+                    128 => (129, 130),
+                    _ => panic!("unsupported metric"),
+                };
+                json!({"type":"array","logicalType":"map","items":{
+                "type":"record","name":format!("metric{id}"),"fields":[
+                    {"name":"key","field-id":key,"type":"int"},
+                    {"name":"value","field-id":value,"type":if *kind == "long-map" { "long" } else { "bytes" }}
+                ]}})
             } else {
                 json!(kind)
             };
@@ -112,6 +127,22 @@ fn encode((_, kind, value): &(i32, &'static str, Value), bytes: &mut Vec<u8>) {
         let string = value.as_str().unwrap();
         long(i64::try_from(string.len()).unwrap(), bytes);
         bytes.extend_from_slice(string.as_bytes());
+    } else if matches!(*kind, "long-map" | "bytes-map") {
+        let values = value.as_array().unwrap();
+        if !values.is_empty() {
+            long(i64::try_from(values.len()).unwrap(), bytes);
+            for item in values {
+                long(item[0].as_i64().unwrap(), bytes);
+                if *kind == "long-map" {
+                    long(item[1].as_i64().unwrap(), bytes);
+                } else {
+                    let value = item[1].as_str().unwrap().as_bytes();
+                    long(i64::try_from(value.len()).unwrap(), bytes);
+                    bytes.extend_from_slice(value);
+                }
+            }
+        }
+        bytes.push(0);
     } else if *kind == "int-array" {
         let values = value.as_array().unwrap();
         long(i64::try_from(values.len()).unwrap(), bytes);

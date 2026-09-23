@@ -58,7 +58,11 @@ impl Parser {
                             depth + 1,
                         )?;
                         self.insert(if kind == "array" {
-                            Node::Array(child, field_id(object, "element-id"))
+                            if object.get("logicalType").and_then(Value::as_str) == Some("map") {
+                                Node::LogicalMap(child)
+                            } else {
+                                Node::Array(child, field_id(object, "element-id"))
+                            }
                         } else {
                             Node::Map(child)
                         })
@@ -166,7 +170,7 @@ impl Parser {
                 Node::Double => (5, 0),
                 Node::Bytes => (6, 0),
                 Node::String => (7, 0),
-                Node::Array(_, _) => (8, 0),
+                Node::Array(_, _) | Node::LogicalMap(_) => (8, 0),
                 Node::Map(_) => (9, 0),
                 Node::Record(_) | Node::Enum(_) | Node::Fixed(_) => (10, index),
                 Node::Union(_) => return Err(AvroContainerError::Schema),

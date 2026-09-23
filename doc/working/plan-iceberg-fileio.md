@@ -290,7 +290,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 The initial handover boundary was typed scalar manifest-entry decoding plus
 cross-block inheritance. Subsequent work added bounded equality-ID list decoding,
-schema element-ID checks and typed OCF manifest metadata. This is not requirement
+schema element-ID checks, typed OCF manifest metadata and bounded metric maps. This is not requirement
 completion or a new blocker.
 No user-guide edits, public FileIO exposure, new unsafe exceptions, locks or
 physical deletion were added. Resume with the next task below, not a rewrite of
@@ -338,8 +338,19 @@ the landed storage primitives. The broader ordering is in
   newer enclosing list; missing optional v1 spec ID cannot be compared. Exact
   list location/length to opened file identity and table schema/spec membership
   remain for full cross-file validation.
-- [ ] **Remaining collections and manifest metadata**: scalar projection does not yet
-  expose metrics maps, partition tuples or partition summaries.
+- [x] **Bounded metric maps**: integer-keyed Avro logical maps now require exact
+  key/value field IDs and non-null integer keys with long/bytes values. Selected
+  values borrow validated block bytes; `AvroMetricMap::visit` independently caps
+  items and encoded bytes. `ManifestMetrics` owns at most 4096 entries and 1 MiB
+  of value payload across all six maps per entry. Duplicate/nonpositive keys,
+  negative counts, null-plus-NaN count overflow/excess, malformed block framing
+  and wrong types/IDs fail before inheritance. Nested counts may exceed file row
+  count. Null and empty maps remain distinct. Six new tests and expanded
+  null/deflate, cross-leaf/block fixtures pass. No locks or unsafe were added.
+  Numeric interpretation of binary bounds and schema membership remain dependent
+  on typed table context; these maps alone do not establish full metric semantics.
+- [ ] **Remaining collections and manifest metadata**: projection does not yet
+  expose partition tuples or partition summaries.
   Extend bounded traversal only as needed; do not deserialize full datum graphs.
   Check field IDs plus array `element-id` and map `key-id`/`value-id` metadata,
   including Iceberg's logical-map array representation. Decode metrics under
@@ -373,6 +384,30 @@ the landed storage primitives. The broader ordering is in
   above; the standard-PUT semantic-kind decision blocks only its dependent wiring.
 
 ### Reuse and integration boundaries
+
+#### Next complex slice after bounded metric maps
+
+- Build a bounded typed schema/spec context from the manifest writer metadata
+  before compiling partition validation. Keep writer schema/spec IDs distinct
+  from the current table IDs: evolution requires historical context, not merely
+  equality with the table's current schema. Bound nested depth, field count and
+  retained bytes, and validate uniqueness of nested field/element/key/value IDs.
+- Compile partition field IDs and transform result types against that context.
+  Include v1 partition-ID compatibility, nullable tuple values and known versus
+  unknown transform read behavior. Do not equate Avro primitive encoding with
+  logical type compatibility. Then add bounded tuple projection and validate it
+  before `ManifestInheritance::resolve` in the existing entry pull.
+- Use the same typed context for equality-ID membership and metric bound
+  decoding/comparison. Current binary bounds are opaque bytes; checking unsigned
+  lexicographic order would be wrong for numeric encodings. NaN eligibility,
+  nested column membership, schema evolution and delete-file reserved columns
+  also require explicit handling. Do not infer absent metric entries as zero.
+- Full delete-file column presence and actual bound correctness require file
+  context, not only manifest schema. Keep snapshot-wide DV uniqueness in commit
+  admission. These remain complex tasks, not ordinary wiring for a cheaper model.
+- Independent ordinary follow-ups remain multipart XML/error response fixtures
+  and grant-limit intersection tests. Metadata projection fallback is a separate
+  medium task. None requires changing or replacing the landed metric decoder.
 
 - `src/file/avro/schema/projection.rs` and `projection/compile.rs`: root or nested
   scalar cursor; required means schema presence, not a non-null runtime value.
@@ -414,7 +449,7 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 235 tests. `pixi run rs-lint` and
+  passes 241 tests. `pixi run rs-lint` and
   `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
   and test code only; the previously recorded native E2E run is not a new run.
 - Start the next change with focused `--test avro_nested_projection_test`,

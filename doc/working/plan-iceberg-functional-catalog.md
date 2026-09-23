@@ -20,7 +20,7 @@ Collect unresolved human decisions in R177 for confirmation when the user return
 do not stop unrelated tasks. No user-guide tasks.
 
 Handover checkpoint (2026-09-23): typed scalar manifest-entry decoding,
-cross-block inheritance, bounded equality-ID lists and typed writer metadata are verified, following
+cross-block inheritance, bounded equality-ID lists, metric maps and typed writer metadata are verified, following
 nested Avro field-ID projection. Resume instructions, exact next implementation slices,
 landed APIs, remaining integration gaps and test commands are in
 `plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this
@@ -41,7 +41,9 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   partition/metric validation and snapshot-wide DV/row-lineage checks require
   bounded traversal plus table context. The scalar bridge and equality-ID lists are landed:
   typed IDs/paths, v1/v2/v3 inheritance, atomic failure behavior and cross-block
-  state have focused tests. Next implement remaining bounded collections; do not rebuild
+  state have focused tests. Six metric maps now have bounded decoding and structural/count
+  validation before inheritance. Typed bounds, table schema/spec context and partition
+  tuples remain high-complexity work. Next implement that context; do not rebuild
   the Avro parser or conflate scalar validation with full manifest acceptance.
 - **High: multipart/HTTP composition (R180)**. Durable credits, parts, completion,
   publication and recovery primitives exist. Wire official retry/error/XML

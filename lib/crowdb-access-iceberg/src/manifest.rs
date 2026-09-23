@@ -7,7 +7,7 @@ mod metadata;
 
 pub use entry::{
     ManifestEntryError, ManifestEntryProjection, ManifestEntryRecords, ManifestEntryState,
-    ManifestFileFields, ManifestScalarEntry,
+    ManifestFileFields, ManifestMetrics, ManifestScalarEntry,
 };
 
 pub use list::{ManifestListEntry, ManifestListError, ManifestListProjection, ManifestListRecords};

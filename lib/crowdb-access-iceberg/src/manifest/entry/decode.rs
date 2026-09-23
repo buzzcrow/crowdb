@@ -134,6 +134,7 @@ fn file(
         referenced_data_file,
         deletion_vector,
         equality_ids,
+        metrics: super::metrics::decode(&values[16..22])?,
     })
 }
 

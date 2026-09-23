@@ -84,7 +84,9 @@ impl<'data> Input<'data> {
                     self.datum(schema, field.node, depth + 1)?;
                 }
             }
-            Node::Array(child, _) => self.collection(schema, *child, false, depth)?,
+            Node::Array(child, _) | Node::LogicalMap(child) => {
+                self.collection(schema, *child, false, depth)?;
+            }
             Node::Map(child) => self.collection(schema, *child, true, depth)?,
             Node::Union(branches) => {
                 let branch = *branches.get(self.size()?).ok_or(AvroContainerError::Schema)?;
