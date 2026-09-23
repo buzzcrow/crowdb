@@ -216,6 +216,12 @@ bounds nesting and verifies raw UTF-8 before parser scratch can grow. Admission
 caps blocking workers; cancellation keeps its permit until the worker exits.
 This structural check does not replace Iceberg schema or commit validation.
 
+Parquet and Puffin container probes derive footer ranges from canonical framing,
+ignoring stored hints even when those hints happen to be in bounds. Their reads
+retain one bounded leaf and only fixed-size framing bytes, independent of the
+advertised footer size. Puffin probing also checks footer-start magic and reserved
+flags. Container framing does not validate footer contents or data semantics.
+
 Delegation tokens carry catalog activation epoch, table, principal fingerprint,
 nonce, exact operation set, issue/expiry times and independent request/file byte
 limits. Domain-separated HMAC authenticates bounded claims and derives per-grant

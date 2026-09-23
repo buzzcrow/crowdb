@@ -77,6 +77,10 @@ integration. Independent FileIO work proceeds under the approved ordering.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
   deletion vectors and fixed-size Parquet/ORC/Avro/Puffin hints. Files: format
   validation/probing and streaming fixtures.
+  Canonical Parquet and Puffin framing probes now derive bounded footer locations
+  without trusting stored hints or allocating advertised footer sizes. They check
+  magic, signed Puffin lengths, reserved flags and cross-leaf reads. Four tests
+  pass; this is not footer decoding, semantic validation or complete file sealing.
 - [ ] **Acceptance**: official FileIO, real chunks/restarts, concurrency/lost
   responses, all boundary tests; run fmt and lint independently. No full feature
   advertisement or closure until the complete requirement passes.
