@@ -106,6 +106,10 @@ integration. Independent FileIO work proceeds under the approved ordering.
   empty parts, exact concatenation, part-digest mismatch, lost writes and caps.
   This engine requires a frozen selection and CAS journal supplied by the next
   persistence layer; it does not yet authorize or publish multipart uploads.
+  Session/part models now validate separate part/file/staged-byte limits, TTL,
+  identity/revision, selection binding and Open/Completing/Publishing/Published/
+  Aborted phase coherence. Four model tests cover normal and invalid transitions;
+  FlatBuffers persistence, CAS mutation journals and runtime admission are next.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,

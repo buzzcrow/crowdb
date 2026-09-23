@@ -230,6 +230,10 @@ when recovery spans many windows. Lost replies can repeat old progress without
 duplicating bytes in the selected output; losing physical writes remain retained.
 The engine requires a durable selection/progress journal and does not itself
 authorize multipart operations or publish file locations.
+Multipart session/part models retain independent resource limits and validate
+phase coherence: publishing requires complete candidate bytes, published outcomes
+require a selected FileId, and abort retains completion evidence without claiming
+publication. These models are not yet persisted by a multipart authority driver.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner
