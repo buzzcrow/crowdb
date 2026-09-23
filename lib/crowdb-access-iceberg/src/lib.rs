@@ -1,6 +1,7 @@
 //! Native Iceberg authorities, independent of general S3 metadata.
 
 pub mod catalog;
+pub mod commit;
 pub mod error;
 pub mod file;
 pub mod key;

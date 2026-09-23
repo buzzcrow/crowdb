@@ -18,6 +18,9 @@ program finishes. Each requirement keeps its own detailed execution plan.
 Status: the user approved this ordering and implementation of independent work.
 Collect unresolved human decisions in R177 for confirmation when the user returns;
 do not stop unrelated tasks. No user-guide tasks.
+Continue independently while the user is away. The active foreground scope is
+R177 through R184 excluding R183 physical GC; ORC belongs to deferred R186.
+Keep human choices in R177, implementation gaps here, and commit verified slices.
 
 Handover checkpoint (2026-09-23): contextual manifest decoding now includes
 historical schema/spec binding, partition tuples, typed bounds/equality fields and
@@ -410,6 +413,22 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      manifest contexts and complete file-validation wiring. These checks need
      selected prior-generation authority; do not mistake document parsing for
      commit admission. Expand nonempty official snapshot fixtures before closure.
+     Implemented checkpoint: `commit::validate_metadata_transition` binds prior/candidate
+     identities, the immediate successor generation, an explicit ordered upgrade
+     trace, monotone allocation counters and retained/new snapshot distinctions.
+     Never infer update order from schema-array ordering: the official builder
+     supports selecting an older retained schema before further updates. The
+     ordered evaluator must validate each actual schema/layout update at its
+     application point; this transition helper is deliberately not a full commit
+     proof. Preserve allocations from intermediate snapshots removed in the same
+     transaction and require lineage on newly added v3 snapshots only.
+     The closed `TableRequirement` union covers all eight pinned table requirement
+     variants, including required-but-nullable ref snapshot IDs, implicit v1 main,
+     legacy partition high-water inference and distinct invalid/budget/conflict
+     results. Evaluation is pure over one selected document; wire request bounds,
+     ordered updates and CAS/recovery are still separate unfinished phases.
+     Eight transition/requirement tests plus metadata/load/list regression tests
+     pass, with workspace fmt/clippy gates. Do not advertise commit support yet.
      Keep `TableMetadataDocument` explicitly documented as a partial validation
      result, not a publishable generation or a REST capability. No endpoint is
      advertised by this checkpoint. Files: `src/table/metadata.rs`, its children,

@@ -64,6 +64,7 @@ pub enum TableMetadataError {
 /// possession of this document is not a table publication or full metadata proof.
 #[derive(Debug)]
 pub struct TableMetadataDocument {
+    head: TableHead,
     canonical: Vec<u8>,
     root: serde_json::Map<String, Value>,
     snapshots: BTreeMap<i64, TableSnapshot>,
@@ -99,6 +100,7 @@ impl TableMetadataDocument {
             return Err(TableMetadataError::Field("metadata"));
         };
         Ok(Self {
+            head: head.clone(),
             canonical,
             root,
             snapshots,
@@ -124,6 +126,10 @@ impl TableMetadataDocument {
     #[must_use]
     pub fn current_snapshot(&self) -> Option<i64> {
         self.current_snapshot
+    }
+
+    pub(crate) fn selected_head(&self) -> &TableHead {
+        &self.head
     }
 }
 
