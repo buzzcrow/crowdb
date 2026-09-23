@@ -7,7 +7,7 @@ use super::{ManifestListEntry, ManifestListError as Error, ManifestVersion};
 #[derive(Clone, Debug)]
 pub struct ManifestListSelection {
     pub location: FileLocation,
-    pub writer_version: ManifestVersion,
+    pub table_version: ManifestVersion,
     pub snapshot_id: i64,
     pub parent_snapshot_id: Option<i64>,
     pub sequence: i64,
@@ -19,14 +19,14 @@ impl ManifestListSelection {
     pub(super) fn validate(&self) -> Result<(), Error> {
         if self.sequence < 0
             || self.parent_snapshot_id == Some(self.snapshot_id)
-            || (self.writer_version == ManifestVersion::V1 && self.sequence != 0)
+            || (self.table_version == ManifestVersion::V1 && self.sequence != 0)
         {
             return Err(Error::Field);
         }
-        match (self.writer_version, self.first_row_id, self.added_rows) {
+        match (self.table_version, self.first_row_id, self.added_rows) {
             (ManifestVersion::V3, Some(first), Some(rows))
-                if first >= 0 && rows >= 0 && first.checked_add(rows).is_some() => {}
-            (ManifestVersion::V1 | ManifestVersion::V2, None, None) => {}
+                if self.sequence > 0 && first >= 0 && rows >= 0 && first.checked_add(rows).is_some() => {}
+            (_, None, None) => {}
             _ => return Err(Error::Field),
         }
         Ok(())
@@ -34,12 +34,13 @@ impl ManifestListSelection {
 
     pub(super) fn validate_metadata(&self, metadata: &BTreeMap<String, Vec<u8>>) -> Result<(), Error> {
         if let Some(version) = metadata.get("format-version") {
-            let expected = match self.writer_version {
-                ManifestVersion::V1 => b"1",
-                ManifestVersion::V2 => b"2",
-                ManifestVersion::V3 => b"3",
+            let valid = match version.as_slice() {
+                b"1" => self.sequence == 0 && self.first_row_id.is_none(),
+                b"2" => self.table_version != ManifestVersion::V1 && self.first_row_id.is_none(),
+                b"3" => self.table_version == ManifestVersion::V3 && self.first_row_id.is_some(),
+                _ => false,
             };
-            if version != expected {
+            if !valid {
                 return Err(Error::Field);
             }
         }
@@ -70,6 +71,7 @@ impl ManifestListSelection {
     pub(super) fn validate_entry(&self, entry: &ManifestListEntry) -> Result<(), Error> {
         if entry.sequence > self.sequence
             || (entry.added_snapshot_id == self.snapshot_id && entry.sequence != self.sequence)
+            || (self.first_row_id.is_none() && entry.first_row_id.is_some())
         {
             return Err(Error::Field);
         }

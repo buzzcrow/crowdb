@@ -73,18 +73,31 @@ impl ManifestListReader {
         decoded_bytes: usize,
     ) -> Result<Self, Error> {
         selection.validate()?;
-        let mut reader = Self::open(
-            store,
-            record,
-            (selection.location.clone(), selection.writer_version),
-            framing,
+        if record.location != selection.location || record.format != ContentFormat::Avro {
+            return Err(Error::Field);
+        }
+        let record = record
+            .bind_kind(FileKind::ManifestList)
+            .map_err(|_| Error::Field)?;
+        let reader = AvroRecords::open(store, record, framing, limits, decoded_bytes).await?;
+        selection.validate_metadata(reader.metadata())?;
+        ManifestListProjection::for_read(
+            reader.schema(),
+            selection.table_version,
+            selection.location.table(),
+        )?;
+        Ok(Self {
+            reader,
+            location: selection.location.clone(),
+            version: selection.table_version,
             limits,
-            decoded_bytes,
-        )
-        .await?;
-        selection.validate_metadata(reader.reader.metadata())?;
-        reader.selection = Some(selection);
-        Ok(reader)
+            block: None,
+            offset: 0,
+            remaining: 0,
+            failed: false,
+            complete: false,
+            selection: Some(selection),
+        })
     }
 
     #[must_use]
@@ -115,8 +128,11 @@ impl ManifestListReader {
             self.block = Some(block);
         }
         let block = self.block.as_ref().ok_or(Error::Field)?;
-        let projection =
-            ManifestListProjection::new(self.reader.schema(), self.version, self.location.table())?;
+        let projection = if self.selection.is_some() {
+            ManifestListProjection::for_read(self.reader.schema(), self.version, self.location.table())?
+        } else {
+            ManifestListProjection::new(self.reader.schema(), self.version, self.location.table())?
+        };
         let mut records = projection.records(&block.bytes[self.offset..], self.remaining, self.limits)?;
         let entry = records.next_entry()?.ok_or(Error::Field)?;
         if let Some(selection) = &self.selection {

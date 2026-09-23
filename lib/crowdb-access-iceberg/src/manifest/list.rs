@@ -9,6 +9,12 @@ const FIELDS: [i32; 14] = [
     500, 501, 502, 503, 517, 515, 516, 504, 505, 506, 512, 513, 514, 520,
 ];
 
+#[derive(Clone, Copy)]
+enum ListReadMode {
+    Writer(ManifestVersion),
+    Compatible(ManifestVersion),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestListError {
     #[error(transparent)]
@@ -34,14 +40,14 @@ pub struct ManifestListEntry {
 
 pub struct ManifestListProjection<'schema> {
     projection: AvroProjection<'schema>,
-    version: ManifestVersion,
+    mode: ListReadMode,
     table: TableLocation,
     summaries: AvroRecordArray<'schema>,
 }
 
 pub struct ManifestListRecords<'projection, 'schema, 'data> {
     records: AvroProjectedRecords<'projection, 'schema, 'data>,
-    version: ManifestVersion,
+    mode: ListReadMode,
     table: TableLocation,
     failed: bool,
     summaries: &'projection AvroRecordArray<'schema>,
@@ -57,9 +63,36 @@ impl<'schema> ManifestListProjection<'schema> {
         version: ManifestVersion,
         table: TableLocation,
     ) -> Result<Self, ManifestListError> {
+        Self::with_mode(schema, ListReadMode::Writer(version), table)
+    }
+
+    /// Applies the specification's permissive read rules to historical lists without
+    /// requiring a writer version that is not stored in snapshot JSON.
+    /// # Errors
+    /// Rejects missing common fields, invalid field IDs and incompatible scalar layouts.
+    pub fn for_read(
+        schema: &'schema AvroSchema,
+        table_version: ManifestVersion,
+        table: TableLocation,
+    ) -> Result<Self, ManifestListError> {
+        Self::with_mode(schema, ListReadMode::Compatible(table_version), table)
+    }
+
+    fn with_mode(
+        schema: &'schema AvroSchema,
+        mode: ListReadMode,
+        table: TableLocation,
+    ) -> Result<Self, ManifestListError> {
         use AvroScalarType::{Int, Long, String};
 
-        let required = if version == ManifestVersion::V1 { 4 } else { 13 };
+        let required = if matches!(
+            mode,
+            ListReadMode::Writer(ManifestVersion::V2 | ManifestVersion::V3)
+        ) {
+            13
+        } else {
+            4
+        };
         let projection = AvroProjection::with_optional(schema, &FIELDS[..required], &FIELDS[required..])?;
         let expected = [
             String, Long, Int, Long, Int, Long, Long, Int, Int, Int, Long, Long, Long, Long,
@@ -96,7 +129,7 @@ impl<'schema> ManifestListProjection<'schema> {
         }
         Ok(Self {
             projection,
-            version,
+            mode,
             table,
             summaries,
         })
@@ -113,7 +146,7 @@ impl<'schema> ManifestListProjection<'schema> {
     ) -> Result<ManifestListRecords<'projection, 'schema, 'data>, ManifestListError> {
         Ok(ManifestListRecords {
             records: self.projection.records(bytes, count, limits)?,
-            version: self.version,
+            mode: self.mode,
             table: self.table,
             failed: false,
             summaries: &self.summaries,
@@ -138,7 +171,7 @@ impl ManifestListRecords<'_, '_, '_> {
         let mut result = self
             .records
             .next_record()?
-            .map(|values| decode(&values, self.version, self.table))
+            .map(|values| decode(&values, self.mode, self.table))
             .transpose()?;
         if let Some(entry) = &mut result {
             entry.partitions = self
@@ -159,7 +192,7 @@ impl ManifestListRecords<'_, '_, '_> {
 
 fn decode(
     values: &[AvroScalar<'_>],
-    version: ManifestVersion,
+    mode: ListReadMode,
     table: TableLocation,
 ) -> Result<ManifestListEntry, ManifestListError> {
     let AvroScalar::String(path) = values[0] else {
@@ -173,20 +206,28 @@ fn decode(
     if location.table() != table || length <= 0 || partition_spec_id < 0 {
         return Err(ManifestListError::Field);
     }
+    let version = match mode {
+        ListReadMode::Writer(version) | ListReadMode::Compatible(version) => version,
+    };
+    let compatible = matches!(mode, ListReadMode::Compatible(_));
     let (content, sequence, min_sequence) = if version == ManifestVersion::V1 {
         (ManifestContent::Data, 0, 0)
     } else {
-        let content = match integer(values[4])? {
+        let content = match optional(values[4], !compatible, integer)?.unwrap_or(0) {
             0 => ManifestContent::Data,
             1 => ManifestContent::Deletes,
             _ => return Err(ManifestListError::Field),
         };
-        (content, long(values[5])?, long(values[6])?)
+        (
+            content,
+            optional(values[5], !compatible, long)?.unwrap_or(0),
+            optional(values[6], !compatible, long)?.unwrap_or(0),
+        )
     };
     if sequence < 0 || min_sequence < 0 || min_sequence > sequence {
         return Err(ManifestListError::Field);
     }
-    let required = version != ManifestVersion::V1;
+    let required = !compatible && version != ManifestVersion::V1;
     let mut file_counts = [None; 3];
     let mut row_counts = [None; 3];
     for index in 0..3 {

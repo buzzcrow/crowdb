@@ -140,7 +140,7 @@ pub async fn stored(
     };
     let selection = ManifestListSelection {
         location: list.location.clone(),
-        writer_version: ManifestVersion::V3,
+        table_version: ManifestVersion::V3,
         snapshot_id: 99,
         parent_snapshot_id: None,
         sequence: 9,

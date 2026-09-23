@@ -32,7 +32,15 @@ async fn stored_metadata(
     empty: bool,
     metadata: &[(&str, &str)],
 ) -> (Arc<blocks::TestBlocks>, FileRecord) {
-    let mut fixture = fixture::TestManifestList::new();
+    stored_layout(corrupt, empty, metadata, fixture::TestManifestList::new()).await
+}
+
+async fn stored_layout(
+    corrupt: bool,
+    empty: bool,
+    metadata: &[(&str, &str)],
+    mut fixture: fixture::TestManifestList,
+) -> (Arc<blocks::TestBlocks>, FileRecord) {
     let schema = fixture.schema_bytes();
     let mut bytes = b"Obj\x01".to_vec();
     long(1 + metadata.len(), &mut bytes);
@@ -225,7 +233,7 @@ async fn canonical_storage_corruption_poisoning_cannot_be_retried_in_place() {
 fn selection(record: &FileRecord, version: ManifestVersion) -> ManifestListSelection {
     ManifestListSelection {
         location: record.location.clone(),
-        writer_version: version,
+        table_version: version,
         snapshot_id: 99,
         parent_snapshot_id: None,
         sequence: if version == ManifestVersion::V1 { 0 } else { 8 },
@@ -327,7 +335,7 @@ async fn invalid_snapshot_scope_is_rejected_before_canonical_reads() {
             4 => scope.first_row_id = Some(-1),
             5 => scope.added_rows = Some(-1),
             6 => scope.first_row_id = Some(i64::MAX),
-            _ => scope.writer_version = ManifestVersion::V1,
+            _ => scope.table_version = ManifestVersion::V1,
         }
         let before = store.reads.load(Ordering::SeqCst);
         assert!(selected(store.clone(), record.clone(), scope).await.is_err());
@@ -347,6 +355,38 @@ async fn snapshot_sequence_checks_distinguish_new_and_reused_manifests() {
         if !accepted {
             assert!(!reader.is_complete());
             assert!(reader.next_entry().await.is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn upgraded_snapshot_reads_old_canonical_lists_with_or_without_writer_headers() {
+    for writer in [ManifestVersion::V1, ManifestVersion::V2] {
+        for table in [ManifestVersion::V2, ManifestVersion::V3] {
+            let label = if writer == ManifestVersion::V1 { "1" } else { "2" };
+            let metadata = [("format-version", label), ("snapshot-id", "99")];
+            for headers in [metadata.as_slice(), &[]] {
+                let mut fixture = fixture::TestManifestList::new();
+                if writer == ManifestVersion::V1 {
+                    fixture.fields.truncate(4);
+                } else {
+                    fixture.fields.retain(|(id, _, _)| *id != 520);
+                }
+                let (store, record) = stored_layout(false, false, headers, fixture).await;
+                let mut scope = selection(&record, writer);
+                scope.table_version = table;
+                let mut reader = selected(store, record, scope).await.unwrap();
+                for _ in 0..4 {
+                    let entry = reader.next_entry().await.unwrap().unwrap();
+                    assert_eq!(entry.sequence, if writer == ManifestVersion::V1 { 0 } else { 8 });
+                    assert_eq!(entry.first_row_id, None);
+                    if writer == ManifestVersion::V1 {
+                        assert_eq!(entry.file_counts, [None; 3]);
+                    }
+                }
+                assert!(reader.next_entry().await.unwrap().is_none());
+                assert!(reader.is_complete());
+            }
         }
     }
 }

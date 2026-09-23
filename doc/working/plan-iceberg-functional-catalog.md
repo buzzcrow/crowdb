@@ -179,9 +179,8 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
   (including literal `null` parent metadata). The official
   [ManifestLists reader](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/ManifestLists.java)
   projects fields rather than requiring the writer's optional OCF linkage.
-  Historical writer selection still comes from the caller; this slice does not
-  derive history, prove row-ID assignment
-  intervals, or validate data/delete bytes. Tests cover optional/official-style
+  This slice does not prove row-ID assignment intervals or validate data/delete
+  bytes. Tests cover optional/official-style
   headers, empty-list mismatches, scope overflow, reused/new manifest sequences,
   and poisoned cursors after selection failure.
   Enumeration slice: `SnapshotManifestReader` owns a fresh selected list and
@@ -197,6 +196,36 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
   Verification: 12 added selection/enumeration tests pass; library all-target
   tests, workspace fmt check and workspace clippy pass. Fixture chunk copies
   preserve owner binding by writing fresh trees rather than relabeling FileIds.
+  Historical-read correction: snapshot JSON does not carry a writer format
+  version. Follow the specification's Writer Requirements read-compatibility
+  matrix instead of inferring an exact historical version. `ManifestListSelection`
+  now carries current `table_version`; `ManifestListProjection::for_read` defaults
+  missing content/sequences and retains unknown optional counts. The strict `new`
+  projection remains available for validating a known writer's output; commit
+  integration must enforce new-file writer requirements separately.
+  Upgraded v3 tables accept old snapshots with no row lineage, while malformed
+  present values and inconsistent optional OCF linkage still fail. Canonical
+  list tests cover v1/v2 snapshots in v2/v3 tables with and without writer headers.
+  Evidence: pinned specification Writer Requirements and Row Lineage upgrade
+  rules; official
+  [SnapshotParser](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/SnapshotParser.java)
+  preserves historical absent sequence/lineage, and
+  [GenericManifestFile](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/GenericManifestFile.java)
+  applies field-based defaults without guessing a historical writer version.
+
+  Historical-read gates: 24 focused list/snapshot tests, workspace fmt and
+  workspace clippy pass. No new format capability or production route is enabled.
+
+  Remaining execution slices from the ten-task batch, in dependency order:
+  2. Cross-manifest identity/descriptor consistency and row-ID assignment ranges.
+  3. Canonical Parquet schema/field-ID/row-count and selected data/delete checks.
+  4. Canonical ORC equivalent checks with bounded decoding.
+  5. Bind complete snapshot enumeration, actual file row counts and DV validation.
+  6. Bounded TableHead/name mappings and generation-qualified repository.
+  7. Full v1/v2/v3 table metadata validation, preserving original JSON.
+  8. Generation-consistent load/list/exists, ALL/REFS, ETags and fallback.
+  9. Production credentials with live table authorization and timed SDK refresh.
+  10. Durable rename/drop and namespace races/recovery, retaining purge intent.
 - [ ] **Selected table metadata**: implement bounded table heads/mappings,
   metadata version validation and generation-consistent load/projection fallback.
   Wire credential vending only after table authorization and lifecycle checks.
