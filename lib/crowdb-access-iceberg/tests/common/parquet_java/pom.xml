@@ -7,6 +7,7 @@
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <exec.mainClass>TestParquetFixtures</exec.mainClass>
   </properties>
   <dependencies>
     <dependency><groupId>org.apache.iceberg</groupId><artifactId>iceberg-core</artifactId><version>1.11.0</version></dependency>
@@ -16,7 +17,7 @@
   <build><plugins>
     <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.14.0</version></plugin>
     <plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.5.0</version>
-      <configuration><mainClass>TestParquetFixtures</mainClass></configuration>
+      <configuration><mainClass>${exec.mainClass}</mainClass></configuration>
     </plugin>
   </plugins></build>
 </project>
