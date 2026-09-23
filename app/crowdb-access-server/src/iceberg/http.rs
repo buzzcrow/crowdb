@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::body::IcebergBody;
+use super::file_http::FileHttp;
 use super::namespace_read::NamespaceHttp;
 use crowdb_access_iceberg::catalog::{CatalogError, CatalogLifecycle, CatalogRepository, RootState};
 use crowdb_access_iceberg::wire::{BearerAuthenticator, CatalogConfig, IcebergErrorResponse};
@@ -20,6 +21,7 @@ pub struct IcebergHttpService {
     authentication: BearerAuthenticator,
     request_timeout: Duration,
     namespaces: Option<NamespaceHttp>,
+    files: Option<FileHttp>,
 }
 
 impl IcebergHttpService {
@@ -34,7 +36,25 @@ impl IcebergHttpService {
             authentication,
             request_timeout,
             namespaces: None,
+            files: None,
         }
+    }
+
+    /// # Errors
+    /// Rejects invalid native file listener limits or signing configuration.
+    pub fn with_fileio(
+        mut self,
+        store: Arc<crowdb_access_iceberg::catalog::RoutedCatalogStore>,
+        blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,
+        region: String,
+    ) -> Result<Self, crowdb_access_iceberg::file::FileGrantError> {
+        self.files = Some(FileHttp::new(
+            store,
+            blocks,
+            self.authentication.namespace_token_key(),
+            region,
+        )?);
+        Ok(self)
     }
 
     /// # Errors
@@ -52,7 +72,12 @@ impl IcebergHttpService {
 
     async fn handle(&self, request: Request<Incoming>) -> Result<Response<IcebergBody>, Infallible> {
         let head = request.method() == hyper::Method::HEAD;
-        let result = tokio::time::timeout(self.request_timeout, self.dispatch(request)).await;
+        let deadline = if request.uri().path().starts_with("/iceberg-") {
+            Duration::from_secs(300)
+        } else {
+            self.request_timeout
+        };
+        let result = Box::pin(tokio::time::timeout(deadline, self.dispatch(request))).await;
         let mut response = match result {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => response(error.error.code, serde_json::to_vec(&error).unwrap_or_default()),
@@ -71,6 +96,12 @@ impl IcebergHttpService {
         &self,
         request: Request<Incoming>,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
+        if request.uri().path().starts_with("/iceberg-") {
+            return Ok(match &self.files {
+                Some(files) => Box::pin(files.dispatch(&self.repository, request)).await,
+                None => super::file_http::unavailable(request.uri().path()),
+            });
+        }
         let authorization = request
             .headers()
             .get(hyper::header::AUTHORIZATION)
@@ -158,8 +189,8 @@ pub async fn serve(
                 let (stream, peer) = match accepted { Ok(value) => value, Err(error) => { failure = Some(error); break; } };
                 let service = Arc::clone(&service);
                 connections.spawn(async move {
-                    let timeout = service.request_timeout;
-                    let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { service.handle(request).await } });
+                    let timeout = Duration::from_secs(300);
+                    let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { Box::pin(service.handle(request)).await } });
                     let connection = http1::Builder::new().keep_alive(false).max_buf_size(64 * 1024)
                         .serve_connection(TokioIo::new(stream), handler);
                     if let Ok(Err(error)) = tokio::time::timeout(timeout, connection).await {

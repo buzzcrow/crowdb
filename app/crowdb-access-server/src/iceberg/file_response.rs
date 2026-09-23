@@ -27,16 +27,27 @@ pub enum FileS3ErrorCode {
     EntityTooLarge,
     InvalidRequest,
     InternalError,
+    NoSuchKey,
+    InvalidRange,
+    SlowDown,
+    Conflict,
+    BadDigest,
+    EntityTooSmall,
 }
 
 impl FileS3ErrorCode {
     const fn status(self) -> StatusCode {
         match self {
             Self::AccessDenied => StatusCode::FORBIDDEN,
-            Self::NoSuchUpload => StatusCode::NOT_FOUND,
-            Self::InvalidPart | Self::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::NoSuchUpload | Self::NoSuchKey => StatusCode::NOT_FOUND,
+            Self::InvalidPart | Self::InvalidRequest | Self::BadDigest | Self::EntityTooSmall => {
+                StatusCode::BAD_REQUEST
+            }
             Self::EntityTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
+            Self::SlowDown => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Conflict => StatusCode::CONFLICT,
         }
     }
 
@@ -48,6 +59,12 @@ impl FileS3ErrorCode {
             Self::EntityTooLarge => "The request exceeds the allowed size",
             Self::InvalidRequest => "The request is invalid",
             Self::InternalError => "The service could not complete the request",
+            Self::NoSuchKey => "The specified key does not exist",
+            Self::InvalidRange => "The requested range cannot be satisfied",
+            Self::SlowDown => "The service is temporarily unavailable",
+            Self::Conflict => "The immutable object already exists with different content",
+            Self::BadDigest => "The supplied digest does not match the uploaded content",
+            Self::EntityTooSmall => "A nonfinal upload part is smaller than 5 MiB",
         }
     }
 
@@ -59,6 +76,12 @@ impl FileS3ErrorCode {
             Self::EntityTooLarge => "EntityTooLarge",
             Self::InvalidRequest => "InvalidRequest",
             Self::InternalError => "InternalError",
+            Self::NoSuchKey => "NoSuchKey",
+            Self::InvalidRange => "InvalidRange",
+            Self::SlowDown => "SlowDown",
+            Self::Conflict => "OperationAborted",
+            Self::BadDigest => "BadDigest",
+            Self::EntityTooSmall => "EntityTooSmall",
         }
     }
 }

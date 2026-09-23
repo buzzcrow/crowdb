@@ -14,6 +14,7 @@ pub enum FileKind {
     EqualityDelete = 5,
     DeletionVector = 6,
     Statistics = 7,
+    Unbound = 8,
 }
 
 impl FileKind {
@@ -66,6 +67,10 @@ impl FileRecord {
             }
             FileKind::DeletionVector => self.format == ContentFormat::Puffin,
             FileKind::Statistics => matches!(self.format, ContentFormat::Puffin | ContentFormat::Parquet),
+            FileKind::Unbound => matches!(
+                self.format,
+                ContentFormat::Avro | ContentFormat::Parquet | ContentFormat::Orc | ContentFormat::Puffin
+            ),
         };
         if !valid_format {
             return Err(ValidationError::Record);
@@ -85,6 +90,20 @@ impl FileRecord {
                     .checked_add(hint.length)
                     .is_some_and(|end| end <= self.length)
         })
+    }
+
+    /// Resolves a stored, unbound upload for one validated Iceberg use.
+    /// The returned view does not mutate the immutable file authority.
+    /// # Errors
+    /// Rejects an incompatible kind, format or storage variant.
+    pub fn bind_kind(&self, kind: FileKind) -> Result<Self, ValidationError> {
+        if kind == FileKind::Unbound || (self.kind != FileKind::Unbound && self.kind != kind) {
+            return Err(ValidationError::Record);
+        }
+        let mut bound = self.clone();
+        bound.kind = kind;
+        bound.validate()?;
+        Ok(bound)
     }
 }
 

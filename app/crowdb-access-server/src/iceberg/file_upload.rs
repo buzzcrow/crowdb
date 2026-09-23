@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use crowdb_access_iceberg::file::{
-    FileBlockStore, FileIdentity, FileIoError, FileTree, FileTreeWriter, MAX_FILE_BLOCK_BYTES,
+    FileBlockStore, FileIdentity, FileIoError, FileTree, FileTreeWriter, NATIVE_FILE_BLOCK_BYTES,
 };
 use http_body_util::BodyExt;
 use hyper::body::{Body, Bytes};
@@ -34,7 +34,7 @@ pub enum FileUploadError {
     Storage(#[from] FileIoError),
     #[error("file upload capacity exhausted")]
     Busy,
-    #[error("file upload byte or frame bounds exceeded")]
+    #[error("file upload byte bounds exceeded")]
     Bounds,
     #[error("file upload body read failed")]
     Body,
@@ -70,9 +70,9 @@ impl FileUploadBudget {
     }
 
     /// Stages bytes only; the caller must authorize intersected limits and seal before publication.
-    /// Uses the listener's 64-KiB frame ceiling and never polls ahead of a pending storage write.
+    /// Writes each received frame in bounded slices and never polls ahead of a pending storage write.
     /// # Errors
-    /// Rejects exhausted admission, invalid frames, body failures and length/digest mismatches.
+    /// Rejects exhausted admission, byte bounds, body failures and length/digest mismatches.
     /// Cancellation or failure retains orphan blocks without publishing any authority.
     pub async fn receive<Input: Body<Data = Bytes> + Unpin>(
         &self,
@@ -88,7 +88,7 @@ impl FileUploadBudget {
             })
             .map_err(|_| FileUploadError::Busy)?;
         let _permit = Permit(self.active.clone());
-        let mut writer = FileTreeWriter::new(store, owner, MAX_FILE_BLOCK_BYTES)?;
+        let mut writer = FileTreeWriter::new(store, owner, NATIVE_FILE_BLOCK_BYTES)?;
         while let Some(frame) = body.frame().await {
             let bytes = frame
                 .map_err(|_| FileUploadError::Body)?
@@ -98,7 +98,7 @@ impl FileUploadBudget {
                 .length()
                 .checked_add(bytes.len() as u64)
                 .ok_or(FileUploadError::Bounds)?;
-            if bytes.len() > 64 * 1024 || length > constraints.max_bytes {
+            if length > constraints.max_bytes {
                 return Err(FileUploadError::Bounds);
             }
             if constraints
@@ -107,7 +107,9 @@ impl FileUploadBudget {
             {
                 return Err(FileUploadError::Length);
             }
-            writer.push(&bytes).await?;
+            for chunk in bytes.chunks(64 * 1024) {
+                writer.push(chunk).await?;
+            }
         }
         if constraints
             .content_length

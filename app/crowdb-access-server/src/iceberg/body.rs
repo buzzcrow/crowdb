@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -7,6 +6,8 @@ use std::sync::{
 use std::task::{Context, Poll};
 
 use hyper::body::{Body, Bytes, Frame, SizeHint};
+
+use super::file_body::FileReadBody;
 
 pub(super) struct SpoolPermit(Arc<AtomicUsize>);
 
@@ -30,6 +31,7 @@ impl Drop for SpoolPermit {
 pub(super) struct IcebergBody {
     bytes: Bytes,
     _permit: Option<SpoolPermit>,
+    file: Option<FileReadBody>,
 }
 
 impl IcebergBody {
@@ -37,25 +39,40 @@ impl IcebergBody {
         Self {
             bytes: Bytes::from(bytes),
             _permit: None,
+            file: None,
         }
     }
     pub(super) fn with_permit(bytes: Vec<u8>, permit: SpoolPermit) -> Self {
         Self {
             bytes: Bytes::from(bytes),
             _permit: Some(permit),
+            file: None,
+        }
+    }
+
+    pub(super) fn file(body: FileReadBody) -> Self {
+        Self {
+            bytes: Bytes::new(),
+            _permit: None,
+            file: Some(body),
         }
     }
 }
 
 impl Body for IcebergBody {
     type Data = Bytes;
-    type Error = Infallible;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn poll_frame(
         self: Pin<&mut Self>,
-        _context: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
         let body = self.get_mut();
+        if let Some(file) = &mut body.file {
+            return Pin::new(file)
+                .poll_frame(context)
+                .map(|frame| frame.map(|result| result.map_err(Into::into)));
+        }
         if body.bytes.is_empty() {
             return Poll::Ready(None);
         }
@@ -64,9 +81,11 @@ impl Body for IcebergBody {
     }
 
     fn is_end_stream(&self) -> bool {
-        self.bytes.is_empty()
+        self.bytes.is_empty() && self.file.as_ref().map_or(true, Body::is_end_stream)
     }
     fn size_hint(&self) -> SizeHint {
-        SizeHint::with_exact(self.bytes.len() as u64)
+        self.file
+            .as_ref()
+            .map_or_else(|| SizeHint::with_exact(self.bytes.len() as u64), Body::size_hint)
     }
 }

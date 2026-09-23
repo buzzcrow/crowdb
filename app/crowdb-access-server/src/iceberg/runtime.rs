@@ -139,9 +139,12 @@ async fn start_listener(
     if timeout.is_zero() || timeout > Duration::from_secs(60) {
         return Err("catalog request timeout is outside server bounds".into());
     }
+    let blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> =
+        Arc::new(crowdb_access_iceberg::file::NativeFileBlocks::new(chunks.clone()));
     let service = Arc::new(
         IcebergHttpService::new(repository.clone(), authentication, timeout)
-            .with_namespaces(store.clone())?,
+            .with_namespaces(store.clone())?
+            .with_fileio(store.clone(), blocks.clone(), "us-east-1".into())?,
     );
     let listener = TcpListener::bind(address).await?;
     tracing::info!(%address, "Iceberg listener ready");
@@ -151,7 +154,7 @@ async fn start_listener(
     let multipart = Box::pin(super::file_recovery::run(
         repository.clone(),
         store.clone(),
-        Arc::new(crowdb_access_iceberg::file::NativeFileBlocks::new(chunks)),
+        blocks,
     ));
     tokio::select! {
         result = serving => result?,

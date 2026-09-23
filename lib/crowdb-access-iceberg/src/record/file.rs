@@ -75,6 +75,7 @@ pub(super) fn decode(value: FBFileRecord<'_>) -> Result<FileRecord, ValidationEr
             5 => FileKind::EqualityDelete,
             6 => FileKind::DeletionVector,
             7 => FileKind::Statistics,
+            8 => FileKind::Unbound,
             _ => return Err(ValidationError::Record),
         },
         format: match value.format() {

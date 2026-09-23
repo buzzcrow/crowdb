@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter};
 use crowdb_protocol::chunkdb::rpc::Location;
+use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 use sha2::{Digest, Sha256};
 
 use crate::error::ValidationError;
@@ -9,6 +10,7 @@ use crate::error::ValidationError;
 use super::{ChunkRoot, FileIdentity};
 
 pub const MAX_FILE_BLOCK_BYTES: usize = 256 * 1024;
+pub const NATIVE_FILE_BLOCK_BYTES: usize = MAX_FRAME_PAYLOAD_BYTES;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FileIoError {
@@ -46,7 +48,7 @@ impl NativeFileBlocks {
 impl FileBlockStore for NativeFileBlocks {
     async fn put(&self, owner: FileIdentity, height: u8, bytes: &[u8]) -> Result<ChunkRoot, FileIoError> {
         if bytes.is_empty()
-            || bytes.len() > MAX_FILE_BLOCK_BYTES
+            || bytes.len() > NATIVE_FILE_BLOCK_BYTES
             || height > super::content::MAX_CHUNK_TREE_HEIGHT
             || (height > 0 && bytes.len() as u64 > super::content::MAX_CHUNK_DIRECTORY_BYTES)
         {

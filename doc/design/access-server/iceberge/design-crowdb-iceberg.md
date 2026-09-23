@@ -199,7 +199,12 @@ never a growing location vector. Hints are non-authoritative and out-of-bounds
 hints are ignored. The publication primitive stages an immutable authority before
 the exact-location CAS; equal-content retries return the selected FileId, while
 conflicts retain losing candidates without overwriting or physical deletion.
-Streaming format sealing and the native FileIO HTTP surface remain unexposed.
+An SDK upload supplies a path and bytes, not the eventual Iceberg data/delete
+use. Sealing validates physical container bytes and records ambiguous Avro,
+Parquet, ORC and Puffin uses as unbound. Selected metadata and manifests must
+validate declared uses against these canonical records before table publication.
+The isolated native HTTP surface exposes signed immutable object reads/writes
+and multipart operations, but no general S3 bucket authority or file DELETE.
 
 Chunk-backed files use bounded leaf blocks and immutable chunk-resident directory
 pages, with at most 256 children per page and eight directory levels. Each page
@@ -274,7 +279,8 @@ allowing later entries in the page to progress. A separate outer budget bounds t
 whole page and context/scan work. One separately bounded admission-journal recovery
 step runs before scanning, including a reservation whose session is not yet present.
 Terminal sessions return their credits on a later visit while retaining all parts.
-FileIO HTTP integration remains separate.
+The HTTP driver composes this durable state machine with physical sealing;
+recovery remains the authority for abandoned or uncertain work.
 
 Multipart part listing uses one upload-scoped scan with at most 256 records per
 page. Numeric markers preserve gaps and resume strictly after the returned part
@@ -283,7 +289,7 @@ the page rather than mixing pending counters with old part records. Expired or
 terminal sessions and malformed storage pages are not reported as successful lists.
 
 Native HTTP upload staging holds an independent concurrency
-credit, consumes one frame at a time and awaits storage writes before pulling more
+credit, slices each received frame into bounded writes and awaits storage before pulling more
 input. Declared/actual byte limits, exact content length and optional signed SHA-256
 are checked before returning a tree. Failed or cancelled uploads retain orphan
 blocks without publishing file authority. This transport adapter does not infer

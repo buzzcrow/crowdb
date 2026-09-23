@@ -31,10 +31,12 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Inline selection and bounded LZ4 decoding are implemented: metadata can remain
   raw through 16 KiB or compress from at most 64 KiB; other file kinds always use
   the chunk variant. Five record tests cover codec/key/tag/corruption boundaries.
-  The publication primitive requires already sealed chunk input; no HTTP route
-  exposes it until the streaming seal pipeline verifies canonical bytes/formats.
-  Standard PUT cannot infer equality-delete usage from bytes alone; the exact
-  HTTP kind binding awaits the R177 decision below. Format parsing is independent.
+  The publication primitive requires already sealed chunk input. Native PUT and
+  Complete now call the streaming seal pipeline before publishing; selected
+  manifest/table-use validation remains pending.
+  Standard PUT does not infer equality-delete usage from bytes. The approved
+  physical-format authority retains ambiguous kind as unbound; selected metadata
+  and manifest uses are validated at load and commit admission.
 - [x] **Bounded chunk streaming**: store at most 256-KiB leaves and 256 child
   references per directory, with at most eight directory levels. Persist directory
   bytes in chunks, not KV; bind every directory to file/catalog/table identity,
@@ -63,14 +65,14 @@ integration. Independent FileIO work proceeds under the approved ordering.
   or cancellation. Three tests cover partial ranges, exact size hints, bounded
   reads, errors and dropping an in-flight response. Listener routing is pending.
   The upload adapter now independently admits at most 64 concurrent bodies, checks
-  declared and actual byte ceilings, consumes at most one 64-KiB HTTP frame at a
-  time and awaits each bounded native writer operation before polling again.
+  declared and actual byte ceilings, slices each received HTTP frame into at
+  most 64-KiB writes and awaits storage before polling again.
   It verifies content length and optional signed SHA-256 before returning a staged
   tree; cancellation, transport/storage errors and digest mismatches never publish
   authority. Four server tests cover round-trip bytes, all failure classes,
   backpressure and credit release while retaining uncertain orphan blocks.
-  Trailer/checksum-streaming compatibility, grant intersection and listener
-  integration remain pending; this primitive does not perform semantic sealing.
+  Trailer/checksum-streaming compatibility remains pending. The listener now
+  applies intersected grants and seals canonical bytes before publication.
 - [x] **Delegation tokens**: sign bounded claims for catalog/activation epoch,
   table, principal, nonce, exact operations, expiry and separate request/file byte
   limits. Derive per-grant S3 credential material without a credential registry;
@@ -83,8 +85,9 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Native request authentication now reconstructs one grant's credentials and
   reuses only the shared SigV4 verifier, never general S3 credential/metadata
   authority. Three server tests cover header and presigned requests, exact grant
-  expiry, tampering, duplicate fields and byte caps. HTTP routing, streaming limit
-  enforcement and credential vending through table endpoints remain unimplemented.
+  expiry, tampering, duplicate fields and byte caps. HTTP routing and streaming
+  limit enforcement now use these primitives; credential vending through table
+  endpoints remains unimplemented.
   Path-style request parsing now recognizes only native exact-object operations
   and multipart subresources, decodes percent escapes once and rejects duplicate
   parameters, path escape, ordinary buckets and file DELETE. Four parser tests
@@ -477,10 +480,9 @@ the landed storage primitives. The broader ordering is in
   entries as DVs. Merge/replace prior position deletes and verify actual data-file
   row counts through format context. These are R182 composition work, not a
   whole-snapshot in-memory collection or a second file-reader state machine.
-- [ ] **Finish other independent FileIO work**: metadata projection load/commit integration,
-  semantic seal orchestration, delegation vending, multipart HTTP composition and
-  official client acceptance remain unfinished. Use the existing execution tasks
-  above; the standard-PUT semantic-kind decision blocks only its dependent wiring.
+- [ ] **Finish other independent FileIO work**: metadata projection load/commit
+  integration, selected-use validation, delegation vending and official client
+  acceptance remain unfinished. Use the existing execution tasks above.
 
 ### Reuse and integration boundaries
 
@@ -531,8 +533,8 @@ the landed storage primitives. The broader ordering is in
   typed S3 errors. UploadPart and ListParts share quoted SHA-256 ETags; Complete
   requires the exact Published session and selected FileRecord and receives a
   trusted public HTTP object URL from its caller. XML escaping and stable marker
-  semantics are covered by focused server tests. XML request-body parsing and
-  public dispatch are separate unfinished HTTP work.
+  semantics are covered by focused server tests. Request XML parsing and public
+  dispatch are now connected as described in the checkpoint below.
 - `FileTransferAdmission::authorize` consumes a verified grant and parsed native
   request, checks table/operation, principal/upload/session credit/expiry, and
   intersects service/session byte ceilings. `check_create` is a preflight against
@@ -541,12 +543,33 @@ the landed storage primitives. The broader ordering is in
   `read_body` call the existing bounded adapters with the intersected ceilings.
   Before dispatch, validate Ready catalog context and authenticate SigV4 using
   `authenticate_file_request`; afterward, reload the current session/policy and
-  use only these checked transfer paths. There is no active FileIO listener route.
-- Next ordinary work is bounded Complete request XML parsing, public route
-  composition using the existing durable repository and response helpers, and
-  exact error/status mapping. Semantic sealing, standard PUT kind binding and
-  official client/retry acceptance remain separate R180 work. Continue with
-  the remaining HTTP tasks; tasks 3–5 are implemented at the boundaries below.
+  use only these checked transfer paths. The native listener now applies them.
+
+#### Checkpoint after SDK-shaped FileIO routes and sealing
+
+- Native path-style S3 requests now enter the Iceberg listener separately from
+  general S3 and bearer catalog routes. Signed PUT, HEAD, GET, Range, create,
+  upload-part, list-parts, Complete and abort use the existing grant, durable
+  multipart, immutable publication and recovery components. Unsupported bucket
+  and object operations remain unavailable. Complete XML parsing is bounded,
+  checks the S3 namespace and ascending part numbers, resolves current durable
+  revisions and enforces the 5-MiB nonfinal part rule.
+- PUT and Complete seal complete canonical bytes before publication. Container
+  magic and full format validation choose JSON metadata or an unbound Avro,
+  Parquet, ORC or Puffin record; neither filenames nor upload headers classify
+  data versus delete use. `FileKind::Unbound` is a storage authority, not a
+  declared Iceberg use. Selected metadata/manifest use must be checked in
+  R181/R182 before table head publication.
+- Native chunk small writes accept at most the protocol frame payload, 65,502
+  bytes. Upload and multipart assembly/recovery use the same block size. The
+  HTTP adapter slices arbitrary received frames into bounded writer calls; the
+  listener's Hyper buffer setting is not a hard body-frame ceiling.
+- A real-stack manual SigV4 test passed ordinary PUT/HEAD/GET/Range and a
+  5-MiB-plus multipart upload, durable ListParts, Complete replay and GET. It
+  took 136 seconds, so the current 300-second Complete/connection deadline is
+  not yet sufficient evidence for large-file official-client acceptance.
+  Official S3FileIO/AWS SDK replay, streaming checksum variants and table-side
+  delegated credential vending remain pending. Do not advertise full FileIO.
 
 #### Handover after partition summaries, Variant bounds and DV binding
 
@@ -573,11 +596,11 @@ the landed storage primitives. The broader ordering is in
   Focused tests: `manifest_summary_test`, `manifest_reader_test`,
   `manifest_variant_test`, `manifest_dv_test`, `manifest_dv_partition_test`,
   `deletion_vector_test` and `puffin_metadata_test`.
-- Next ordinary slices: bounded Complete request XML parsing and exact error
-  mapping, then public HTTP composition using the existing durable multipart
-  state machine. Next complex slices: semantic seal orchestration, candidate
+- Complete XML parsing, HTTP composition and physical seal orchestration are
+  now connected. Next complex slices are selected-use validation, candidate
   snapshot enumeration/admission, selected table heads and atomic commits.
-  Existing standard-PUT kind binding and R179 latency decisions remain in R177.
+  Credential vending and official-client acceptance remain separate; R179's
+  latency decision remains recorded in R177.
 
 - `src/file/avro/schema/projection.rs` and `projection/compile.rs`: root or nested
   scalar cursor; required means schema presence, not a non-null runtime value.
@@ -645,14 +668,3 @@ the landed storage primitives. The broader ordering is in
   and its newly enabled frame dependency `twox-hash 2.1.3` declare 1.81. Current
   Pixi toolchain gates pass; Rust 1.75 was not verified. Do not silently claim
   that older toolchain or downgrade unrelated dependencies as part of the decoder.
-
-## Blocked
-
-Only standard-FileIO semantic kind binding awaits a high-level decision, recorded
-in R177. The backed-up table specification's Equality Delete Files section puts
-usage in manifest `content`/`equality_ids`; ordinary FileIO writes only a path and
-bytes. Inferring kind from `.parquet` or schema alone is unsound. A physical
-storage-family record plus generation-bound usage preserves standard clients;
-per-file upload intents preserve early semantic kind but require adaptation.
-Continue credentials, format parsers, multipart storage and projections; do not
-expose guessed kind classification or claim complete writable FileIO acceptance.

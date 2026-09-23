@@ -28,6 +28,10 @@ owns physical reclamation.
   prefix and immutable files; it never reads or writes general S3 metadata.
 - **FILE-I5 — Canonical fallback:** projections and format hints may avoid work but
   canonical bytes are the only file authority.
+- **FILE-I6 — Client-neutral publication:** ordinary S3 PUT and multipart Complete
+  need only a location and bytes. Ambiguous data/delete usage remains unbound
+  until selected Iceberg metadata supplies it; names and upload headers never
+  determine semantic kind.
 
 1. Add `file/id.rs`, `key.rs`, `record.rs`, `repository.rs`, `writer.rs`,
    `reader.rs`, `location.rs`, `multipart.rs`, and `s3_compat.rs`. A table location
@@ -40,8 +44,12 @@ owns physical reclamation.
    64 KiB may be tested for LZ4 compression. Data, position/equality delete,
    deletion-vector, and statistics files always use chunk storage regardless of
    size.
-3. Publish only after complete bytes, digest, length, file kind, content format,
-   and fixed-size format hint are verified. A retry of the same location with the
+3. Publish only after complete bytes, digest, length, physical content format,
+   and fixed-size format hint are verified. JSON metadata may bind its unique
+   kind at seal; Parquet, ORC, Avro and Puffin remain semantically unbound when
+   their bytes permit more than one Iceberg use. R181/R182 validate each selected
+   metadata or manifest reference against canonical bytes and its declared kind
+   before load or head commit. A retry of the same location with the
    same digest returns the existing result; different bytes return conflict.
    Published overwrite is impossible.
 4. Implement immutable PUT, HEAD, and GET with one contiguous range. PUT streams
@@ -106,6 +114,11 @@ owns physical reclamation.
   overwrite, path escape, tagging, lifecycle, and DELETE are attempted, assert only
   the declared table-prefix operations succeed and general S3 objects remain
   isolated. Invariant: FILE-I4. E2E test.
+- Given an official client uploads ordinary Parquet data and equality-delete
+  files through identical S3 operations, when both immutable locations publish
+  and selected manifests declare their uses, assert PUT/Complete require no
+  custom kind header and wrong uses fail before table head CAS. Invariants:
+  FILE-I1 and FILE-I6. E2E test.
 
 Required gates:
 

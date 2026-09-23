@@ -3,7 +3,7 @@
 #[path = "common/iceberg_upload.rs"]
 mod common;
 
-use crowdb_access_iceberg::file::FileReader;
+use crowdb_access_iceberg::file::{FileReader, NATIVE_FILE_BLOCK_BYTES};
 use crowdb_access_server::iceberg::{FileUploadBudget, FileUploadConstraints, FileUploadError};
 use hyper::body::{Bytes, Frame};
 use sha2::{Digest, Sha256};
@@ -38,7 +38,7 @@ async fn native_upload_pulls_bounded_frames_and_verifies_exact_bytes_before_retu
         .unwrap();
     assert_eq!(budget.active(), 0);
     assert_eq!(tree.length, bytes.len() as u64);
-    assert!(store.max_input.load(Ordering::SeqCst) <= 256 * 1024);
+    assert!(store.max_input.load(Ordering::SeqCst) <= NATIVE_FILE_BLOCK_BYTES);
     let mut reader = FileReader::from_tree(store, identity, tree, None, 16 * 1024).unwrap();
     let mut actual = Vec::new();
     while let Some(frame) = reader.next().await.unwrap() {
@@ -48,7 +48,7 @@ async fn native_upload_pulls_bounded_frames_and_verifies_exact_bytes_before_retu
 }
 
 #[tokio::test]
-async fn upload_byte_length_digest_and_frame_failures_never_return_a_tree() {
+async fn upload_byte_length_and_digest_failures_never_return_a_tree() {
     let budget = FileUploadBudget::new(1).unwrap();
     let store = Arc::new(common::TestUploadBlocks::default());
     let identity = common::owner();
@@ -104,17 +104,18 @@ async fn upload_byte_length_digest_and_frame_failures_never_return_a_tree() {
             .await,
         Err(FileUploadError::Digest)
     ));
-    assert!(matches!(
-        budget
-            .receive(
-                common::TestUploadBody::new(&vec![1; 65_537], 65_537),
-                store.clone(),
-                identity,
-                constraints(100_000)
-            )
-            .await,
-        Err(FileUploadError::Bounds)
-    ));
+    let large_frame = vec![1; 65_537];
+    let tree = budget
+        .receive(
+            common::TestUploadBody::new(&large_frame, large_frame.len()),
+            store.clone(),
+            identity,
+            constraints(100_000),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tree.length, large_frame.len() as u64);
+    assert!(store.max_input.load(Ordering::SeqCst) <= NATIVE_FILE_BLOCK_BYTES);
     assert_eq!(budget.active(), 0);
 }
 
@@ -186,7 +187,7 @@ async fn pending_storage_applies_backpressure_and_cancellation_releases_only_mem
         () = store.entered.notified() => {}
     }
     assert_eq!(budget.active(), 1);
-    assert_eq!(polls.load(Ordering::SeqCst), 4);
+    assert_eq!(polls.load(Ordering::SeqCst), 1);
     let mut other = common::TestUploadBody::new(b"", 1);
     other.frames.push_back(Ok(Frame::data(Bytes::new())));
     let other_polls = other.polls.clone();
@@ -199,6 +200,6 @@ async fn pending_storage_applies_backpressure_and_cancellation_releases_only_mem
     assert_eq!(other_polls.load(Ordering::SeqCst), 0);
     drop(upload);
     assert_eq!(budget.active(), 0);
-    assert_eq!(polls.load(Ordering::SeqCst), 4);
+    assert_eq!(polls.load(Ordering::SeqCst), 1);
     assert_eq!(store.values.load().len(), 1);
 }

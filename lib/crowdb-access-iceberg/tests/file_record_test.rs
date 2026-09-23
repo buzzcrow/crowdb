@@ -70,6 +70,7 @@ fn inline_selection_enforces_kind_stored_size_and_compression_input_bounds() {
         FileKind::EqualityDelete,
         FileKind::DeletionVector,
         FileKind::Statistics,
+        FileKind::Unbound,
     ] {
         for length in [0, 1, MAX_INLINE_BYTES, MAX_COMPRESSION_INPUT_BYTES] {
             assert!(FileContent::select_inline(kind, &vec![0; length]).is_none());

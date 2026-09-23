@@ -24,6 +24,9 @@ iceberg = [
     "dep:hyper",
     "dep:hyper-util",
     "dep:percent-encoding",
+    "dep:quick-xml",
+    "dep:base64",
+    "dep:md-5",
     "dep:serde_json",
     "dep:serde",
     "dep:sha2",
@@ -60,6 +63,9 @@ http-body-util = { version = "0.1", optional = true }
 hyper = { workspace = true, features = ["http1", "server"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 percent-encoding = { version = "2", optional = true }
+quick-xml = { version = "0.38", optional = true }
+base64 = { version = "0.22", optional = true }
+md-5 = { version = "0.10", optional = true }
 serde_json = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 sha2 = { version = "0.10", optional = true }
@@ -78,6 +84,7 @@ crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["chunk-kv", "chunkdb", "diskdb", "diskio"] }
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
 
 [[test]]
@@ -99,4 +106,9 @@ required-features = ["iceberg-e2e"]
 [[test]]
 name = "iceberg_file_storage_test"
 path = "tests/iceberg_file_storage_test.rs"
+required-features = ["iceberg-e2e"]
+
+[[test]]
+name = "iceberg_file_http_test"
+path = "tests/iceberg_file_http_test.rs"
 required-features = ["iceberg-e2e"]

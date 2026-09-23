@@ -207,6 +207,12 @@ and must not carry independent open questions.
     HEAD, one-range GET, create/upload/list/complete/abort multipart, and delegated
     credentials. Bucket CRUD, overwrite, tagging, lifecycle, and unrestricted
     DELETE are unsupported.
+    Standard FileIO PUT supplies a location and bytes without Iceberg content
+    type. Native file authority records the verified physical format and may keep
+    semantic kind unbound. A selected manifest or metadata reference supplies
+    semantic usage; load and commit admission validate that usage against canonical
+    bytes before publishing a table head. Filenames and Parquet schemas never
+    decide data versus equality-delete kind.
 18. **Multipart:** multipart is required for the first writable milestone; all
     sessions, parts, bytes, TTLs, completion, and abort work are durable and bounded.
 19. **Reclamation:** R183 uses generation-indexed candidates plus traversal from
@@ -293,19 +299,6 @@ ordinary implementation tasks are not open questions.
   add test-side retries without confirmation. Five diagnostic/fix runs and the
   exact outstanding failure are recorded in the R179 execution plan. Continue
   independent work, but do not claim R179 E2E acceptance or completion.
-
-- **File kind at standard PUT:** may native FileRecord classify verified physical
-  format/storage family while the selected manifest owns semantic data/equality-
-  delete usage? Standard FileIO supplies a location and bytes, not an Iceberg
-  content-kind header. Equality-delete files use ordinary table column IDs and
-  the manifest supplies `content` and `equality_ids`, so their bytes alone cannot
-  always distinguish them from data files. Recommended: retain immutable physical
-  authority and validate semantic usage at manifest/commit admission. Alternative:
-  require a per-file upload intent identifying kind, which needs an extension or
-  client adaptation. R180 currently requires verified kind before publication;
-  do not guess from filenames or silently weaken that contract. Continue bounded
-  storage, credentials and format parsing, but defer HTTP kind binding until this
-  contract is confirmed.
 
 - **Release engine profiles:** which Spark, Flink, and Trino versions and
   deployment profiles must gate the first functional release? Testing all three

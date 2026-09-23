@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crowdb_access_iceberg::catalog::{CatalogError, CatalogRepository, RootState, RoutedCatalogStore};
-use crowdb_access_iceberg::file::{FileBlockStore, MultipartRecovery};
+use crowdb_access_iceberg::file::{FileBlockStore, MultipartRecovery, NATIVE_FILE_BLOCK_BYTES};
 
 pub(super) async fn run(
     catalog: Arc<CatalogRepository>,
@@ -32,8 +32,9 @@ pub(super) async fn run(
             continue;
         }
         let budget = Duration::from_millis(authority.admission_bounds.request_ms);
-        let recovery = MultipartRecovery::new(store.clone(), blocks.clone(), 64 * 1024, 256 * 1024)
-            .and_then(|recovery| recovery.with_session_timeout(budget));
+        let recovery =
+            MultipartRecovery::new(store.clone(), blocks.clone(), 64 * 1024, NATIVE_FILE_BLOCK_BYTES)
+                .and_then(|recovery| recovery.with_session_timeout(budget));
         let Ok(recovery) = recovery else {
             tracing::error!("multipart recovery bounds invalid; deferring page until catalog is corrected");
             continue;

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::file::{
     ByteRange, FileBlockStore, FileGrant, FileGrantError, FileIdentity, FileLocation, FileOperation,
-    FileRecord, FileTree, MultipartAdmissionRecord, MultipartPhase, MultipartSession,
+    FileRecord, FileTree, MultipartAdmissionRecord, MultipartLimits, MultipartPhase, MultipartSession,
 };
 use hyper::body::{Body, Bytes};
 
@@ -63,6 +63,34 @@ pub struct FileTransferAdmission {
 }
 
 impl FileTransferAdmission {
+    #[must_use]
+    pub const fn context(&self) -> CatalogContext {
+        self.context
+    }
+
+    #[must_use]
+    pub const fn principal(&self) -> [u8; 32] {
+        self.principal
+    }
+
+    /// Returns limits for a newly created durable multipart session.
+    /// # Errors
+    /// Rejects non-create requests or an exhausted byte intersection.
+    pub fn multipart_limits(&self) -> Result<MultipartLimits, FileAdmissionError> {
+        if self.operation != FileOperation::CreateMultipart {
+            return Err(FileAdmissionError::Scope);
+        }
+        let limits = MultipartLimits {
+            max_parts: 10_000,
+            max_part_bytes: self.request_bytes.min(self.file_bytes),
+            max_file_bytes: self.file_bytes,
+            max_staged_bytes: self.staged_bytes,
+            ttl_ms: 24 * 60 * 60 * 1000,
+        };
+        limits.validate().map_err(|_| FileAdmissionError::Bounds)?;
+        Ok(limits)
+    }
+
     /// Intersects verified credentials with service and durable session bounds.
     /// # Errors
     /// Rejects wrong table, principal, operation, upload, expiry or missing credit.
@@ -112,7 +140,10 @@ impl FileTransferAdmission {
                 if now_ms < session.created_ms || now_ms >= session.expires_ms {
                     return Err(FileAdmissionError::State);
                 }
-                if session.credit.map_or(true, |credit| credit.released) {
+                if session.credit.map_or(true, |credit| credit.released)
+                    && !(request.operation == FileOperation::CompleteMultipart
+                        && session.phase == MultipartPhase::Published)
+                {
                     return Err(FileAdmissionError::State);
                 }
                 file_bytes = file_bytes.min(session.limits.max_file_bytes);

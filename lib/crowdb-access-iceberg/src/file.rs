@@ -24,6 +24,7 @@ mod range;
 mod reader;
 mod record;
 mod repository;
+mod seal;
 mod writer;
 
 pub use assembly::{AssemblyPart, AssemblyProgress, FileAssembly, PartFingerprint};
@@ -32,7 +33,9 @@ pub use avro::{
     AvroIntList, AvroLimits, AvroMetricMap, AvroMetricValue, AvroProjectedRecords, AvroProjection,
     AvroRecordArray, AvroRecords, AvroScalar, AvroScalarType, AvroSchema, AvroTuple, AvroTupleField,
 };
-pub use blocks::{FileBlockStore, FileIoError, NativeFileBlocks, MAX_FILE_BLOCK_BYTES};
+pub use blocks::{
+    FileBlockStore, FileIoError, NativeFileBlocks, MAX_FILE_BLOCK_BYTES, NATIVE_FILE_BLOCK_BYTES,
+};
 pub use content::{ChunkRoot, FileContent, InlineCodec, MAX_COMPRESSION_INPUT_BYTES, MAX_INLINE_BYTES};
 pub use credentials::{
     FileCredentials, FileGrant, FileGrantError, FileGrantIssuer, FileOperation, FileOperations,
@@ -70,4 +73,5 @@ pub use range::{resolve_range, ByteRange, RangeError};
 pub use reader::{FileReader, MAX_READ_FRAME_BYTES};
 pub use record::{ContentFormat, FileKind, FileMapping, FileRecord, FormatHint};
 pub use repository::FileRepository;
+pub use seal::{FileSealError, FileSealer};
 pub use writer::{FileTree, FileTreeWriter, FileWriterCheckpoint};
