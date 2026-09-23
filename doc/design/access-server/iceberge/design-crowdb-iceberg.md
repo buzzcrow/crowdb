@@ -282,6 +282,13 @@ number. Current-session checks bracket each scan; concurrent mutations invalidat
 the page rather than mixing pending counters with old part records. Expired or
 terminal sessions and malformed storage pages are not reported as successful lists.
 
+Native HTTP upload staging holds an independent concurrency
+credit, consumes one frame at a time and awaits storage writes before pulling more
+input. Declared/actual byte limits, exact content length and optional signed SHA-256
+are checked before returning a tree. Failed or cancelled uploads retain orphan
+blocks without publishing file authority. This transport adapter does not infer
+semantic file kind, authorize grants or accept unchecked checksum trailers.
+
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner
 bounds nesting and verifies raw UTF-8 before parser scratch can grow. Admission

@@ -62,6 +62,15 @@ integration. Independent FileIO work proceeds under the approved ordering.
   reads only on body polling and holds one shared admission credit until completion
   or cancellation. Three tests cover partial ranges, exact size hints, bounded
   reads, errors and dropping an in-flight response. Listener routing is pending.
+  The upload adapter now independently admits at most 64 concurrent bodies, checks
+  declared and actual byte ceilings, consumes at most one 64-KiB HTTP frame at a
+  time and awaits each bounded native writer operation before polling again.
+  It verifies content length and optional signed SHA-256 before returning a staged
+  tree; cancellation, transport/storage errors and digest mismatches never publish
+  authority. Four server tests cover round-trip bytes, all failure classes,
+  backpressure and credit release while retaining uncertain orphan blocks.
+  Trailer/checksum-streaming compatibility, grant intersection and listener
+  integration remain pending; this primitive does not perform semantic sealing.
 - [x] **Delegation tokens**: sign bounded claims for catalog/activation epoch,
   table, principal, nonce, exact operations, expiry and separate request/file byte
   limits. Derive per-grant S3 credential material without a credential registry;
