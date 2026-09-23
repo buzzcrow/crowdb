@@ -67,6 +67,7 @@ impl MultipartRepository {
             selection: reference,
             selected_parts: selection.count(),
             candidate: None,
+            publication: None,
         });
         self.exchange(session, &next).await
     }

@@ -115,6 +115,8 @@ impl MultipartRecovery {
             self.repository
                 .advance_completion(session, self.blocks.clone(), self.step_bytes, self.block_bytes)
                 .await?
+        } else if session.phase == MultipartPhase::Publishing {
+            self.repository.publish(session).await?.is_some()
         } else {
             return Ok(RecoveryAction::Retained);
         };

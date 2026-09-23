@@ -40,6 +40,7 @@ pub enum MultipartPhase {
     Publishing,
     Published,
     Aborted,
+    Conflicted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,6 +49,7 @@ pub struct MultipartCompletion {
     pub selected_parts: u16,
     pub progress: AssemblyProgress,
     pub candidate: Option<FileTree>,
+    pub publication: Option<PayloadReference>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,7 +112,9 @@ impl MultipartSession {
             MultipartPhase::Completing => {
                 self.completion.is_some() && candidate.is_none() && self.published.is_none()
             }
-            MultipartPhase::Publishing => candidate.is_some() && self.published.is_none(),
+            MultipartPhase::Publishing | MultipartPhase::Conflicted => {
+                candidate.is_some() && self.published.is_none()
+            }
             MultipartPhase::Published => candidate.is_some() && self.published.is_some(),
             MultipartPhase::Aborted => self.published.is_none(),
         };
@@ -165,6 +169,19 @@ impl MultipartCompletion {
         if let Some(candidate) = &self.candidate {
             validate_tree(candidate)?;
             if !done || candidate.length != progress.completed_bytes {
+                return Err(ValidationError::Record);
+            }
+        }
+        if self.candidate.is_some() != self.publication.is_some() {
+            return Err(ValidationError::Record);
+        }
+        if let Some(publication) = &self.publication {
+            publication.validate()?;
+            if publication.catalog != session.context.catalog
+                || publication.operation != session.upload
+                || publication.length == 0
+                || publication.length > crate::record::MAX_RECORD_BYTES
+            {
                 return Err(ValidationError::Record);
             }
         }

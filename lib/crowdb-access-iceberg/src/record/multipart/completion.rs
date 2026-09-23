@@ -38,6 +38,11 @@ pub(super) fn encode<'buffer>(
         .as_ref()
         .map(|bytes| builder.create_vector(bytes));
     let candidate = value.candidate.as_ref().map(|tree| encode_tree(builder, tree));
+    let publication = value
+        .publication
+        .as_ref()
+        .map(|reference| encode_reference(builder, reference))
+        .transpose()?;
     Ok(FBMultipartCompletion::create(
         builder,
         &FBMultipartCompletionArgs {
@@ -50,6 +55,7 @@ pub(super) fn encode<'buffer>(
             active,
             part_digest,
             candidate,
+            publication,
         },
     ))
 }
@@ -95,5 +101,6 @@ pub(super) fn decode(value: FBMultipartCompletion<'_>) -> Result<MultipartComple
         selected_parts: value.selected_parts(),
         progress,
         candidate: value.candidate().map(decode_tree).transpose()?,
+        publication: value.publication().map(decode_reference).transpose()?,
     })
 }

@@ -213,6 +213,7 @@ table FBMultipartCompletion {
     active:FBPartFingerprint;
     part_digest:[ubyte];
     candidate:FBFileTree;
+    publication:FBPayloadReference;
 }
 
 table FBMultipartSession {

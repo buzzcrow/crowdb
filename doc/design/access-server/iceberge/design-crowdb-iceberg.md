@@ -254,6 +254,12 @@ part settlement, logical expiry or assembly byte window per session. It validate
 the complete scan page before mutations, rejects foreign continuations and reports
 finished assembly as awaiting semantic sealing. Expiry never deletes physical
 parts and cannot bypass an unresolved part mutation or a publication fence.
+Publication freezes a caller-validated sealed file record in immutable payload
+pages before the publication phase CAS. Recovery replays that exact record through
+the immutable file repository and persists the selected FileId. Equal preexisting
+bytes retain their original identity. Only a proven incompatible immutable location
+permits the terminal Conflicted phase; uncertain writes and context failures do not
+become false aborts. Canonical format validation remains the seal caller's contract.
 Global runtime admission, server scheduling and HTTP integration remain separate.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an

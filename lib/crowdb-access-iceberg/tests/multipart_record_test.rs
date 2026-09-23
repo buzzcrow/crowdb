@@ -48,6 +48,7 @@ async fn multipart_records_round_trip_open_partial_publishing_published_and_abor
     }
     let completion = session.completion.as_mut().unwrap();
     completion.candidate = Some(assembly.finish(&completion.progress).await.unwrap());
+    completion.publication = Some(completion.selection.clone());
     session.phase = MultipartPhase::Publishing;
     check(&session);
     session.phase = MultipartPhase::Published;
@@ -55,6 +56,8 @@ async fn multipart_records_round_trip_open_partial_publishing_published_and_abor
     check(&session);
     session.phase = MultipartPhase::Aborted;
     session.published = None;
+    check(&session);
+    session.phase = MultipartPhase::Conflicted;
     check(&session);
     let part = MultipartPart {
         upload: session.upload,

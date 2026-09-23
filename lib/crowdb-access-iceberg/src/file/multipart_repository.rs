@@ -10,6 +10,7 @@ use super::{MultipartPhase, MultipartSession};
 
 mod completion;
 mod parts;
+mod publication;
 
 pub use completion::MultipartWorkError;
 

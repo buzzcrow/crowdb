@@ -27,6 +27,7 @@ async fn multipart_session_phases_require_frozen_completion_and_never_claim_an_a
     completion.progress.next_part = 1;
     completion.progress.writer = Some(writer.checkpoint().await.unwrap());
     completion.candidate = Some(writer.finish().await.unwrap());
+    completion.publication = Some(completion.selection.clone());
     session.validate().unwrap();
     session.phase = MultipartPhase::Published;
     assert!(session.validate().is_err());

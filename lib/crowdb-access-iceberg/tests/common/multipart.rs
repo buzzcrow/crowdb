@@ -61,5 +61,6 @@ pub fn completion(session: &MultipartSession) -> MultipartCompletion {
             part_digest: None,
         },
         candidate: None,
+        publication: None,
     }
 }

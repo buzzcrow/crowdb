@@ -134,6 +134,14 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Four sweep tests cover multi-page progress, cross-instance visits, exact expiry,
   retained bytes, invalid/foreign cursors and corrupt pages before any mutation.
   The native scan adapter is implemented; server scheduling remains next.
+  A caller-provided sealed record is now frozen as an immutable payload before
+  the publication phase CAS. Recovery replays the exact seal through immutable
+  file publication and records the selected FileId, including an existing equal
+  file's original identity. A proven unequal immutable location records a terminal
+  Conflicted phase; ambiguous storage/context failures remain recoverable instead.
+  Five publication tests cover all five lost-write boundaries, restart replay,
+  equal/different locations, abort races, corrupt intent and lost conflict replies.
+  This does not infer HTTP file kind or replace canonical format validation.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
@@ -177,7 +185,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 174 library tests pass, covering namespace, file records, range/streaming,
+- 179 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass
