@@ -294,6 +294,19 @@ ordinary implementation tasks are not open questions.
   exact outstanding failure are recorded in the R179 execution plan. Continue
   independent work, but do not claim R179 E2E acceptance or completion.
 
+- **File kind at standard PUT:** may native FileRecord classify verified physical
+  format/storage family while the selected manifest owns semantic data/equality-
+  delete usage? Standard FileIO supplies a location and bytes, not an Iceberg
+  content-kind header. Equality-delete files use ordinary table column IDs and
+  the manifest supplies `content` and `equality_ids`, so their bytes alone cannot
+  always distinguish them from data files. Recommended: retain immutable physical
+  authority and validate semantic usage at manifest/commit admission. Alternative:
+  require a per-file upload intent identifying kind, which needs an extension or
+  client adaptation. R180 currently requires verified kind before publication;
+  do not guess from filenames or silently weaken that contract. Continue bounded
+  storage, credentials and format parsing, but defer HTTP kind binding until this
+  contract is confirmed.
+
 - **Release engine profiles:** which Spark, Flink, and Trino versions and
   deployment profiles must gate the first functional release? Testing all three
   immediately provides broader interoperability evidence but increases fixture

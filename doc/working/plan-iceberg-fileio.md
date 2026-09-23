@@ -33,6 +33,8 @@ integration. Independent FileIO work proceeds under the approved ordering.
   the chunk variant. Five record tests cover codec/key/tag/corruption boundaries.
   The publication primitive requires already sealed chunk input; no HTTP route
   exposes it until the streaming seal pipeline verifies canonical bytes/formats.
+  Standard PUT cannot infer equality-delete usage from bytes alone; the exact
+  HTTP kind binding awaits the R177 decision below. Format parsing is independent.
 - [x] **Bounded chunk streaming**: store at most 256-KiB leaves and 256 child
   references per directory, with at most eight directory levels. Persist directory
   bytes in chunks, not KV; bind every directory to file/catalog/table identity,
@@ -86,3 +88,14 @@ integration. Independent FileIO work proceeds under the approved ordering.
   `iceberg_file_storage_test` target. This verifies storage bytes, not Parquet
   semantics or the pending FileIO HTTP and official-client contract.
 - Command: `pixi run clean-env && CROWDB_RUNTIME_ROOT="$PWD/.crowdb-runtime/ephemeral/iceberg-file-storage" pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_storage_test -- --nocapture`.
+
+## Blocked
+
+Only standard-FileIO semantic kind binding awaits a high-level decision, recorded
+in R177. The backed-up table specification's Equality Delete Files section puts
+usage in manifest `content`/`equality_ids`; ordinary FileIO writes only a path and
+bytes. Inferring kind from `.parquet` or schema alone is unsound. A physical
+storage-family record plus generation-bound usage preserves standard clients;
+per-file upload intents preserve early semantic kind but require adaptation.
+Continue credentials, format parsers, multipart storage and projections; do not
+expose guessed kind classification or claim complete writable FileIO acceptance.
