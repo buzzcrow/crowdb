@@ -186,6 +186,11 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Chunk-KV restart pass against real ChunkDB/DiskIO using the separate
   `iceberg_file_storage_test` target. This verifies storage bytes, not Parquet
   semantics or the pending FileIO HTTP and official-client contract.
+  The same native fixture now persists a multipart reservation, settles it through
+  the recovery scan, freezes its selection and checkpoints seven assembled bytes.
+  After Chunk-KV restart and a new chunk client, recovery completes the exact bytes
+  while the file location remains unpublished. Logical abort retains that state.
+  The expanded fixture passes in 35.96 seconds; Iceberg E2E-feature clippy passes.
 - Command: `pixi run clean-env && CROWDB_RUNTIME_ROOT="$PWD/.crowdb-runtime/ephemeral/iceberg-file-storage" pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_storage_test -- --nocapture`.
 
 ## Blocked

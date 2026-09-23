@@ -1,5 +1,7 @@
 #[path = "common/iceberg_stack.rs"]
 mod common;
+#[path = "common/iceberg_multipart.rs"]
+mod multipart;
 
 use std::sync::Arc;
 
@@ -145,4 +147,6 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     assert_eq!(read_all(reader).await, bytes[16_380..33_000]);
     assert_eq!(repository.publish(context, &candidate).await.unwrap(), candidate);
     client.shutdown_small_writes().await.unwrap();
+    drop(client);
+    multipart::verify_restart(&mut stack, context, owner.table).await;
 }
