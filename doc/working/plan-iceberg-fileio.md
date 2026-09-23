@@ -223,7 +223,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   sequence ordering, version-dependent required/unknown counts and v3 delete/data
   row-ID separation. Four tests cover renamed/reordered fields, missing/null
   values, empty-list schema types and poisoned cursors. Partition-summary semantics,
-  table spec membership and typed data-file/inheritance integration
+  table spec membership and complete collection/cross-file semantics
   remain separate; list decoding does not yet prove those cross-file invariants.
   Nested scalar paths now traverse records and nullable records, with at most 64
   selections, 16 IDs per path and 16,384 compiled field visits. Shared named record
@@ -236,7 +236,12 @@ integration. Independent FileIO work proceeds under the approved ordering.
   A constant-state manifest inheritance resolver now handles v1 zero sequences,
   added-only sequence inheritance, explicit ages, upgraded existing-file row IDs,
   data/delete separation and checked row-ID advancement. Five semantic tests pass.
-  It is not yet connected to Avro schema decoding or table commit admission.
+  Typed scalar entry projection now connects Avro decoding to that resolver and
+  preserves its state across blocks. Required values, path scope, format/content,
+  DV descriptor bounds and row-ID overflow fail before advancing the failed entry.
+  Five entry tests and two chunk-backed null/deflate block integration tests pass.
+  Partition/equality-ID/metrics semantics, canonical DV reference verification and
+  table commit admission remain pending; this is not full manifest validation.
 - [ ] **Acceptance**: official FileIO, real chunks/restarts, concurrency/lost
   responses, all boundary tests; run fmt and lint independently. No full feature
   advertisement or closure until the complete requirement passes.
@@ -258,7 +263,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 223 library tests pass, covering namespace, file records, range/streaming,
+- 230 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass
@@ -283,8 +288,10 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Handover — 2026-09-23
 
-Stop at the verified nested-projection task boundary at the user's request, so a
-cheaper mode can resume. This is not requirement completion or a new blocker.
+The user requested a handover for a cheaper mode, then asked to finish a complex
+independent task first. That boundary is now typed scalar manifest-entry decoding
+plus cross-block inheritance, built on the verified nested projection. This is
+not requirement completion or a new blocker.
 No user-guide edits, public FileIO exposure, new unsafe exceptions, locks or
 physical deletion were added. Resume with the next task below, not a rewrite of
 the landed storage primitives. The broader ordering is in
@@ -292,20 +299,24 @@ the landed storage primitives. The broader ordering is in
 
 ### Immediate continuation
 
-- [ ] **Typed manifest entries**: add `src/manifest/entry.rs` and
-  `tests/manifest_entry_test.rs`. Reuse `AvroProjection::paths`,
+- [x] **Typed scalar manifest entries**: implemented `src/manifest/entry.rs`,
+  `entry/decode.rs` and `tests/manifest_entry_test.rs`, reusing `AvroProjection::paths`,
   `AvroFieldPath { ids, required }`, `field_types()` and `ManifestInheritance`.
-  Root IDs are status `0`, snapshot `1`, data-file record `2`, data sequence `3`,
+  `ManifestEntryState` owns inheritance across blocks and rejects a mismatched
+  projection version/table. Root IDs are status `0`, snapshot `1`, data-file record `2`, data sequence `3`,
   file sequence `4`. Nested paths include `[2, 134]` content, `[2, 100]` path,
   `[2, 101]` format, `[2, 103]` record count, `[2, 104]` byte length,
   `[2, 140]` sort order, `[2, 142]` first row ID, `[2, 143]` referenced file,
-  `[2, 144]` DV offset, and `[2, 145]` DV size. Check required/null/type rules
-  against each writer version before consuming data; bind paths to the expected
-  native table. Keep one entry, not a growing vector. Resolve inheritance only
-  after all checks for that entry pass, so a failed entry never advances row IDs.
-  Do not guess semantic file kind from extension. Test v1 missing sequence/content,
-  v2 added-only inheritance, v3 row IDs, malformed status/content, foreign paths,
-  null required values, poison-after-error and unchanged resolver on failure.
+  `[2, 144]` DV offset, and `[2, 145]` DV size. The v1 deprecated block-size field
+  `[2, 105]` is also required. Types are checked at compile time and required values
+  at pull time. Paths bind to the native table; no extension-based kind guessing.
+  Scalar/binary failures and inheritance errors never advance that entry's row IDs.
+  Position deletes ignore sort order. Puffin entries require v3 position-delete
+  content, a referenced file and an in-file offset/size pair. Full equality-delete,
+  partition and metric semantics are explicitly not asserted by `ManifestScalarEntry`.
+  When adding those checks, perform them before `inheritance.resolve`, not after
+  yielding the entry. Five tests cover versions, malformed values, null records,
+  explicit versus inherited row IDs, overflow, descriptors and poisoned cursors.
 - [ ] **Collections and manifest metadata**: scalar projection does not yet
   expose equality IDs, metrics maps, partition tuples or partition summaries.
   Extend bounded traversal only as needed; do not deserialize full datum graphs.
@@ -316,15 +327,18 @@ the landed storage primitives. The broader ordering is in
   version is not necessarily the table or enclosing manifest-list version.
   Position deletes ignore sort order; do not reject solely for a non-null value.
   Files: Avro schema/projection children, manifest modules, focused fixtures.
-- [ ] **End-to-end block semantics**: compose `AvroRecords::next()` with the typed
-  projections over each decoded block; retain the inheritance resolver across
-  blocks. `AvroRecords::schema()` borrows the reader, so drop a borrowed projection
-  before the next mutable pull, or design an owned bounded compilation handle
-  rather than using unsafe/self-referential state. Add native leaf-crossing OCF
-  tests, null/deflate blocks, renamed/reordered fields, cancellation and corruption.
-  Existing `file_avro_test.rs`, `common/file_blocks.rs` and
-  `common/manifest_list.rs` are fixtures to reuse. Do not report complete manifest
-  acceptance while collection or cross-file checks remain missing.
+- [x] **Scalar block integration**: `manifest_entry_stream_test.rs` composes
+  `AvroRecords::next()` with a projection per decoded block and shared
+  `ManifestEntryState`. Tests cross 64-byte stored leaves and Avro block boundaries
+  for v1/v2/v3 with both null and raw-deflate codecs; a binary-valid but semantically
+  invalid later block leaves prior row-ID progress unchanged. Drop the borrowed
+  projection before the next mutable reader pull; no unsafe/self-referential state
+  is needed. `common/manifest_entry.rs` provides typed schema and OCF datum fixtures.
+  These use the test block store, not a new real-ChunkDB process acceptance run.
+- [ ] **Complete block semantics**: extend that integration with collection,
+  OCF metadata, cancellation and cross-file checks as they land. Reuse
+  `file_avro_test.rs`, `common/file_blocks.rs` and `common/manifest_list.rs`.
+  Do not report complete manifest acceptance while those checks are missing.
 - [ ] **DV cross-file checks**: reuse `read_puffin_metadata` and
   `validate_deletion_vector`; those already verify exact descriptor reference,
   span, cardinality, portable bitmap structure, maximum position and CRC.
@@ -379,12 +393,13 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 223 tests. `pixi run rs-lint` and
+  passes 230 tests. `pixi run rs-lint` and
   `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
   and test code only; the previously recorded native E2E run is not a new run.
 - Start the next change with focused `--test avro_nested_projection_test`,
   `--test avro_projection_test`, `--test manifest_list_test`,
-  `--test manifest_inheritance_test` and the new entry target, then the full library
+  `--test manifest_inheritance_test`, `--test manifest_entry_test` and
+  `--test manifest_entry_stream_test`, then the full library
   gate and separate lint/fmt gates. Use `pixi run` for every executable.
 - For server transport changes, run
   `pixi run -- cargo test -p crowdb-access-server --no-default-features --features iceberg --test iceberg_file_upload_test --test iceberg_file_body_test --test iceberg_file_auth_test --test iceberg_file_request_test`.

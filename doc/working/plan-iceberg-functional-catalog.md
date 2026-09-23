@@ -19,12 +19,48 @@ Status: the user approved this ordering and implementation of independent work.
 Collect unresolved human decisions in R177 for confirmation when the user returns;
 do not stop unrelated tasks. No user-guide tasks.
 
-Handover checkpoint (2026-09-23): the user now requests stopping after the current
-verified task to switch to a cheaper mode. Nested Avro field-ID projection is
-that task boundary. Resume instructions, exact next implementation slices,
+Handover checkpoint (2026-09-23): the user requested a cheaper-mode handover,
+then asked to finish a complex independent task first. Typed scalar manifest-entry
+decoding and cross-block inheritance are now the verified task boundary, following
+nested Avro field-ID projection. Resume instructions, exact next implementation slices,
 landed APIs, remaining integration gaps and test commands are in
 `plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this
 pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
+
+## Remaining Complexity Review
+
+- **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
+  immutable candidate metadata, namespace admission, one head-CAS publisher,
+  lost-response replay and v1/v2/v3 evolution must agree on a single generation.
+  This depends on unfinished FileIO and table state, so do not implement it as an
+  isolated HTTP handler or advertise write support from partial coverage.
+- **Highest: reclamation safety (R183)**. Cross-snapshot reachability, catalog/table
+  generations, pins, reader/delegation leases, retained multipart evidence and
+  crash-safe deletion proofs are coupled. Keep the approved deferral and physical
+  deletion disabled; this is not a cleanup job that can safely use only TTL.
+- **High: remaining FileIO semantics (R180)**. Collection schemas, equality IDs,
+  partition/metric validation and snapshot-wide DV/row-lineage checks require
+  bounded traversal plus table context. The difficult scalar bridge is now landed:
+  typed IDs/paths, v1/v2/v3 inheritance, atomic failure behavior and cross-block
+  state have focused tests. Next implement bounded collections; do not rebuild
+  the Avro parser or conflate scalar validation with full manifest acceptance.
+- **High: multipart/HTTP composition (R180)**. Durable credits, parts, completion,
+  publication and recovery primitives exist. Wire official retry/error/XML
+  behavior, authentication/limits and semantic sealing onto those same fences.
+  Invalid frozen selections and uncertain publication must not acquire a second
+  HTTP-only state machine. Standard PUT semantic kind still needs the R177 choice.
+- **High: namespace/table races (R179/R181)**. Create/rename-in versus namespace
+  drop needs shared admission and crash recovery; bounded table heads, logical
+  drop and purge intent are still prerequisites. Preserve the separate namespace
+  latency blocker instead of weakening its acceptance fixture.
+- **Medium, good bounded follow-ups**: metadata projection pages with canonical
+  fallback; multipart response serialization and LastModified once their contract
+  is read; grant/byte-limit intersection tests; additional negative format fixtures.
+  Take one small verified slice per commit. None alone completes a catalog server.
+- **Broad integration cost (R184)**: official FileIO/REST clients, cancellation,
+  native restarts and engine/version matrices. Start foreground vertical slices
+  as lifecycle/commit features land; GC-dependent acceptance remains last. Release
+  engine profiles and no-GC capacity policy remain human choices in R177.
 
 ## Review checkpoint
 
