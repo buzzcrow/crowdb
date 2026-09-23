@@ -14,6 +14,9 @@ pub(in crate::manifest) fn validate(
     lower: Option<&[u8]>,
     upper: Option<&[u8]>,
 ) -> Result<(), Error> {
+    if *kind == PrimitiveType::Variant {
+        return super::variant::validate(lower, upper);
+    }
     let lower = lower.map(|bytes| decode(kind, bytes)).transpose()?;
     let upper = upper.map(|bytes| decode(kind, bytes)).transpose()?;
     let order = match (lower, upper) {

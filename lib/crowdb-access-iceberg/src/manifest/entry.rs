@@ -13,6 +13,7 @@ mod decode;
 mod metrics;
 mod partition;
 mod semantic;
+mod variant;
 pub use metrics::ManifestMetrics;
 pub use partition::PartitionValue;
 

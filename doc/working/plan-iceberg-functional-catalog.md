@@ -49,8 +49,9 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   validation before inheritance. Historical schema/spec context, partition tuples,
   typed scalar/geospatial bounds and a list-bound streaming reader are now implemented.
   Partition summary decoding and reader containment/EOF validation are implemented.
-  Remaining complex work includes Variant bounds and snapshot/file
-  validation. Use the contextual reader; do not conflate it with full seal acceptance.
+  Variant bound objects also have bounded decoding and typed ordering checks.
+  Remaining complex work includes snapshot/file validation. Use the contextual
+  reader; do not conflate it with full seal acceptance.
 - **High: multipart/HTTP composition (R180)**. Durable credits, parts, completion,
   publication and recovery primitives exist. Response formatting and limit
   intersection helpers are present. Wire actual HTTP operations, official retry

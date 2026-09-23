@@ -414,8 +414,7 @@ the landed storage primitives. The broader ordering is in
   collection ancestry. Bounds check encodings and ordering for scalar types and
   geospatial points, including numeric promotions, signed decimals, signed zero,
   UTF-8 and geography dateline wrapping. Position-delete reserved columns are
-  recognized. Variant bound values return explicit unsupported errors; their
-  specialized nested representation remains separate work below.
+  recognized. Variant bounds now use the bounded object decoder below.
 - [x] **Partition summaries (task 3)**: decode bounded field-summary arrays by
   field ID, bind ordering/types to the historical partition spec, and check
   summary flags and bounds against streamed entries before reader completion.
@@ -425,8 +424,18 @@ the landed storage primitives. The broader ordering is in
   `ManifestReader` checks bound containment for all entry statuses and exact
   null/known-NaN flags at EOF; unknown transforms retain bounds without using
   them for filtering. Four new tests plus the full library gate pass (277 tests).
-- [ ] **Variant bounds (task 4)**: validate bounded concatenated Variant metadata
+- [x] **Variant bounds (task 4)**: validate bounded concatenated Variant metadata
   and primitive-valued bounds objects, normalized paths, paired types and order.
+  `entry/variant.rs` and its `primitive`/`path` children accept metadata v1,
+  all offset widths, unordered value storage and optional one-sided paths.
+  Limits are 1 MiB encoded bytes, 4096 dictionary/object entries, 4096 path bytes
+  and 32 path segments. Same logical types compare exactly, including integer/
+  decimal encodings and micro/nanosecond timestamps; float/double and timestamp
+  zones remain distinct. Null/NaN bounds, nested object/array values, malformed
+  offsets, duplicates and unsupported type IDs fail before inheritance advances.
+  Five focused tests and the full library gate pass (282 tests).
+  Encoding reference: [Parquet Variant](https://github.com/apache/parquet-format/blob/master/VariantEncoding.md);
+  path reference: [RFC 9535 normalized paths](https://www.rfc-editor.org/rfc/rfc9535.html#section-2.7).
 - [ ] **Remaining format semantics**: full default-value validation,
   encryption key metadata and split offsets remain.
   Actual data/delete-file field presence and true bounds against data require
@@ -472,8 +481,8 @@ the landed storage primitives. The broader ordering is in
 - Reader completion verifies this pipeline and list totals, not whole-snapshot
   correctness or content-file truth. Callers must exhaust the reader and handle
   final EOF errors. Unknown transform values are retained for reads; write
-  admission must reject unknown transforms. Variant bounds explicitly fail closed
-  until a bounded Variant decoder is implemented.
+  admission must reject unknown transforms. Variant bounds now decode bounded
+  primitive-valued objects; actual bound truth still requires data-file context.
 - Full delete-file column presence and actual bound correctness require file
   context, not only manifest schema. Keep snapshot-wide DV uniqueness in commit
   admission. These remain complex tasks, not ordinary wiring for a cheaper model.
@@ -523,7 +532,8 @@ the landed storage primitives. The broader ordering is in
   composition using the existing durable repository and response helpers, and
   exact error/status mapping. Semantic sealing, standard PUT kind binding and
   official client/retry acceptance remain separate R180 work. Continue with
-  task 4 (Variant bounds); partition summaries now flow through the reader.
+  task 5 (DV cross-file checks); summaries and Variant bounds now flow through
+  contextual readers.
 
 - `src/file/avro/schema/projection.rs` and `projection/compile.rs`: root or nested
   scalar cursor; required means schema presence, not a non-null runtime value.
@@ -568,7 +578,7 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 277 tests (including durable part-time and partition-summary tests). Protocol
+  passes 282 tests (including partition-summary and Variant-bound tests). Protocol
   `--all-targets` passes after the schema addition. Fmt, workspace lint, and
   Iceberg-feature clippy pass.
 - Server compatibility gates also pass: default `--all-targets` (2 tests) and
