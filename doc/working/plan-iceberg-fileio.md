@@ -416,8 +416,19 @@ the landed storage primitives. The broader ordering is in
   UTF-8 and geography dateline wrapping. Position-delete reserved columns are
   recognized. Variant bound values return explicit unsupported errors; their
   specialized nested representation remains separate work below.
-- [ ] **Remaining format semantics**: partition summaries, variant bound decoding,
-  full default-value validation, encryption key metadata and split offsets remain.
+- [x] **Partition summaries (task 3)**: decode bounded field-summary arrays by
+  field ID, bind ordering/types to the historical partition spec, and check
+  summary flags and bounds against streamed entries before reader completion.
+  Cover null/NaN, signed zero, malformed layouts, limits and poisoned cursors.
+  `ManifestListEntry::partitions` preserves absent/null/empty arrays. Each list
+  record admits at most 256 summaries and 1 MiB encoded summary bytes.
+  `ManifestReader` checks bound containment for all entry statuses and exact
+  null/known-NaN flags at EOF; unknown transforms retain bounds without using
+  them for filtering. Four new tests plus the full library gate pass (277 tests).
+- [ ] **Variant bounds (task 4)**: validate bounded concatenated Variant metadata
+  and primitive-valued bounds objects, normalized paths, paired types and order.
+- [ ] **Remaining format semantics**: full default-value validation,
+  encryption key metadata and split offsets remain.
   Actual data/delete-file field presence and true bounds against data require
   format/file context. No complete manifest/seal acceptance is claimed here.
 - [x] **Scalar block integration**: `manifest_entry_stream_test.rs` composes
@@ -437,7 +448,7 @@ the landed storage primitives. The broader ordering is in
   Tests cover v1/v2/v3, null/deflate, 64-byte leaves, multiple records per block,
   multiple blocks, bad later entries, wrong identity/spec, totals and cancellation.
   These are chunk-backed library tests, not new real-server or client E2E acceptance.
-- [ ] **DV cross-file checks**: reuse `read_puffin_metadata` and
+- [ ] **DV cross-file checks (task 5)**: reuse `read_puffin_metadata` and
   `validate_deletion_vector`; those already verify exact descriptor reference,
   span, cardinality, portable bitmap structure, maximum position and CRC.
   Still connect manifest fields to that validator, compare maximum position with
@@ -512,7 +523,7 @@ the landed storage primitives. The broader ordering is in
   composition using the existing durable repository and response helpers, and
   exact error/status mapping. Semantic sealing, standard PUT kind binding and
   official client/retry acceptance remain separate R180 work. Continue with
-  task 3 (partition summaries) once these handoff interfaces are understood.
+  task 4 (Variant bounds); partition summaries now flow through the reader.
 
 - `src/file/avro/schema/projection.rs` and `projection/compile.rs`: root or nested
   scalar cursor; required means schema presence, not a non-null runtime value.
@@ -523,8 +534,9 @@ the landed storage primitives. The broader ordering is in
   or complete global Iceberg field-ID validation.
 - `src/manifest/list.rs`: typed manifest-list cursor, canonical same-table paths,
   length/spec-ID checks, v1 zero sequences, v2/v3 required counts, v3 optional row
-  IDs and delete separation. It does not verify spec membership, summaries,
-  referenced file existence or snapshot-wide lineage. The list writer version is
+  IDs, bounded summaries and delete separation. Trusted context and the bound
+  reader validate summary types and actual partitions. Referenced file existence
+  and snapshot-wide lineage remain separate. The list writer version is
   explicit; do not infer it from the current table version.
 - `src/file/multipart_credits.rs`: durable global session/reserved-byte admission
   with a single pending CAS journal; `settle` repairs uncertain reservation or
@@ -556,7 +568,7 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 273 tests (including the new durable part-time test). Protocol
+  passes 277 tests (including durable part-time and partition-summary tests). Protocol
   `--all-targets` passes after the schema addition. Fmt, workspace lint, and
   Iceberg-feature clippy pass.
 - Server compatibility gates also pass: default `--all-targets` (2 tests) and

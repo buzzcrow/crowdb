@@ -9,6 +9,14 @@ pub(super) fn projection<'schema>(
     schema: &'schema AvroSchema,
     paths: &[AvroFieldPath<'_>],
 ) -> Result<AvroProjection<'schema>, AvroContainerError> {
+    at_root(schema, schema.root, paths)
+}
+
+pub(in crate::file::avro::schema) fn at_root<'schema>(
+    schema: &'schema AvroSchema,
+    root: usize,
+    paths: &[AvroFieldPath<'_>],
+) -> Result<AvroProjection<'schema>, AvroContainerError> {
     if paths.is_empty() || paths.len() > 64 {
         return Err(AvroContainerError::Bounds);
     }
@@ -29,7 +37,7 @@ pub(super) fn projection<'schema>(
         map_ids: vec![None; paths.len()],
     };
     let selections: Vec<_> = paths.iter().copied().enumerate().collect();
-    let root = compiler.record(schema.root, &selections)?;
+    let root = compiler.record(root, &selections)?;
     Ok(AvroProjection {
         schema,
         root,

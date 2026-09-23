@@ -157,3 +157,85 @@ async fn multiple_entries_in_one_block_advance_exactly_once_and_check_live_minim
     }
     assert!(reader.next_entry().await.is_err());
 }
+
+#[tokio::test]
+async fn partition_summaries_check_streamed_null_nan_bounds_and_eof_flags() {
+    use crowdb_access_iceberg::manifest::{ManifestContext, PartitionSummary};
+    let version = ManifestVersion::V3;
+    for (values, lower, upper, nulls, nans, valid) in [
+        ([None, Some(f64::NAN)], None, None, true, Some(true), true),
+        (
+            [Some(-0.0), Some(0.0)],
+            Some(-0.0),
+            Some(0.0),
+            false,
+            Some(false),
+            true,
+        ),
+        (
+            [Some(-0.0), Some(0.0)],
+            Some(0.0),
+            Some(0.0),
+            false,
+            Some(false),
+            false,
+        ),
+        ([Some(1.0), None], None, None, false, None, false),
+        ([Some(1.0), Some(f64::NAN)], None, None, false, Some(false), false),
+        ([Some(1.0), Some(2.0)], Some(1.0), Some(1.0), false, None, false),
+        ([Some(1.0), Some(2.0)], None, None, true, None, false),
+        ([Some(1.0), Some(2.0)], None, None, false, Some(true), false),
+    ] {
+        for deflate in [false, true] {
+            let (store, record) = stream::stored_with_partitions(version, deflate, values).await;
+            let mut list = stream::list(&record);
+            list.partitions = Some(vec![PartitionSummary {
+                contains_null: nulls,
+                contains_nan: nans,
+                lower_bound: lower.map(|value: f64| value.to_le_bytes().to_vec()),
+                upper_bound: upper.map(|value: f64| value.to_le_bytes().to_vec()),
+            }]);
+            let context=ManifestContext::parse(version,0,0,
+                br#"{"type":"struct","schema-id":0,"fields":[{"id":3,"name":"v","required":false,"type":"double"}]}"#,
+                br#"[{"source-id":3,"field-id":1000,"name":"p","transform":"identity"}]"#).unwrap();
+            let mut reader = ManifestReader::open(
+                store,
+                record,
+                list,
+                context,
+                AvroLimits {
+                    header_bytes: 8192,
+                    metadata_entries: 8,
+                    block_bytes: 4096,
+                    records_per_block: 8,
+                },
+                AvroDatumLimits {
+                    depth: 64,
+                    values: 1000,
+                    value_bytes: 1024,
+                },
+                4096,
+            )
+            .await
+            .unwrap();
+            let mut failed = false;
+            let mut row_id = Some(100);
+            loop {
+                match reader.next_entry().await {
+                    Ok(Some(_)) => row_id = reader.next_row_id(),
+                    Ok(None) => break,
+                    Err(_) => {
+                        failed = true;
+                        assert_eq!(reader.next_row_id(), row_id);
+                        break;
+                    }
+                }
+            }
+            assert_eq!(!failed, valid, "{values:?}, {deflate}");
+            assert_eq!(reader.is_complete(), valid);
+            if failed {
+                assert!(reader.next_entry().await.is_err());
+            }
+        }
+    }
+}

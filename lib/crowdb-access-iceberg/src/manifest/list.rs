@@ -1,9 +1,9 @@
 use crate::file::{
-    AvroContainerError, AvroDatumLimits, AvroProjectedRecords, AvroProjection, AvroScalar, AvroScalarType,
-    AvroSchema, FileLocation, TableLocation,
+    AvroContainerError, AvroDatumLimits, AvroFieldPath, AvroProjectedRecords, AvroProjection,
+    AvroRecordArray, AvroScalar, AvroScalarType, AvroSchema, FileLocation, TableLocation,
 };
 
-use super::{ManifestContent, ManifestVersion};
+use super::{ManifestContent, ManifestVersion, PartitionSummary};
 
 const FIELDS: [i32; 14] = [
     500, 501, 502, 503, 517, 515, 516, 504, 505, 506, 512, 513, 514, 520,
@@ -29,12 +29,14 @@ pub struct ManifestListEntry {
     pub file_counts: [Option<i32>; 3],
     pub row_counts: [Option<i64>; 3],
     pub first_row_id: Option<i64>,
+    pub partitions: Option<Vec<PartitionSummary>>,
 }
 
 pub struct ManifestListProjection<'schema> {
     projection: AvroProjection<'schema>,
     version: ManifestVersion,
     table: TableLocation,
+    summaries: AvroRecordArray<'schema>,
 }
 
 pub struct ManifestListRecords<'projection, 'schema, 'data> {
@@ -42,6 +44,8 @@ pub struct ManifestListRecords<'projection, 'schema, 'data> {
     version: ManifestVersion,
     table: TableLocation,
     failed: bool,
+    summaries: &'projection AvroRecordArray<'schema>,
+    limits: AvroDatumLimits,
 }
 
 impl<'schema> ManifestListProjection<'schema> {
@@ -68,10 +72,33 @@ impl<'schema> ManifestListProjection<'schema> {
         {
             return Err(ManifestListError::Field);
         }
+        let paths = [509, 518, 510, 511];
+        let selections: Vec<_> = paths
+            .iter()
+            .map(|id| AvroFieldPath {
+                ids: std::slice::from_ref(id),
+                required: *id == 509,
+            })
+            .collect();
+        let summaries = AvroRecordArray::new(schema, 507, 508, &selections)?;
+        if summaries.field_types().is_some_and(|types| {
+            types
+                .iter()
+                .zip([
+                    AvroScalarType::Boolean,
+                    AvroScalarType::Boolean,
+                    AvroScalarType::Bytes,
+                    AvroScalarType::Bytes,
+                ])
+                .any(|(actual, expected)| actual.is_some_and(|actual| actual != expected))
+        }) {
+            return Err(ManifestListError::Field);
+        }
         Ok(Self {
             projection,
             version,
             table,
+            summaries,
         })
     }
 
@@ -89,6 +116,8 @@ impl<'schema> ManifestListProjection<'schema> {
             version: self.version,
             table: self.table,
             failed: false,
+            summaries: &self.summaries,
+            limits,
         })
     }
 }
@@ -102,11 +131,23 @@ impl ManifestListRecords<'_, '_, '_> {
             return Err(AvroContainerError::Failed.into());
         }
         self.failed = true;
-        let result = self
+        let mut result = self
             .records
             .next_record()?
             .map(|values| decode(&values, self.version, self.table))
             .transpose()?;
+        if let Some(entry) = &mut result {
+            entry.partitions = self
+                .summaries
+                .read(self.records.last_record_bytes(), self.limits, 256, 1024 * 1024)?
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|values| PartitionSummary::decode(values))
+                        .collect()
+                })
+                .transpose()?;
+        }
         self.failed = false;
         Ok(result)
     }
@@ -174,6 +215,7 @@ fn decode(
         file_counts,
         row_counts,
         first_row_id,
+        partitions: None,
     })
 }
 

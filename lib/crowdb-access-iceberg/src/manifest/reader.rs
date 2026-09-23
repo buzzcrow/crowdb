@@ -23,6 +23,7 @@ pub struct ManifestReader {
     failed: bool,
     complete: bool,
     min_sequence: Option<i64>,
+    summaries: super::summary::SummaryState,
 }
 
 impl ManifestReader {
@@ -59,6 +60,7 @@ impl ManifestReader {
         let state = ManifestEntryState::from_list(metadata, &list, table)?;
         let version = metadata.version;
         ManifestEntryProjection::with_context(reader.schema(), version, table, &context)?;
+        let summaries = super::summary::SummaryState::new(&list, &context)?;
         Ok(Self {
             reader,
             context,
@@ -74,6 +76,7 @@ impl ManifestReader {
             failed: false,
             complete: false,
             min_sequence: None,
+            summaries,
         })
     }
 
@@ -103,6 +106,7 @@ impl ManifestReader {
             self.block = None;
             let Some(block) = self.reader.next().await? else {
                 self.check_totals(true)?;
+                self.summaries.finish(&self.list, &self.context)?;
                 self.complete = true;
                 self.failed = false;
                 return Ok(None);
@@ -127,6 +131,11 @@ impl ManifestReader {
         )?;
         let entry = records.next_entry()?.ok_or(Error::Field)?;
         let length = records.last_record_length();
+        self.summaries.observe(
+            &self.list,
+            &self.context,
+            entry.file.partition.as_deref().ok_or(Error::Field)?,
+        )?;
         if entry.inherited.data_sequence > self.list.sequence
             || entry.inherited.file_sequence > self.list.sequence
         {

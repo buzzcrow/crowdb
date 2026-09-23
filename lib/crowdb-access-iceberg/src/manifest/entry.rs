@@ -8,7 +8,7 @@ use super::{
     ManifestListEntry, ManifestMetadata, ManifestVersion,
 };
 
-mod bounds;
+pub(super) mod bounds;
 mod decode;
 mod metrics;
 mod partition;

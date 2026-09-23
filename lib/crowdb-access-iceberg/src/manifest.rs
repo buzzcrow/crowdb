@@ -6,10 +6,12 @@ mod inheritance;
 mod list;
 mod metadata;
 mod reader;
+mod summary;
 pub use context::{
     ManifestContext, ManifestContextError, PartitionField, PartitionTransform, PrimitiveType, SchemaField,
 };
 pub use reader::ManifestReader;
+pub use summary::PartitionSummary;
 
 pub use entry::{
     ManifestEntryError, ManifestEntryProjection, ManifestEntryRecords, ManifestEntryState,

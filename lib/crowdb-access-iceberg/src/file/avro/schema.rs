@@ -3,7 +3,9 @@ use super::AvroContainerError;
 mod binary;
 mod parse;
 mod projection;
+mod record_array;
 mod tuple;
+pub use record_array::AvroRecordArray;
 pub use tuple::{AvroTuple, AvroTupleField};
 
 pub use projection::{

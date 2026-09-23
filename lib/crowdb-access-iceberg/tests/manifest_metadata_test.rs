@@ -114,6 +114,7 @@ fn manifest_list_binding_checks_content_spec_and_table_before_inheritance() {
     let values = metadata(ManifestVersion::V3);
     let header = ManifestMetadata::parse(&values).unwrap();
     let mut list = ManifestListEntry {
+        partitions: None,
         location: table().file("metadata/manifest.avro").unwrap(),
         length: 42,
         partition_spec_id: 4,

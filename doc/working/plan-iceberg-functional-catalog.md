@@ -48,7 +48,8 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   state have focused tests. Six metric maps now have bounded decoding and structural/count
   validation before inheritance. Historical schema/spec context, partition tuples,
   typed scalar/geospatial bounds and a list-bound streaming reader are now implemented.
-  Remaining complex work includes Variant bounds, partition summaries and snapshot/file
+  Partition summary decoding and reader containment/EOF validation are implemented.
+  Remaining complex work includes Variant bounds and snapshot/file
   validation. Use the contextual reader; do not conflate it with full seal acceptance.
 - **High: multipart/HTTP composition (R180)**. Durable credits, parts, completion,
   publication and recovery primitives exist. Response formatting and limit

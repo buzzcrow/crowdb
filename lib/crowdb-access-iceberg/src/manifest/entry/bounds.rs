@@ -9,7 +9,7 @@ enum Bound<'data> {
     Point(Vec<f64>),
 }
 
-pub(super) fn validate(
+pub(in crate::manifest) fn validate(
     kind: &PrimitiveType,
     lower: Option<&[u8]>,
     upper: Option<&[u8]>,

@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 
 pub struct TestManifestList {
     pub fields: Vec<(i32, &'static str, Value)>,
+    pub summary_schema: Option<Value>,
+    pub summary_bytes: Vec<u8>,
 }
 
 pub fn table() -> TableLocation {
@@ -16,6 +18,8 @@ pub fn table() -> TableLocation {
 impl TestManifestList {
     pub fn new() -> Self {
         Self {
+            summary_schema: None,
+            summary_bytes: Vec::new(),
             fields: vec![
                 (
                     500,
@@ -44,11 +48,14 @@ impl TestManifestList {
     }
 
     pub fn schema(&self) -> AvroSchema {
-        let fields: Vec<_> = self
+        let mut fields: Vec<_> = self
             .fields
             .iter()
             .map(|(id, kind, _)| json!({"name":format!("renamed{id}"),"field-id":id,"type":["null",kind]}))
             .collect();
+        if let Some(schema) = &self.summary_schema {
+            fields.push(json!({"name":"partitions","field-id":507,"type":schema}));
+        }
         AvroSchema::parse(
             &serde_json::to_vec(&json!({"type":"record","name":"List","fields":fields})).unwrap(),
         )
@@ -71,6 +78,7 @@ impl TestManifestList {
                 long(value.as_i64().unwrap(), &mut bytes);
             }
         }
+        bytes.extend_from_slice(&self.summary_bytes);
         bytes
     }
 }

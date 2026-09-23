@@ -22,6 +22,7 @@ pub fn context(version: ManifestVersion) -> ManifestContext {
 
 pub fn list(record: &FileRecord) -> ManifestListEntry {
     ManifestListEntry {
+        partitions: None,
         location: record.location.clone(),
         length: record.length,
         partition_spec_id: 0,
@@ -45,10 +46,33 @@ pub async fn stored_with_count(
     corrupt: bool,
     records_per_block: usize,
 ) -> (Arc<TestBlocks>, FileRecord) {
+    stored_impl(version, deflate, corrupt, records_per_block, None).await
+}
+
+pub async fn stored_with_partitions(
+    version: ManifestVersion,
+    deflate: bool,
+    values: [Option<f64>; 2],
+) -> (Arc<TestBlocks>, FileRecord) {
+    stored_impl(version, deflate, false, 1, Some(values)).await
+}
+
+async fn stored_impl(
+    version: ManifestVersion,
+    deflate: bool,
+    corrupt: bool,
+    records_per_block: usize,
+    partitions: Option<[Option<f64>; 2]>,
+) -> (Arc<TestBlocks>, FileRecord) {
     let mut fixture = TestManifestEntry::new(version);
     crowdb_access_iceberg::manifest::ManifestEntryProjection::new(&fixture.schema(), version, table())
         .unwrap();
     fixture.file.push((109, "long-map", serde_json::json!([[3, 10]])));
+    if partitions.is_some() {
+        fixture
+            .partition_fields
+            .push(serde_json::json!({"name":"p","field-id":1000,"type":["null","double"]}));
+    }
     let mut bytes = b"Obj\x01".to_vec();
     let mut metadata=vec![
         ("avro.schema",fixture.schema_bytes()),
@@ -56,6 +80,10 @@ pub async fn stored_with_count(
         ("schema",br#"{"type":"struct","schema-id":0,"fields":[{"id":3,"name":"v","required":false,"type":"long"}]}"#.to_vec()),
         ("partition-spec",b"[]".to_vec()),
     ];
+    if partitions.is_some() {
+        metadata[2].1 = br#"{"type":"struct","schema-id":0,"fields":[{"id":3,"name":"v","required":false,"type":"double"}]}"#.to_vec();
+        metadata[3].1 = br#"[{"source-id":3,"field-id":1000,"name":"p","transform":"identity"}]"#.to_vec();
+    }
     if version != ManifestVersion::V1 {
         metadata.extend([
             (
@@ -79,6 +107,16 @@ pub async fn stored_with_count(
     bytes.push(0);
     bytes.extend([42; 16]);
     for index in 0..2 {
+        if let Some(values) = partitions {
+            fixture.partition_bytes = match values[index] {
+                None => vec![0],
+                Some(value) => {
+                    let mut bytes = vec![2];
+                    bytes.extend(value.to_le_bytes());
+                    bytes
+                }
+            };
+        }
         if corrupt && index == 1 {
             fixture.set(109, serde_json::json!([[4, 10]]));
         }

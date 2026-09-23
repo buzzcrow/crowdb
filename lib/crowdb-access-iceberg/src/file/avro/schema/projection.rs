@@ -1,6 +1,6 @@
 use super::{binary::Input, AvroContainerError, AvroDatumLimits, AvroSchema, Node};
 
-mod compile;
+pub(super) mod compile;
 mod int_list;
 mod metric_map;
 
@@ -30,6 +30,8 @@ pub enum AvroScalar<'data> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AvroScalarType {
+    Boolean,
+    Bytes,
     Int,
     Long,
     String,
@@ -217,13 +219,17 @@ impl<'data> AvroProjectedRecords<'_, '_, 'data> {
 }
 
 fn primitive(schema: &AvroSchema, node: &Node) -> bool {
-    matches!(node, Node::Int | Node::Long | Node::String)
-        || matches!(node, Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int))
+    matches!(
+        node,
+        Node::Boolean | Node::Bytes | Node::Int | Node::Long | Node::String
+    ) || matches!(node, Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int))
         || metric_map::layout(schema, node).is_some()
 }
 
 fn scalar_type(schema: &AvroSchema, index: usize) -> Option<AvroScalarType> {
     match &schema.nodes[index] {
+        Node::Boolean => Some(AvroScalarType::Boolean),
+        Node::Bytes => Some(AvroScalarType::Bytes),
         Node::Int => Some(AvroScalarType::Int),
         Node::Long => Some(AvroScalarType::Long),
         Node::String => Some(AvroScalarType::String),
