@@ -52,8 +52,10 @@ impl MultipartRepository {
         part: &MultipartPart,
         now_ms: u64,
     ) -> Result<bool, CatalogError> {
-        part.validate_for(session)?;
         check_live(session, now_ms)?;
+        let mut after = part.clone();
+        after.modified_ms = now_ms;
+        after.validate_for(session)?;
         if session.phase != MultipartPhase::Open {
             return Err(CatalogError::Conflict);
         }
@@ -76,10 +78,7 @@ impl MultipartRepository {
             .checked_sub(before.as_ref().map_or(0, |part| part.tree.length))
             .and_then(|bytes| bytes.checked_add(part.tree.length))
             .ok_or(ValidationError::Record)?;
-        next.pending = Some(MultipartPartMutation {
-            before,
-            after: part.clone(),
-        });
+        next.pending = Some(MultipartPartMutation { before, after });
         self.exchange(session, &next).await
     }
 

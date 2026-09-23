@@ -23,6 +23,8 @@ Handover checkpoint (2026-09-23): contextual manifest decoding now includes
 historical schema/spec binding, partition tuples, typed bounds/equality fields and
 a list-bound reader with EOF totals and cancellation poisoning. Generation-local
 metadata projection pages and canonical streaming fallback are also implemented;
+multipart part LastModified, S3-shaped response serialization and intersected
+grant/service/session byte limits are implemented as separate components;
 table load/commit wiring remains pending. Resume instructions, exact next implementation slices,
 landed APIs, remaining integration gaps and test commands are in
 `plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this
@@ -49,17 +51,17 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   Remaining complex work includes Variant bounds, partition summaries and snapshot/file
   validation. Use the contextual reader; do not conflate it with full seal acceptance.
 - **High: multipart/HTTP composition (R180)**. Durable credits, parts, completion,
-  publication and recovery primitives exist. Wire official retry/error/XML
-  behavior, authentication/limits and semantic sealing onto those same fences.
+  publication and recovery primitives exist. Response formatting and limit
+  intersection helpers are present. Wire actual HTTP operations, official retry
+  behavior and semantic sealing onto those same fences.
   Invalid frozen selections and uncertain publication must not acquire a second
   HTTP-only state machine. Standard PUT semantic kind still needs the R177 choice.
 - **High: namespace/table races (R179/R181)**. Create/rename-in versus namespace
   drop needs shared admission and crash recovery; bounded table heads, logical
   drop and purge intent are still prerequisites. Preserve the separate namespace
   latency blocker instead of weakening its acceptance fixture.
-- **Medium, good bounded follow-ups**: multipart response serialization and
-  LastModified once their contract
-  is read; grant/byte-limit intersection tests; additional negative format fixtures.
+- **Medium, good bounded follow-ups**: additional negative format fixtures,
+  multipart request-body decoding and selected metadata projection consumers.
   Take one small verified slice per commit. None alone completes a catalog server.
 - **Broad integration cost (R184)**: official FileIO/REST clients, cancellation,
   native restarts and engine/version matrices. Start foreground vertical slices

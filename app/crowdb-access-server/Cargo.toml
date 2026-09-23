@@ -13,6 +13,7 @@ workspace = true
 [features]
 default = ["s3"]
 iceberg = [
+    "dep:chrono",
     "dep:thiserror",
     "dep:crowdb-access-s3",
     "dep:crowdb-access-iceberg",

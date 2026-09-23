@@ -52,6 +52,7 @@ pub async fn verify_restart(stack: &mut TestIcebergStack, context: CatalogContex
         upload: initial.upload,
         number: 1,
         revision: 1,
+        modified_ms: 101,
         owner,
         tree: writer.finish().await.unwrap(),
     };

@@ -121,6 +121,9 @@ fn decode_page(
             return Err(ValidationError::Record.into());
         };
         part.validate_for(session)?;
+        if part.modified_ms < session.created_ms || part.modified_ms >= session.expires_ms {
+            return Err(ValidationError::Record.into());
+        }
         parts.push(*part);
     }
     let next_marker = if let Some(cursor) = page.continuation {

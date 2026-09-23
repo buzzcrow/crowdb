@@ -162,7 +162,12 @@ integration. Independent FileIO work proceeds under the approved ordering.
   pending mutations, expiry, terminal phases, stale snapshots and corruption fail
   closed rather than returning mixed part state. Five tests cover pagination,
   independent limits, adjacent uploads and a session mutation during the scan.
-  S3 XML response encoding and per-part LastModified capture remain HTTP work.
+  Part mutation now persists `modified_ms` in the FlatBuffers part record. The
+  repository stamps it from the accepted mutation time, including replacement;
+  lost-write replay retains that value. List decoding rejects zero or out-of-session
+  timestamps before XML serialization. Existing pre-field part records decode with
+  a zero timestamp and fail closed; there is no public multipart endpoint or
+  deployed compatibility promise for those experimental records.
   Global admission now persists independent session/byte limits and one bounded
   CAS journal. A session reserves its staged-byte ceiling before authority creation;
   only terminal sessions release it, retaining a policy/sequence-bound receipt.
@@ -172,6 +177,25 @@ integration. Independent FileIO work proceeds under the approved ordering.
   write, concurrent admission, policy mismatch, duplicate release and stale helpers.
   Public HTTP admission/configuration remains to be connected. Capacity of retained
   physical orphans remains the separate R177 trial-policy decision.
+- [x] **Multipart response encoding**: the server now has bounded S3-shaped
+  Create/List/Complete success XML and typed error XML; UploadPart returns a
+  quoted SHA-256 ETag header, ListParts emits the same ETag, LastModified from
+  persisted part time, exact requested MaxParts and continuation marker. Complete
+  requires a Published session, matching FileRecord and a caller-supplied HTTP
+  object URL. XML text is escaped; abort returns 204. Six server tests cover XML
+  escaping, pagination, dates, errors and incomplete publication. Files: server
+  `file_response.rs`, library multipart model/codec/repository/list, protocol schema,
+  library/server tests. HTTP dispatch/official client use still await composition.
+- [x] **Grant and byte intersection**: `FileTransferAdmission` checks a verified
+  grant's operation, table, principal, upload ID, validity window and active
+  multipart credit against configured service and durable session ceilings.
+  `check_create` preflights the global policy and session budget before the caller
+  performs `MultipartAdmission::reserve`; `receive` and `read_body` enforce
+  intersected declared and actual stream/range bytes before publication or read.
+  Three focused server tests cover each limit, foreign scope, missing/released
+  credit, expired grant, upload backpressure and bounded range reads. Files:
+  server `file_admission.rs` and server tests. Public listener routing and
+  credit-reservation wiring still await complete HTTP composition.
 - [x] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
   `ProjectionStore::put` derives raw top-level JSON children from already sealed
@@ -285,7 +309,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 230 library tests pass, covering namespace, file records, range/streaming,
+- The earlier 230-test library checkpoint covered namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass
@@ -442,10 +466,10 @@ the landed storage primitives. The broader ordering is in
 - Full delete-file column presence and actual bound correctness require file
   context, not only manifest schema. Keep snapshot-wide DV uniqueness in commit
   admission. These remain complex tasks, not ordinary wiring for a cheaper model.
-- Independent ordinary follow-ups remain multipart XML/error response fixtures
-  and grant-limit intersection tests. Metadata projection storage/fallback is now
-  implemented; table-load wiring remains pending with table heads. None requires
-  changing or replacing the landed metric decoder.
+- Multipart response formatting, durable part LastModified and grant/service
+  limit intersection are implemented as bounded server/library components.
+  Metadata projection storage/fallback is also implemented; table-load wiring
+  remains pending with table heads. None requires replacing the metric decoder.
 
 #### Handover after metadata projection fallback
 
@@ -462,6 +486,33 @@ the landed storage primitives. The broader ordering is in
   catalog/table/generation/digest/version boundary, and no new lock or unsafe
   exception is needed. Admission/fencing still belongs to the calling catalog
   operation; this optional store is not an alternate authority.
+
+#### Handover after multipart responses and limit intersection
+
+- `MultipartRepository::reserve_part` stamps `modified_ms` from its accepted
+  `now_ms` before persisting the pending mutation. The FlatBuffers field is
+  append-only; committed parts with zero/invalid time fail closed. A replacement
+  gets its own LastModified, and recovery preserves the original pending value.
+- `MultipartResponses` formats Create, UploadPart, ListParts, Complete, Abort and
+  typed S3 errors. UploadPart and ListParts share quoted SHA-256 ETags; Complete
+  requires the exact Published session and selected FileRecord and receives a
+  trusted public HTTP object URL from its caller. XML escaping and stable marker
+  semantics are covered by focused server tests. XML request-body parsing and
+  public dispatch are separate unfinished HTTP work.
+- `FileTransferAdmission::authorize` consumes a verified grant and parsed native
+  request, checks table/operation, principal/upload/session credit/expiry, and
+  intersects service/session byte ceilings. `check_create` is a preflight against
+  the durable global policy; it does not reserve credits. The caller must invoke
+  `MultipartAdmission::reserve` before exposing an upload ID. `receive` and
+  `read_body` call the existing bounded adapters with the intersected ceilings.
+  Before dispatch, validate Ready catalog context and authenticate SigV4 using
+  `authenticate_file_request`; afterward, reload the current session/policy and
+  use only these checked transfer paths. There is no active FileIO listener route.
+- Next ordinary work is bounded Complete request XML parsing, public route
+  composition using the existing durable repository and response helpers, and
+  exact error/status mapping. Semantic sealing, standard PUT kind binding and
+  official client/retry acceptance remain separate R180 work. Continue with
+  task 3 (partition summaries) once these handoff interfaces are understood.
 
 - `src/file/avro/schema/projection.rs` and `projection/compile.rs`: root or nested
   scalar cursor; required means schema presence, not a non-null runtime value.
@@ -484,12 +535,14 @@ the landed storage primitives. The broader ordering is in
 - `src/file/multipart_repository/` and recovery/list modules already implement
   journaled part replacement, frozen selection, resumable assembly, frozen seal
   publication/replay, bounded listing and native background recovery. Do not
-  implement a second state machine in HTTP handlers. Public XML/error wiring,
-  LastModified, grant/byte intersections and standard-client completion retry
-  details still need work; an invalid frozen selection currently requires abort.
-- Server `src/iceberg/file_upload.rs`, `file_body.rs`, `file_auth.rs` and
-  `file_request.rs` provide bounded transport, SigV4 grant authentication and
-  operation parsing. They are not a publicly composed FileIO service. Upload
+  implement a second state machine in HTTP handlers. New response formatters and
+  intersected admission helpers are available, but public route wiring, semantic
+  sealing and standard-client completion retry still need work; an invalid frozen
+  selection currently requires abort.
+- Server `src/iceberg/file_upload.rs`, `file_body.rs`, `file_auth.rs`,
+  `file_request.rs`, `file_response.rs` and `file_admission.rs` provide bounded
+  transport, SigV4 grant authentication, operation parsing, response formatting
+  and limit checks. They are not a publicly composed FileIO service. Upload
   rejects trailers and does not yet support AWS streaming-checksum framing.
 - Formats: JSON validation is structural; Parquet/ORC probes verify framing and
   fixed-size hints, not complete footer semantics. Puffin metadata is bounded
@@ -503,12 +556,14 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 272 tests (including 10 metadata projection tests). `pixi run rs-lint` and
-  `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
-  and test code only; the previously recorded native E2E run is not a new run.
+  passes 273 tests (including the new durable part-time test). Protocol
+  `--all-targets` passes after the schema addition. Fmt, workspace lint, and
+  Iceberg-feature clippy pass.
 - Server compatibility gates also pass: default `--all-targets` (2 tests) and
   `pixi run clean-env && pixi run -- cargo test -p crowdb-access-server --features iceberg --all-targets`
-  (24 tests). This does not run the `iceberg-e2e` native-storage acceptance suite.
+  (30 tests). The no-default-feature response/admission tests pass (6 tests).
+  Real-stack `iceberg-e2e` file storage passes in an isolated runtime root;
+  the default persistent runtime already holds unrelated RPC port claims.
 - Projection changes start with `--test metadata_projection_test`; format changes
   start with focused `--test avro_nested_projection_test`,
   `--test avro_projection_test`, `--test manifest_list_test`,

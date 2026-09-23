@@ -252,6 +252,7 @@ table FBMultipartPart {
     revision:ulong;
     owner:FBFileIdentity (required);
     tree:FBFileTree (required);
+    modified_ms:ulong;
 }
 
 table FBMultipartCreditMutation {

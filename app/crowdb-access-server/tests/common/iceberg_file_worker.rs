@@ -59,6 +59,7 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, table: Ta
         upload: initial.upload,
         number: 1,
         revision: 1,
+        modified_ms: 2,
         owner: FileIdentity {
             table,
             file: FileId::random(),

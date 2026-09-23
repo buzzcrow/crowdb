@@ -163,6 +163,7 @@ pub(super) fn encode_part<'buffer>(
             revision: part.revision,
             owner: Some(owner),
             tree: Some(tree),
+            modified_ms: part.modified_ms,
         },
     ))
 }
@@ -172,6 +173,7 @@ pub(super) fn decode_part(value: FBMultipartPart<'_>) -> Result<MultipartPart, V
         upload: OperationId::from_bytes(value.upload().bytes())?,
         number: value.number(),
         revision: value.revision(),
+        modified_ms: value.modified_ms(),
         owner: fields::decode_owner(value.owner())?,
         tree: fields::decode_tree(value.tree())?,
     };

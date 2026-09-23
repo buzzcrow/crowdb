@@ -66,6 +66,7 @@ async fn slow_first_session_does_not_starve_later_expiry_or_advance_unfinished_b
         upload: first.upload,
         number: 1,
         revision: 1,
+        modified_ms: 101,
         owner,
         tree: writer.finish().await.unwrap(),
     };

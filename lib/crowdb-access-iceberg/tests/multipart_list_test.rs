@@ -37,6 +37,7 @@ async fn setup() -> (file::TestFile, MultipartSession, Vec<MultipartPart>) {
             upload: session.upload,
             number: 2 * index + 1,
             revision: 1,
+            modified_ms: 101,
             owner: FileIdentity {
                 file: FileId::random(),
                 ..session.owner

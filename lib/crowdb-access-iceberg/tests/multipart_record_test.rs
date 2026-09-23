@@ -63,6 +63,7 @@ async fn multipart_records_round_trip_open_partial_publishing_published_and_abor
         upload: session.upload,
         number: 1,
         revision: 2,
+        modified_ms: 101,
         owner,
         tree: part.tree,
     };
@@ -71,6 +72,11 @@ async fn multipart_records_round_trip_open_partial_publishing_published_and_abor
     assert!(bytes.len() < 1024);
     assert_eq!(StorageRecord::decode(&part.key(), &bytes).unwrap(), record);
     let mut wrong = part;
+    wrong.modified_ms = 0;
+    assert!(StorageRecord::MultipartPart(Box::new(wrong.clone()))
+        .encode()
+        .is_err());
+    wrong.modified_ms = 101;
     wrong.number = 2;
     assert!(StorageRecord::decode(&wrong.key(), &bytes).is_err());
 }

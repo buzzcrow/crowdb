@@ -86,6 +86,7 @@ fn staged_parts_are_physical_bytes_bound_to_one_upload_table_and_revision() {
         upload: session.upload,
         number: 1,
         revision: 1,
+        modified_ms: 101,
         owner: FileIdentity {
             file: FileId::random(),
             ..session.owner

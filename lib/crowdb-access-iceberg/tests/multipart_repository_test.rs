@@ -40,9 +40,28 @@ async fn part(session: &MultipartSession, number: u16, revision: u64, length: us
         upload: session.upload,
         number,
         revision,
+        modified_ms: 101,
         owner,
         tree: writer.finish().await.unwrap(),
     }
+}
+
+#[tokio::test]
+async fn reservation_stamps_durable_part_time_from_admission_clock() {
+    let (fixture, initial) = setup().await;
+    let repository = MultipartRepository::new(fixture.store.clone());
+    repository.begin(&initial, 100).await.unwrap();
+    let mut input = part(&initial, 1, 1, 3).await;
+    input.modified_ms = 0;
+    assert!(repository.reserve_part(&initial, &input, 101).await.unwrap());
+    let pending = load(&repository, &initial).await;
+    assert_eq!(pending.pending.as_ref().unwrap().after.modified_ms, 101);
+    assert!(repository.settle_part(&pending).await.unwrap());
+    let committed = load(&repository, &initial).await;
+    assert_eq!(
+        repository.part(&committed, 1).await.unwrap().unwrap().modified_ms,
+        101
+    );
 }
 
 async fn load(repository: &MultipartRepository, session: &MultipartSession) -> MultipartSession {
@@ -92,7 +111,9 @@ async fn each_lost_part_mutation_reply_recovers_exact_counts_on_a_new_instance()
             }
             assert!(session.pending.is_none());
             assert_eq!((session.part_count, session.staged_bytes), (1, 30));
-            assert_eq!(recovery.part(&session, 1).await.unwrap(), Some(candidate.clone()));
+            let mut committed = candidate.clone();
+            committed.modified_ms = 102;
+            assert_eq!(recovery.part(&session, 1).await.unwrap(), Some(committed.clone()));
             assert!(matches!(
                 recovery.part(&initial, 1).await,
                 Err(CatalogError::Busy)
@@ -105,7 +126,7 @@ async fn each_lost_part_mutation_reply_recovers_exact_counts_on_a_new_instance()
                 .unwrap();
             assert_eq!(
                 StorageRecord::decode(&candidate.key(), &value.bytes).unwrap(),
-                StorageRecord::MultipartPart(Box::new(candidate))
+                StorageRecord::MultipartPart(Box::new(committed))
             );
         }
     }

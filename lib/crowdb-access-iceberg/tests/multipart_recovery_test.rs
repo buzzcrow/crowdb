@@ -49,6 +49,7 @@ async fn bounded_sweeps_settle_abandoned_part_mutations_then_expire_without_dele
             upload: session.upload,
             number: 1,
             revision: 1,
+            modified_ms: 101,
             owner,
             tree: writer.finish().await.unwrap(),
         };
@@ -107,6 +108,7 @@ async fn recovery_advances_one_byte_window_per_visit_and_reports_unpublished_sea
         upload: initial.upload,
         number: 1,
         revision: 1,
+        modified_ms: 101,
         owner,
         tree: writer.finish().await.unwrap(),
     };

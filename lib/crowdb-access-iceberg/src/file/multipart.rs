@@ -205,6 +205,7 @@ pub struct MultipartPart {
     pub upload: OperationId,
     pub number: u16,
     pub revision: u64,
+    pub modified_ms: u64,
     pub owner: FileIdentity,
     pub tree: FileTree,
 }
@@ -224,7 +225,7 @@ impl MultipartPart {
     /// # Errors
     /// Rejects invalid part numbers, revisions and inconsistent physical bytes.
     pub fn validate(&self) -> Result<(), ValidationError> {
-        if self.number == 0 || self.number > 10_000 || self.revision == 0 {
+        if self.number == 0 || self.number > 10_000 || self.revision == 0 || self.modified_ms == 0 {
             return Err(ValidationError::Record);
         }
         validate_tree(&self.tree)
