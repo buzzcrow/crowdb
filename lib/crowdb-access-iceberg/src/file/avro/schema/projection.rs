@@ -10,10 +10,18 @@ pub enum AvroScalar<'data> {
     String(&'data str),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AvroScalarType {
+    Int,
+    Long,
+    String,
+}
+
 pub struct AvroProjection<'schema> {
     schema: &'schema AvroSchema,
     slots: Vec<Option<usize>>,
     count: usize,
+    types: Vec<Option<AvroScalarType>>,
 }
 
 pub struct AvroProjectedRecords<'projection, 'schema, 'data> {
@@ -30,20 +38,36 @@ impl<'schema> AvroProjection<'schema> {
     /// # Errors
     /// Rejects missing, duplicate or invalid IDs and non-scalar selected field layouts.
     pub fn new(schema: &'schema AvroSchema, ids: &[i32]) -> Result<Self, AvroContainerError> {
-        if ids.is_empty() || ids.len() > 64 {
+        Self::with_optional(schema, ids, &[])
+    }
+
+    /// Appends optional selections, returning null when the writer omits those fields.
+    /// # Errors
+    /// Applies the same ID, scalar-layout and combined selection bounds as required projection.
+    pub fn with_optional(
+        schema: &'schema AvroSchema,
+        required: &[i32],
+        optional: &[i32],
+    ) -> Result<Self, AvroContainerError> {
+        let count = required
+            .len()
+            .checked_add(optional.len())
+            .ok_or(AvroContainerError::Bounds)?;
+        if count == 0 || count > 64 {
             return Err(AvroContainerError::Bounds);
         }
         let Node::Record(fields) = &schema.nodes[schema.root] else {
             return Err(AvroContainerError::Schema);
         };
         let mut requested = BTreeMap::new();
-        for (slot, id) in ids.iter().enumerate() {
+        for (slot, id) in required.iter().chain(optional).enumerate() {
             if *id < 0 || requested.insert(*id, slot).is_some() {
                 return Err(AvroContainerError::Schema);
             }
         }
         let mut seen = BTreeSet::new();
         let mut slots = Vec::with_capacity(fields.len());
+        let mut types = vec![None; count];
         for field in fields {
             let id = field.id.filter(|id| *id >= 0).ok_or(AvroContainerError::Schema)?;
             if !seen.insert(id) {
@@ -53,16 +77,25 @@ impl<'schema> AvroProjection<'schema> {
             if slot.is_some() && !scalar_layout(schema, field.node) {
                 return Err(AvroContainerError::Schema);
             }
+            if let Some(slot) = slot {
+                types[slot] = scalar_type(schema, field.node);
+            }
             slots.push(slot);
         }
-        if !requested.is_empty() {
+        if requested.values().any(|slot| *slot < required.len()) {
             return Err(AvroContainerError::Schema);
         }
         Ok(Self {
             schema,
             slots,
-            count: ids.len(),
+            count,
+            types,
         })
+    }
+
+    #[must_use]
+    pub fn field_types(&self) -> &[Option<AvroScalarType>] {
+        &self.types
     }
 
     /// Opens a bounded cursor; each successful pull validates every field in that record.
@@ -131,6 +164,16 @@ impl<'data> AvroProjectedRecords<'_, '_, 'data> {
 
 fn primitive(node: &Node) -> bool {
     matches!(node, Node::Int | Node::Long | Node::String)
+}
+
+fn scalar_type(schema: &AvroSchema, index: usize) -> Option<AvroScalarType> {
+    match &schema.nodes[index] {
+        Node::Int => Some(AvroScalarType::Int),
+        Node::Long => Some(AvroScalarType::Long),
+        Node::String => Some(AvroScalarType::String),
+        Node::Union(branches) => branches.iter().find_map(|branch| scalar_type(schema, *branch)),
+        _ => None,
+    }
 }
 
 fn scalar_layout(schema: &AvroSchema, index: usize) -> bool {

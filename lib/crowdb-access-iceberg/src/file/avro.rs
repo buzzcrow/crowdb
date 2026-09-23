@@ -10,7 +10,9 @@ mod schema;
 pub use codec::AvroCodec;
 use input::Input;
 pub use records::{AvroDecodedBlock, AvroRecords};
-pub use schema::{AvroDatumLimits, AvroProjectedRecords, AvroProjection, AvroScalar, AvroSchema};
+pub use schema::{
+    AvroDatumLimits, AvroProjectedRecords, AvroProjection, AvroScalar, AvroScalarType, AvroSchema,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AvroContainerError {

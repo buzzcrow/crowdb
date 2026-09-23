@@ -29,7 +29,7 @@ mod writer;
 pub use assembly::{AssemblyPart, AssemblyProgress, FileAssembly, PartFingerprint};
 pub use avro::{
     AvroBlock, AvroBlocks, AvroCodec, AvroContainerError, AvroDatumLimits, AvroDecodedBlock, AvroLimits,
-    AvroProjectedRecords, AvroProjection, AvroRecords, AvroScalar, AvroSchema,
+    AvroProjectedRecords, AvroProjection, AvroRecords, AvroScalar, AvroScalarType, AvroSchema,
 };
 pub use blocks::{FileBlockStore, FileIoError, NativeFileBlocks, MAX_FILE_BLOCK_BYTES};
 pub use content::{ChunkRoot, FileContent, InlineCodec, MAX_COMPRESSION_INPUT_BYTES, MAX_INLINE_BYTES};

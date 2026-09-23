@@ -217,8 +217,14 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Nullable unions work in either branch order. Every skipped field still receives
   binary validation under the same block-wide work/depth limits; malformed IDs,
   duplicate IDs, missing selections and trailing bytes fail closed. Four cursor
-  tests pass. Nested data-file projection and typed manifest-list interpretation
-  remain to be connected to the inheritance resolver.
+  tests pass. Optional selections preserve absent values as unknown, and selected
+  writer types are exposed before reading any records. Typed manifest-list pulls
+  now validate canonical same-table locations, positive lengths, spec IDs,
+  sequence ordering, version-dependent required/unknown counts and v3 delete/data
+  row-ID separation. Four tests cover renamed/reordered fields, missing/null
+  values, empty-list schema types and poisoned cursors. Partition-summary semantics,
+  table spec membership, nested data-file projection and inheritance integration
+  remain separate; list decoding does not yet prove those cross-file invariants.
   Reader-schema resolution, logical/manifest field semantics and optional codecs
   remain separate; this does not advertise complete manifest v1/v2/v3 validation.
   A constant-state manifest inheritance resolver now handles v1 zero sequences,
@@ -246,7 +252,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 215 library tests pass, covering namespace, file records, range/streaming,
+- 219 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass

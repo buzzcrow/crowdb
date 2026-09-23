@@ -4,7 +4,7 @@ mod binary;
 mod parse;
 mod projection;
 
-pub use projection::{AvroProjectedRecords, AvroProjection, AvroScalar};
+pub use projection::{AvroProjectedRecords, AvroProjection, AvroScalar, AvroScalarType};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AvroDatumLimits {
