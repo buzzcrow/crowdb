@@ -239,6 +239,25 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      row-ID slice passed 11 snapshot tests. Remaining historical-preservation and
      physical-file checks require prior selected metadata and canonical readers.
   3. Canonical Parquet schema/field-ID/row-count and selected data/delete checks.
+     Footer slice: `file/parquet/` decodes bounded Thrift Compact metadata from
+     canonical footer ranges, never stored hints. Independent footer/value/depth/
+     schema/row-group limits bound input and decoded structures. Validate required
+     field types, duplicate Thrift fields, schema preorder/IDs, row-group column
+     counts and physical types, column byte spans, and aggregate rows/byte counts.
+     Reject encrypted/external metadata explicitly. This is not page decoding or
+     complete Iceberg logical-type/equality/position-delete validation; logical
+     annotation IDs are retained but their parameters are not yet interpreted.
+     Evidence: Apache
+     [Parquet 2.10 IDL](https://github.com/apache/parquet-format/blob/apache-parquet-format-2.10.0/src/main/thrift/parquet.thrift)
+     and [Compact protocol](https://github.com/apache/thrift/blob/master/doc/specs/thrift-compact-protocol.md).
+     `parquet_official_footer.rs` embeds the 730-byte footer from Apache
+     [alltypes_plain.parquet](https://github.com/apache/parquet-testing/blob/master/data/alltypes_plain.parquet)
+     (original file length 1851, footer offset 1113), exercising real delta headers.
+     The test supplies placeholder body bytes and tests only footer interpretation,
+     not those data pages or official Iceberg writer acceptance.
+     Footer checkpoint: library all-target tests, seven focused footer tests,
+     workspace fmt and clippy pass. Collections grow only as decoded values arrive;
+     nested advertised sizes cannot multiply speculative vector reservations.
   4. Canonical ORC equivalent checks with bounded decoding.
   5. Bind complete snapshot enumeration, actual file row counts and DV validation.
   6. Bounded TableHead/name mappings and generation-qualified repository.
