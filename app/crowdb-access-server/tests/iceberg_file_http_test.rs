@@ -257,6 +257,11 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
         )
         .await;
     assert_eq!(complete.status(), 200, "{}", complete.text().await.unwrap());
+    assert!(complete
+        .text()
+        .await
+        .unwrap()
+        .ends_with("</CompleteMultipartUploadResult>"));
     let replay = client
         .send(
             Method::POST,
@@ -267,7 +272,58 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
         )
         .await;
     assert_eq!(replay.status(), 200);
+    assert!(replay
+        .text()
+        .await
+        .unwrap()
+        .ends_with("</CompleteMultipartUploadResult>"));
     let get = client.send(Method::GET, &metadata, "", b"", false).await;
     assert_eq!(get.status(), 200);
     assert_eq!(get.bytes().await.unwrap().as_ref(), document);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Maven and the pinned Apache Iceberg Java dependencies"]
+async fn official_java_s3_fileio_uploads_and_reads_native_files() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let (_stack, _process, client, table) = setup().await;
+    let configuration = format!(
+        "endpoint=http://{}\naccess={}\nsecret={}\ntoken={}\nlocation={}\n",
+        client.address,
+        client.credentials.access_key_id(),
+        client.credentials.secret_access_key(),
+        client.credentials.session_token(),
+        table
+            .file("placeholder")
+            .unwrap()
+            .to_string()
+            .trim_end_matches("placeholder"),
+    );
+    let status = tokio::task::spawn_blocking(move || {
+        let maven = std::env::var_os("CROWDB_ICEBERG_E2E_MVN").unwrap_or_else(|| "mvn".into());
+        let mut child = Command::new("timeout")
+            .arg("600")
+            .arg(maven)
+            .args(["--batch-mode", "--no-transfer-progress", "-f"])
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/common/iceberg_java/pom.xml"
+            ))
+            .args(["compile", "exec:java"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(configuration.as_bytes())
+            .unwrap();
+        child.wait().unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(status.success(), "official Apache Iceberg S3FileIO failed");
 }

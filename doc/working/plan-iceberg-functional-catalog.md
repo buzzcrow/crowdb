@@ -25,6 +25,9 @@ a list-bound reader with EOF totals and cancellation poisoning. Generation-local
 metadata projection pages and canonical streaming fallback are also implemented;
 multipart part LastModified, S3-shaped response serialization and intersected
 grant/service/session byte limits are implemented as separate components;
+native FileIO routing and physical sealing are connected, and a pinned Apache
+Iceberg 1.11.0 / AWS SDK 2.44.4 FileIO baseline now passes with default signed
+checksum trailers and streamed Complete responses;
 partition summaries, bounded Variant bounds and a scoped streaming DV cross-file
 validator are now implemented. Candidate snapshot enumeration/admission and
 table load/commit wiring remains pending. Resume instructions, exact next implementation slices,
@@ -58,11 +61,13 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   prior-delete replacement and actual data-file semantics. Use these components;
   do not conflate them with full seal or commit acceptance.
 - **High: multipart/HTTP composition (R180)**. Durable credits, parts, completion,
-  publication and recovery primitives exist. Response formatting and limit
-  intersection helpers are present. Wire actual HTTP operations, official retry
-  behavior and semantic sealing onto those same fences.
+  publication and recovery primitives are wired into native HTTP routes. A pinned
+  Java FileIO test covers default signed checksum trailers, Complete, reads and
+  embedded errors. Wider client profiles, optional multipart checksum metadata,
+  table credential vending and selected-use semantics remain.
   Invalid frozen selections and uncertain publication must not acquire a second
-  HTTP-only state machine. Standard PUT semantic kind still needs the R177 choice.
+  HTTP-only state machine. Standard PUT retains ambiguous kinds as unbound until
+  selected metadata supplies the declared use, as already approved.
 - **High: namespace/table races (R179/R181)**. Create/rename-in versus namespace
   drop needs shared admission and crash recovery; bounded table heads, logical
   drop and purge intent are still prerequisites. Preserve the separate namespace
@@ -119,6 +124,27 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   wording reflects the approved split while retaining the full milestone.
 
 ## Dependency-ordered execution
+
+### Remaining tasks from the current five-task batch
+
+The first task, the pinned official FileIO baseline, is verified. Details and
+commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
+
+- [ ] **Credential vending**: implement the standard REST storage-credential
+  response and refresh contract from the pinned OpenAPI and official SDK. Reuse
+  `FileGrantIssuer`; derive operations from the authenticated read/write role.
+  Its live endpoint depends on the selected table identity/lifecycle below;
+  implement the wire/issuer slice first, then attach it with table loads.
+- [ ] **Selected-use validation**: complete format semantics and validate
+  canonical unbound files against trusted metadata/manifest declarations. Do not
+  infer use from names, headers or upload container bytes.
+- [ ] **Selected table metadata**: implement bounded table heads/mappings,
+  metadata version validation and generation-consistent load/projection fallback.
+  Wire credential vending only after table authorization and lifecycle checks.
+- [ ] **Table lifecycle**: implement durable rename/drop, destination admission,
+  namespace races and restart recovery; retain purge intent for deferred GC.
+
+### Requirement milestones
 
 - [ ] **Finish namespace acceptance**: resolve the recorded 500-ms real-stack
   CRUD latency decision, then verify official-client CRUD/restarts and the future

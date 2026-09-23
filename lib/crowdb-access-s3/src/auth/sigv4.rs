@@ -13,6 +13,9 @@ use zeroize::ZeroizeOnDrop;
 
 use super::{AuthError, PayloadMode, RawAuthRequest, RequestAuthenticator};
 
+mod streaming;
+pub use streaming::StreamingPayloadVerifier;
+
 type HmacSha256 = Hmac<Sha256>;
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 const TERMINATOR: &str = "aws4_request";
@@ -75,7 +78,7 @@ impl<P: CredentialProvider> SigV4Verifier<P> {
             .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
         {
-            return self.verify_header(request, authorization, now);
+            return self.verify_header(request, authorization, now, false);
         }
         self.verify_presigned(request, now)
     }
@@ -85,6 +88,7 @@ impl<P: CredentialProvider> SigV4Verifier<P> {
         request: RawAuthRequest<'_>,
         authorization: &str,
         now: u64,
+        streaming: bool,
     ) -> Result<(), AuthError> {
         let parsed = ParsedAuthorization::parse(authorization)?;
         let amz_date = request
@@ -112,6 +116,7 @@ impl<P: CredentialProvider> SigV4Verifier<P> {
                 .headers
                 .get("x-amz-security-token")
                 .and_then(|value| value.to_str().ok()),
+            streaming,
         )
     }
 
@@ -156,6 +161,7 @@ impl<P: CredentialProvider> SigV4Verifier<P> {
             payload_hash,
             &canonical_query,
             session_token.as_deref(),
+            false,
         )
     }
 
@@ -168,6 +174,7 @@ impl<P: CredentialProvider> SigV4Verifier<P> {
         payload_hash: &str,
         canonical_query: &str,
         session_token: Option<&str>,
+        streaming: bool,
     ) -> Result<(), AuthError> {
         if parsed.region != self.region || parsed.service != "s3" || parsed.terminator != TERMINATOR {
             return Err(AuthError::Rejected);
@@ -183,7 +190,9 @@ impl<P: CredentialProvider> SigV4Verifier<P> {
         if !amz_date.starts_with(parsed.date) {
             return Err(AuthError::Rejected);
         }
-        validate_payload_hash(payload_hash)?;
+        if !streaming || !streaming::supported(payload_hash) {
+            validate_payload_hash(payload_hash)?;
+        }
         let canonical_headers = canonical_headers(request.headers, parsed.signed_headers)?;
         let canonical_request = format!(
             "{}\n{}\n{}\n{}\n{}\n{}",

@@ -18,6 +18,13 @@ fn complete_xml_accepts_only_ordered_sha256_parts() {
         CompleteSelection::parse(sdk_xml.as_bytes()).unwrap().parts()[0].digest,
         [1; 32]
     );
+    for quote in ["&quot;", "&#34;", "&#x22;"] {
+        let escaped = sdk_xml.replace(&format!("\"{first}\""), &format!("{quote}{first}{quote}"));
+        assert_eq!(
+            CompleteSelection::parse(escaped.as_bytes()).unwrap().parts()[0].digest,
+            [1; 32]
+        );
+    }
 }
 
 #[test]
@@ -59,6 +66,10 @@ fn complete_xml_rejects_ambiguous_or_unbounded_inputs() {
             part("1", &etag)
         ),
         "x".repeat(2 * 1024 * 1024 + 1),
+        format!(
+            "<CompleteMultipartUpload>{}</CompleteMultipartUpload>",
+            part("1", &format!("&unknown;{}&unknown;", "01".repeat(32)))
+        ),
     ] {
         assert!(CompleteSelection::parse(body.as_bytes()).is_err(), "{body:.100}");
     }

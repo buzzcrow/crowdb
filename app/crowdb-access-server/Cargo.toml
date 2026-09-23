@@ -12,6 +12,7 @@ workspace = true
 
 [features]
 default = ["s3"]
+test-util = []
 iceberg = [
     "dep:chrono",
     "dep:thiserror",
@@ -30,6 +31,8 @@ iceberg = [
     "dep:serde_json",
     "dep:serde",
     "dep:sha2",
+    "dep:sha1",
+    "dep:crc",
 ]
 s3-e2e = ["s3"]
 iceberg-e2e = ["iceberg"]
@@ -69,12 +72,15 @@ md-5 = { version = "0.10", optional = true }
 serde_json = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 sha2 = { version = "0.10", optional = true }
+sha1 = { version = "0.10", optional = true }
+crc = { version = "3.3", optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
+crowdb-access-server = { path = ".", default-features = false, features = ["test-util"] }
 hmac = "0.12"
 arc-swap = "1.9"
 async-trait = "0.1"
@@ -85,7 +91,7 @@ crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["chunk-kv", "chunkdb", "diskdb", "diskio"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 
 [[test]]
 name = "s3_full_stack_test"

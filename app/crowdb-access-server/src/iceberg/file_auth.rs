@@ -1,6 +1,31 @@
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::file::{FileCredentials, FileGrant, FileGrantIssuer};
+use crowdb_access_s3::auth::StreamingPayloadVerifier;
 use crowdb_access_s3::auth::{AuthError, Credential, CredentialProvider, RawAuthRequest, SigV4Verifier};
+
+pub(super) fn authenticate_file_transfer(
+    issuer: &FileGrantIssuer,
+    context: CatalogContext,
+    request: RawAuthRequest<'_>,
+    region: &str,
+    now_ms: u64,
+) -> Result<(FileGrant, Option<StreamingPayloadVerifier>), AuthError> {
+    if !request
+        .headers
+        .get("x-amz-content-sha256")
+        .is_some_and(|value| value.as_bytes().starts_with(b"STREAMING-"))
+    {
+        return authenticate_file_request(issuer, context, request, region, now_ms)
+            .map(|grant| (grant, None));
+    }
+    validate_bounds(request)?;
+    let credentials = issuer
+        .verify_token(&session_token(request)?, context, now_ms)
+        .map_err(|_| AuthError::Rejected)?;
+    let verifier = SigV4Verifier::new(FileCredentialProvider(&credentials), region.to_owned(), 900)
+        .verify_streaming(request, now_ms / 1000)?;
+    Ok((credentials.grant().clone(), Some(verifier)))
+}
 
 /// Authenticates native file credentials without consulting general S3 authority.
 /// Callers must freshly validate the Ready context and authorize the returned grant

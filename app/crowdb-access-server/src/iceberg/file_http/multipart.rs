@@ -8,9 +8,10 @@ use crowdb_access_iceberg::file::{
     MultipartAdmissionLimits, MultipartPart, MultipartPhase, MultipartSession, MultipartWorkError,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
+use crowdb_access_s3::auth::StreamingPayloadVerifier;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use hyper::http::header::{HeaderValue, CONTENT_LENGTH};
+use hyper::http::header::HeaderValue;
 use hyper::{Request, Response};
 use md5::Md5;
 use sha2::{Digest, Sha256};
@@ -19,6 +20,7 @@ use super::{admission_error, catalog_error, FileHttp, FileS3ErrorCode, FileTrans
 use crate::iceberg::body::IcebergBody;
 use crate::iceberg::file_request::{FileRequest, MultipartRequest};
 use crate::iceberg::file_response::MultipartResponses;
+use crate::iceberg::{FileEncodingError, FileUploadBody};
 
 impl FileHttp {
     pub(super) async fn load_session(
@@ -47,12 +49,13 @@ impl FileHttp {
     }
 
     pub(super) async fn multipart_request(
-        &self,
+        self: &Arc<Self>,
         file: &FileRequest,
         request: Request<Incoming>,
         session: Option<MultipartSession>,
         admission: &FileTransferAdmission,
         now_ms: u64,
+        streaming: Option<StreamingPayloadVerifier>,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         match (&file.multipart, file.operation) {
             (Some(MultipartRequest::Create), FileOperation::CreateMultipart) => {
@@ -65,6 +68,7 @@ impl FileHttp {
                     request,
                     admission,
                     now_ms,
+                    streaming,
                 )
                 .await
             }
@@ -165,10 +169,18 @@ impl FileHttp {
         request: Request<Incoming>,
         admission: &FileTransferAdmission,
         now_ms: u64,
+        streaming: Option<StreamingPayloadVerifier>,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
-        let length = content_length(request.headers().get(CONTENT_LENGTH))?;
-        let digest = signed_digest(request.headers().get("x-amz-content-sha256"))?;
+        let digest = if streaming.is_some() {
+            None
+        } else {
+            signed_digest(request.headers().get("x-amz-content-sha256"))?
+        };
         let content_md5 = request.headers().get("content-md5").cloned();
+        let (parts, body) = request.into_parts();
+        let mut body = FileUploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
+            .map_err(encoding_error)?;
+        let length = body.decoded_length();
         let owner = FileIdentity {
             table: session.owner.table,
             file: FileId::random(),
@@ -176,14 +188,17 @@ impl FileHttp {
         let tree = admission
             .receive(
                 &self.uploads,
-                request.into_body(),
+                &mut body,
                 self.blocks.clone(),
                 owner,
                 length,
                 digest,
             )
             .await
-            .map_err(admission_error)?;
+            .map_err(|error| {
+                body.failure()
+                    .map_or_else(|| admission_error(error), encoding_error)
+            })?;
         verify_md5(self.blocks.clone(), owner, tree.clone(), content_md5.as_ref()).await?;
         let before = self
             .multipart
@@ -265,7 +280,7 @@ impl FileHttp {
     }
 
     async fn complete(
-        &self,
+        self: &Arc<Self>,
         mut session: MultipartSession,
         request: Request<Incoming>,
         now_ms: u64,
@@ -305,7 +320,26 @@ impl FileHttp {
             session = self.current(&session).await?;
         }
         let expected: [u8; 32] = Sha256::digest(selection.encode()).into();
-        self.drive_complete(session, expected, now_ms, &url).await
+        let service = Arc::clone(self);
+        let resource = session.location.object_key();
+        let body = crate::iceberg::FileCompleteBody::new(
+            async move {
+                service
+                    .drive_complete(session, expected, now_ms, &url)
+                    .await
+                    .map(Response::into_body)
+            },
+            &resource,
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(300),
+        )
+        .map_err(|_| FileS3ErrorCode::InternalError)?;
+        let mut response = Response::new(IcebergBody::complete(body));
+        response.headers_mut().insert(
+            hyper::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/xml"),
+        );
+        Ok(response)
     }
 
     async fn drive_complete(
@@ -314,7 +348,7 @@ impl FileHttp {
         expected: [u8; 32],
         now_ms: u64,
         url: &str,
-    ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
+    ) -> Result<Response<Vec<u8>>, FileS3ErrorCode> {
         if session
             .completion
             .as_ref()
@@ -368,7 +402,6 @@ impl FileHttp {
                     session = self.current(&session).await?;
                     self.release_terminal(&session).await;
                     return MultipartResponses::complete(&session, &record, url)
-                        .map(|response| response.map(IcebergBody::new))
                         .map_err(|_| FileS3ErrorCode::InternalError);
                 }
                 _ => return Err(FileS3ErrorCode::Conflict),
@@ -449,17 +482,13 @@ pub(super) fn seal_error(error: FileSealError) -> FileS3ErrorCode {
     }
 }
 
-pub(super) fn content_length(value: Option<&HeaderValue>) -> Result<Option<u64>, FileS3ErrorCode> {
-    value
-        .map(|value| {
-            value
-                .to_str()
-                .ok()
-                .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-                .and_then(|value| value.parse().ok())
-                .ok_or(FileS3ErrorCode::InvalidRequest)
-        })
-        .transpose()
+pub(super) fn encoding_error(error: FileEncodingError) -> FileS3ErrorCode {
+    match error {
+        FileEncodingError::Length => FileS3ErrorCode::EntityTooLarge,
+        FileEncodingError::Checksum => FileS3ErrorCode::BadDigest,
+        FileEncodingError::Signature => FileS3ErrorCode::AccessDenied,
+        FileEncodingError::Framing | FileEncodingError::Transport => FileS3ErrorCode::InvalidRequest,
+    }
 }
 
 pub(super) fn signed_digest(value: Option<&HeaderValue>) -> Result<Option<[u8; 32]>, FileS3ErrorCode> {

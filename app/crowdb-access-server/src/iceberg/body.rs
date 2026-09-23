@@ -8,6 +8,7 @@ use std::task::{Context, Poll};
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 
 use super::file_body::FileReadBody;
+use super::file_complete::FileCompleteBody;
 
 pub(super) struct SpoolPermit(Arc<AtomicUsize>);
 
@@ -32,6 +33,7 @@ pub(super) struct IcebergBody {
     bytes: Bytes,
     _permit: Option<SpoolPermit>,
     file: Option<FileReadBody>,
+    complete: Option<FileCompleteBody>,
 }
 
 impl IcebergBody {
@@ -40,6 +42,7 @@ impl IcebergBody {
             bytes: Bytes::from(bytes),
             _permit: None,
             file: None,
+            complete: None,
         }
     }
     pub(super) fn with_permit(bytes: Vec<u8>, permit: SpoolPermit) -> Self {
@@ -47,6 +50,7 @@ impl IcebergBody {
             bytes: Bytes::from(bytes),
             _permit: Some(permit),
             file: None,
+            complete: None,
         }
     }
 
@@ -55,6 +59,16 @@ impl IcebergBody {
             bytes: Bytes::new(),
             _permit: None,
             file: Some(body),
+            complete: None,
+        }
+    }
+
+    pub(super) fn complete(body: FileCompleteBody) -> Self {
+        Self {
+            bytes: Bytes::new(),
+            _permit: None,
+            file: None,
+            complete: Some(body),
         }
     }
 }
@@ -68,6 +82,11 @@ impl Body for IcebergBody {
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
         let body = self.get_mut();
+        if let Some(complete) = &mut body.complete {
+            return Pin::new(complete)
+                .poll_frame(context)
+                .map(|frame| frame.map(|result| result.map_err(Into::into)));
+        }
         if let Some(file) = &mut body.file {
             return Pin::new(file)
                 .poll_frame(context)
@@ -81,9 +100,14 @@ impl Body for IcebergBody {
     }
 
     fn is_end_stream(&self) -> bool {
-        self.bytes.is_empty() && self.file.as_ref().map_or(true, Body::is_end_stream)
+        self.bytes.is_empty()
+            && self.file.as_ref().map_or(true, Body::is_end_stream)
+            && self.complete.as_ref().map_or(true, Body::is_end_stream)
     }
     fn size_hint(&self) -> SizeHint {
+        if let Some(complete) = &self.complete {
+            return complete.size_hint();
+        }
         self.file
             .as_ref()
             .map_or_else(|| SizeHint::with_exact(self.bytes.len() as u64), Body::size_hint)

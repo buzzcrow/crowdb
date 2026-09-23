@@ -218,6 +218,10 @@ impl FileTransferAdmission {
         Ok(())
     }
 
+    pub(super) const fn request_byte_limit(&self) -> u64 {
+        self.request_bytes
+    }
+
     /// Receives a bounded immutable PUT or multipart part without publishing it.
     /// # Errors
     /// Rejects declared/actual size, digest, owner or storage failures.

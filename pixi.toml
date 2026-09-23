@@ -90,8 +90,20 @@ iceberg-e2e = { features = ["iceberg-e2e"], no-default-feature = true }
 [feature.iceberg-e2e.dependencies]
 python = "3.12.*"
 pyiceberg = ">=0.10,<0.12"
+openjdk = "21.*"
+maven = "3.9.*"
 
 [feature.iceberg-e2e.tasks]
+test-java-iceberg-fileio-e2e = '''
+bash -c '
+set -e
+pixi run -e default -- cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release
+pixi run -e default -- cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
+pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server --features crowdb-access-server/iceberg
+pixi run -e default clean-env
+CROWDB_RUNTIME_ROOT="$PIXI_PROJECT_ROOT/.crowdb-runtime/ephemeral/iceberg-java-e2e" CROWDB_ICEBERG_E2E_MVN="$CONDA_PREFIX/bin/mvn" JAVA_HOME="$CONDA_PREFIX/lib/jvm" pixi run -e default -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test official_java_s3_fileio -- --ignored --nocapture
+'
+'''
 test-pyiceberg-e2e = '''
 bash -c '
 set -e

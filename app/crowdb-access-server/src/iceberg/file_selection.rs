@@ -46,6 +46,7 @@ impl CompleteSelection {
         let mut parts = Vec::new();
         let mut number = None;
         let mut digest = None;
+        let mut etag = Vec::new();
         loop {
             match reader.read_event().map_err(|_| CompleteRequestError)? {
                 Event::Decl(_) if state == State::Start => {}
@@ -71,15 +72,28 @@ impl CompleteSelection {
                                 .map_err(|_| CompleteRequestError)?,
                         );
                     }
-                    State::Etag if digest.is_none() => digest = Some(parse_etag(&event)?),
+                    State::Etag => append_etag(&mut etag, &event)?,
                     State::Start | State::Root | State::Part | State::Done
                         if event.iter().all(u8::is_ascii_whitespace) => {}
                     _ => return Err(CompleteRequestError),
                 },
+                Event::GeneralRef(event) if state == State::Etag => {
+                    if event.len() > 16 {
+                        return Err(CompleteRequestError);
+                    }
+                    let name = std::str::from_utf8(&event).map_err(|_| CompleteRequestError)?;
+                    let encoded = format!("&{name};");
+                    let decoded = quick_xml::escape::unescape(&encoded).map_err(|_| CompleteRequestError)?;
+                    append_etag(&mut etag, decoded.as_bytes())?;
+                }
                 Event::End(event) => {
                     state = match (state, event.name().as_ref()) {
                         (State::Number, b"PartNumber") if number.is_some() => State::Part,
-                        (State::Etag, b"ETag") if digest.is_some() => State::Part,
+                        (State::Etag, b"ETag") => {
+                            digest = Some(parse_etag(&etag)?);
+                            etag.clear();
+                            State::Part
+                        }
                         (State::Part, b"Part") => {
                             let number = number.take().ok_or(CompleteRequestError)?;
                             let digest = digest.take().ok_or(CompleteRequestError)?;
@@ -165,6 +179,14 @@ fn parse_etag(bytes: &[u8]) -> Result<[u8; 32], CompleteRequestError> {
         *target = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
     }
     Ok(digest)
+}
+
+fn append_etag(etag: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CompleteRequestError> {
+    if etag.len().saturating_add(bytes.len()) > 66 {
+        return Err(CompleteRequestError);
+    }
+    etag.extend_from_slice(bytes);
+    Ok(())
 }
 
 fn hex_digit(byte: u8) -> Result<u8, CompleteRequestError> {

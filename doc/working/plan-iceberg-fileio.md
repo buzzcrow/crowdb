@@ -10,6 +10,25 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Execution
 
+- [x] **Official SDK completion compatibility**: verify AWS Complete semantics
+  and official client source before changing transport behavior. Stream the XML
+  declaration and periodic whitespace while the existing durable completion
+  driver runs; encode late failures inside the HTTP 200 XML body. Keep a bounded
+  work deadline and cancel foreground work when the response is dropped. Replace
+  the connection's absolute lifetime with an inactivity deadline so active
+  responses can deliver their terminal XML. Add body cancellation/deadline tests
+  and a real-stack official AWS SDK test before claiming compatibility.
+  Sources: AWS `API_CompleteMultipartUpload`, Apache Iceberg `S3OutputStream`,
+  and botocore's special-case HTTP 200 error handling.
+  Files: server `file_complete.rs`, `body.rs`, `file_http/multipart.rs`,
+  `http.rs`, connection adapter and server integration tests.
+  Apache Iceberg 1.11.0 with bundled AWS SDK 2.44.4 passes the real-stack
+  ordinary PUT, 6-MiB multipart, HEAD, GET, seek and late-error path. Its default
+  signed checksum trailers exposed the missing streaming verifier; its escaped
+  ETags exposed the XML parser's literal-quote assumption. Both are corrected
+  without changing the client's checksum/chunked defaults. This is a pinned
+  FileIO baseline, not full catalog or release-profile acceptance.
+
 - [x] **Canonical location**: introduce typed table prefixes and exact relative
   keys, lower-case unpadded base32 catalog IDs and lower-case hex table IDs.
   Keep S3 URI keys distinct from HTTP percent decoding; reject escape rather than
@@ -63,7 +82,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   A verified Hyper body adapter now emits at most 16-KiB frames, starts storage
   reads only on body polling and holds one shared admission credit until completion
   or cancellation. Three tests cover partial ranges, exact size hints, bounded
-  reads, errors and dropping an in-flight response. Listener routing is pending.
+  reads, errors and dropping an in-flight response. Listener routing is connected.
   The upload adapter now independently admits at most 64 concurrent bodies, checks
   declared and actual byte ceilings, slices each received HTTP frame into at
   most 64-KiB writes and awaits storage before polling again.
@@ -71,7 +90,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   tree; cancellation, transport/storage errors and digest mismatches never publish
   authority. Four server tests cover round-trip bytes, all failure classes,
   backpressure and credit release while retaining uncertain orphan blocks.
-  Trailer/checksum-streaming compatibility remains pending. The listener now
+  Signed/unsigned AWS checksum streaming is now implemented. The listener now
   applies intersected grants and seals canonical bytes before publication.
 - [x] **Delegation tokens**: sign bounded claims for catalog/activation epoch,
   table, principal, nonce, exact operations, expiry and separate request/file byte
@@ -91,7 +110,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Path-style request parsing now recognizes only native exact-object operations
   and multipart subresources, decodes percent escapes once and rejects duplicate
   parameters, path escape, ordinary buckets and file DELETE. Four parser tests
-  pass; it is not yet attached to a public listener or durable multipart driver.
+  pass; listener and durable multipart driver composition are connected.
 - [ ] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
   recover completion, duplicate uploads and logical abort without physical delete.
   Files: file multipart modules, record schema and crash/restart tests.
@@ -223,7 +242,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
   Load/commit integration still belongs to R181/R182: callers must supply the
   selected generation's authenticated FileRecord and consume fallback streams.
   This is not a whole-file materialization path or full metadata semantic validator.
-- [~] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
+- [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
   deletion vectors and fixed-size Parquet/ORC/Avro/Puffin hints. Files: format
   validation/probing and streaming fixtures.
   Canonical Parquet and Puffin framing probes now derive bounded footer locations
@@ -568,8 +587,56 @@ the landed storage primitives. The broader ordering is in
   5-MiB-plus multipart upload, durable ListParts, Complete replay and GET. It
   took 136 seconds, so the current 300-second Complete/connection deadline is
   not yet sufficient evidence for large-file official-client acceptance.
-  Official S3FileIO/AWS SDK replay, streaming checksum variants and table-side
-  delegated credential vending remain pending. Do not advertise full FileIO.
+  The pinned S3FileIO baseline and streaming checksum support now pass as detailed
+  below. Table-side delegated credential vending and the wider client/engine
+  matrix remain pending. Do not advertise full FileIO.
+
+#### Checkpoint after official Java FileIO compatibility
+
+- `FileCompleteBody` sends the XML declaration first, then 10-second whitespace
+  heartbeats, then exactly one success or error document. A 300-second work
+  deadline yields a terminal `SlowDown` document; disconnect drops foreground
+  work, leaving durable recovery in charge. Connections expire after 300 seconds
+  without successful I/O, not after a fixed total lifetime. Shutdown draining
+  remains bounded to 300 seconds. These are resource limits, not evidence of
+  acceptance for arbitrarily large objects.
+- `SigV4Verifier::verify_streaming` explicitly opts native uploads into AWS
+  streaming seed verification. The ordinary verifier still rejects streaming.
+  `FileUploadBody` verifies every signed chunk, the zero-length terminal chunk,
+  declared trailing checksum and trailer signature. Unsigned trailer uploads
+  and signed uploads without trailers also have focused tests. CRC32, CRC32C,
+  CRC64NVME, SHA-1 and SHA-256 are supported; unknown checksum algorithms fail
+  closed. Encoded bytes and decoded lengths are bounded separately; parser lines
+  are capped at 1 KiB and output frames at 64 KiB. Only successful EOF can return
+  a publishable upload tree. Trailers carried as arbitrary HTTP trailer frames
+  remain rejected; AWS trailers are decoded from the aws-chunked payload.
+- AWS's published signed CRC32C trailer example verifies independently of our
+  test signer. Negative cases cover changed seeds/chunks/checksums/signatures,
+  extra bytes, truncation, duplicate framing headers, frame splits and encoded
+  byte limits. Complete XML accepts predefined and numeric references in ETags
+  under the same 66-byte decoded bound and still rejects external entities.
+- Reproduce the official client test with
+  `pixi run -e iceberg-e2e test-java-iceberg-fileio-e2e`. The environment pins
+  Java 21 and Maven 3.9 through `pixi.lock`; the fixture pins Iceberg 1.11.0 and
+  its AWS bundle. Credentials enter the test process through stdin, not command
+  arguments. Successful execution took 177.74 seconds including stack startup
+  and Maven cleanup. Maven reports the official SDK's remaining daemon threads
+  during in-process cleanup; the Maven process exits successfully.
+- Remaining scope: catalog credential vending, selected-use validation, table
+  heads/load/lifecycle, candidate snapshot admission and commits. Multipart
+  additional-checksum persistence/Complete fields and the wider release-client
+  matrix are not covered by this baseline. The existing immutable digest remains
+  SHA-256; checksum verification does not redefine ETags or file authority.
+- Verification passed: affected S3/server `--all-targets` tests with the Iceberg
+  feature, the pinned Java real-stack test, manual SigV4 PUT/Range/multipart and
+  Complete replay (137.15 seconds), workspace fmt and `pixi run rs-lint`, and
+  explicit Iceberg-E2E-feature clippy. The no-default-feature encoding tests also
+  pass. No new unsafe scope, lock or physical deletion path was introduced.
+- Primary references:
+  [AWS Complete](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CompleteMultipartUpload.html),
+  [AWS signed chunks](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sigv4-streaming.html),
+  [AWS signed trailers](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sigv4-streaming-trailers.html),
+  [Iceberg S3OutputStream](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/aws/src/main/java/org/apache/iceberg/aws/s3/S3OutputStream.java).
 
 #### Handover after partition summaries, Variant bounds and DV binding
 
@@ -625,14 +692,15 @@ the landed storage primitives. The broader ordering is in
   journaled part replacement, frozen selection, resumable assembly, frozen seal
   publication/replay, bounded listing and native background recovery. Do not
   implement a second state machine in HTTP handlers. New response formatters and
-  intersected admission helpers are available, but public route wiring, semantic
-  sealing and standard-client completion retry still need work; an invalid frozen
-  selection currently requires abort.
+  intersected admission helpers, public routes and physical sealing are connected.
+  Selected-use validation and standard-client compatibility still need work;
+  an invalid frozen selection currently requires abort.
 - Server `src/iceberg/file_upload.rs`, `file_body.rs`, `file_auth.rs`,
   `file_request.rs`, `file_response.rs` and `file_admission.rs` provide bounded
   transport, SigV4 grant authentication, operation parsing, response formatting
-  and limit checks. They are not a publicly composed FileIO service. Upload
-  rejects trailers and does not yet support AWS streaming-checksum framing.
+  and limit checks. They are composed in the native FileIO listener. Upload
+  rejects arbitrary HTTP trailer frames; `FileUploadBody` validates AWS checksum
+  trailers inside the signed/unsigned aws-chunked payload before publication.
 - Formats: JSON validation is structural; Parquet/ORC probes verify framing and
   fixed-size hints, not complete footer semantics. Puffin metadata is bounded
   plain JSON or one sized LZ4 frame. Avro only has null/raw-deflate codecs.

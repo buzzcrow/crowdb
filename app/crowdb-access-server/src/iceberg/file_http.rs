@@ -10,15 +10,16 @@ use crowdb_access_iceberg::file::{
     FileRepository, FileSealer, MultipartAdmission, MultipartLister, MultipartRepository, RangeError,
 };
 use crowdb_access_iceberg::key::OperationId;
-use crowdb_access_s3::auth::RawAuthRequest;
+use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
 use hyper::body::Incoming;
 use hyper::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
 use hyper::{Method, Request, Response, StatusCode};
 
 use super::body::IcebergBody;
 use super::file_admission::{FileAdmissionError, FileServiceLimits, FileTransferAdmission};
-use super::file_auth::authenticate_file_request;
+use super::file_auth::authenticate_file_transfer;
 use super::file_body::FileResponseBudget;
+use super::file_encoding::FileUploadBody;
 use super::file_request::{FileRequest, FileRequestError};
 use super::file_response::{FileS3ErrorCode, MultipartResponses};
 use super::file_upload::FileUploadBudget;
@@ -73,7 +74,7 @@ impl FileHttp {
     }
 
     pub(super) async fn dispatch(
-        &self,
+        self: &Arc<Self>,
         catalog: &CatalogRepository,
         request: Request<Incoming>,
     ) -> Response<IcebergBody> {
@@ -88,7 +89,7 @@ impl FileHttp {
     }
 
     async fn execute(
-        &self,
+        self: &Arc<Self>,
         catalog: &CatalogRepository,
         request: Request<Incoming>,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
@@ -101,7 +102,7 @@ impl FileHttp {
             return Err(FileS3ErrorCode::SlowDown);
         }
         let now_ms = now_ms()?;
-        let grant = authenticate_file_request(
+        let (grant, streaming) = authenticate_file_transfer(
             &self.issuer,
             root.context,
             RawAuthRequest::from_parts(request.method(), request.uri(), request.headers()),
@@ -120,8 +121,21 @@ impl FileHttp {
             FileOperation::Head | FileOperation::Get => {
                 self.read(&file_request, &request, root.context, &admission).await
             }
-            FileOperation::Put => self.put(&file_request, request, root.context, &admission).await,
-            _ => Box::pin(self.multipart_request(&file_request, request, session, &admission, now_ms)).await,
+            FileOperation::Put => {
+                self.put(&file_request, request, root.context, &admission, streaming)
+                    .await
+            }
+            _ => {
+                Box::pin(self.multipart_request(
+                    &file_request,
+                    request,
+                    session,
+                    &admission,
+                    now_ms,
+                    streaming,
+                ))
+                .await
+            }
         }
     }
 
@@ -131,10 +145,18 @@ impl FileHttp {
         request: Request<Incoming>,
         context: crowdb_access_iceberg::catalog::CatalogContext,
         admission: &FileTransferAdmission,
+        streaming: Option<StreamingPayloadVerifier>,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
-        let length = multipart::content_length(request.headers().get(CONTENT_LENGTH))?;
-        let digest = multipart::signed_digest(request.headers().get("x-amz-content-sha256"))?;
+        let digest = if streaming.is_some() {
+            None
+        } else {
+            multipart::signed_digest(request.headers().get("x-amz-content-sha256"))?
+        };
         let content_md5 = request.headers().get("content-md5").cloned();
+        let (parts, body) = request.into_parts();
+        let mut body = FileUploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
+            .map_err(multipart::encoding_error)?;
+        let length = body.decoded_length();
         let owner = crowdb_access_iceberg::file::FileIdentity {
             table: file_request.location.table(),
             file: crowdb_access_iceberg::key::FileId::random(),
@@ -142,14 +164,17 @@ impl FileHttp {
         let tree = admission
             .receive(
                 &self.uploads,
-                request.into_body(),
+                &mut body,
                 self.blocks.clone(),
                 owner,
                 length,
                 digest,
             )
             .await
-            .map_err(admission_error)?;
+            .map_err(|error| {
+                body.failure()
+                    .map_or_else(|| admission_error(error), multipart::encoding_error)
+            })?;
         multipart::verify_md5(self.blocks.clone(), owner, tree.clone(), content_md5.as_ref()).await?;
         let sealed = FileSealer::new(self.blocks.clone(), self.limits.max_file_bytes)
             .map_err(|_| FileS3ErrorCode::InternalError)?

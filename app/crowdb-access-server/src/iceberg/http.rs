@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::body::IcebergBody;
+use super::connection::{ActiveIo, ConnectionActivity};
 use super::file_http::FileHttp;
 use super::namespace_read::NamespaceHttp;
 use crowdb_access_iceberg::catalog::{CatalogError, CatalogLifecycle, CatalogRepository, RootState};
@@ -21,7 +22,7 @@ pub struct IcebergHttpService {
     authentication: BearerAuthenticator,
     request_timeout: Duration,
     namespaces: Option<NamespaceHttp>,
-    files: Option<FileHttp>,
+    files: Option<Arc<FileHttp>>,
 }
 
 impl IcebergHttpService {
@@ -48,12 +49,12 @@ impl IcebergHttpService {
         blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,
         region: String,
     ) -> Result<Self, crowdb_access_iceberg::file::FileGrantError> {
-        self.files = Some(FileHttp::new(
+        self.files = Some(Arc::new(FileHttp::new(
             store,
             blocks,
             self.authentication.namespace_token_key(),
             region,
-        )?);
+        )?));
         Ok(self)
     }
 
@@ -189,19 +190,35 @@ pub async fn serve(
                 let (stream, peer) = match accepted { Ok(value) => value, Err(error) => { failure = Some(error); break; } };
                 let service = Arc::clone(&service);
                 connections.spawn(async move {
-                    let timeout = Duration::from_secs(300);
+                    let activity = ConnectionActivity::new();
+                    let stream = ActiveIo::new(stream, activity.clone());
                     let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { Box::pin(service.handle(request)).await } });
                     let connection = http1::Builder::new().keep_alive(false).max_buf_size(64 * 1024)
                         .serve_connection(TokioIo::new(stream), handler);
-                    if let Ok(Err(error)) = tokio::time::timeout(timeout, connection).await {
-                        tracing::debug!(%peer, %error, "Iceberg HTTP connection failed");
+                    tokio::select! {
+                        result = connection => {
+                            if let Err(error) = result {
+                                tracing::debug!(%peer, %error, "Iceberg HTTP connection failed");
+                            }
+                        }
+                        () = activity.expired(Duration::from_secs(300)) => {
+                            tracing::debug!(%peer, "Iceberg HTTP connection idle deadline exhausted");
+                        }
                     }
                 });
             }
         }
     }
     drop(listener);
-    while connections.join_next().await.is_some() {}
+    if tokio::time::timeout(Duration::from_secs(300), async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
+    }
     failure.map_or(Ok(()), Err)
 }
 
