@@ -19,6 +19,7 @@ mod namespace_request;
 mod namespace_write;
 mod recovery;
 mod runtime;
+mod table_read;
 
 pub use file_admission::{FileAdmissionError, FileServiceLimits, FileTransferAdmission};
 pub use file_auth::authenticate_file_request;

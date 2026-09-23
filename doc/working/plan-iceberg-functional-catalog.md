@@ -506,10 +506,27 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      Absent tokens collect the complete bounded result; empty tokens start paging.
      Work and retained-name byte exhaustion fail before any result is returned.
      Files: `src/table/load.rs`, `list.rs`, `list/token.rs`; table load/list tests.
-     Remaining: Access Server HTTP composition, authorization/admission/error
-     mapping and bounded response framing; official-client ALL/REFS/conditional
-     and complete/paged list E2E. Keep table capabilities unadvertised until this
-     integration and item 7's remaining validation pass. No second publisher.
+     Access Server adapter checkpoint: `iceberg/table_read.rs` composes GET load,
+     HEAD exists and complete/paged table listing after shared bearer/catalog
+     admission. It preserves raw metadata inside the standard response envelope,
+     uses mode-specific ETags/304, checks query/header bounds and single path
+     decoding, and retains one of four lock-free spool permits through response
+     delivery. Complete and paged lists share admission; output bytes are capped
+     before any response is sent. Failed requests release admission.
+     Five fixture-backed TCP tests cover ALL/REFS, conditional/HEAD, large unknown
+     numeric values, escaped names, token binding, all credential roles, missing
+     objects, corruption and resource admission. Setup is exclusively through
+     `with_table_reads_for_tests` behind `test-util`; production runtime and
+     advertised capabilities remain unchanged. No second publisher is introduced.
+     Remaining: production activation with credential vending and final metadata
+     validation; official-client ALL/REFS/conditional and complete/paged list E2E.
+     Run server tests and clippy with `--features iceberg`: default server feature
+     selection skips these tests entirely and is not evidence of validation.
+     Keep table capabilities unadvertised until these integration gates pass.
+     Adapter gates pass: server `--features iceberg --all-targets` tests and
+     clippy, production-only `--no-default-features --features iceberg` library
+     check, workspace fmt and `rs-lint`. The native/full-stack E2E feature is
+     intentionally separate and is not claimed by this checkpoint.
      Gates for this read/default slice: library all-target tests and final focused
      metadata/load/list tests pass, as do workspace fmt/clippy; pinned Java fixture
      generation succeeds (nonfatal existing SLF4J binding warnings only).

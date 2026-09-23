@@ -31,16 +31,21 @@ impl Drop for SpoolPermit {
 
 pub(super) struct IcebergBody {
     bytes: Bytes,
-    _permit: Option<SpoolPermit>,
+    permit: Option<SpoolPermit>,
     file: Option<FileReadBody>,
     complete: Option<FileCompleteBody>,
 }
 
 impl IcebergBody {
+    pub(super) fn with_spool_permit(mut self, permit: SpoolPermit) -> Self {
+        self.permit = Some(permit);
+        self
+    }
+
     pub(super) fn new(bytes: Vec<u8>) -> Self {
         Self {
             bytes: Bytes::from(bytes),
-            _permit: None,
+            permit: None,
             file: None,
             complete: None,
         }
@@ -48,7 +53,7 @@ impl IcebergBody {
     pub(super) fn with_permit(bytes: Vec<u8>, permit: SpoolPermit) -> Self {
         Self {
             bytes: Bytes::from(bytes),
-            _permit: Some(permit),
+            permit: Some(permit),
             file: None,
             complete: None,
         }
@@ -57,7 +62,7 @@ impl IcebergBody {
     pub(super) fn file(body: FileReadBody) -> Self {
         Self {
             bytes: Bytes::new(),
-            _permit: None,
+            permit: None,
             file: Some(body),
             complete: None,
         }
@@ -66,7 +71,7 @@ impl IcebergBody {
     pub(super) fn complete(body: FileCompleteBody) -> Self {
         Self {
             bytes: Bytes::new(),
-            _permit: None,
+            permit: None,
             file: None,
             complete: Some(body),
         }

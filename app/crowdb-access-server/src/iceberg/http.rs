@@ -23,6 +23,7 @@ pub struct IcebergHttpService {
     request_timeout: Duration,
     namespaces: Option<NamespaceHttp>,
     files: Option<Arc<FileHttp>>,
+    tables: Option<super::table_read::TableHttp>,
 }
 
 impl IcebergHttpService {
@@ -38,6 +39,7 @@ impl IcebergHttpService {
             request_timeout,
             namespaces: None,
             files: None,
+            tables: None,
         }
     }
 
@@ -66,6 +68,24 @@ impl IcebergHttpService {
     ) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
         self.namespaces = Some(NamespaceHttp::new(
             store,
+            &self.authentication.namespace_token_key(),
+        )?);
+        Ok(self)
+    }
+
+    /// Installs generation-qualified reads without advertising table capabilities.
+    /// Runtime activation awaits complete commit validation and credential vending.
+    /// # Errors
+    /// Rejects invalid table-list token signing configuration.
+    #[cfg(feature = "test-util")]
+    pub fn with_table_reads_for_tests<Store: crowdb_access_iceberg::namespace::NamespaceStore + 'static>(
+        mut self,
+        store: Arc<Store>,
+        blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,
+    ) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
+        self.tables = Some(super::table_read::TableHttp::new(
+            store,
+            blocks,
             &self.authentication.namespace_token_key(),
         )?);
         Ok(self)
@@ -157,6 +177,11 @@ impl IcebergHttpService {
                 200,
                 serde_json::to_vec(&config).map_err(|_| service_unavailable())?,
             ));
+        }
+        if super::table_read::TableHttp::handles(request.uri().path()) {
+            if let Some(tables) = &self.tables {
+                return tables.read(root.context, &request).await;
+            }
         }
         match &self.namespaces {
             Some(namespaces) => namespaces.dispatch(root.context, principal, request).await,
