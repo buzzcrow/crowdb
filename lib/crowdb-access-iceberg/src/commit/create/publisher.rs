@@ -18,7 +18,10 @@ use crate::{
 mod admission;
 mod completion;
 mod helping;
+mod preparation;
 mod reservation;
+mod staged;
+pub use staged::{StagedCommitLimits, StagedCommitRequest};
 
 #[derive(Clone, Debug)]
 pub struct TableCreationRequest {
@@ -35,6 +38,7 @@ pub struct TableCreator {
     store: Arc<dyn CatalogStore>,
     names: Arc<dyn NamespaceStore>,
     blocks: Option<Arc<dyn FileBlockStore>>,
+    staged_limits: Option<Arc<StagedCommitLimits>>,
 }
 
 impl TableCreator {
@@ -44,6 +48,7 @@ impl TableCreator {
             store: store.clone(),
             names: store,
             blocks: Some(blocks),
+            staged_limits: None,
         }
     }
 
@@ -63,76 +68,10 @@ impl TableCreator {
                 return Err(CatalogError::Conflict.into());
             }
         } else {
-            let operation = self.prepare(request).await?;
+            let operation = self.prepare(request, None).await?;
             journal.begin(operation).await?;
         }
         self.resume(request.context, request.identity.operation).await
-    }
-
-    async fn prepare(&self, request: &TableCreationRequest) -> Result<TableCreateOperation, Error> {
-        let decoded = CreateTableRequest::decode(&request.body, limits())?;
-        if decoded.stage_create() {
-            return Err(Error::Unsupported("staged table creation"));
-        }
-        let namespace = NamespaceRepository::from_parts(self.store.clone(), self.names.clone())
-            .load(request.context, &request.namespace)
-            .await?
-            .ok_or(Error::NamespaceMissing)?;
-        let table = TableLocation {
-            catalog: request.context.catalog,
-            table: TableId::random(),
-        };
-        let target = TableHead {
-            catalog: request.context.catalog,
-            table: table.table,
-            namespace: namespace.namespace,
-            name: decoded.name().into(),
-            name_epoch: 1,
-            lifecycle: TableLifecycle::Ready,
-            generation: 1,
-            metadata_file: FileId::from_bytes(request.identity.operation.as_bytes())?,
-            metadata_location: table.file(&format!(
-                "metadata/1-{}.metadata.json",
-                request.identity.operation
-            ))?,
-            metadata_digest: [0; 32],
-            format_version: 2,
-            table_uuid: Some(uuid::Uuid::new_v4()),
-            operation_fence: 1,
-            pending_operation: Some(request.identity.operation),
-        };
-        let initial = evaluate_table_creation(&decoded, target, request.timestamp_ms, limits())?;
-        let response =
-            crate::commit::publication::metadata_response(&initial.head, initial.document.canonical())?;
-        let payloads = self.payloads();
-        let input = payloads
-            .put(request.context.catalog, request.identity.operation, &request.body)
-            .await?;
-        let document = payloads
-            .put(
-                request.context.catalog,
-                request.identity.operation,
-                initial.document.canonical(),
-            )
-            .await?;
-        let response = payloads
-            .put(request.context.catalog, request.identity.operation, &response)
-            .await?;
-        Ok(TableCreateOperation {
-            context: request.context,
-            identity: request.identity,
-            principal: request.principal.clone(),
-            namespace: request.namespace.clone(),
-            revision: 1,
-            timestamp_ms: request.timestamp_ms,
-            phase: Phase::Prepared,
-            input,
-            document,
-            response,
-            candidate: initial.head,
-            admission: None,
-            outcome: None,
-        })
     }
 
     /// # Errors
@@ -159,6 +98,7 @@ impl TableCreator {
                 .await?
                 .ok_or(ValidationError::Record)?;
             match operation.phase {
+                Phase::Staged => return Err(Error::Unsupported("unbound staged table")),
                 Phase::Prepared => self.reserve(&operation, budget).await?,
                 Phase::Reserved => self.write_metadata(&operation).await?,
                 Phase::FilesReady => self.prepare_admission(&operation, budget).await?,
@@ -195,8 +135,22 @@ impl TableCreator {
         }
         let blocks = self.blocks.clone().ok_or(CatalogError::Busy)?;
         let bytes = self.payloads().get(&operation.document).await?;
-        let document = TableMetadataDocument::parse(bytes, &operation.candidate, limits())?;
-        if !document.snapshots().is_empty() {
+        let document = Arc::new(TableMetadataDocument::parse(
+            bytes,
+            &operation.candidate,
+            limits(),
+        )?);
+        if operation.stage.is_some() {
+            if let Err(error) = self
+                .validate_initial_files(operation, blocks.clone(), document.clone())
+                .await
+            {
+                if staged::definite_validation_failure(&error) {
+                    return self.abort(operation, 400).await;
+                }
+                return Err(error);
+            }
+        } else if !document.snapshots().is_empty() {
             return Err(ValidationError::Record.into());
         }
         self.current(operation).await?;

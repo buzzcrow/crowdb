@@ -55,7 +55,7 @@ impl TableCreateJournal {
         operation: TableCreateOperation,
     ) -> Result<TableCreateOperation, CatalogError> {
         operation.validate()?;
-        if operation.phase != Phase::Prepared || operation.revision != 1 {
+        if !matches!(operation.phase, Phase::Prepared | Phase::Staged) || operation.revision != 1 {
             return Err(ValidationError::Record.into());
         }
         if let Some(existing) = self.load(operation.context, operation.identity.operation).await? {
@@ -97,6 +97,19 @@ impl TableCreateJournal {
         before.validate()?;
         after.validate()?;
         let mut unchanged = after.clone();
+        if before.binding_transition(after)? {
+            unchanged.stage = before.stage.clone();
+            unchanged.candidate = before.candidate.clone();
+            unchanged.document = before.document.clone();
+            unchanged.response = before.response.clone();
+            unchanged.timestamp_ms = before.timestamp_ms;
+            let payloads = PayloadStore::new(self.store.clone());
+            let stage = after.stage.as_ref().ok_or(ValidationError::Record)?;
+            let binding = stage.binding.as_ref().ok_or(ValidationError::Record)?;
+            for payload in [&binding.input, &after.document, &after.response] {
+                payloads.get(payload).await?;
+            }
+        }
         unchanged.phase = before.phase;
         unchanged.revision = before.revision;
         unchanged.admission = before.admission.clone();

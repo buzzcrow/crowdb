@@ -81,6 +81,10 @@ impl TableCreator {
 
     pub(super) async fn abort(&self, operation: &TableCreateOperation, status: u16) -> Result<(), Error> {
         let (kind, message) = match status {
+            400 => (
+                "BadRequestException",
+                "Initial table files fail selected-use validation",
+            ),
             404 => (
                 "NoSuchNamespaceException",
                 "Namespace is not available for table admission",

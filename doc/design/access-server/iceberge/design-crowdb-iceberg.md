@@ -392,7 +392,24 @@ marker. Parent helpers therefore resolve the remaining publication using catalog
 records without requiring a file block reader. The initial head is selected once,
 then the reservation becomes a published mapping. The durable terminal result
 precedes conditional cleanup of parent and table markers. These domain operations
-remain separate from REST write admission and staged-create completion.
+remain separate from REST write admission.
+
+Staged creation retains an invisible durable draft and metadata-only response.
+Its native table location resolves the draft without a client-specific token.
+The final assert-create request initializes an empty metadata builder using the
+retained UUID, preserving the field IDs already used by staged files. One journal
+CAS binds its request identity, input bytes, evaluation clock and candidate before
+the ordinary name-reservation and parent-admission sequence begins. Initial file
+validation is fenced by that exact reservation and journal revision, never by a
+fabricated prior head. Publication checks all selected initial snapshots and the
+enabled auxiliary-file profile before writing canonical table metadata.
+
+Draft expiry and final binding compete on the same phase CAS. Only an unbound
+draft may expire; bound operations recover their original publication outcome
+regardless of elapsed time. Known semantic file failures retain a terminal client
+error and release their reservation. Uncertain storage outcomes remain recoverable.
+The draft response and final commit response are retained separately for exact
+replay.
 
 Drop, replacement, and snapshot expiration remove logical reachability first.
 Physical reclamation follows a proof that no live metadata, snapshot, reference,

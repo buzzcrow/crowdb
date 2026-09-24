@@ -53,6 +53,7 @@ impl TestInitial {
             candidate: head.clone(),
             admission: None,
             outcome: None,
+            stage: None,
         };
         fixture.namespace.store.values.rcu(|current| {
             let mut next = (**current).clone();

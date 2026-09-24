@@ -23,6 +23,8 @@ pub enum CommitPublicationError {
     #[error("commit operation is not enabled: {0}")]
     Unsupported(&'static str),
     #[error(transparent)]
+    Evaluation(#[from] super::EvaluationError),
+    #[error(transparent)]
     Catalog(#[from] CatalogError),
     #[error(transparent)]
     Validation(#[from] ValidationError),

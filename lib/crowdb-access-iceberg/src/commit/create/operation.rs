@@ -9,6 +9,9 @@ use crate::{
     table::{TableHead, TableLifecycle, TableMapping, TableMappingState},
 };
 
+mod staging;
+pub use staging::{TableCreateStage, TableStageBinding};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum TableCreatePhase {
@@ -22,17 +25,19 @@ pub enum TableCreatePhase {
     Complete,
     Aborting,
     Aborted,
+    Staged,
 }
 
 impl TableCreatePhase {
     pub(super) fn permits(self, next: Self) -> bool {
         use TableCreatePhase::{
             Aborted, Aborting, Admitted, Admitting, Complete, FilesReady, Prepared, Published, Publishing,
-            Reserved,
+            Reserved, Staged,
         };
         matches!(
             (self, next),
-            (Prepared, Reserved | Aborting)
+            (Staged, Prepared | Aborted)
+                | (Prepared, Reserved | Aborting)
                 | (Reserved, FilesReady | Aborting)
                 | (FilesReady, Admitting | Aborting)
                 | (Admitting, Admitted | FilesReady | Aborting)
@@ -59,6 +64,7 @@ pub struct TableCreateOperation {
     pub candidate: TableHead,
     pub admission: Option<NamespaceMutation>,
     pub outcome: Option<TableCommitOutcome>,
+    pub stage: Option<TableCreateStage>,
 }
 
 impl TableCreateOperation {
@@ -94,6 +100,7 @@ impl TableCreateOperation {
         self.context.validate()?;
         self.candidate.validate()?;
         self.namespace.encode()?;
+        self.validate_stage()?;
         if self.principal.is_empty()
             || self.principal.len() > 256
             || self.principal.contains('\0')
@@ -125,7 +132,10 @@ impl TableCreateOperation {
                 }
             }
         }
-        if (matches!(self.phase, Prepared | Reserved | FilesReady) && self.admission.is_some())
+        if (matches!(
+            self.phase,
+            Prepared | Reserved | FilesReady | TableCreatePhase::Staged
+        ) && self.admission.is_some())
             || (matches!(
                 self.phase,
                 Admitting | Admitted | Publishing | Published | Complete
@@ -146,7 +156,7 @@ impl TableCreateOperation {
         Ok(())
     }
 
-    fn reference(&self, payload: &PayloadReference) -> Result<(), ValidationError> {
+    pub(super) fn reference(&self, payload: &PayloadReference) -> Result<(), ValidationError> {
         payload.validate()?;
         if payload.catalog != self.context.catalog || payload.operation != self.identity.operation {
             return Err(ValidationError::IdentityMismatch);

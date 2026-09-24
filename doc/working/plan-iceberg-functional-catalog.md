@@ -219,23 +219,31 @@ Current requested sequence (tasks 1–3):
   wrong candidate/phase and work overflow. All 512 library tests, 48 server tests
   and workspace fmt/clippy pass.
 
-### Active staged-publication integration
+### Staged-publication checkpoint
 
-- [~] **Durable draft and commit binding**: append optional staged evidence to
-  `TableCreateOperation`, preserving existing wire tags. Stage response contains
-  metadata only; no head, name reservation or canonical metadata file is published.
-  Resolve the draft through its native table location; freeze UUID, namespace and
-  principal. A single journal CAS binds the final request identity/body, evaluated
-  candidate and response, then enters the existing create reservation/admission
-  publisher. Competing final identities cannot both bind.
-- [ ] **Phase-fenced expiry**: only an unbound draft can expire. Expiry and final
-  binding race on the same journal revision; bound/uncertain publication resumes
-  instead of being TTL-deleted. Test reply loss at every durable stage/bind write,
-  expiry-versus-binding and namespace drop during final publication.
-- [ ] **Initial file-proof publication**: compose the reserved-create source with
-  snapshot and auxiliary limits before immutable candidate publication. Reject
-  unsupported partition-statistics semantics as in ordinary commit proofs.
-- [ ] **HTTP composition and SDK acceptance**: connect authenticated create/commit,
+- `TableCreator::stage`, `commit_staged` and `expire_stage` now implement the
+  durable library path. Optional staged evidence and phase 10 are appended without
+  changing older wire values. Drafts retain metadata-only responses and publish
+  no name/head/file; native table identity resolves the journal without a custom
+  SDK token. Final binding freezes principal, namespace, UUID, exact request body,
+  identity, clock, candidate and response in one CAS.
+- Initial publication composes reserved-operation file resolution with snapshot,
+  projection, DV-parent and auxiliary checks. Nonempty partition statistics stay
+  disabled. Known semantic file failures persist 400 and remove their reservation;
+  uncertain storage or unclassified failures retain recoverable intent rather
+  than being misreported as final client errors.
+- Expiry only transitions an unbound draft; it cannot delete a bound reservation or
+  uncertain publication. Stage and commit responses replay separately. Explicit
+  `StagedCommitLimits` and a server-supplied expiry are required by the library;
+  runtime configuration, periodic expiry scheduling and FileIO grants are not yet
+  connected.
+- Nine focused tests cover v1/v2/v3 initialization, every durable stage and final
+  commit reply-loss point, expiry reply loss, actual expiry/binding and competing
+  identity CAS races, namespace drop at every interrupted commit boundary,
+  native manifest/Parquet publication and terminal row-count rejection.
+  Gates: all 521 library tests, 48 Iceberg-enabled server tests, protocol
+  all-target tests and workspace fmt/clippy pass. No new unsafe scope or lock.
+- [~] **HTTP composition and SDK acceptance**: connect authenticated create/commit,
   retry ledger, limits and draft-aware FileIO grants only after the durable library
   path passes. HTTP write endpoints remain disabled until then.
 

@@ -17,8 +17,8 @@ mod publisher;
 mod schema;
 
 pub use journal::TableCreateJournal;
-pub use operation::{TableCreateOperation, TableCreatePhase};
-pub use publisher::{TableCreationRequest, TableCreator};
+pub use operation::{TableCreateOperation, TableCreatePhase, TableCreateStage, TableStageBinding};
+pub use publisher::{StagedCommitLimits, StagedCommitRequest, TableCreationRequest, TableCreator};
 
 #[derive(Debug)]
 pub struct CreateTableRequest {

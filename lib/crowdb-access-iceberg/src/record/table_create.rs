@@ -1,6 +1,7 @@
 use crowdb_protocol::iceberg_fb::{FBTableCreateOperation, FBTableCreateOperationArgs};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
+mod staging;
 use crate::{
     catalog::CatalogContext,
     commit::{TableCommitOutcome, TableCreateOperation, TableCreatePhase},
@@ -33,6 +34,11 @@ pub(super) fn encode<'buffer>(
         .as_ref()
         .map(|value| super::payload::encode_reference(builder, &value.body))
         .transpose()?;
+    let stage = operation
+        .stage
+        .as_ref()
+        .map(|stage| staging::encode(builder, stage))
+        .transpose()?;
     Ok(FBTableCreateOperation::create(
         builder,
         &FBTableCreateOperationArgs {
@@ -52,6 +58,7 @@ pub(super) fn encode<'buffer>(
             admission,
             outcome_status: operation.outcome.as_ref().map_or(0, |outcome| outcome.status),
             outcome_body,
+            stage,
         },
     ))
 }
@@ -84,6 +91,7 @@ pub(super) fn decode(value: FBTableCreateOperation<'_>) -> Result<TableCreateOpe
             7 => TableCreatePhase::Complete,
             8 => TableCreatePhase::Aborting,
             9 => TableCreatePhase::Aborted,
+            10 => TableCreatePhase::Staged,
             _ => return Err(ValidationError::Record),
         },
         input: super::payload::decode_reference(value.input())?,
@@ -102,6 +110,7 @@ pub(super) fn decode(value: FBTableCreateOperation<'_>) -> Result<TableCreateOpe
             }),
             _ => return Err(ValidationError::Record),
         },
+        stage: value.stage().map(staging::decode).transpose()?,
     };
     operation.validate()?;
     Ok(operation)

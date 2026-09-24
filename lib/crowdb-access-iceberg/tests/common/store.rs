@@ -25,6 +25,25 @@ pub struct TestStore {
     pub file_mapping_visits: AtomicUsize,
     pub table_reservation_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub table_reservation_visits: AtomicUsize,
+    pub stage_transition_barrier: Option<Arc<tokio::sync::Barrier>>,
+    pub stage_transition_visits: AtomicUsize,
+}
+
+impl TestStore {
+    async fn pause_stage_transition(&self, key: &[u8], expected: Option<&[u8]>) {
+        if let (Some(barrier), Some(expected)) = (&self.stage_transition_barrier, expected) {
+            if let Ok(crowdb_access_iceberg::record::StorageRecord::TableCreateOperation(operation)) =
+                crowdb_access_iceberg::key::IcebergKey::decode(key)
+                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, expected))
+            {
+                if operation.phase == crowdb_access_iceberg::commit::TableCreatePhase::Staged
+                    && self.stage_transition_visits.fetch_add(1, Ordering::SeqCst) < 2
+                {
+                    barrier.wait().await;
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -41,6 +60,7 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
+        self.pause_stage_transition(key, expected).await;
         if matches!(
             crowdb_access_iceberg::key::IcebergKey::decode(key),
             Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {

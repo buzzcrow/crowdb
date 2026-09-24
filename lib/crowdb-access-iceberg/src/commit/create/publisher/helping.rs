@@ -20,6 +20,7 @@ impl TableCreator {
             store,
             names,
             blocks: None,
+            staged_limits: None,
         };
         let operation = creator
             .journal()
@@ -58,6 +59,7 @@ impl TableCreator {
             store,
             names,
             blocks: None,
+            staged_limits: None,
         };
         let operation = creator
             .journal()

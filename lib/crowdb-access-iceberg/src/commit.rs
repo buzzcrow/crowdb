@@ -16,9 +16,9 @@ mod update;
 
 pub use create::{
     evaluate_table_creation, CreateTableRequest, InitialTableMetadata, TableCreateJournal,
-    TableCreateOperation, TableCreatePhase,
+    TableCreateOperation, TableCreatePhase, TableCreateStage, TableStageBinding,
 };
-pub use create::{TableCreationRequest, TableCreator};
+pub use create::{StagedCommitLimits, StagedCommitRequest, TableCreationRequest, TableCreator};
 pub use evaluator::{
     evaluate_metadata_updates, evaluate_table_create_commit, EvaluatedMetadata, EvaluationError,
     EvaluationLimits,
