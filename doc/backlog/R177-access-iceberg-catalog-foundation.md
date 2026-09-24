@@ -243,6 +243,18 @@ and must not carry independent open questions.
 
 ### Confirmed Compatibility Decisions
 
+- **Functional/performance acceptance split (OI-1, confirmed 2026-09-24):**
+  functional correctness uses a bounded runtime profile independently of a
+  subsecond latency target. Preserve the original 500-ms clear/restart timing
+  coverage; move full namespace CRUD assertions to a separate functional test,
+  not out of the suite. A larger functional deadline is not a performance
+  improvement or latency guarantee. Fix only obvious performance bugs with
+  demonstrated root causes and correctness regression tests. Record broader
+  optimization candidates for a later consolidated performance backlog.
+  Do not add test-side retries, suppress failures, weaken assertions, bypass
+  durability/authorization, or change concurrency/clear semantics to fabricate
+  a performance result.
+
 - **Name-mapping interoperability profile (confirmed 2026-09-24):** selected-use
   admission uses the pinned Java 1.11.0 SDK-safe intersection. Reject colliding
   dotted paths and multiple ID-less mapping nodes; preserve segmented paths and
@@ -313,32 +325,46 @@ Required gates:
 
 ## Open Questions
 
-All unresolved human decisions for R179 through R184 are collected here. Continue
-independent implementation while awaiting confirmation; settled contracts and
-ordinary implementation tasks are not open questions.
+Reviewed 2026-09-24 against the implementation checkpoint `a832e699`.
+Only the following two human decisions remain unresolved. Recommendations
+below are proposals, not approvals. Implementation and acceptance gaps belong in
+the working plans and do not become new open questions.
 
-- **Namespace latency acceptance:** should every uncontended native namespace
-  mutation complete within the existing real-stack fixture's 500-ms admission
-  bound, or should functional CRUD use a separate bounded deployment profile
-  while retaining that fixture for fast clear/restart testing? The current durable
-  journal and HTTP retry ledger sometimes exhaust 500 ms; responses remain
-  retryable and publication recoverable. Keeping 500 ms requires further critical
-  path/batching work; a separate realistic profile distinguishes semantic
-  conformance from a subsecond latency target. Do not enlarge existing timeouts or
-  add test-side retries without confirmation. Five diagnostic/fix runs and the
-  exact outstanding failure are recorded in the R179 execution plan. Continue
-  independent work, but do not claim R179 E2E acceptance or completion.
 
-- **Release engine profiles:** which Spark, Flink, and Trino versions and
-  deployment profiles must gate the first functional release? Testing all three
-  immediately provides broader interoperability evidence but increases fixture
-  and environment work; selecting one initial release profile accelerates the
-  checkpoint while the other profiles remain pending R184 acceptance. Implement
-  the common harness and specification fixtures without waiting for this choice;
-  do not silently claim untested engine support.
-- **No-GC trial capacity:** what deployment storage budget and reserved free-space
-  margin should apply until R183 lands? A fixed byte budget is predictable for a
-  dedicated trial; a backend-capacity-based threshold accommodates shared storage
-  but needs reliable capacity accounting. Bounded request/session implementation
-  is independent of this choice. Do not enable unattended sustained writes or
-  invent a production capacity guarantee before the deployment policy is set.
+- **OI-2 — First-release engine matrix (pending):**
+  Which engine, version and deployment combinations are mandatory release gates?
+  - Evidence: pinned Java SDK and native Parquet/create/commit/restart tests pass.
+    That does not establish Spark, Flink, Trino, official Rust-client or complete
+    REST Compatibility Kit acceptance.
+  - Recommendation: choose one engine from the first actual deployment as the
+    initial release gate; keep the other engine profiles explicitly pending.
+    Pin the selected version only after checking its official compatibility
+    requirements and the target deployment. No engine/version is selected here.
+  - Alternative: gate the first release on Spark, Flink and Trino together, with
+    additional environment and cross-engine test work.
+  - Decision needed: first engine, required version/deployment if already known,
+    and whether all three must pass before release. Common protocol and harness
+    work can proceed independently.
+
+- **OI-3 — No-GC trial capacity and write-stop policy (pending):**
+  What storage budget and reserved free-space margin govern the trial before R183?
+  - Evidence: physical GC remains deferred. Current request/file/session limits
+    bound active work, not total retained files, orphan chunks or abandoned data.
+    Catalog clear is logical retirement, not capacity reclamation.
+  - Recommendation: use an explicitly capacity-limited, monitored trial, with a
+    defined write-stop threshold and responsible operator. Prefer a dedicated
+    budget initially; automatic enforcement still needs trustworthy accounting
+    and must be implemented/tested before claiming that protection.
+  - Alternative: use backend-capacity-based admission for shared storage, after
+    defining reliable capacity attribution, reserved margin and unavailable-metric
+    behavior. Neither policy is supplied by multipart credits alone.
+  - Decision needed: dedicated versus shared deployment, usable capacity/budget,
+    reserved margin or stop threshold, and manual monitored trial versus automatic
+    enforcement as a release gate. No numeric defaults are assumed.
+    Do not enable unattended sustained writes or claim production capacity safety
+    before the policy and its required enforcement are in place.
+
+Already settled, not open issues: independent writer credentials; direct v1-to-v3
+upgrade; the SDK-safe name-mapping profile; standard S3 upload with selected-use
+FileKind validation; ORC deferral to R186; physical GC deferral to R183. These
+decisions are not reopened by documentation cleanup.

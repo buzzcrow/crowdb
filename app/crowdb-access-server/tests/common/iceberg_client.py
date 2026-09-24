@@ -50,8 +50,11 @@ def main():
     assert len(complete.json()["namespaces"]) == len(namespaces)
     missing = requests.head(uri + "/v1/namespaces/missing-namespace", headers={"Authorization": "Bearer " + "r" * 32}, timeout=5)
     assert missing.status_code == 404 and missing.content == b""
-    verify_namespaces(uri, properties)
-    print("PyIceberg config, authentication and namespace CRUD passed")
+    if "--read-only" in sys.argv[2:]:
+        print("PyIceberg config, authentication and namespace reads passed")
+    else:
+        verify_namespaces(uri, properties)
+        print("PyIceberg config, authentication and namespace CRUD passed")
 
 
 def verify_namespaces(uri, properties):

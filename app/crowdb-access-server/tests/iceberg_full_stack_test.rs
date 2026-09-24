@@ -82,8 +82,8 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     let original = execute(&repository, initialize.clone()).await;
     let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    frontend.check_official_client();
-    second_frontend.check_official_client();
+    frontend.check_official_reads();
+    second_frontend.check_official_reads();
     let denied = process::command(&stack.cluster.mgmt_endpoints)
         .env("CROWDB_ICEBERG_TOKEN", "r".repeat(32))
         .arg("status")
@@ -112,7 +112,7 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     ));
     drop(repository);
     stack.chunk_kv.restart().await;
-    let repository = CatalogRepository::new(stack.store().await, ClearBounds::default()).unwrap();
+    let repository = CatalogRepository::new(stack.store().await, bounds).unwrap();
     let (recovering, _) = repository.status().await.unwrap();
     if let crowdb_access_iceberg::catalog::RootState::Published(transition) = recovering.state {
         let remaining = transition.complete_after_ms.saturating_sub(now_ms());
@@ -134,16 +134,74 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     background::verify(stack.store().await, repository.status().await.unwrap().0.context).await;
-    frontend.check_official_client();
-    second_frontend.check_official_client();
+    frontend.check_official_reads();
+    second_frontend.check_official_reads();
     drop(frontend);
     drop(second_frontend);
     journal::verify_recovery(&mut stack, repository.status().await.unwrap().0.context).await;
     verify_interrupted_clear(&stack, &repository).await;
     let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    frontend.check_official_reads();
+    second_frontend.check_official_reads();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn namespace_functional_crud_survives_native_storage_and_listener_restart() {
+    let mut stack = TestIcebergStack::start().await;
+    let repository = CatalogRepository::new(
+        stack.store().await,
+        ClearBounds {
+            request_ms: 300_000,
+            ..ClearBounds::default()
+        },
+    )
+    .unwrap();
+    execute(
+        &repository,
+        request(ManagementAction::Initialize, "functional", None),
+    )
+    .await;
+    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     frontend.check_official_client();
     second_frontend.check_official_client();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let created = client
+        .post(format!("http://{}/v1/namespaces", frontend.address))
+        .bearer_auth("w".repeat(32))
+        .header("content-type", "application/json")
+        .body(r#"{"namespace":["persisted"],"properties":{"owner":"before-restart"}}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
+    verify_retained_namespace(&client, &second_frontend).await;
+    drop(frontend);
+    drop(second_frontend);
+    stack.chunk_kv.restart().await;
+    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    for listener in [&frontend, &second_frontend] {
+        verify_retained_namespace(&client, listener).await;
+        listener.check_official_client();
+    }
+}
+
+async fn verify_retained_namespace(client: &reqwest::Client, listener: &process::TestIcebergProcess) {
+    let response = client
+        .get(format!("http://{}/v1/namespaces/persisted", listener.address))
+        .bearer_auth("r".repeat(32))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["namespace"], serde_json::json!(["persisted"]));
+    assert_eq!(body["properties"], serde_json::json!({"owner":"before-restart"}));
 }
 
 async fn verify_interrupted_clear(stack: &TestIcebergStack, repository: &CatalogRepository) {
@@ -159,7 +217,7 @@ async fn verify_interrupted_clear(stack: &TestIcebergStack, repository: &Catalog
                 inner: stack.store().await,
                 mode: std::sync::atomic::AtomicU8::new(mode),
             }),
-            ClearBounds::default(),
+            authority.admission_bounds,
         )
         .unwrap();
         assert!(matches!(

@@ -118,6 +118,12 @@ The architecture boundary is [Native Iceberg Storage](../design/access-server/ic
 
 ## Acceptance
 
+Functional correctness and latency optimization are separate gates, as confirmed
+in R177. Use a bounded functional deployment profile for full CRUD; retain the
+500-ms maintenance/restart fixture independently. No extra test-side retries,
+weaker assertions or durability shortcuts may substitute for correctness.
+Record measured systemic performance work for a later consolidated backlog.
+
 - Given identifiers at every level and byte boundary plus malformed separators,
   when they are encoded and decoded through REST and storage codecs, assert valid
   identifiers round-trip and invalid ones fail before mutation. Invariant: NS-I4.

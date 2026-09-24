@@ -38,16 +38,27 @@ impl TestIcebergProcess {
     }
 
     pub fn check_official_client(&self) {
+        self.check_client(false);
+    }
+
+    pub fn check_official_reads(&self) {
+        self.check_client(true);
+    }
+
+    fn check_client(&self, read_only: bool) {
         let python = std::env::var_os("CROWDB_ICEBERG_E2E_PYTHON")
             .expect("run pixi run -e iceberg-e2e test-pyiceberg-e2e");
-        let status = Command::new(python)
+        let mut command = Command::new(python);
+        command
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/common/iceberg_client.py"
             ))
-            .arg(format!("http://{}", self.address))
-            .status()
-            .unwrap();
+            .arg(format!("http://{}", self.address));
+        if read_only {
+            command.arg("--read-only");
+        }
+        let status = command.status().unwrap();
         assert!(status.success(), "official Iceberg client contract failed");
     }
 }
