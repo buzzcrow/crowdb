@@ -127,7 +127,7 @@ async fn retries_keep_the_original_generation_and_candidate_but_reject_changed_r
     let journal = TableCommitJournal::new(fixture.store.clone());
     journal.begin(operation.clone()).await.unwrap();
     let validated = next(&operation, Phase::Validated);
-    assert!(journal.advance(&operation, &validated).await.unwrap());
+    assert!(journal.advance_for_tests(&operation, &validated).await.unwrap());
     let mut retry = operation.clone();
     retry.before.generation += 10;
     assert_eq!(journal.begin(retry).await.unwrap(), validated);
@@ -153,10 +153,10 @@ async fn retries_keep_the_original_generation_and_candidate_but_reject_changed_r
     let mut rebased = next(&validated, Phase::Writing);
     rebased.before.generation += 1;
     rebased.candidate.as_mut().unwrap().generation += 1;
-    assert!(journal.advance(&validated, &rebased).await.is_err());
+    assert!(journal.advance_for_tests(&validated, &rebased).await.is_err());
     let mut retimed = next(&validated, Phase::Writing);
     retimed.timestamp_ms += 1;
-    assert!(journal.advance(&validated, &retimed).await.is_err());
+    assert!(journal.advance_for_tests(&validated, &retimed).await.is_err());
 }
 
 #[tokio::test]
@@ -165,17 +165,17 @@ async fn abort_and_publication_are_arbitrated_by_the_same_phase_revision() {
     let journal = TableCommitJournal::new(fixture.store.clone());
     journal.begin(operation.clone()).await.unwrap();
     let validated = next(&operation, Phase::Validated);
-    journal.advance(&operation, &validated).await.unwrap();
+    journal.advance_for_tests(&operation, &validated).await.unwrap();
     let writing = next(&validated, Phase::Writing);
-    journal.advance(&validated, &writing).await.unwrap();
+    journal.advance_for_tests(&validated, &writing).await.unwrap();
     let publishing = next(&writing, Phase::Publishing);
     let aborted = rejected(&fixture, &writing).await;
-    assert!(journal.advance(&writing, &publishing).await.unwrap());
-    assert!(!journal.advance(&writing, &aborted).await.unwrap());
+    assert!(journal.advance_for_tests(&writing, &publishing).await.unwrap());
+    assert!(!journal.advance_for_tests(&writing, &aborted).await.unwrap());
     let rejected = rejected(&fixture, &publishing).await;
-    assert!(journal.advance(&publishing, &rejected).await.is_err());
+    assert!(journal.advance_for_tests(&publishing, &rejected).await.is_err());
     assert!(journal
-        .advance(&publishing, &next(&publishing, Phase::Published))
+        .advance_for_tests(&publishing, &next(&publishing, Phase::Published))
         .await
         .is_err());
     let mut winner = publishing.candidate.clone().unwrap();
@@ -187,7 +187,7 @@ async fn abort_and_publication_are_arbitrated_by_the_same_phase_revision() {
             StorageRecord::TableHead(Box::new(winner)),
         )
         .await;
-    assert!(journal.advance(&publishing, &rejected).await.unwrap());
+    assert!(journal.advance_for_tests(&publishing, &rejected).await.unwrap());
 }
 
 #[tokio::test]
@@ -231,7 +231,7 @@ async fn lost_phase_replies_resume_exact_intent_and_success_needs_the_selected_c
             .store
             .fail_after
             .store(fixture.store.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
-        assert!(journal.advance(&current, &target).await.is_err());
+        assert!(journal.advance_for_tests(&current, &target).await.is_err());
         current = TableCommitJournal::new(fixture.store.clone())
             .load(fixture.context, current.identity.operation)
             .await
@@ -251,9 +251,9 @@ async fn retired_contexts_missing_payloads_and_terminal_mutations_fail_closed() 
     assert!(journal.begin(missing).await.is_err());
     journal.begin(operation.clone()).await.unwrap();
     let rejected = rejected(&fixture, &operation).await;
-    assert!(journal.advance(&operation, &rejected).await.unwrap());
+    assert!(journal.advance_for_tests(&operation, &rejected).await.unwrap());
     assert!(journal
-        .advance(&rejected, &next(&rejected, Phase::Validated))
+        .advance_for_tests(&rejected, &next(&rejected, Phase::Validated))
         .await
         .is_err());
     let mut context = fixture.context;

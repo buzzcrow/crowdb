@@ -89,7 +89,7 @@ impl TableCommitJournal {
 
     /// # Errors
     /// Rejects rebasing, candidate replacement, phase skips and unproven publication outcomes.
-    pub async fn advance(
+    pub(super) async fn advance(
         &self,
         previous: &TableCommitOperation,
         next: &TableCommitOperation,
@@ -128,6 +128,18 @@ impl TableCommitJournal {
         );
         self.check_context(previous.context).await?;
         Ok(applied)
+    }
+
+    #[cfg(feature = "test-util")]
+    /// Exercises phase invariants independently of file proof construction.
+    /// # Errors
+    /// Returns the same validation and storage errors as the internal journal transition.
+    pub async fn advance_for_tests(
+        &self,
+        previous: &TableCommitOperation,
+        next: &TableCommitOperation,
+    ) -> Result<bool, CatalogError> {
+        self.advance(previous, next).await
     }
 
     async fn publication_outcome(

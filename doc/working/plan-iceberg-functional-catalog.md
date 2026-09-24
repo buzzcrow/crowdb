@@ -134,9 +134,27 @@ Current requested sequence (tasks 1–3):
   workspace fmt and clippy pass. Seven journal/preparation tests cover phase reply
   loss, terminal replay, abort/publication arbitration, candidate/head binding,
   retired epochs and deterministic canonical reconstruction without candidate writes.
-  Remaining: preparation/revalidation proof, immutable candidate writer, sole head
-  publisher and pending-marker settlement; then immediate/staged creation,
-  namespace admission/recovery and REST wiring. No endpoint or capability changed.
+  Update-publication implementation: `prepare_table_commit` composes durable
+  evaluation, selected-generation provenance, all retained snapshot checks and
+  auxiliary bindings into a privately constructed `PreparedTableCommit`. The
+  proof owns its storage domain; callers cannot transplant it into another store.
+  Journal advancement is internal, with a `test-util` hook only for phase tests.
+  Publication freezes the candidate, writes immutable inline/chunked metadata,
+  selects generation plus one with one head CAS, persists the exact response and
+  only then clears the pending marker. Recovery preserves FileId/tree identity
+  after a lost authority write, reconstructs interrupted chunk writes, resolves
+  unknown head-CAS outcomes, and durably rejects superseded input without rebasing.
+  Six focused tests cover concurrent winner/loser, every durable reply-loss point,
+  marker settlement, stale prepublication recovery and chunked candidate failures;
+  all 484 library tests, 48 Iceberg-enabled access-server tests and workspace
+  fmt/clippy pass.
+  Publication deliberately rejects nonempty partition-statistics while their
+  selected-use schema/row validator is unfinished; it does not promote the current
+  container-only auxiliary helper into a complete proof. Plaintext Parquet remains
+  the enabled data/delete profile; ORC and physical reclamation stay deferred.
+  Remaining: full proof-profile coverage, immediate/staged creation, namespace
+  admission/recovery, request admission/retry-ledger composition and REST wiring.
+  No endpoint or advertised capability changed.
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,

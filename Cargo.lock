@@ -617,6 +617,7 @@ dependencies = [
  "bytes",
  "chrono",
  "crc32fast",
+ "crowdb-access-iceberg",
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-protocol",

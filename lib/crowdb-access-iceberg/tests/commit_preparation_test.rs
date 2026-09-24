@@ -135,7 +135,7 @@ async fn persisted_input_and_timestamp_rebuild_byte_identical_candidates_without
     operation.revision += 1;
     operation.phase = Phase::Validated;
     operation.candidate = Some(evaluated.head.clone());
-    assert!(journal.advance(&previous, &operation).await.unwrap());
+    assert!(journal.advance_for_tests(&previous, &operation).await.unwrap());
     let writes = fixture.store.writes.load(std::sync::atomic::Ordering::SeqCst);
     let recovered = evaluate_durable_commit(
         fixture.store.clone(),

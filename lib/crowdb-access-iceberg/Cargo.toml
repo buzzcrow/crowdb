@@ -10,6 +10,9 @@ description = "Native Iceberg catalog authority and immutable storage access."
 [lints]
 workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22"
@@ -35,5 +38,6 @@ tokio = { workspace = true, features = ["rt"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+crowdb-access-iceberg = { path = ".", features = ["test-util"] }
 arc-swap = "1.9"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
