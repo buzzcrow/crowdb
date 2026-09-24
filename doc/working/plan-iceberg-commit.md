@@ -7,6 +7,15 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
 
 ## Execution
 
+Latest checkpoint: retained statistics preserve their accepted writer semantics
+across schema evolution and v2-to-v3 upgrades, bound to the selected prior head.
+Unchanged references still undergo authority, length and canonical digest checks;
+changed paths or snapshots use full validation. Three focused tests cover upgrade,
+new partition fields, foreign provenance, changed snapshots, copied files, resource
+limits, encryption descriptors and byte corruption. Library all-target tests,
+Iceberg-enabled server all-target tests, fmt and lint pass. Publication guards
+remain until real SDK statistics publication and replay acceptance passes.
+
 - [x] **Official SDK errors and counts**: use pinned Java 1.11.0 typed requests
   and its commit error handler to verify requirement conflicts, stale schema,
   malformed updates, ordered rollback, lifecycle identity, and exact 1000/1001
@@ -54,9 +63,11 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
     Do not reject these as invented live partitions or require their last-update
     snapshot to remain retained. Confirmed against `PartitionStatsHandler`
     (`computeStats`, `liveEntry`, `deletedEntry`, incremental merge) in Java 1.11.0.
-  - Retained v2 statistics must not be rejected merely because the candidate
-    upgrades to v3; validate against their proven writer context and apply the
-    standard missing-DV default rather than relaxing new-file required columns.
+  - Retained statistics reuse already accepted semantics only when their exact
+    snapshot/path/size and parsed snapshot match the selected input generation.
+    Canonical file authority and digest verification still run. This preserves
+    old writer schemas across evolution and v2-to-v3 without weakening newly
+    introduced files or rewriting old bytes; readers apply the standard DV default.
   - Add real SDK statistics publication and replay acceptance, then remove both
     ordinary/staged publication guards together. Schema/reader fixtures alone
     do not satisfy this acceptance.

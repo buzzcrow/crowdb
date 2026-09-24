@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::sync::Arc;
+mod retained;
 
 use super::{file_error, CandidateFileSource};
 use crate::{
@@ -41,6 +42,26 @@ impl CandidateFileSource {
         self: &Arc<Self>,
         limits: CandidateAuxiliaryLimits,
     ) -> Result<CandidateAuxiliarySummary, Error> {
+        self.auxiliary_files(limits, None).await
+    }
+
+    /// Reuses accepted statistics semantics only for unchanged references and snapshots
+    /// anchored in this source's selected input generation. Canonical bytes are still verified.
+    /// # Errors
+    /// Rejects foreign provenance, changed authority, corrupt bytes and exhausted budgets.
+    pub async fn validate_auxiliary_files_with_prior(
+        self: &Arc<Self>,
+        prior: &crate::table::TableMetadataDocument,
+        limits: CandidateAuxiliaryLimits,
+    ) -> Result<CandidateAuxiliarySummary, Error> {
+        self.auxiliary_files(limits, Some(prior)).await
+    }
+
+    async fn auxiliary_files(
+        self: &Arc<Self>,
+        limits: CandidateAuxiliaryLimits,
+        prior: Option<&crate::table::TableMetadataDocument>,
+    ) -> Result<CandidateAuxiliarySummary, Error> {
         self.ensure_current().await?;
         if !(1..=100_000).contains(&limits.files)
             || limits.bytes == 0
@@ -50,6 +71,7 @@ impl CandidateFileSource {
         }
         let mut summary = CandidateAuxiliarySummary::default();
         let mut work = limits.work;
+        let retained = retained::Statistics::new(self, prior, limits.files, &mut work)?;
         let mut manifests = limits.manifests;
         for field in ["statistics", "partition-statistics"] {
             let Some(entries) = self.candidate.fields().get(field) else {
@@ -77,8 +99,15 @@ impl CandidateFileSource {
                 if field == "statistics" {
                     summary.blobs += self.statistics(entry, &record, limits, &mut work).await?;
                 } else {
-                    self.partition_statistics(entry, &record, limits, &mut manifests, &mut work)
-                        .await?;
+                    if record.format != ContentFormat::Parquet
+                        || entry.get("key-metadata").is_some_and(|value| !value.is_null())
+                    {
+                        return Err(Error::Binding);
+                    }
+                    if !retained.contains(&self.candidate, entry, &mut work)? {
+                        self.partition_statistics(entry, &record, limits, &mut manifests, &mut work)
+                            .await?;
+                    }
                 }
                 let mut reader =
                     FileReader::new(self.blocks.clone(), record, None, 16 * 1024).map_err(file_error)?;

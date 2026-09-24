@@ -118,7 +118,9 @@ pub async fn prepare_table_commit(
             .validate_snapshots(&prior_document, limits.snapshots),
     )
     .await?;
-    source.validate_auxiliary_files(limits.auxiliary).await?;
+    source
+        .validate_auxiliary_files_with_prior(&prior_document, limits.auxiliary)
+        .await?;
     if TableCommitJournal::new(store.clone())
         .load(operation.context, operation.identity.operation)
         .await?

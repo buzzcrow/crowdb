@@ -79,6 +79,7 @@ impl TestPrior {
         let bytes = serde_json::to_vec(value).unwrap();
         let mut head = self.selected.head.clone();
         head.generation += 1;
+        head.format_version = u8::try_from(value["format-version"].as_u64().unwrap()).unwrap();
         head.metadata_file = crowdb_access_iceberg::key::FileId::random();
         head.metadata_location = fixture::table().file("metadata/two.json").unwrap();
         head.metadata_digest = Sha256::digest(&bytes).into();
