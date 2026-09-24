@@ -30,12 +30,10 @@ Goal: close immutable native FileIO acceptance with bounded work and no physical
   projection version; partial publication cannot block canonical reads or commits.
   Test equivalent validation and byte-identical fallback, not merely a cache hit.
   Files: `src/metadata_projection/`, `src/table/load.rs`, commit integration.
-- [ ] **Selected-use coverage**: finish partition-statistics selected schema/rows/
-  counts with R182; preserve current rejection until then. Audit complete delete
-  rewrite semantics and aggregate limits using actual SDK fixtures. Existing
-  defaults, bounds, split-offset and encryption-metadata work must be assessed
-  against current code rather than old handover lists.
-  Files: `src/commit/`, `src/manifest/`, `src/file/`, format tests.
+- [x] **Selected-use coverage**: partition-statistics schema/rows/inventory,
+  retained history and SDK publication pass with R182. Ordinary rewrite semantics
+  follow the confirmed engine boundary; file, sequence, partition, position and DV
+  validation remain enforced. Independent work/byte/entry limits pass.
 - [ ] **Cross-instance recovery acceptance**: map every R180 multipart/publication
   crash and lost-response case to library or real-stack evidence; add missing
   two-listener native cases. Verify same-location equal/different writes, frozen
@@ -46,7 +44,7 @@ Goal: close immutable native FileIO acceptance with bounded work and no physical
   Existing Java provider cache/expired-seed and draft-isolation tests are not a
   complete timed native expiry matrix.
   Files: server credential/auth tests, Java/native fixtures.
-- [ ] **Official FileIO matrix**: cover data and equality-delete files uploaded
+- [~] **Official FileIO matrix**: cover data and equality-delete files uploaded
   through identical ordinary S3 operations and rejected wrong selected uses.
   Confirm unsupported operations, path escapes, trailers, immutable conflicts and
   independent byte/count/concurrency budgets across the enabled SDK profile.

@@ -2,7 +2,6 @@
 
 Upstream: [R177](../backlog/R177-access-iceberg-catalog-foundation.md),
 [R180](../backlog/R180-access-iceberg-fileio.md),
-[R182](../backlog/R182-access-iceberg-table-commit.md),
 [R184](../backlog/R184-access-iceberg-rest-conformance.md).
 
 Goal: finish the native functional catalog without confusing working vertical
@@ -17,8 +16,27 @@ after the program finishes. Human decisions live only in R177. No user-guide wor
 Statistics publication checkpoint (2026-09-25): canonical typed rows and selected
 manifest counts, retained-file schema/version compatibility, official Java
 publication/replay, evolved partition specs, v2-to-v3 and staged creation all pass,
-including native listener restart. R182 now proceeds to native process-kill
-acceptance and closure audit; R180 keeps its independent FileIO acceptance tasks.
+including native listener restart. R182 atomic-commit acceptance is complete;
+R180 keeps its independent FileIO acceptance tasks.
+
+Atomic-commit acceptance closed (2026-09-25), implementation `af4ae81`:
+
+- Native listener processes are killed before/after all 91 request-local durable
+  writes across immediate create, stage, staged publication and update: 182 cases
+  resume on independent production listeners with exact response replay, changed
+  input rejection and one visible generation. A separate paused head-CAS loser
+  verifies durable conflict replay and retained but unreachable candidate files.
+- Test identities preselect distinct retry buckets, isolating admitted publication
+  faults from separately tested collision backpressure. No production retry,
+  timeout, lock or unsafe exception was added.
+- Every acceptance case maps to ordered union/upgrade tests, namespace/drop/expiry
+  phase races, official SDK error/count and CAS-race fixtures, selected statistics
+  and native storage. HTTP tests add exact byte boundaries and four-slot admission
+  with rejection before operation/candidate mutation and release after errors.
+- Library all-targets, default/Iceberg server all-targets, SDK/native acceptance,
+  fmt, workspace lint and explicit E2E-feature clippy pass. Ordinary rewrite row-set
+  equivalence remains engine-owned; ORC, physical GC and engine/performance gates
+  retain their separately agreed scope.
 
 Verified integration checkpoint: `a832e699` (2026-09-24).
 
@@ -38,7 +56,7 @@ Verified integration checkpoint: `a832e699` (2026-09-24).
   Real Java 1.11.0 writes v1 data, upgrades to v3, appends with retained history,
   publishes a staged table, and reads both after catalog-process restart.
 
-This does not close R180, R182–R184. Existing tests do not substitute for unexecuted
+This does not close R180 or R183–R184. Existing tests do not substitute for unexecuted
 acceptance cases, full engine matrices, requirement-closure audits or physical GC.
 
 Verified lifecycle implementation checkpoint (2026-09-24):
@@ -96,51 +114,8 @@ Table lifecycle acceptance closed (2026-09-24), implementation `4bbc2226`:
 
 ## Remaining tasks in dependency order
 
-The user-approved closure order is R181 (complete), R182, then remaining R180.
-Advance shared R180 prerequisites when required for correct R182 publication;
-do not close a requirement by ignoring its dependency's unsupported selected use.
+R181 and R182 are complete. Continue remaining R180, then foreground R184.
 
-- [ ] **Selected-use gaps — R180/R182**: finish partition-statistics
-  ordered-row and count validation before removing its explicit rejection.
-  Canonical required-column INT32 decoding is implemented for its spec IDs and
-  file/DV counts. Nullable scalar pages now decode definition levels and separate
-  v2 level/value compression, verified against four official Java files.
-  Unified schema validation and Boolean/float/double/fixed-byte physical decoding
-  are implemented. Typed logical values, cross-page/group tuple ordering,
-  spec membership, provable duplicates and local count consistency are now wired
-  into auxiliary validation. Snapshot-inventory reconciliation now checks
-  projected per-spec counter aggregates without computing data rows. Retained-file
-  evolution and successful SDK publication remain pending; the 406 guard stays.
-  R177 OI-4 records the
-  confirmed SDK-compatible omission of fields with deleted source columns;
-  retained fields still require full validation.
-  Test catalog compatibility for equality-delete rewrites and position-delete
-  removal without replacement DV; audit retained history and aggregate admission.
-  R177 OI-5 is confirmed: ordinary rewrite row-set equivalence belongs to the
-  writer/engine, not a new CROWDB server evaluator or catalog closure condition.
-  Existing file validation and DV replacement checks remain unchanged.
-  Preserve explicit rejection for encrypted data and unsupported selected formats;
-  encryption-key metadata parsing is not encrypted-file support.
-  Files: `commit/proof.rs`, auxiliary/snapshot validators and SDK fixtures.
-- [ ] **Commit acceptance closure — R182**: extend official-client and
-  multi-process fault coverage to every declared create/commit/error/limit case;
-  test candidate/head publication interruption, not just a completed-table
-  process restart. Compose new rename/drop fences without introducing a second
-  publisher or rebasing an uncertain operation.
-  Library commit/drop/rename fence arbitration is covered; extend native crash
-  interruption evidence rather than reimplementing those fences.
-  Official Java error/count checkpoint now covers duplicate create, failed UUID
-  and stale-schema requirements, malformed ordered updates, invalid version,
-  identifier mismatch, dropped/recreated table identity, 1000/1001 counts and
-  4096/4097 aggregate requirement-text bytes. Rejected commits preserve canonical
-  metadata selection. Five SDK fixtures now pass, including a deterministic
-  real head-CAS loser with exact conflict replay and changed-input rejection,
-  identical retained input generations, and load/list orphan invisibility.
-  Disabled partition-statistics typed updates return 406 through the official
-  SDK before candidate publication. Native process interruption acceptance and
-  actual partition-statistics selected-use validation remain open.
-  Execution detail: [commit plan](plan-iceberg-commit.md).
-  Files: commit tests, `iceberg_file_http_test.rs`, native fault harness.
 - [ ] **Projection integration — R180**: connect generation-local projection
   publication/loading only with equivalent authority/validation checks. Current
   canonical-only table loading is correct; the tested projection helper is not a

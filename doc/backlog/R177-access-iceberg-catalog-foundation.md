@@ -48,9 +48,9 @@ server-side scan planning, multiple active catalogs, tenants, or warehouses.
 Unsupported endpoints and optional features return the precise standard
 unsupported response and perform no mutation.
 
-The user approved a foreground functional checkpoint before reclamation. R179 and
-R181 are complete; finish R182 next, advancing necessary shared R180 prerequisites,
-then remaining R180 and foreground R184 conformance. Implement R183 afterward
+The user approved a foreground functional checkpoint before reclamation. R179,
+R181 and R182 are complete; finish remaining R180 and foreground R184 conformance.
+Implement R183 afterward
 and finish the remaining R184 gates. This does not remove R183 or complete the
 original correctness milestone early. Before reclamation, unreachable storage is
 retained, physical file/chunk deletion remains disabled, and logical purge records
@@ -387,5 +387,5 @@ GC and exhaustion-recovery requirements recorded in R183.
     GC, ORC or engine-test deferrals. No human decision remains pending here.
 
 Unfinished implementation and unexecuted acceptance remain in the working plans.
-R179 and R181 are closed by their acceptance gates, not by these decisions.
-R180 and R182–R184 remain open; this does not imply engine/GC conformance.
+R179, R181 and R182 are closed by their acceptance gates, not by these decisions.
+R180 and R183–R184 remain open; this does not imply engine/GC conformance.
