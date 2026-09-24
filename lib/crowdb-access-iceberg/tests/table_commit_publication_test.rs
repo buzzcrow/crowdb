@@ -148,6 +148,167 @@ async fn head(fixture: &TestPrior) -> TableHead {
     *head
 }
 
+async fn lifecycle_request(
+    fixture: &TestPrior,
+    rename: bool,
+) -> crowdb_access_iceberg::table::TableLifecycleRequest {
+    use crowdb_access_iceberg::table::{name_key, TableLifecycleAction, TableMapping, TableMappingState};
+    let mut parent = fixture.namespace.authority(None, &["parent"]);
+    parent.namespace = fixture.selected.head.namespace;
+    fixture.namespace.publish(&parent).await;
+    let head = &fixture.selected.head;
+    fixture
+        .namespace
+        .put(
+            name_key(head.catalog, head.namespace, &head.name).unwrap(),
+            StorageRecord::TableMapping(TableMapping {
+                catalog: head.catalog,
+                namespace: head.namespace,
+                name: head.name.clone(),
+                table: head.table,
+                name_epoch: head.name_epoch,
+                operation: OperationId::random(),
+                state: TableMappingState::Published,
+            }),
+        )
+        .await;
+    let destination = fixture.namespace.authority(None, &["destination"]);
+    fixture.namespace.publish(&destination).await;
+    crowdb_access_iceberg::table::TableLifecycleRequest {
+        context: fixture.namespace.context,
+        identity: RequestIdentity {
+            operation: OperationId::random(),
+            issued_ms: 100,
+        },
+        principal: "writer".into(),
+        namespace: parent.identifier,
+        name: head.name.clone(),
+        action: if rename {
+            TableLifecycleAction::Rename {
+                namespace: destination.identifier,
+                name: "renamed".into(),
+            }
+        } else {
+            TableLifecycleAction::Drop {
+                purge_requested: true,
+            }
+        },
+    }
+}
+
+#[tokio::test]
+async fn prepared_commit_cannot_publish_across_rename_or_drop_fences() {
+    use crowdb_access_iceberg::table::TableLifecycles;
+    for rename in [false, true] {
+        for publishing in [false, true] {
+            let fixture = TestPrior::new().await;
+            let request = lifecycle_request(&fixture, rename).await;
+            let (operation, proof) = prepare(&fixture, "stale").await;
+            assert_eq!(
+                TableLifecycles::new(fixture.namespace.store.clone())
+                    .execute(&request)
+                    .await
+                    .unwrap()
+                    .status,
+                204
+            );
+            let lifecycle_head = head(&fixture).await;
+            let result = if publishing {
+                proof.publish().await.unwrap()
+            } else {
+                recover_table_commit(
+                    fixture.namespace.store.clone(),
+                    fixture.blocks.clone(),
+                    fixture.namespace.context,
+                    operation.identity.operation,
+                    limits(),
+                )
+                .await
+                .unwrap()
+            };
+            assert_eq!(result.status, 409);
+            assert_eq!(head(&fixture).await, lifecycle_head);
+            assert_eq!(
+                recover_table_commit(
+                    fixture.namespace.store.clone(),
+                    fixture.blocks.clone(),
+                    fixture.namespace.context,
+                    operation.identity.operation,
+                    limits()
+                )
+                .await
+                .unwrap(),
+                result
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn commit_winning_head_cas_forces_pending_lifecycle_to_abort_without_rebasing() {
+    use crowdb_access_iceberg::table::TableLifecycles;
+    for rename in [false, true] {
+        let fixture = TestPrior::new().await;
+        let request = lifecycle_request(&fixture, rename).await;
+        let (_, proof) = prepare(&fixture, "winner").await;
+        let store = fixture.namespace.store.clone();
+        store.table_head_pause_before.store(true, Ordering::SeqCst);
+        let task_store = store.clone();
+        let task_request = request.clone();
+        let pending =
+            tokio::spawn(async move { TableLifecycles::new(task_store).execute(&task_request).await });
+        store.table_head_entered.notified().await;
+        assert_eq!(proof.publish().await.unwrap().status, 200);
+        let committed = head(&fixture).await;
+        store.table_head_release.notify_one();
+        assert_eq!(pending.await.unwrap().unwrap().status, 409);
+        assert_eq!(head(&fixture).await, committed);
+        assert_eq!(
+            TableLifecycles::new(store)
+                .execute(&request)
+                .await
+                .unwrap()
+                .status,
+            409
+        );
+    }
+}
+
+#[tokio::test]
+async fn background_lifecycle_sweep_recovers_tombstone_without_client_retry() {
+    use crowdb_access_iceberg::{
+        commit::{TableRecovery, TableRecoveryKind},
+        table::{TableLifecyclePhase, TableLifecycles},
+    };
+    let fixture = TestPrior::new().await;
+    let request = lifecycle_request(&fixture, false).await;
+    let store = fixture.namespace.store.clone();
+    store.table_head_pause_after.store(true, Ordering::SeqCst);
+    let task_store = store.clone();
+    let task_request = request.clone();
+    let pending = tokio::spawn(async move { TableLifecycles::new(task_store).execute(&task_request).await });
+    store.table_head_entered.notified().await;
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+    let recovery = TableRecovery::new(store.clone(), fixture.blocks.clone(), limits());
+    let page = recovery
+        .recover_page(request.context, TableRecoveryKind::Lifecycle, None, 2000)
+        .await
+        .unwrap();
+    assert_eq!(page.progressed, 1);
+    assert!(page.failures.is_empty());
+    assert!(page.continuation.is_none());
+    assert_eq!(
+        TableLifecycles::new(store)
+            .load(request.context, request.identity.operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .phase,
+        TableLifecyclePhase::Complete
+    );
+}
+
 #[tokio::test]
 async fn recovery_sweeps_prepared_commits_with_bounded_catalog_and_kind_cursors() {
     use crowdb_access_iceberg::commit::{TableRecovery, TableRecoveryKind};

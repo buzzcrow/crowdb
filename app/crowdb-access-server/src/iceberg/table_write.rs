@@ -19,6 +19,7 @@ use super::{
     table_limits,
 };
 
+mod lifecycle;
 mod mutation;
 pub(super) mod request;
 
@@ -28,6 +29,7 @@ pub(super) struct TableWrites {
     creator: TableCreator,
     namespaces: NamespaceRepository,
     tables: TableRepository,
+    lifecycles: crowdb_access_iceberg::table::TableLifecycles,
     ledger: RetryLedger,
     payloads: PayloadStore,
     limits: CommitProofLimits,
@@ -42,6 +44,7 @@ impl TableWrites {
     ) -> Self {
         let limits = table_limits::commits();
         Self {
+            lifecycles: crowdb_access_iceberg::table::TableLifecycles::new(store.clone()),
             store: store.clone(),
             blocks: blocks.clone(),
             creator: TableCreator::new(store.clone(), blocks)
@@ -67,7 +70,7 @@ impl TableWrites {
         principal: Principal,
         request: Request<Incoming>,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
-        if request.method() != Method::POST {
+        if request.method() != Method::POST && request.method() != Method::DELETE {
             return Err(super::table_read::unsupported());
         }
         if !principal.namespace_write {
@@ -90,8 +93,13 @@ impl TableWrites {
             .map_err(|_| bad_request())?;
         let key = RequestKey::parse(header, now).map_err(|_| bad_request())?;
         let uri = request.uri().clone();
+        let method = request.method().clone();
         let bytes = read_body(request.into_body()).await?;
-        let route = "POST table";
+        let route = if method == Method::DELETE {
+            "DELETE table"
+        } else {
+            "POST table"
+        };
         let mut digest = Sha256::new();
         for value in [route.as_bytes(), uri.to_string().as_bytes(), bytes.as_slice()] {
             digest.update((value.len() as u64).to_be_bytes());
@@ -112,6 +120,15 @@ impl TableWrites {
             RetryAdmission::Replay(record) => return Ok(response(record.status, record.body)),
             RetryAdmission::New(record) | RetryAdmission::Resume(record) => record,
         };
+        if method == Method::DELETE || uri.path() == "/v1/tables/rename" {
+            let result = self.mutate_lifecycle(&record, &method, &uri, &bytes).await;
+            let (status, body) = self.outcome_response(result, None, context).await?;
+            self.ledger
+                .finish(record, status, body.clone(), now_ms()?)
+                .await
+                .map_err(|error| mutation_error(&error))?;
+            return Ok(response(status, body));
+        }
         let target = request::parse(&uri);
         let configuration_target = target.as_ref().ok().and_then(|target| {
             let name = target.name.clone().or_else(|| {

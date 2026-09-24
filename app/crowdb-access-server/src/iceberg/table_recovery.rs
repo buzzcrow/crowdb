@@ -14,18 +14,18 @@ pub(super) async fn run(
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut context = None;
-    let mut continuations = [None, None];
+    let mut continuations = [None, None, None];
     let mut index = 0;
     loop {
         interval.tick().await;
         let Ok(Ok((root, authority))) = tokio::time::timeout(Duration::from_secs(1), catalog.status()).await
         else {
-            continuations = [None, None];
+            continuations = [None, None, None];
             continue;
         };
         if context != Some(root.context) || root.state != RootState::Ready {
             context = Some(root.context);
-            continuations = [None, None];
+            continuations = [None, None, None];
         }
         if root.state != RootState::Ready {
             continue;
@@ -35,7 +35,11 @@ pub(super) async fn run(
         else {
             continue;
         };
-        let kind = [TableRecoveryKind::Create, TableRecoveryKind::Update][index];
+        let kind = [
+            TableRecoveryKind::Create,
+            TableRecoveryKind::Update,
+            TableRecoveryKind::Lifecycle,
+        ][index];
         let result = tokio::time::timeout(
             Duration::from_millis(authority.admission_bounds.request_ms),
             recovery.recover_page(root.context, kind, continuations[index].clone(), now),
@@ -54,6 +58,6 @@ pub(super) async fn run(
             }
             Err(_) => tracing::warn!("table recovery page deadline exhausted; retaining cursor"),
         }
-        index = 1 - index;
+        index = (index + 1) % continuations.len();
     }
 }

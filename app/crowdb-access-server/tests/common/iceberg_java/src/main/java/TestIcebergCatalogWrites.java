@@ -1,6 +1,7 @@
 import java.util.Map;
 import java.util.UUID;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
@@ -30,6 +31,10 @@ public final class TestIcebergCatalogWrites {
           credential(persisted);
           verifyFiles(persisted, tableName.equals("immediate") ? 2 : 1);
         }
+        require(!catalog.tableExists(TableIdentifier.of(Namespace.of("analytics"), "lifecycle")),
+            "dropped lifecycle table remains absent after restart");
+        require(!catalog.namespaceExists(Namespace.of("lifecycle_destination")),
+            "empty destination namespace remains dropped after restart");
         System.out.println("Official RESTCatalog restart read and credential acceptance passed");
         return;
       }
@@ -69,8 +74,55 @@ public final class TestIcebergCatalogWrites {
       if (args.length > 1) {
         verifyFiles(catalog.loadTable(stagedName), 1);
       }
-      System.out.println("Official RESTCatalog create, update, upgrade, stage and refresh acceptance passed");
+      lifecycle(catalog, schema, args.length > 1);
+      System.out.println("Official RESTCatalog create, update, upgrade, stage, refresh, rename and drop acceptance passed");
     }
+  }
+
+  private static void lifecycle(RESTCatalog catalog, Schema schema, boolean nativeFiles) throws Exception {
+    Namespace destination = Namespace.of("lifecycle_destination");
+    catalog.createNamespace(destination);
+    TableIdentifier source = TableIdentifier.of(Namespace.of("analytics"), "lifecycle");
+    TableIdentifier renamed = TableIdentifier.of(Namespace.of("analytics"), "lifecycle_renamed");
+    TableIdentifier moved = TableIdentifier.of(destination, "moved");
+    Table original = catalog.buildTable(source, schema).create();
+    if (nativeFiles) {
+      original.newAppend().appendFile(writeData(original)).commit();
+    }
+    String location = original.location();
+    catalog.renameTable(source, renamed);
+    require(!catalog.tableExists(source), "old name is not an alias");
+    require(catalog.loadTable(renamed).location().equals(location), "rename preserves file location");
+    catalog.renameTable(renamed, moved);
+    require(!catalog.tableExists(renamed), "cross-namespace old name is not an alias");
+    Table selected = catalog.loadTable(moved);
+    require(selected.location().equals(location), "cross-namespace stable identity");
+    credential(selected);
+    selected.updateProperties().set("after-rename", "yes").commit();
+    require(catalog.loadTable(moved).properties().get("after-rename").equals("yes"), "commit after rename");
+    if (nativeFiles) {
+      verifyFiles(selected, 1);
+    }
+    String metadata = ((BaseTable) selected).operations().current().metadataFileLocation();
+    require(catalog.dropTable(moved, false), "logical drop succeeds");
+    require(!catalog.tableExists(moved), "dropped table is absent");
+    require(catalog.dropNamespace(destination), "moved table does not leave live namespace children");
+    if (nativeFiles) {
+      require(selected.io().newInputFile(metadata).exists(), "drop does not physically delete metadata");
+      verifyFiles(selected, 1);
+    }
+    Table recreated = catalog.buildTable(source, schema).create();
+    require(!recreated.location().equals(location), "recreated name uses a new table identity");
+    String recreatedMetadata = ((BaseTable) recreated).operations().current().metadataFileLocation();
+    if (nativeFiles) {
+      require(recreated.io().newInputFile(recreatedMetadata).exists(), "metadata exists before purge request");
+    }
+    require(catalog.dropTable(source, true), "purge request logically drops the table");
+    require(!catalog.tableExists(source), "purge request removes name visibility");
+    if (nativeFiles) {
+      require(recreated.io().newInputFile(recreatedMetadata).exists(), "purge is a deferred proof task");
+    }
+    require(!catalog.dropTable(source, false), "missing table follows SDK false contract");
   }
 
   private static DataFile writeData(Table table) throws Exception {

@@ -144,9 +144,9 @@ the proof. A live child restores Ready without changing the name epoch or proper
 revision. Only completion of both ranges permits the fenced tombstone CAS.
 Terminal replay and conditional cleanup cannot delete a recreated NamespaceId.
 Table-child probes resolve published mappings against the selected table head.
-Unpublished table reservations are helped through their own creation journal;
-an unadmitted creator beneath the drop fence is aborted, while an admitted
-creator is completed before the parent can be fenced. Corrupt table authority
+Unpublished table reservations are helped through their creation or lifecycle
+journal; an unadmitted creator or rename beneath the drop fence is aborted, while
+an admitted publisher is completed before the parent can be fenced. Corrupt table authority
 blocks the emptiness proof rather than being treated as absence.
 Each listener runs a namespace-journal sweep with bounded pages, per-operation
 phase budgets and a wall-clock deadline. The sweep resumes abandoned operations
@@ -441,12 +441,34 @@ error and release their reservation. Uncertain storage outcomes remain recoverab
 The draft response and final commit response are retained separately for exact
 replay.
 
-Bounded background scans alternate creation and update journals, four records per
+Bounded background scans rotate creation, update and lifecycle journals, four records per
 page, with independent continuations reset on catalog activation changes. Recovery
 expires only unbound drafts, reconstructs fixed candidate proofs, settles published
 markers and retains uncertain storage errors. Known semantic validation failures
 become durable client outcomes before any candidate is published. Recovery deadlines
 preserve journal evidence rather than canceling the logical operation.
+
+Logical drop and same/cross-namespace rename use a bounded `TableLifecycleOperation`
+journal. It fixes the original head and exact source mapping, request identity,
+principal, input and candidate before publication. A single head CAS arbitrates
+against metadata commits and other lifecycle operations. A losing operation keeps
+its terminal conflict instead of rebasing onto a new generation or recreated name.
+Rename changes the canonical identifier and name epoch, not table identity, UUID,
+metadata generation, digest or file location. Destination reservation precedes a
+namespace admission CAS. The admission marker remains until the head outcome and
+destination mapping are durable; namespace-drop helpers finish or abort that exact
+operation with a shared bounded work budget. The source stays head-qualified until
+the move publishes, and the old name never becomes an alias. Cleanup conditionally
+removes only the captured mapping, preserving names recreated with another identity.
+
+Drop tombstones the selected head without traversing snapshots or deleting files.
+A purge request persists a `TablePurgeTask` containing the tombstoned head and
+activation epoch, indexed by table, generation and metadata file. This is pending
+reachability-proof work, not proof of deletion or permission to delete. Success is
+retained before releasing rename head/namespace markers. Retrying after response
+loss returns the original result without mutating a replacement table. The REST
+drop/rename routes require independent writer credentials and return empty success
+responses; stale table names fail normal load, exists, commit and credential refresh.
 
 Drop, replacement, and snapshot expiration remove logical reachability first.
 Physical reclamation follows a proof that no live metadata, snapshot, reference,

@@ -14,7 +14,8 @@ Goal: finish namespace acceptance without weakening identity, admission or recov
 - Qualified reads, authenticated pagination, bounded complete-response spooling,
   HTTP mutations and retry ledgers, background recovery and index repair.
 - Table-create admission is integrated, including namespace-drop races and
-  interrupted immediate/staged publication. Rename-in is not yet implemented.
+  interrupted immediate/staged publication. Rename-in now reserves before parent
+  admission and participates in bounded reservation/admission helping.
 - Official PyIceberg CRUD passes against two listeners before and after native
   Chunk-KV/listener restart in a separate functional profile. A retained namespace
   and its exact properties survive the restart and resolve through both listeners.
@@ -23,14 +24,14 @@ Goal: finish namespace acceptance without weakening identity, admission or recov
   the complete CRUD assertions execute in the separate test, not disappear.
   Both real-stack tests pass serially and under default test concurrency
   (2026-09-24). No production performance
-  changes or added client retries were made. R179 still awaits rename-in coverage.
+  changes or added client retries were made.
+- Rename-in versus destination drop is covered at every interrupted write boundary
+  and with delayed head-CAS replies. A losing rename releases only its reservation;
+  a winning rename blocks namespace tombstoning. Source/destination recreation and
+  commit/drop races preserve exact authority. Full R179 closure still needs audit.
 
 ## Remaining execution
 
-- [ ] **Rename-in admission seam**: after R181 rename exists, test destination
-  reservation, parent drop, lost head-CAS reply, recreated names and recovery.
-  Preserve table-create/drop regression coverage rather than replacing it.
-  Files: namespace probes/helping, table lifecycle and native/library tests.
 - [ ] **Final gates and closure**: map remaining R179 acceptance to executable
   evidence, run tests/fmt/clippy, update affected permanent design, then remove
   the requirement, index entry and this plan. Do not close on a partial CRUD pass.

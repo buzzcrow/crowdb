@@ -35,27 +35,36 @@ Verified integration checkpoint: `a832e699` (2026-09-24).
   publishes a staged table, and reads both after catalog-process restart.
 
 This does not close R179–R184. Existing tests do not substitute for unexecuted
-acceptance cases, full engine matrices, lifecycle operations or physical GC.
+acceptance cases, full engine matrices, requirement-closure audits or physical GC.
+
+Verified lifecycle implementation checkpoint (2026-09-24):
+
+- Logical table drop, durable pending purge proof tasks and same/cross-namespace
+  rename now use bounded journals and one exact head CAS. Conditional cleanup and
+  terminal replay preserve recreated names; no file traversal or physical deletion.
+- Writer-only DELETE/rename REST routes, standard empty 204 responses, exact
+  request binding and a third background-recovery journal sweep are connected.
+- Library tests cover every successful-path durable reply loss, delayed head-CAS
+  replies, destination namespace drop, recreation before/after recovery, retired
+  contexts, commit/lifecycle arbitration and recovery without client retry.
+- HTTP tests cover permissions, replay, errors, metadata/location preservation and
+  commits after a cross-namespace move. Official Java SDK exercises rename/drop,
+  ordinary native Parquet reads and access-listener restart. Existing grants retain
+  their lifetime; deleted names cannot obtain fresh credentials. Physical purge is
+  deferred even after logical success.
+- Full Iceberg library/server suites, fmt, workspace clippy and explicit
+  Iceberg-E2E feature clippy pass. No unsafe exception, runtime lock, timeout
+  increase, assertion reduction or test-side retry was introduced.
 
 ## Remaining tasks in dependency order
 
-- [ ] **Namespace acceptance — R179**: complete the future rename-in versus
-  namespace-drop seam and remaining acceptance audit. Official PyIceberg CRUD
+- [ ] **Namespace acceptance — R179**: complete the rename-in versus
+  namespace-drop acceptance audit; its library race seam is now covered. Official PyIceberg CRUD
   now passes on two listeners before/after native storage and listener restart;
   the separate 500-ms clear/restart fixture also passes. Table-create
   admission already has fault/race coverage; do not reimplement it.
   Files: namespace modules, `iceberg_full_stack_test.rs`,
   [namespace execution plan](plan-iceberg-namespace.md).
-- [ ] **Logical table drop — R181**: journal tombstoning and visibility removal;
-  preserve response-loss replay, recreated-name safety and all file authority.
-  Persist a pending purge proof task for purge requests, never report physical
-  deletion complete. Compose REST admission and background recovery.
-  Files: library `table/`, `operation/`, `record/`; server `iceberg/`; tests.
-- [ ] **Same/cross-namespace rename — R181**: reserve destination before parent
-  admission; arbitrate head/name-epoch publication, settle the old mapping, and
-  recover every crash boundary. Old names are not aliases. Race destination
-  namespace drop and subsequent name recreation against rename-in.
-  Files: table lifecycle and namespace helping/probes, server routes, tests.
 - [ ] **Selected-use gaps — R180/R182**: implement partition-statistics schema,
   ordered-row and count validation before removing its explicit rejection.
   Audit equality-delete rewrites, position-delete removal without replacement DV,
@@ -86,6 +95,8 @@ acceptance cases, full engine matrices, lifecycle operations or physical GC.
   test candidate/head publication interruption, not just a completed-table
   process restart. Compose new rename/drop fences without introducing a second
   publisher or rebasing an uncertain operation.
+  Library commit/drop/rename fence arbitration is covered; extend native crash
+  interruption evidence rather than reimplementing those fences.
   Files: commit tests, `iceberg_file_http_test.rs`, native fault harness.
 - [ ] **Release conformance — R184**: run the Apache REST Compatibility Kit,
   and official Rust client. Engine acceptance is deferred to the separate testing
@@ -127,6 +138,14 @@ work below for a consolidated backlog after functional implementation. Never
 trade away durability, fencing, bounds or assertions for a passing timing result.
 
 ## Performance work to consolidate later
+
+- SDK diagnostic: the first expanded in-memory Java lifecycle run returned 503
+  at purge on 2026-09-24. One instrumented rerun and two fixed diagnostic batches
+  (five and ten runs) passed without changing timeouts, adding retries or suppressing
+  assertions. No server diagnostic was captured for the original failure; its root
+  cause remains unconfirmed. Keep this as a follow-up observation, not a fixed bug
+  or a reason to claim a stronger latency guarantee. Preserve the unchanged SDK
+  command and capture request-admission/deadline diagnostics if it recurs.
 
 - Historical namespace diagnostics measured roughly 45–75 ms per durable phase
   and intermittent failure under a 500-ms total bound. Refresh measurements before

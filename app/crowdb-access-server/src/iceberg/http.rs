@@ -201,7 +201,12 @@ impl IcebergHttpService {
         if request.method() == hyper::Method::GET && request.uri().path() == "/v1/config" {
             return self.config(request.uri().query());
         }
-        if super::table_read::TableHttp::handles(request.uri().path()) {
+        if super::table_read::TableHttp::handles(request.uri().path())
+            || request.uri().path() == "/v1/tables/rename"
+        {
+            if request.uri().path() == "/v1/tables/rename" && request.method() != hyper::Method::POST {
+                return Err(super::table_read::unsupported());
+            }
             if request.uri().path().ends_with("/credentials") {
                 return match &self.table_credentials {
                     Some(credentials) => {
@@ -212,7 +217,7 @@ impl IcebergHttpService {
                     None => Err(super::table_read::unsupported()),
                 };
             }
-            if request.method() == hyper::Method::POST {
+            if request.method() == hyper::Method::POST || request.method() == hyper::Method::DELETE {
                 return match &self.table_writes {
                     Some(writes) => Box::pin(writes.execute(root.context, principal, request)).await,
                     None => Err(super::table_read::unsupported()),
@@ -264,6 +269,8 @@ impl IcebergHttpService {
                 [
                     "POST /v1/{prefix}/namespaces/{namespace}/tables",
                     "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                    "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                    "POST /v1/{prefix}/tables/rename",
                 ]
                 .map(str::to_owned),
             );

@@ -16,6 +16,8 @@ const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageRecord {
+    TableLifecycleOperation(Box<crate::table::TableLifecycleOperation>),
+    TablePurgeTask(Box<crate::table::TablePurgeTask>),
     TableCreateOperation(Box<crate::commit::TableCreateOperation>),
     TableCommitOperation(Box<crate::commit::TableCommitOperation>),
     TableHead(Box<crate::table::TableHead>),
@@ -42,6 +44,14 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::TableLifecycleOperation(operation) => (
+                FBRecordValue::FBTableLifecycleOperation,
+                super::table_lifecycle::encode(&mut builder, operation)?.as_union_value(),
+            ),
+            Self::TablePurgeTask(task) => (
+                FBRecordValue::FBTablePurgeTask,
+                super::table_lifecycle::encode_purge(&mut builder, task)?.as_union_value(),
+            ),
             Self::TableCreateOperation(operation) => (
                 FBRecordValue::FBTableCreateOperation,
                 super::table_create::encode(&mut builder, operation)?.as_union_value(),
@@ -153,6 +163,8 @@ impl StorageRecord {
         if matches!(
             envelope.value_type(),
             FBRecordValue::FBTableCreateOperation
+                | FBRecordValue::FBTableLifecycleOperation
+                | FBRecordValue::FBTablePurgeTask
                 | FBRecordValue::FBTableCommitOperation
                 | FBRecordValue::FBTableHead
                 | FBRecordValue::FBTableMapping
@@ -164,6 +176,20 @@ impl StorageRecord {
 
     fn decode_table(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         let record = match envelope.value_type() {
+            FBRecordValue::FBTableLifecycleOperation => {
+                Self::TableLifecycleOperation(Box::new(super::table_lifecycle::decode(
+                    envelope
+                        .value_as_fbtable_lifecycle_operation()
+                        .ok_or(ValidationError::Record)?,
+                )?))
+            }
+            FBRecordValue::FBTablePurgeTask => {
+                Self::TablePurgeTask(Box::new(super::table_lifecycle::decode_purge(
+                    envelope
+                        .value_as_fbtable_purge_task()
+                        .ok_or(ValidationError::Record)?,
+                )?))
+            }
             FBRecordValue::FBTableCreateOperation => {
                 Self::TableCreateOperation(Box::new(super::table_create::decode(
                     envelope
@@ -276,6 +302,8 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::TableLifecycleOperation(operation), key) if *key == operation.key() => Ok(()),
+            (Self::TablePurgeTask(task), key) if *key == task.key() => Ok(()),
             (Self::TableCreateOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::TableCommitOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::TableHead(head), key) if *key == crate::table::head_key(head.catalog, head.table) => {

@@ -14,5 +14,6 @@ mod root;
 mod table;
 mod table_commit;
 mod table_create;
+mod table_lifecycle;
 
 pub use envelope::{StorageRecord, MAX_RECORD_BYTES};

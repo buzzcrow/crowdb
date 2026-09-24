@@ -29,7 +29,6 @@ pub struct TestTableHttp {
 }
 
 impl TestTableHttp {
-    #[cfg(feature = "iceberg-e2e")]
     pub fn endpoint(&self) -> String {
         format!("http://{}", self.address)
     }

@@ -44,11 +44,15 @@ impl TableCreator {
             return Err(ValidationError::Record.into());
         };
         if existing.state == TableMappingState::Reserved {
-            let owner = self
-                .journal()
-                .load(operation.context, existing.operation)
-                .await?
-                .ok_or(ValidationError::Record)?;
+            let owner = self.journal().load(operation.context, existing.operation).await?;
+            let Some(owner) = owner else {
+                Box::pin(
+                    crate::table::TableLifecycles::from_parts(self.store.clone(), self.names.clone())
+                        .help_reservation(operation.context, &existing, budget),
+                )
+                .await?;
+                return Ok(());
+            };
             if owner.mapping(TableMappingState::Reserved) != existing {
                 return Err(ValidationError::IdentityMismatch.into());
             }

@@ -23,11 +23,14 @@ impl TableCreator {
             staged_limits: None,
             response_reserve: 0,
         };
-        let operation = creator
-            .journal()
-            .load(context, identity)
-            .await?
-            .ok_or(ValidationError::Record)?;
+        let operation = creator.journal().load(context, identity).await?;
+        let Some(operation) = operation else {
+            return Box::pin(
+                crate::table::TableLifecycles::from_parts(creator.store, creator.names)
+                    .help_admission(context, holder, identity, budget),
+            )
+            .await;
+        };
         if operation.candidate.namespace != holder
             || !matches!(
                 operation.phase,
@@ -63,11 +66,14 @@ impl TableCreator {
             staged_limits: None,
             response_reserve: 0,
         };
-        let operation = creator
-            .journal()
-            .load(context, mapping.operation)
-            .await?
-            .ok_or(ValidationError::Record)?;
+        let operation = creator.journal().load(context, mapping.operation).await?;
+        let Some(operation) = operation else {
+            return Box::pin(
+                crate::table::TableLifecycles::from_parts(creator.store, creator.names)
+                    .help_reservation(context, mapping, budget),
+            )
+            .await;
+        };
         if operation.mapping(TableMappingState::Reserved) != *mapping {
             return Err(ValidationError::IdentityMismatch.into());
         }

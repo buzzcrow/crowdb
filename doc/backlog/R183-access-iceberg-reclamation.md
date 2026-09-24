@@ -51,7 +51,10 @@ contains zero free bytes.
 2. Emit candidates for failed/abandoned metadata generations, expired staged table
    creates, multipart sessions and parts, orphan projections, expired snapshots,
    purge-requested dropped tables, and retired catalog ranges. Candidate creation
-   never performs physical deletion.
+   never performs physical deletion. Consume the durable tombstoned-head purge
+   tasks emitted by logical table drop, retaining their activation epoch, stable
+   table identity and selected metadata generation. A pending purge task is input
+   to reachability proof, not authorization to delete files or a completed purge.
 3. Traverse standard metadata JSON, metadata logs, retained snapshots and refs,
    manifest lists, manifests, data/delete files, deletion vectors, and statistics
    files according to the owning format version. Spill bounded sorted mark pages to

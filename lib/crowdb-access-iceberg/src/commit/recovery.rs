@@ -21,6 +21,7 @@ use crate::{
 pub enum TableRecoveryKind {
     Create,
     Update,
+    Lifecycle,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +38,7 @@ impl TableRecoveryScan {
         let scope = match self.kind {
             TableRecoveryKind::Create => CatalogScope::TableCreateOperation,
             TableRecoveryKind::Update => CatalogScope::TableCommitOperation,
+            TableRecoveryKind::Lifecycle => CatalogScope::TableLifecycleOperation,
         };
         let mut start = IcebergKey::catalog_range(self.catalog).start;
         let mut end = start.clone();
@@ -81,6 +83,7 @@ pub struct TableRecovery {
     creator: TableCreator,
     blocks: Arc<dyn FileBlockStore>,
     limits: CommitProofLimits,
+    lifecycles: crate::table::TableLifecycles,
 }
 
 pub struct TableRecoveryPage {
@@ -98,6 +101,7 @@ impl TableRecovery {
         limits: CommitProofLimits,
     ) -> Self {
         Self {
+            lifecycles: crate::table::TableLifecycles::new(store.clone()),
             store: store.clone(),
             scanner: store.clone(),
             creator: TableCreator::new(store, blocks.clone()).with_staged_limits(StagedCommitLimits {
@@ -155,6 +159,8 @@ impl TableRecovery {
                     if operation.context == context => {}
                 (StorageRecord::TableCommitOperation(operation), TableRecoveryKind::Update)
                     if operation.context == context => {}
+                (StorageRecord::TableLifecycleOperation(operation), TableRecoveryKind::Lifecycle)
+                    if operation.context == context => {}
                 _ => return Err(ValidationError::IdentityMismatch.into()),
             }
             operations.push(record);
@@ -176,35 +182,7 @@ impl TableRecovery {
             failures: Vec::new(),
         };
         for operation in operations {
-            let (identity, result) = match operation {
-                StorageRecord::TableCreateOperation(operation) => {
-                    let identity = operation.identity.operation;
-                    let result = if operation.phase == TableCreatePhase::Staged {
-                        self.creator
-                            .expire_stage(context, operation.candidate.table, now_ms)
-                            .await
-                    } else {
-                        self.creator.resume(context, identity).await.map(|_| true)
-                    };
-                    (identity, result)
-                }
-                StorageRecord::TableCommitOperation(operation) => {
-                    let identity = operation.identity.operation;
-                    (
-                        identity,
-                        recover_table_commit(
-                            self.store.clone(),
-                            self.blocks.clone(),
-                            context,
-                            identity,
-                            self.limits,
-                        )
-                        .await
-                        .map(|_| true),
-                    )
-                }
-                _ => return Err(ValidationError::Record.into()),
-            };
+            let (identity, result) = self.resume_operation(context, operation, now_ms).await?;
             match result {
                 Ok(true) => report.progressed += 1,
                 Ok(false) => report.retained += 1,
@@ -213,5 +191,54 @@ impl TableRecovery {
         }
         check_context(self.store.as_ref(), context).await?;
         Ok(report)
+    }
+
+    async fn resume_operation(
+        &self,
+        context: CatalogContext,
+        operation: StorageRecord,
+        now_ms: i64,
+    ) -> Result<(OperationId, Result<bool, CommitPublicationError>), CatalogError> {
+        let result = match operation {
+            StorageRecord::TableLifecycleOperation(operation) => {
+                let identity = operation.identity.operation;
+                (
+                    identity,
+                    self.lifecycles
+                        .resume(context, identity)
+                        .await
+                        .map(|_| true)
+                        .map_err(CommitPublicationError::from),
+                )
+            }
+            StorageRecord::TableCreateOperation(operation) => {
+                let identity = operation.identity.operation;
+                let result = if operation.phase == TableCreatePhase::Staged {
+                    self.creator
+                        .expire_stage(context, operation.candidate.table, now_ms)
+                        .await
+                } else {
+                    self.creator.resume(context, identity).await.map(|_| true)
+                };
+                (identity, result)
+            }
+            StorageRecord::TableCommitOperation(operation) => {
+                let identity = operation.identity.operation;
+                (
+                    identity,
+                    recover_table_commit(
+                        self.store.clone(),
+                        self.blocks.clone(),
+                        context,
+                        identity,
+                        self.limits,
+                    )
+                    .await
+                    .map(|_| true),
+                )
+            }
+            _ => return Err(ValidationError::Record.into()),
+        };
+        Ok(result)
     }
 }

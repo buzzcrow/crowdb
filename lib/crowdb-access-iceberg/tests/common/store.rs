@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 
@@ -27,9 +27,34 @@ pub struct TestStore {
     pub table_reservation_visits: AtomicUsize,
     pub stage_transition_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub stage_transition_visits: AtomicUsize,
+    pub table_head_pause_before: AtomicBool,
+    pub table_head_pause_after: AtomicBool,
+    pub table_head_entered: tokio::sync::Notify,
+    pub table_head_release: tokio::sync::Notify,
 }
 
 impl TestStore {
+    async fn pause_table_head(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8], after: bool) {
+        if expected.is_none() {
+            return;
+        }
+        let Ok(crowdb_access_iceberg::record::StorageRecord::TableHead(head)) =
+            crowdb_access_iceberg::key::IcebergKey::decode(key)
+                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+        else {
+            return;
+        };
+        let enabled = if after {
+            &self.table_head_pause_after
+        } else {
+            &self.table_head_pause_before
+        };
+        if head.pending_operation.is_some() && enabled.swap(false, Ordering::SeqCst) {
+            self.table_head_entered.notify_one();
+            self.table_head_release.notified().await;
+        }
+    }
+
     async fn pause_stage_transition(&self, key: &[u8], expected: Option<&[u8]>) {
         if let (Some(barrier), Some(expected)) = (&self.stage_transition_barrier, expected) {
             if let Ok(crowdb_access_iceberg::record::StorageRecord::TableCreateOperation(operation)) =
@@ -60,6 +85,7 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
+        self.pause_table_head(key, expected, value, false).await;
         self.pause_stage_transition(key, expected).await;
         if matches!(
             crowdb_access_iceberg::key::IcebergKey::decode(key),
@@ -147,6 +173,7 @@ impl CatalogStore for TestStore {
                 if self.fail_after.load(Ordering::SeqCst) == writes {
                     return Err(StoreError::Response);
                 }
+                self.pause_table_head(key, expected, value, true).await;
                 return Ok(CasOutcome::Applied(revision));
             }
         }

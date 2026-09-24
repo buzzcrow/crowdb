@@ -351,7 +351,31 @@ table FBTableCreateOperation {
     stage:FBTableCreateStage;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation }
+table FBTableLifecycleOperation {
+    catalog:[ubyte] (required);
+    activation_epoch:ulong;
+    operation:[ubyte] (required);
+    issued_ms:ulong;
+    principal:string (required);
+    revision:ulong;
+    phase:ubyte = 255;
+    input:FBPayloadReference (required);
+    source:FBTableMapping (required);
+    before:FBTableHead (required);
+    candidate:FBTableHead (required);
+    destination_namespace:[ubyte];
+    purge_requested:bool;
+    admission:FBNamespaceMutation;
+    outcome_status:ushort;
+    outcome_body:FBPayloadReference;
+}
+
+table FBTablePurgeTask {
+    activation_epoch:ulong;
+    head:FBTableHead (required);
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask }
 
 table FBIcebergRecord {
     schema_version:ushort;
