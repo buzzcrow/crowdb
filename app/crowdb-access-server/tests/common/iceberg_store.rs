@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crowdb_access_iceberg::catalog::{CasOutcome, CatalogStore, StoreError, StoredValue};
 use crowdb_protocol::chunk_kv::ClientRequestId;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -13,6 +13,9 @@ pub struct TestStore {
     pub scan_delay_ms: AtomicU64,
     pub scans: AtomicU64,
     pub lose_reply_kind: AtomicU8,
+    pub pause_file_read: AtomicBool,
+    pub file_read_entered: tokio::sync::Notify,
+    pub file_read_release: tokio::sync::Notify,
 }
 
 #[async_trait]
@@ -88,6 +91,17 @@ impl crowdb_access_iceberg::namespace::NamespaceStore for TestStore {
 impl CatalogStore for TestStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         let value = self.values.load().get(key).cloned();
+        if matches!(
+            crowdb_access_iceberg::key::IcebergKey::decode(key),
+            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
+                scope: crowdb_access_iceberg::key::CatalogScope::File,
+                ..
+            })
+        ) && self.pause_file_read.swap(false, Ordering::SeqCst)
+        {
+            self.file_read_entered.notify_one();
+            self.file_read_release.notified().await;
+        }
         let delay = self.read_delay_ms.load(Ordering::SeqCst);
         if delay != 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
@@ -125,6 +139,7 @@ impl CatalogStore for TestStore {
                             (mode == 2
                                 && scope == crowdb_access_iceberg::key::CatalogScope::NamespaceAuthority)
                                 || (mode == 3 && scope == crowdb_access_iceberg::key::CatalogScope::Operation)
+                                || (mode == 5 && scope == crowdb_access_iceberg::key::CatalogScope::TableHead)
                                 || (mode == 4
                                     && scope
                                         == crowdb_access_iceberg::key::CatalogScope::TableCommitOperation

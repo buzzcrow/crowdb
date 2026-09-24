@@ -25,6 +25,125 @@ use crowdb_access_iceberg::{
 };
 use std::sync::atomic::Ordering;
 
+async fn visible_during_rename(
+    test: &TestCreation,
+    request: &TableLifecycleRequest,
+    expected: &[u8],
+) -> (bool, bool) {
+    use crowdb_access_iceberg::table::{
+        SnapshotLoadingMode, TableListLimits, TableLister, TableLoad, TableLoader, TableMetadataLimits,
+    };
+    let TableLifecycleAction::Rename { namespace, name } = &request.action else {
+        panic!("rename fixture required");
+    };
+    let loader = TableLoader::new(
+        test.fixture.store.clone(),
+        test.blocks.clone(),
+        TableMetadataLimits {
+            bytes: 2 * 1024 * 1024,
+            values: 200_000,
+            depth: 64,
+            string_bytes: 1024 * 1024,
+            collection_entries: 10_000,
+        },
+    );
+    let lister = TableLister::new(test.fixture.store.clone(), &[7; 32]).unwrap();
+    let mut visible = Vec::new();
+    for (parent, table) in [(&request.namespace, &request.name), (namespace, name)] {
+        let (response, page) = tokio::join!(
+            loader.load(request.context, parent, table, SnapshotLoadingMode::All, None),
+            lister.list(
+                request.context,
+                parent,
+                TableListLimits {
+                    page_size: 1,
+                    scanned: 10,
+                    names_bytes: 1024,
+                },
+                None
+            )
+        );
+        let page = page.unwrap().unwrap();
+        let present = match response.unwrap() {
+            TableLoad::Missing => false,
+            TableLoad::Loaded { head, metadata, .. } => {
+                assert_eq!(metadata, expected);
+                assert_eq!(head.name, *table);
+                let original: serde_json::Value = serde_json::from_slice(expected).unwrap();
+                assert_eq!(
+                    head.table_uuid.unwrap().to_string(),
+                    original["table-uuid"].as_str().unwrap()
+                );
+                true
+            }
+            TableLoad::NotModified { .. } => panic!("unconditional load returned not modified"),
+        };
+        assert_eq!(page.names.contains(table), present);
+        visible.push(present);
+    }
+    assert!(
+        !(visible[0] && visible[1]),
+        "old name must never alias the new name"
+    );
+    (visible[0], visible[1])
+}
+
+#[tokio::test]
+async fn interrupted_renames_keep_concurrent_list_and_load_head_qualified() {
+    for mode in [2, 3] {
+        let (baseline, request) = setup(mode).await;
+        let writes = baseline.fixture.store.writes.load(Ordering::SeqCst);
+        TableLifecycles::new(baseline.fixture.store.clone())
+            .execute(&request)
+            .await
+            .unwrap();
+        let count = baseline.fixture.store.writes.load(Ordering::SeqCst) - writes;
+        for offset in 1..=count {
+            let (test, request) = setup(mode).await;
+            let original = TableRepository::new(test.fixture.store.clone())
+                .select(request.context, test.parent.namespace, &request.name)
+                .await
+                .unwrap()
+                .unwrap();
+            let document = crowdb_access_iceberg::table::read_table_metadata_document(
+                test.blocks.clone(),
+                &original,
+                crowdb_access_iceberg::table::TableMetadataLimits {
+                    bytes: 2 * 1024 * 1024,
+                    values: 200_000,
+                    depth: 64,
+                    string_bytes: 1024 * 1024,
+                    collection_entries: 10_000,
+                },
+            )
+            .await
+            .unwrap();
+            let store = test.fixture.store.clone();
+            store
+                .fail_after
+                .store(store.writes.load(Ordering::SeqCst) + offset, Ordering::SeqCst);
+            assert!(TableLifecycles::new(store.clone())
+                .execute(&request)
+                .await
+                .is_err());
+            store.fail_after.store(0, Ordering::SeqCst);
+            visible_during_rename(&test, &request, document.canonical()).await;
+            assert_eq!(
+                TableLifecycles::new(store)
+                    .execute(&request)
+                    .await
+                    .unwrap()
+                    .status,
+                204
+            );
+            assert_eq!(
+                visible_during_rename(&test, &request, document.canonical()).await,
+                (false, true)
+            );
+        }
+    }
+}
+
 async fn setup(mode: u8) -> (TestCreation, TableLifecycleRequest) {
     let test = TestCreation::new().await;
     assert_eq!(test.creator().create(&test.request).await.unwrap().status, 200);
