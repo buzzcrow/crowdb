@@ -66,9 +66,14 @@ before reopening admission. Completion uses persisted lease, request, delegated
 access and clock-skew limits, never shorter restart configuration. Retired
 authorities remain unreachable; physical deletion is not implemented.
 
-The baseline has no root lease or delegated credentials. Each HTTP connection
-has an absolute lifetime starting before its authoritative root read and covering
-response transmission. Listeners stop admission before bounded draining;
+The baseline has no root lease or delegated credential vending. Each HTTP connection
+has an absolute lifetime starting at acceptance and covering header parsing,
+request execution and response transmission, including streamed file bodies and
+multipart completion heartbeats. Network progress cannot extend this lifetime.
+REST and FileIO admission reject listener lifetimes exceeding the persisted catalog
+request bound. Newly initialized runtime catalogs use a five-minute request bound;
+existing catalogs retain their persisted bound across restart and clear.
+Listeners stop admission before bounded draining;
 startup and periodic reconciliation resume interrupted management operations.
 
 Management and shared REST retry ledgers each use 4096 deterministic hash slots.

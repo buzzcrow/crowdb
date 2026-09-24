@@ -1,6 +1,6 @@
 use std::fmt::Write;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crowdb_access_iceberg::catalog::{
     CatalogError, CatalogLifecycle, CatalogRepository, RootState, RoutedCatalogStore,
@@ -77,9 +77,10 @@ impl FileHttp {
         self: &Arc<Self>,
         catalog: &CatalogRepository,
         request: Request<Incoming>,
+        request_timeout: Duration,
     ) -> Response<IcebergBody> {
         let path = request.uri().path().to_owned();
-        match Box::pin(self.execute(catalog, request)).await {
+        match Box::pin(self.execute(catalog, request, request_timeout)).await {
             Ok(response) => response,
             Err(code) => {
                 tracing::debug!(?code, %path, "native file request rejected");
@@ -92,12 +93,15 @@ impl FileHttp {
         self: &Arc<Self>,
         catalog: &CatalogRepository,
         request: Request<Incoming>,
+        request_timeout: Duration,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         let file_request = FileRequest::parse(request.method(), request.uri()).map_err(request_error)?;
         let (root, authority) = catalog.status().await.map_err(catalog_error)?;
         if root.state != RootState::Ready
             || authority.lifecycle != CatalogLifecycle::Ready
             || authority.capabilities.bits() != 0
+            || request_timeout.is_zero()
+            || request_timeout > Duration::from_millis(authority.admission_bounds.request_ms)
         {
             return Err(FileS3ErrorCode::SlowDown);
         }

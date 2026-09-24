@@ -252,6 +252,14 @@ Current requested sequence (tasks 1–3):
   neither table reads nor writes. Runtime catalog admission uses zero delegated
   grace by default, so credential activation must audit persisted clear/request
   bounds rather than merely advertise the new routes.
+  Absolute connection lifetime now covers streamed responses and completion
+  heartbeats, not only handler execution. FileIO and REST both check the listener
+  lifetime against persisted request bounds. Runtime initialization uses a
+  five-minute request bound; old catalogs retain their original shorter bound.
+  Credential vending remains disabled pending the delegated-grace audit.
+  Verified: 49 server feature-enabled tests, workspace fmt/clippy and explicit
+  Iceberg-feature clippy. Paused-clock coverage proves active heartbeat writes
+  cannot extend the absolute deadline; real HTTP covers incomplete headers.
   The pinned SDK's `VendedCredentialsProvider` refreshes a server-configured
   `credentials.uri`, requires exactly one S3 credential in the result and starts
   refreshing five minutes before expiry. The standard credentials route identifies

@@ -28,11 +28,13 @@ impl ConnectionActivity {
         self.latest_ms.fetch_max(elapsed, Ordering::Relaxed);
     }
 
-    pub(super) async fn expired(&self, idle: Duration) {
+    pub(super) async fn expired(&self, idle: Duration, lifetime: Duration) {
+        let deadline = self.start + lifetime;
         loop {
             let latest = self.latest_ms.load(Ordering::Relaxed);
-            tokio::time::sleep_until(self.start + Duration::from_millis(latest) + idle).await;
-            if self.latest_ms.load(Ordering::Relaxed) == latest {
+            let idle_deadline = self.start + Duration::from_millis(latest) + idle;
+            tokio::time::sleep_until(idle_deadline.min(deadline)).await;
+            if Instant::now() >= deadline || self.latest_ms.load(Ordering::Relaxed) == latest {
                 return;
             }
         }
@@ -89,11 +91,12 @@ impl<Stream: AsyncWrite + Unpin> AsyncWrite for ActiveIo<Stream> {
 pub fn active_io_for_tests<Stream: AsyncRead + AsyncWrite + Unpin>(
     stream: Stream,
     idle: Duration,
+    lifetime: Duration,
 ) -> (
     impl AsyncRead + AsyncWrite + Unpin,
     impl std::future::Future<Output = ()>,
 ) {
     let activity = ConnectionActivity::new();
     let tracked = ActiveIo::new(stream, activity.clone());
-    (tracked, async move { activity.expired(idle).await })
+    (tracked, async move { activity.expired(idle, lifetime).await })
 }

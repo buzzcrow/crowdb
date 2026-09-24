@@ -110,7 +110,13 @@ async fn connect(
     )
     .await?;
     let store = Arc::new(RoutedCatalogStore::new(client));
-    let repository = Arc::new(CatalogRepository::new(store.clone(), ClearBounds::default())?);
+    let repository = Arc::new(CatalogRepository::new(
+        store.clone(),
+        ClearBounds {
+            request_ms: 300_000,
+            ..ClearBounds::default()
+        },
+    )?);
     Ok((repository, store, chunks))
 }
 
@@ -136,7 +142,7 @@ async fn start_listener(
         return Err("Iceberg catalog is not ready for this server".into());
     }
     let timeout = Duration::from_millis(authority.admission_bounds.request_ms);
-    if timeout.is_zero() || timeout > Duration::from_secs(60) {
+    if timeout.is_zero() || timeout > Duration::from_secs(300) {
         return Err("catalog request timeout is outside server bounds".into());
     }
     let blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> =

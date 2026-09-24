@@ -93,12 +93,7 @@ impl IcebergHttpService {
 
     async fn handle(&self, request: Request<Incoming>) -> Result<Response<IcebergBody>, Infallible> {
         let head = request.method() == hyper::Method::HEAD;
-        let deadline = if request.uri().path().starts_with("/iceberg-") {
-            Duration::from_secs(300)
-        } else {
-            self.request_timeout
-        };
-        let result = Box::pin(tokio::time::timeout(deadline, self.dispatch(request))).await;
+        let result = Box::pin(tokio::time::timeout(self.request_timeout, self.dispatch(request))).await;
         let mut response = match result {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => response(error.error.code, serde_json::to_vec(&error).unwrap_or_default()),
@@ -119,7 +114,9 @@ impl IcebergHttpService {
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         if request.uri().path().starts_with("/iceberg-") {
             return Ok(match &self.files {
-                Some(files) => Box::pin(files.dispatch(&self.repository, request)).await,
+                Some(files) => {
+                    Box::pin(files.dispatch(&self.repository, request, self.request_timeout)).await
+                }
                 None => super::file_http::unavailable(request.uri().path()),
             });
         }
@@ -152,7 +149,8 @@ impl IcebergHttpService {
             .map_err(|_| service_unavailable())?;
         if root.state != RootState::Ready
             || authority.lifecycle != CatalogLifecycle::Ready
-            || self.request_timeout.as_millis() > u128::from(authority.admission_bounds.request_ms)
+            || self.request_timeout.is_zero()
+            || self.request_timeout > Duration::from_millis(authority.admission_bounds.request_ms)
             || authority.capabilities.bits() != 0
         {
             return Err(service_unavailable());
@@ -226,6 +224,7 @@ pub async fn serve(
                 let (stream, peer) = match accepted { Ok(value) => value, Err(error) => { failure = Some(error); break; } };
                 let service = Arc::clone(&service);
                 connections.spawn(async move {
+                    let lifetime = service.request_timeout;
                     let activity = ConnectionActivity::new();
                     let stream = ActiveIo::new(stream, activity.clone());
                     let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { Box::pin(service.handle(request)).await } });
@@ -237,8 +236,8 @@ pub async fn serve(
                                 tracing::debug!(%peer, %error, "Iceberg HTTP connection failed");
                             }
                         }
-                        () = activity.expired(Duration::from_secs(300)) => {
-                            tracing::debug!(%peer, "Iceberg HTTP connection idle deadline exhausted");
+                        () = activity.expired(Duration::from_secs(300), lifetime) => {
+                            tracing::debug!(%peer, "Iceberg HTTP connection lifetime or idle deadline exhausted");
                         }
                     }
                 });

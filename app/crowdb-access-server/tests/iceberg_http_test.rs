@@ -80,6 +80,17 @@ async fn authenticated_config_warehouse_errors_and_shutdown_use_real_http() {
     assert!(get(address, "/v1/config", "wrong")
         .await
         .starts_with("HTTP/1.1 401"));
+    let mut incomplete = TcpStream::connect(address).await.unwrap();
+    incomplete
+        .write_all(b"GET /v1/config HTTP/1.1\r\nHost: localhost\r\n")
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_millis(2500), incomplete.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bytes.is_empty());
     store
         .read_delay_ms
         .store(3000, std::sync::atomic::Ordering::SeqCst);
