@@ -58,11 +58,13 @@ Verified lifecycle implementation checkpoint (2026-09-24):
 
 ## Remaining tasks in dependency order
 
-- [ ] **Namespace acceptance — R179**: complete the rename-in versus
-  namespace-drop acceptance audit; its library race seam is now covered. Official PyIceberg CRUD
-  now passes on two listeners before/after native storage and listener restart;
-  the separate 500-ms clear/restart fixture also passes. Table-create
-  admission already has fault/race coverage; do not reimplement it.
+- [ ] **Namespace acceptance — R179**: the source audit at `a52cfb72` confirms
+  rename-in/table-create versus namespace-drop fault coverage, but identifies
+  remaining property-limit E2E and official-client pagination/exhaustion/error
+  evidence. Complete those cases, then rerun native namespace closure gates;
+  existing two-listener CRUD/restart and separate 500-ms maintenance results
+  predate the lifecycle integration. Do not reimplement admission or claim raw
+  HTTP boundary tests as SDK coverage. No new human decision is required.
   Files: namespace modules, `iceberg_full_stack_test.rs`,
   [namespace execution plan](plan-iceberg-namespace.md).
 - [ ] **Selected-use gaps — R180/R182**: implement partition-statistics schema,
