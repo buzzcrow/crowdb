@@ -262,5 +262,21 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   E2E-feature all-target clippy pass after shared-projection cleanup. This does
   not prove agreement with snapshot inventory or permit
   publication: both `UnsupportedPartitionStatistics` guards remain in place.
-- No pending human decision. Native interruption acceptance and closure audit
+- OI-5 was discovered in the subsequent delete-rewrite audit, after this row
+  implementation. Native interruption acceptance and closure audit
   remain separate implementation work; ORC, GC and engine tests stay deferred.
+
+## Blocked
+
+- **Ordinary delete-rewrite proof scope only:** R177 OI-5 needs a responsibility
+  decision. The pinned SDK's `RewriteFiles` contract requires logical equivalence,
+  while its REST commit handler does not prove that equivalence by scanning rows.
+  The existing `snapshot_validation/preservation.rs` deliberately proves DV
+  replacement coverage, not arbitrary equality/position-delete rewrites.
+- Recommendation: retain writer/engine responsibility for that computation and
+  test the catalog's declared validation boundary; alternative: build an explicit
+  bounded server-side equivalence evaluator. Do not pretend filename retention,
+  row-count equality or rejection of every removed delete is such an evaluator.
+- No production checks have been removed or relaxed. Partition-statistics
+  reconciliation, retained-file compatibility and native interruption tests are
+  unfinished work, not additional human decisions. R182 remains open.

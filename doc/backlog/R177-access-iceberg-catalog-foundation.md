@@ -361,7 +361,32 @@ GC and exhaustion-recovery requirements recorded in R183.
   fields, types, row ordering and counts; do not silently treat omitted partition
   values as known or broaden omissions to arbitrary fields. Existing
   partition-statistics publication stays disabled until the complete semantic
-  validator is implemented. No human decision is currently pending.
+  validator is implemented. This decision is resolved.
+
+- **OI-5 — Ordinary delete-rewrite equivalence responsibility (pending):**
+  distinguish valid file/metadata structure from proving that a rewrite preserves
+  the logical set of live rows. Java 1.11.0
+  [RewriteFiles](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/api/src/main/java/org/apache/iceberg/RewriteFiles.java)
+  requires the caller's replacement data/delete records to preserve logical
+  equivalence. Its
+  [REST CatalogHandlers.commit](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/rest/CatalogHandlers.java)
+  validates requirements, applies metadata updates and delegates publication;
+  that handler does not scan rows to prove equivalence.
+  - Recommended: keep this computation the writer/engine's responsibility,
+    preserving CROWDB's implemented authorization, immutable-file authority,
+    schema/sequence/partition validation, position bounds, DV merge checks and
+    atomic publication. Add explicit compatibility tests and document that
+    ordinary equality/position-delete rewrites are not a server-side row-set
+    equivalence proof. This is not permission to bypass existing checks.
+  - Alternative: require CROWDB to prove equivalence for ordinary delete rewrites,
+    including removals with no replacement DV. This needs data/delete value
+    evaluation with schema evolution, NULL/NaN equality and sequence/partition
+    applicability, independent admission budgets and a policy for proofs that
+    exceed those budgets. Merely retaining filenames or matching counts is not
+    a correct implementation and may reject legal compaction.
+  - Confirm which component owns this extra proof before expanding commit
+    validation into row evaluation. Neither alternative changes the confirmed
+    partition-statistics omission, GC, ORC or engine-test deferrals.
 
 Unfinished implementation and unexecuted acceptance remain in the working plans.
 R179 and R181 are closed by their acceptance gates, not by these decisions.

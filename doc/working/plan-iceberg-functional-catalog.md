@@ -110,6 +110,9 @@ do not close a requirement by ignoring its dependency's unsupported selected use
   Audit equality-delete rewrites, position-delete removal without replacement DV,
   retained history and aggregate admission against the declared profile. Existing
   DV replacement validation alone does not prove all delete rewrites.
+  R177 OI-5 now asks whether ordinary rewrite row-set equivalence stays with the
+  writer/engine or becomes an additional CROWDB server proof; existing checks
+  remain unchanged while that responsibility is decided.
   Preserve explicit rejection for encrypted data and unsupported selected formats;
   encryption-key metadata parsing is not encrypted-file support.
   Files: `commit/proof.rs`, auxiliary/snapshot validators and SDK fixtures.
