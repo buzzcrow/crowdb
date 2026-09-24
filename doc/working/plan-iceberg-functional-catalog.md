@@ -2,7 +2,6 @@
 
 Upstream: [R177](../backlog/R177-access-iceberg-catalog-foundation.md),
 [R180](../backlog/R180-access-iceberg-fileio.md),
-[R181](../backlog/R181-access-iceberg-table-lifecycle.md),
 [R182](../backlog/R182-access-iceberg-table-commit.md),
 [R184](../backlog/R184-access-iceberg-rest-conformance.md).
 
@@ -33,7 +32,7 @@ Verified integration checkpoint: `a832e699` (2026-09-24).
   Real Java 1.11.0 writes v1 data, upgrades to v3, appends with retained history,
   publishes a staged table, and reads both after catalog-process restart.
 
-This does not close R180–R184. Existing tests do not substitute for unexecuted
+This does not close R180, R182–R184. Existing tests do not substitute for unexecuted
 acceptance cases, full engine matrices, requirement-closure audits or physical GC.
 
 Verified lifecycle implementation checkpoint (2026-09-24):
@@ -70,9 +69,30 @@ Namespace acceptance closed (2026-09-24), implementation `442f26c7`:
   restart and the independent 500-ms maintenance fixture pass together under
   default concurrency. Fault-phase integration tests cover namespace/table
   creation and rename-in versus namespace drop; no claim of native process kills
-  at every phase. R180–R184 retain their separate outstanding acceptance.
+  at every phase. Other requirements retain their separate outstanding acceptance.
+
+Table lifecycle acceptance closed (2026-09-24), implementation `4bbc2226`:
+
+- R181's seven acceptance cases map to metadata/version tests, library lifecycle
+  fault/race tests, HTTP boundary tests and official Java read/write fixtures.
+  Added ALL/REFS conditional-load races against actual commits; mixed five-page
+  stale/reserved/missing/tombstoned/current index and HEAD checks; lost drop head
+  publication replies in both purge modes; unsupported-route authority equality.
+- Every interrupted same/cross-namespace rename additionally runs concurrent
+  list/load checks before and after recovery. Old names never alias new names,
+  canonical bytes and UUID remain unchanged, and recovery yields one current name.
+- Library and default/Iceberg-enabled server all-targets, all three Java SDK tests,
+  native Parquet/lifecycle/listener-restart acceptance, fmt and both workspace and
+  E2E-feature clippy pass. Existing Maven logging/shutdown warnings remain visible.
+  No production semantics, retry policy or timeouts changed for this closure.
+- Optional projection integration and selected partition-statistics/delete rewrite
+  validation remain R180/R182 tasks. Physical reclamation remains deferred R183.
 
 ## Remaining tasks in dependency order
+
+The user-approved closure order is R181 (complete), R182, then remaining R180.
+Advance shared R180 prerequisites when required for correct R182 publication;
+do not close a requirement by ignoring its dependency's unsupported selected use.
 
 - [ ] **Selected-use gaps — R180/R182**: implement partition-statistics schema,
   ordered-row and count validation before removing its explicit rejection.
@@ -82,6 +102,14 @@ Namespace acceptance closed (2026-09-24), implementation `442f26c7`:
   Preserve explicit rejection for encrypted data and unsupported selected formats;
   encryption-key metadata parsing is not encrypted-file support.
   Files: `commit/proof.rs`, auxiliary/snapshot validators and SDK fixtures.
+- [ ] **Commit acceptance closure — R182**: extend official-client and
+  multi-process fault coverage to every declared create/commit/error/limit case;
+  test candidate/head publication interruption, not just a completed-table
+  process restart. Compose new rename/drop fences without introducing a second
+  publisher or rebasing an uncertain operation.
+  Library commit/drop/rename fence arbitration is covered; extend native crash
+  interruption evidence rather than reimplementing those fences.
+  Files: commit tests, `iceberg_file_http_test.rs`, native fault harness.
 - [ ] **Projection integration — R180**: connect generation-local projection
   publication/loading only with equivalent authority/validation checks. Current
   canonical-only table loading is correct; the tested projection helper is not a
@@ -99,14 +127,6 @@ Namespace acceptance closed (2026-09-24), implementation `442f26c7`:
   snapshot/purge parameters, retired retries and credential lifecycle races.
   Add bounded protocol metrics without credentials or high-cardinality labels.
   Files: `catalog/capability.rs`, `wire/config.rs`, server `iceberg/`, tests.
-- [ ] **Commit acceptance closure — R182**: extend official-client and
-  multi-process fault coverage to every declared create/commit/error/limit case;
-  test candidate/head publication interruption, not just a completed-table
-  process restart. Compose new rename/drop fences without introducing a second
-  publisher or rebasing an uncertain operation.
-  Library commit/drop/rename fence arbitration is covered; extend native crash
-  interruption evidence rather than reimplementing those fences.
-  Files: commit tests, `iceberg_file_http_test.rs`, native fault harness.
 - [ ] **Release conformance — R184**: run the Apache REST Compatibility Kit,
   and official Rust client. Engine acceptance is deferred to the separate testing
   project in Next, not part of the current implementation phase. Include row-level deletes,

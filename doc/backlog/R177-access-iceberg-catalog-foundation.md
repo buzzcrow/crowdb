@@ -48,8 +48,9 @@ server-side scan planning, multiple active catalogs, tenants, or warehouses.
 Unsupported endpoints and optional features return the precise standard
 unsupported response and perform no mutation.
 
-The user approved an earlier functional checkpoint in this order: finish R179,
-then R180, R181, R182, and foreground R184 conformance; implement R183 afterward
+The user approved a foreground functional checkpoint before reclamation. R179 and
+R181 are complete; finish R182 next, advancing necessary shared R180 prerequisites,
+then remaining R180 and foreground R184 conformance. Implement R183 afterward
 and finish the remaining R184 gates. This does not remove R183 or complete the
 original correctness milestone early. Before reclamation, unreachable storage is
 retained, physical file/chunk deletion remains disabled, and logical purge records
@@ -125,8 +126,8 @@ system root -> active CatalogId/activation epoch
 3. R180 implements native immutable files, streaming/range FileIO, multipart, and
    generation-local metadata projections. It can proceed after R178 in parallel
    with R179.
-4. R181 implements table identity, v1/v2/v3 metadata validation, lifecycle, load,
-   list, rename, and drop on R179 and R180.
+4. R181 is complete: table identity, v1/v2/v3 metadata validation, lifecycle,
+   load/list/exists, rename/drop and fault/replay acceptance on native files.
 5. R182 implements atomic create/staged-create and update commits, requirements,
    updates, format upgrades, idempotency, conflict classification, and recovery.
 6. R183 implements snapshot-aware purge, orphan cleanup, retired catalog cleanup,
@@ -351,5 +352,5 @@ OI-3 uses the existing disk/chunk allocation capacity boundary, with remaining
 GC and exhaustion-recovery requirements recorded in R183.
 
 Unfinished implementation and unexecuted acceptance remain in the working plans.
-R179 is closed by its acceptance gates, not by these decisions. R180–R184 remain
-open; namespace acceptance does not imply engine/GC conformance.
+R179 and R181 are closed by their acceptance gates, not by these decisions.
+R180 and R182–R184 remain open; this does not imply engine/GC conformance.
