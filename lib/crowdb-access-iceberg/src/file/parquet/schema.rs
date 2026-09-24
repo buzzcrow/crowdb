@@ -23,6 +23,7 @@ pub(super) struct ColumnSchema<'schema> {
     pub physical_type: i32,
     pub path: Vec<&'schema str>,
     pub repeated: bool,
+    pub definition_level: u8,
 }
 
 pub(super) fn columns(schema: &[ParquetSchemaElement]) -> Result<Vec<ColumnSchema<'_>>, Error> {
@@ -46,6 +47,15 @@ pub(super) fn columns(schema: &[ParquetSchemaElement]) -> Result<Vec<ColumnSchem
                 path,
                 repeated: field.repetition == Some(2)
                     || parents.iter().any(|(field, _)| field.repetition == Some(2)),
+                definition_level: u8::try_from(
+                    usize::from(field.repetition != Some(0))
+                        + parents
+                            .iter()
+                            .skip(1)
+                            .filter(|(field, _)| field.repetition != Some(0))
+                            .count(),
+                )
+                .map_err(|_| Error::Bounds)?,
             });
         } else if field.children > 0 {
             parents.push((field, field.children));

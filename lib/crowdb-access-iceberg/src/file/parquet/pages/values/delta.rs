@@ -12,13 +12,15 @@ pub(super) fn integers(bytes: &mut &[u8], count: usize, integer_bits: u8) -> Res
         || block % blocks != 0
         || (block / blocks) % 32 != 0
         || total != count
-        || total == 0
     {
         return Err(Error::Invalid);
     }
     let mut previous = signed(bytes)?;
     if integer_bits == 32 && i32::try_from(previous).is_err() {
         return Err(Error::Invalid);
+    }
+    if total == 0 {
+        return Ok(Vec::new());
     }
     let mut values = vec![previous];
     while values.len() < total {

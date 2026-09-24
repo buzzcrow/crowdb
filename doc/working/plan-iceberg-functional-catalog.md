@@ -97,8 +97,11 @@ do not close a requirement by ignoring its dependency's unsupported selected use
 - [ ] **Selected-use gaps — R180/R182**: implement partition-statistics schema,
   ordered-row and count validation before removing its explicit rejection.
   Canonical required-column INT32 decoding is implemented for its spec IDs and
-  file/DV counts. Nullable/other partition values and full row/schema checks
-  remain pending; this prerequisite does not enable statistics publication.
+  file/DV counts. Nullable scalar pages now decode definition levels and separate
+  v2 level/value compression, verified against four official Java files.
+  Other partition values and full row/schema checks remain pending; these
+  prerequisites do not enable statistics publication. R177 OI-4 records the
+  historical-field union versus SDK projection policy awaiting confirmation.
   Audit equality-delete rewrites, position-delete removal without replacement DV,
   retained history and aggregate admission against the declared profile. Existing
   DV replacement validation alone does not prove all delete rewrites.

@@ -8,9 +8,9 @@ mod compact;
 mod logical;
 mod metadata;
 mod pages;
-#[cfg(feature = "test-util")]
-pub use pages::read_parquet_integer_column_for_tests;
 pub use pages::ParquetPageLimits;
+#[cfg(feature = "test-util")]
+pub use pages::{read_parquet_integer_column_for_tests, read_parquet_nullable_integer_column_for_tests};
 pub(crate) use pages::{ParquetColumnReader, ParquetColumnValue};
 mod schema;
 
@@ -57,6 +57,8 @@ pub struct ParquetRowGroup {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParquetColumnChunk {
     pub schema_index: usize,
+    pub definition_level: u8,
+    pub repeated: bool,
     pub offset: u64,
     pub length: u64,
     pub data_offset: u64,

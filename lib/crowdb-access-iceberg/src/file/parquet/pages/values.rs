@@ -3,6 +3,7 @@ mod delta;
 
 #[derive(Clone, Debug)]
 pub(crate) enum ColumnValue {
+    Null,
     Long(i64),
     Bytes(Vec<u8>),
 }
@@ -15,6 +16,10 @@ pub(super) fn decode(
     dictionary: Option<&[ColumnValue]>,
     limit: usize,
 ) -> Result<Vec<ColumnValue>, Error> {
+    validate_encoding(encoding, physical)?;
+    if count == 0 && bytes.is_empty() {
+        return Ok(Vec::new());
+    }
     if count
         .checked_mul(std::mem::size_of::<ColumnValue>())
         .filter(|bytes| *bytes <= limit)
@@ -114,12 +119,23 @@ pub(super) fn decode(
 fn push(values: &mut Vec<ColumnValue>, value: ColumnValue, remaining: &mut usize) -> Result<(), Error> {
     let size = std::mem::size_of::<ColumnValue>()
         + match &value {
-            ColumnValue::Long(_) => 0,
+            ColumnValue::Long(_) | ColumnValue::Null => 0,
             ColumnValue::Bytes(bytes) => bytes.len(),
         };
     *remaining = remaining.checked_sub(size).ok_or(Error::Bounds)?;
     values.push(value);
     Ok(())
+}
+
+fn validate_encoding(encoding: i64, physical: i32) -> Result<(), Error> {
+    if matches!(encoding, 0 | 2 | 8)
+        || (matches!(encoding, 5 | 9) && matches!(physical, 1 | 2))
+        || (matches!(encoding, 6 | 7) && physical == 6)
+    {
+        Ok(())
+    } else {
+        Err(Error::Unsupported)
+    }
 }
 
 fn integer(bytes: &[u8]) -> Result<ColumnValue, Error> {

@@ -126,6 +126,8 @@ fn column_metadata(
     Ok((
         ParquetColumnChunk {
             schema_index: leaf.index,
+            definition_level: leaf.definition_level,
+            repeated: leaf.repeated,
             offset: start,
             length: compressed,
             data_offset: data,

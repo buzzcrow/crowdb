@@ -1,13 +1,16 @@
 use std::{io::Read, sync::Arc};
 
-use super::{compact, ParquetColumnChunk, ParquetMetadataError as Error, ParquetMetadataLimits};
+use super::{ParquetColumnChunk, ParquetMetadataError as Error};
 use crate::file::{ByteRange, FileBlockStore, FileReader, FileRecord};
 
+mod header;
+mod levels;
 #[cfg(feature = "test-util")]
 mod testing;
 mod values;
+use header::Header;
 #[cfg(feature = "test-util")]
-pub use testing::read_parquet_integer_column_for_tests;
+pub use testing::{read_parquet_integer_column_for_tests, read_parquet_nullable_integer_column_for_tests};
 pub(crate) use values::ColumnValue as ParquetColumnValue;
 use values::{decode, ColumnValue};
 
@@ -39,7 +42,11 @@ impl ParquetColumnReader {
         physical: i32,
         limits: ParquetPageLimits,
     ) -> Result<Self, Error> {
+        if column.repeated {
+            return Err(Error::Unsupported);
+        }
         if limits.bytes == 0
+            || column.definition_level > 32
             || limits.bytes > 8 * 1024 * 1024
             || limits.values == 0
             || limits.values > 1_048_576
@@ -86,14 +93,7 @@ impl ParquetColumnReader {
             self.pages += 1;
             let start = self.offset;
             let (header, payload) = self.page().await?;
-            let values = decode(
-                &payload,
-                header.encoding,
-                self.physical,
-                header.values,
-                self.dictionary.as_deref(),
-                self.limits.bytes,
-            )?;
+            let values = self.decode_values(&header, &payload)?;
             if header.kind == 2 {
                 if self.dictionary.is_some()
                     || self.seen != 0
@@ -117,6 +117,40 @@ impl ParquetColumnReader {
         }
     }
 
+    fn decode_values(&self, header: &Header, mut payload: &[u8]) -> Result<Vec<ColumnValue>, Error> {
+        levels::materialized_limit(header.values, self.limits.bytes)?;
+        let presence = if header.kind == 2 {
+            None
+        } else {
+            levels::presence(&mut payload, header, self.column.definition_level)?
+        };
+        let count = presence.as_ref().map_or(header.values, |levels| {
+            levels.iter().filter(|value| **value).count()
+        });
+        let null_bytes = levels::materialized_limit(header.values - count, self.limits.bytes)?;
+        let mut values = decode(
+            payload,
+            header.encoding,
+            self.physical,
+            count,
+            self.dictionary.as_deref(),
+            self.limits.bytes - null_bytes,
+        )?;
+        let Some(presence) = presence else {
+            return Ok(values);
+        };
+        let mut remaining = values.len();
+        values.resize_with(header.values, || ColumnValue::Null);
+        for (index, present) in presence.into_iter().enumerate().rev() {
+            if present {
+                remaining = remaining.checked_sub(1).ok_or(Error::Invalid)?;
+                let value = std::mem::replace(&mut values[remaining], ColumnValue::Null);
+                values[index] = value;
+            }
+        }
+        Ok(values)
+    }
+
     async fn page(&mut self) -> Result<(Header, Vec<u8>), Error> {
         let end = self.column.offset + self.column.length;
         let bytes = read(
@@ -136,106 +170,26 @@ impl ParquetColumnReader {
         if header.crc.is_some_and(|crc| crc32fast::hash(&payload) != crc) {
             return Err(Error::Invalid);
         }
-        let decoded = decompress(
-            &payload,
-            header.decoded,
+        let prefix = header.level_bytes;
+        let data = decompress(
+            &payload[prefix..],
+            header.decoded - prefix,
             if header.is_compressed {
                 self.column.compression
             } else {
                 0
             },
         )?;
+        let decoded = if prefix == 0 {
+            data
+        } else {
+            let mut decoded = Vec::with_capacity(header.decoded);
+            decoded.extend_from_slice(&payload[..prefix]);
+            decoded.extend(data);
+            decoded
+        };
         self.offset = payload_end;
         Ok((header, decoded))
-    }
-}
-
-struct Header {
-    kind: i64,
-    values: usize,
-    encoding: i64,
-    compressed: usize,
-    decoded: usize,
-    is_compressed: bool,
-    crc: Option<u32>,
-}
-
-impl Header {
-    fn decode(bytes: &[u8], limits: ParquetPageLimits) -> Result<(Self, usize), Error> {
-        let (value, consumed) = compact::prefix(
-            bytes,
-            ParquetMetadataLimits {
-                footer_bytes: 64 * 1024,
-                values: 1000,
-                depth: 8,
-                schema_elements: 1,
-                row_groups: 1,
-            },
-        )?;
-        let fields = value.fields()?;
-        let number = |id| fields.get(&id).ok_or(Error::Invalid)?.integer(5);
-        let kind = number(1)?;
-        let decoded = usize::try_from(number(2)?).map_err(|_| Error::Invalid)?;
-        let compressed = usize::try_from(number(3)?).map_err(|_| Error::Invalid)?;
-        if decoded > limits.bytes || compressed > limits.bytes {
-            return Err(Error::Bounds);
-        }
-        let detail = fields
-            .get(&match kind {
-                0 => 5,
-                2 => 7,
-                3 => 8,
-                _ => return Err(Error::Unsupported),
-            })
-            .ok_or(Error::Invalid)?
-            .fields()?;
-        let item = |id| detail.get(&id).ok_or(Error::Invalid)?.integer(5);
-        let values = usize::try_from(item(1)?).map_err(|_| Error::Invalid)?;
-        if values == 0 || values > limits.values {
-            return Err(Error::Bounds);
-        }
-        let encoding = item(if kind == 3 { 4 } else { 2 })?;
-        if kind == 2 && !matches!(encoding, 0 | 2) {
-            return Err(Error::Invalid);
-        }
-        if kind == 0 && (!matches!(item(3)?, 3 | 4) || !matches!(item(4)?, 3 | 4)) {
-            return Err(Error::Invalid);
-        }
-        let is_compressed = if kind == 3 {
-            if item(2)? != 0
-                || item(3)? != i64::try_from(values).map_err(|_| Error::Bounds)?
-                || item(5)? != 0
-                || item(6)? != 0
-            {
-                return Err(Error::Invalid);
-            }
-            detail
-                .get(&7)
-                .map(compact::Value::boolean)
-                .transpose()?
-                .unwrap_or(true)
-        } else {
-            true
-        };
-        let crc = fields
-            .get(&4)
-            .map(|value| {
-                let value = i32::try_from(value.integer(5)?).map_err(|_| Error::Invalid)?;
-                Ok::<_, Error>(u32::from_ne_bytes(value.to_ne_bytes()))
-            })
-            .transpose()?;
-        Ok((
-            Self {
-                kind,
-                values,
-                encoding: if kind == 2 { 0 } else { encoding },
-                compressed,
-                decoded,
-                is_compressed,
-                crc,
-            },
-            consumed,
-        ))
     }
 }
 
