@@ -16,7 +16,7 @@ pub enum MetadataRead {
 }
 
 pub struct ProjectionStore {
-    store: Arc<dyn CatalogStore>,
+    pub(super) store: Arc<dyn CatalogStore>,
     blocks: Arc<dyn FileBlockStore>,
 }
 
@@ -113,7 +113,7 @@ impl ProjectionStore {
         Some(selected)
     }
 
-    async fn read_child(&self, identity: ProjectionIdentity, child: &Child) -> Option<Vec<u8>> {
+    pub(super) async fn read_child(&self, identity: ProjectionIdentity, child: &Child) -> Option<Vec<u8>> {
         let mut bytes = Vec::with_capacity(child.length);
         for page in 0..child.length.div_ceil(PROJECTION_PAGE_BYTES) {
             let key = identity.key(child.index, u16::try_from(page).ok()?)?;
@@ -126,7 +126,13 @@ impl ProjectionStore {
         (<[u8; 32]>::from(Sha256::digest(&bytes)) == child.digest).then_some(bytes)
     }
 
-    async fn put_page(&self, identity: ProjectionIdentity, child: u16, page: u16, bytes: &[u8]) -> bool {
+    pub(super) async fn put_page(
+        &self,
+        identity: ProjectionIdentity,
+        child: u16,
+        page: u16,
+        bytes: &[u8],
+    ) -> bool {
         let Some(key) = identity.key(child, page) else {
             return false;
         };

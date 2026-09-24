@@ -368,7 +368,7 @@ impl FileHttp {
                             .advance_completion(
                                 &session,
                                 self.blocks.clone(),
-                                1024 * 1024,
+                                crate::iceberg::file_admission::MULTIPART_COPY_BYTES,
                                 crowdb_access_iceberg::file::NATIVE_FILE_BLOCK_BYTES,
                             )
                             .await

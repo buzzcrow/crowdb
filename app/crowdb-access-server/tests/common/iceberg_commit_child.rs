@@ -75,7 +75,7 @@ pub async fn run() {
     let service = IcebergHttpService::new(repository, authentication, Duration::from_secs(300))
         .with_namespaces(store.clone())
         .unwrap()
-        .with_fileio(store.inner.clone(), blocks.clone(), "us-east-1".into())
+        .with_fileio(store.clone(), blocks.clone(), "us-east-1".into())
         .unwrap()
         .with_tables(store.clone(), blocks)
         .unwrap()

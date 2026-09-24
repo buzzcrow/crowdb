@@ -7,7 +7,7 @@ use std::sync::{
 use async_trait::async_trait;
 use crowdb_access_iceberg::{
     catalog::{CasOutcome, CatalogStore, RoutedCatalogStore, StoreError, StoredValue},
-    file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError},
+    file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError, MultipartPartScan, MultipartPartStore},
     key::IcebergKey,
     namespace::{ChildScan, NamespaceStore},
     record::StorageRecord,
@@ -54,6 +54,13 @@ pub struct TestCommitStore {
 }
 
 #[async_trait]
+impl MultipartPartStore for TestCommitStore {
+    async fn scan_multipart_parts(&self, scan: MultipartPartScan) -> Result<MultiScanPage, StoreError> {
+        self.inner.scan_multipart_parts(scan).await
+    }
+}
+
+#[async_trait]
 impl NamespaceStore for TestCommitStore {
     async fn scan_children(&self, request: ChildScan) -> Result<MultiScanPage, StoreError> {
         self.inner.scan_children(request).await
@@ -91,6 +98,7 @@ impl CatalogStore for TestCommitStore {
             StorageRecord::TableHead(head) => format!("head-{}", head.generation),
             StorageRecord::File(_) => "file-record".into(),
             StorageRecord::FileMapping(_) => "file-mapping".into(),
+            StorageRecord::MultipartSession(session) => format!("multipart-{:?}", session.phase),
             _ => "journal-or-fence".into(),
         };
         let index = self.boundary.before(&label).await;

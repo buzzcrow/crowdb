@@ -11,6 +11,10 @@ use super::file_body::{FileBodyError, FileReadBody, FileResponseBudget};
 use super::file_request::{FileRequest, MultipartRequest};
 use super::file_upload::{FileUploadBudget, FileUploadConstraints, FileUploadError};
 
+pub(super) const MULTIPART_COPY_BYTES: usize = 1024 * 1024
+    / crowdb_access_iceberg::file::NATIVE_FILE_BLOCK_BYTES
+    * crowdb_access_iceberg::file::NATIVE_FILE_BLOCK_BYTES;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileServiceLimits {
     pub max_request_bytes: u64,

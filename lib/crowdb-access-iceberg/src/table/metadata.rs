@@ -197,6 +197,15 @@ pub async fn read_table_metadata_document(
     selected: &SelectedTable,
     limits: TableMetadataLimits,
 ) -> Result<TableMetadataDocument, TableMetadataError> {
+    let bytes = read_table_metadata_bytes(store, selected, limits).await?;
+    TableMetadataDocument::parse(bytes, &selected.head, limits)
+}
+
+pub(crate) async fn read_table_metadata_bytes(
+    store: Arc<dyn FileBlockStore>,
+    selected: &SelectedTable,
+    limits: TableMetadataLimits,
+) -> Result<Vec<u8>, TableMetadataError> {
     limits.validate()?;
     let record = &selected.metadata;
     let head = &selected.head;
@@ -219,7 +228,7 @@ pub async fn read_table_metadata_document(
         }
         bytes.extend_from_slice(&frame);
     }
-    TableMetadataDocument::parse(bytes, head, limits)
+    Ok(bytes)
 }
 
 fn integer(value: &Value, field: &'static str) -> Result<i64, TableMetadataError> {

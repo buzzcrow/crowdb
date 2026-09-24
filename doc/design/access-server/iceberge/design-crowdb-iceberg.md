@@ -47,6 +47,18 @@ Standard Iceberg metadata is the recoverable table state. CROWDB may maintain
 derived indexes or projections for scale, but they are disposable and cannot
 become a second table authority.
 
+Generation-local metadata projections preserve raw top-level JSON children in
+bounded pages. REFS loads construct them only after canonical metadata passes
+the complete bounded parser. A versioned validation receipt binds the selected
+head, exact parser limits and projection root; a generic JSON projection alone
+cannot stand in for metadata validation. REFS loads may reuse this validated
+representation without decoding the complete object graph. They still read and
+verify canonical storage and recheck the namespace and head before responding.
+Missing, partial, corrupt, unknown-version or differently bounded projections
+fall back to the canonical parser. ALL responses preserve exact canonical bytes.
+Projection construction is optional and never participates in commit proofs or
+head publication. No cross-generation cache or deduplication is implied.
+
 Iceberg metadata stores bounded logical records and opaque data references.
 Physical chunk placement and storage topology remain below the access boundary.
 
@@ -232,8 +244,11 @@ pages, with at most 256 children per page and eight directory levels. Each page
 binds its catalog, table and file identity, child heights and covered byte count.
 The writer retains only one partial leaf and bounded per-level frontiers. Native
 block completion waits for the readable chunk cursor before publishing a root.
-Pull readers retain one leaf, verify directory/leaf digests and read no future
-block until requested; full-file reads also verify the canonical digest. Range
+Pull readers retain one leaf and its current verified leaf-directory page,
+bounded to 32 KiB independently of file length. Directory reuse is reader-local,
+bound to the exact immutable root, and never shared across files or generations.
+Readers verify directory/leaf digests and read no future block until requested;
+full-file reads also verify the canonical digest. Range
 parsing accepts one contiguous interval and rejects multiple ranges explicitly.
 The HTTP pull-body adapter adds shared response admission and 16-KiB frames.
 Only body polling starts a storage read; cancellation drops the in-flight read
@@ -282,6 +297,12 @@ Each completion step verifies that bounded selection and one selected part befor
 copying a bounded byte window and publishing its checkpoint by session CAS. Lost
 replies reload progress without appending selected bytes twice. Assembled bytes
 remain unexposed until semantic sealing and immutable location publication.
+Foreground and recovery drivers use the same native-block-aligned byte window
+below the one-MiB assembly ceiling. Equal windows prevent systematic CAS losses
+to a smaller competing recovery step; alignment avoids checkpoint-only tiny leaves.
+Within a step, one next 16-KiB frame read may overlap the current writer push.
+There are no detached copy tasks or unbounded queues. Either IO failure cancels
+the other future and returns no new checkpoint; prior durable progress stays valid.
 A recovery page scans at most four session authorities and performs one pending
 part settlement, logical expiry or assembly byte window per session. It validates
 the complete scan page before session mutations, rejects foreign continuations and reports
@@ -294,7 +315,12 @@ bytes retain their original identity. Only a proven incompatible immutable locat
 permits the terminal Conflicted phase; uncertain writes and context failures do not
 become false aborts. Canonical format validation remains the seal caller's contract.
 Each native listener schedules the multipart sweep independently of namespace
-recovery. It resets its cursor when the active context changes and bounds each
+recovery. It observes at most four session revisions, then rechecks the same page
+on the next tick. Byte-copy recovery defers revisions that advanced meanwhile;
+unchanged revisions remain eligible. This bounded observation is only scheduling
+advice, not a lock or lease: expiry, journal settlement, publication and all
+context/session CAS checks remain authoritative. An observation does not retain
+file bytes or survive a restart. It resets its cursor when the active context changes and bounds each
 session by the persisted catalog request deadline. Timeout defers only that session,
 allowing later entries in the page to progress. A separate outer budget bounds the
 whole page and context/scan work. One separately bounded admission-journal recovery
@@ -320,6 +346,8 @@ Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner
 bounds nesting and verifies raw UTF-8 before parser scratch can grow. Admission
 caps blocking workers; cancellation keeps its permit until the worker exits.
+The validating full-file reader checks the canonical digest in the same storage
+pass for chunked JSON; no independent preliminary full-file read is required.
 This structural check does not replace Iceberg schema or commit validation.
 
 Avro writer-schema binary layouts compile to bounded named-reference graphs.

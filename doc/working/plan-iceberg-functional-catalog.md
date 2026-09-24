@@ -13,6 +13,24 @@ after the program finishes. Human decisions live only in R177. No user-guide wor
 
 ## Completed summary
 
+FileIO implementation checkpoint (2026-09-25; closure cleanup pending):
+
+- REFS loads use disposable generation-local projections only with a receipt
+  bound to the full selected head, parser limits and canonical digest. Corruption
+  and partial writes fall back; ALL and commit admission still parse canonical JSON.
+- Native PUT/Complete processes are killed before/after all 22 request-local
+  durable writes: 44 cases pass with exact identity/replay and retained orphans.
+  Background recovery, not extra Complete calls, settles released credits and
+  returns the session/byte counters to zero. Native credential lifecycle passes.
+- Multipart uses block-aligned bounded windows, progress-aware recovery scheduling,
+  one-frame read/write overlap and single-pass chunked JSON validation. Readers
+  retain one verified leaf-directory page. No request timeout or client-side retry
+  policy changed; the unchanged 5-MiB raw multipart fixture passes three consecutive runs.
+- 616 library tests, 70 Iceberg-enabled server tests, default server tests,
+  no-default transport tests, fmt and all lint gates pass. Official Java FileIO,
+  selected data/delete, native catalog/listener-restart and Chunk-KV restart
+  fixtures pass. Both final native fault-matrix runs pass all 44 scenarios.
+
 Statistics publication checkpoint (2026-09-25): canonical typed rows and selected
 manifest counts, retained-file schema/version compatibility, official Java
 publication/replay, evolved partition specs, v2-to-v3 and staged creation all pass,
@@ -116,16 +134,9 @@ Table lifecycle acceptance closed (2026-09-24), implementation `4bbc2226`:
 
 R181 and R182 are complete. Continue remaining R180, then foreground R184.
 
-- [ ] **Projection integration — R180**: connect generation-local projection
-  publication/loading only with equivalent authority/validation checks. Current
-  canonical-only table loading is correct; the tested projection helper is not a
-  production fast path. Missing/partial/corrupt projections remain optional and
-  fall back to exact canonical bytes. No cross-generation deduplication.
-  Files: `metadata_projection/`, `table/load.rs`, commit integration.
-- [ ] **FileIO acceptance closure — R180**: audit remaining cross-instance
-  multipart crash/response-loss cases, official data/equality-delete uploads
-  through identical ordinary S3 requests, timed native credential refresh and
-  independent resource-budget intersections. Reuse existing state machines.
+- [~] **FileIO acceptance closure — R180**: complete the final native fault-matrix
+  repeat, then commit verified implementation and remove the completed requirement
+  and execution plan. All required SDK, storage-restart and quality gates pass.
   Files: [FileIO execution plan](plan-iceberg-fileio.md), native/SDK fixtures.
 - [ ] **REST/capability consistency — R184**: reconcile persisted format flags,
   currently foundation-default config overrides and actually installed routes.
@@ -173,6 +184,19 @@ work below for a consolidated backlog after functional implementation. Never
 trade away durability, fencing, bounds or assertions for a passing timing result.
 
 ## Performance work to consolidate later
+
+- A native fault-matrix diagnostic run returned `Store(Client(Deadline))` from
+  the independent verification client's first file-record load, after HTTP replay
+  succeeded. No request timeout or caller retry was changed; two subsequent complete
+  44-case runs passed. The cause of that one five-second client deadline remains
+  unconfirmed. Capture fresh client routing/transport and backend timing if it
+  recurs; do not describe it as fixed by FileIO scheduling changes.
+- Native multipart diagnostics exposed unequal competing copy windows, tiny
+  checkpoint-only leaves, repeated directory reads and duplicate JSON digest
+  passes. These targeted costs are removed. One-frame assembly overlap preserves
+  checkpoint/replay/error invariants. Broader batching, shared decoded caches,
+  sustained throughput and recovery-page scaling remain measurement work, not
+  implied guarantees from the original-bound functional fixture passing.
 
 - SDK diagnostic: the first expanded in-memory Java lifecycle run returned 503
   at purge on 2026-09-24. One instrumented rerun and two fixed diagnostic batches

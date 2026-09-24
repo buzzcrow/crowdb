@@ -13,7 +13,9 @@ use super::{
     MultipartWorkError, MAX_FILE_BLOCK_BYTES,
 };
 
+mod observation;
 mod scan;
+pub use observation::MultipartRecoveryObservation;
 pub use scan::{MultipartRecoveryScan, MultipartRecoveryStore};
 
 pub struct MultipartRecovery {
@@ -83,6 +85,16 @@ impl MultipartRecovery {
         continuation: Option<MultiScanContinuation>,
         now_ms: u64,
     ) -> Result<MultipartRecoveryPage, CatalogError> {
+        self.recover_page_inner(context, continuation, now_ms, None).await
+    }
+
+    async fn recover_page_inner(
+        &self,
+        context: CatalogContext,
+        continuation: Option<MultiScanContinuation>,
+        now_ms: u64,
+        observation: Option<&MultipartRecoveryObservation>,
+    ) -> Result<MultipartRecoveryPage, CatalogError> {
         self.repository.check_context(context).await?;
         let work = self.recover_admission(context);
         let admission = if let Some(timeout) = self.session_timeout {
@@ -108,7 +120,7 @@ impl MultipartRecovery {
             failures: Vec::new(),
         };
         for session in sessions {
-            let work = self.recover_session(&session, now_ms);
+            let work = self.recover_session(&session, now_ms, observation);
             let outcome = if let Some(timeout) = self.session_timeout {
                 tokio::time::timeout(timeout, work)
                     .await
@@ -132,6 +144,7 @@ impl MultipartRecovery {
         &self,
         session: &MultipartSession,
         now_ms: u64,
+        observation: Option<&MultipartRecoveryObservation>,
     ) -> Result<RecoveryAction, MultipartWorkError> {
         let changed = if session.pending.is_some() {
             self.repository.settle_part(session).await?
@@ -143,6 +156,9 @@ impl MultipartRecovery {
             let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
             if completion.progress.next_part == completion.selected_parts {
                 return Ok(RecoveryAction::AwaitingSeal);
+            }
+            if observation.is_some_and(|observation| !observation.unchanged(session)) {
+                return Ok(RecoveryAction::Deferred);
             }
             self.repository
                 .advance_completion(session, self.blocks.clone(), self.step_bytes, self.block_bytes)

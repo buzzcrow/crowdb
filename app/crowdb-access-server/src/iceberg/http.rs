@@ -49,9 +49,9 @@ impl IcebergHttpService {
 
     /// # Errors
     /// Rejects invalid native file listener limits or signing configuration.
-    pub fn with_fileio(
+    pub fn with_fileio<Store: crowdb_access_iceberg::file::MultipartPartStore + 'static>(
         mut self,
-        store: Arc<crowdb_access_iceberg::catalog::RoutedCatalogStore>,
+        store: Arc<Store>,
         blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,
         region: String,
     ) -> Result<Self, crowdb_access_iceberg::file::FileGrantError> {

@@ -2,12 +2,11 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crowdb_access_iceberg::catalog::{
-    CatalogError, CatalogLifecycle, CatalogRepository, RootState, RoutedCatalogStore,
-};
+use crowdb_access_iceberg::catalog::{CatalogError, CatalogLifecycle, CatalogRepository, RootState};
 use crowdb_access_iceberg::file::{
     resolve_range, FileBlockStore, FileGrantError, FileGrantIssuer, FileOperation, FileRecord,
-    FileRepository, FileSealer, MultipartAdmission, MultipartLister, MultipartRepository, RangeError,
+    FileRepository, FileSealer, MultipartAdmission, MultipartLister, MultipartPartStore, MultipartRepository,
+    RangeError,
 };
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
@@ -40,8 +39,8 @@ pub(super) struct FileHttp {
 }
 
 impl FileHttp {
-    pub(super) fn new(
-        store: Arc<RoutedCatalogStore>,
+    pub(super) fn new<Store: MultipartPartStore + 'static>(
+        store: Arc<Store>,
         blocks: Arc<dyn FileBlockStore>,
         secret: [u8; 32],
         region: String,

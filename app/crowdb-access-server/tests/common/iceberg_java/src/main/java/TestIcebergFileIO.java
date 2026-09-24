@@ -60,6 +60,7 @@ public class TestIcebergFileIO {
       large[large.length - 1] = '}';
       verify(files, prefix + "metadata/sdk-multipart.json", large);
       verifyLateError(files.client(), prefix + "metadata/sdk-invalid.json");
+      TestIcebergFileOperations.run(files.client(), prefix);
       if (credentialRequests.get() != 1) {
         throw new AssertionError("SDK did not fetch and cache the delegated credential response");
       }

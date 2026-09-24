@@ -6,7 +6,8 @@ use crate::error::ValidationError;
 
 use super::blocks::verify_block;
 use super::{
-    ByteRange, ChunkDirectory, FileBlockStore, FileContent, FileIdentity, FileIoError, FileRecord, FileTree,
+    ByteRange, ChunkDirectory, ChunkRoot, FileBlockStore, FileContent, FileIdentity, FileIoError, FileRecord,
+    FileTree,
 };
 
 pub const MAX_READ_FRAME_BYTES: usize = 64 * 1024;
@@ -18,6 +19,7 @@ pub struct FileReader {
     end: u64,
     frame_bytes: usize,
     cached: Option<(u64, Vec<u8>)>,
+    leaf_directory: Option<(ChunkRoot, Vec<u8>)>,
     digest: Option<Sha256>,
     failed: bool,
 }
@@ -100,6 +102,7 @@ impl FileReader {
             end: range.end,
             frame_bytes,
             cached,
+            leaf_directory: None,
             digest,
             failed: false,
         })
@@ -108,6 +111,13 @@ impl FileReader {
     #[must_use]
     pub fn retained_payload_bytes(&self) -> usize {
         self.cached.as_ref().map_or(0, |(_, bytes)| bytes.capacity())
+    }
+
+    #[must_use]
+    pub fn retained_directory_bytes(&self) -> usize {
+        self.leaf_directory
+            .as_ref()
+            .map_or(0, |(_, bytes)| bytes.capacity())
     }
 
     /// # Errors
@@ -150,18 +160,15 @@ impl FileReader {
         Ok(Some(result))
     }
 
-    async fn select_leaf(&self) -> Result<(u64, Vec<u8>), FileIoError> {
+    async fn select_leaf(&mut self) -> Result<(u64, Vec<u8>), FileIoError> {
         let FileContent::Chunks { root: Some(root) } = &self.record.content else {
             return Err(ValidationError::Record.into());
         };
         let mut root = root.clone();
         let mut start = 0;
         let mut length = self.record.length;
-        let owner = self.record.owner;
         while root.height > 0 {
-            let bytes = self.store.read(&root).await?;
-            verify_block(&root, &bytes)?;
-            let directory = ChunkDirectory::decode(&bytes, owner, root.height, length)?;
+            let directory = self.directory(&root, length).await?;
             let mut selected = None;
             for entry in directory.entries {
                 if self.cursor - start < entry.length {
@@ -180,5 +187,28 @@ impl FileReader {
         let bytes = self.store.read(&root).await?;
         verify_block(&root, &bytes)?;
         Ok((start, bytes))
+    }
+
+    async fn directory(&mut self, root: &ChunkRoot, length: u64) -> Result<ChunkDirectory, FileIoError> {
+        if let Some((selected, bytes)) = &self.leaf_directory {
+            if selected == root {
+                return Ok(ChunkDirectory::decode(
+                    bytes,
+                    self.record.owner,
+                    root.height,
+                    length,
+                )?);
+            }
+        }
+        if root.height == 1 {
+            self.leaf_directory = None;
+        }
+        let bytes = self.store.read(root).await?;
+        verify_block(root, &bytes)?;
+        let directory = ChunkDirectory::decode(&bytes, self.record.owner, root.height, length)?;
+        if root.height == 1 {
+            self.leaf_directory = Some((root.clone(), bytes));
+        }
+        Ok(directory)
     }
 }

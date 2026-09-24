@@ -143,9 +143,11 @@ impl FileAssembly {
         if part_digest.length() != progress.part_offset {
             return Err(FileIoError::Bounds);
         }
-        while let Some(bytes) = reader.next().await? {
+        let mut pending = reader.next().await?;
+        while let Some(bytes) = pending {
             part_digest.update(&bytes)?;
-            writer.push(&bytes).await?;
+            let (next, ()) = tokio::try_join!(reader.next(), writer.push(&bytes))?;
+            pending = next;
         }
         if writer.length() != progress.completed_bytes + count {
             return Err(FileIoError::Bounds);

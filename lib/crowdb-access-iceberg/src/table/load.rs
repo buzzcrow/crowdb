@@ -6,13 +6,11 @@ use std::{
 use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 
-use super::{
-    read_table_metadata_document, TableHead, TableMetadataDocument, TableMetadataError, TableMetadataLimits,
-    TableRepository,
-};
+use super::{TableHead, TableMetadataDocument, TableMetadataError, TableMetadataLimits, TableRepository};
 use crate::{
     catalog::{CatalogContext, CatalogError},
     file::FileBlockStore,
+    metadata_projection::ProjectionStore,
     namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
 };
 
@@ -48,6 +46,9 @@ pub struct TableLoader {
     tables: TableRepository,
     blocks: Arc<dyn FileBlockStore>,
     limits: TableMetadataLimits,
+    projections: ProjectionStore,
+    #[cfg(feature = "test-util")]
+    projection_hits: std::sync::atomic::AtomicUsize,
 }
 
 impl TableLoader {
@@ -59,9 +60,12 @@ impl TableLoader {
     ) -> Self {
         Self {
             namespaces: NamespaceRepository::new(store.clone()),
+            projections: ProjectionStore::new(store.clone(), blocks.clone()),
             tables: TableRepository::new(store),
             blocks,
             limits,
+            #[cfg(feature = "test-util")]
+            projection_hits: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -110,9 +114,10 @@ impl TableLoader {
                 .await?;
             return Ok(TableLoad::Missing);
         };
-        let document = read_table_metadata_document(self.blocks.clone(), &selected, self.limits).await?;
+        let canonical =
+            super::metadata::read_table_metadata_bytes(self.blocks.clone(), &selected, self.limits).await?;
         let etag = etag(&selected.head, mode);
-        let metadata = representation(&document, mode)?;
+        let metadata = self.representation(&selected, canonical, mode).await?;
         if metadata.len() > self.limits.bytes {
             return Err(TableMetadataError::Bounds.into());
         }
@@ -132,6 +137,42 @@ impl TableLoader {
             etag,
             metadata,
         })
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn projection_hits_for_tests(&self) -> usize {
+        self.projection_hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    async fn representation(
+        &self,
+        selected: &super::SelectedTable,
+        canonical: Vec<u8>,
+        mode: SnapshotLoadingMode,
+    ) -> Result<Vec<u8>, TableMetadataError> {
+        if mode == SnapshotLoadingMode::Refs {
+            if let Some(fields) = self
+                .projections
+                .document_fields(&selected.metadata, &selected.head, self.limits)
+                .await
+            {
+                if let Ok(metadata) = projected_representation(&fields, &canonical) {
+                    #[cfg(feature = "test-util")]
+                    self.projection_hits
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(metadata);
+                }
+            }
+        }
+        let document = TableMetadataDocument::parse(canonical, &selected.head, self.limits)?;
+        let metadata = representation(&document, mode)?;
+        if mode == SnapshotLoadingMode::Refs {
+            self.projections
+                .put_document(&selected.metadata, &document, self.limits)
+                .await;
+        }
+        Ok(metadata)
     }
 
     async fn check_namespace(
@@ -170,17 +211,37 @@ fn representation(
     if mode == SnapshotLoadingMode::All {
         return Ok(document.canonical().to_vec());
     }
-    let mut fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(document.canonical())?;
+    let fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(document.canonical())?;
+    refs_representation(fields, document.canonical())
+}
+
+fn projected_representation(
+    fields: &BTreeMap<String, Vec<u8>>,
+    canonical: &[u8],
+) -> Result<Vec<u8>, TableMetadataError> {
+    let fields = fields
+        .iter()
+        .map(|(name, bytes)| Ok((name.as_str(), serde_json::from_slice::<&RawValue>(bytes)?)))
+        .collect::<Result<BTreeMap<_, _>, serde_json::Error>>()?;
+    refs_representation(fields, canonical)
+}
+
+fn refs_representation(
+    fields: BTreeMap<&str, &RawValue>,
+    canonical: &[u8],
+) -> Result<Vec<u8>, TableMetadataError> {
     let Some(snapshots) = fields.get("snapshots") else {
-        return Ok(document.canonical().to_vec());
+        return Ok(canonical.to_vec());
     };
     let snapshots: Vec<&RawValue> = serde_json::from_str(snapshots.get())?;
-    let mut referenced: BTreeSet<i64> = document.current_snapshot().into_iter().collect();
-    if let Some(refs) = document
-        .fields()
-        .get("refs")
-        .and_then(serde_json::Value::as_object)
-    {
+    let mut referenced = BTreeSet::new();
+    if let Some(current) = fields.get("current-snapshot-id") {
+        if let Some(current) = serde_json::from_str::<Option<i64>>(current.get())?.filter(|id| *id != -1) {
+            referenced.insert(current);
+        }
+    }
+    if let Some(refs) = fields.get("refs") {
+        let refs: BTreeMap<&str, serde_json::Value> = serde_json::from_str(refs.get())?;
         for reference in refs.values() {
             if let Some(id) = reference["snapshot-id"].as_i64() {
                 referenced.insert(id);
@@ -200,6 +261,7 @@ fn representation(
         }
     }
     let selected = serde_json::value::to_raw_value(&selected)?;
+    let mut fields: BTreeMap<_, _> = fields.into_iter().collect();
     fields.insert("snapshots", &selected);
     Ok(serde_json::to_vec(&fields)?)
 }

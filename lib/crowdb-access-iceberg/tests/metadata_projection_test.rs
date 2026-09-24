@@ -233,7 +233,7 @@ async fn oversized_stored_pages_and_invalid_key_dimensions_are_rejected() {
     else {
         panic!("catalog key");
     };
-    for (index, value) in [(57, 0), (59, 65), (61, 64), (61, 1)] {
+    for (index, value) in [(57, 0), (59, 65), (61, 64), (61, 2)] {
         let mut invalid = suffix.clone();
         invalid[index] = value;
         assert!(IcebergKey::Catalog {
@@ -243,5 +243,20 @@ async fn oversized_stored_pages_and_invalid_key_dimensions_are_rejected() {
         }
         .encode()
         .is_err());
+    }
+    for version in [1, 2] {
+        let mut receipt = suffix.clone();
+        receipt[57] = version;
+        receipt[61] = 1;
+        assert_eq!(
+            IcebergKey::Catalog {
+                catalog,
+                scope,
+                suffix: receipt
+            }
+            .encode()
+            .is_ok(),
+            version == 2
+        );
     }
 }

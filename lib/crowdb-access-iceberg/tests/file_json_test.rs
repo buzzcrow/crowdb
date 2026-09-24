@@ -51,6 +51,19 @@ async fn json_sealing_streams_large_strings_and_split_utf8_without_changing_cano
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn json_sealing_consumes_complete_multi_megabyte_objects_and_rejects_trailing_values() {
+    let store = Arc::new(TestBlocks::default());
+    let validator = JsonSealer::new(store.clone(), 1, 8 * 1024 * 1024, 64).unwrap();
+    let bytes = format!("{{\"large\":\"{}\"}}", "x".repeat(5 * 1024 * 1024)).into_bytes();
+    let valid = record(store.clone(), &bytes, 64 * 1024).await;
+    assert_eq!(validator.validate(valid.clone()).await.unwrap(), valid);
+    let mut trailing = bytes;
+    trailing.extend_from_slice(b" false");
+    let invalid = record(store.clone(), &trailing, 64 * 1024).await;
+    assert!(validator.validate(invalid).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn json_sealing_rejects_syntax_utf8_nesting_and_size_violations() {
     let store = Arc::new(TestBlocks::default());
     let validator = JsonSealer::new(store.clone(), 1, 1000, 4).unwrap();

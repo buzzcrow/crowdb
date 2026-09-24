@@ -275,6 +275,12 @@ and must not carry independent open questions.
   Do not add test-side retries, suppress failures, weaken assertions, bypass
   durability/authorization, or change concurrency/clear semantics to fabricate
   a performance result.
+  A native fault-matrix diagnostic returned one unconfirmed five-second
+  `Store(Client(Deadline))` from the independent verification client after HTTP
+  replay succeeded. Subsequent complete acceptance passed without changing that
+  timeout or adding retries. Track the observation and future routing/transport
+  capture in the [performance follow-up](../working/plan-iceberg-functional-catalog.md#performance-work-to-consolidate-later);
+  do not claim its root cause is fixed or turn it into a new human design choice.
 
 - **Name-mapping interoperability profile (confirmed 2026-09-24):** selected-use
   admission uses the pinned Java 1.11.0 SDK-safe intersection. Reject colliding

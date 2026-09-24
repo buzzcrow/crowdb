@@ -197,7 +197,11 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
             let version = u16::from_be_bytes([suffix[56], suffix[57]]);
             let child = u16::from_be_bytes([suffix[58], suffix[59]]);
             let page = u16::from_be_bytes([suffix[60], suffix[61]]);
-            if version == 0 || child > 64 || page >= 64 || (child == 0 && page != 0) {
+            if version == 0
+                || child > 64
+                || page >= 64
+                || (child == 0 && page != 0 && !(version == 2 && page == 1))
+            {
                 return Err(ValidationError::Key);
             }
             super::TableId::from_bytes(&suffix[..16]).map(|_| ())

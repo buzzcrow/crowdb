@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::file::{FileRecord, TableLocation};
 use crate::key::{CatalogScope, IcebergKey};
 
-pub const PROJECTION_VERSION: u16 = 1;
+pub const PROJECTION_VERSION: u16 = 2;
 pub const PROJECTION_PAGE_BYTES: usize = 32 * 1024;
 pub const MAX_PROJECTION_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const MAX_CHILDREN: usize = 64;

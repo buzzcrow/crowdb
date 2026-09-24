@@ -13,11 +13,13 @@ pub(super) async fn run(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut context = None;
     let mut continuation = None;
+    let mut observation = None;
     loop {
         interval.tick().await;
         let status = tokio::time::timeout(Duration::from_secs(1), catalog.status()).await;
         let Ok(Ok((root, authority))) = status else {
             continuation = None;
+            observation = None;
             tracing::warn!(
                 ?status,
                 "multipart catalog status unavailable; deferring recovery"
@@ -27,17 +29,34 @@ pub(super) async fn run(
         if root.state != RootState::Ready || context != Some(root.context) {
             context = Some(root.context);
             continuation = None;
+            observation = None;
         }
         if root.state != RootState::Ready {
             continue;
         }
         let budget =
             Duration::from_millis(authority.admission_bounds.request_ms).min(Duration::from_secs(60));
-        let recovery =
-            MultipartRecovery::new(store.clone(), blocks.clone(), 64 * 1024, NATIVE_FILE_BLOCK_BYTES)
-                .and_then(|recovery| recovery.with_session_timeout(budget));
+        let recovery = MultipartRecovery::new(
+            store.clone(),
+            blocks.clone(),
+            super::file_admission::MULTIPART_COPY_BYTES,
+            NATIVE_FILE_BLOCK_BYTES,
+        )
+        .and_then(|recovery| recovery.with_session_timeout(budget));
         let Ok(recovery) = recovery else {
             tracing::error!("multipart recovery bounds invalid; deferring page until catalog is corrected");
+            continue;
+        };
+        let Some(observed) = observation.take() else {
+            match tokio::time::timeout(budget, recovery.observe_page(root.context, continuation.clone()))
+                .await
+            {
+                Ok(Ok(observed)) => observation = Some(observed),
+                result => {
+                    continuation = None;
+                    tracing::warn!(?result, "multipart observation failed; restarting sweep");
+                }
+            }
             continue;
         };
         let Some(now_ms) = SystemTime::now()
@@ -49,11 +68,8 @@ pub(super) async fn run(
             continue;
         };
         let page_budget = budget.saturating_mul(5).saturating_add(Duration::from_secs(2));
-        let result = tokio::time::timeout(
-            page_budget,
-            recovery.recover_page(root.context, continuation.clone(), now_ms),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(page_budget, recovery.recover_observed_page(observed, now_ms)).await;
         match result {
             Ok(Ok(page)) => {
                 continuation = page.continuation;

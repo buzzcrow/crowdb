@@ -22,6 +22,68 @@ fn owner() -> FileIdentity {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chunked_json_checks_syntax_and_complete_digest_in_one_storage_pass() {
+    let blocks = Arc::new(TestBlocks::default());
+    let identity = owner();
+    let bytes = format!("{{\"text\":\"{}\"}}", "x".repeat(65536));
+    let mut writer = FileTreeWriter::new(blocks.clone(), identity, 128 * 1024).unwrap();
+    writer.push(bytes.as_bytes()).await.unwrap();
+    let tree = writer.finish().await.unwrap();
+    let sealer = FileSealer::new(blocks.clone(), 128 * 1024).unwrap();
+    let location = identity.table.file("metadata/chunked.json").unwrap();
+    let record = sealer
+        .seal(
+            identity,
+            location.clone(),
+            tree.clone(),
+            FileKind::Metadata,
+            ContentFormat::Json,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(record.content, FileContent::Chunks { .. }));
+    assert_eq!(blocks.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let mut wrong = tree.clone();
+    wrong.digest[0] ^= 1;
+    assert!(sealer
+        .seal(
+            identity,
+            location.clone(),
+            wrong,
+            FileKind::Metadata,
+            ContentFormat::Json
+        )
+        .await
+        .is_err());
+    blocks
+        .corrupt_reads
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(sealer
+        .seal(identity, location, tree, FileKind::Metadata, ContentFormat::Json)
+        .await
+        .is_err());
+    blocks
+        .corrupt_reads
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let mut writer = FileTreeWriter::new(blocks.clone(), identity, 128 * 1024).unwrap();
+    writer
+        .push(format!("{{\"text\":\"{}\"", "x".repeat(65536)).as_bytes())
+        .await
+        .unwrap();
+    let malformed = writer.finish().await.unwrap();
+    assert!(sealer
+        .seal(
+            identity,
+            identity.table.file("metadata/malformed.json").unwrap(),
+            malformed,
+            FileKind::Metadata,
+            ContentFormat::Json
+        )
+        .await
+        .is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn seal_verifies_complete_digest_and_selects_bounded_inline_metadata() {
     let blocks = Arc::new(TestBlocks::default());
     let identity = owner();

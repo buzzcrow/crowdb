@@ -97,14 +97,16 @@ impl FileSealer {
         if owner.table != location.table() || tree.length > self.max_file_bytes {
             return Err(FileSealError::Bounds);
         }
-        let mut reader = FileReader::from_tree(self.store.clone(), owner, tree.clone(), None, 64 * 1024)?;
         let mut inline = (kind.allows_inline() && tree.length <= MAX_COMPRESSION_INPUT_BYTES as u64)
             .then(|| usize::try_from(tree.length).ok())
             .flatten()
             .map(Vec::with_capacity);
-        while let Some(bytes) = reader.next().await? {
-            if let Some(inline) = &mut inline {
-                inline.extend_from_slice(&bytes);
+        if format != ContentFormat::Json || inline.is_some() {
+            let mut reader = FileReader::from_tree(self.store.clone(), owner, tree.clone(), None, 64 * 1024)?;
+            while let Some(bytes) = reader.next().await? {
+                if let Some(inline) = &mut inline {
+                    inline.extend_from_slice(&bytes);
+                }
             }
         }
         let content = inline

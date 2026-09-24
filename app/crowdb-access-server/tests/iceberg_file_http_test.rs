@@ -5,10 +5,15 @@ mod common;
 #[allow(dead_code)]
 mod process;
 
-use std::fmt::Write;
+#[path = "common/iceberg_commit_child.rs"]
+mod child;
+#[path = "common/iceberg_commit_fault.rs"]
+mod fault;
+#[path = "common/iceberg_file_lifecycle.rs"]
+mod lifecycle;
+#[path = "common/iceberg_file_recovery.rs"]
+mod recovery;
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use common::{now_ms, TestIcebergStack};
 use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds, ManagementPrivilege};
 use crowdb_access_iceberg::file::{
@@ -17,95 +22,28 @@ use crowdb_access_iceberg::file::{
 use crowdb_access_iceberg::key::{OperationId, TableId};
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
-use hmac::{Hmac, Mac};
-use md5::Md5;
-use reqwest::{Client, Method, Response};
-use sha2::{Digest, Sha256};
+use reqwest::{Client, Method};
 
-fn hex(bytes: &[u8]) -> String {
-    let mut result = String::new();
-    for byte in bytes {
-        write!(result, "{byte:02x}").unwrap();
-    }
-    result
+#[path = "common/iceberg_signed_file.rs"]
+mod signed;
+use signed::TestFileClient;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "test-only child listener invoked by native file crash matrix"]
+async fn native_fault_listener_child() {
+    child::run().await;
 }
 
-fn mac(key: &[u8], input: &str) -> Vec<u8> {
-    let mut signer = Hmac::<Sha256>::new_from_slice(key).unwrap();
-    signer.update(input.as_bytes());
-    signer.finalize().into_bytes().to_vec()
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires native storage and kills listener subprocesses at durable FileIO boundaries"]
+async fn native_file_publication_recovers_across_listeners_at_every_durable_write() {
+    recovery::run().await;
 }
 
-struct TestFileClient {
-    client: Client,
-    credentials: crowdb_access_iceberg::file::FileCredentials,
-    address: std::net::SocketAddr,
-}
-
-impl TestFileClient {
-    async fn send(&self, method: Method, path: &str, query: &str, body: &[u8], md5: bool) -> Response {
-        self.send_range(method, path, query, body, md5, None).await
-    }
-
-    async fn send_range(
-        &self,
-        method: Method,
-        path: &str,
-        query: &str,
-        body: &[u8],
-        md5: bool,
-        range: Option<&str>,
-    ) -> Response {
-        let now =
-            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(i64::try_from(now_ms()).unwrap()).unwrap();
-        let date = now.format("%Y%m%dT%H%M%SZ").to_string();
-        let short = now.format("%Y%m%d").to_string();
-        let hash = hex(&Sha256::digest(body));
-        let host = self.address.to_string();
-        let names = "host;x-amz-content-sha256;x-amz-date;x-amz-security-token";
-        let canonical = format!(
-            "{}\n{path}\n{query}\nhost:{host}\nx-amz-content-sha256:{hash}\nx-amz-date:{date}\nx-amz-security-token:{}\n\n{names}\n{hash}",
-            method.as_str(), self.credentials.session_token()
-        );
-        let date_key = mac(
-            format!("AWS4{}", self.credentials.secret_access_key()).as_bytes(),
-            &short,
-        );
-        let region_key = mac(&date_key, "us-east-1");
-        let service_key = mac(&region_key, "s3");
-        let signing_key = mac(&service_key, "aws4_request");
-        let scope = format!("{short}/us-east-1/s3/aws4_request");
-        let string_to_sign = format!(
-            "AWS4-HMAC-SHA256\n{date}\n{scope}\n{}",
-            hex(&Sha256::digest(canonical))
-        );
-        let authorization = format!(
-            "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={names}, Signature={}",
-            self.credentials.access_key_id(),
-            hex(&mac(&signing_key, &string_to_sign))
-        );
-        let url = if query.is_empty() {
-            format!("http://{host}{path}")
-        } else {
-            format!("http://{host}{path}?{query}")
-        };
-        let mut request = self
-            .client
-            .request(method, url)
-            .header("host", host)
-            .header("x-amz-content-sha256", hash)
-            .header("x-amz-date", date)
-            .header("x-amz-security-token", self.credentials.session_token())
-            .header("authorization", authorization)
-            .body(body.to_vec());
-        if md5 {
-            request = request.header("content-md5", STANDARD.encode(Md5::digest(body)));
-        }
-        if let Some(range) = range {
-            request = request.header("range", range);
-        }
-        request.send().await.unwrap()
-    }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires native storage and checks real-time credential expiry and lifecycle fencing"]
+async fn native_file_credentials_refresh_expire_and_follow_lifecycle_fences() {
+    lifecycle::run().await;
 }
 
 async fn setup() -> (
@@ -366,6 +304,32 @@ async fn official_java_catalog_commits_native_parquet_snapshots_and_staged_table
 }
 
 async fn run_catalog_sdk(endpoint: String, mode: &'static str) {
+    run_sdk(endpoint, "TestIcebergCatalogWrites", mode).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires native storage services, Maven and pinned Apache Iceberg dependencies"]
+async fn official_java_identical_s3_uploads_validate_selected_data_and_delete_uses() {
+    let (_stack, process, _, _) = setup_with_bounds(ClearBounds {
+        request_ms: 300_000,
+        delegated_access_ms: 900_000,
+        ..ClearBounds::default()
+    })
+    .await;
+    let endpoint = format!("http://{}", process.address);
+    let response = Client::new()
+        .post(format!("{endpoint}/v1/namespaces"))
+        .bearer_auth("w".repeat(32))
+        .header("content-type", "application/json")
+        .body(r#"{"namespace":["analytics"]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    run_sdk(endpoint, "TestIcebergSelectedFiles", "").await;
+}
+
+async fn run_sdk(endpoint: String, class: &'static str, mode: &'static str) {
     let status = tokio::task::spawn_blocking(move || {
         let maven = std::env::var_os("CROWDB_ICEBERG_E2E_MVN").unwrap_or_else(|| "mvn".into());
         std::process::Command::new("timeout")
@@ -376,11 +340,8 @@ async fn run_catalog_sdk(endpoint: String, mode: &'static str) {
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/common/iceberg_java/pom.xml"
             ))
-            .args([
-                "compile",
-                "exec:java",
-                "-Dexec.mainClass=TestIcebergCatalogWrites",
-            ])
+            .args(["compile", "exec:java"])
+            .arg(format!("-Dexec.mainClass={class}"))
             .arg(format!("-Dexec.args={endpoint} {mode}"))
             .status()
             .unwrap()

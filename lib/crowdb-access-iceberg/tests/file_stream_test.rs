@@ -97,7 +97,54 @@ async fn backpressure_holds_one_leaf_and_performs_no_speculative_reads() {
     assert_eq!(store.reads.load(Ordering::SeqCst), reads);
     assert_eq!(reader.next().await.unwrap().unwrap(), b"gh");
     assert_eq!(reader.next().await.unwrap().unwrap(), b"ijk");
-    assert_eq!(store.reads.load(Ordering::SeqCst), reads + 2);
+    assert_eq!(store.reads.load(Ordering::SeqCst), reads + 1);
+    assert!(reader.retained_directory_bytes() <= 32 * 1024);
+}
+
+#[tokio::test]
+async fn streaming_reuses_only_one_verified_leaf_directory_without_prefetch() {
+    for length in [31, 256, 257, 513] {
+        let store = Arc::new(TestBlocks::default());
+        let owner = owner();
+        let mut writer = FileTreeWriter::new(store.clone(), owner, 1).unwrap();
+        let input = vec![42; length];
+        writer.push(&input).await.unwrap();
+        let tree = writer.finish().await.unwrap();
+        let parent_reads = if length > 256 { length } else { 0 };
+        let directory_reads = length.div_ceil(256);
+        let mut reader = FileReader::new(store.clone(), record(owner, tree), None, 1).unwrap();
+        for expected in &input {
+            assert_eq!(reader.next().await.unwrap().unwrap(), [*expected]);
+            assert!(reader.retained_directory_bytes() <= 32 * 1024);
+            assert_eq!(reader.retained_payload_bytes(), 1);
+        }
+        assert!(reader.next().await.unwrap().is_none());
+        assert_eq!(
+            store.reads.load(Ordering::SeqCst),
+            length + parent_reads + directory_reads
+        );
+    }
+}
+
+#[tokio::test]
+async fn retained_directory_does_not_hide_new_leaf_corruption() {
+    let store = Arc::new(TestBlocks::default());
+    let owner = owner();
+    let mut writer = FileTreeWriter::new(store.clone(), owner, 4).unwrap();
+    writer.push(b"abcdefgh").await.unwrap();
+    let mut reader = FileReader::new(
+        store.clone(),
+        record(owner, writer.finish().await.unwrap()),
+        None,
+        4,
+    )
+    .unwrap();
+    assert_eq!(reader.next().await.unwrap().unwrap(), b"abcd");
+    assert!(reader.retained_directory_bytes() > 0);
+    store.corrupt_reads.store(true, Ordering::SeqCst);
+    assert!(reader.next().await.is_err());
+    assert!(reader.next().await.is_err());
+    assert_eq!(store.reads.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]
