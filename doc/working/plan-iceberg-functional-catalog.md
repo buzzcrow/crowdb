@@ -73,13 +73,27 @@ Current requested sequence (tasks 1–3):
   deletes, including canonical Java SDK Parquet pages; removed data may drop its
   DV, but candidate orphan DVs fail. Aggregate candidate ranges and each prior
   vector are independently bounded. This is not the generation-bound publication
-  proof: trusted sources, historical manifest provenance, legacy v1 enumeration,
+  proof: candidate-source composition, legacy v1 enumeration,
   equality-delete rewrites and position-delete removal without a replacement DV
   remain to compose. Files: `file/deletion_vector/positions.rs` and
   `manifest/snapshot_validation/preservation.rs` in `crowdb-access-iceberg`.
   Verification: eight new focused tests cover range encodings, CRC, budgets,
   exact-target coverage, dropped/replaced DVs, immutable identity and SDK v1/v2
   Parquet page fixtures. Complete library tests and workspace fmt/clippy pass.
+  Prior-generation provenance checkpoint: `commit/provenance.rs` builds a bounded
+  exact immutable-manifest index only from retained canonical lists in a selected
+  head. Recovered writer contexts may include schemas already expired from table
+  metadata; unrelated uploads cannot authorize themselves. List EOF, manifest
+  framing/digest EOF, declared length/spec/content, catalog epoch and complete head
+  fences are checked. Four focused tests cover recovery, unselected uploads,
+  independent limits, corruption, stale heads and head changes during reads;
+  workspace fmt/clippy pass. Legacy embedded v1 manifests remain explicitly
+  unsupported by this index, not silently skipped.
+  Next integration sequence: compose candidate definition contexts with the prior
+  index, preserving exact immutable identities; add the legacy embedded-manifest
+  enumerator; run file proofs for every candidate snapshot and direct-parent DV
+  replacement; then produce a non-forgeable generation-bound publication proof.
+  Only after that wire the operation journal, immutable metadata write and head CAS.
 - [ ] **Create and atomic publication**: compose durable request identity,
   namespace reservations, immutable candidate writes, one head CAS and recovery;
   cover immediate/staged create, concurrent losers and response-loss replay.
