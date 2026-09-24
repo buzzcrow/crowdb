@@ -45,6 +45,10 @@ after the program finishes. Human decisions live only in R177. No user-guide wor
 ## Remaining tasks in dependency order
 
 R179–R182 are complete. Continue foreground R184; R183 and R186 stay deferred.
+
+Execution detail and difficulty: [R184 REST conformance plan](plan-iceberg-rest-conformance.md).
+The initial inspection is complete; implementation has not started.
+
 - [ ] **REST/capability consistency — R184**: reconcile persisted format flags,
   currently foundation-default config overrides and actually installed routes.
   Cover supported/unsupported combinations, precise errors, data-access/prefix/
