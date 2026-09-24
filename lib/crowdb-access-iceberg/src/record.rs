@@ -13,5 +13,6 @@ mod retry;
 mod root;
 mod table;
 mod table_commit;
+mod table_create;
 
 pub use envelope::{StorageRecord, MAX_RECORD_BYTES};

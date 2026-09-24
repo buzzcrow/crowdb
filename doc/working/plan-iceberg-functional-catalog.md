@@ -174,6 +174,29 @@ Current requested sequence (tasks 1–3):
   markers only after the durable result. Staged creation retains a draft and expiry;
   final-commit binding and expiration compete through a phase CAS, never TTL-delete
   an uncertain publisher. Cover every durable reply-loss point and drop races.
+  Immediate-create implementation: `TableCreator` persists a dedicated
+  `TableCreateOperation` with input, canonical document, fixed head and response.
+  Its appended wire tag/key scope preserve earlier values. The phase journal
+  freezes identities and parent snapshots. A name reservation precedes immutable
+  metadata writes and parent admission; selected head, published mapping and
+  terminal response precede conditional marker cleanup. Namespace drop and marker
+  dispatch now help table creation without needing block IO after admission.
+  Staged-create execution remains explicitly disabled; pure staged metadata is
+  not a staged publication implementation. HTTP writes remain disabled.
+  Focused verification covers every durable creation reply-loss point, chunk
+  write failure, same-name competition, retired catalog replay, and namespace drop
+  at every interrupted phase plus an actual parent-CAS race. One uncovered drop
+  preflight assumed all parent markers were namespace operations; its dispatcher
+  now recognizes table creation before fencing instead of reporting corruption.
+  Gates: 502 library tests, 48 Iceberg-enabled access-server tests, protocol
+  all-target tests and workspace fmt/clippy pass. No unsafe scope or lock was added.
+  Staged compatibility inspection: Java `RESTSessionCatalog.createChanges` sends
+  assign-UUID, upgrade, full schema/spec/order setters, location and properties;
+  `RESTTableOperations` prepends these to transaction changes with `assert-create`.
+  `CatalogHandlers` applies that list to an empty builder, not to the draft as an
+  ordinary next-generation update. Implement this distinct evaluator path and use
+  standard UUID/location fields to find and bind the durable draft; do not require
+  a nonstandard SDK token or renumber staged file schemas a second time.
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,

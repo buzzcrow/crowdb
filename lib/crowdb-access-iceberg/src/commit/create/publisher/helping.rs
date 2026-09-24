@@ -1,0 +1,84 @@
+use super::{
+    Arc, CatalogContext, CatalogError, CatalogStore, Error, NamespaceStore, OperationId, Phase, TableCreator,
+};
+use crate::{
+    error::ValidationError,
+    key::NamespaceId,
+    table::{TableMapping, TableMappingState},
+};
+
+impl TableCreator {
+    pub(crate) async fn help_admission(
+        store: Arc<dyn CatalogStore>,
+        names: Arc<dyn NamespaceStore>,
+        context: CatalogContext,
+        holder: NamespaceId,
+        identity: OperationId,
+        budget: &mut usize,
+    ) -> Result<(), CatalogError> {
+        let creator = Self {
+            store,
+            names,
+            blocks: None,
+        };
+        let operation = creator
+            .journal()
+            .load(context, identity)
+            .await?
+            .ok_or(ValidationError::Record)?;
+        if operation.candidate.namespace != holder
+            || !matches!(
+                operation.phase,
+                Phase::Admitting
+                    | Phase::Admitted
+                    | Phase::Publishing
+                    | Phase::Published
+                    | Phase::Complete
+                    | Phase::Aborting
+                    | Phase::Aborted
+            )
+        {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        creator
+            .resume_with_budget(context, identity, budget)
+            .await
+            .map_err(catalog_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn help_reservation(
+        store: Arc<dyn CatalogStore>,
+        names: Arc<dyn NamespaceStore>,
+        context: CatalogContext,
+        mapping: &TableMapping,
+        budget: &mut usize,
+    ) -> Result<(), CatalogError> {
+        let creator = Self {
+            store,
+            names,
+            blocks: None,
+        };
+        let operation = creator
+            .journal()
+            .load(context, mapping.operation)
+            .await?
+            .ok_or(ValidationError::Record)?;
+        if operation.mapping(TableMappingState::Reserved) != *mapping {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        creator
+            .resume_with_budget(context, mapping.operation, budget)
+            .await
+            .map_err(catalog_error)?;
+        Ok(())
+    }
+}
+
+fn catalog_error(error: Error) -> CatalogError {
+    match error {
+        Error::Catalog(error) => error,
+        Error::Validation(error) => error.into(),
+        _ => ValidationError::Record.into(),
+    }
+}

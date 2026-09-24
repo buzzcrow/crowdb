@@ -126,7 +126,7 @@ fn decode_phase(phase: u8) -> Result<NamespacePhase, ValidationError> {
     }
 }
 
-fn encode_mutation<'buffer>(
+pub(super) fn encode_mutation<'buffer>(
     builder: &mut FlatBufferBuilder<'buffer>,
     mutation: &NamespaceMutation,
 ) -> Result<WIPOffset<FBNamespaceMutation<'buffer>>, ValidationError> {
@@ -147,7 +147,7 @@ fn encode_mutation<'buffer>(
     ))
 }
 
-fn decode_mutation(value: FBNamespaceMutation<'_>) -> Result<NamespaceMutation, ValidationError> {
+pub(super) fn decode_mutation(value: FBNamespaceMutation<'_>) -> Result<NamespaceMutation, ValidationError> {
     if value.key().len() > MAX_KEY_BYTES {
         return Err(ValidationError::KeyTooLarge);
     }

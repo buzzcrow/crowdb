@@ -14,7 +14,11 @@ mod requirement;
 mod transition;
 mod update;
 
-pub use create::{evaluate_table_creation, CreateTableRequest, InitialTableMetadata};
+pub use create::{
+    evaluate_table_creation, CreateTableRequest, InitialTableMetadata, TableCreateJournal,
+    TableCreateOperation, TableCreatePhase,
+};
+pub use create::{TableCreationRequest, TableCreator};
 pub use evaluator::{evaluate_metadata_updates, EvaluatedMetadata, EvaluationError, EvaluationLimits};
 pub use files::{
     CandidateAuxiliaryLimits, CandidateAuxiliarySummary, CandidateFileSource, CandidateSnapshotLimits,

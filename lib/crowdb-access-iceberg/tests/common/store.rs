@@ -23,6 +23,8 @@ pub struct TestStore {
     pub namespace_reservation_visits: AtomicUsize,
     pub file_mapping_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub file_mapping_visits: AtomicUsize,
+    pub table_reservation_barrier: Option<Arc<tokio::sync::Barrier>>,
+    pub table_reservation_visits: AtomicUsize,
 }
 
 #[async_trait]
@@ -53,6 +55,18 @@ impl CatalogStore for TestStore {
             }
         }
         if expected.is_none() {
+            if let Ok(crowdb_access_iceberg::record::StorageRecord::TableMapping(mapping)) =
+                crowdb_access_iceberg::key::IcebergKey::decode(key)
+                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+            {
+                if mapping.state == crowdb_access_iceberg::table::TableMappingState::Reserved {
+                    if let Some(barrier) = &self.table_reservation_barrier {
+                        if self.table_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                            barrier.wait().await;
+                        }
+                    }
+                }
+            }
             if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceMapping(mapping)) =
                 crowdb_access_iceberg::key::IcebergKey::decode(key)
                     .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))

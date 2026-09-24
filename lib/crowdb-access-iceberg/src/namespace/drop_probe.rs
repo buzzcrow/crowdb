@@ -51,13 +51,14 @@ impl NamespaceDropper {
                 return Err(ValidationError::Key.into());
             }
             last = item.key.clone();
-            if scope == CatalogScope::TableName {
-                return Err(ValidationError::Record.into());
-            }
-            if self
-                .inspect_child(operation, &item.key, &item.value, budget)
-                .await?
-            {
+            let resolved = if scope == CatalogScope::TableName {
+                self.inspect_table(operation, &item.key, &item.value, budget)
+                    .await?
+            } else {
+                self.inspect_child(operation, &item.key, &item.value, budget)
+                    .await?
+            };
+            if resolved {
                 return Ok(());
             }
         }
@@ -131,6 +132,52 @@ impl NamespaceDropper {
                 self.prepare_finish(operation, NamespacePhase::Restoring).await?;
                 return Ok(true);
             }
+        }
+        self.creator
+            .names
+            .delete_mapping(encoded, bytes, mutation_identity(encoded, Some(bytes), &[]))
+            .await?;
+        Ok(false)
+    }
+
+    async fn inspect_table(
+        &self,
+        operation: &NamespaceOperation,
+        encoded: &[u8],
+        bytes: &[u8],
+        budget: &mut usize,
+    ) -> Result<bool, CatalogError> {
+        let key = IcebergKey::decode(encoded)?;
+        let StorageRecord::TableMapping(mapping) = StorageRecord::decode(&key, bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if mapping.namespace != operation.namespace {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        if mapping.state == crate::table::TableMappingState::Reserved {
+            Box::pin(crate::commit::TableCreator::help_reservation(
+                self.creator.repository.store.clone(),
+                self.creator.names.clone(),
+                operation.context,
+                &mapping,
+                budget,
+            ))
+            .await?;
+            return Ok(true);
+        }
+        let key = crate::table::head_key(mapping.catalog, mapping.table);
+        let value = self
+            .creator
+            .names
+            .get(&key.encode()?)
+            .await?
+            .ok_or(ValidationError::Record)?;
+        let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if mapping.resolves(&head) {
+            self.prepare_finish(operation, NamespacePhase::Restoring).await?;
+            return Ok(true);
         }
         self.creator
             .names

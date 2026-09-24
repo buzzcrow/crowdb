@@ -16,6 +16,7 @@ const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageRecord {
+    TableCreateOperation(Box<crate::commit::TableCreateOperation>),
     TableCommitOperation(Box<crate::commit::TableCommitOperation>),
     TableHead(Box<crate::table::TableHead>),
     TableMapping(crate::table::TableMapping),
@@ -41,6 +42,10 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::TableCreateOperation(operation) => (
+                FBRecordValue::FBTableCreateOperation,
+                super::table_create::encode(&mut builder, operation)?.as_union_value(),
+            ),
             Self::TableCommitOperation(operation) => (
                 FBRecordValue::FBTableCommitOperation,
                 super::table_commit::encode(&mut builder, operation)?.as_union_value(),
@@ -145,7 +150,27 @@ impl StorageRecord {
     }
 
     fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
+        if matches!(
+            envelope.value_type(),
+            FBRecordValue::FBTableCreateOperation
+                | FBRecordValue::FBTableCommitOperation
+                | FBRecordValue::FBTableHead
+                | FBRecordValue::FBTableMapping
+        ) {
+            return Self::decode_table(envelope);
+        }
+        Self::decode_domain(envelope)
+    }
+
+    fn decode_table(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         let record = match envelope.value_type() {
+            FBRecordValue::FBTableCreateOperation => {
+                Self::TableCreateOperation(Box::new(super::table_create::decode(
+                    envelope
+                        .value_as_fbtable_create_operation()
+                        .ok_or(ValidationError::Record)?,
+                )?))
+            }
             FBRecordValue::FBTableCommitOperation => {
                 Self::TableCommitOperation(Box::new(super::table_commit::decode(
                     envelope
@@ -161,6 +186,13 @@ impl StorageRecord {
                     .value_as_fbtable_mapping()
                     .ok_or(ValidationError::Record)?,
             )?),
+            _ => return Err(ValidationError::Record),
+        };
+        Ok(record)
+    }
+
+    fn decode_domain(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
+        let record = match envelope.value_type() {
             FBRecordValue::FBMultipartAdmission => {
                 Self::MultipartAdmission(Box::new(super::multipart_admission::decode(
                     envelope
@@ -244,6 +276,7 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::TableCreateOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::TableCommitOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::TableHead(head), key) if *key == crate::table::head_key(head.catalog, head.table) => {
                 Ok(())

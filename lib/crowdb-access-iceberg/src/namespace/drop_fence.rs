@@ -29,9 +29,8 @@ impl NamespaceDropper {
         if let Some(pending) = authority.pending_operation {
             let owner = NamespaceJournal::new(self.creator.repository.store.clone())
                 .load(operation.context, pending)
-                .await?
-                .ok_or(ValidationError::Record)?;
-            if owner.action == NamespaceAction::Drop {
+                .await?;
+            if let Some(owner) = owner.filter(|owner| owner.action == NamespaceAction::Drop) {
                 if owner.namespace != operation.namespace {
                     return Err(ValidationError::IdentityMismatch.into());
                 }

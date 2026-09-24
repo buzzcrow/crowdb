@@ -135,7 +135,11 @@ helped, stale namespace mappings are conditionally removed, and corruption block
 the proof. A live child restores Ready without changing the name epoch or property
 revision. Only completion of both ranges permits the fenced tombstone CAS.
 Terminal replay and conditional cleanup cannot delete a recreated NamespaceId.
-Table-child records currently fail closed until table authority is implemented.
+Table-child probes resolve published mappings against the selected table head.
+Unpublished table reservations are helped through their own creation journal;
+an unadmitted creator beneath the drop fence is aborted, while an admitted
+creator is completed before the parent can be fenced. Corrupt table authority
+blocks the emptiness proof rather than being treated as absence.
 Each listener runs a namespace-journal sweep with bounded pages, per-operation
 phase budgets and a wall-clock deadline. The sweep resumes abandoned operations
 and their conditional mapping cleanup without requiring a client retry. Catalog
@@ -380,6 +384,15 @@ merge implicitly.
 Retries are idempotent across response loss. Any healthy Access Server can
 recover the durable operation outcome, so no server instance is a table leader
 or lock owner.
+
+The library's immediate table creator records its immutable input, candidate
+identity, canonical metadata and response before reserving the namespace/name.
+It writes and verifies the initial metadata before acquiring a parent admission
+marker. Parent helpers therefore resolve the remaining publication using catalog
+records without requiring a file block reader. The initial head is selected once,
+then the reservation becomes a published mapping. The durable terminal result
+precedes conditional cleanup of parent and table markers. These domain operations
+remain separate from REST write admission and staged-create completion.
 
 Drop, replacement, and snapshot expiration remove logical reachability first.
 Physical reclamation follows a proof that no live metadata, snapshot, reference,

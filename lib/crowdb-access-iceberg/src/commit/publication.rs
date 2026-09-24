@@ -14,8 +14,14 @@ use crate::{
 mod candidate;
 mod completion;
 
+pub(super) use candidate::{response as metadata_response, write_metadata_file};
+
 #[derive(Debug, thiserror::Error)]
 pub enum CommitPublicationError {
+    #[error("namespace does not exist")]
+    NamespaceMissing,
+    #[error("commit operation is not enabled: {0}")]
+    Unsupported(&'static str),
     #[error(transparent)]
     Catalog(#[from] CatalogError),
     #[error(transparent)]

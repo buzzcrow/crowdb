@@ -318,7 +318,26 @@ table FBTableCommitOperation {
     outcome_body:FBPayloadReference;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation }
+table FBTableCreateOperation {
+    catalog:[ubyte] (required);
+    activation_epoch:ulong;
+    operation:[ubyte] (required);
+    issued_ms:ulong;
+    principal:string (required);
+    namespace_name:[ubyte] (required);
+    revision:ulong;
+    timestamp_ms:long;
+    phase:ubyte = 255;
+    input:FBPayloadReference (required);
+    document:FBPayloadReference (required);
+    response:FBPayloadReference (required);
+    candidate:FBTableHead (required);
+    admission:FBNamespaceMutation;
+    outcome_status:ushort;
+    outcome_body:FBPayloadReference;
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation }
 
 table FBIcebergRecord {
     schema_version:ushort;

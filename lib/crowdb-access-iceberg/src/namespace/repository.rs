@@ -13,6 +13,9 @@ pub struct NamespaceRepository {
 }
 
 impl NamespaceRepository {
+    pub(crate) fn from_parts(store: Arc<dyn CatalogStore>, names: Arc<dyn super::NamespaceStore>) -> Self {
+        Self { store, names }
+    }
     pub(super) async fn cleanup_marker(
         &self,
         key: &[u8],

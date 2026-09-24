@@ -9,9 +9,16 @@ use crate::{
     },
 };
 
+mod journal;
 mod layout;
+mod operation;
 mod properties;
+mod publisher;
 mod schema;
+
+pub use journal::TableCreateJournal;
+pub use operation::{TableCreateOperation, TableCreatePhase};
+pub use publisher::{TableCreationRequest, TableCreator};
 
 #[derive(Debug)]
 pub struct CreateTableRequest {

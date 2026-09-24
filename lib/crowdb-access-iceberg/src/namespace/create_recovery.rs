@@ -9,6 +9,21 @@ use super::{
 };
 
 impl NamespaceCreator {
+    pub(crate) async fn help_table_parent(
+        store: std::sync::Arc<dyn crate::catalog::CatalogStore>,
+        names: std::sync::Arc<dyn super::NamespaceStore>,
+        context: CatalogContext,
+        holder: crate::key::NamespaceId,
+        identity: OperationId,
+        budget: &mut usize,
+    ) -> Result<(), CatalogError> {
+        Self {
+            repository: super::NamespaceRepository::from_parts(store, names.clone()),
+            names,
+        }
+        .help_marker(context, holder, identity, budget)
+        .await
+    }
     /// # Errors
     /// Rejects foreign operations and retired contexts; unfinished bounded work returns busy.
     pub async fn resume(
@@ -101,10 +116,20 @@ impl NamespaceCreator {
         identity: OperationId,
         budget: &mut usize,
     ) -> Result<(), CatalogError> {
-        let operation = NamespaceJournal::new(self.repository.store.clone())
+        let Some(operation) = NamespaceJournal::new(self.repository.store.clone())
             .load(context, identity)
             .await?
-            .ok_or(ValidationError::Record)?;
+        else {
+            return Box::pin(crate::commit::TableCreator::help_admission(
+                self.repository.store.clone(),
+                self.names.clone(),
+                context,
+                holder,
+                identity,
+                budget,
+            ))
+            .await;
+        };
         if operation.namespace != holder
             && !(operation.action == NamespaceAction::Create && operation.parent == Some(holder))
         {
