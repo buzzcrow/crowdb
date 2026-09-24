@@ -23,6 +23,9 @@ mod provenance;
 #[path = "common/snapshot_files.rs"]
 #[allow(dead_code)]
 mod snapshot;
+#[path = "common/partition_statistics_official.rs"]
+#[allow(dead_code)]
+mod statistics_official;
 #[path = "common/manifest_stream.rs"]
 #[allow(dead_code)]
 mod stream;
@@ -44,21 +47,80 @@ fn limits() -> CandidateAuxiliaryLimits {
         puffin_encoded_bytes: 100_000,
         puffin_decoded_bytes: 100_000,
         parquet: snapshot::limits().position_deletes.metadata,
+        partition_rows: crowdb_access_iceberg::manifest::PartitionStatisticsRowLimits {
+            page: snapshot::limits().position_deletes.page,
+            rows: 1000,
+            buffered_bytes: 64 * 1024 * 1024,
+        },
     }
 }
 
 async fn source(fixture: &TestPrior, entry: Value, field: &str) -> CandidateFileSource {
     let mut value = Value::Object(fixture.document.fields().clone());
     value[field] = json!([entry]);
+    source_document(fixture, &value).await
+}
+
+async fn source_document(fixture: &TestPrior, value: &Value) -> CandidateFileSource {
     CandidateFileSource::new(
         fixture.namespace.store.clone(),
         fixture.blocks.clone(),
         fixture.namespace.context,
         Arc::new(fixture.build(provenance::limits()).await.unwrap()),
-        fixture.candidate_value(&value),
+        fixture.candidate_value(value),
         provenance::limits().manifests.framing,
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn auxiliary_validation_reads_official_partition_rows_and_shares_work_budget() {
+    let fixture = TestPrior::new().await;
+    let bytes = data_encoding::BASE64
+        .decode(statistics_official::STATS_2_TRUE.as_bytes())
+        .unwrap();
+    let record = snapshot::store(
+        fixture.blocks.clone(),
+        "metadata/rows.parquet",
+        ContentFormat::Parquet,
+        &bytes,
+    )
+    .await;
+    FileRepository::new(fixture.namespace.store.clone())
+        .publish(fixture.namespace.context, &record)
+        .await
+        .unwrap();
+    let mut value = Value::Object(fixture.document.fields().clone());
+    value["schemas"] = json!([{"schema-id":1,"type":"struct","fields":[
+        {"id":2,"name":"kept","type":"int","required":false}]}]);
+    value["current-schema-id"] = json!(1);
+    value["partition-specs"] = json!([
+        {"spec-id":0,"fields":[
+            {"source-id":1,"field-id":1000,"name":"old_part","transform":"identity"},
+            {"source-id":2,"field-id":1001,"name":"kept_part","transform":"identity"}]},
+        {"spec-id":1,"fields":[
+            {"source-id":2,"field-id":1001,"name":"renamed","transform":"identity"}]}]);
+    value["default-spec-id"] = json!(1);
+    value["last-partition-id"] = json!(1001);
+    value["partition-statistics"] = json!([{"snapshot-id":99,
+        "statistics-path":record.location.to_string(),"file-size-in-bytes":record.length}]);
+    let source = source_document(&fixture, &value).await;
+    let summary = source.validate_auxiliary_files(limits()).await.unwrap();
+    assert_eq!(summary.files, 1);
+    assert_eq!(summary.bytes, record.length);
+    let mut limited = limits();
+    limited.partition_rows.rows = 0;
+    assert!(source.validate_auxiliary_files(limited).await.is_err());
+    limited = limits();
+    limited.work = 1;
+    assert!(source.validate_auxiliary_files(limited).await.is_err());
+    value["partition-specs"][1]["spec-id"] = json!(2);
+    value["default-spec-id"] = json!(2);
+    assert!(source_document(&fixture, &value)
+        .await
+        .validate_auxiliary_files(limits())
+        .await
+        .is_err());
 }
 
 async fn statistics(fixture: &TestPrior) -> Value {

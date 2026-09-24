@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{primitive, SelectedParquetError as Error};
 use crate::{
@@ -7,6 +7,9 @@ use crate::{
 };
 
 mod projection;
+mod rows;
+mod value;
+pub use rows::{validate_partition_statistics_rows, PartitionStatisticsRowLimits};
 
 /// Validates partition-statistics field IDs, requiredness and the unified partition type.
 /// This validates schema only, not page values, tuple ordering or statistics counts.
@@ -17,6 +20,14 @@ pub fn validate_partition_statistics_schema(
     document: &TableMetadataDocument,
     work: &mut usize,
 ) -> Result<(), Error> {
+    validated_projection(metadata, document, work).map(|_| ())
+}
+
+fn validated_projection(
+    metadata: &ParquetMetadata,
+    document: &TableMetadataDocument,
+    work: &mut usize,
+) -> Result<BTreeMap<i32, projection::PartitionField>, Error> {
     if *work == 0 || *work > 1_000_000 {
         return Err(ParquetMetadataError::Bounds.into());
     }
@@ -60,7 +71,7 @@ pub fn validate_partition_statistics_schema(
     {
         return Err(Error::Schema);
     }
-    Ok(())
+    Ok(fields)
 }
 
 fn partition(

@@ -230,3 +230,42 @@ async fn official_sdk_unified_partition_and_v2_v3_statistics_schemas_match() {
         }
     }
 }
+
+#[tokio::test]
+async fn official_sdk_rows_validate_projected_specs_beyond_schema_only() {
+    use crowdb_access_iceberg::{
+        file::ParquetPageLimits,
+        manifest::{validate_partition_statistics_rows, PartitionStatisticsRowLimits},
+    };
+    for (version, deleted, encoded) in [
+        (2, false, official::STATS_2_FALSE),
+        (2, true, official::STATS_2_TRUE),
+        (3, false, official::STATS_3_FALSE),
+        (3, true, official::STATS_3_TRUE),
+    ] {
+        let bytes = data_encoding::BASE64.decode(encoded.as_bytes()).unwrap();
+        let (store, record) = parquet::stored_content(&bytes, fixture::table()).await;
+        let metadata =
+            crowdb_access_iceberg::file::read_parquet_metadata(store.clone(), &record, parquet::limits())
+                .await
+                .unwrap();
+        let limits = PartitionStatisticsRowLimits {
+            page: ParquetPageLimits {
+                bytes: 64 * 1024,
+                values: 1000,
+                pages: 100,
+            },
+            rows: 1000,
+            buffered_bytes: 64 * 1024 * 1024,
+        };
+        let document = fixture::parse(&table(version, deleted)).unwrap();
+        let result =
+            validate_partition_statistics_rows(store, &record, &metadata, &document, limits, &mut 100_000)
+                .await;
+        assert_eq!(
+            result.is_ok(),
+            deleted,
+            "schema-only fixtures with old_part=11 and spec_id=1 must fail row membership"
+        );
+    }
+}

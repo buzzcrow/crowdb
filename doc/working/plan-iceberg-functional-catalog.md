@@ -100,8 +100,11 @@ do not close a requirement by ignoring its dependency's unsupported selected use
   file/DV counts. Nullable scalar pages now decode definition levels and separate
   v2 level/value compression, verified against four official Java files.
   Unified schema validation and Boolean/float/double/fixed-byte physical decoding
-  are implemented. Logical partition values and full row checks remain pending; these
-  prerequisites do not enable statistics publication. R177 OI-4 records the
+  are implemented. Typed logical values, cross-page/group tuple ordering,
+  spec membership, provable duplicates and local count consistency are now wired
+  into auxiliary validation. Snapshot-inventory reconciliation, retained-file
+  evolution and successful SDK publication remain pending; the 406 guard stays.
+  R177 OI-4 records the
   confirmed SDK-compatible omission of fields with deleted source columns;
   retained fields still require full validation.
   Audit equality-delete rewrites, position-delete removal without replacement DV,

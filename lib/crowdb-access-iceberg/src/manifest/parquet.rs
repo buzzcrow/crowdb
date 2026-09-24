@@ -9,7 +9,9 @@ pub use deletes::{
 mod schema;
 mod statistics;
 pub use schema::{validate_parquet_schema, ParquetFieldMapping, SelectedParquetSchema};
-pub use statistics::validate_partition_statistics_schema;
+pub use statistics::{
+    validate_partition_statistics_rows, validate_partition_statistics_schema, PartitionStatisticsRowLimits,
+};
 
 use super::{EntryStatus, FileContentKind, ManifestScalarEntry};
 use crate::file::{

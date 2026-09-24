@@ -111,6 +111,15 @@ pub(super) fn commits() -> CommitProofLimits {
             puffin_encoded_bytes: 1024 * 1024,
             puffin_decoded_bytes: 1024 * 1024,
             parquet,
+            partition_rows: crowdb_access_iceberg::manifest::PartitionStatisticsRowLimits {
+                page: ParquetPageLimits {
+                    bytes: 1024 * 1024,
+                    values: 100_000,
+                    pages: 100_000,
+                },
+                rows: 1_000_000,
+                buffered_bytes: 64 * 1024 * 1024,
+            },
         },
     }
 }

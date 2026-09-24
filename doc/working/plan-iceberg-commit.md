@@ -30,11 +30,27 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   fixed-length byte arrays under page limits, retaining floating-point bits.
   Support plain/dictionary, Boolean RLE and fixed delta/split encodings.
   Files: `file/parquet/pages/values/`, scalar fixtures/tests.
-- [~] **Selected auxiliary semantics**: implement partition-statistics row values,
-  ordered rows and counts before removing `UnsupportedPartitionStatistics`.
+- [~] **Selected auxiliary semantics**: finish partition-statistics inventory
+  reconciliation and retained-file upgrade compatibility before removing
+  `UnsupportedPartitionStatistics`. Typed row validation is implemented and
+  wired into auxiliary validation; focused and broad regression tests pass.
   Audit delete rewrites, retained history and aggregate bounds. Files:
   `lib/crowdb-access-iceberg/src/commit/files/auxiliary.rs`, `commit/proof.rs`,
   relevant Parquet readers and crate tests.
+  Remaining substeps:
+  - Compare per-spec projected tuples and data/delete/DV counts with selected
+    manifest inventory; omitted historical values remain unknown, never NULL.
+    The pinned SDK's full computation includes zero-count rows from deleted
+    entries; incremental computation can retain older zero-count partitions.
+    Do not reject these as invented live partitions or require their last-update
+    snapshot to remain retained. Confirmed against `PartitionStatsHandler`
+    (`computeStats`, `liveEntry`, `deletedEntry`, incremental merge) in Java 1.11.0.
+  - Retained v2 statistics must not be rejected merely because the candidate
+    upgrades to v3; validate against their proven writer context and apply the
+    standard missing-DV default rather than relaxing new-file required columns.
+  - Add real SDK statistics publication and replay acceptance, then remove both
+    ordinary/staged publication guards together. Schema/reader fixtures alone
+    do not satisfy this acceptance.
 - [ ] **Publication fault acceptance**: exercise native process interruption at
   candidate and head publication; cover create/staged operation boundaries,
   exact identity recovery on another listener, changed-input conflicts and
@@ -218,3 +234,33 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   all-target and no-default-feature library clippy, and Access Server all-target
   `iceberg-e2e` clippy pass. No native fault or full statistics publication
   acceptance was executed at this prerequisite checkpoint.
+
+## Partition-statistics rows in progress
+
+- Canonical page iteration now validates typed NULL-FIRST lexicographic tuple
+  order across pages and row groups, known spec IDs, spec-local bucket/truncate/
+  absent-field semantics, nonnegative counters and provable duplicate tuples.
+  Deleted-source projection collisions are not treated as proven duplicates.
+- Decimal values enforce declared precision; time values enforce unit-specific
+  day bounds. Temporal comparison uses i128 nanoseconds without overflow, not
+  an assumption about Java reader unit conversion. Strings validate UTF-8;
+  floating comparison preserves signed zero and canonicalizes NaNs for ordering;
+  UUID comparison uses Java's signed high/low halves rather than unsigned bytes.
+- Row, work and aggregate column-buffer limits are explicit. The auxiliary
+  validator shares its work budget with row validation. Buffered-page reservation
+  includes four page budgets per column for retained dictionary/value vectors
+  and eight shared page budgets for decoding transients; current/previous tuple
+  storage is charged separately. This is conservative admission, not a claim of
+  exact allocator accounting or a performance measurement.
+- Twelve focused row tests, ten schema/official-file tests and five auxiliary
+  regressions pass. Official deleted-source v2/v3 files pass row validation;
+  older schema-only fixtures with a non-NULL field absent from their row's spec
+  correctly fail membership. Auxiliary integration exercises a real file,
+  unknown spec rejection and independent row/work limits.
+- The full Iceberg library and Iceberg-enabled Access Server all-target suites
+  pass; focused tests, fmt, library all-target clippy, workspace lint and server
+  E2E-feature all-target clippy pass after shared-projection cleanup. This does
+  not prove agreement with snapshot inventory or permit
+  publication: both `UnsupportedPartitionStatistics` guards remain in place.
+- No pending human decision. Native interruption acceptance and closure audit
+  remain separate implementation work; ORC, GC and engine tests stay deferred.

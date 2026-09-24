@@ -145,6 +145,11 @@ async fn reservation_head_and_catalog_fences_are_independent() {
                 puffin_encoded_bytes: 100_000,
                 puffin_decoded_bytes: 100_000,
                 parquet: snapshot::limits().position_deletes.metadata,
+                partition_rows: crowdb_access_iceberg::manifest::PartitionStatisticsRowLimits {
+                    page: snapshot::limits().position_deletes.page,
+                    rows: 1000,
+                    buffered_bytes: 64 * 1024 * 1024,
+                },
             })
             .await
             .is_err());
