@@ -10,7 +10,10 @@ mod metadata;
 mod pages;
 pub use pages::ParquetPageLimits;
 #[cfg(feature = "test-util")]
-pub use pages::{read_parquet_integer_column_for_tests, read_parquet_nullable_integer_column_for_tests};
+pub use pages::{
+    read_parquet_integer_column_for_tests, read_parquet_nullable_integer_column_for_tests,
+    read_parquet_scalar_column_for_tests,
+};
 pub(crate) use pages::{ParquetColumnReader, ParquetColumnValue};
 mod schema;
 

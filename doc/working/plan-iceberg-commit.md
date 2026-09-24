@@ -26,6 +26,10 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   omission. Reject conflicting retained specs and charge projection/schema work
   against the caller's aggregate budget. Files: `manifest/parquet/statistics.rs`,
   `statistics/projection.rs`, auxiliary integration and schema fixtures/tests.
+- [x] **Remaining physical scalar decoding**: decode BOOLEAN, FLOAT, DOUBLE and
+  fixed-length byte arrays under page limits, retaining floating-point bits.
+  Support plain/dictionary, Boolean RLE and fixed delta/split encodings.
+  Files: `file/parquet/pages/values/`, scalar fixtures/tests.
 - [~] **Selected auxiliary semantics**: implement partition-statistics row values,
   ordered rows and counts before removing `UnsupportedPartitionStatistics`.
   Audit delete rewrites, retained history and aggregate bounds. Files:
@@ -181,3 +185,30 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
 - Verified: eight schema tests, the full Iceberg library all-target suite and
   Access Server all-target suite with `iceberg`; workspace fmt/`rs-lint`, library
   all-target clippy and Access Server all-target `iceberg-e2e` clippy pass.
+
+## Physical scalar checkpoint
+
+- Physical type and fixed width now come from the validated schema leaf, not a
+  caller-supplied numeric type. BOOLEAN supports LSB-first plain and length-framed
+  RLE on both page versions; FLOAT/DOUBLE preserve signed zero, infinities and NaN
+  bits. Fixed bytes support plain, dictionary, delta-byte-array and byte-stream
+  split with exact reconstructed widths. INT96 and unknown encodings still reject.
+- Generic bytes use the explicit page materialization budget instead of the
+  unrelated delete-path length cap. Position-delete paths retain their semantic
+  location validation. Dictionary expansion charges retained bytes before copying
+  payloads; scalar split decoding keeps a stack buffer for widths up to eight.
+- Ten focused scalar tests include four Parquet Java 1.17.1 v1/v2 files with
+  nullable Boolean/float/double/fixed/large-binary columns and dictionary toggles.
+  The Java writer canonicalizes NaN payloads; hand-built page tests separately
+  verify that the reader preserves encoded payload bits without conversion.
+  Generator: `TestScalarParquetFixtures` using the same documented Maven command;
+  offline generation succeeds with the existing visible shutdown/logging warnings.
+- This is physical decoding, not a claim of complete logical partition semantics.
+  Next: decimal/time/unit normalization, typed NULL-FIRST tuple comparison,
+  spec membership, duplicates and count validation across pages and row groups;
+  retain the publication rejection until all selected-file checks are integrated.
+- Verified: ten scalar tests and all existing library all-target tests; Access
+  Server all-target tests with `iceberg`; workspace fmt/`rs-lint`, library
+  all-target and no-default-feature library clippy, and Access Server all-target
+  `iceberg-e2e` clippy pass. No native fault or full statistics publication
+  acceptance was executed at this prerequisite checkpoint.

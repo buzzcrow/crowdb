@@ -23,6 +23,16 @@ pub async fn file(
     pages: &[TestPage],
     codec: i64,
 ) -> (Arc<TestBlocks>, FileRecord) {
+    file_with_type_length(physical, None, depth, pages, codec).await
+}
+
+pub async fn file_with_type_length(
+    physical: i64,
+    type_length: Option<i64>,
+    depth: usize,
+    pages: &[TestPage],
+    codec: i64,
+) -> (Arc<TestBlocks>, FileRecord) {
     let mut bytes = b"PAR1".to_vec();
     let mut uncompressed = 0;
     let mut data_offset = None;
@@ -61,12 +71,16 @@ pub async fn file(
             (5, 5, number(1)),
         ]));
     }
-    schema.push(structure(&vec![
+    let mut leaf = vec![
         (1, 5, number(physical)),
         (3, 5, number(i64::from(depth > 0))),
         (4, 8, binary(b"value")),
         (9, 5, number(2)),
-    ]));
+    ];
+    if let Some(length) = type_length {
+        leaf.push((2, 5, number(length)));
+    }
+    schema.push(structure(&leaf));
     let group = structure(&vec![
         (
             1,

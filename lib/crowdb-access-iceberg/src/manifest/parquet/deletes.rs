@@ -78,8 +78,20 @@ pub async fn validate_parquet_position_deletes(
             .iter()
             .find(|column| column.schema_index == pos_index)
             .ok_or(Error::Schema)?;
-        let mut paths = ParquetColumnReader::new(store.clone(), record, path, 6, limits.page)?;
-        let mut positions = ParquetColumnReader::new(store.clone(), record, pos, 2, limits.page)?;
+        let mut paths = ParquetColumnReader::new(
+            store.clone(),
+            record,
+            path,
+            &metadata.schema[path_index],
+            limits.page,
+        )?;
+        let mut positions = ParquetColumnReader::new(
+            store.clone(),
+            record,
+            pos,
+            &metadata.schema[pos_index],
+            limits.page,
+        )?;
         for _ in 0..group.rows {
             let (Some(ParquetColumnValue::Bytes(path)), Some(ParquetColumnValue::Long(pos))) =
                 (paths.next().await?, positions.next().await?)

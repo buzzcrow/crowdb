@@ -94,12 +94,13 @@ The user-approved closure order is R181 (complete), R182, then remaining R180.
 Advance shared R180 prerequisites when required for correct R182 publication;
 do not close a requirement by ignoring its dependency's unsupported selected use.
 
-- [ ] **Selected-use gaps — R180/R182**: implement partition-statistics schema,
+- [ ] **Selected-use gaps — R180/R182**: finish partition-statistics
   ordered-row and count validation before removing its explicit rejection.
   Canonical required-column INT32 decoding is implemented for its spec IDs and
   file/DV counts. Nullable scalar pages now decode definition levels and separate
   v2 level/value compression, verified against four official Java files.
-  Other partition values and full row/schema checks remain pending; these
+  Unified schema validation and Boolean/float/double/fixed-byte physical decoding
+  are implemented. Logical partition values and full row checks remain pending; these
   prerequisites do not enable statistics publication. R177 OI-4 records the
   confirmed SDK-compatible omission of fields with deleted source columns;
   retained fields still require full validation.

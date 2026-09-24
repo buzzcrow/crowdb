@@ -1,6 +1,6 @@
 use std::{io::Read, sync::Arc};
 
-use super::{ParquetColumnChunk, ParquetMetadataError as Error};
+use super::{ParquetColumnChunk, ParquetMetadataError as Error, ParquetSchemaElement};
 use crate::file::{ByteRange, FileBlockStore, FileReader, FileRecord};
 
 mod header;
@@ -10,9 +10,12 @@ mod testing;
 mod values;
 use header::Header;
 #[cfg(feature = "test-util")]
-pub use testing::{read_parquet_integer_column_for_tests, read_parquet_nullable_integer_column_for_tests};
+pub use testing::{
+    read_parquet_integer_column_for_tests, read_parquet_nullable_integer_column_for_tests,
+    read_parquet_scalar_column_for_tests,
+};
 pub(crate) use values::ColumnValue as ParquetColumnValue;
-use values::{decode, ColumnValue};
+use values::{decode, ColumnValue, Physical};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ParquetPageLimits {
@@ -25,7 +28,7 @@ pub(crate) struct ParquetColumnReader {
     store: Arc<dyn FileBlockStore>,
     record: FileRecord,
     column: ParquetColumnChunk,
-    physical: i32,
+    physical: Physical,
     limits: ParquetPageLimits,
     offset: u64,
     seen: u64,
@@ -39,7 +42,7 @@ impl ParquetColumnReader {
         store: Arc<dyn FileBlockStore>,
         record: &FileRecord,
         column: &ParquetColumnChunk,
-        physical: i32,
+        field: &ParquetSchemaElement,
         limits: ParquetPageLimits,
     ) -> Result<Self, Error> {
         if column.repeated {
@@ -52,7 +55,6 @@ impl ParquetColumnReader {
             || limits.values > 1_048_576
             || limits.pages == 0
             || limits.pages > 1_000_000
-            || !matches!(physical, 1 | 2 | 6)
             || column
                 .offset
                 .checked_add(column.length)
@@ -65,7 +67,7 @@ impl ParquetColumnReader {
             store,
             record: record.clone(),
             column: column.clone(),
-            physical,
+            physical: Physical::new(field)?,
             limits,
             offset: column.offset,
             seen: 0,
