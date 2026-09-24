@@ -60,18 +60,27 @@ pub(super) fn parse(
             }
             _ => return Err(Error::Invalid),
         };
+        let transform = PartitionTransform::parse(value["transform"].as_str().ok_or(Error::Invalid)?)?;
         for source in &sources {
-            let field = fields.get(source).ok_or(Error::Invalid)?;
+            let Some(field) = fields.get(source) else {
+                if transform == PartitionTransform::Void {
+                    continue;
+                }
+                return Err(Error::Invalid);
+            };
             if field.repeated || field.primitive.is_none() {
                 return Err(Error::Invalid);
             }
         }
-        let transform = PartitionTransform::parse(value["transform"].as_str().ok_or(Error::Invalid)?)?;
         if sources.len() != 1 && !matches!(transform, PartitionTransform::Unknown(_)) {
             return Err(Error::Invalid);
         }
-        let source = fields[&sources[0]].primitive.as_ref().ok_or(Error::Invalid)?;
-        let result = transform.result(source)?;
+        let result = fields
+            .get(&sources[0])
+            .and_then(|field| field.primitive.as_ref())
+            .map(|source| transform.result(source))
+            .transpose()?
+            .flatten();
         partitions.push(PartitionField {
             id: field_id,
             name: name.into(),

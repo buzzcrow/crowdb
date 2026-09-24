@@ -73,9 +73,9 @@ Current requested sequence (tasks 1–3):
   deletes, including canonical Java SDK Parquet pages; removed data may drop its
   DV, but candidate orphan DVs fail. Aggregate candidate ranges and each prior
   vector are independently bounded. This is not the generation-bound publication
-  proof: candidate-source composition, legacy v1 enumeration,
-  equality-delete rewrites and position-delete removal without a replacement DV
-  remain to compose. Files: `file/deletion_vector/positions.rs` and
+  proof: complete publication admission remains to compose. Equality-delete
+  rewrites and position-delete removal without a replacement DV are not proven
+  by this helper. Files: `file/deletion_vector/positions.rs` and
   `manifest/snapshot_validation/preservation.rs` in `crowdb-access-iceberg`.
   Verification: eight new focused tests cover range encodings, CRC, budgets,
   exact-target coverage, dropped/replaced DVs, immutable identity and SDK v1/v2
@@ -87,12 +87,30 @@ Current requested sequence (tasks 1–3):
   framing/digest EOF, declared length/spec/content, catalog epoch and complete head
   fences are checked. Four focused tests cover recovery, unselected uploads,
   independent limits, corruption, stale heads and head changes during reads;
-  workspace fmt/clippy pass. Legacy embedded v1 manifests remain explicitly
-  unsupported by this index, not silently skipped.
-  Next integration sequence: compose candidate definition contexts with the prior
-  index, preserving exact immutable identities; add the legacy embedded-manifest
-  enumerator; run file proofs for every candidate snapshot and direct-parent DV
-  replacement; then produce a non-forgeable generation-bound publication proof.
+  workspace fmt/clippy pass.
+  Candidate composition checkpoint (2026-09-24): `CandidateFileSource` fences
+  both prior head and candidate successor identity. Prior-reachable manifests may
+  recover expired definitions; new uploads must match candidate definitions.
+  Embedded v1 snapshots now enumerate canonical manifests without fabricating a
+  manifest-list file, enforce actual v1 writer headers, and participate in the
+  prior provenance index. All candidate snapshots undergo writer validation and
+  current-schema Parquet projection; new children invoke direct-parent DV checks.
+  Retained context composition preserves historical fields, uses one work budget,
+  and permits a dropped partition source only for the void transform. Exhausted
+  definition IDs no longer prevent reuse of existing schemas/specs/sort orders.
+  Auxiliary references now bind exact canonical file length, Puffin total footer
+  size and blob descriptors, including the spec-permitted property subset; file
+  counts, full canonical bytes and descriptor comparison work have separate caps.
+  Partition statistics currently receive Parquet container validation only, not
+  unified partition schema, ordered rows or count semantics. These helpers remain
+  explicitly separate from a publishable proof, and no HTTP writes are enabled.
+  Files: `commit/files/`, `commit/provenance/scan.rs`,
+  `manifest/snapshot_reader/references.rs`, `table/metadata/context.rs`.
+  Verification: all 471 library tests and workspace fmt/clippy pass, including
+  legacy enumeration, current-reader projection, provenance races, auxiliary
+  descriptor corruption, independent budgets and exhausted definition IDs.
+  Next integration sequence: finish selected-use semantics and aggregate admission,
+  then produce a non-forgeable generation-bound publication proof.
   Only after that wire the operation journal, immutable metadata write and head CAS.
 - [ ] **Create and atomic publication**: compose durable request identity,
   namespace reservations, immutable candidate writes, one head CAS and recovery;

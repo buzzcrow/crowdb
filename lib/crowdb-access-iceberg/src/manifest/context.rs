@@ -156,9 +156,9 @@ impl ManifestContext {
         }
         for schema in history {
             work = work
-                .checked_sub(schema.fields.len())
+                .checked_sub(schema.fields.len() + schema.historical_fields.len())
                 .ok_or(ManifestContextError::Bounds)?;
-            for (id, field) in &schema.fields {
+            for (id, field) in schema.fields.iter().chain(&schema.historical_fields) {
                 if self.fields.contains_key(id) {
                     continue;
                 }

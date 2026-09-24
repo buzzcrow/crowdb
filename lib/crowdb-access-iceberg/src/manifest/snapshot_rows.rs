@@ -8,6 +8,14 @@ pub(super) struct SnapshotRowAssignments {
 }
 
 impl SnapshotRowAssignments {
+    pub(super) fn legacy(snapshot_id: i64) -> Self {
+        Self {
+            snapshot_id,
+            range: None,
+            next: 0,
+            current: None,
+        }
+    }
     pub(super) fn new(selection: &ManifestListSelection) -> Result<Self, Error> {
         let range = match (selection.first_row_id, selection.added_rows) {
             (Some(first), Some(rows)) => Some((first, first.checked_add(rows).ok_or(Error::RowIds)?)),

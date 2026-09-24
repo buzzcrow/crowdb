@@ -27,6 +27,9 @@ pub struct ManifestReader {
 }
 
 impl ManifestReader {
+    pub(super) fn writer_version(&self) -> ManifestVersion {
+        self.version
+    }
     pub(super) fn selection(&self) -> (&crate::file::FileLocation, &ManifestContext) {
         (&self.list.location, &self.context)
     }

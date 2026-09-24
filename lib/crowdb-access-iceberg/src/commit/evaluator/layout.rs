@@ -34,7 +34,7 @@ impl State {
         )?;
         let (collection, id_name, _) = names(partition);
         let mut definitions = self.raw.array(collection)?;
-        let mut next = i32::from(!partition && !fields.is_empty());
+        let mut highest_id = if partition { -1_i32 } else { 0 };
         let mut prior = Vec::new();
         for definition in &definitions {
             let value: Value = serde_json::from_str(definition.get())?;
@@ -43,12 +43,14 @@ impl State {
                 self.reused_layout(id, partition);
                 return Ok(());
             }
-            next = next.max(id.checked_add(1).ok_or(Error::Field(id_name))?);
+            highest_id = highest_id.max(id);
             prior.push(value);
         }
-        if !partition && fields.is_empty() {
-            next = 0;
-        }
+        let next = if !partition && fields.is_empty() {
+            0
+        } else {
+            highest_id.checked_add(1).ok_or(Error::Field(id_name))?
+        };
         let last: i32 = self.raw.get("last-partition-id")?;
         let highest = if partition {
             self.partition_ids(fields, &prior, last)?

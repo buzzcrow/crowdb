@@ -64,3 +64,33 @@ fn legacy_context_uses_implicit_partition_ids_and_explicit_schema_id() {
     assert_eq!(context.partitions()[0].id, 1000);
     assert!(document.manifest_context(0, 0, &[], 1000).is_err());
 }
+#[test]
+fn retained_history_is_bounded_as_a_whole_and_survives_context_composition() {
+    let mut value = fixture::metadata(3);
+    value["last-column-id"] = json!(20);
+    value["current-schema-id"] = json!(19);
+    value["schemas"] = json!((0..20)
+        .map(|index| json!({"type":"struct","schema-id":index,
+        "fields":[{"id":index + 1,"name":"value","type":"long","required":false}]}))
+        .collect::<Vec<_>>());
+    let document = fixture::parse(&value).unwrap();
+    let history = document.current_manifest_context(1000).unwrap();
+    assert!(history.field(1).is_none());
+    assert!(history.retained_field(1).is_some());
+    let current = document.manifest_context(19, 0, &[], 1000).unwrap();
+    let composed = current.with_schema_history(&[history]).unwrap();
+    for field in 1..=20 {
+        assert!(composed.retained_field(field).is_some());
+    }
+    assert!(document.current_manifest_context(10).is_err());
+}
+
+#[test]
+fn retained_history_shares_the_writer_context_work_budget() {
+    let document = fixture::parse(&fixture::metadata(3)).unwrap();
+    let writer_budget = (1..1000)
+        .find(|work| document.manifest_context(0, 0, &[], *work).is_ok())
+        .unwrap();
+    assert!(document.current_manifest_context(writer_budget).is_err());
+    assert!(document.current_manifest_context(writer_budget + 1).is_ok());
+}

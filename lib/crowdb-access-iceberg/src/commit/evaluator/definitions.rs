@@ -17,17 +17,18 @@ impl State {
         let incoming: Value = serde_json::from_str(normalized.get())?;
         let context = self.schema_context(&incoming)?;
         let mut schemas = self.raw.array("schemas")?;
-        let mut next_id = 0_i32;
+        let mut highest_id = -1_i32;
         for existing in &schemas {
             let mut value: Value = serde_json::from_str(existing.get())?;
             let id = integer(&value, "schema-id")?;
-            next_id = next_id.max(id.checked_add(1).ok_or(Error::Field("schema-id"))?);
+            highest_id = highest_id.max(id);
             value["schema-id"] = Value::from(0);
             if same_schema(&value, &incoming) {
                 self.last_schema = self.added_schemas.contains(&id).then_some(id);
                 return Ok(());
             }
         }
+        let next_id = highest_id.checked_add(1).ok_or(Error::Field("schema-id"))?;
         let current = self.current_schema()?;
         let prior: Value = serde_json::from_str(current.get())?;
         let prior_context = self.schema_context(&prior)?;

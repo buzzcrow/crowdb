@@ -60,6 +60,45 @@ fn run(metadata: &Value, request: &Value, work: usize) -> Result<EvaluatedMetada
 fn add(schema: &Value) -> Value {
     json!({"action":"add-schema","schema":schema})
 }
+
+#[test]
+fn exhausted_schema_ids_allow_reuse_but_not_new_definitions() {
+    let mut metadata = fixture::metadata(3);
+    metadata["schemas"][0]["schema-id"] = json!(i32::MAX);
+    metadata["current-schema-id"] = json!(i32::MAX);
+    let schema = metadata["schemas"][0].clone();
+    assert!(evaluate(&metadata, json!([add(&schema)])).is_ok());
+    let mut changed = schema;
+    changed["fields"][0]["name"] = json!("renamed");
+    assert!(evaluate(&metadata, json!([add(&changed)])).is_err());
+}
+
+#[test]
+fn exhausted_layout_ids_do_not_prevent_reusing_a_later_definition() {
+    let mut metadata = fixture::metadata(3);
+    metadata["partition-specs"] = json!([
+        {"spec-id":i32::MAX,"fields":[{"field-id":1000,"source-id":1,
+        "name":"bucket","transform":"bucket[16]"}]},
+        {"spec-id":0,"fields":[]}
+    ]);
+    metadata["last-partition-id"] = json!(1000);
+    let reused = json!({"action":"add-spec","spec":{"fields":[]}});
+    assert!(evaluate(&metadata, json!([reused])).is_ok());
+    let novel = json!({"action":"add-spec","spec":{"fields":[
+        {"field-id":1001,"source-id":1,"name":"identity","transform":"identity"}
+    ]}});
+    assert!(evaluate(&metadata, json!([novel])).is_err());
+    metadata["sort-orders"] = json!([
+        {"order-id":i32::MAX,"fields":[{"source-id":1,"transform":"identity",
+        "direction":"asc","null-order":"nulls-first"}]},
+        {"order-id":0,"fields":[]}
+    ]);
+    assert!(evaluate(
+        &metadata,
+        json!([{"action":"add-sort-order","sort-order":{"fields":[]}}])
+    )
+    .is_ok());
+}
 fn select(id: i32) -> Value {
     json!({"action":"set-current-schema","schema-id":id})
 }

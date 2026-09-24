@@ -156,3 +156,24 @@ fn history_retains_dropped_columns_and_metadata_binding_uses_the_writer_schema()
     let wrong=ManifestMetadata{schema_json:br#"{"type":"struct","schema-id":7,"fields":[{"id":1,"name":"old","required":false,"type":"long"}]}"#,..metadata};
     assert!(current.validate_metadata(wrong, 2).is_err());
 }
+#[test]
+fn void_partition_sources_may_be_expired_but_other_transforms_need_a_source_type() {
+    use crowdb_access_iceberg::manifest::{ManifestContext, ManifestVersion};
+    for transform in ["void", "identity", "bucket[8]"] {
+        let spec = serde_json::to_vec(
+            &serde_json::json!([{"field-id":1000,"source-id":1,"name":"old","transform":transform}]),
+        )
+        .unwrap();
+        let context = ManifestContext::parse(
+            ManifestVersion::V1,
+            0,
+            0,
+            br#"{"type":"struct","schema-id":0,"fields":[]}"#,
+            &spec,
+        );
+        assert_eq!(context.is_ok(), transform == "void");
+        if let Ok(context) = context {
+            assert!(context.partitions()[0].result.is_none());
+        }
+    }
+}

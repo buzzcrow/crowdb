@@ -2,6 +2,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 
+mod scan;
+
 use crate::{
     catalog::{CatalogContext, CatalogStore},
     file::{AvroBlocks, FileBlockStore, FileContent, FileKind, FileLocation, FileRecord, FileRepository},
@@ -36,12 +38,13 @@ pub struct PriorManifestSource {
     blocks: Arc<dyn FileBlockStore>,
     anchors: BTreeMap<String, Anchor>,
     limits: PriorManifestLimits,
+    history: ManifestContext,
 }
 
 impl PriorManifestSource {
     /// Scans every retained canonical manifest list through EOF before returning provenance.
-    /// No uploaded header can add a path to this index. Legacy embedded manifest snapshots
-    /// require a separate enumerator and are explicitly rejected here.
+    /// No uploaded header can add a path to this index. Legacy embedded manifest paths
+    /// are anchored directly in the same selected canonical metadata document.
     /// # Errors
     /// Rejects stale heads, missing authority, inconsistent immutable references and bounded-work excess.
     pub async fn build(
@@ -85,6 +88,7 @@ impl PriorManifestSource {
             blocks,
             anchors: BTreeMap::new(),
             limits,
+            history: document.current_manifest_context(1_000_000).map_err(source)?,
         };
         result.scan(&files, document).await?;
         result
@@ -95,65 +99,15 @@ impl PriorManifestSource {
         Ok(result)
     }
 
-    async fn scan(&mut self, files: &FileRepository, document: &TableMetadataDocument) -> Result<(), Error> {
-        let limits = self.limits;
-        let context = self.context;
-        let mut references = 0_u64;
-        let mut retained = 0_usize;
-        let mut bytes = 0_u64;
-        let version = match self.selected.head.format_version {
-            1 => ManifestVersion::V1,
-            2 => ManifestVersion::V2,
-            3 => ManifestVersion::V3,
-            _ => return Err(Error::Unavailable),
-        };
-        for snapshot in document.snapshots().values() {
-            let selection = snapshot.manifest_selection(version).map_err(source)?;
-            let record = files
-                .load(context, &selection.location)
-                .await
-                .map_err(source)?
-                .ok_or(Error::Unavailable)?;
-            bytes = charge_bytes(bytes, record.length, limits.manifests.manifest_bytes)?;
-            let mut manifests = 0_u64;
-            let mut reader = ManifestListReader::open_selected(
-                self.blocks.clone(),
-                record,
-                selection,
-                limits.manifests.framing,
-                limits.manifests.datum,
-                limits.manifests.decoded_bytes,
-            )
-            .await?;
-            while let Some(entry) = reader.next_entry().await? {
-                manifests = manifests
-                    .checked_add(1)
-                    .filter(|count| *count <= limits.manifests.manifests)
-                    .ok_or(Error::Bounds)?;
-                references = references
-                    .checked_add(1)
-                    .filter(|count| *count <= limits.references)
-                    .ok_or(Error::Bounds)?;
-                let record = files
-                    .load(context, &entry.location)
-                    .await
-                    .map_err(source)?
-                    .ok_or(Error::Unavailable)?
-                    .bind_kind(FileKind::Manifest)
-                    .map_err(source)?;
-                if record.length != entry.length {
-                    return Err(Error::Unavailable);
-                }
-                bytes = charge_bytes(bytes, record.length, limits.manifests.manifest_bytes)?;
-                self.insert(record, entry.partition_spec_id, entry.content, &mut retained)?;
-            }
-        }
-        Ok(())
-    }
-
     #[must_use]
     pub fn selected(&self) -> &SelectedTable {
         &self.selected
+    }
+
+    pub(crate) fn contains(&self, location: &FileLocation) -> bool {
+        location.table().catalog == self.context.catalog
+            && location.table().table == self.selected.head.table
+            && self.anchors.contains_key(location.relative_key())
     }
 
     fn insert(
@@ -257,6 +211,9 @@ impl SnapshotManifestSource for PriorManifestSource {
         self.repository
             .ensure_current(self.context, &self.selected)
             .await
+            .map_err(source)?;
+        let context = context
+            .with_schema_history(std::slice::from_ref(&self.history))
             .map_err(source)?;
         Ok((anchor.record.clone(), context))
     }

@@ -4,6 +4,77 @@ use super::{TableMetadataDocument, TableMetadataError as Error};
 use crate::manifest::{ManifestContext, ManifestContextError, ManifestVersion};
 
 impl TableMetadataDocument {
+    /// Resolves the current schema/default spec with bounded retained field history.
+    /// # Errors
+    /// Rejects missing current definitions and incompatible or excessive history.
+    pub fn current_manifest_context(&self, work_limit: usize) -> Result<ManifestContext, Error> {
+        let schema = self
+            .fields()
+            .get("current-schema-id")
+            .and_then(Value::as_i64)
+            .or_else(|| {
+                self.fields()
+                    .get("schema")
+                    .and_then(|schema| schema.get("schema-id"))
+                    .and_then(Value::as_i64)
+            })
+            .unwrap_or(0);
+        let spec = self
+            .fields()
+            .get("default-spec-id")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        self.manifest_context_with_retained_history(
+            i32::try_from(schema).map_err(|_| Error::Field("schema-id"))?,
+            i32::try_from(spec).map_err(|_| Error::Field("spec-id"))?,
+            work_limit,
+        )
+    }
+
+    /// Resolves a writer pair and retains all available historical field definitions under one work cap.
+    /// # Errors
+    /// Rejects incompatible field reuse, unavailable definitions and bounded-history exhaustion.
+    pub fn manifest_context_with_retained_history(
+        &self,
+        schema_id: i32,
+        spec_id: i32,
+        work_limit: usize,
+    ) -> Result<ManifestContext, Error> {
+        if work_limit == 0 || work_limit > 1_000_000 {
+            return Err(Error::Bounds);
+        }
+        if schema_id < 0 || spec_id < 0 {
+            return Err(Error::Field("manifest-context"));
+        }
+        let mut work = work_limit;
+        let mut context = self.writer_context(schema_id, spec_id, &mut work)?;
+        let schemas = self
+            .fields()
+            .get("schemas")
+            .and_then(Value::as_array)
+            .map_or_else(
+                || {
+                    self.fields()
+                        .get("schema")
+                        .map_or(&[] as &[Value], std::slice::from_ref)
+                },
+                Vec::as_slice,
+            );
+        for schema in schemas {
+            charge(&mut work)?;
+            let identity = schema.get("schema-id").and_then(Value::as_i64).unwrap_or(0);
+            let identity = i32::try_from(identity).map_err(|_| Error::Field("schema-id"))?;
+            if identity == schema_id {
+                continue;
+            }
+            let historical = self.parse_context(identity, 0, schema, &Value::Array(Vec::new()), &mut work)?;
+            context = context
+                .with_schema_history(&[historical])
+                .map_err(|error| context_error(&error))?;
+        }
+        Ok(context)
+    }
+
     /// Builds a manifest context exclusively from this selected metadata generation.
     /// Historical IDs must be retained here; missing history must be recovered from
     /// separately verified prior authority, never from untrusted manifest headers.
@@ -24,11 +95,7 @@ impl TableMetadataDocument {
             return Err(Error::Field("manifest-context"));
         }
         let mut work = work_limit;
-        let schema = self.find_definition("schemas", "schema-id", "schema", schema_id, &mut work)?;
-        let spec =
-            self.find_definition("partition-specs", "spec-id", "partition-spec", spec_id, &mut work)?;
-        let fields = if spec.is_array() { spec } else { &spec["fields"] };
-        let context = self.parse_context(schema_id, spec_id, schema, fields, &mut work)?;
+        let context = self.writer_context(schema_id, spec_id, &mut work)?;
         let mut historical = Vec::new();
         for identity in history {
             let schema = self.find_definition("schemas", "schema-id", "schema", *identity, &mut work)?;
@@ -43,6 +110,18 @@ impl TableMetadataDocument {
         context
             .with_schema_history(&historical)
             .map_err(|error| context_error(&error))
+    }
+
+    fn writer_context(
+        &self,
+        schema_id: i32,
+        spec_id: i32,
+        work: &mut usize,
+    ) -> Result<ManifestContext, Error> {
+        let schema = self.find_definition("schemas", "schema-id", "schema", schema_id, work)?;
+        let spec = self.find_definition("partition-specs", "spec-id", "partition-spec", spec_id, work)?;
+        let fields = if spec.is_array() { spec } else { &spec["fields"] };
+        self.parse_context(schema_id, spec_id, schema, fields, work)
     }
 
     fn find_definition(

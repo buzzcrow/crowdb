@@ -19,121 +19,126 @@ mod namespaces;
 mod parquet;
 #[path = "common/snapshot_files.rs"]
 mod snapshot;
+#[path = "common/manifest_stream.rs"]
+#[allow(dead_code)]
+mod stream;
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, RootState},
-    commit::{PriorManifestLimits, PriorManifestSource},
-    file::{ContentFormat, FileContent, FileKind, FileRecord, FileRepository},
-    manifest::{SnapshotManifestSource, SnapshotValidationInput},
+    catalog::RootState,
+    commit::{CandidateFileSource, CandidateSnapshotLimits, PriorManifestLimits},
+    file::{ContentFormat, FileRepository},
+    manifest::{SnapshotFileSource, SnapshotManifestSource},
     record::StorageRecord,
-    table::{head_key, SelectedTable, TableMetadataDocument},
+    table::head_key,
 };
-use serde_json::json;
 use std::sync::{atomic::Ordering, Arc};
 
-struct TestPrior {
-    namespace: namespaces::TestNamespace,
-    blocks: Arc<blocks::TestBlocks>,
-    selected: SelectedTable,
-    document: TableMetadataDocument,
-    input: SnapshotValidationInput,
-    manifest: FileRecord,
+#[path = "common/commit_provenance.rs"]
+mod provenance;
+use provenance::{limits, TestPrior};
+
+#[tokio::test]
+async fn embedded_legacy_manifests_are_anchored_in_canonical_metadata_without_a_list() {
+    let fixture = TestPrior::legacy().await;
+    let source = fixture.build(limits()).await.unwrap();
+    let (_, context) = source.resolve(&fixture.manifest.location).await.unwrap();
+    assert_eq!(context.schema_id(), 0);
+    assert!(context.field(3).is_some());
+    let mut limited = limits();
+    limited.manifests.manifest_bytes = fixture.manifest.length - 1;
+    assert!(fixture.build(limited).await.is_err());
 }
 
-impl TestPrior {
-    async fn new() -> Self {
-        let namespace = namespaces::TestNamespace {
-            store: Arc::new(common::TestStore::default()),
-            context: CatalogContext {
-                catalog: fixture::table().catalog,
-                activation_epoch: 1,
-            },
-        };
-        namespace.root(namespace.context, RootState::Ready).await;
-        let blocks = Arc::new(blocks::TestBlocks::default());
-        let data = snapshot::data(blocks.clone(), "data/first.parquet").await;
-        let input = snapshot::input(
-            blocks.clone(),
-            vec![vec![snapshot::entry(&data, 0, 10)]],
-            vec![data],
-        )
-        .await;
-        let (manifest, _) = input
-            .manifests
-            .resolve(&fixture::table().file("metadata/0.avro").unwrap())
-            .await
-            .unwrap();
-        let files = FileRepository::new(namespace.store.clone());
-        files.publish(namespace.context, &input.list).await.unwrap();
-        files.publish(namespace.context, &manifest).await.unwrap();
-        let mut value = metadata::metadata(2);
-        value["schemas"] = json!([{"type":"struct","schema-id":1,"fields":[{"id":4,"name":"new","type":"string","required":false}]}]);
-        value["current-schema-id"] = json!(1);
-        value["last-column-id"] = json!(4);
-        value["last-sequence-number"] = json!(9);
-        let mut snapshot = metadata::snapshot(99, 9);
-        snapshot["schema-id"] = json!(1);
-        snapshot["manifest-list"] = json!(input.list.location.to_string());
-        value["snapshots"] = json!([snapshot]);
+#[tokio::test]
+async fn candidate_validation_checks_every_snapshot_and_current_schema_projection() {
+    use sha2::{Digest, Sha256};
+    let fixture = TestPrior::new().await;
+    let prior = Arc::new(fixture.build(limits()).await.unwrap());
+    for required in [false, true] {
+        let mut value = serde_json::Value::Object(fixture.document.fields().clone());
+        value["schemas"][0]["fields"][0]["required"] = serde_json::json!(required);
         let bytes = serde_json::to_vec(&value).unwrap();
-        let head = metadata::head(
-            &bytes,
-            2,
-            Some(uuid::Uuid::parse_str(value["table-uuid"].as_str().unwrap()).unwrap()),
+        let mut head = fixture.selected.head.clone();
+        head.generation += 1;
+        head.metadata_file = crowdb_access_iceberg::key::FileId::random();
+        head.metadata_location = fixture::table().file("metadata/candidate.json").unwrap();
+        head.metadata_digest = Sha256::digest(&bytes).into();
+        let document = Arc::new(
+            crowdb_access_iceberg::table::TableMetadataDocument::parse(bytes, &head, metadata::limits())
+                .unwrap(),
         );
-        let document = TableMetadataDocument::parse(bytes, &head, metadata::limits()).unwrap();
-        let record = FileRecord {
-            file: head.metadata_file,
-            location: head.metadata_location.clone(),
-            kind: FileKind::Metadata,
-            format: ContentFormat::Json,
-            length: document.canonical().len() as u64,
-            digest: head.metadata_digest,
-            content: FileContent::select_inline(FileKind::Metadata, document.canonical()).unwrap(),
-            hint: None,
-        };
-        files.publish(namespace.context, &record).await.unwrap();
-        namespace
-            .put(
-                head_key(head.catalog, head.table),
-                StorageRecord::TableHead(Box::new(head.clone())),
+        let source = Arc::new(
+            CandidateFileSource::new(
+                fixture.namespace.store.clone(),
+                fixture.blocks.clone(),
+                fixture.namespace.context,
+                prior.clone(),
+                document,
+                limits().manifests.framing,
+            )
+            .unwrap(),
+        );
+        let checked = source
+            .validate_snapshots(
+                &fixture.document,
+                CandidateSnapshotLimits {
+                    snapshots: 10,
+                    entries: 100,
+                    manifest_bytes: 1_000_000,
+                    ranges: 100,
+                    files: snapshot::limits(),
+                },
             )
             .await;
-        Self {
-            namespace,
-            blocks,
-            selected: SelectedTable {
-                head,
-                metadata: record,
-            },
-            document,
-            input,
-            manifest,
+        if required {
+            assert!(checked.is_err());
+        } else {
+            let summary = checked.unwrap();
+            assert_eq!(summary.snapshots, 1);
+            assert_eq!((summary.data_files, summary.data_rows), (1, 10));
         }
-    }
-
-    async fn build(
-        &self,
-        limits: PriorManifestLimits,
-    ) -> Result<PriorManifestSource, crowdb_access_iceberg::manifest::SnapshotManifestError> {
-        PriorManifestSource::build(
-            self.namespace.store.clone(),
-            self.blocks.clone(),
-            self.namespace.context,
-            &self.selected,
-            &self.document,
-            limits,
-        )
-        .await
     }
 }
 
-fn limits() -> PriorManifestLimits {
-    PriorManifestLimits {
-        snapshots: 10,
-        references: 10,
-        index_bytes: 100_000,
-        manifests: snapshot::limits().manifests,
+#[tokio::test]
+async fn candidate_sources_separate_reachable_history_from_new_definition_bound_uploads() {
+    let fixture = TestPrior::new().await;
+    let prior = Arc::new(fixture.build(limits()).await.unwrap());
+    let upload = fixture.copy_manifest("metadata/upload.avro").await;
+    for restored in [false, true] {
+        let source = CandidateFileSource::new(
+            fixture.namespace.store.clone(),
+            fixture.blocks.clone(),
+            fixture.namespace.context,
+            prior.clone(),
+            fixture.candidate(restored),
+            limits().manifests.framing,
+        )
+        .unwrap();
+        assert!(
+            SnapshotManifestSource::resolve(&source, &fixture.manifest.location)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            SnapshotManifestSource::resolve(&source, &upload.location)
+                .await
+                .is_ok(),
+            restored
+        );
+        assert_eq!(
+            SnapshotFileSource::resolve(&source, &upload.location)
+                .await
+                .unwrap(),
+            upload
+        );
+        let foreign = crowdb_access_iceberg::file::TableLocation {
+            catalog: fixture.namespace.context.catalog,
+            table: crowdb_access_iceberg::key::TableId::random(),
+        }
+        .file("metadata/upload.avro")
+        .unwrap();
+        assert!(SnapshotFileSource::resolve(&source, &foreign).await.is_err());
     }
 }
 

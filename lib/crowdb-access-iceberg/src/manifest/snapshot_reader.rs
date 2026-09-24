@@ -9,6 +9,9 @@ use super::{
     ManifestReader, ManifestScalarEntry,
 };
 
+mod references;
+use references::References;
+
 #[derive(Clone, Copy, Debug)]
 pub struct SnapshotManifestLimits {
     pub framing: AvroLimits,
@@ -60,7 +63,7 @@ pub trait SnapshotManifestSource: Send + Sync {
 pub struct SnapshotManifestReader {
     store: Arc<dyn FileBlockStore>,
     source: Arc<dyn SnapshotManifestSource>,
-    list: ManifestListReader,
+    list: References,
     manifest: Option<ManifestReader>,
     limits: SnapshotManifestLimits,
     summary: SnapshotManifestSummary,
@@ -100,7 +103,7 @@ impl SnapshotManifestReader {
         Ok(Self {
             store,
             source,
-            list,
+            list: References::List(Box::new(list)),
             manifest: None,
             limits,
             summary: SnapshotManifestSummary::default(),
@@ -108,6 +111,42 @@ impl SnapshotManifestReader {
             complete: false,
             rows,
             identity,
+        })
+    }
+
+    /// Enumerates a legacy v1 snapshot's embedded manifest paths without inventing a list file.
+    /// # Errors
+    /// Rejects foreign paths, excessive references and non-v1 manifests.
+    pub fn open_legacy(
+        store: Arc<dyn FileBlockStore>,
+        source: Arc<dyn SnapshotManifestSource>,
+        table: crate::file::TableLocation,
+        snapshot_id: i64,
+        locations: Vec<FileLocation>,
+        limits: SnapshotManifestLimits,
+    ) -> Result<Self, SnapshotManifestError> {
+        if limits.manifests == 0
+            || limits.entries == 0
+            || limits.manifest_bytes == 0
+            || locations.len() as u64 > limits.manifests
+            || locations.iter().any(|location| location.table() != table)
+        {
+            return Err(SnapshotManifestError::Bounds);
+        }
+        Ok(Self {
+            store,
+            source,
+            list: References::Legacy {
+                locations: locations.into_iter(),
+                snapshot_id,
+            },
+            manifest: None,
+            limits,
+            summary: SnapshotManifestSummary::default(),
+            failed: false,
+            complete: false,
+            rows: super::snapshot_rows::SnapshotRowAssignments::legacy(snapshot_id),
+            identity: super::SnapshotIdentityIndex::new(table, limits.identity)?,
         })
     }
 
@@ -150,7 +189,7 @@ impl SnapshotManifestReader {
                 self.rows.finish_manifest(manifest.next_row_id())?;
                 self.manifest = None;
             }
-            let Some(reference) = self.list.next_entry().await? else {
+            let Some((reference, resolved)) = self.list.next(self.source.as_ref()).await? else {
                 self.complete = true;
                 self.failed = false;
                 return Ok(None);
@@ -163,7 +202,10 @@ impl SnapshotManifestReader {
                 reference.length,
                 self.limits.manifest_bytes,
             )?;
-            let (record, context) = self.source.resolve(&reference.location).await?;
+            let (record, context) = match resolved {
+                Some(resolved) => resolved,
+                None => self.source.resolve(&reference.location).await?,
+            };
             self.manifest = Some(
                 ManifestReader::open(
                     self.store.clone(),
@@ -176,6 +218,14 @@ impl SnapshotManifestReader {
                 )
                 .await?,
             );
+            if matches!(self.list, References::Legacy { .. })
+                && self
+                    .manifest
+                    .as_ref()
+                    .is_some_and(|manifest| manifest.writer_version() != super::ManifestVersion::V1)
+            {
+                return Err(SnapshotManifestError::Unavailable);
+            }
             self.summary.manifests = manifests;
             self.summary.manifest_bytes = bytes;
         }
