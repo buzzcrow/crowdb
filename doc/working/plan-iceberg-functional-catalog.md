@@ -246,6 +246,20 @@ Current requested sequence (tasks 1–3):
 - [~] **HTTP composition and SDK acceptance**: connect authenticated create/commit,
   retry ledger, limits and draft-aware FileIO grants only after the durable library
   path passes. HTTP write endpoints remain disabled until then.
+  Integration inspection: existing `wire::FileDelegationLimits`,
+  `StorageCredential` and `LoadCredentialsResponse` already serialize credentials;
+  reuse them rather than adding another wire model. The live server still installs
+  neither table reads nor writes. Runtime catalog admission uses zero delegated
+  grace by default, so credential activation must audit persisted clear/request
+  bounds rather than merely advertise the new routes.
+  The pinned SDK's `VendedCredentialsProvider` refreshes a server-configured
+  `credentials.uri`, requires exactly one S3 credential in the result and starts
+  refreshing five minutes before expiry. The standard credentials route identifies
+  a table by name, while several invisible drafts may share that name. Verify an
+  exact-draft refresh URI with the real SDK before choosing its routing; never
+  return several draft credentials or silently refresh against another table.
+  Primary source:
+  [Java 1.11.0 provider](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/aws/src/main/java/org/apache/iceberg/aws/s3/VendedCredentialsProvider.java).
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,
