@@ -201,3 +201,60 @@ async fn lineage_identity_and_range_limits_fail_before_returning_a_proof() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn equality_rewrite_changes_paths_without_requiring_a_catalog_row_set_proof() {
+    let store = Arc::new(blocks::TestBlocks::default());
+    let data = snapshot::data(store.clone(), "data/target.parquet").await;
+    let old = snapshot::data(store.clone(), "data/old-equality.parquet").await;
+    let replacement = snapshot::data(store.clone(), "data/new-equality.parquet").await;
+    let mut old_entry = snapshot::entry(&old, 2, 10);
+    old_entry.set(135, serde_json::json!([3]));
+    let prior = snapshot::input(
+        store.clone(),
+        vec![vec![snapshot::entry(&data, 0, 10)], vec![old_entry]],
+        vec![data.clone(), old],
+    )
+    .await;
+    for equality_id in [3, 4] {
+        let mut entry = snapshot::entry(&replacement, 2, 10);
+        entry.set(135, serde_json::json!([equality_id]));
+        let mut candidate = snapshot::input(
+            store.clone(),
+            vec![vec![snapshot::entry(&data, 0, 10)], vec![entry]],
+            vec![data.clone(), replacement.clone()],
+        )
+        .await;
+        child(&mut candidate);
+        let result =
+            validate_snapshot_delete_preservation(store.clone(), &prior, &candidate, snapshot::limits(), 10)
+                .await;
+        assert_eq!(result.is_ok(), equality_id == 3, "{result:?}");
+    }
+}
+
+#[tokio::test]
+async fn expired_position_delete_removal_does_not_require_a_replacement_vector() {
+    let store = Arc::new(blocks::TestBlocks::default());
+    let delete = snapshot::store(
+        store.clone(),
+        "data/old-position.parquet",
+        ContentFormat::Parquet,
+        &official::files().remove(0),
+    )
+    .await;
+    let prior = snapshot::input(
+        store.clone(),
+        vec![vec![snapshot::entry(&delete, 1, 100)]],
+        vec![delete],
+    )
+    .await;
+    let mut candidate = snapshot::input(store.clone(), vec![], vec![]).await;
+    child(&mut candidate);
+    let summary = validate_snapshot_delete_preservation(store, &prior, &candidate, snapshot::limits(), 10)
+        .await
+        .unwrap();
+    assert_eq!(summary.data_files, 0);
+    assert_eq!(summary.position_files, 0);
+    assert_eq!(summary.vectors, 0);
+}

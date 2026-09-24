@@ -30,11 +30,19 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   fixed-length byte arrays under page limits, retaining floating-point bits.
   Support plain/dictionary, Boolean RLE and fixed delta/split encodings.
   Files: `file/parquet/pages/values/`, scalar fixtures/tests.
+- [x] **Ordinary delete-rewrite boundary**: confirm writer/engine responsibility
+  for row-set equivalence. Equality-delete replacement paths remain admissible
+  while invalid equality IDs reject; expired ordinary position-delete removal
+  does not require a replacement DV. Existing lost-DV and incomplete replacement
+  rejection tests stay enabled. Files: `snapshot_validation/preservation.rs`,
+  `snapshot_delete_preservation_test.rs`. These are catalog validation tests,
+  not execution-engine compaction or row-equivalence acceptance.
 - [~] **Selected auxiliary semantics**: finish partition-statistics inventory
   reconciliation and retained-file upgrade compatibility before removing
   `UnsupportedPartitionStatistics`. Typed row validation is implemented and
   wired into auxiliary validation; focused and broad regression tests pass.
-  Audit delete rewrites, retained history and aggregate bounds. Files:
+  Test ordinary delete-rewrite compatibility without adding row-set equivalence
+  computation; audit retained history and aggregate bounds. Files:
   `lib/crowdb-access-iceberg/src/commit/files/auxiliary.rs`, `commit/proof.rs`,
   relevant Parquet readers and crate tests.
   Remaining substeps:
@@ -266,17 +274,26 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   implementation. Native interruption acceptance and closure audit
   remain separate implementation work; ORC, GC and engine tests stay deferred.
 
-## Blocked
+## Confirmed delete-rewrite responsibility
 
-- **Ordinary delete-rewrite proof scope only:** R177 OI-5 needs a responsibility
-  decision. The pinned SDK's `RewriteFiles` contract requires logical equivalence,
+- **R177 OI-5 is resolved:** the writer/engine owns ordinary rewrite row-set
+  equivalence; Catalog does not recompute it. The SDK contract requires equivalence,
   while its REST commit handler does not prove that equivalence by scanning rows.
   The existing `snapshot_validation/preservation.rs` deliberately proves DV
   replacement coverage, not arbitrary equality/position-delete rewrites.
-- Recommendation: retain writer/engine responsibility for that computation and
-  test the catalog's declared validation boundary; alternative: build an explicit
-  bounded server-side equivalence evaluator. Do not pretend filename retention,
+- Remaining acceptance tests exercise the catalog's declared validation boundary,
+  not a server-side equivalence evaluator. Do not pretend filename retention,
   row-count equality or rejection of every removed delete is such an evaluator.
 - No production checks have been removed or relaxed. Partition-statistics
   reconciliation, retained-file compatibility and native interruption tests are
   unfinished work, not additional human decisions. R182 remains open.
+- The no-DV candidate path now returns after validating both snapshots and
+  surviving data identity, provided no prior DV target survives without a DV.
+  This avoids an unnecessary candidate manifest scan and repeated prior
+  position-page decoding; it does not skip either snapshot's file validation.
+- The shortcut uses the total validated DV count, not the applicable-target
+  index: an orphan DV is absent from that index but must still reach rejection.
+  The existing orphan regression exposed this distinction during implementation;
+  the corrected condition preserves its rejection. All 22 focused preservation,
+  selected-file and publication tests pass, with fmt, all-target library clippy
+  and workspace lint. The full library all-target regression also passes.

@@ -43,6 +43,16 @@ pub async fn validate_snapshot_delete_preservation(
     let (prior_index, prior_summary) = Box::pin(super::validate(store.clone(), prior, limits)).await?;
     let (candidate_index, summary) = Box::pin(super::validate(store.clone(), candidate, limits)).await?;
     surviving_files(&prior_index, &candidate_index)?;
+    if summary.vectors == 0 {
+        if prior_index
+            .vectors
+            .iter()
+            .any(|path| candidate_index.files.contains_key(path))
+        {
+            return Err(Error::Binding);
+        }
+        return Ok(summary);
+    }
     let vectors = collect(store.clone(), candidate, &candidate_index, limits, ranges).await?;
     let mut reader = super::open(store.clone(), prior, limits).await?;
     while let Some(entry) = reader.next_entry().await? {

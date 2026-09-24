@@ -54,6 +54,11 @@ conflicts, idempotency, and crash recovery without a table-wide lock.
    from the current schema. Retained fields still require compatible types and
    ordered IDs; missing active fields or invented historical types fail. This
    confirmed compatibility exception does not waive row ordering or count checks.
+   Ordinary data/delete rewrite row-set equivalence is the writer/engine's
+   responsibility, not a Catalog computation or completion prerequisite.
+   Preserve existing file-authority, schema/sequence/partition, position-bound
+   and DV replacement checks; do not reject legal compaction merely because an
+   old delete file is removed or replaced under another path.
 5. Support any explicit higher supported target, including direct v1-to-v3.
    Expand direct upgrades into v1-to-v2 and v2-to-v3 internal transitions; validate
    the source and preserve each intermediate version's rules before validating

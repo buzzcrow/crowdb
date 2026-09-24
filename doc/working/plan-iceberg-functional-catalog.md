@@ -107,12 +107,11 @@ do not close a requirement by ignoring its dependency's unsupported selected use
   R177 OI-4 records the
   confirmed SDK-compatible omission of fields with deleted source columns;
   retained fields still require full validation.
-  Audit equality-delete rewrites, position-delete removal without replacement DV,
-  retained history and aggregate admission against the declared profile. Existing
-  DV replacement validation alone does not prove all delete rewrites.
-  R177 OI-5 now asks whether ordinary rewrite row-set equivalence stays with the
-  writer/engine or becomes an additional CROWDB server proof; existing checks
-  remain unchanged while that responsibility is decided.
+  Test catalog compatibility for equality-delete rewrites and position-delete
+  removal without replacement DV; audit retained history and aggregate admission.
+  R177 OI-5 is confirmed: ordinary rewrite row-set equivalence belongs to the
+  writer/engine, not a new CROWDB server evaluator or catalog closure condition.
+  Existing file validation and DV replacement checks remain unchanged.
   Preserve explicit rejection for encrypted data and unsupported selected formats;
   encryption-key metadata parsing is not encrypted-file support.
   Files: `commit/proof.rs`, auxiliary/snapshot validators and SDK fixtures.
