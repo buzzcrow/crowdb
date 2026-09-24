@@ -14,6 +14,12 @@ after the program finishes. Human decisions live only in R177. No user-guide wor
 
 ## Completed summary
 
+Statistics publication checkpoint (2026-09-25): canonical typed rows and selected
+manifest counts, retained-file schema/version compatibility, official Java
+publication/replay, evolved partition specs, v2-to-v3 and staged creation all pass,
+including native listener restart. R182 now proceeds to native process-kill
+acceptance and closure audit; R180 keeps its independent FileIO acceptance tasks.
+
 Verified integration checkpoint: `a832e699` (2026-09-24).
 
 - Independent writer credentials; namespace CRUD, bounded listing, durable

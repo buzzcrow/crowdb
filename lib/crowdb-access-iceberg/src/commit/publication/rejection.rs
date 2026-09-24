@@ -15,8 +15,7 @@ pub(super) fn response(error: &CommitProofError) -> Option<IcebergErrorResponse>
         ))) => (409, "CommitFailedException", "Table requirement failed"),
         CommitProofError::Preparation(CommitPreparationError::Evaluation(EvaluationError::Unsupported(
             _,
-        )))
-        | CommitProofError::UnsupportedPartitionStatistics => (
+        ))) => (
             406,
             "UnsupportedOperationException",
             "Selected operation is not supported",

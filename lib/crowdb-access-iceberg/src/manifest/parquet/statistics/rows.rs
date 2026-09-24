@@ -160,20 +160,36 @@ impl GroupReader {
     ) -> Result<Self, Error> {
         validate_group(metadata, group)?;
         charge(work, group.columns.len())?;
-        let buffered = group
+        let pages = group
             .columns
             .len()
             .checked_mul(4)
             .and_then(|pages| pages.checked_add(8))
-            .and_then(|pages| pages.checked_mul(limits.page.bytes))
-            .filter(|bytes| *bytes <= limits.buffered_bytes)
+            .ok_or(ParquetMetadataError::Bounds)?;
+        let available = limits
+            .buffered_bytes
+            .checked_sub(64 * 1024)
+            .ok_or(ParquetMetadataError::Bounds)?;
+        let page = ParquetPageLimits {
+            bytes: limits
+                .page
+                .bytes
+                .min(available / pages.checked_add(8).ok_or(ParquetMetadataError::Bounds)?),
+            ..limits.page
+        };
+        if page.bytes == 0 {
+            return Err(ParquetMetadataError::Bounds.into());
+        }
+        let buffered = pages
+            .checked_mul(page.bytes)
+            .and_then(|bytes| bytes.checked_add(64 * 1024))
             .ok_or(ParquetMetadataError::Bounds)?;
         let mut readers = Vec::new();
         for column in &group.columns {
             let field = metadata.schema.get(column.schema_index).ok_or(Error::Schema)?;
             readers.push((
                 column.schema_index,
-                ParquetColumnReader::new(store.clone(), record, column, field, limits.page)?,
+                ParquetColumnReader::new(store.clone(), record, column, field, page)?,
             ));
         }
         Ok(Self { buffered, readers })

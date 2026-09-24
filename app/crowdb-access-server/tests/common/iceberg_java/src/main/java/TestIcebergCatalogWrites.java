@@ -26,6 +26,7 @@ public final class TestIcebergCatalogWrites {
           "io-impl", "org.apache.iceberg.aws.s3.S3FileIO", "client.region", "us-east-1",
           "rest-metrics-reporting-enabled", "false"));
       if (args.length > 1 && args[1].equals("verify")) {
+        TestIcebergPartitionStatistics.run(catalog, args[0], true);
         for (String tableName : new String[] {"immediate", "staged"}) {
           Table persisted = catalog.loadTable(TableIdentifier.of(Namespace.of("analytics"), tableName));
           credential(persisted);
@@ -75,6 +76,9 @@ public final class TestIcebergCatalogWrites {
         verifyFiles(catalog.loadTable(stagedName), 1);
       }
       lifecycle(catalog, schema, args.length > 1);
+      if (args.length > 1) {
+        TestIcebergPartitionStatistics.run(catalog, args[0], false);
+      }
       System.out.println("Official RESTCatalog create, update, upgrade, stage, refresh, rename and drop acceptance passed");
     }
   }

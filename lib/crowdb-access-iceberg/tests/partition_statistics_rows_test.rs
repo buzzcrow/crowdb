@@ -242,6 +242,72 @@ async fn row_work_and_buffer_limits_fail_before_unbounded_materialization() {
 }
 
 #[tokio::test]
+async fn wide_statistics_share_the_existing_buffer_cap_without_reserving_full_pages_per_column() {
+    for fields in [2, 10] {
+        let mut columns: Vec<_> = (0..fields)
+            .map(|index| rows::column(1000 + index, 2, vec![Some(7_i64.to_le_bytes().to_vec())]))
+            .collect();
+        columns.extend(rows::counts(1));
+        for id in [6, 7, 8, 9, 13] {
+            columns.push(rows::integers(id, &[0]));
+        }
+        columns.extend([
+            rows::integers(10, &[10]),
+            rows::integers(11, &[100]),
+            rows::integers(12, &[99]),
+        ]);
+        let mut table = serde_json::Value::Object(
+            rows::table(&vec!["long"; usize::try_from(fields).unwrap()])
+                .fields()
+                .clone(),
+        );
+        table["format-version"] = serde_json::json!(3);
+        table["next-row-id"] = serde_json::json!(0);
+        let document = fixture::parse(&table).unwrap();
+        let (store, record) = rows::file(&columns, 1, 1).await;
+        let metadata = read_parquet_metadata(store.clone(), &record, parquet::limits())
+            .await
+            .unwrap();
+        let mut bounded = limits();
+        bounded.page.bytes = 1024 * 1024;
+        bounded.buffered_bytes = 64 * 1024 * 1024;
+        validate_partition_statistics_rows(
+            store.clone(),
+            &record,
+            &metadata,
+            &document,
+            bounded,
+            &mut 100_000,
+        )
+        .await
+        .unwrap();
+        bounded.buffered_bytes = 64 * 1024;
+        assert!(validate_partition_statistics_rows(
+            store.clone(),
+            &record,
+            &metadata,
+            &document,
+            bounded,
+            &mut 100_000
+        )
+        .await
+        .is_err());
+        bounded.buffered_bytes = 64 * 1024 * 1024;
+        bounded.page.bytes = 1;
+        assert!(validate_partition_statistics_rows(
+            store,
+            &record,
+            &metadata,
+            &document,
+            bounded,
+            &mut 100_000
+        )
+        .await
+        .is_err());
+    }
+}
+
+#[tokio::test]
 async fn uuid_order_uses_signed_java_halves() {
     let values = [(-1_i64, 0_i64), (0, -1), (0, 0), (1, 0)];
     let mut column = rows::column(

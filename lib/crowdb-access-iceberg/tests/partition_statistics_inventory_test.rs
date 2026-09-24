@@ -35,11 +35,45 @@ async fn validate(
     counts: &[rows::TestColumn],
     work: &mut usize,
 ) -> Result<(), SnapshotValidationError> {
+    validate_with_delete(data_rows, counts, work, None).await
+}
+
+async fn validate_with_delete(
+    data_rows: i64,
+    counts: &[rows::TestColumn],
+    work: &mut usize,
+    delete: Option<(i64, bool)>,
+) -> Result<(), SnapshotValidationError> {
     let store = Arc::new(blocks::TestBlocks::default());
     let data = snapshot::data(store.clone(), "data/input.parquet").await;
     let mut entry = snapshot::entry(&data, 0, data_rows);
     entry.set(104, serde_json::json!(100));
-    let input = snapshot::input(store.clone(), vec![vec![entry]], vec![data]).await;
+    let mut groups = vec![vec![entry]];
+    if let Some((kind, vector)) = delete {
+        let record = snapshot::store(
+            store.clone(),
+            "deletes/rows",
+            if vector {
+                ContentFormat::Puffin
+            } else {
+                ContentFormat::Parquet
+            },
+            &[],
+        )
+        .await;
+        let mut entry = snapshot::entry(&record, kind, 3);
+        entry.set(104, serde_json::json!(100));
+        if kind == 2 {
+            entry.set(135, serde_json::json!([3]));
+        }
+        if vector {
+            entry.set(143, serde_json::json!(data.location.to_string()));
+            entry.set(144, serde_json::json!(4));
+            entry.set(145, serde_json::json!(20));
+        }
+        groups.push(vec![entry]);
+    }
+    let input = snapshot::input(store.clone(), groups, vec![data]).await;
     let mut reader = SnapshotManifestReader::open(
         store.clone(),
         input.manifests,
@@ -59,11 +93,16 @@ async fn validate(
     let metadata = read_parquet_metadata(store.clone(), &statistics, parquet::limits())
         .await
         .unwrap();
+    let mut document = serde_json::Value::Object(rows::table(&[]).fields().clone());
+    if delete.is_some_and(|(_, vector)| vector) {
+        document["format-version"] = serde_json::json!(3);
+        document["next-row-id"] = serde_json::json!(0);
+    }
     validate_partition_statistics_inventory(
         store,
         &statistics,
         &metadata,
-        &rows::table(&[]),
+        &metadata::parse(&document).unwrap(),
         &mut reader,
         PartitionStatisticsRowLimits {
             page: ParquetPageLimits {
@@ -106,6 +145,36 @@ async fn total_counts_without_deletes_are_metadata_derivable() {
         let mut counts = rows::counts(1);
         counts.push(rows::integers(10, &[total]));
         assert_eq!(validate(10, &counts, &mut 100_000).await.is_ok(), total == 10);
+    }
+}
+
+#[tokio::test]
+async fn delete_and_vector_counters_are_separate_and_do_not_recompute_engine_totals() {
+    for (kind, vector, record_id, file_id) in [(1, false, 6, 7), (2, false, 8, 9), (1, true, 6, 13)] {
+        let mut counts = rows::counts(1);
+        for id in [6, 7, 8, 9, 13] {
+            if id == 13 && !vector {
+                continue;
+            }
+            counts.push(rows::integers(
+                id,
+                &[if id == record_id {
+                    3
+                } else {
+                    i64::from(id == file_id)
+                }],
+            ));
+        }
+        counts.push(rows::integers(10, &[if vector { 7 } else { 8 }]));
+        validate_with_delete(10, &counts, &mut 100_000, Some((kind, vector)))
+            .await
+            .unwrap();
+        *counts.iter_mut().find(|column| column.id == file_id).unwrap() = rows::integers(file_id, &[2]);
+        assert!(
+            validate_with_delete(10, &counts, &mut 100_000, Some((kind, vector)))
+                .await
+                .is_err()
+        );
     }
 }
 

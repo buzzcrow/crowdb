@@ -36,8 +36,6 @@ pub enum CommitProofError {
     Manifest(#[from] SnapshotManifestError),
     #[error(transparent)]
     Files(#[from] SnapshotValidationError),
-    #[error("partition statistics selected-use validation is not enabled")]
-    UnsupportedPartitionStatistics,
 }
 
 /// Generation-bound evidence for the enabled canonical selected-file validation profile.
@@ -75,14 +73,6 @@ pub async fn prepare_table_commit(
     )
     .await?;
     let document = Arc::new(evaluated.document);
-    if document
-        .fields()
-        .get("partition-statistics")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|entries| !entries.is_empty())
-    {
-        return Err(CommitProofError::UnsupportedPartitionStatistics);
-    }
     let selected = SelectedTable {
         head: operation.before.clone(),
         metadata: FileRepository::new(store.clone())

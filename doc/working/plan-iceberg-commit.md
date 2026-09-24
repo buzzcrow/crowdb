@@ -7,15 +7,6 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
 
 ## Execution
 
-Latest checkpoint: retained statistics preserve their accepted writer semantics
-across schema evolution and v2-to-v3 upgrades, bound to the selected prior head.
-Unchanged references still undergo authority, length and canonical digest checks;
-changed paths or snapshots use full validation. Three focused tests cover upgrade,
-new partition fields, foreign provenance, changed snapshots, copied files, resource
-limits, encryption descriptors and byte corruption. Library all-target tests,
-Iceberg-enabled server all-target tests, fmt and lint pass. Publication guards
-remain until real SDK statistics publication and replay acceptance passes.
-
 - [x] **Official SDK errors and counts**: use pinned Java 1.11.0 typed requests
   and its commit error handler to verify requirement conflicts, stale schema,
   malformed updates, ordered rollback, lifecycle identity, and exact 1000/1001
@@ -46,36 +37,31 @@ remain until real SDK statistics publication and replay acceptance passes.
   rejection tests stay enabled. Files: `snapshot_validation/preservation.rs`,
   `snapshot_delete_preservation_test.rs`. These are catalog validation tests,
   not execution-engine compaction or row-equivalence acceptance.
-- [~] **Selected auxiliary semantics**: finish partition-statistics inventory
-  reconciliation and retained-file upgrade compatibility before removing
-  `UnsupportedPartitionStatistics`. Typed row validation is implemented and
-  wired into auxiliary validation; focused and broad regression tests pass.
-  Test ordinary delete-rewrite compatibility without adding row-set equivalence
-  computation; audit retained history and aggregate bounds. Files:
-  `lib/crowdb-access-iceberg/src/commit/files/auxiliary.rs`, `commit/proof.rs`,
-  relevant Parquet readers and crate tests.
-  Remaining substeps:
-  - Inventory comparison is implemented: per-spec projected tuples and
-    data/delete/DV counts are reconciled with selected manifests. Omitted
-    historical values remain unknown; collapsed tuples aggregate their counters.
-    The pinned SDK's full computation includes zero-count rows from deleted
-    entries; incremental computation can retain older zero-count partitions.
-    Do not reject these as invented live partitions or require their last-update
-    snapshot to remain retained. Confirmed against `PartitionStatsHandler`
-    (`computeStats`, `liveEntry`, `deletedEntry`, incremental merge) in Java 1.11.0.
-  - Retained statistics reuse already accepted semantics only when their exact
-    snapshot/path/size and parsed snapshot match the selected input generation.
-    Canonical file authority and digest verification still run. This preserves
-    old writer schemas across evolution and v2-to-v3 without weakening newly
-    introduced files or rewriting old bytes; readers apply the standard DV default.
-  - Add real SDK statistics publication and replay acceptance, then remove both
-    ordinary/staged publication guards together. Schema/reader fixtures alone
-    do not satisfy this acceptance.
-- [ ] **Publication fault acceptance**: exercise native process interruption at
+- [x] **Selected auxiliary semantics**: reconcile statistics with selected manifest
+  inventories, preserve unknown optional values and deleted-source omissions, and
+  reuse accepted immutable references only through selected prior provenance.
+  Ordinary and staged publication now validate statistics instead of returning
+  the provisional 406. Real Java SDK publication/replay, schema/spec evolution,
+  v2-to-v3 upgrade, staged creation and native listener restart acceptance pass.
+  Files: `commit/files/auxiliary/`, `manifest/parquet/statistics/`,
+  `TestIcebergPartitionStatistics.java`.
+- [~] **Publication fault acceptance**: exercise native process interruption at
   candidate and head publication; cover create/staged operation boundaries,
   exact identity recovery on another listener, changed-input conflicts and
   unreachable losing candidates. Existing in-memory reply-loss tests and
   successful restart fixtures do not satisfy this matrix.
+  - Use a test-executable child listener with native routed KV and native file
+    blocks. Keep fault injection entirely in `tests/common/`, wrapping the existing
+    storage traits rather than adding production environment switches.
+  - Enumerate request-local durable CAS and block writes in a successful baseline;
+    pause immediately before and after each boundary, notify the parent, then kill
+    the child process. Repeat for create, stage, staged publication and update.
+  - Retry the original identity/body through a separate listener and assert exact
+    final response replay, single visible generation and changed-input conflicts.
+    Verify stage invisibility and recoverable durable name reservations.
+  - Pause before candidate head selection, publish a competitor, kill the paused
+    listener and verify durable conflict replay plus unreachable candidate files.
+    Test response loss after final journal persistence independently of head CAS.
 - [x] **Remaining SDK error cases**: add deterministic head-CAS loss and disabled
   selected-operation errors through the official client. Failed requirements and
   post-drop/recreated-name checks do not substitute for publication races.
@@ -83,9 +69,9 @@ remain until real SDK statistics publication and replay acceptance passes.
   HTTP update, then release the SDK request. Check Publishing/Rejected journal
   phases, same retained input, exact conflict replay and unreachable candidate.
   Files: test-only store, `iceberg_commit_sdk_test.rs`, `TestIcebergCommitRace.java`.
-  Disabled partition-statistics uses a typed SDK update and metadata-only fixture
-  references to prove the pre-file-validation 406 gate; it does not validate a
-  real statistics file. Replace this rejection fixture when support is enabled.
+  The provisional unsupported-statistics fixture is now an unavailable-file
+  rejection fixture (400) with unchanged canonical head; valid files are covered
+  by native SDK publication tests.
 - [ ] **Closure audit**: map every R182 acceptance case to executed verification;
   retain unsupported shared dependencies until implemented, then close R182.
 
@@ -102,235 +88,42 @@ remain until real SDK statistics publication and replay acceptance passes.
 - Gates: `pixi run cargo fmt --all -- --check`, `pixi run rs-lint`, explicit
   access-server E2E-feature clippy. No user-guide or deferred engine-test work.
 
-## Verified checkpoint
+## Verified implementation summary
 
-- All four official Java SDK tests pass together under default concurrency.
-  New error checks inspect HTTP status, parsed wire error type, exact SDK exception
-  class and unchanged canonical metadata location after every rejected live-table
-  commit. The first update of a later-failing ordered batch remains invisible.
-- The exact 1000-count case uses numeric schema requirements; 1000 UUID
-  requirements correctly fail the independent 4096-byte aggregate text budget.
-  Both count and text limits retain their original production values.
-- Test setup initially inherited an invalid `/opt/jdk11` JAVA_HOME; use
-  `JAVA_HOME=$PWD/.pixi/envs/iceberg-e2e/lib/jvm` and
-  `CROWDB_ICEBERG_E2E_MVN=$PWD/.pixi/envs/iceberg-e2e/bin/mvn`.
-  The checking handler delegates parsing and exception mapping to the official
-  `ErrorHandler`; a plain Consumer receives the raw body instead of parsed fields.
-- No production code, retry policy, timeouts or unsafe scope changed. Existing
-  Maven SLF4J binding warnings remain visible and nonfatal.
-- Ten HTTP table write/lifecycle acceptance tests, workspace fmt/clippy and
-  explicit `iceberg-e2e` all-target clippy pass. Full native fault and engine
-  matrices were not run or claimed by this checkpoint.
-
-## CAS and disabled-operation checkpoint
-
-- The real publisher is paused immediately before the storage head CAS, after
-  reaching Publishing with written candidate metadata. Another HTTP commit
-  publishes first. Both journals retain the identical input head and target
-  generation; the SDK loser reaches Rejected with 409 CommitFailedException.
-- Same-key replay returns the identical error body; changed input conflicts.
-  Exactly two commit journals remain, with no rebase/new commit from either
-  replay. Load selects the winner, list exposes one table, and loser-only
-  properties never become visible. This uses the in-memory CAS implementation,
-  not native multi-process failure injection.
-- The disabled selected partition-statistics gate returns HTTP/wire 406 and
-  UnsupportedOperationException; the pinned SDK maps it to RESTException.
-  Earlier property/snapshot updates in that batch leave the head unchanged.
-- Five Java SDK tests, server Iceberg-enabled all-targets, fmt, workspace clippy
-  and explicit E2E-feature clippy pass. No production code or limits changed.
-
-## Partition-statistics reader checkpoint
-
-- The backed-up Iceberg 1.11.0 specification requires INT32 spec IDs and
-  data/delete/DV file counts. The prior canonical page reader only decoded
-  INT64 and BYTE_ARRAY. INT32 now shares the bounded page/CRC/decompression
-  pipeline for PLAIN, both dictionary tags, DELTA_BINARY_PACKED and
-  BYTE_STREAM_SPLIT. Signed values are represented losslessly as i64 internally.
-- Delta arithmetic wraps at the physical 32-bit width, rejects oversized first
-  values/minimum deltas and used miniblock widths, and accepts arbitrary unused
-  miniblock-width/padding bits as required by the
-  [Parquet encoding specification](https://parquet.apache.org/docs/file-format/data-pages/encodings/).
-- Seven integer tests cover page v1/v2, multiple pages, five existing codecs,
-  signed extremes, dictionary RLE/bitpacking, full-width delta residuals,
-  malformed lengths/indices and unchanged value/byte budgets. Test access is
-  isolated behind `test-util`; the production column reader stays crate-private.
-- Iceberg library and Iceberg-enabled server all-target suites, workspace fmt
-  and clippy, library all-target clippy and server E2E-feature clippy pass.
-  Existing INT64/string position-delete decoding remains covered by regression
-  tests. No native process-kill or new SDK statistics-file acceptance is claimed.
-- Next: remaining partition primitive types,
-  unified partition schema across retained specs, NULL-FIRST tuple ordering,
-  duplicate/spec/count semantics and real SDK statistics files. Do not remove
-  the existing publication 406 gate at this prerequisite-only checkpoint.
-
-## Nullable page checkpoint
-
-- Canonical schema traversal derives definition depth and repeated ancestry.
-  The scalar reader rejects repeated columns and checks nullable levels before
-  yielding a page. v1 RLE framing and legacy MSB-first bitpacking, v2 raw levels
-  with independently compressed data, exact null/value counts and full-null
-  materialization budgets are covered. Required-column decoding retains its
-  previous no-level path; null expansion reuses the decoded value vector.
-- Eight nullable tests include four complete files generated by Parquet Java
-  1.17.1: v1/v2 nested optional columns, dictionary values and all-null pages.
-  The official v2 all-null writer emits a zero-element delta header; the decoder
-  now accepts that framed empty stream without accepting trailing bytes or
-  unknown encodings. Existing integer/string/delete regressions still pass.
-- Verified: all 25 focused nullable/integer/delete tests, the Iceberg library
-  all-target suite and Access Server all-target suite with `iceberg` enabled.
-  Workspace fmt and `rs-lint`, library all-target clippy and Access Server
-  all-target clippy with `iceberg-e2e` enabled pass. This does not claim a new
-  native process-kill matrix or SDK partition-statistics publication acceptance.
-- Generator: `tests/common/parquet_java/src/main/java/TestNullableParquetFixtures.java`;
-  exact BASE64 files: `tests/common/parquet_nullable_official.rs`. Regenerate via
-  `pixi run timeout 60 "$CROWDB_ICEBERG_E2E_MVN" -o --batch-mode --no-transfer-progress
-  -f lib/crowdb-access-iceberg/tests/common/parquet_java/pom.xml compile exec:java
-  -Dexec.mainClass=TestNullableParquetFixtures` with the previously documented
-  JAVA_HOME. The fixture POM explicitly pins parquet-hadoop 1.17.1. Initial
-  compilation required that direct dependency and an online cache fill for its
-  snappy-java dependency. Maven succeeded with existing SLF4J and Hadoop shutdown
-  classloader warnings visible; neither warnings nor retries were suppressed.
-
-## Confirmed schema compatibility
-
-- R177 OI-4 is confirmed: accept the pinned SDK's omission of historical
-  partition fields whose source columns are absent from the current schema.
-  Validate retained field types, ordering and statistics; reject arbitrary
-  omissions and never treat omitted values as known. Add a real SDK fixture
-  after source-column deletion alongside rejection coverage for missing active
-  fields. No decision blocks implementation. The 406 guard remains until the
-  complete selected-file validator passes acceptance.
-
-## Partition-statistics schema checkpoint
-
-- Eight schema tests cover all retained specs, deleted-source omission versus
-  dropped partition fields with live sources, retained primitive types, missing
-  history, sorted field IDs, conflicting source/transform reuse, v1 void fields,
-  v1/v2/v3 requiredness and exact aggregate work boundaries.
-- A ninth regression covers legacy v1 metadata without `schemas`,
-  `current-schema-id` or `partition-specs`: use the legacy schema's declared ID
-  before falling back to zero and derive missing partition IDs positionally.
-  The test first reproduced a schema rejection before this fallback was fixed.
-  After the fix, all 24 schema/auxiliary/metadata-context/document tests pass;
-  fmt, workspace lint and both library/server all-target clippy gates pass again.
-- Four real Parquet files use Java 1.11.0 `Partitioning.partitionType` and
-  `PartitionStatsHandler.schema` with Parquet Java 1.17.1 output. A minimal Table
-  proxy supplies real Schema/PartitionSpec objects; these are schema/reader
-  fixtures, not a REST publication or full statistics-computation acceptance.
-  Generator: `tests/common/parquet_java/src/main/java/TestPartitionStatisticsFixtures.java`;
-  use the nullable fixture Maven command with this main class. Offline generation
-  succeeds; deprecated-API, SLF4J and Hadoop shutdown warnings remain visible.
-- Auxiliary validation now rejects ordinary data-file schemas instead of
-  accepting any framed Parquet file. The publication guard is unchanged.
-  Remaining: complete typed row decoding, NULL-FIRST ordering, spec/duplicate/count
-  semantics, retained-statistics upgrade compatibility and publication acceptance.
-- Verified: eight schema tests, the full Iceberg library all-target suite and
-  Access Server all-target suite with `iceberg`; workspace fmt/`rs-lint`, library
-  all-target clippy and Access Server all-target `iceberg-e2e` clippy pass.
-
-## Physical scalar checkpoint
-
-- Physical type and fixed width now come from the validated schema leaf, not a
-  caller-supplied numeric type. BOOLEAN supports LSB-first plain and length-framed
-  RLE on both page versions; FLOAT/DOUBLE preserve signed zero, infinities and NaN
-  bits. Fixed bytes support plain, dictionary, delta-byte-array and byte-stream
-  split with exact reconstructed widths. INT96 and unknown encodings still reject.
-- Generic bytes use the explicit page materialization budget instead of the
-  unrelated delete-path length cap. Position-delete paths retain their semantic
-  location validation. Dictionary expansion charges retained bytes before copying
-  payloads; scalar split decoding keeps a stack buffer for widths up to eight.
-- Ten focused scalar tests include four Parquet Java 1.17.1 v1/v2 files with
-  nullable Boolean/float/double/fixed/large-binary columns and dictionary toggles.
-  The Java writer canonicalizes NaN payloads; hand-built page tests separately
-  verify that the reader preserves encoded payload bits without conversion.
-  Generator: `TestScalarParquetFixtures` using the same documented Maven command;
-  offline generation succeeds with the existing visible shutdown/logging warnings.
-- This is physical decoding, not a claim of complete logical partition semantics.
-  Next: decimal/time/unit normalization, typed NULL-FIRST tuple comparison,
-  spec membership, duplicates and count validation across pages and row groups;
-  retain the publication rejection until all selected-file checks are integrated.
-- Verified: ten scalar tests and all existing library all-target tests; Access
-  Server all-target tests with `iceberg`; workspace fmt/`rs-lint`, library
-  all-target and no-default-feature library clippy, and Access Server all-target
-  `iceberg-e2e` clippy pass. No native fault or full statistics publication
-  acceptance was executed at this prerequisite checkpoint.
-
-## Partition-statistics rows in progress
-
-- Canonical page iteration now validates typed NULL-FIRST lexicographic tuple
-  order across pages and row groups, known spec IDs, spec-local bucket/truncate/
-  absent-field semantics, nonnegative counters and provable duplicate tuples.
-  Deleted-source projection collisions are not treated as proven duplicates.
-- Decimal values enforce declared precision; time values enforce unit-specific
-  day bounds. Temporal comparison uses i128 nanoseconds without overflow, not
-  an assumption about Java reader unit conversion. Strings validate UTF-8;
-  floating comparison preserves signed zero and canonicalizes NaNs for ordering;
-  UUID comparison uses Java's signed high/low halves rather than unsigned bytes.
-- Row, work and aggregate column-buffer limits are explicit. The auxiliary
-  validator shares its work budget with row validation. Buffered-page reservation
-  includes four page budgets per column for retained dictionary/value vectors
-  and eight shared page budgets for decoding transients; current/previous tuple
-  storage is charged separately. This is conservative admission, not a claim of
-  exact allocator accounting or a performance measurement.
-- Twelve focused row tests, ten schema/official-file tests and five auxiliary
-  regressions pass. Official deleted-source v2/v3 files pass row validation;
-  older schema-only fixtures with a non-NULL field absent from their row's spec
-  correctly fail membership. Auxiliary integration exercises a real file,
-  unknown spec rejection and independent row/work limits.
-- The full Iceberg library and Iceberg-enabled Access Server all-target suites
-  pass; focused tests, fmt, library all-target clippy, workspace lint and server
-  E2E-feature all-target clippy pass after shared-projection cleanup. This does
-  not prove agreement with snapshot inventory or permit
-  publication: both `UnsupportedPartitionStatistics` guards remain in place.
-- OI-5 was discovered in the subsequent delete-rewrite audit, after this row
-  implementation. Native interruption acceptance and closure audit
-  remain separate implementation work; ORC, GC and engine tests stay deferred.
-
-## Confirmed delete-rewrite responsibility
-
-- **R177 OI-5 is resolved:** the writer/engine owns ordinary rewrite row-set
-  equivalence; Catalog does not recompute it. The SDK contract requires equivalence,
-  while its REST commit handler does not prove that equivalence by scanning rows.
-  The existing `snapshot_validation/preservation.rs` deliberately proves DV
-  replacement coverage, not arbitrary equality/position-delete rewrites.
-- Remaining acceptance tests exercise the catalog's declared validation boundary,
-  not a server-side equivalence evaluator. Do not pretend filename retention,
-  row-count equality or rejection of every removed delete is such an evaluator.
-- No production checks have been removed or relaxed. Partition-statistics
-  reconciliation, retained-file compatibility and native interruption tests are
-  unfinished work, not additional human decisions. R182 remains open.
-- The no-DV candidate path now returns after validating both snapshots and
-  surviving data identity, provided no prior DV target survives without a DV.
-  This avoids an unnecessary candidate manifest scan and repeated prior
-  position-page decoding; it does not skip either snapshot's file validation.
-- The shortcut uses the total validated DV count, not the applicable-target
-  index: an orphan DV is absent from that index but must still reach rejection.
-  The existing orphan regression exposed this distinction during implementation;
-  the corrected condition preserves its rejection. All 22 focused preservation,
-  selected-file and publication tests pass, with fmt, all-target library clippy
-  and workspace lint. The full library all-target regression also passes.
-
-## Statistics inventory checkpoint
-
-- Added bounded manifest inventory reconciliation to auxiliary-file validation.
-  It compares present statistics counters with live manifest entries by spec ID
-  and normalized projected partition tuple, rejects missing live partitions and
-  swapped per-partition counts, and accepts historical zero-count rows.
-- Missing optional counters stay unknown. Exact total records are checked only
-  when there are no ordinary position/equality delete files; no data-row scan or
-  writer row-equivalence computation is introduced. Manifest I/O/source failures
-  preserve their error category instead of becoming terminal row-validation errors.
-- Inventory keys normalize numeric promotions, temporal units, decimals, UUIDs,
-  NaNs and signed zero consistently with statistics rows. Inventory retention and
-  page buffers share the configured memory allowance; manifest count/entry/byte
-  budgets are shared across auxiliary files, and comparisons consume work.
-- Six new inventory tests cover wrong record/file/byte totals, optional unknown
-  counters, metadata-derived totals, work exhaustion, partition-specific counts,
-  missing partitions and deleted-source projection collisions. Existing official
-  zero-row-count fixtures are paired with an empty manifest list rather than
-  pretending they describe unrelated live files.
-- Focused suites, library all-targets and Iceberg-enabled server all-targets pass.
-  Fmt, library all-target clippy, workspace lint and server E2E-feature all-target
-  clippy pass. Retained-file evolution,
-  real SDK publication and native interruption acceptance remain pending; both
-  publication guards remain in place.
+- Library tests cover ordered metadata updates, retained generations, schema/spec/
+  sort evolution, v1/v2/v3 defaults and lineage, direct upgrades, name mapping,
+  immutable candidates, deterministic CAS conflicts and exact durable replay.
+- Delete validation preserves ordinary writer-owned rewrite semantics while
+  retaining file authority, IDs/sequence/partition, position bounds and DV merge/
+  preservation checks. No Catalog row-set equivalence evaluator was introduced.
+- Statistics validation covers physical scalar decoding, typed NULL-FIRST tuple
+  ordering, transform/spec membership, Unicode/decimal/time/UUID/NaN normalization,
+  count consistency and selected-manifest inventory reconciliation. Optional
+  unknown counters are not invented; historical zero-count partitions remain
+  compatible with the SDK. Deleted-source projection collisions aggregate counts.
+- Already accepted statistics survive evolution only with exact prior-head,
+  snapshot, location and size binding. Canonical authority, lengths and digest
+  verification still run; copied or changed references receive full validation.
+- Native SDK acceptance exposed over-reservation for wide statistics. Readers now
+  divide the unchanged aggregate budget into enforced per-column page allowances,
+  scratch/header reserve and checked tuple retention. Neither the 64-MiB cap nor
+  configured page ceiling is increased. Two-/ten-field regressions pass; tiny
+  aggregate and page budgets still reject.
+- Official Java 1.11.0 uses native S3FileIO and Parquet statistics, publishes v2,
+  replays identical typed requests with UUIDv7 identity, evolves schema/specs,
+  upgrades to v3 with retained statistics, computes new v3 statistics and publishes
+  a staged table containing statistics. Both tables are read after listener restart.
+- The SDK fixture includes Parquet Hadoop and Hadoop MapReduce reader dependencies.
+  Populate runtime artifacts with Maven `dependency:resolve -DincludeScope=runtime`
+  before offline E2E execution. No client-side workaround, retry loop or production
+  timeout increase was added.
+- Use an isolated ephemeral runtime root for native suites: unrelated preserved
+  persistent port claims in the default root can violate the test allocator's
+  fixed ChunkDB listen/RPC offset. Do not delete persistent user runtime state.
+- Latest native command: isolated runtime root plus
+  `cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test official_java_catalog_commits_native_parquet_snapshots_and_staged_tables -- --ignored --nocapture`,
+  via Pixi with the pinned Java/Maven environment. Publication and restart pass.
+- Latest focused coverage: statistics rows (13), inventory (7), retained files (3);
+  four official table SDK tests pass. Full library/server and lint gates are
+  rerun before each coherent commit. Native interruption acceptance remains
+  independent and is not claimed by ordinary successful restart tests.

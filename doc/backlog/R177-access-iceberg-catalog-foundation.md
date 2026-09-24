@@ -359,9 +359,9 @@ GC and exhaustion-recovery requirements recorded in R183.
   schema. The user confirmed compatibility with this SDK projection: accept
   this explicit omission case while validating retained
   fields, types, row ordering and counts; do not silently treat omitted partition
-  values as known or broaden omissions to arbitrary fields. Existing
-  partition-statistics publication stays disabled until the complete semantic
-  validator is implemented. This decision is resolved.
+  values as known or broaden omissions to arbitrary fields. Statistics publication
+  now validates canonical rows and selected manifest counts; accepted immutable
+  references retain their writer semantics across evolution. This decision is resolved.
 
 - **OI-5 — Ordinary delete-rewrite equivalence responsibility (confirmed):**
   distinguish valid file/metadata structure from proving that a rewrite preserves

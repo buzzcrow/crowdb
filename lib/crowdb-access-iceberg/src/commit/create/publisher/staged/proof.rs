@@ -18,14 +18,6 @@ impl TableCreator {
             .staged_limits
             .as_ref()
             .ok_or(Error::Unsupported("staged commit file limits"))?;
-        if document
-            .fields()
-            .get("partition-statistics")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|entries| !entries.is_empty())
-        {
-            return Err(CommitProofError::UnsupportedPartitionStatistics.into());
-        }
         let source = Arc::new(
             CandidateFileSource::for_creation(
                 self.store.clone(),

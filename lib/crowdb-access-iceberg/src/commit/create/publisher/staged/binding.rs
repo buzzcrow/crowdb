@@ -74,15 +74,6 @@ impl TableCreator {
                 request.timestamp_ms,
                 limits.evaluation,
             )?;
-            if evaluated
-                .document
-                .fields()
-                .get("partition-statistics")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|entries| !entries.is_empty())
-            {
-                return Err(Error::Unsupported("partition statistics selected-use validation"));
-            }
             self.bind_stage(&operation, request, evaluated).await?;
         }
         self.resume(request.context, identity).await
