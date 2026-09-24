@@ -96,6 +96,26 @@ fn union_retains_dropped_partition_fields_when_the_source_still_exists() {
 }
 
 #[test]
+fn legacy_v1_schema_identity_and_implicit_partition_ids_are_resolved() {
+    let mut table = table(1, false);
+    for key in [
+        "schemas",
+        "current-schema-id",
+        "partition-specs",
+        "default-spec-id",
+    ] {
+        table.as_object_mut().unwrap().remove(key);
+    }
+    table["partition-spec"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("field-id");
+    let mut metadata = metadata(1, true);
+    metadata.schema[2].field_id = Some(1000);
+    assert!(validate(&metadata, &table).is_ok());
+}
+
+#[test]
 fn deleted_sources_may_be_omitted_but_retained_values_still_require_their_types() {
     for version in 1..=3 {
         let table = table(version, true);

@@ -171,6 +171,12 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   dropped partition fields with live sources, retained primitive types, missing
   history, sorted field IDs, conflicting source/transform reuse, v1 void fields,
   v1/v2/v3 requiredness and exact aggregate work boundaries.
+- A ninth regression covers legacy v1 metadata without `schemas`,
+  `current-schema-id` or `partition-specs`: use the legacy schema's declared ID
+  before falling back to zero and derive missing partition IDs positionally.
+  The test first reproduced a schema rejection before this fallback was fixed.
+  After the fix, all 24 schema/auxiliary/metadata-context/document tests pass;
+  fmt, workspace lint and both library/server all-target clippy gates pass again.
 - Four real Parquet files use Java 1.11.0 `Partitioning.partitionType` and
   `PartitionStatsHandler.schema` with Parquet Java 1.17.1 output. A minimal Table
   proxy supplies real Schema/PartitionSpec objects; these are schema/reader

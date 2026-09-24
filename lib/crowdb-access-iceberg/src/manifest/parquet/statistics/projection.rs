@@ -113,7 +113,10 @@ fn sources(
 ) -> Result<BTreeMap<i32, (bool, SchemaField)>, Error> {
     let root = document.fields();
     let schemas = definitions(root.get("schemas"), root.get("schema"))?;
-    let current = root.get("current-schema-id").map_or(Ok(0), identifier)?;
+    let current = root
+        .get("current-schema-id")
+        .or_else(|| root.get("schema").and_then(|schema| schema.get("schema-id")))
+        .map_or(Ok(0), identifier)?;
     let mut ordered = BTreeMap::new();
     for schema in schemas {
         charge_value(schema, work)?;
