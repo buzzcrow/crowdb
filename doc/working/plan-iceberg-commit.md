@@ -45,7 +45,7 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   v2-to-v3 upgrade, staged creation and native listener restart acceptance pass.
   Files: `commit/files/auxiliary/`, `manifest/parquet/statistics/`,
   `TestIcebergPartitionStatistics.java`.
-- [~] **Publication fault acceptance**: exercise native process interruption at
+- [x] **Publication fault acceptance**: exercise native process interruption at
   candidate and head publication; cover create/staged operation boundaries,
   exact identity recovery on another listener, changed-input conflicts and
   unreachable losing candidates. Existing in-memory reply-loss tests and
@@ -72,8 +72,39 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   The provisional unsupported-statistics fixture is now an unavailable-file
   rejection fixture (400) with unchanged canonical head; valid files are covered
   by native SDK publication tests.
-- [ ] **Closure audit**: map every R182 acceptance case to executed verification;
-  retain unsupported shared dependencies until implemented, then close R182.
+- [x] **Closure audit**: all nine acceptance cases map to the evidence below.
+  Native matrix passed 182 before/after interruption cases (create 30 writes,
+  stage 12, staged publication 30, update 19), plus a competing head-CAS winner
+  with durable losing-candidate rejection. Default and Iceberg-enabled server
+  all-targets, library all-targets, fmt, workspace lint and E2E-feature clippy pass.
+
+## Acceptance audit
+
+- One-generation CAS and unreachable loser: `table_commit_publication_test`,
+  `iceberg_commit_sdk_test`; native process-kill matrix additionally checks
+  durable rejected replay and retained, unselected candidate files.
+- Requirement/update unions and ordered rejection: `commit_requirement_test`,
+  `commit_request_test`, `commit_evaluator*_test`, metadata schema/default/layout/
+  snapshot tests and pinned Java commit fixtures. Physical ORC remains R186.
+- Upgrades: evaluator direct/expanded transition equivalence, metadata transition
+  tests, official native v1-to-v3 data retention and v2-to-v3 statistics retention.
+- Crash boundaries: `iceberg_commit_crash_test` enumerates native durable writes
+  before/after create, stage, staged publication and update, with exact replay on
+  an independent production listener. Test-only UUIDv7 keys reserve distinct
+  retry-ledger buckets before admission, isolating this matrix from unrelated
+  collision backpressure; `retry_test` retains collision rejection coverage.
+- Historical partition omission and statistics: schema/rows/inventory tests plus
+  native SDK publication, evolution, staged creation and listener restart.
+- Parent drop and expiry: `table_create_namespace_test`, `table_staged_race_test`
+  resolve every interrupted phase and uncertain parent admission without exposing
+  a child under a tombstone.
+- Standard client errors: official table SDK error/count fixtures and commit CAS
+  race fixture; unsupported updates, invalid unions and unavailable selected files
+  fail without selecting a partial candidate.
+- Independent resource limits: request/requirement/evaluator/create/provenance/
+  auxiliary suites; `iceberg_table_admission_test` adds exact request-byte edges,
+  four held HTTP body slots, fifth-request rejection and release after errors,
+  asserting unchanged head, operation and file authority on admission failure.
 
 ## Files and verification
 
@@ -82,9 +113,8 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
 - CAS race: `app/crowdb-access-server/tests/iceberg_commit_sdk_test.rs`,
   `tests/common/iceberg_store.rs` and Java `TestIcebergCommitRace.java`.
 - Unit/integration: Iceberg library all-targets; access-server default and
-  Iceberg-enabled affected suites. Additional byte/work/admission limits remain
-  to audit; SDK count tests alone do not prove leak-free admission.
-- E2E: ignored Java SDK runner with `iceberg-e2e`; native fault matrix pending.
+  Iceberg-enabled affected suites, including HTTP byte/concurrency admission.
+- E2E: ignored Java SDK runner and native fault matrix with `iceberg-e2e`.
 - Gates: `pixi run cargo fmt --all -- --check`, `pixi run rs-lint`, explicit
   access-server E2E-feature clippy. No user-guide or deferred engine-test work.
 
