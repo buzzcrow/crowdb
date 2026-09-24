@@ -3,11 +3,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 mod auxiliary;
+mod fence;
 mod snapshots;
 pub use auxiliary::{CandidateAuxiliaryLimits, CandidateAuxiliarySummary};
 pub use snapshots::{CandidateSnapshotLimits, CandidateSnapshotSummary};
 
-use super::PriorManifestSource;
+use super::{PriorManifestSource, TableCreateOperation};
 use crate::{
     catalog::{CatalogContext, CatalogStore},
     file::{AvroBlocks, AvroLimits, FileBlockStore, FileKind, FileLocation, FileRecord, FileRepository},
@@ -15,16 +16,17 @@ use crate::{
         ManifestContext, ManifestMetadata, ManifestVersion, SnapshotFileSource, SnapshotManifestError,
         SnapshotManifestSource, SnapshotValidationError,
     },
-    table::{TableMetadataDocument, TableRepository},
+    table::TableMetadataDocument,
 };
+use fence::CandidateFence;
 
 /// Immutable file resolution for one candidate and its still-selected input generation.
 pub struct CandidateFileSource {
     files: FileRepository,
-    tables: TableRepository,
+    store: Arc<dyn CatalogStore>,
     blocks: Arc<dyn FileBlockStore>,
     context: CatalogContext,
-    prior: Arc<PriorManifestSource>,
+    fence: CandidateFence,
     candidate: Arc<TableMetadataDocument>,
     framing: AvroLimits,
 }
@@ -62,20 +64,51 @@ impl CandidateFileSource {
         }
         Ok(Self {
             files: FileRepository::new(store.clone()),
-            tables: TableRepository::new(store),
+            store,
             blocks,
             context,
-            prior,
+            fence: CandidateFence::Generation(prior),
             candidate,
             framing,
         })
     }
 
-    async fn load(&self, location: &FileLocation) -> Result<FileRecord, SnapshotValidationError> {
-        self.tables
-            .ensure_current(self.context, self.prior.selected())
+    /// Binds initial file checks to an exact durable reservation, without inventing a prior head.
+    /// # Errors
+    /// Rejects a non-reserved operation or a candidate not frozen by that operation.
+    pub fn for_creation(
+        store: Arc<dyn CatalogStore>,
+        blocks: Arc<dyn FileBlockStore>,
+        operation: &TableCreateOperation,
+        candidate: Arc<TableMetadataDocument>,
+        framing: AvroLimits,
+    ) -> Result<Self, SnapshotValidationError> {
+        operation.validate().map_err(file_error)?;
+        if operation.phase != super::TableCreatePhase::Reserved
+            || candidate.selected_head() != &operation.candidate
+        {
+            return Err(SnapshotValidationError::Binding);
+        }
+        Ok(Self {
+            files: FileRepository::new(store.clone()),
+            store,
+            blocks,
+            context: operation.context,
+            fence: CandidateFence::Creation(Box::new(operation.clone())),
+            candidate,
+            framing,
+        })
+    }
+
+    async fn ensure_current(&self) -> Result<(), SnapshotValidationError> {
+        self.fence
+            .check(self.store.clone(), self.context)
             .await
-            .map_err(file_error)?;
+            .map_err(file_error)
+    }
+
+    async fn load(&self, location: &FileLocation) -> Result<FileRecord, SnapshotValidationError> {
+        self.ensure_current().await?;
         let head = self.candidate.selected_head();
         if location.table().catalog != head.catalog || location.table().table != head.table {
             return Err(SnapshotValidationError::Binding);
@@ -86,10 +119,7 @@ impl CandidateFileSource {
             .await
             .map_err(file_error)?
             .ok_or(SnapshotValidationError::Unavailable)?;
-        self.tables
-            .ensure_current(self.context, self.prior.selected())
-            .await
-            .map_err(file_error)?;
+        self.ensure_current().await?;
         Ok(record)
     }
 }
@@ -107,8 +137,8 @@ impl SnapshotManifestSource for CandidateFileSource {
         &self,
         location: &FileLocation,
     ) -> Result<(FileRecord, ManifestContext), SnapshotManifestError> {
-        if self.prior.contains(location) {
-            return self.prior.resolve(location).await;
+        if let Some(prior) = self.fence.prior().filter(|prior| prior.contains(location)) {
+            return prior.resolve(location).await;
         }
         let record = self
             .load(location)
@@ -147,10 +177,7 @@ impl SnapshotManifestSource for CandidateFileSource {
         context
             .validate_metadata(metadata, spec_id)
             .map_err(manifest_error)?;
-        self.tables
-            .ensure_current(self.context, self.prior.selected())
-            .await
-            .map_err(manifest_error)?;
+        self.ensure_current().await.map_err(manifest_error)?;
         Ok((record, context))
     }
 }

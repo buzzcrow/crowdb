@@ -208,6 +208,36 @@ Current requested sequence (tasks 1–3):
   append snapshot/ref transaction updates. All 508 library tests and workspace
   fmt/clippy pass. Durable staging, expiry and its final file-proof/publication
   integration remain unfinished; this evaluator does not grant publication.
+  Initial-file isolation checkpoint: candidate resolution now distinguishes a
+  selected prior generation from an exact reserved create operation. Creation
+  checks the journal, name reservation and absent head before/after resolution;
+  it cannot borrow expired definitions from a fabricated prior generation.
+  Initial snapshots use the same bounded file/projection checks and validate
+  parent-child delete preservation within the candidate. Empty auxiliary lists
+  still check authority. Four focused tests cover real manifest/Parquet files,
+  missing schema/parent, stale intent during IO, reservation/head/catalog fences,
+  wrong candidate/phase and work overflow. All 512 library tests, 48 server tests
+  and workspace fmt/clippy pass.
+
+### Active staged-publication integration
+
+- [~] **Durable draft and commit binding**: append optional staged evidence to
+  `TableCreateOperation`, preserving existing wire tags. Stage response contains
+  metadata only; no head, name reservation or canonical metadata file is published.
+  Resolve the draft through its native table location; freeze UUID, namespace and
+  principal. A single journal CAS binds the final request identity/body, evaluated
+  candidate and response, then enters the existing create reservation/admission
+  publisher. Competing final identities cannot both bind.
+- [ ] **Phase-fenced expiry**: only an unbound draft can expire. Expiry and final
+  binding race on the same journal revision; bound/uncertain publication resumes
+  instead of being TTL-deleted. Test reply loss at every durable stage/bind write,
+  expiry-versus-binding and namespace drop during final publication.
+- [ ] **Initial file-proof publication**: compose the reserved-create source with
+  snapshot and auxiliary limits before immutable candidate publication. Reject
+  unsupported partition-statistics semantics as in ordinary commit proofs.
+- [ ] **HTTP composition and SDK acceptance**: connect authenticated create/commit,
+  retry ledger, limits and draft-aware FileIO grants only after the durable library
+  path passes. HTTP write endpoints remain disabled until then.
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,

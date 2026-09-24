@@ -41,9 +41,35 @@ impl CandidateFileSource {
         prior: &TableMetadataDocument,
         limits: CandidateSnapshotLimits,
     ) -> Result<CandidateSnapshotSummary, Error> {
-        if prior.selected_head() != &self.prior.selected().head {
+        if !self
+            .fence
+            .prior()
+            .is_some_and(|source| prior.selected_head() == &source.selected().head)
+        {
             return Err(Error::Binding);
         }
+        self.validate_snapshot_set(Some(prior), &limits).await
+    }
+
+    /// Validates all initial snapshots, including parent-child DV checks within a staged transaction.
+    /// # Errors
+    /// Rejects missing reservation authority, foreign files, missing parents and exhausted limits.
+    pub async fn validate_initial_snapshots(
+        self: Arc<Self>,
+        limits: CandidateSnapshotLimits,
+    ) -> Result<CandidateSnapshotSummary, Error> {
+        if self.fence.prior().is_some() {
+            return Err(Error::Binding);
+        }
+        self.validate_snapshot_set(None, &limits).await
+    }
+
+    async fn validate_snapshot_set(
+        self: Arc<Self>,
+        prior: Option<&TableMetadataDocument>,
+        limits: &CandidateSnapshotLimits,
+    ) -> Result<CandidateSnapshotSummary, Error> {
+        self.ensure_current().await?;
         if limits.snapshots == 0
             || limits.snapshots > 100_000
             || self.candidate.snapshots().len() > limits.snapshots
@@ -68,14 +94,14 @@ impl CandidateFileSource {
             )
             .map_err(super::file_error)?;
         let mut summary = CandidateSnapshotSummary::default();
-        let mut remaining = limits;
+        let mut remaining = *limits;
         for snapshot in self.candidate.snapshots().values() {
             let files = remaining.file_limits()?;
             if snapshot.manifest_list.is_some() {
                 let input = self.input(snapshot, mapping.clone()).await?;
                 let checked = validate_snapshot_files(self.blocks.clone(), input, files).await?;
                 remaining.charge(checked.manifests)?;
-                if !prior.snapshots().contains_key(&snapshot.snapshot_id) {
+                if !prior.is_some_and(|prior| prior.snapshots().contains_key(&snapshot.snapshot_id)) {
                     self.preserve(prior, snapshot, mapping.clone(), &mut remaining)
                         .await?;
                 }
@@ -100,10 +126,7 @@ impl CandidateFileSource {
             summary.data_files = summary.data_files.checked_add(count).ok_or(Error::Bounds)?;
             summary.data_rows = summary.data_rows.checked_add(rows).ok_or(Error::Bounds)?;
         }
-        self.tables
-            .ensure_current(self.context, self.prior.selected())
-            .await
-            .map_err(super::file_error)?;
+        self.ensure_current().await?;
         Ok(summary)
     }
 
@@ -144,7 +167,7 @@ impl CandidateFileSource {
 
     async fn preserve(
         self: &Arc<Self>,
-        prior: &TableMetadataDocument,
+        prior: Option<&TableMetadataDocument>,
         snapshot: &TableSnapshot,
         mapping: Option<ParquetFieldMapping>,
         remaining: &mut CandidateSnapshotLimits,
@@ -153,8 +176,7 @@ impl CandidateFileSource {
             return Ok(());
         };
         let parent = prior
-            .snapshots()
-            .get(&parent_id)
+            .and_then(|prior| prior.snapshots().get(&parent_id))
             .or_else(|| self.candidate.snapshots().get(&parent_id))
             .ok_or(Error::Binding)?;
         if parent.manifest_list.is_none() || snapshot.sequence == 0 {
@@ -165,8 +187,7 @@ impl CandidateFileSource {
             validate_snapshot_files(self.blocks.clone(), parent, remaining.file_limits()?).await?;
         remaining.charge(parent_summary.manifests)?;
         let parent = prior
-            .snapshots()
-            .get(&parent_id)
+            .and_then(|prior| prior.snapshots().get(&parent_id))
             .or_else(|| self.candidate.snapshots().get(&parent_id))
             .ok_or(Error::Binding)?;
         let parent = self.input(parent, mapping.clone()).await?;

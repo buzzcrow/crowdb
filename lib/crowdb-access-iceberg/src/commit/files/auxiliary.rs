@@ -35,6 +35,7 @@ impl CandidateFileSource {
         &self,
         limits: CandidateAuxiliaryLimits,
     ) -> Result<CandidateAuxiliarySummary, Error> {
+        self.ensure_current().await?;
         if !(1..=100_000).contains(&limits.files)
             || limits.bytes == 0
             || !(1..=1_000_000).contains(&limits.work)
@@ -78,10 +79,7 @@ impl CandidateFileSource {
                 while reader.next().await.map_err(file_error)?.is_some() {}
             }
         }
-        self.tables
-            .ensure_current(self.context, self.prior.selected())
-            .await
-            .map_err(file_error)?;
+        self.ensure_current().await?;
         Ok(summary)
     }
 
