@@ -35,6 +35,7 @@ pub enum CatalogScope {
     MultipartPart = 12,
     MultipartAdmission = 13,
     MetadataProjection = 14,
+    TableCommitOperation = 15,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,6 +169,7 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         12 => Ok(CatalogScope::MultipartPart),
         13 => Ok(CatalogScope::MultipartAdmission),
         14 => Ok(CatalogScope::MetadataProjection),
+        15 => Ok(CatalogScope::TableCommitOperation),
         _ => Err(ValidationError::Key),
     }
 }
@@ -203,6 +205,7 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
         | CatalogScope::File
         | CatalogScope::Operation
         | CatalogScope::NamespaceOperation
+        | CatalogScope::TableCommitOperation
         | CatalogScope::MultipartSession => super::OperationId::from_bytes(suffix).map(|_| ()),
         CatalogScope::MultipartPart => {
             if suffix.len() != 18 || !(1..=10_000).contains(&u16::from_be_bytes([suffix[16], suffix[17]])) {

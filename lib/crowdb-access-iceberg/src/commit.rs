@@ -2,6 +2,9 @@
 
 mod evaluator;
 mod files;
+mod journal;
+mod operation;
+mod preparation;
 mod provenance;
 mod request;
 mod requirement;
@@ -13,6 +16,9 @@ pub use files::{
     CandidateAuxiliaryLimits, CandidateAuxiliarySummary, CandidateFileSource, CandidateSnapshotLimits,
     CandidateSnapshotSummary,
 };
+pub use journal::TableCommitJournal;
+pub use operation::{TableCommitOperation, TableCommitOutcome, TableCommitPhase};
+pub use preparation::{evaluate_durable_commit, CommitPreparationError, CommitPreparationLimits};
 pub use provenance::{PriorManifestLimits, PriorManifestSource};
 pub use request::{CommitRequest, CommitRequestLimits, CommitTableIdentifier};
 pub use requirement::{validate_requirements, RequirementError, RequirementLimits, TableRequirement};

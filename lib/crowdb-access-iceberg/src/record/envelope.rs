@@ -16,6 +16,7 @@ const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageRecord {
+    TableCommitOperation(Box<crate::commit::TableCommitOperation>),
     TableHead(Box<crate::table::TableHead>),
     TableMapping(crate::table::TableMapping),
     Active(ActiveCatalogRecord),
@@ -40,6 +41,10 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::TableCommitOperation(operation) => (
+                FBRecordValue::FBTableCommitOperation,
+                super::table_commit::encode(&mut builder, operation)?.as_union_value(),
+            ),
             Self::TableHead(head) => (
                 FBRecordValue::FBTableHead,
                 super::table::encode_head(&mut builder, head)?.as_union_value(),
@@ -134,7 +139,20 @@ impl StorageRecord {
         if envelope.schema_version() != SCHEMA_VERSION {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
+        let record = Self::decode_value(envelope)?;
+        record.validate_key(key)?;
+        Ok(record)
+    }
+
+    fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         let record = match envelope.value_type() {
+            FBRecordValue::FBTableCommitOperation => {
+                Self::TableCommitOperation(Box::new(super::table_commit::decode(
+                    envelope
+                        .value_as_fbtable_commit_operation()
+                        .ok_or(ValidationError::Record)?,
+                )?))
+            }
             FBRecordValue::FBTableHead => Self::TableHead(Box::new(super::table::decode_head(
                 envelope.value_as_fbtable_head().ok_or(ValidationError::Record)?,
             )?)),
@@ -221,12 +239,12 @@ impl StorageRecord {
             )?),
             _ => return Err(ValidationError::Record),
         };
-        record.validate_key(key)?;
         Ok(record)
     }
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::TableCommitOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::TableHead(head), key) if *key == crate::table::head_key(head.catalog, head.table) => {
                 Ok(())
             }

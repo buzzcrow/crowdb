@@ -12,5 +12,6 @@ mod payload;
 mod retry;
 mod root;
 mod table;
+mod table_commit;
 
 pub use envelope::{StorageRecord, MAX_RECORD_BYTES};

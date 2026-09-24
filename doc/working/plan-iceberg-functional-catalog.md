@@ -116,6 +116,27 @@ Current requested sequence (tasks 1–3):
   namespace reservations, immutable candidate writes, one head CAS and recovery;
   cover immediate/staged create, concurrent losers and response-loss replay.
   Do not enable HTTP writes before the preceding proofs and crash tests pass.
+  Update-journal checkpoint: `TableCommitOperation` stores the exact input head,
+  request payload digest, principal, evaluation timestamp, candidate head and final
+  response payload. Its separate FlatBuffers union tag and key scope are appended,
+  preserving all existing wire values. `TableCommitJournal` CAS transitions freeze
+  the selected generation and candidate; retries recover the original intent,
+  never rebase. Publication outcome transitions require observing the exact
+  candidate head or a definitively superseded input fence. Unknown outcomes cannot
+  become rejection merely due to timeout. Context checks bracket durable reads and
+  writes. The journal itself does not validate files or publish table heads.
+  `evaluate_durable_commit` now reads only the journaled request payload and exact
+  canonical input file, uses the persisted evaluation clock, and rechecks both
+  phase revision and complete head after evaluation. Recovery must reproduce the
+  frozen candidate digest/identity byte-for-byte; caller-supplied altered targets,
+  timestamps and stale generations cannot silently rebase or write candidates.
+  Verification: 478 library tests, 48 access-server tests with `iceberg` enabled,
+  workspace fmt and clippy pass. Seven journal/preparation tests cover phase reply
+  loss, terminal replay, abort/publication arbitration, candidate/head binding,
+  retired epochs and deterministic canonical reconstruction without candidate writes.
+  Remaining: preparation/revalidation proof, immutable candidate writer, sole head
+  publisher and pending-marker settlement; then immediate/staged creation,
+  namespace admission/recovery and REST wiring. No endpoint or capability changed.
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,
