@@ -16,6 +16,9 @@ pub struct TestStore {
     pub pause_file_read: AtomicBool,
     pub file_read_entered: tokio::sync::Notify,
     pub file_read_release: tokio::sync::Notify,
+    pub pause_head_cas: AtomicBool,
+    pub head_cas_entered: tokio::sync::Notify,
+    pub head_cas_release: tokio::sync::Notify,
 }
 
 #[async_trait]
@@ -116,6 +119,17 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
+        if matches!(
+            crowdb_access_iceberg::key::IcebergKey::decode(key),
+            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
+                scope: crowdb_access_iceberg::key::CatalogScope::TableHead,
+                ..
+            })
+        ) && self.pause_head_cas.swap(false, Ordering::SeqCst)
+        {
+            self.head_cas_entered.notify_one();
+            self.head_cas_release.notified().await;
+        }
         loop {
             let current = self.values.load_full();
             let previous = current.get(key);

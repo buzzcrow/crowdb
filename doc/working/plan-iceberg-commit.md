@@ -22,9 +22,16 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   exact identity recovery on another listener, changed-input conflicts and
   unreachable losing candidates. Existing in-memory reply-loss tests and
   successful restart fixtures do not satisfy this matrix.
-- [ ] **Remaining SDK error cases**: add deterministic head-CAS loss and disabled
+- [x] **Remaining SDK error cases**: add deterministic head-CAS loss and disabled
   selected-operation errors through the official client. Failed requirements and
   post-drop/recreated-name checks do not substitute for publication races.
+  First pause a real update immediately before its head CAS, publish a competing
+  HTTP update, then release the SDK request. Check Publishing/Rejected journal
+  phases, same retained input, exact conflict replay and unreachable candidate.
+  Files: test-only store, `iceberg_commit_sdk_test.rs`, `TestIcebergCommitRace.java`.
+  Disabled partition-statistics uses a typed SDK update and metadata-only fixture
+  references to prove the pre-file-validation 406 gate; it does not validate a
+  real statistics file. Replace this rejection fixture when support is enabled.
 - [ ] **Closure audit**: map every R182 acceptance case to executed verification;
   retain unsupported shared dependencies until implemented, then close R182.
 
@@ -32,6 +39,8 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
 
 - SDK fixture: `app/crowdb-access-server/tests/common/iceberg_java/src/main/java/TestIcebergCommitErrors.java`.
 - SDK runner: `app/crowdb-access-server/tests/iceberg_table_sdk_test.rs`.
+- CAS race: `app/crowdb-access-server/tests/iceberg_commit_sdk_test.rs`,
+  `tests/common/iceberg_store.rs` and Java `TestIcebergCommitRace.java`.
 - Unit/integration: Iceberg library all-targets; access-server default and
   Iceberg-enabled affected suites. Additional byte/work/admission limits remain
   to audit; SDK count tests alone do not prove leak-free admission.
@@ -58,3 +67,20 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
 - Ten HTTP table write/lifecycle acceptance tests, workspace fmt/clippy and
   explicit `iceberg-e2e` all-target clippy pass. Full native fault and engine
   matrices were not run or claimed by this checkpoint.
+
+## CAS and disabled-operation checkpoint
+
+- The real publisher is paused immediately before the storage head CAS, after
+  reaching Publishing with written candidate metadata. Another HTTP commit
+  publishes first. Both journals retain the identical input head and target
+  generation; the SDK loser reaches Rejected with 409 CommitFailedException.
+- Same-key replay returns the identical error body; changed input conflicts.
+  Exactly two commit journals remain, with no rebase/new commit from either
+  replay. Load selects the winner, list exposes one table, and loser-only
+  properties never become visible. This uses the in-memory CAS implementation,
+  not native multi-process failure injection.
+- The disabled selected partition-statistics gate returns HTTP/wire 406 and
+  UnsupportedOperationException; the pinned SDK maps it to RESTException.
+  Earlier property/snapshot updates in that batch leave the head unchanged.
+- Five Java SDK tests, server Iceberg-enabled all-targets, fmt, workspace clippy
+  and explicit E2E-feature clippy pass. No production code or limits changed.

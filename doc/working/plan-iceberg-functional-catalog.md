@@ -113,8 +113,12 @@ do not close a requirement by ignoring its dependency's unsupported selected use
   and stale-schema requirements, malformed ordered updates, invalid version,
   identifier mismatch, dropped/recreated table identity, 1000/1001 counts and
   4096/4097 aggregate requirement-text bytes. Rejected commits preserve canonical
-  metadata selection. All four SDK fixtures pass; real CAS-loss/disabled-operation
-  SDK cases and native interruption acceptance remain open.
+  metadata selection. Five SDK fixtures now pass, including a deterministic
+  real head-CAS loser with exact conflict replay and changed-input rejection,
+  identical retained input generations, and load/list orphan invisibility.
+  Disabled partition-statistics typed updates return 406 through the official
+  SDK before candidate publication. Native process interruption acceptance and
+  actual partition-statistics selected-use validation remain open.
   Execution detail: [commit plan](plan-iceberg-commit.md).
   Files: commit tests, `iceberg_file_http_test.rs`, native fault harness.
 - [ ] **Projection integration — R180**: connect generation-local projection

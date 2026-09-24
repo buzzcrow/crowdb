@@ -3,6 +3,8 @@ import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.MetadataUpdate;
+import org.apache.iceberg.ImmutableGenericPartitionStatisticsFile;
+import org.apache.iceberg.SnapshotParser;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.UpdateRequirement;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -10,6 +12,7 @@ import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.BadRequestException;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.exceptions.RESTException;
 import org.apache.iceberg.rest.ErrorHandlers;
 import org.apache.iceberg.rest.ErrorHandler;
 import org.apache.iceberg.rest.HTTPClient;
@@ -51,6 +54,7 @@ public final class TestIcebergCommitErrors {
       rejected(catalog, client, UpdateTableRequest.create(TableIdentifier.of("analytics", "other"),
           List.of(), List.of(property("wrong-path"))),
           400, "BadRequestException", BadRequestException.class);
+      disabledPartitionStatistics(catalog, client);
       counts(catalog, client, uuid);
       int oldSchema = catalog.loadTable(NAME).schema().schemaId();
       catalog.loadTable(NAME).updateSchema().addColumn("message", Types.StringType.get()).commit();
@@ -66,6 +70,19 @@ public final class TestIcebergCommitErrors {
           409, "CommitFailedException", CommitFailedException.class);
     }
     System.out.println("Official commit errors, atomic rejection and count boundaries passed");
+  }
+
+  private static void disabledPartitionStatistics(RESTCatalog catalog, HTTPClient client) {
+    String location = catalog.loadTable(NAME).location();
+    var snapshot = SnapshotParser.fromJson("{\"snapshot-id\":1,\"sequence-number\":1,"
+        + "\"timestamp-ms\":" + System.currentTimeMillis()
+        + ",\"schema-id\":0,\"summary\":{\"operation\":\"append\"},"
+        + "\"manifest-list\":\"" + location + "/metadata/disabled.avro\"}");
+    var statistics = ImmutableGenericPartitionStatisticsFile.builder().snapshotId(1)
+        .path(location + "/metadata/disabled.parquet").fileSizeInBytes(8).build();
+    rejected(catalog, client, new UpdateTableRequest(List.of(), List.of(property("disabled"),
+        new MetadataUpdate.AddSnapshot(snapshot), new MetadataUpdate.SetPartitionStatistics(statistics))),
+        406, "UnsupportedOperationException", RESTException.class);
   }
 
   private static void counts(RESTCatalog catalog, HTTPClient client, String uuid) {
