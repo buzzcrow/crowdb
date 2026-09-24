@@ -109,6 +109,13 @@ do not close a requirement by ignoring its dependency's unsupported selected use
   publisher or rebasing an uncertain operation.
   Library commit/drop/rename fence arbitration is covered; extend native crash
   interruption evidence rather than reimplementing those fences.
+  Official Java error/count checkpoint now covers duplicate create, failed UUID
+  and stale-schema requirements, malformed ordered updates, invalid version,
+  identifier mismatch, dropped/recreated table identity, 1000/1001 counts and
+  4096/4097 aggregate requirement-text bytes. Rejected commits preserve canonical
+  metadata selection. All four SDK fixtures pass; real CAS-loss/disabled-operation
+  SDK cases and native interruption acceptance remain open.
+  Execution detail: [commit plan](plan-iceberg-commit.md).
   Files: commit tests, `iceberg_file_http_test.rs`, native fault harness.
 - [ ] **Projection integration — R180**: connect generation-local projection
   publication/loading only with equivalent authority/validation checks. Current
