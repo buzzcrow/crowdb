@@ -101,7 +101,8 @@ do not close a requirement by ignoring its dependency's unsupported selected use
   v2 level/value compression, verified against four official Java files.
   Other partition values and full row/schema checks remain pending; these
   prerequisites do not enable statistics publication. R177 OI-4 records the
-  historical-field union versus SDK projection policy awaiting confirmation.
+  confirmed SDK-compatible omission of fields with deleted source columns;
+  retained fields still require full validation.
   Audit equality-delete rewrites, position-delete removal without replacement DV,
   retained history and aggregate admission against the declared profile. Existing
   DV replacement validation alone does not prove all delete rewrites.

@@ -49,6 +49,11 @@ conflicts, idempotency, and crash recovery without a table-wide lock.
    partition specs, sort orders, properties, locations, snapshots and references,
    statistics, sequence and row-ID inheritance, row lineage, delete semantics,
    encryption-key metadata, and version-specific fields.
+   Partition-statistics schema validation allows the pinned Java SDK to omit
+   historical partition fields only when their source columns have been deleted
+   from the current schema. Retained fields still require compatible types and
+   ordered IDs; missing active fields or invented historical types fail. This
+   confirmed compatibility exception does not waive row ordering or count checks.
 5. Support any explicit higher supported target, including direct v1-to-v3.
    Expand direct upgrades into v1-to-v2 and v2-to-v3 internal transitions; validate
    the source and preserve each intermediate version's rules before validating
@@ -99,6 +104,11 @@ conflicts, idempotency, and crash recovery without a table-wide lock.
   and head-CAS boundary, when another server resumes with the same request identity,
   assert one table/generation/result is visible and different input under that
   identity conflicts. Invariant: COMMIT-I4. E2E test.
+- Given evolved partition specs and deleted source columns, when official SDK
+  statistics files are validated, assert the approved historical-field omission
+  succeeds while missing active fields, incompatible retained types, invalid row
+  ordering and invalid counts fail before publication. Invariant: COMMIT-I3.
+  Integration test.
 - Given parent drop racing immediate or staged-create publication and expiration,
   when recovery resolves uncertain CAS outcomes, assert reservations protect every
   publishable child and aborted publishers cannot later expose a table beneath a

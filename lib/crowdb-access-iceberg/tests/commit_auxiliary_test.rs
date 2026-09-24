@@ -184,7 +184,7 @@ async fn auxiliary_file_byte_and_comparison_budgets_are_independent() {
 }
 
 #[tokio::test]
-async fn partition_statistics_resolve_plaintext_parquet_not_puffin_or_missing_paths() {
+async fn partition_statistics_reject_ordinary_data_schema_puffin_and_missing_paths() {
     let fixture = TestPrior::new().await;
     let record = snapshot::data(fixture.blocks.clone(), "metadata/partition-stats.parquet").await;
     FileRepository::new(fixture.namespace.store.clone())
@@ -197,7 +197,7 @@ async fn partition_statistics_resolve_plaintext_parquet_not_puffin_or_missing_pa
         .await
         .validate_auxiliary_files(limits())
         .await
-        .is_ok());
+        .is_err());
     entry["statistics-path"] = json!(fixture::table()
         .file("metadata/missing.parquet")
         .unwrap()

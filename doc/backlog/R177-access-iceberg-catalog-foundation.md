@@ -351,18 +351,17 @@ the user's later independent project;
 OI-3 uses the existing disk/chunk allocation capacity boundary, with remaining
 GC and exhaustion-recovery requirements recorded in R183.
 
-- **OI-4 — Partition-statistics historical fields (confirmation pending):**
+- **OI-4 — Partition-statistics historical fields (confirmed):**
   the backed-up specification's Partition Statistics File section describes a
   union of all historical partition fields. Pinned Java 1.11.0
   [Partitioning.partitionType / allActiveFieldIds](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/Partitioning.java)
   instead filters out fields whose source columns are absent from the current
-  schema. Should selected-use validation accept this SDK projection?
-  Recommended: accept this explicit omission case while validating retained
+  schema. The user confirmed compatibility with this SDK projection: accept
+  this explicit omission case while validating retained
   fields, types, row ordering and counts; do not silently treat omitted partition
-  values as known or broaden omissions to arbitrary fields. Alternative: enforce
-  the complete historical union and reject official-client statistics files after
-  source-column deletion. Existing partition-statistics publication stays disabled
-  until both this choice and the complete semantic validator are resolved.
+  values as known or broaden omissions to arbitrary fields. Existing
+  partition-statistics publication stays disabled until the complete semantic
+  validator is implemented. No human decision is currently pending.
 
 Unfinished implementation and unexecuted acceptance remain in the working plans.
 R179 and R181 are closed by their acceptance gates, not by these decisions.

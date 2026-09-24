@@ -45,8 +45,9 @@ pub use list::{ManifestListEntry, ManifestListError, ManifestListProjection, Man
 pub use metadata::{ManifestMetadata, ManifestMetadataError};
 pub use parquet::{
     read_parquet_selection, read_selected_parquet_metadata, validate_parquet_position_deletes,
-    validate_parquet_schema, ParquetFieldMapping, ParquetSelection, PositionDeleteLimits,
-    PositionDeleteSummary, PositionDeleteTargets, SelectedParquetError, SelectedParquetSchema,
+    validate_parquet_schema, validate_partition_statistics_schema, ParquetFieldMapping, ParquetSelection,
+    PositionDeleteLimits, PositionDeleteSummary, PositionDeleteTargets, SelectedParquetError,
+    SelectedParquetSchema,
 };
 
 pub use inheritance::{

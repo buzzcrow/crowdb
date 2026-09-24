@@ -6,7 +6,7 @@ use crate::{
         probe_puffin_footer, read_parquet_metadata, read_puffin_metadata, ContentFormat, FileKind,
         FileReader, FileRecord, ParquetMetadataLimits, PuffinBlob,
     },
-    manifest::SnapshotValidationError as Error,
+    manifest::{validate_partition_statistics_schema, SnapshotValidationError as Error},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -28,7 +28,7 @@ pub struct CandidateAuxiliarySummary {
 
 impl CandidateFileSource {
     /// Resolves auxiliary references and validates canonical framing, lengths and statistics descriptors.
-    /// Partition statistics receive container validation, not partition-row semantic validation.
+    /// Partition statistics receive container/schema validation, not partition-row semantic validation.
     /// # Errors
     /// Rejects unavailable files, incorrect descriptors, encryption and exhausted aggregate budgets.
     pub async fn validate_auxiliary_files(
@@ -70,8 +70,10 @@ impl CandidateFileSource {
                 if field == "statistics" {
                     summary.blobs += self.statistics(entry, &record, limits, &mut work).await?;
                 } else {
-                    read_parquet_metadata(self.blocks.clone(), &record, limits.parquet)
+                    let metadata = read_parquet_metadata(self.blocks.clone(), &record, limits.parquet)
                         .await
+                        .map_err(file_error)?;
+                    validate_partition_statistics_schema(&metadata, &self.candidate, &mut work)
                         .map_err(file_error)?;
                 }
                 let mut reader =

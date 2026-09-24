@@ -21,7 +21,12 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   v1 level framing and v2 uncompressed levels/compressed value sections; validate
   exact value/null counts before yielding page values. Files: `file/parquet/pages/`,
   nullable-column fixtures and tests. Repeated columns remain unsupported here.
-- [ ] **Selected auxiliary semantics**: implement partition-statistics schema,
+- [x] **Partition-statistics schema**: validate unified field IDs and types,
+  version-dependent required statistics columns and the confirmed deleted-source
+  omission. Reject conflicting retained specs and charge projection/schema work
+  against the caller's aggregate budget. Files: `manifest/parquet/statistics.rs`,
+  `statistics/projection.rs`, auxiliary integration and schema fixtures/tests.
+- [~] **Selected auxiliary semantics**: implement partition-statistics row values,
   ordered rows and counts before removing `UnsupportedPartitionStatistics`.
   Audit delete rewrites, retained history and aggregate bounds. Files:
   `lib/crowdb-access-iceberg/src/commit/files/auxiliary.rs`, `commit/proof.rs`,
@@ -146,10 +151,33 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   snappy-java dependency. Maven succeeded with existing SLF4J and Hadoop shutdown
   classloader warnings visible; neither warnings nor retries were suppressed.
 
-## Blocked
+## Confirmed schema compatibility
 
-- Only the unified partition-statistics schema policy awaits R177 OI-4:
-  full historical union versus the pinned SDK's current-source-field projection.
-  The user was asked before implementing an exception. Nullable reading, other
-  primitive decoding and publication-fault acceptance do not depend on this
-  decision and are not blocked. The 406 guard remains unchanged.
+- R177 OI-4 is confirmed: accept the pinned SDK's omission of historical
+  partition fields whose source columns are absent from the current schema.
+  Validate retained field types, ordering and statistics; reject arbitrary
+  omissions and never treat omitted values as known. Add a real SDK fixture
+  after source-column deletion alongside rejection coverage for missing active
+  fields. No decision blocks implementation. The 406 guard remains until the
+  complete selected-file validator passes acceptance.
+
+## Partition-statistics schema checkpoint
+
+- Eight schema tests cover all retained specs, deleted-source omission versus
+  dropped partition fields with live sources, retained primitive types, missing
+  history, sorted field IDs, conflicting source/transform reuse, v1 void fields,
+  v1/v2/v3 requiredness and exact aggregate work boundaries.
+- Four real Parquet files use Java 1.11.0 `Partitioning.partitionType` and
+  `PartitionStatsHandler.schema` with Parquet Java 1.17.1 output. A minimal Table
+  proxy supplies real Schema/PartitionSpec objects; these are schema/reader
+  fixtures, not a REST publication or full statistics-computation acceptance.
+  Generator: `tests/common/parquet_java/src/main/java/TestPartitionStatisticsFixtures.java`;
+  use the nullable fixture Maven command with this main class. Offline generation
+  succeeds; deprecated-API, SLF4J and Hadoop shutdown warnings remain visible.
+- Auxiliary validation now rejects ordinary data-file schemas instead of
+  accepting any framed Parquet file. The publication guard is unchanged.
+  Remaining: complete typed row decoding, NULL-FIRST ordering, spec/duplicate/count
+  semantics, retained-statistics upgrade compatibility and publication acceptance.
+- Verified: eight schema tests, the full Iceberg library all-target suite and
+  Access Server all-target suite with `iceberg`; workspace fmt/`rs-lint`, library
+  all-target clippy and Access Server all-target `iceberg-e2e` clippy pass.

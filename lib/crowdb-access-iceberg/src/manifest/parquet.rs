@@ -7,7 +7,9 @@ pub use deletes::{
     validate_parquet_position_deletes, PositionDeleteLimits, PositionDeleteSummary, PositionDeleteTargets,
 };
 mod schema;
+mod statistics;
 pub use schema::{validate_parquet_schema, ParquetFieldMapping, SelectedParquetSchema};
+pub use statistics::validate_partition_statistics_schema;
 
 use super::{EntryStatus, FileContentKind, ManifestScalarEntry};
 use crate::file::{
