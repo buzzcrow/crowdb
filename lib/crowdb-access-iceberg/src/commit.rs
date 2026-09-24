@@ -1,5 +1,6 @@
 //! Bounded candidate evaluation and checks, separate from file proofs and publication.
 
+mod create;
 mod evaluator;
 mod files;
 mod journal;
@@ -13,6 +14,7 @@ mod requirement;
 mod transition;
 mod update;
 
+pub use create::{evaluate_table_creation, CreateTableRequest, InitialTableMetadata};
 pub use evaluator::{evaluate_metadata_updates, EvaluatedMetadata, EvaluationError, EvaluationLimits};
 pub use files::{
     CandidateAuxiliaryLimits, CandidateAuxiliarySummary, CandidateFileSource, CandidateSnapshotLimits,

@@ -15,6 +15,7 @@ mod raw;
 mod scalar;
 mod snapshots;
 
+pub(super) use raw::encode as encode_bounded;
 use raw::Document;
 
 #[derive(Clone, Copy, Debug)]

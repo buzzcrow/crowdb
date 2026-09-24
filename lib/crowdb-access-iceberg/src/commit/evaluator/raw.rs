@@ -65,7 +65,7 @@ impl Document {
     }
 }
 
-pub(super) fn encode<Value: Serialize + ?Sized>(value: &Value, limit: usize) -> Result<Box<RawValue>, Error> {
+pub(crate) fn encode<Value: Serialize + ?Sized>(value: &Value, limit: usize) -> Result<Box<RawValue>, Error> {
     let mut output = Output {
         bytes: Vec::new(),
         limit,

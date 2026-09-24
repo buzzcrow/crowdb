@@ -155,6 +155,25 @@ Current requested sequence (tasks 1–3):
   Remaining: full proof-profile coverage, immediate/staged creation, namespace
   admission/recovery, request admission/retry-ledger composition and REST wiring.
   No endpoint or advertised capability changed.
+  Initial-create evaluation: `CreateTableRequest` and `evaluate_table_creation`
+  now construct deterministic empty-table metadata from a retained identity and
+  timestamp. Fresh IDs follow Java's sibling-first struct traversal, list element
+  allocation and map key/value allocation; identifier IDs, nested defaults and
+  partition/sort sources follow the same rebinding. Default format/compression,
+  reserved-property filtering, retry properties, metrics column aliases and
+  SDK-serialized null optional fields are covered. The pure candidate is explicitly
+  not a namespace/publication proof. Generated Java 1.11.0 requests and complete
+  v1/v2/v3 output documents provide differential fixtures.
+  Verification: all 493 library tests and workspace fmt/clippy pass, including
+  eight focused initial-metadata tests and the complete-document SDK comparison.
+  Next creation slices: persist a separate table-create intent; reserve the name
+  before parent admission; write and verify initial immutable metadata before
+  taking the parent marker so namespace recovery does not need a block-store
+  dependency. Extend parent marker dispatch and namespace table probes to resolve
+  table-create reservations. Publish the first head and mapping, then settle both
+  markers only after the durable result. Staged creation retains a draft and expiry;
+  final-commit binding and expiration compete through a phase CAS, never TTL-delete
+  an uncertain publisher. Cover every durable reply-loss point and drop races.
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,
