@@ -71,6 +71,8 @@ pub use multipart_recovery::{
 };
 pub use multipart_repository::{MultipartRepository, MultipartWorkError};
 pub use multipart_selection::{MultipartSelection, SelectedPart};
+#[cfg(feature = "test-util")]
+pub use parquet::read_parquet_integer_column_for_tests;
 pub use parquet::{
     read_parquet_metadata, ParquetColumnChunk, ParquetLogicalType, ParquetMetadata, ParquetMetadataError,
     ParquetMetadataLimits, ParquetRowGroup, ParquetSchemaElement, ParquetTimeUnit,

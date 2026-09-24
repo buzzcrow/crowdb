@@ -12,6 +12,11 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   malformed updates, ordered rollback, lifecycle identity, and exact 1000/1001
   requirement/update limits plus 4096/4097 aggregate requirement-text bytes.
   Files: Java fixture and `iceberg_table_sdk_test.rs`.
+- [x] **Partition-statistics integer prerequisite**: extend canonical Parquet
+  column decoding to INT32 for spec IDs and file/DV counts: plain, dictionary,
+  delta and byte-stream-split, including signed overflow and resource boundaries.
+  Files: `file/parquet/pages.rs`, `pages/values.rs`, `values/delta.rs`, integer
+  column tests. Keep the publication rejection until full validation exists.
 - [ ] **Selected auxiliary semantics**: implement partition-statistics schema,
   ordered rows and counts before removing `UnsupportedPartitionStatistics`.
   Audit delete rewrites, retained history and aggregate bounds. Files:
@@ -84,3 +89,27 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   Earlier property/snapshot updates in that batch leave the head unchanged.
 - Five Java SDK tests, server Iceberg-enabled all-targets, fmt, workspace clippy
   and explicit E2E-feature clippy pass. No production code or limits changed.
+
+## Partition-statistics reader checkpoint
+
+- The backed-up Iceberg 1.11.0 specification requires INT32 spec IDs and
+  data/delete/DV file counts. The prior canonical page reader only decoded
+  INT64 and BYTE_ARRAY. INT32 now shares the bounded page/CRC/decompression
+  pipeline for PLAIN, both dictionary tags, DELTA_BINARY_PACKED and
+  BYTE_STREAM_SPLIT. Signed values are represented losslessly as i64 internally.
+- Delta arithmetic wraps at the physical 32-bit width, rejects oversized first
+  values/minimum deltas and used miniblock widths, and accepts arbitrary unused
+  miniblock-width/padding bits as required by the
+  [Parquet encoding specification](https://parquet.apache.org/docs/file-format/data-pages/encodings/).
+- Seven integer tests cover page v1/v2, multiple pages, five existing codecs,
+  signed extremes, dictionary RLE/bitpacking, full-width delta residuals,
+  malformed lengths/indices and unchanged value/byte budgets. Test access is
+  isolated behind `test-util`; the production column reader stays crate-private.
+- Iceberg library and Iceberg-enabled server all-target suites, workspace fmt
+  and clippy, library all-target clippy and server E2E-feature clippy pass.
+  Existing INT64/string position-delete decoding remains covered by regression
+  tests. No native process-kill or new SDK statistics-file acceptance is claimed.
+- Next: nullable definition levels and remaining partition primitive types,
+  unified partition schema across retained specs, NULL-FIRST tuple ordering,
+  duplicate/spec/count semantics and real SDK statistics files. Do not remove
+  the existing publication 406 gate at this prerequisite-only checkpoint.

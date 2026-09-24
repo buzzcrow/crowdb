@@ -124,7 +124,7 @@ pub async fn file(
     stored_content(&bytes, table).await
 }
 
-fn page(bytes: &mut Vec<u8>, payload: &[u8], count: i64, encoding: i64, kind: i64, codec: i64) -> i64 {
+pub fn page(bytes: &mut Vec<u8>, payload: &[u8], count: i64, encoding: i64, kind: i64, codec: i64) -> i64 {
     let compressed = match codec {
         1 => snap::raw::Encoder::new().compress_vec(payload).unwrap(),
         2 => {

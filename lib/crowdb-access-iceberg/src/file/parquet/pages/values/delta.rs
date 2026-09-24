@@ -1,6 +1,6 @@
 use super::{bits, take, unsigned, Error};
 
-pub(super) fn integers(bytes: &mut &[u8], count: usize) -> Result<Vec<i64>, Error> {
+pub(super) fn integers(bytes: &mut &[u8], count: usize, integer_bits: u8) -> Result<Vec<i64>, Error> {
     let block = usize::try_from(unsigned(bytes)?).map_err(|_| Error::Bounds)?;
     let blocks = usize::try_from(unsigned(bytes)?).map_err(|_| Error::Bounds)?;
     let total = usize::try_from(unsigned(bytes)?).map_err(|_| Error::Bounds)?;
@@ -17,16 +17,22 @@ pub(super) fn integers(bytes: &mut &[u8], count: usize) -> Result<Vec<i64>, Erro
         return Err(Error::Invalid);
     }
     let mut previous = signed(bytes)?;
+    if integer_bits == 32 && i32::try_from(previous).is_err() {
+        return Err(Error::Invalid);
+    }
     let mut values = vec![previous];
     while values.len() < total {
         let minimum = signed(bytes)?;
+        if integer_bits == 32 && i32::try_from(minimum).is_err() {
+            return Err(Error::Invalid);
+        }
         let widths = take(bytes, blocks)?;
         let per_block = block / blocks;
         for width in widths {
             if values.len() == total {
                 break;
             }
-            if *width > 64 {
+            if *width > integer_bits {
                 return Err(Error::Invalid);
             }
             let packed = take(bytes, per_block * usize::from(*width) / 8)?;
@@ -35,6 +41,13 @@ pub(super) fn integers(bytes: &mut &[u8], count: usize) -> Result<Vec<i64>, Erro
                 previous = previous
                     .wrapping_add(minimum)
                     .wrapping_add(i64::from_ne_bytes(difference.to_ne_bytes()));
+                if integer_bits == 32 {
+                    previous = i64::from(i32::from_le_bytes(
+                        previous.to_le_bytes()[..4]
+                            .try_into()
+                            .map_err(|_| Error::Invalid)?,
+                    ));
+                }
                 values.push(previous);
             }
         }

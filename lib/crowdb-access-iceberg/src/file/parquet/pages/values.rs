@@ -25,24 +25,26 @@ pub(super) fn decode(
     let mut result = Vec::new();
     let mut remaining = limit;
     match encoding {
-        5 if physical == 2 => {
-            for value in delta::integers(&mut bytes, count)? {
+        5 if matches!(physical, 1 | 2) => {
+            for value in delta::integers(&mut bytes, count, if physical == 1 { 32 } else { 64 })? {
                 push(&mut result, ColumnValue::Long(value), &mut remaining)?;
             }
         }
         6 | 7 if physical == 6 => {
             result = delta_strings(&mut bytes, encoding, count, limit)?;
         }
-        9 if physical == 2 => {
-            result = split(bytes, count, limit)?;
+        9 if matches!(physical, 1 | 2) => {
+            result = if physical == 1 {
+                split::<4>(bytes, count, limit)?
+            } else {
+                split::<8>(bytes, count, limit)?
+            };
             bytes = &[];
         }
         0 => {
             for _ in 0..count {
-                let value = if physical == 2 {
-                    ColumnValue::Long(i64::from_le_bytes(
-                        take(&mut bytes, 8)?.try_into().map_err(|_| Error::Invalid)?,
-                    ))
+                let value = if matches!(physical, 1 | 2) {
+                    integer(take(&mut bytes, if physical == 1 { 4 } else { 8 })?)?
                 } else {
                     let length =
                         i32::from_le_bytes(take(&mut bytes, 4)?.try_into().map_err(|_| Error::Invalid)?);
@@ -120,21 +122,29 @@ fn push(values: &mut Vec<ColumnValue>, value: ColumnValue, remaining: &mut usize
     Ok(())
 }
 
-fn split(bytes: &[u8], count: usize, mut remaining: usize) -> Result<Vec<ColumnValue>, Error> {
-    if bytes.len() != count.checked_mul(8).ok_or(Error::Invalid)? {
+fn integer(bytes: &[u8]) -> Result<ColumnValue, Error> {
+    Ok(ColumnValue::Long(match bytes.len() {
+        4 => i64::from(i32::from_le_bytes(bytes.try_into().map_err(|_| Error::Invalid)?)),
+        8 => i64::from_le_bytes(bytes.try_into().map_err(|_| Error::Invalid)?),
+        _ => return Err(Error::Invalid),
+    }))
+}
+
+fn split<const WIDTH: usize>(
+    bytes: &[u8],
+    count: usize,
+    mut remaining: usize,
+) -> Result<Vec<ColumnValue>, Error> {
+    if bytes.len() != count.checked_mul(WIDTH).ok_or(Error::Invalid)? {
         return Err(Error::Invalid);
     }
     let mut result = Vec::new();
     for index in 0..count {
-        let mut value = [0; 8];
+        let mut value = [0; WIDTH];
         for (stream, value) in value.iter_mut().enumerate() {
             *value = bytes[stream * count + index];
         }
-        push(
-            &mut result,
-            ColumnValue::Long(i64::from_le_bytes(value)),
-            &mut remaining,
-        )?;
+        push(&mut result, integer(&value)?, &mut remaining)?;
     }
     Ok(result)
 }
@@ -146,11 +156,11 @@ fn delta_strings(
     mut remaining: usize,
 ) -> Result<Vec<ColumnValue>, Error> {
     let prefixes = if encoding == 7 {
-        Some(delta::integers(bytes, count)?)
+        Some(delta::integers(bytes, count, 64)?)
     } else {
         None
     };
-    let lengths = delta::integers(bytes, count)?;
+    let lengths = delta::integers(bytes, count, 64)?;
     let mut result = Vec::new();
     for (index, length) in lengths.into_iter().enumerate() {
         let length = usize::try_from(length).map_err(|_| Error::Invalid)?;

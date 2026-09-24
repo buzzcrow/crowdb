@@ -8,6 +8,8 @@ mod compact;
 mod logical;
 mod metadata;
 mod pages;
+#[cfg(feature = "test-util")]
+pub use pages::read_parquet_integer_column_for_tests;
 pub use pages::ParquetPageLimits;
 pub(crate) use pages::{ParquetColumnReader, ParquetColumnValue};
 mod schema;

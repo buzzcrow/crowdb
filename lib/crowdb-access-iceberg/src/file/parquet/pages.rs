@@ -3,7 +3,11 @@ use std::{io::Read, sync::Arc};
 use super::{compact, ParquetColumnChunk, ParquetMetadataError as Error, ParquetMetadataLimits};
 use crate::file::{ByteRange, FileBlockStore, FileReader, FileRecord};
 
+#[cfg(feature = "test-util")]
+mod testing;
 mod values;
+#[cfg(feature = "test-util")]
+pub use testing::read_parquet_integer_column_for_tests;
 pub(crate) use values::ColumnValue as ParquetColumnValue;
 use values::{decode, ColumnValue};
 
@@ -41,7 +45,7 @@ impl ParquetColumnReader {
             || limits.values > 1_048_576
             || limits.pages == 0
             || limits.pages > 1_000_000
-            || !matches!(physical, 2 | 6)
+            || !matches!(physical, 1 | 2 | 6)
             || column
                 .offset
                 .checked_add(column.length)
