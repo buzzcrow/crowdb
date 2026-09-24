@@ -29,12 +29,14 @@ impl State {
             }
         }
         let next_id = highest_id.checked_add(1).ok_or(Error::Field("schema-id"))?;
-        let current = self.current_schema()?;
-        let prior: Value = serde_json::from_str(current.get())?;
-        let prior_context = self.schema_context(&prior)?;
         let last: i32 = self.raw.get("last-column-id")?;
-        let specs: Value = self.raw.get("partition-specs")?;
-        evolution::validate(&prior, &prior_context, &incoming, &context, last, &specs)?;
+        if !schemas.is_empty() && self.raw.get::<i32>("current-schema-id")? >= 0 {
+            let current = self.current_schema()?;
+            let prior: Value = serde_json::from_str(current.get())?;
+            let prior_context = self.schema_context(&prior)?;
+            let specs: Value = self.raw.get("partition-specs")?;
+            evolution::validate(&prior, &prior_context, &incoming, &context, last, &specs)?;
+        }
         let highest = context.fields().map(|(id, _)| *id).max().unwrap_or(0).max(last);
         object.insert("schema-id".into(), raw::encode(&next_id, self.raw.limit)?);
         schemas.push(raw::encode(&object, self.raw.limit)?);

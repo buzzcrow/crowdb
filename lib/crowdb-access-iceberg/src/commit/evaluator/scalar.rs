@@ -23,7 +23,11 @@ impl State {
             }
             TableUpdate::UpgradeFormatVersion { format_version } => self.upgrade(*format_version)?,
             TableUpdate::SetLocation { location } => {
-                let before: String = self.raw.get("location")?;
+                let before: String = if self.raw.fields.contains_key("location") {
+                    self.raw.get("location")?
+                } else {
+                    self.source_head.metadata_location.table().to_string()
+                };
                 let parse = |location: &str| {
                     format!("{}/", location.trim_end_matches('/'))
                         .parse::<TableLocation>()

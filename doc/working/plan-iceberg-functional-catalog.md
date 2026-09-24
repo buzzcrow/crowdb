@@ -197,6 +197,17 @@ Current requested sequence (tasks 1–3):
   ordinary next-generation update. Implement this distinct evaluator path and use
   standard UUID/location fields to find and bind the durable draft; do not require
   a nonstandard SDK token or renumber staged file schemas a second time.
+  Initial-commit evaluator checkpoint: `evaluate_table_create_commit` now applies
+  assert-create requests to an empty builder, preserves staged field IDs and
+  requires explicit UUID/location/definition initialization. It produces generation
+  one without a draft metadata-log entry. The first format upgrade selects the
+  initial builder version, matching Java's handler. Six focused tests cover
+  incomplete initialization, identity/requirement rejection, independent budgets,
+  malformed auxiliary metadata and complete v1/v2/v3 SDK output comparison.
+  Fixtures invoke the pinned SDK's real `RESTSessionCatalog.createChanges` and
+  append snapshot/ref transaction updates. All 508 library tests and workspace
+  fmt/clippy pass. Durable staging, expiry and its final file-proof/publication
+  integration remain unfinished; this evaluator does not grant publication.
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,

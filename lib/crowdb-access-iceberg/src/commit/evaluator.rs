@@ -10,11 +10,13 @@ use crate::table::{TableHead, TableMetadataDocument, TableMetadataError, TableMe
 
 mod auxiliary;
 mod definitions;
+mod initial;
 mod layout;
 mod raw;
 mod scalar;
 mod snapshots;
 
+pub use initial::evaluate_table_create_commit;
 pub(super) use raw::encode as encode_bounded;
 use raw::Document;
 
@@ -55,25 +57,10 @@ pub fn evaluate_metadata_updates(
     timestamp_ms: i64,
     limits: EvaluationLimits,
 ) -> Result<EvaluatedMetadata, EvaluationError> {
-    limits.metadata.validate()?;
-    if limits.updates == 0
-        || limits.updates > 1000
-        || request.updates.len() > limits.updates
-        || limits.work_bytes == 0
-        || limits.work_bytes > 256 * 1024 * 1024
-    {
-        return Err(TableMetadataError::Bounds.into());
-    }
+    validate_limits(request, limits)?;
     validate_requirements(&request.requirements, Some(prior), limits.requirements)?;
     let mut state = State::new(prior, limits, timestamp_ms)?;
-    for (index, update) in request.updates.iter().enumerate() {
-        update.validate_parameters()?;
-        if !state.apply(update)? {
-            return Err(EvaluationError::Unsupported(index));
-        }
-        let bytes = state.raw.finish()?;
-        crate::table::decode_bounded_json(&bytes, limits.metadata)?;
-    }
+    state.apply_all(request)?;
     state.raw.set("last-updated-ms", &timestamp_ms)?;
     state.history(prior)?;
     state.snapshot_log()?;
@@ -131,6 +118,17 @@ struct State {
 }
 
 impl State {
+    fn apply_all(&mut self, request: &CommitRequest) -> Result<(), EvaluationError> {
+        for (index, update) in request.updates.iter().enumerate() {
+            update.validate_parameters()?;
+            if !self.apply(update)? {
+                return Err(EvaluationError::Unsupported(index));
+            }
+            let bytes = self.raw.finish()?;
+            crate::table::decode_bounded_json(&bytes, self.limits)?;
+        }
+        Ok(())
+    }
     fn new(
         prior: &TableMetadataDocument,
         limits: EvaluationLimits,
@@ -279,4 +277,17 @@ fn integer(value: &Value, name: &'static str) -> Result<i32, TableMetadataError>
         .and_then(|value| i32::try_from(value).ok())
         .filter(|value| *value >= 0)
         .ok_or(TableMetadataError::Field(name))
+}
+
+fn validate_limits(request: &CommitRequest, limits: EvaluationLimits) -> Result<(), TableMetadataError> {
+    limits.metadata.validate()?;
+    if limits.updates == 0
+        || limits.updates > 1000
+        || request.updates.len() > limits.updates
+        || limits.work_bytes == 0
+        || limits.work_bytes > 256 * 1024 * 1024
+    {
+        return Err(TableMetadataError::Bounds);
+    }
+    Ok(())
 }

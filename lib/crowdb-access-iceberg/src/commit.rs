@@ -19,7 +19,10 @@ pub use create::{
     TableCreateOperation, TableCreatePhase,
 };
 pub use create::{TableCreationRequest, TableCreator};
-pub use evaluator::{evaluate_metadata_updates, EvaluatedMetadata, EvaluationError, EvaluationLimits};
+pub use evaluator::{
+    evaluate_metadata_updates, evaluate_table_create_commit, EvaluatedMetadata, EvaluationError,
+    EvaluationLimits,
+};
 pub use files::{
     CandidateAuxiliaryLimits, CandidateAuxiliarySummary, CandidateFileSource, CandidateSnapshotLimits,
     CandidateSnapshotSummary,
