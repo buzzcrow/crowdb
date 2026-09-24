@@ -59,18 +59,14 @@ cuObject/RDMA acceleration after the TCP baseline is correct and measured.
 ### Planned — Native Iceberg storage
 
 R177 is the program blueprint and resolves the shared design questions. The
-catalog/service foundation, namespace, table-lifecycle and atomic-commit acceptance
-are complete. R180 and R183–R184 complete the correctness milestone; R185 is a later
+catalog/service foundation, namespace, FileIO, table-lifecycle and atomic-commit
+acceptance are complete. R183–R184 complete the correctness milestone; R185 is a later
 cache optimization.
 
 - **[R177](R177-access-iceberg-catalog-foundation.md)** — native Iceberg storage
   blueprint — Area: access server / Iceberg / Chunk-KV / chunk I/O — Fix the
   authority model, v1/v2/v3 core profile, program invariants, requirement order,
   and all cross-cutting design decisions.
-- **[R180](R180-access-iceberg-fileio.md)** — native immutable files and FileIO —
-  Area: access server / Iceberg / chunk I/O — Add immutable metadata, manifest,
-  data, delete, deletion-vector, and statistics files; streaming/range I/O;
-  durable multipart; delegated access; and metadata projections.
 - **[R183](R183-access-iceberg-reclamation.md)** — reachability and bounded
   reclamation — Area: access server / Iceberg / chunk I/O — Prove v1/v2/v3
   snapshot and operation reachability before reclaiming candidates, purged tables,

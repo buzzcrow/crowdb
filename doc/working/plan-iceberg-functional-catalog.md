@@ -1,7 +1,6 @@
 # Iceberg Functional Catalog Plan
 
 Upstream: [R177](../backlog/R177-access-iceberg-catalog-foundation.md),
-[R180](../backlog/R180-access-iceberg-fileio.md),
 [R184](../backlog/R184-access-iceberg-rest-conformance.md).
 
 Goal: finish the native functional catalog without confusing working vertical
@@ -13,131 +12,39 @@ after the program finishes. Human decisions live only in R177. No user-guide wor
 
 ## Completed summary
 
-FileIO implementation checkpoint (2026-09-25; closure cleanup pending):
-
-- REFS loads use disposable generation-local projections only with a receipt
-  bound to the full selected head, parser limits and canonical digest. Corruption
-  and partial writes fall back; ALL and commit admission still parse canonical JSON.
-- Native PUT/Complete processes are killed before/after all 22 request-local
-  durable writes: 44 cases pass with exact identity/replay and retained orphans.
-  Background recovery, not extra Complete calls, settles released credits and
-  returns the session/byte counters to zero. Native credential lifecycle passes.
-- Multipart uses block-aligned bounded windows, progress-aware recovery scheduling,
-  one-frame read/write overlap and single-pass chunked JSON validation. Readers
-  retain one verified leaf-directory page. No request timeout or client-side retry
-  policy changed; the unchanged 5-MiB raw multipart fixture passes three consecutive runs.
-- 616 library tests, 70 Iceberg-enabled server tests, default server tests,
-  no-default transport tests, fmt and all lint gates pass. Official Java FileIO,
-  selected data/delete, native catalog/listener-restart and Chunk-KV restart
-  fixtures pass. Both final native fault-matrix runs pass all 44 scenarios.
-
-Statistics publication checkpoint (2026-09-25): canonical typed rows and selected
-manifest counts, retained-file schema/version compatibility, official Java
-publication/replay, evolved partition specs, v2-to-v3 and staged creation all pass,
-including native listener restart. R182 atomic-commit acceptance is complete;
-R180 keeps its independent FileIO acceptance tasks.
-
-Atomic-commit acceptance closed (2026-09-25), implementation `af4ae81`:
-
-- Native listener processes are killed before/after all 91 request-local durable
-  writes across immediate create, stage, staged publication and update: 182 cases
-  resume on independent production listeners with exact response replay, changed
-  input rejection and one visible generation. A separate paused head-CAS loser
-  verifies durable conflict replay and retained but unreachable candidate files.
-- Test identities preselect distinct retry buckets, isolating admitted publication
-  faults from separately tested collision backpressure. No production retry,
-  timeout, lock or unsafe exception was added.
-- Every acceptance case maps to ordered union/upgrade tests, namespace/drop/expiry
-  phase races, official SDK error/count and CAS-race fixtures, selected statistics
-  and native storage. HTTP tests add exact byte boundaries and four-slot admission
-  with rejection before operation/candidate mutation and release after errors.
-- Library all-targets, default/Iceberg server all-targets, SDK/native acceptance,
-  fmt, workspace lint and explicit E2E-feature clippy pass. Ordinary rewrite row-set
-  equivalence remains engine-owned; ORC, physical GC and engine/performance gates
-  retain their separately agreed scope.
-
-Verified integration checkpoint: `a832e699` (2026-09-24).
-
-- Independent writer credentials; namespace CRUD, bounded listing, durable
-  retries, parent admission, restart recovery and stale-index repair.
-- Native immutable FileIO, SigV4 delegation, bounded streaming/ranges, durable
-  multipart, XML responses/checksums and background recovery.
-- Bounded metadata/manifest/Parquet/Puffin/DV validation; partition and Variant
-  bounds; generation-bound provenance and direct-parent delete preservation.
-- Ordered updates, confirmed direct v1-to-v3 upgrades and SDK-safe name mapping;
-  immediate/staged create, immutable candidate publication, one head CAS,
-  deterministic conflicts, exact retry and bounded recovery.
-- Runtime table reads/create/commit/credentials. Draft grants bind exact identity
-  and original writer; response headroom and configuration-aware ETags are checked.
-- 527 library tests, 58 Iceberg-enabled server tests, three Java SDK tests,
-  native Parquet/staged/upgrade/restart acceptance, fmt and clippy pass.
-  Real Java 1.11.0 writes v1 data, upgrades to v3, appends with retained history,
-  publishes a staged table, and reads both after catalog-process restart.
-
-This does not close R180 or R183–R184. Existing tests do not substitute for unexecuted
-acceptance cases, full engine matrices, requirement-closure audits or physical GC.
-
-Verified lifecycle implementation checkpoint (2026-09-24):
-
-- Logical table drop, durable pending purge proof tasks and same/cross-namespace
-  rename now use bounded journals and one exact head CAS. Conditional cleanup and
-  terminal replay preserve recreated names; no file traversal or physical deletion.
-- Writer-only DELETE/rename REST routes, standard empty 204 responses, exact
-  request binding and a third background-recovery journal sweep are connected.
-- Library tests cover every successful-path durable reply loss, delayed head-CAS
-  replies, destination namespace drop, recreation before/after recovery, retired
-  contexts, commit/lifecycle arbitration and recovery without client retry.
-- HTTP tests cover permissions, replay, errors, metadata/location preservation and
-  commits after a cross-namespace move. Official Java SDK exercises rename/drop,
-  ordinary native Parquet reads and access-listener restart. Existing grants retain
-  their lifetime; deleted names cannot obtain fresh credentials. Physical purge is
-  deferred even after logical success.
-- Full Iceberg library/server suites, fmt, workspace clippy and explicit
-  Iceberg-E2E feature clippy pass. No unsafe exception, runtime lock, timeout
-  increase, assertion reduction or test-side retry was introduced.
-
-Namespace acceptance closed (2026-09-24), implementation `442f26c7`:
-
-- R179's acceptance audit is complete. Property-limit HTTP tests cover exact
-  UTF-8/cardinality/encoded-authority boundaries and unchanged authority bytes
-  and revision after rejection. PyIceberg covers item/byte/scan/time/concurrency
-  spool limits and resource release; Java 1.11.0 follows stale-only pages to the
-  final result with an exact scan-count assertion. Missing namespace errors pass.
-- Deadline regression fixed: dispatch reserves response headroom inside the
-  unchanged absolute connection lifetime, allowing timeout 503s before teardown.
-  No new runtime locks, unsafe exceptions, added SDK retries or relaxed assertions.
-- Full library, default/Iceberg-enabled server, namespace SDK, fmt, workspace
-  clippy and explicit E2E-feature clippy pass. Native two-listener CRUD/storage
-  restart and the independent 500-ms maintenance fixture pass together under
-  default concurrency. Fault-phase integration tests cover namespace/table
-  creation and rename-in versus namespace drop; no claim of native process kills
-  at every phase. Other requirements retain their separate outstanding acceptance.
-
-Table lifecycle acceptance closed (2026-09-24), implementation `4bbc2226`:
-
-- R181's seven acceptance cases map to metadata/version tests, library lifecycle
-  fault/race tests, HTTP boundary tests and official Java read/write fixtures.
-  Added ALL/REFS conditional-load races against actual commits; mixed five-page
-  stale/reserved/missing/tombstoned/current index and HEAD checks; lost drop head
-  publication replies in both purge modes; unsupported-route authority equality.
-- Every interrupted same/cross-namespace rename additionally runs concurrent
-  list/load checks before and after recovery. Old names never alias new names,
-  canonical bytes and UUID remain unchanged, and recovery yields one current name.
-- Library and default/Iceberg-enabled server all-targets, all three Java SDK tests,
-  native Parquet/lifecycle/listener-restart acceptance, fmt and both workspace and
-  E2E-feature clippy pass. Existing Maven logging/shutdown warnings remain visible.
-  No production semantics, retry policy or timeouts changed for this closure.
-- Optional projection integration and selected partition-statistics/delete rewrite
-  validation remain R180/R182 tasks. Physical reclamation remains deferred R183.
+- R179 namespace and R181 table lifecycle acceptance are closed, with independent
+  writer credentials, bounded listing, rename/drop fencing, durable replay and
+  native/official-client recovery evidence. Implementations: `442f26c7`,
+  `4bbc2226`.
+- R182 atomic commits are closed: `af4ae819`, cleanup `0fef46c0`. Native process
+  kills cover 182 before/after durable-write cases across create, stage, publish
+  and update; independent listeners preserve exact replay and one visible head.
+  Head-CAS loser, bounded admission, statistics evolution and official SDK
+  publication/restart pass. Ordinary rewrite row-set equivalence stays engine-owned.
+- R180 FileIO is closed: `0a848834`. Immutable streaming/range files, durable
+  multipart, delegated credentials and validated generation-local REFS projections
+  pass acceptance. Corrupt/partial projections fall back to canonical JSON;
+  ALL and commit admission still parse canonical metadata.
+- Native PUT/Complete process kills pass all 44 cases twice. Background recovery
+  settles credits without extra Complete requests. Native credential lifecycle,
+  official Java FileIO/selected data-delete/catalog fixtures and Chunk-KV restart
+  pass; this is not an all-service DiskIO restart or physical-GC claim.
+- Evidence-backed FileIO fixes align bounded copy windows, avoid competing active
+  recovery, duplicate JSON scans and repeated directory reads, and overlap one
+  frame of copy I/O. The unchanged 5-MiB raw multipart fixture passes three runs;
+  no request timeout, caller retry, authority check or durability gate was relaxed.
+- Final gates: 616 library tests, 70 Iceberg-enabled server tests, default server
+  tests, 14 no-default transport tests, fmt, workspace lint and explicit
+  Iceberg-E2E clippy pass. Existing Maven warnings remain visible. Only the Pixi
+  toolchain was verified; locked LZ4 dependencies exceed the declared Rust 1.75
+  MSRV, so Rust 1.75 compatibility is not claimed.
+- ORC, physical GC and broad engine/performance acceptance remain separately
+  scoped below. Unconfirmed diagnostic deadlines are retained as observations,
+  not claimed fixes or pending human design choices.
 
 ## Remaining tasks in dependency order
 
-R181 and R182 are complete. Continue remaining R180, then foreground R184.
-
-- [~] **FileIO acceptance closure — R180**: complete the final native fault-matrix
-  repeat, then commit verified implementation and remove the completed requirement
-  and execution plan. All required SDK, storage-restart and quality gates pass.
-  Files: [FileIO execution plan](plan-iceberg-fileio.md), native/SDK fixtures.
+R179–R182 are complete. Continue foreground R184; R183 and R186 stay deferred.
 - [ ] **REST/capability consistency — R184**: reconcile persisted format flags,
   currently foundation-default config overrides and actually installed routes.
   Cover supported/unsupported combinations, precise errors, data-access/prefix/
@@ -255,7 +162,8 @@ trade away durability, fencing, bounds or assertions for a passing timing result
   Java RESTCatalog implements token continuation. Neither client is patched.
 - Native namespace: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_full_stack_test -- --nocapture`.
   Use the same Python variable and an isolated cleaned runtime root as below.
-- Native: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test official_java_catalog_commits -- --ignored --nocapture`.
+- Native SDK: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test official_java_ -- --ignored --nocapture --test-threads=1`.
+- Native FileIO faults/lifecycle: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test native_file_ -- --ignored --nocapture --test-threads=1`.
 - For Java tests, use default Pixi for Cargo; set
   `JAVA_HOME=$PWD/.pixi/envs/iceberg-e2e/lib/jvm` and
   `CROWDB_ICEBERG_E2E_MVN=$PWD/.pixi/envs/iceberg-e2e/bin/mvn`.

@@ -48,8 +48,8 @@ server-side scan planning, multiple active catalogs, tenants, or warehouses.
 Unsupported endpoints and optional features return the precise standard
 unsupported response and perform no mutation.
 
-The user approved a foreground functional checkpoint before reclamation. R179,
-R181 and R182 are complete; finish remaining R180 and foreground R184 conformance.
+The user approved a foreground functional checkpoint before reclamation. R179
+through R182 are complete; continue foreground R184 conformance.
 Implement R183 afterward
 and finish the remaining R184 gates. This does not remove R183 or complete the
 original correctness milestone early. Before reclamation, unreachable storage is
@@ -123,13 +123,13 @@ system root -> active CatalogId/activation epoch
 2. R179 is complete: namespace authority, bounded standard REST operations,
    child/drop fencing, official-client boundary acceptance and native restart.
    Its contract is retained in [Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
-3. R180 implements native immutable files, streaming/range FileIO, multipart, and
-   generation-local metadata projections. It can proceed after R178 in parallel
-   with R179.
+3. R180 is complete: native immutable files, bounded streaming/range FileIO,
+   durable multipart, delegated credentials and validated generation-local
+   metadata projections, with native fault/restart and official SDK acceptance.
 4. R181 is complete: table identity, v1/v2/v3 metadata validation, lifecycle,
    load/list/exists, rename/drop and fault/replay acceptance on native files.
-5. R182 implements atomic create/staged-create and update commits, requirements,
-   updates, format upgrades, idempotency, conflict classification, and recovery.
+5. R182 is complete: atomic create/staged-create and update commits, requirements,
+   format upgrades, idempotency, conflict classification and native fault recovery.
 6. R183 implements snapshot-aware purge, orphan cleanup, retired catalog cleanup,
    and bounded reclamation after R180 through R182 define reachability.
 7. R184 completes public REST integration, authentication, endpoint discovery,
@@ -393,5 +393,5 @@ GC and exhaustion-recovery requirements recorded in R183.
     GC, ORC or engine-test deferrals. No human decision remains pending here.
 
 Unfinished implementation and unexecuted acceptance remain in the working plans.
-R179, R181 and R182 are closed by their acceptance gates, not by these decisions.
-R180 and R183–R184 remain open; this does not imply engine/GC conformance.
+R179–R182 are closed by their acceptance gates, not by these decisions.
+R183–R184 remain open; this does not imply engine/GC conformance.
