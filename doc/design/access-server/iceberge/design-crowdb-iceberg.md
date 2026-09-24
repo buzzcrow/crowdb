@@ -366,8 +366,14 @@ credential provider. Only the shared SigV4 algorithm is reused; general S3
 credentials and metadata are never consulted. Header and presigned requests have
 bounded authentication input and reject duplicate authentication fields. Grant
 expiry remains exact even when signature timestamps allow clock skew. Table
-credential vending, routed operation checks and streaming enforcement remain
-separate integration work; a session token alone never authenticates a request.
+credential issuance requires a matching Ready catalog authority and rejects
+lifetimes above its persisted delegated-access bound, independently of the
+signer's configured maximum. A zero persisted delegation bound disables issuance.
+Callers still must freshly authorize the root and exact live table or draft;
+the serialization primitive does not perform those reads. Table credential
+vending remains separate integration work; routed operation checks and streamed
+request/response limits already enforce signed scopes and server budgets.
+A session token alone never authenticates a request.
 The native path-style request parser preserves decoded object-key bytes and limits
 operations to immutable object reads/writes and multipart subresources. Unknown
 query operations, duplicate parameters and general buckets fail closed. HTTP

@@ -257,17 +257,43 @@ Current requested sequence (tasks 1–3):
   lifetime against persisted request bounds. Runtime initialization uses a
   five-minute request bound; old catalogs retain their original shorter bound.
   Credential vending remains disabled pending the delegated-grace audit.
+  `FileDelegationLimits::issue` now requires the matching Ready catalog authority
+  and checks its persisted delegation bound independently of issuer configuration.
+  Zero-grace catalogs cannot mint credentials; wider signing configuration cannot
+  bypass the bound. HTTP callers must still reauthorize the current root and exact
+  table/draft, and runtime delegation bounds remain disabled until that wiring.
   Verified: 49 server feature-enabled tests, workspace fmt/clippy and explicit
   Iceberg-feature clippy. Paused-clock coverage proves active heartbeat writes
   cannot extend the absolute deadline; real HTTP covers incomplete headers.
-  The pinned SDK's `VendedCredentialsProvider` refreshes a server-configured
-  `credentials.uri`, requires exactly one S3 credential in the result and starts
-  refreshing five minutes before expiry. The standard credentials route identifies
-  a table by name, while several invisible drafts may share that name. Verify an
-  exact-draft refresh URI with the real SDK before choosing its routing; never
-  return several draft credentials or silently refresh against another table.
+  The pinned SDK's `AwsClientProperties` selects `VendedCredentialsProvider` using
+  response config `client.refresh-credentials-endpoint`; `credentials.uri` is the
+  provider's internal property, not sufficient by itself to activate S3FileIO
+  refresh. The provider requires exactly one S3 credential and starts refreshing
+  five minutes before expiry. The official Java acceptance fixture now creates
+  two same-name staged transactions through `RESTCatalog`, retains each returned
+  refresh config in S3FileIO, then uses the real AWS provider selection and HTTP
+  refresh with expired seed credentials. Distinct `?table-id=...` selectors and
+  bearer headers survive unchanged; successful grants are cached and an expired
+  draft's 404 does not fall back to the other draft.
+  This is a mock-server SDK contract test, not CROWDB credential-authority E2E.
+  Wire the existing credentials route with an optional exact TableId selector:
+  validate catalog, name/namespace, principal and live head or original draft
+  journal; reject missing/mismatched/expired targets rather than resolving another
+  same-name table. Mint one prefix credential only after persisted delegation
+  bounds pass. Do not trust a selector as authorization or require SDK changes.
   Primary source:
   [Java 1.11.0 provider](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/aws/src/main/java/org/apache/iceberg/aws/s3/VendedCredentialsProvider.java).
+  [Java 1.11.0 AWS provider selection](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/aws/src/main/java/org/apache/iceberg/aws/AwsClientProperties.java).
+  Verification: 522 library tests and the pinned Java staged-refresh acceptance
+  pass; workspace fmt/clippy, server Iceberg-feature all-target clippy and focused
+  SDK-test clippy pass. The broader `--features iceberg-e2e --all-targets` clippy
+  gate hits a pre-existing dead-code warning: shared fixture
+  `TestTableHttp::endpoint` is unused in `iceberg_table_http_test` with that feature.
+  Both affected fixture/test files are unchanged; no unrelated lint suppression
+  was added. Run the SDK acceptance from the default Pixi environment with
+  `JAVA_HOME=$PWD/.pixi/envs/iceberg-e2e/lib/jvm` and
+  `CROWDB_ICEBERG_E2E_MVN=$PWD/.pixi/envs/iceberg-e2e/bin/mvn`; the Java-only
+  environment does not provide Cargo.
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,

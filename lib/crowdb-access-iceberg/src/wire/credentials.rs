@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::catalog::CatalogContext;
+use crate::catalog::{CatalogAuthority, CatalogContext, CatalogLifecycle};
 use crate::file::{
     FileCredentials, FileGrant, FileGrantError, FileGrantIssuer, FileOperation, FileOperations, TableLocation,
 };
@@ -58,18 +58,27 @@ pub struct FileDelegationLimits {
 }
 
 impl FileDelegationLimits {
-    /// Requires fresh Ready catalog and live table authorization from the caller.
+    /// Requires a fresh Ready root/authority pair and live table or draft authorization.
     /// Refresh must reauthorize the bearer, never exchange an old file token.
     /// # Errors
-    /// Rejects invalid time windows and budgets, including issuer TTL violations.
+    /// Rejects foreign/retired authorities and windows exceeding persisted delegation bounds.
+    /// Also rejects invalid time windows and budgets, including issuer TTL violations.
     pub fn issue(
         self,
         issuer: &FileGrantIssuer,
         principal: Principal,
         context: CatalogContext,
+        authority: &CatalogAuthority,
         table: TableId,
         now_ms: u64,
     ) -> Result<FileCredentials, FileGrantError> {
+        authority.validate().map_err(|_| FileGrantError::Invalid)?;
+        if authority.catalog != context.catalog || authority.lifecycle != CatalogLifecycle::Ready {
+            return Err(FileGrantError::Forbidden);
+        }
+        if self.ttl_ms > authority.admission_bounds.delegated_access_ms {
+            return Err(FileGrantError::Bounds);
+        }
         let expires_ms = now_ms.checked_add(self.ttl_ms).ok_or(FileGrantError::Invalid)?;
         if expires_ms > i64::MAX as u64 {
             return Err(FileGrantError::Invalid);
