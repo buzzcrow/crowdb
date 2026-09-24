@@ -3,7 +3,7 @@ import uuid
 
 import requests
 from pyiceberg.catalog import load_catalog
-from pyiceberg.exceptions import RESTError, UnauthorizedError, NamespaceAlreadyExistsError, NamespaceNotEmptyError
+from pyiceberg.exceptions import RESTError, UnauthorizedError, NamespaceAlreadyExistsError, NamespaceNotEmptyError, NoSuchNamespaceError
 
 
 def main():
@@ -86,6 +86,13 @@ def verify_namespaces(uri, properties):
     writer.drop_namespace(child)
     writer.drop_namespace(namespace)
     assert not writer.namespace_exists(namespace)
+    for operation in (writer.load_namespace_properties, writer.drop_namespace, writer.list_namespaces):
+        try:
+            operation(namespace)
+        except NoSuchNamespaceError:
+            pass
+        else:
+            raise AssertionError("missing namespace was accepted")
 
 
 if __name__ == "__main__":

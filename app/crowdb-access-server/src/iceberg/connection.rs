@@ -28,6 +28,10 @@ impl ConnectionActivity {
         self.latest_ms.fetch_max(elapsed, Ordering::Relaxed);
     }
 
+    pub(super) fn dispatch_deadline(&self, lifetime: Duration) -> Instant {
+        self.start + lifetime - (lifetime / 10).min(Duration::from_millis(100))
+    }
+
     pub(super) async fn expired(&self, idle: Duration, lifetime: Duration) {
         let deadline = self.start + lifetime;
         loop {

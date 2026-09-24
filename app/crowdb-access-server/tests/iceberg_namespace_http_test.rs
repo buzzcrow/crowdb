@@ -178,6 +178,27 @@ async fn complete_list_spool_admission_is_bounded_and_released() {
 }
 
 #[tokio::test]
+async fn complete_list_deadline_returns_503_and_releases_all_spool_slots() {
+    let (store, _, address, stop, server) = setup().await;
+    store.scan_delay_ms.store(2500, Ordering::SeqCst);
+    let (status, body) = send(address, "GET", "/v1/namespaces").await;
+    assert_eq!(status, 503);
+    let error: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(error["error"]["code"], 503);
+    assert!(error.get("namespaces").is_none());
+    store.scan_delay_ms.store(100, Ordering::SeqCst);
+    let mut requests = Vec::new();
+    for _ in 0..4 {
+        requests.push(tokio::spawn(send(address, "GET", "/v1/namespaces")));
+    }
+    for request in requests {
+        assert_eq!(request.await.unwrap().0, 200);
+    }
+    stop.send(()).unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn complete_list_exhaustion_never_returns_a_truncated_success() {
     use crowdb_access_iceberg::catalog::StoredValue;
     use crowdb_access_iceberg::key::NamespaceId;

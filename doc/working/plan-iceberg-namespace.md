@@ -33,13 +33,13 @@ Goal: finish namespace acceptance without weakening identity, admission or recov
 
 ## Remaining execution
 
-- [ ] **Property-limit E2E**: exercise valid entry/key/value/encoded-authority
+- [x] **Property-limit E2E**: exercise valid entry/key/value/encoded-authority
   boundaries and one-over-limit updates through a listener. Reload after each
   rejected update, including removal/update overlap (422), and assert unchanged
   properties. Library boundary tests alone do not satisfy this E2E acceptance.
   Files: `app/crowdb-access-server/tests/iceberg_namespace_write_http_test.rs`,
   `app/crowdb-access-server/tests/common/iceberg_client.py`.
-- [ ] **Official-client listing boundaries**: extend the SDK fixture beyond
+- [x] **Official-client listing boundaries**: extend the SDK fixture beyond
   ordinary complete listing to explicit start/continuation, stale-only pages,
   exhaustion and subsequent successful requests proving resource release.
   Reuse bounded HTTP fixtures; first inspect the pinned SDK's pagination API,
@@ -47,7 +47,7 @@ Goal: finish namespace acceptance without weakening identity, admission or recov
   Cover missing namespace load/drop errors as well as the existing conflict and
   not-empty cases. Files: `iceberg_namespace_http_test.rs`,
   `tests/common/iceberg_client.py`, `iceberg_full_stack_test.rs` under the server.
-- [ ] **Final gates and closure**: after these gaps are covered, rerun the native
+- [~] **Final gates and closure**: after these gaps are covered, rerun the native
   two-listener CRUD/restart and unchanged 500-ms maintenance fixtures against the
   lifecycle integration, plus tests/fmt/clippy. Reconcile every acceptance item,
   then remove the requirement, index entry and this plan together. Do not close
@@ -55,10 +55,28 @@ Goal: finish namespace acceptance without weakening identity, admission or recov
 
 ## Acceptance evidence audit — 2026-09-24
 
-This is a source audit at `a52cfb72`, not a fresh test run. The implementation
-checkpoint passed its library/server/SDK gates; final namespace closure gates
-remain pending. Test names below are under `lib/crowdb-access-iceberg/tests/`
-unless identified as server tests. Numbering follows R179's acceptance bullets.
+Closure implementation: `iceberg_namespace_limits_test.rs` now passes three HTTP
+tests, including the exact codec-derived encoded-authority boundary, one extra
+value byte, and byte/revision equality after rejected updates. New SDK fixtures
+use PyIceberg for complete-list item/byte/scan/time exhaustion and Java 1.11.0 for
+empty-token/empty-page continuation. Five expected failures per exhausted case
+followed by success detect leaked four-slot spool admission, not retry-to-success.
+The timeout case exposed dispatch and connection teardown racing at the same
+deadline. Dispatch now reserves response headroom within the existing absolute
+connection lifetime; no timeout was increased. A non-ignored HTTP regression
+also checks 503 and availability of all four spool slots after cancellation.
+The Java fixture uses the existing nested no-FileIO class and SDK-default retry
+settings (zero retries is rejected by the pinned SDK); exact scan count checks
+ensure its successful pagination run did not hide retries.
+
+The source audit began at `a52cfb72`; the identified gaps are now covered below.
+Fresh library and default/Iceberg-enabled server all-target suites pass. Both
+native full-stack tests pass under default concurrency (48.53 seconds), including
+the unchanged 500-ms maintenance profile and extended PyIceberg missing-namespace
+errors before/after restart. New SDK boundary tests pass (18.06 seconds), including
+five simultaneous SDK list calls producing four successes and one admission 503.
+Test names below are under `lib/crowdb-access-iceberg/tests/` unless identified as
+server tests. Numbering follows R179's acceptance bullets.
 
 - **1 — identifiers**: `namespace_model_test.rs` covers encoded level/byte
   boundaries and malformed inputs; `namespace_record_test.rs` covers storage
@@ -69,7 +87,8 @@ unless identified as server tests. Numbering follows R179's acceptance bullets.
 - **3 — properties**: `namespace_model_test.rs` and `namespace_record_test.rs`
   cover cardinality, byte and encoded-envelope bounds. Server
   `iceberg_namespace_write_http_test.rs` checks overlap status and replay, but
-  does not establish the complete boundary-and-unchanged-authority E2E matrix.
+  is supplemented by `iceberg_namespace_limits_test.rs`, which establishes the
+  boundary-and-unchanged-authority E2E matrix.
 - **4 — paged authority filtering**: `namespace_list_test.rs` covers stale-only
   pages, corruption and context-bound tokens; `namespace_repository_test.rs`
   checks authoritative parent/name identity.
@@ -87,14 +106,17 @@ unless identified as server tests. Numbering follows R179's acceptance bullets.
   publication, concurrent writers and helping interrupted nonempty drops.
 - **9 — listing E2E**: server `iceberg_namespace_http_test.rs` covers token modes,
   item/byte/scan exhaustion and spool concurrency/release. The official Python
-  fixture currently checks ordinary listing; raw HTTP checks do not replace the
-  required official-client exhaustion/continuation evidence. Still pending.
+  fixture checks complete-list exhaustion and release through the new
+  `iceberg_namespace_sdk_test.rs`; Java covers empty pages and continuation with
+  an exact scan-count assertion. Raw HTTP tests additionally verify wire status
+  and that failure bodies are not truncated namespace successes.
 - **10 — parent identity**: `namespace_create_test.rs`,
   `namespace_repository_test.rs` and `namespace_list_test.rs` cover missing
   parents, recreation, descendant isolation and token rejection.
 - **11 — official endpoint/error matrix**: server `common/iceberg_client.py`
   covers CRUD, exists, duplicate and nonempty errors through PyIceberg. Explicit
-  SDK missing-load/drop and pagination/error cases remain in the task above.
+  SDK missing-load/drop/list errors now pass in the native test; the new Java
+  namespace fixture covers pagination and complete-response null continuation.
 - **12 — credentials**: `wire_test.rs` covers role separation and invalid/duplicate
   credentials; server `iceberg_auth_test.rs` covers startup rejection and
   namespace-write HTTP tests exercise independent credentials. The Python fixture

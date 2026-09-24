@@ -134,9 +134,13 @@ impl IcebergHttpService {
         Ok(self)
     }
 
-    async fn handle(&self, request: Request<Incoming>) -> Result<Response<IcebergBody>, Infallible> {
+    async fn handle(
+        &self,
+        request: Request<Incoming>,
+        deadline: tokio::time::Instant,
+    ) -> Result<Response<IcebergBody>, Infallible> {
         let head = request.method() == hyper::Method::HEAD;
-        let result = Box::pin(tokio::time::timeout(self.request_timeout, self.dispatch(request))).await;
+        let result = Box::pin(tokio::time::timeout_at(deadline, self.dispatch(request))).await;
         let mut response = match result {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => response(error.error.code, serde_json::to_vec(&error).unwrap_or_default()),
@@ -310,8 +314,9 @@ pub async fn serve(
                 connections.spawn(async move {
                     let lifetime = service.request_timeout;
                     let activity = ConnectionActivity::new();
+                    let deadline = activity.dispatch_deadline(lifetime);
                     let stream = ActiveIo::new(stream, activity.clone());
-                    let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { Box::pin(service.handle(request)).await } });
+                    let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { Box::pin(service.handle(request, deadline)).await } });
                     let connection = http1::Builder::new().keep_alive(false).max_buf_size(64 * 1024)
                         .serve_connection(TokioIo::new(stream), handler);
                     tokio::select! {

@@ -164,8 +164,13 @@ bind the catalog activation, stable parent identity, spelling, page size and las
 scanned key. A stale-only page can therefore be empty while retaining a token.
 Unpaginated lists build a complete in-memory spool before success headers, capped
 independently at 2 MiB, 1024 results, 4096 scanned mappings and four concurrent
-spools. Atomic admission rejects excess work without waiting. The request deadline
-bounds construction and sending; cancellation drops the spool permit. Completed
+spools. Atomic admission rejects excess work without waiting. The connection's
+absolute lifetime bounds construction and sending. Dispatch stops before that
+deadline, reserving the smaller of 100 ms or 10% of the lifetime for emitting a
+bounded error response. Header receipt does not restart this budget. This keeps
+deadline exhaustion before success headers on the 503 path rather than racing
+connection teardown; a stalled transport still closes at the unchanged hard
+deadline. Cancellation drops the spool permit. Completed
 responses stream in 16-KiB frames. Absent page tokens request complete results;
 empty page tokens begin paginated mode. Tokens use a domain-separated signing key
 derived from the configured credentials so equally configured listeners interoperate.
