@@ -125,6 +125,13 @@ impl CatalogStore for TestStore {
                             (mode == 2
                                 && scope == crowdb_access_iceberg::key::CatalogScope::NamespaceAuthority)
                                 || (mode == 3 && scope == crowdb_access_iceberg::key::CatalogScope::Operation)
+                                || (mode == 4
+                                    && scope
+                                        == crowdb_access_iceberg::key::CatalogScope::TableCommitOperation
+                                    && matches!(crowdb_access_iceberg::key::IcebergKey::decode(key).and_then(|key|
+                                        crowdb_access_iceberg::record::StorageRecord::decode(&key, value)),
+                                        Ok(crowdb_access_iceberg::record::StorageRecord::TableCommitOperation(operation))
+                                            if operation.phase == crowdb_access_iceberg::commit::TableCommitPhase::Rejected))
                         }
                         _ => false,
                     };

@@ -48,33 +48,5 @@ impl TableCreator {
 }
 
 pub(in crate::commit::create::publisher) fn definite_validation_failure(error: &Error) -> bool {
-    use crate::file::ParquetMetadataError;
-    use crate::manifest::{SelectedParquetError, SnapshotManifestError, SnapshotValidationError};
-    matches!(
-        error,
-        Error::Proof(CommitProofError::Files(
-            SnapshotValidationError::Binding
-                | SnapshotValidationError::Bounds
-                | SnapshotValidationError::Unsupported
-                | SnapshotValidationError::Unavailable
-                | SnapshotValidationError::Parquet(
-                    SelectedParquetError::Delete
-                        | SelectedParquetError::Schema
-                        | SelectedParquetError::Unsupported
-                        | SelectedParquetError::Binding
-                        | SelectedParquetError::Rows
-                        | SelectedParquetError::Metadata(
-                            ParquetMetadataError::Invalid
-                                | ParquetMetadataError::Bounds
-                                | ParquetMetadataError::Unsupported
-                        )
-                )
-                | SnapshotValidationError::Manifest(
-                    SnapshotManifestError::Bounds
-                        | SnapshotManifestError::RowIds
-                        | SnapshotManifestError::Unavailable
-                        | SnapshotManifestError::Identity(_)
-                )
-        ))
-    )
+    matches!(error, Error::Proof(CommitProofError::Files(error)) if crate::commit::proof::invalid_files(error))
 }

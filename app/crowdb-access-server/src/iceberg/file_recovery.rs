@@ -31,7 +31,8 @@ pub(super) async fn run(
         if root.state != RootState::Ready {
             continue;
         }
-        let budget = Duration::from_millis(authority.admission_bounds.request_ms);
+        let budget =
+            Duration::from_millis(authority.admission_bounds.request_ms).min(Duration::from_secs(60));
         let recovery =
             MultipartRecovery::new(store.clone(), blocks.clone(), 64 * 1024, NATIVE_FILE_BLOCK_BYTES)
                 .and_then(|recovery| recovery.with_session_timeout(budget));

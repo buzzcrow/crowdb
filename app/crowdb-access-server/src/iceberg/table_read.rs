@@ -9,9 +9,9 @@ use crowdb_access_iceberg::{
     table::{SnapshotLoadingMode, TableListLimits, TableLister, TableLoad, TableLoader},
     wire::IcebergErrorResponse,
 };
-#[cfg(feature = "test-util")]
 use crowdb_access_iceberg::{file::FileBlockStore, namespace::NamespaceStore, table::TableMetadataLimits};
 use hyper::{header, Method, Request, Response};
+use sha2::{Digest, Sha256};
 
 use super::{
     body::{IcebergBody, SpoolPermit},
@@ -25,10 +25,10 @@ pub(super) struct TableHttp {
     loader: TableLoader,
     lister: TableLister,
     spools: Arc<AtomicUsize>,
+    pub(super) file_config: Option<super::table_credentials::TableFileConfig>,
 }
 
 impl TableHttp {
-    #[cfg(feature = "test-util")]
     pub(super) fn new<Store: NamespaceStore + 'static>(
         store: Arc<Store>,
         blocks: Arc<dyn FileBlockStore>,
@@ -48,6 +48,7 @@ impl TableHttp {
             ),
             lister: TableLister::new(store, secret)?,
             spools: Arc::new(AtomicUsize::new(0)),
+            file_config: None,
         })
     }
 
@@ -135,7 +136,17 @@ impl TableHttp {
         let condition = condition(headers)?;
         let loaded = self
             .loader
-            .load(context, namespace, name, mode, condition.as_deref())
+            .load(
+                context,
+                namespace,
+                name,
+                mode,
+                if self.file_config.is_some() {
+                    None
+                } else {
+                    condition.as_deref()
+                },
+            )
             .await
             .map_err(|_| service_unavailable())?;
         let (mut result, etag) = match loaded {
@@ -149,7 +160,29 @@ impl TableHttp {
                 append(&mut bytes, b",\"metadata\":")?;
                 append(&mut bytes, &metadata)?;
                 append(&mut bytes, b"}")?;
-                (response(200, bytes), etag)
+                let etag = if let Some(config) = &self.file_config {
+                    config.append(&mut bytes, namespace, name, head.table)?;
+                    let mut digest = Sha256::new();
+                    digest.update(etag.as_bytes());
+                    digest.update(&bytes);
+                    format!("\"{:x}\"", digest.finalize())
+                } else {
+                    etag
+                };
+                let unchanged = condition.as_deref().is_some_and(|header| {
+                    header.split(',').any(|tag| {
+                        let tag = tag.trim();
+                        tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag
+                    })
+                });
+                (
+                    if unchanged {
+                        response(304, Vec::new())
+                    } else {
+                        response(200, bytes)
+                    },
+                    etag,
+                )
             }
         };
         result
@@ -252,7 +285,7 @@ fn append(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), IcebergErrorResponse>
     Ok(())
 }
 
-fn missing_table() -> IcebergErrorResponse {
+pub(super) fn missing_table() -> IcebergErrorResponse {
     IcebergErrorResponse::new(404, "NoSuchTableException", "Table does not exist")
 }
 

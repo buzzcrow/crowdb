@@ -39,6 +39,7 @@ pub struct TableCreator {
     names: Arc<dyn NamespaceStore>,
     blocks: Option<Arc<dyn FileBlockStore>>,
     staged_limits: Option<Arc<StagedCommitLimits>>,
+    response_reserve: usize,
 }
 
 impl TableCreator {
@@ -49,7 +50,25 @@ impl TableCreator {
             names: store,
             blocks: Some(blocks),
             staged_limits: None,
+            response_reserve: 0,
         }
+    }
+
+    #[must_use]
+    pub fn with_response_reserve(mut self, bytes: usize) -> Self {
+        self.response_reserve = bytes;
+        self
+    }
+
+    fn validate_response_size(&self, bytes: &[u8]) -> Result<(), Error> {
+        if bytes
+            .len()
+            .checked_add(self.response_reserve)
+            .map_or(true, |length| length > MAX_PAYLOAD_BYTES)
+        {
+            return Err(crate::table::TableMetadataError::Bounds.into());
+        }
+        Ok(())
     }
 
     /// # Errors

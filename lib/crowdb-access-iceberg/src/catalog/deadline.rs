@@ -20,6 +20,15 @@ impl Default for ClearBounds {
 }
 
 impl ClearBounds {
+    pub(crate) fn cover(self, other: Self) -> Self {
+        Self {
+            root_lease_ms: self.root_lease_ms.max(other.root_lease_ms),
+            request_ms: self.request_ms.max(other.request_ms),
+            delegated_access_ms: self.delegated_access_ms.max(other.delegated_access_ms),
+            clock_skew_ms: self.clock_skew_ms.max(other.clock_skew_ms),
+        }
+    }
+
     /// # Errors
     /// Rejects an unbounded request lifetime or overflowing deadline.
     pub fn completion_deadline(self, maintenance_observed_ms: u64) -> Result<u64, ValidationError> {

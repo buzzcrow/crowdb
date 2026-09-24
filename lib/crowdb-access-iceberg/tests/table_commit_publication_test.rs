@@ -11,6 +11,8 @@ mod list_fixture;
 #[path = "common/table_metadata.rs"]
 #[allow(dead_code)]
 mod metadata;
+#[path = "common/namespace_store.rs"]
+mod namespace_store;
 #[path = "common/namespace.rs"]
 #[allow(dead_code)]
 mod namespaces;
@@ -20,6 +22,8 @@ mod parquet;
 #[path = "common/commit_provenance.rs"]
 #[allow(dead_code)]
 mod provenance;
+#[path = "common/table_recovery.rs"]
+mod recovery_store;
 #[path = "common/snapshot_files.rs"]
 #[allow(dead_code)]
 mod snapshot;
@@ -142,6 +146,62 @@ async fn head(fixture: &TestPrior) -> TableHead {
         panic!("not a head")
     };
     *head
+}
+
+#[tokio::test]
+async fn recovery_sweeps_prepared_commits_with_bounded_catalog_and_kind_cursors() {
+    use crowdb_access_iceberg::commit::{TableRecovery, TableRecoveryKind};
+    let fixture = TestPrior::new().await;
+    let mut operations = Vec::new();
+    for _ in 0..5 {
+        operations.push(prepare(&fixture, "swept").await.0);
+    }
+    let recovery = TableRecovery::new(fixture.namespace.store.clone(), fixture.blocks.clone(), limits());
+    let first = recovery
+        .recover_page(fixture.namespace.context, TableRecoveryKind::Update, None, 2000)
+        .await
+        .unwrap();
+    assert_eq!(first.progressed, 4);
+    assert!(first.failures.is_empty());
+    let cursor = first.continuation.unwrap();
+    assert!(recovery
+        .recover_page(
+            fixture.namespace.context,
+            TableRecoveryKind::Create,
+            Some(cursor.clone()),
+            2000
+        )
+        .await
+        .is_err());
+    let second = recovery
+        .recover_page(
+            fixture.namespace.context,
+            TableRecoveryKind::Update,
+            Some(cursor),
+            2000,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.progressed, 1);
+    assert!(second.failures.is_empty());
+    assert!(second.continuation.is_none());
+    assert_eq!(
+        head(&fixture).await.generation,
+        fixture.selected.head.generation + 1
+    );
+    let journal = TableCommitJournal::new(fixture.namespace.store.clone());
+    let mut winners = 0;
+    for operation in operations {
+        let current = journal
+            .load(operation.context, operation.identity.operation)
+            .await
+            .unwrap()
+            .unwrap();
+        let status = current.outcome.unwrap().status;
+        assert!(matches!(status, 200 | 409));
+        winners += usize::from(status == 200);
+    }
+    assert_eq!(winners, 1);
 }
 
 #[tokio::test]

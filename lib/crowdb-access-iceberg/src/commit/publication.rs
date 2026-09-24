@@ -13,6 +13,7 @@ use crate::{
 
 mod candidate;
 mod completion;
+mod rejection;
 
 pub(super) use candidate::{response as metadata_response, write_metadata_file};
 
@@ -116,10 +117,13 @@ pub async fn recover_table_commit(
         ))?;
         head
     };
-    Box::pin(prepare_table_commit(store, blocks, &operation, target, limits))
-        .await?
-        .publish()
-        .await
+    match Box::pin(prepare_table_commit(store, blocks, &operation, target, limits)).await {
+        Ok(proof) => proof.publish().await,
+        Err(error) => match rejection::response(&error) {
+            Some(response) => publisher.reject_validation(&operation, response).await,
+            None => Err(error.into()),
+        },
+    }
 }
 
 impl Publisher {

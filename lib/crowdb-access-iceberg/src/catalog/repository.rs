@@ -233,6 +233,11 @@ impl CatalogRepository {
         let bounds = original_authority
             .as_ref()
             .map_or(self.bounds, |authority| authority.admission_bounds);
+        let bounds = if valid && request.action == ManagementAction::Clear {
+            bounds.cover(self.bounds)
+        } else {
+            bounds
+        };
         let mut result = if request.action == ManagementAction::Rename && valid {
             original_authority
                 .as_ref()

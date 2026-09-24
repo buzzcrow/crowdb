@@ -19,7 +19,11 @@ mod namespace_request;
 mod namespace_write;
 mod recovery;
 mod runtime;
+mod table_credentials;
+mod table_limits;
 mod table_read;
+mod table_recovery;
+mod table_write;
 
 pub use file_admission::{FileAdmissionError, FileServiceLimits, FileTransferAdmission};
 pub use file_auth::authenticate_file_request;

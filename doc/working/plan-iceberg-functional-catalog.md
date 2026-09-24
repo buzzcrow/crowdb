@@ -22,278 +22,90 @@ Continue independently while the user is away. The active foreground scope is
 R177 through R184 excluding R183 physical GC; ORC belongs to deferred R186.
 Keep human choices in R177, implementation gaps here, and commit verified slices.
 
-Handover checkpoint (2026-09-23): contextual manifest decoding now includes
-historical schema/spec binding, partition tuples, typed bounds/equality fields and
-a list-bound reader with EOF totals and cancellation poisoning. Generation-local
-metadata projection pages and canonical streaming fallback are also implemented;
-multipart part LastModified, S3-shaped response serialization and intersected
-grant/service/session byte limits are implemented as separate components;
-native FileIO routing and physical sealing are connected, and a pinned Apache
-Iceberg 1.11.0 / AWS SDK 2.44.4 FileIO baseline now passes with default signed
-checksum trailers and streamed Complete responses;
-partition summaries, bounded Variant bounds and a scoped streaming DV cross-file
-validator are now implemented. Candidate snapshot enumeration/admission and
-table load/commit wiring remains pending. Resume instructions, exact next implementation slices,
-landed APIs, remaining integration gaps and test commands are in
-`plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this
-pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
+## Current requested tasks 1–3
+
+The requested tasks 1–3 are implemented and verified for the enabled profile:
+ordered evaluation, generation-bound file proofs and atomic create/update
+publication are connected to the native HTTP runtime. This checkpoint
+does not close all of R182 or R184: the enabled profile rejects unsupported
+partition-statistics selected-use semantics and encrypted data, and defers ORC
+(R186), physical GC (R183), lifecycle routes and full engine conformance.
+
+- Ordered evaluation preserves raw unknown JSON numbers, checks requirements
+  before mutation, assigns SDK-compatible schema/layout IDs and validates
+  definitions at their actual update position. Direct v1-to-v3 and the confirmed
+  SDK-safe name-mapping restrictions are implemented.
+- Non-forgeable `PreparedTableCommit` binds the exact input head, journal revision,
+  immutable file identity, retained-manifest provenance, all selected snapshots,
+  current-reader Parquet projection and direct-parent DV preservation. Validation
+  never grants authority to unrelated uploads or silently rebases a stale head.
+- Immediate and staged create use durable namespace/name admission, canonical
+  immutable metadata and one initial head publisher. Stage binding and expiry
+  compete on one phase CAS; bound or uncertain operations cannot expire.
+- Runtime exposes create, commit, table reads and credential refresh together.
+  Writer is the only mutation role. Retry ledgers bind route, exact bytes,
+  principal and activation; original operation state is loaded before fresh name
+  resolution. Known semantic errors are durable 4xx; uncertain storage errors
+  remain retryable. Candidate response budgets reserve 64 KiB for SDK config
+  before publication; raw metadata bytes remain unchanged.
+  Table-load ETags bind the returned SDK configuration too, so changed endpoints
+  cannot incorrectly reuse a metadata-only conditional response.
+- Credential refresh reauthorizes the live namespace/table or exact original
+  writer's unbound draft. SDK config uses
+  `client.refresh-credentials-endpoint` with an exact `table-id` selector; no
+  SDK extension or client-specific staging token is required. Same-name drafts,
+  expired targets and read/manage/clear roles cannot gain draft write access.
+- Initialization persists five-minute request and fifteen-minute delegation
+  bounds. Restart does not expand existing authority. Explicit clear may expand
+  bounds componentwise under its maintenance fence and waits the full resulting
+  grace. Legacy zero-delegation catalogs keep table routes disabled until an
+  explicitly requested clear and subsequent restart. No existing catalog was
+  cleared as part of development.
+- Background recovery alternates create/update journals in four-record pages,
+  validates catalog/kind/cursor scope and resets on activation changes. It
+  expires only unbound drafts and recovers fixed intent without physical deletion.
+  Multipart session recovery remains capped at its supported sixty-second budget.
+- The pinned Java 1.11.0 native-storage test passes create, properties, schema,
+  v1 append followed by direct v1-to-v3 upgrade, real Zstd Parquet upload, v3
+  append retaining the older manifests/data, same-name draft
+  isolation, staged append/publication, credential refresh and manifest scans.
+  Restarting the native catalog process preserves both tables, selected files and
+  credential refresh; no in-memory fixture substitutes for the storage stack.
+  Actual SDK bytecode confirmed that v2/v3 manifest schema IDs may reside in
+  embedded schema JSON without a duplicate OCF header; explicit mismatches still
+  fail. This compatibility regression has a focused Rust test.
+- Files: library `commit/recovery.rs`, `commit/publication/rejection.rs`,
+  `commit/proof/rejection.rs`, `manifest/metadata.rs`, catalog clear admission;
+  server `iceberg/table_write/`, `table_credentials.rs`, `table_recovery.rs`,
+  `table_limits.rs`, HTTP/runtime/read wiring; library and HTTP acceptance tests;
+  `tests/common/iceberg_java/src/main/java/TestIcebergCatalogWrites.java` fixture.
+
+- **Verification**: 527 library tests, the server Iceberg all-target suite,
+  all three pinned Java table SDK tests, and native Parquet/upgrade/staged/restart
+  acceptance pass. Workspace fmt/lint and explicit library/server Iceberg-E2E
+  all-target clippy pass. The first full-library invocation reached the shell's
+  sixty-second limit during compilation plus tests; its background rerun passed.
+  No new unsafe scope, lock, user-guide edit or physical cleanup was introduced.
+  Maven reports SDK worker/reaper threads during shutdown; both native test
+  invocations exit successfully. This is not a failed commit or storage check.
+  Run native acceptance with an isolated `CROWDB_RUNTIME_ROOT` to avoid persistent
+  shared harness port claims; do not delete shared persistent runtime state.
+  Use the default Pixi environment for Cargo with
+  `JAVA_HOME=$PWD/.pixi/envs/iceberg-e2e/lib/jvm` and
+  `CROWDB_ICEBERG_E2E_MVN=$PWD/.pixi/envs/iceberg-e2e/bin/mvn`.
+  Command: `cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test official_java_catalog_commits -- --ignored --nocapture`,
+  through `pixi run` after isolated `clean-env`.
+  SDK fixture dependencies follow the pinned Iceberg dependencies in Maven order
+  so Hadoop transitives cannot select older Avro/Jackson versions.
 
 ## Remaining Complexity Review
 
-Current requested sequence (tasks 1–3):
-
-- [ ] **Ordered candidate evaluation**: apply updates against one input document;
-  validate schema evolution at each actual update, server-assigned definition IDs,
-  last-added selectors, defaults, layouts, snapshot logs and bounded raw JSON.
-  Keep the evaluator pure and separate from publication authority.
-  Library checkpoint implemented and verified: all 23 update actions execute in
-  order; requirements precede mutation; bounded raw JSON preserves unknown large
-  numbers. Schema IDs are server-assigned, last-added selectors track transaction
-  state, field IDs/defaults/promotions/collection identities are checked, and
-  layouts bind the schema selected at the actual add operation. Snapshot/ref,
-  auxiliary metadata, log suppression/expiration and allocation high-water marks
-  are evaluated without writing storage. Direct v1-to-v3 expands to two internal
-  transitions after the user's 2026-09-24 confirmation. Candidate admission also
-  compiles the confirmed SDK-safe name-mapping profile into segmented Parquet paths.
-  Files: `src/commit/evaluator.rs`, `src/commit/evaluator/`, and
-  `src/table/metadata/name_mapping/compile.rs` in `crowdb-access-iceberg`.
-  Twenty-two focused tests pass, including generated Java 1.11.0 v1/v2/v3
-  differential schema/layout/property fixtures and raw-number preservation.
-  Complete library tests passed before the final focused additions; final focused
-  tests and workspace `rs-fmt-check` / `rs-lint` pass. No HTTP writes are enabled.
-  Keep this item open for broader SDK differential coverage and integration with
-  file proofs: `EvaluatedMetadata` is explicitly not a publishable proof.
-- [ ] **Commit file proof**: bind candidate snapshots and canonical file resolution
-  to the selected generation, including reused-manifest provenance after schema
-  expiration and prior-delete preservation. Structural metadata is not this proof.
-  Implemented checkpoint: bounded checksum-validated DV position ranges and
-  direct-parent snapshot DV replacement checks. Both snapshots undergo complete
-  selected-file validation; surviving data retains immutable identity, sequence
-  and partition bindings. Replacements cover prior DVs and applicable position
-  deletes, including canonical Java SDK Parquet pages; removed data may drop its
-  DV, but candidate orphan DVs fail. Aggregate candidate ranges and each prior
-  vector are independently bounded. This is not the generation-bound publication
-  proof: complete publication admission remains to compose. Equality-delete
-  rewrites and position-delete removal without a replacement DV are not proven
-  by this helper. Files: `file/deletion_vector/positions.rs` and
-  `manifest/snapshot_validation/preservation.rs` in `crowdb-access-iceberg`.
-  Verification: eight new focused tests cover range encodings, CRC, budgets,
-  exact-target coverage, dropped/replaced DVs, immutable identity and SDK v1/v2
-  Parquet page fixtures. Complete library tests and workspace fmt/clippy pass.
-  Prior-generation provenance checkpoint: `commit/provenance.rs` builds a bounded
-  exact immutable-manifest index only from retained canonical lists in a selected
-  head. Recovered writer contexts may include schemas already expired from table
-  metadata; unrelated uploads cannot authorize themselves. List EOF, manifest
-  framing/digest EOF, declared length/spec/content, catalog epoch and complete head
-  fences are checked. Four focused tests cover recovery, unselected uploads,
-  independent limits, corruption, stale heads and head changes during reads;
-  workspace fmt/clippy pass.
-  Candidate composition checkpoint (2026-09-24): `CandidateFileSource` fences
-  both prior head and candidate successor identity. Prior-reachable manifests may
-  recover expired definitions; new uploads must match candidate definitions.
-  Embedded v1 snapshots now enumerate canonical manifests without fabricating a
-  manifest-list file, enforce actual v1 writer headers, and participate in the
-  prior provenance index. All candidate snapshots undergo writer validation and
-  current-schema Parquet projection; new children invoke direct-parent DV checks.
-  Retained context composition preserves historical fields, uses one work budget,
-  and permits a dropped partition source only for the void transform. Exhausted
-  definition IDs no longer prevent reuse of existing schemas/specs/sort orders.
-  Auxiliary references now bind exact canonical file length, Puffin total footer
-  size and blob descriptors, including the spec-permitted property subset; file
-  counts, full canonical bytes and descriptor comparison work have separate caps.
-  Partition statistics currently receive Parquet container validation only, not
-  unified partition schema, ordered rows or count semantics. These helpers remain
-  explicitly separate from a publishable proof, and no HTTP writes are enabled.
-  Files: `commit/files/`, `commit/provenance/scan.rs`,
-  `manifest/snapshot_reader/references.rs`, `table/metadata/context.rs`.
-  Verification: all 471 library tests and workspace fmt/clippy pass, including
-  legacy enumeration, current-reader projection, provenance races, auxiliary
-  descriptor corruption, independent budgets and exhausted definition IDs.
-  Next integration sequence: finish selected-use semantics and aggregate admission,
-  then produce a non-forgeable generation-bound publication proof.
-  Only after that wire the operation journal, immutable metadata write and head CAS.
-- [ ] **Create and atomic publication**: compose durable request identity,
-  namespace reservations, immutable candidate writes, one head CAS and recovery;
-  cover immediate/staged create, concurrent losers and response-loss replay.
-  Do not enable HTTP writes before the preceding proofs and crash tests pass.
-  Update-journal checkpoint: `TableCommitOperation` stores the exact input head,
-  request payload digest, principal, evaluation timestamp, candidate head and final
-  response payload. Its separate FlatBuffers union tag and key scope are appended,
-  preserving all existing wire values. `TableCommitJournal` CAS transitions freeze
-  the selected generation and candidate; retries recover the original intent,
-  never rebase. Publication outcome transitions require observing the exact
-  candidate head or a definitively superseded input fence. Unknown outcomes cannot
-  become rejection merely due to timeout. Context checks bracket durable reads and
-  writes. The journal itself does not validate files or publish table heads.
-  `evaluate_durable_commit` now reads only the journaled request payload and exact
-  canonical input file, uses the persisted evaluation clock, and rechecks both
-  phase revision and complete head after evaluation. Recovery must reproduce the
-  frozen candidate digest/identity byte-for-byte; caller-supplied altered targets,
-  timestamps and stale generations cannot silently rebase or write candidates.
-  Verification: 478 library tests, 48 access-server tests with `iceberg` enabled,
-  workspace fmt and clippy pass. Seven journal/preparation tests cover phase reply
-  loss, terminal replay, abort/publication arbitration, candidate/head binding,
-  retired epochs and deterministic canonical reconstruction without candidate writes.
-  Update-publication implementation: `prepare_table_commit` composes durable
-  evaluation, selected-generation provenance, all retained snapshot checks and
-  auxiliary bindings into a privately constructed `PreparedTableCommit`. The
-  proof owns its storage domain; callers cannot transplant it into another store.
-  Journal advancement is internal, with a `test-util` hook only for phase tests.
-  Publication freezes the candidate, writes immutable inline/chunked metadata,
-  selects generation plus one with one head CAS, persists the exact response and
-  only then clears the pending marker. Recovery preserves FileId/tree identity
-  after a lost authority write, reconstructs interrupted chunk writes, resolves
-  unknown head-CAS outcomes, and durably rejects superseded input without rebasing.
-  Six focused tests cover concurrent winner/loser, every durable reply-loss point,
-  marker settlement, stale prepublication recovery and chunked candidate failures;
-  all 484 library tests, 48 Iceberg-enabled access-server tests and workspace
-  fmt/clippy pass.
-  Publication deliberately rejects nonempty partition-statistics while their
-  selected-use schema/row validator is unfinished; it does not promote the current
-  container-only auxiliary helper into a complete proof. Plaintext Parquet remains
-  the enabled data/delete profile; ORC and physical reclamation stay deferred.
-  Remaining: full proof-profile coverage, immediate/staged creation, namespace
-  admission/recovery, request admission/retry-ledger composition and REST wiring.
-  No endpoint or advertised capability changed.
-  Initial-create evaluation: `CreateTableRequest` and `evaluate_table_creation`
-  now construct deterministic empty-table metadata from a retained identity and
-  timestamp. Fresh IDs follow Java's sibling-first struct traversal, list element
-  allocation and map key/value allocation; identifier IDs, nested defaults and
-  partition/sort sources follow the same rebinding. Default format/compression,
-  reserved-property filtering, retry properties, metrics column aliases and
-  SDK-serialized null optional fields are covered. The pure candidate is explicitly
-  not a namespace/publication proof. Generated Java 1.11.0 requests and complete
-  v1/v2/v3 output documents provide differential fixtures.
-  Verification: all 493 library tests and workspace fmt/clippy pass, including
-  eight focused initial-metadata tests and the complete-document SDK comparison.
-  Next creation slices: persist a separate table-create intent; reserve the name
-  before parent admission; write and verify initial immutable metadata before
-  taking the parent marker so namespace recovery does not need a block-store
-  dependency. Extend parent marker dispatch and namespace table probes to resolve
-  table-create reservations. Publish the first head and mapping, then settle both
-  markers only after the durable result. Staged creation retains a draft and expiry;
-  final-commit binding and expiration compete through a phase CAS, never TTL-delete
-  an uncertain publisher. Cover every durable reply-loss point and drop races.
-  Immediate-create implementation: `TableCreator` persists a dedicated
-  `TableCreateOperation` with input, canonical document, fixed head and response.
-  Its appended wire tag/key scope preserve earlier values. The phase journal
-  freezes identities and parent snapshots. A name reservation precedes immutable
-  metadata writes and parent admission; selected head, published mapping and
-  terminal response precede conditional marker cleanup. Namespace drop and marker
-  dispatch now help table creation without needing block IO after admission.
-  Staged-create execution remains explicitly disabled; pure staged metadata is
-  not a staged publication implementation. HTTP writes remain disabled.
-  Focused verification covers every durable creation reply-loss point, chunk
-  write failure, same-name competition, retired catalog replay, and namespace drop
-  at every interrupted phase plus an actual parent-CAS race. One uncovered drop
-  preflight assumed all parent markers were namespace operations; its dispatcher
-  now recognizes table creation before fencing instead of reporting corruption.
-  Gates: 502 library tests, 48 Iceberg-enabled access-server tests, protocol
-  all-target tests and workspace fmt/clippy pass. No unsafe scope or lock was added.
-  Staged compatibility inspection: Java `RESTSessionCatalog.createChanges` sends
-  assign-UUID, upgrade, full schema/spec/order setters, location and properties;
-  `RESTTableOperations` prepends these to transaction changes with `assert-create`.
-  `CatalogHandlers` applies that list to an empty builder, not to the draft as an
-  ordinary next-generation update. Implement this distinct evaluator path and use
-  standard UUID/location fields to find and bind the durable draft; do not require
-  a nonstandard SDK token or renumber staged file schemas a second time.
-  Initial-commit evaluator checkpoint: `evaluate_table_create_commit` now applies
-  assert-create requests to an empty builder, preserves staged field IDs and
-  requires explicit UUID/location/definition initialization. It produces generation
-  one without a draft metadata-log entry. The first format upgrade selects the
-  initial builder version, matching Java's handler. Six focused tests cover
-  incomplete initialization, identity/requirement rejection, independent budgets,
-  malformed auxiliary metadata and complete v1/v2/v3 SDK output comparison.
-  Fixtures invoke the pinned SDK's real `RESTSessionCatalog.createChanges` and
-  append snapshot/ref transaction updates. All 508 library tests and workspace
-  fmt/clippy pass. Durable staging, expiry and its final file-proof/publication
-  integration remain unfinished; this evaluator does not grant publication.
-  Initial-file isolation checkpoint: candidate resolution now distinguishes a
-  selected prior generation from an exact reserved create operation. Creation
-  checks the journal, name reservation and absent head before/after resolution;
-  it cannot borrow expired definitions from a fabricated prior generation.
-  Initial snapshots use the same bounded file/projection checks and validate
-  parent-child delete preservation within the candidate. Empty auxiliary lists
-  still check authority. Four focused tests cover real manifest/Parquet files,
-  missing schema/parent, stale intent during IO, reservation/head/catalog fences,
-  wrong candidate/phase and work overflow. All 512 library tests, 48 server tests
-  and workspace fmt/clippy pass.
-
-### Staged-publication checkpoint
-
-- `TableCreator::stage`, `commit_staged` and `expire_stage` now implement the
-  durable library path. Optional staged evidence and phase 10 are appended without
-  changing older wire values. Drafts retain metadata-only responses and publish
-  no name/head/file; native table identity resolves the journal without a custom
-  SDK token. Final binding freezes principal, namespace, UUID, exact request body,
-  identity, clock, candidate and response in one CAS.
-- Initial publication composes reserved-operation file resolution with snapshot,
-  projection, DV-parent and auxiliary checks. Nonempty partition statistics stay
-  disabled. Known semantic file failures persist 400 and remove their reservation;
-  uncertain storage or unclassified failures retain recoverable intent rather
-  than being misreported as final client errors.
-- Expiry only transitions an unbound draft; it cannot delete a bound reservation or
-  uncertain publication. Stage and commit responses replay separately. Explicit
-  `StagedCommitLimits` and a server-supplied expiry are required by the library;
-  runtime configuration, periodic expiry scheduling and FileIO grants are not yet
-  connected.
-- Nine focused tests cover v1/v2/v3 initialization, every durable stage and final
-  commit reply-loss point, expiry reply loss, actual expiry/binding and competing
-  identity CAS races, namespace drop at every interrupted commit boundary,
-  native manifest/Parquet publication and terminal row-count rejection.
-  Gates: all 521 library tests, 48 Iceberg-enabled server tests, protocol
-  all-target tests and workspace fmt/clippy pass. No new unsafe scope or lock.
-- [~] **HTTP composition and SDK acceptance**: connect authenticated create/commit,
-  retry ledger, limits and draft-aware FileIO grants only after the durable library
-  path passes. HTTP write endpoints remain disabled until then.
-  Integration inspection: existing `wire::FileDelegationLimits`,
-  `StorageCredential` and `LoadCredentialsResponse` already serialize credentials;
-  reuse them rather than adding another wire model. The live server still installs
-  neither table reads nor writes. Runtime catalog admission uses zero delegated
-  grace by default, so credential activation must audit persisted clear/request
-  bounds rather than merely advertise the new routes.
-  Absolute connection lifetime now covers streamed responses and completion
-  heartbeats, not only handler execution. FileIO and REST both check the listener
-  lifetime against persisted request bounds. Runtime initialization uses a
-  five-minute request bound; old catalogs retain their original shorter bound.
-  Credential vending remains disabled pending the delegated-grace audit.
-  `FileDelegationLimits::issue` now requires the matching Ready catalog authority
-  and checks its persisted delegation bound independently of issuer configuration.
-  Zero-grace catalogs cannot mint credentials; wider signing configuration cannot
-  bypass the bound. HTTP callers must still reauthorize the current root and exact
-  table/draft, and runtime delegation bounds remain disabled until that wiring.
-  Verified: 49 server feature-enabled tests, workspace fmt/clippy and explicit
-  Iceberg-feature clippy. Paused-clock coverage proves active heartbeat writes
-  cannot extend the absolute deadline; real HTTP covers incomplete headers.
-  The pinned SDK's `AwsClientProperties` selects `VendedCredentialsProvider` using
-  response config `client.refresh-credentials-endpoint`; `credentials.uri` is the
-  provider's internal property, not sufficient by itself to activate S3FileIO
-  refresh. The provider requires exactly one S3 credential and starts refreshing
-  five minutes before expiry. The official Java acceptance fixture now creates
-  two same-name staged transactions through `RESTCatalog`, retains each returned
-  refresh config in S3FileIO, then uses the real AWS provider selection and HTTP
-  refresh with expired seed credentials. Distinct `?table-id=...` selectors and
-  bearer headers survive unchanged; successful grants are cached and an expired
-  draft's 404 does not fall back to the other draft.
-  This is a mock-server SDK contract test, not CROWDB credential-authority E2E.
-  Wire the existing credentials route with an optional exact TableId selector:
-  validate catalog, name/namespace, principal and live head or original draft
-  journal; reject missing/mismatched/expired targets rather than resolving another
-  same-name table. Mint one prefix credential only after persisted delegation
-  bounds pass. Do not trust a selector as authorization or require SDK changes.
-  Primary source:
-  [Java 1.11.0 provider](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/aws/src/main/java/org/apache/iceberg/aws/s3/VendedCredentialsProvider.java).
-  [Java 1.11.0 AWS provider selection](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/aws/src/main/java/org/apache/iceberg/aws/AwsClientProperties.java).
-  Verification: 522 library tests and the pinned Java staged-refresh acceptance
-  pass; workspace fmt/clippy, server Iceberg-feature all-target clippy and focused
-  SDK-test clippy pass. The broader `--features iceberg-e2e --all-targets` clippy
-  gate hits a pre-existing dead-code warning: shared fixture
-  `TestTableHttp::endpoint` is unused in `iceberg_table_http_test` with that feature.
-  Both affected fixture/test files are unchanged; no unrelated lint suppression
-  was added. Run the SDK acceptance from the default Pixi environment with
-  `JAVA_HOME=$PWD/.pixi/envs/iceberg-e2e/lib/jvm` and
-  `CROWDB_ICEBERG_E2E_MVN=$PWD/.pixi/envs/iceberg-e2e/bin/mvn`; the Java-only
-  environment does not provide Cargo.
+The detailed checkpoints below are historical implementation records, not the
+current activation status. The tasks 1–3 summary above supersedes statements that
+table writes, credential vending or atomic publication are still disconnected.
+Remaining program work includes table rename/drop/replace, full selected-use
+profiles (including partition statistics), persisted capability activation,
+release client/engine matrices, and the explicitly deferred ORC/GC requirements.
 
 - **Highest: atomic commits and creation (R182)**. Requirement/update evaluation,
   immutable candidate metadata, namespace admission, one head-CAS publisher,
@@ -411,7 +223,7 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
   multipart, HEAD, GET, seek and embedded-error checks (178.19 s). This is not
   a production catalog credentials endpoint or a timed refresh acceptance test.
   Maven reports the existing SDK daemon-thread cleanup warnings with exit 0.
-- [~] **Selected-use validation**: complete format semantics and validate
+- [ ] **Selected-use validation**: complete format semantics and validate
   canonical unbound files against trusted metadata/manifest declarations. Do not
   infer use from names, headers or upload container bytes.
   First slice: `ManifestReader` binds unbound canonical uploads only to the

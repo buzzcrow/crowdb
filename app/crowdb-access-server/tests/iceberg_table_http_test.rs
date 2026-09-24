@@ -6,6 +6,7 @@ mod blocks;
 #[path = "common/iceberg_store.rs"]
 mod common;
 #[path = "common/iceberg_table_http.rs"]
+#[allow(dead_code)]
 mod fixture;
 
 use fixture::TestTableHttp;
@@ -13,6 +14,41 @@ use reqwest::Method;
 use serde_json::Value;
 
 const PATH: &str = "/v1/namespaces/analytics/tables/events";
+
+#[tokio::test]
+async fn configured_load_etag_includes_sdk_configuration_and_preserves_conditionals() {
+    use sha2::{Digest, Sha256};
+    let fixture = TestTableHttp::vending().await;
+    let (head, _) = fixture.install("events").await;
+    let mut digest = Sha256::new();
+    digest.update(b"crowdb-iceberg-table-load-v1");
+    digest.update(head.catalog.as_bytes());
+    digest.update(head.table.as_bytes());
+    digest.update(head.generation.to_be_bytes());
+    digest.update(head.metadata_digest);
+    digest.update([0]);
+    let metadata_etag = format!("\"{:x}\"", digest.finalize());
+    let loaded = fixture
+        .request(Method::GET, PATH, "r", Some(&metadata_etag))
+        .await;
+    assert_eq!(loaded.status(), 200);
+    let etag = loaded.headers()["etag"].to_str().unwrap().to_owned();
+    let bytes = loaded.bytes().await.unwrap();
+    let mut digest = Sha256::new();
+    digest.update(metadata_etag.as_bytes());
+    digest.update(&bytes);
+    assert_eq!(etag, format!("\"{:x}\"", digest.finalize()));
+    assert_ne!(etag, metadata_etag);
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(body["config"]["s3.endpoint"].is_string());
+    let unchanged = fixture
+        .request(Method::GET, PATH, "r", Some(&format!("W/{etag}")))
+        .await;
+    assert_eq!(unchanged.status(), 304);
+    assert_eq!(unchanged.headers()["etag"], etag);
+    assert!(unchanged.bytes().await.unwrap().is_empty());
+    fixture.finish().await;
+}
 
 #[tokio::test]
 async fn table_load_preserves_raw_metadata_and_mode_specific_conditional_responses() {

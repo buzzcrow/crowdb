@@ -5,8 +5,11 @@ Upstream: [immutable FileIO requirement](../backlog/R180-access-iceberg-fileio.m
 Goal: publish immutable native file identities with bounded streaming and durable
 multipart, without general S3 authority or premature physical deletion.
 
-R179 remains open for the recorded latency decision and later table admission
-integration. Independent FileIO work proceeds under the approved ordering.
+Current integration status is maintained in
+[the functional catalog plan](plan-iceberg-functional-catalog.md#current-requested-tasks-13).
+Native table create/commit, selected-file proofs, draft credentials and recovery
+are connected. Historical checkpoints below do not supersede that status.
+R179 remains open for its recorded latency decision and complete acceptance.
 
 ## Execution
 

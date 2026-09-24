@@ -1,4 +1,6 @@
 use std::sync::Arc;
+mod rejection;
+pub(in crate::commit) use rejection::invalid_files;
 
 use super::{
     evaluate_durable_commit, CandidateAuxiliaryLimits, CandidateFileSource, CandidateSnapshotLimits,

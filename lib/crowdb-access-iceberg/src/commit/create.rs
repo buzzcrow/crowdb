@@ -145,9 +145,12 @@ fn validate_target(request: &CreateTableRequest, target: &TableHead, timestamp_m
     }
     if let Some(location) = request.fields["location"].as_str() {
         let location = format!("{}/", location.trim_end_matches('/'));
-        if location.parse::<TableLocation>().map_err(|_| Error::Binding)? != target.metadata_location.table()
+        if location
+            .parse::<TableLocation>()
+            .map_err(|_| Error::Field("location"))?
+            != target.metadata_location.table()
         {
-            return Err(Error::Binding);
+            return Err(Error::Field("location"));
         }
     }
     Ok(())

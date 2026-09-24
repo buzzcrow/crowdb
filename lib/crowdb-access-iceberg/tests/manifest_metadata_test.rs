@@ -90,13 +90,7 @@ fn missing_invalid_and_mismatched_manifest_metadata_fails_closed() {
         values.insert(key.to_owned(), value);
         assert!(ManifestMetadata::parse(&values).is_err(), "{key}");
     }
-    for key in [
-        "schema",
-        "partition-spec",
-        "schema-id",
-        "partition-spec-id",
-        "content",
-    ] {
+    for key in ["schema", "partition-spec", "partition-spec-id", "content"] {
         let mut values = metadata(ManifestVersion::V2);
         values.remove(key);
         assert!(ManifestMetadata::parse(&values).is_err(), "{key}");
@@ -107,6 +101,17 @@ fn missing_invalid_and_mismatched_manifest_metadata_fails_closed() {
     values = metadata(ManifestVersion::V1);
     values.insert("schema".to_owned(), vec![b' '; 1024 * 1024 + 1]);
     assert!(ManifestMetadata::parse(&values).is_err());
+}
+
+#[test]
+fn java_writer_embedded_schema_id_is_authoritative_without_duplicate_header() {
+    for version in [ManifestVersion::V2, ManifestVersion::V3] {
+        let mut values = metadata(version);
+        values.remove("schema-id");
+        assert_eq!(ManifestMetadata::parse(&values).unwrap().schema_id, Some(7));
+        values.insert("schema".into(), br#"{"type":"struct","fields":[]}"#.to_vec());
+        assert!(ManifestMetadata::parse(&values).is_err());
+    }
 }
 
 #[test]

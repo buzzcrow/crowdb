@@ -35,8 +35,29 @@ impl TestTableHttp {
     }
 
     pub async fn new() -> Self {
+        Self::start(false, false).await
+    }
+
+    pub async fn writable() -> Self {
+        Self::start(true, false).await
+    }
+
+    pub async fn vending() -> Self {
+        Self::start(true, true).await
+    }
+
+    async fn start(writable: bool, vending: bool) -> Self {
         let store = Arc::new(TestStore::default());
-        let repository = Arc::new(CatalogRepository::new(store.clone(), ClearBounds::default()).unwrap());
+        let repository = Arc::new(
+            CatalogRepository::new(
+                store.clone(),
+                ClearBounds {
+                    delegated_access_ms: if vending { 900_000 } else { 0 },
+                    ..ClearBounds::default()
+                },
+            )
+            .unwrap(),
+        );
         repository
             .execute(
                 ManagementRequest {
@@ -79,15 +100,24 @@ impl TestTableHttp {
         let auth =
             BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32))
                 .unwrap();
-        let service = Arc::new(
-            IcebergHttpService::new(repository, auth, Duration::from_secs(2))
-                .with_namespaces(store.clone())
-                .unwrap()
-                .with_table_reads_for_tests(store.clone(), Arc::new(TestFileBlocks::default()))
-                .unwrap(),
-        );
+        let service = IcebergHttpService::new(repository, auth, Duration::from_secs(2))
+            .with_namespaces(store.clone())
+            .unwrap();
+        let blocks = Arc::new(TestFileBlocks::default());
+        let service = if writable {
+            service.with_tables(store.clone(), blocks).unwrap()
+        } else {
+            service.with_table_reads_for_tests(store.clone(), blocks).unwrap()
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let service = Arc::new(if vending {
+            service
+                .with_table_credentials(store.clone(), format!("http://{address}"))
+                .unwrap()
+        } else {
+            service
+        });
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             serve(listener, service, async {
@@ -214,5 +244,23 @@ impl TestTableHttp {
     pub async fn finish(self) {
         self.stop.send(()).unwrap();
         self.server.await.unwrap();
+    }
+
+    pub async fn post(
+        &self,
+        path: &str,
+        role: &str,
+        key: Option<&str>,
+        body: &serde_json::Value,
+    ) -> reqwest::Response {
+        let mut request = reqwest::Client::new()
+            .post(format!("http://{}{path}", self.address))
+            .bearer_auth(role.repeat(32))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(body).unwrap());
+        if let Some(key) = key {
+            request = request.header("idempotency-key", key);
+        }
+        request.send().await.unwrap()
     }
 }

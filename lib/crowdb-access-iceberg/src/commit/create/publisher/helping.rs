@@ -21,6 +21,7 @@ impl TableCreator {
             names,
             blocks: None,
             staged_limits: None,
+            response_reserve: 0,
         };
         let operation = creator
             .journal()
@@ -60,6 +61,7 @@ impl TableCreator {
             names,
             blocks: None,
             staged_limits: None,
+            response_reserve: 0,
         };
         let operation = creator
             .journal()

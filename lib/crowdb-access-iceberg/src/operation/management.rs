@@ -204,7 +204,8 @@ impl ManagementOperation {
             }
             ManagementAction::Clear
                 if self.request.confirmation != Some(original.catalog)
-                    || original.catalog == self.candidate =>
+                    || original.catalog == self.candidate
+                    || original.admission_bounds.cover(self.bounds) != self.bounds =>
             {
                 return Err(ValidationError::Record)
             }

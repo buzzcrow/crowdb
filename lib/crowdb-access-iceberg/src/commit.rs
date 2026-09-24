@@ -9,6 +9,7 @@ mod preparation;
 mod proof;
 mod provenance;
 mod publication;
+mod recovery;
 mod request;
 mod requirement;
 mod transition;
@@ -33,6 +34,9 @@ pub use preparation::{evaluate_durable_commit, CommitPreparationError, CommitPre
 pub use proof::{prepare_table_commit, CommitProofError, CommitProofLimits, PreparedTableCommit};
 pub use provenance::{PriorManifestLimits, PriorManifestSource};
 pub use publication::{recover_table_commit, CommitPublicationError};
+pub use recovery::{
+    TableRecovery, TableRecoveryKind, TableRecoveryPage, TableRecoveryScan, TableRecoveryStore,
+};
 pub use request::{CommitRequest, CommitRequestLimits, CommitTableIdentifier};
 pub use requirement::{validate_requirements, RequirementError, RequirementLimits, TableRequirement};
 pub use transition::{validate_metadata_transition, TransitionLimits};

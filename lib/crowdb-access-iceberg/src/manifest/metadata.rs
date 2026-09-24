@@ -59,7 +59,7 @@ impl<'metadata> ManifestMetadata<'metadata> {
             }
             _ => return Err(ManifestMetadataError::Field),
         };
-        if version != ManifestVersion::V1 && (schema_id.is_none() || partition_spec_id.is_none()) {
+        if version != ManifestVersion::V1 && partition_spec_id.is_none() {
             return Err(ManifestMetadataError::Field);
         }
         let json_id = schema
@@ -72,11 +72,16 @@ impl<'metadata> ManifestMetadata<'metadata> {
                     .ok_or(ManifestMetadataError::Field)
             })
             .transpose()?;
-        if (version != ManifestVersion::V1 && json_id != schema_id)
+        if (version != ManifestVersion::V1 && json_id.is_none())
             || json_id.is_some_and(|id| schema_id.is_some_and(|metadata_id| metadata_id != id))
         {
             return Err(ManifestMetadataError::Field);
         }
+        let schema_id = if version == ManifestVersion::V1 {
+            schema_id
+        } else {
+            schema_id.or(json_id)
+        };
         Ok(Self {
             version,
             content,

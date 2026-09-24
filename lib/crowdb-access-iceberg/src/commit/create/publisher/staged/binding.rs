@@ -96,6 +96,7 @@ impl TableCreator {
     ) -> Result<(), Error> {
         let response =
             crate::commit::publication::metadata_response(&evaluated.head, evaluated.document.canonical())?;
+        self.validate_response_size(&response)?;
         let payloads = self.payloads();
         let identity = operation.identity.operation;
         let catalog = operation.context.catalog;

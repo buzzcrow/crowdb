@@ -114,8 +114,19 @@ async fn setup() -> (
     TestFileClient,
     TableLocation,
 ) {
+    setup_with_bounds(ClearBounds::default()).await
+}
+
+async fn setup_with_bounds(
+    bounds: ClearBounds,
+) -> (
+    TestIcebergStack,
+    process::TestIcebergProcess,
+    TestFileClient,
+    TableLocation,
+) {
     let stack = TestIcebergStack::start().await;
-    let repository = CatalogRepository::new(stack.store().await, ClearBounds::default()).unwrap();
+    let repository = CatalogRepository::new(stack.store().await, bounds).unwrap();
     repository
         .execute(
             ManagementRequest {
@@ -327,4 +338,57 @@ async fn official_java_s3_fileio_uploads_and_reads_native_files() {
     .await
     .unwrap();
     assert!(status.success(), "official Apache Iceberg S3FileIO failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires native storage services, Maven and pinned Apache Iceberg dependencies"]
+async fn official_java_catalog_commits_native_parquet_snapshots_and_staged_tables() {
+    let (stack, process, _, _) = setup_with_bounds(ClearBounds {
+        request_ms: 300_000,
+        delegated_access_ms: 900_000,
+        ..ClearBounds::default()
+    })
+    .await;
+    let endpoint = format!("http://{}", process.address);
+    let response = Client::new()
+        .post(format!("{endpoint}/v1/namespaces"))
+        .bearer_auth("w".repeat(32))
+        .header("content-type", "application/json")
+        .body(r#"{"namespace":["analytics"]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    run_catalog_sdk(endpoint, "data").await;
+    drop(process);
+    let restarted = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    run_catalog_sdk(format!("http://{}", restarted.address), "verify").await;
+}
+
+async fn run_catalog_sdk(endpoint: String, mode: &'static str) {
+    let status = tokio::task::spawn_blocking(move || {
+        let maven = std::env::var_os("CROWDB_ICEBERG_E2E_MVN").unwrap_or_else(|| "mvn".into());
+        std::process::Command::new("timeout")
+            .arg("600")
+            .arg(maven)
+            .args(["-o", "--batch-mode", "--no-transfer-progress", "-f"])
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/common/iceberg_java/pom.xml"
+            ))
+            .args([
+                "compile",
+                "exec:java",
+                "-Dexec.mainClass=TestIcebergCatalogWrites",
+            ])
+            .arg(format!("-Dexec.args={endpoint} {mode}"))
+            .status()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        status.success(),
+        "official native catalog and Parquet acceptance failed"
+    );
 }

@@ -23,6 +23,23 @@ use crowdb_access_iceberg::{
 };
 
 #[tokio::test]
+async fn response_reserve_rejects_before_durable_creation() {
+    let test = TestCreation::new().await;
+    let before = test.fixture.store.writes.load(Ordering::SeqCst);
+    let creator = test
+        .creator()
+        .with_response_reserve(crowdb_access_iceberg::operation::MAX_PAYLOAD_BYTES);
+    assert!(matches!(
+        creator.create(&test.request).await,
+        Err(CommitPublicationError::Metadata(
+            crowdb_access_iceberg::table::TableMetadataError::Bounds
+        ))
+    ));
+    assert_eq!(test.fixture.store.writes.load(Ordering::SeqCst), before);
+    assert_eq!(test.creator().create(&test.request).await.unwrap().status, 200);
+}
+
+#[tokio::test]
 async fn immediate_create_publishes_one_table_and_replays_exact_result() {
     let test = TestCreation::new().await;
     let creator = test.creator();

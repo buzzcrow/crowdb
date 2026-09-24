@@ -66,13 +66,16 @@ before reopening admission. Completion uses persisted lease, request, delegated
 access and clock-skew limits, never shorter restart configuration. Retired
 authorities remain unreachable; physical deletion is not implemented.
 
-The baseline has no root lease or delegated credential vending. Each HTTP connection
+The baseline has no root lease. Each HTTP connection
 has an absolute lifetime starting at acceptance and covering header parsing,
 request execution and response transmission, including streamed file bodies and
 multipart completion heartbeats. Network progress cannot extend this lifetime.
 REST and FileIO admission reject listener lifetimes exceeding the persisted catalog
 request bound. Newly initialized runtime catalogs use a five-minute request bound;
-existing catalogs retain their persisted bound across restart and clear.
+new catalogs also persist a fifteen-minute delegated-access bound. Restart never
+increases persisted bounds. Explicit catalog clear may expand them componentwise
+under the maintenance fence and waits the resulting full grace before admission;
+neither clear nor smaller restart settings can shorten existing bounds.
 Listeners stop admission before bounded draining;
 startup and periodic reconciliation resume interrupted management operations.
 
@@ -174,8 +177,12 @@ CROWDB implements with compliant Iceberg semantics.
 
 The catalog listener exposes authenticated config and namespace REST. An absent or
 empty warehouse selects the sole active catalog; other selectors fail with
-`NoSuchWarehouseException`. Its endpoint list advertises namespace CRUD and all table
-format capabilities are disabled. Namespace mutations advertise a 24-hour UUIDv7
+`NoSuchWarehouseException`. Its endpoint list advertises installed namespace and
+table read/create/commit/credential routes, not unimplemented lifecycle operations.
+Runtime table routes require a persisted delegation bound of at least fifteen
+minutes. Legacy catalogs below that bound retain foundation-only service; activation
+requires an explicit clear with expanded bounds and a listener restart after the
+maintenance grace. Namespace and table mutations advertise a 24-hour UUIDv7
 idempotency window, bind canonical route, exact request input, principal and catalog
 activation, and retain large results in immutable payload pages. Server errors
 remain retryable, never terminal ledger outcomes. Exhausting the configured request
@@ -185,7 +192,7 @@ separate reader, writer, management and clear roles; this is not an OAuth token
 issuer. All four credentials are required and distinct. Writer has a separate
 namespace-write capability and no catalog management or clear privilege; reader,
 manager and clearer do not inherit namespace-write rights. All four can read the
-configuration endpoint and namespaces. Only writer may invoke namespace mutations.
+configuration endpoint and namespaces. Only writer may invoke namespace or table mutations.
 Management commands are separate from the Iceberg REST listener. Operational
 configuration is in the [user guide](../../../user-manual/user-guide.md#9-iceberg-catalog-foundation).
 
@@ -370,15 +377,24 @@ credential issuance requires a matching Ready catalog authority and rejects
 lifetimes above its persisted delegated-access bound, independently of the
 signer's configured maximum. A zero persisted delegation bound disables issuance.
 Callers still must freshly authorize the root and exact live table or draft;
-the serialization primitive does not perform those reads. Table credential
-vending remains separate integration work; routed operation checks and streamed
+the serialization primitive does not perform those reads. The credential endpoint
+checks the current namespace and published table or exact unbound draft. Draft
+vending requires its original writer principal and a table-ID query selector;
+same-name drafts cannot authorize each other. Expired drafts cannot refresh. Grants
+last at most fifteen minutes and never outlive a draft. Published readers receive
+read-only grants; only writers receive upload and multipart rights. Responses
+configure the native S3 origin and SDK credential-refresh endpoint without embedding
+long-lived secrets or changing canonical metadata bytes. Table-load ETags include
+the SDK configuration as well as the selected-generation metadata representation;
+changed endpoints cannot be hidden by a metadata-only conditional response.
+Routed operation checks and streamed
 request/response limits already enforce signed scopes and server budgets.
 A session token alone never authenticates a request.
 The native path-style request parser preserves decoded object-key bytes and limits
 operations to immutable object reads/writes and multipart subresources. Unknown
 query operations, duplicate parameters and general buckets fail closed. HTTP
 DELETE can identify an upload abort only; it cannot identify physical file deletion.
-These request primitives are not yet attached to the public listener.
+These request primitives are attached to the native listener.
 
 Writes and reads stream through bounded CROWDB storage clients. Delegated FileIO
 access may move immutable ranges without an Access Server payload bounce, but
@@ -402,8 +418,11 @@ It writes and verifies the initial metadata before acquiring a parent admission
 marker. Parent helpers therefore resolve the remaining publication using catalog
 records without requiring a file block reader. The initial head is selected once,
 then the reservation becomes a published mapping. The durable terminal result
-precedes conditional cleanup of parent and table markers. These domain operations
-remain separate from REST write admission.
+precedes conditional cleanup of parent and table markers. REST write admission
+binds the principal, route and exact body in the shared retry ledger before invoking
+these operations. Recovery reloads an existing operation before resolving the name
+or current head and never rebases an uncertain request. Response headroom is checked
+before publication so credential configuration fits the durable replay budget.
 
 Staged creation retains an invisible durable draft and metadata-only response.
 Its native table location resolves the draft without a client-specific token.
@@ -421,6 +440,13 @@ regardless of elapsed time. Known semantic file failures retain a terminal clien
 error and release their reservation. Uncertain storage outcomes remain recoverable.
 The draft response and final commit response are retained separately for exact
 replay.
+
+Bounded background scans alternate creation and update journals, four records per
+page, with independent continuations reset on catalog activation changes. Recovery
+expires only unbound drafts, reconstructs fixed candidate proofs, settles published
+markers and retains uncertain storage errors. Known semantic validation failures
+become durable client outcomes before any candidate is published. Recovery deadlines
+preserve journal evidence rather than canceling the logical operation.
 
 Drop, replacement, and snapshot expiration remove logical reachability first.
 Physical reclamation follows a proof that no live metadata, snapshot, reference,

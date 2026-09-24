@@ -179,7 +179,7 @@ impl NamespaceWrites {
     }
 }
 
-async fn read_body(mut body: Incoming) -> Result<Vec<u8>, IcebergErrorResponse> {
+pub(super) async fn read_body(mut body: Incoming) -> Result<Vec<u8>, IcebergErrorResponse> {
     let mut bytes = Vec::new();
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|_| bad_request())?;
@@ -193,7 +193,7 @@ async fn read_body(mut body: Incoming) -> Result<Vec<u8>, IcebergErrorResponse> 
     Ok(bytes)
 }
 
-fn now_ms() -> Result<u64, IcebergErrorResponse> {
+pub(super) fn now_ms() -> Result<u64, IcebergErrorResponse> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| service_unavailable())?;

@@ -69,13 +69,13 @@ pub async fn run() -> Result<(), BoxError> {
     }
     let (repository, store, chunks) = connect(config.management_seeds).await?;
     let result = if arguments.is_empty() || arguments == ["serve"] {
-        start_listener(
+        Box::pin(start_listener(
             &config.listen,
             repository,
             store,
             config.authentication,
             chunks.clone(),
-        )
+        ))
         .await
     } else {
         manage(&repository, &config.authentication, &arguments).await
@@ -114,6 +114,7 @@ async fn connect(
         store.clone(),
         ClearBounds {
             request_ms: 300_000,
+            delegated_access_ms: 900_000,
             ..ClearBounds::default()
         },
     )?);
@@ -147,11 +148,19 @@ async fn start_listener(
     }
     let blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> =
         Arc::new(crowdb_access_iceberg::file::NativeFileBlocks::new(chunks.clone()));
-    let service = Arc::new(
-        IcebergHttpService::new(repository.clone(), authentication, timeout)
-            .with_namespaces(store.clone())?
-            .with_fileio(store.clone(), blocks.clone(), "us-east-1".into())?,
-    );
+    let mut service = IcebergHttpService::new(repository.clone(), authentication, timeout)
+        .with_namespaces(store.clone())?
+        .with_fileio(store.clone(), blocks.clone(), "us-east-1".into())?;
+    if authority.admission_bounds.delegated_access_ms >= 900_000 {
+        let endpoint =
+            std::env::var("CROWDB_ICEBERG_PUBLIC_URI").unwrap_or_else(|_| format!("http://{address}"));
+        service = service
+            .with_tables(store.clone(), blocks.clone())?
+            .with_table_credentials(store.clone(), endpoint)?;
+    } else {
+        tracing::warn!("table routes disabled: persisted catalog delegation bound is below fifteen minutes");
+    }
+    let service = Arc::new(service);
     let listener = TcpListener::bind(address).await?;
     tracing::info!(%address, "Iceberg listener ready");
     let serving = serve(listener, service, async {
@@ -160,12 +169,14 @@ async fn start_listener(
     let multipart = Box::pin(super::file_recovery::run(
         repository.clone(),
         store.clone(),
-        blocks,
+        blocks.clone(),
     ));
+    let tables = super::table_recovery::run(repository.clone(), store.clone(), blocks);
     tokio::select! {
         result = serving => result?,
         () = super::recovery::run(repository, crowdb_access_iceberg::namespace::NamespaceRecovery::new(store)) => {}
         () = multipart => {}
+        () = tables => {}
     }
     tracing::info!("Iceberg listener drained");
     Ok(())

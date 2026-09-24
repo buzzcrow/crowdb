@@ -24,6 +24,8 @@ pub struct IcebergHttpService {
     namespaces: Option<NamespaceHttp>,
     files: Option<Arc<FileHttp>>,
     tables: Option<super::table_read::TableHttp>,
+    table_writes: Option<super::table_write::TableWrites>,
+    table_credentials: Option<super::table_credentials::TableCredentials>,
 }
 
 impl IcebergHttpService {
@@ -40,6 +42,8 @@ impl IcebergHttpService {
             namespaces: None,
             files: None,
             tables: None,
+            table_writes: None,
+            table_credentials: None,
         }
     }
 
@@ -88,6 +92,45 @@ impl IcebergHttpService {
             blocks,
             &self.authentication.namespace_token_key(),
         )?);
+        Ok(self)
+    }
+
+    /// # Errors
+    /// Rejects invalid table token configuration.
+    pub fn with_tables<Store: crowdb_access_iceberg::namespace::NamespaceStore + 'static>(
+        mut self,
+        store: Arc<Store>,
+        blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,
+    ) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
+        self.tables = Some(super::table_read::TableHttp::new(
+            store.clone(),
+            blocks.clone(),
+            &self.authentication.namespace_token_key(),
+        )?);
+        self.table_writes = Some(super::table_write::TableWrites::new(store, blocks));
+        Ok(self)
+    }
+
+    /// # Errors
+    /// Requires installed table access and a configured external HTTP/S origin.
+    pub fn with_table_credentials<Store: crowdb_access_iceberg::namespace::NamespaceStore + 'static>(
+        mut self,
+        store: Arc<Store>,
+        endpoint: String,
+    ) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
+        let config = super::table_credentials::TableFileConfig::new(endpoint)?;
+        self.tables
+            .as_mut()
+            .ok_or(crowdb_access_iceberg::error::ValidationError::Record)?
+            .file_config = Some(config.clone());
+        self.table_writes
+            .as_mut()
+            .ok_or(crowdb_access_iceberg::error::ValidationError::Record)?
+            .file_config = Some(config);
+        self.table_credentials = Some(
+            super::table_credentials::TableCredentials::new(store, self.authentication.namespace_token_key())
+                .map_err(|_| crowdb_access_iceberg::error::ValidationError::Record)?,
+        );
         Ok(self)
     }
 
@@ -156,37 +199,25 @@ impl IcebergHttpService {
             return Err(service_unavailable());
         }
         if request.method() == hyper::Method::GET && request.uri().path() == "/v1/config" {
-            let warehouse = warehouse(request.uri().query())?;
-            let mut config = CatalogConfig::foundation(warehouse.as_deref())?;
-            if self.namespaces.is_some() {
-                config.endpoints = [
-                    "GET /v1/{prefix}/namespaces",
-                    "GET /v1/{prefix}/namespaces/{namespace}",
-                    "HEAD /v1/{prefix}/namespaces/{namespace}",
-                    "POST /v1/{prefix}/namespaces",
-                    "POST /v1/{prefix}/namespaces/{namespace}/properties",
-                    "DELETE /v1/{prefix}/namespaces/{namespace}",
-                ]
-                .map(str::to_owned)
-                .to_vec();
-                config.idempotency_key_lifetime = Some("PT24H".into());
-            }
-            if self.tables.is_some() {
-                config.endpoints.extend(
-                    [
-                        "GET /v1/{prefix}/namespaces/{namespace}/tables",
-                        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-                        "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-                    ]
-                    .map(str::to_owned),
-                );
-            }
-            return Ok(response(
-                200,
-                serde_json::to_vec(&config).map_err(|_| service_unavailable())?,
-            ));
+            return self.config(request.uri().query());
         }
         if super::table_read::TableHttp::handles(request.uri().path()) {
+            if request.uri().path().ends_with("/credentials") {
+                return match &self.table_credentials {
+                    Some(credentials) => {
+                        credentials
+                            .load(&self.repository, root.context, principal, &request)
+                            .await
+                    }
+                    None => Err(super::table_read::unsupported()),
+                };
+            }
+            if request.method() == hyper::Method::POST {
+                return match &self.table_writes {
+                    Some(writes) => Box::pin(writes.execute(root.context, principal, request)).await,
+                    None => Err(super::table_read::unsupported()),
+                };
+            }
             return match &self.tables {
                 Some(tables) => tables.read(root.context, &request).await,
                 None => Err(super::table_read::unsupported()),
@@ -200,6 +231,52 @@ impl IcebergHttpService {
                 "This endpoint is not implemented",
             )),
         }
+    }
+
+    fn config(&self, query: Option<&str>) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
+        let warehouse = warehouse(query)?;
+        let mut config = CatalogConfig::foundation(warehouse.as_deref())?;
+        if self.namespaces.is_some() {
+            config.endpoints = [
+                "GET /v1/{prefix}/namespaces",
+                "GET /v1/{prefix}/namespaces/{namespace}",
+                "HEAD /v1/{prefix}/namespaces/{namespace}",
+                "POST /v1/{prefix}/namespaces",
+                "POST /v1/{prefix}/namespaces/{namespace}/properties",
+                "DELETE /v1/{prefix}/namespaces/{namespace}",
+            ]
+            .map(str::to_owned)
+            .to_vec();
+            config.idempotency_key_lifetime = Some("PT24H".into());
+        }
+        if self.tables.is_some() {
+            config.endpoints.extend(
+                [
+                    "GET /v1/{prefix}/namespaces/{namespace}/tables",
+                    "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                    "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                ]
+                .map(str::to_owned),
+            );
+        }
+        if self.table_writes.is_some() {
+            config.endpoints.extend(
+                [
+                    "POST /v1/{prefix}/namespaces/{namespace}/tables",
+                    "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                ]
+                .map(str::to_owned),
+            );
+        }
+        if self.table_credentials.is_some() {
+            config
+                .endpoints
+                .push("GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials".into());
+        }
+        Ok(response(
+            200,
+            serde_json::to_vec(&config).map_err(|_| service_unavailable())?,
+        ))
     }
 }
 

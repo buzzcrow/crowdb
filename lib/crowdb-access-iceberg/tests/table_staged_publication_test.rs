@@ -19,6 +19,8 @@ mod namespaces;
 #[path = "common/parquet_metadata.rs"]
 #[allow(dead_code)]
 mod parquet;
+#[path = "common/table_recovery.rs"]
+mod recovery_store;
 #[path = "common/snapshot_files.rs"]
 #[allow(dead_code)]
 mod snapshot;
@@ -34,6 +36,61 @@ use crowdb_access_iceberg::{
 use serde_json::json;
 use staging::TestStaged;
 use std::sync::atomic::Ordering;
+
+#[tokio::test]
+async fn recovery_retains_live_drafts_and_phase_fences_expiry() {
+    use crowdb_access_iceberg::commit::{
+        CommitPreparationLimits, CommitProofLimits, CommitRequestLimits, PriorManifestLimits, TableRecovery,
+        TableRecoveryKind,
+    };
+    let test = TestStaged::new().await;
+    test.stage().await;
+    let limits = staging::limits();
+    let recovery = TableRecovery::new(
+        test.namespace.store.clone(),
+        test.blocks.clone(),
+        CommitProofLimits {
+            preparation: CommitPreparationLimits {
+                request: CommitRequestLimits {
+                    json: metadata::limits(),
+                    requirements: 100,
+                    updates: 100,
+                },
+                evaluation: limits.evaluation,
+            },
+            prior: PriorManifestLimits {
+                snapshots: 10,
+                references: 100,
+                index_bytes: 1_000_000,
+                manifests: limits.snapshots.files.manifests,
+            },
+            snapshots: limits.snapshots,
+            auxiliary: limits.auxiliary,
+        },
+    );
+    let live = recovery
+        .recover_page(test.namespace.context, TableRecoveryKind::Create, None, 1999)
+        .await
+        .unwrap();
+    assert_eq!(live.retained, 1);
+    assert_eq!(test.operation().await.phase, TableCreatePhase::Staged);
+    test.namespace.store.fail_after.store(
+        test.namespace.store.writes.load(Ordering::SeqCst) + 1,
+        Ordering::SeqCst,
+    );
+    let uncertain = recovery
+        .recover_page(test.namespace.context, TableRecoveryKind::Create, None, 2000)
+        .await
+        .unwrap();
+    assert_eq!(uncertain.failures.len(), 1);
+    let expired = recovery
+        .recover_page(test.namespace.context, TableRecoveryKind::Create, None, 2000)
+        .await
+        .unwrap();
+    assert_eq!(expired.progressed, 1);
+    assert!(expired.failures.is_empty());
+    assert_eq!(test.operation().await.phase, TableCreatePhase::Aborted);
+}
 
 #[tokio::test]
 async fn draft_is_invisible_and_sdk_initial_updates_publish_exactly_one_generation() {

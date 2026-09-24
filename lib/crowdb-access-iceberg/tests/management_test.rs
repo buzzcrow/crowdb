@@ -354,6 +354,58 @@ async fn delayed_fence_and_crash_restart_cannot_shorten_persisted_grace() {
 }
 
 #[tokio::test]
+async fn explicit_clear_can_raise_delegation_bounds_without_shortening_old_reader_grace() {
+    let store = Arc::new(TestStore::default());
+    let old = repository(&store)
+        .execute(
+            request(ManagementAction::Initialize, 0, "catalog"),
+            ManagementPrivilege::Manage,
+            100,
+        )
+        .await
+        .unwrap();
+    let expanded = ClearBounds {
+        root_lease_ms: 0,
+        request_ms: 5,
+        delegated_access_ms: 50,
+        clock_skew_ms: 2,
+    };
+    let upgraded = CatalogRepository::new(store.clone(), expanded).unwrap();
+    let mut clear = request(ManagementAction::Clear, 1, "replacement");
+    clear.confirmation = Some(old.catalog);
+    assert!(matches!(
+        upgraded
+            .execute(clear.clone(), ManagementPrivilege::Clear, 100)
+            .await,
+        Err(CatalogError::Busy)
+    ));
+    let (root, authority) = upgraded.status().await.unwrap();
+    let RootState::Published(transition) = root.state else {
+        panic!("clear must retain maintenance fence")
+    };
+    assert_eq!(transition.bounds.request_ms, 10);
+    assert_eq!(transition.bounds.delegated_access_ms, 50);
+    assert_eq!(authority.admission_bounds, transition.bounds);
+    let restarted = repository(&store);
+    assert!(matches!(
+        restarted
+            .execute(
+                clear.clone(),
+                ManagementPrivilege::Clear,
+                transition.complete_after_ms - 1
+            )
+            .await,
+        Err(CatalogError::Busy)
+    ));
+    let ready = restarted
+        .execute(clear, ManagementPrivilege::Clear, transition.complete_after_ms)
+        .await
+        .unwrap();
+    assert_eq!(ready.admission_bounds, transition.bounds);
+    assert_ne!(ready.catalog, old.catalog);
+}
+
+#[tokio::test]
 async fn clear_epoch_exhaustion_and_missing_confirmation_do_not_write() {
     use crowdb_access_iceberg::key::{IcebergKey, SystemScope};
     use crowdb_access_iceberg::record::StorageRecord;

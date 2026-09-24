@@ -48,6 +48,7 @@ impl TableCreator {
         } else {
             crate::commit::publication::metadata_response(&initial.head, initial.document.canonical())?
         };
+        self.validate_response_size(&response)?;
         let payloads = self.payloads();
         let input = payloads
             .put(request.context.catalog, request.identity.operation, &request.body)
