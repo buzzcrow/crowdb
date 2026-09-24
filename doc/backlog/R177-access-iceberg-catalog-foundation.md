@@ -55,8 +55,10 @@ original correctness milestone early. Before reclamation, unreachable storage is
 retained, physical file/chunk deletion remains disabled, and logical purge records
 a durable pending proof task without claiming that space has been reclaimed.
 Ownership and recovery evidence must survive until later candidate discovery.
-The functional checkpoint requires capacity monitoring and write admission that
-fails before storage exhaustion; per-request bounds alone do not bound retained
+The functional checkpoint uses existing provisioned disk capacity: insufficient
+eligible space prevents new chunk allocation. It requires no separate Iceberg
+quota or pre-full write-stop policy. R183 owns full-capacity failure/recovery
+acceptance and later reclamation; per-request bounds do not bound retained
 storage. No mandatory semantics of an advertised version are deferred.
 
 ### 2. Authority hierarchy
@@ -243,6 +245,22 @@ and must not carry independent open questions.
 
 ### Confirmed Compatibility Decisions
 
+- **Storage capacity boundary (OI-3, confirmed 2026-09-24):** use the existing
+  disk provisioning/allocation flow, including configured capacity limits for
+  the current file-backed simulated disks. When managed disk capacity cannot satisfy
+  a new chunk, allocation fails naturally; do not add an Iceberg-layer quota or
+  pre-full stop threshold for the current checkpoint. R183 records full-capacity
+  failure safety, later GC and recovery requirements. This settles the capacity
+  policy, not an assertion that unimplemented GC or full-disk tests have passed.
+
+- **Engine testing deferred (OI-2, confirmed 2026-09-24):** do not run Spark,
+  Flink or Trino acceptance in the current implementation phase. Record this in
+  the execution plan's Next section; the user will establish a separate testing
+  project later and select its engine/version/deployment matrix there. This
+  removes the immediate selection decision, not the outstanding conformance
+  obligation. Do not advertise untested engine compatibility or close full R184
+  acceptance on existing SDK evidence alone.
+
 - **Functional/performance acceptance split (OI-1, confirmed 2026-09-24):**
   functional correctness uses a bounded runtime profile independently of a
   subsecond latency target. Preserve the original 500-ms clear/restart timing
@@ -325,46 +343,10 @@ Required gates:
 
 ## Open Questions
 
-Reviewed 2026-09-24 against the implementation checkpoint `a832e699`.
-Only the following two human decisions remain unresolved. Recommendations
-below are proposals, not approvals. Implementation and acceptance gaps belong in
-the working plans and do not become new open questions.
+None currently requiring user confirmation. OI-1 separates functional/performance
+acceptance; OI-2 defers engine testing to the user's later independent project;
+OI-3 uses the existing disk/chunk allocation capacity boundary, with remaining
+GC and exhaustion-recovery requirements recorded in R183.
 
-
-- **OI-2 — First-release engine matrix (pending):**
-  Which engine, version and deployment combinations are mandatory release gates?
-  - Evidence: pinned Java SDK and native Parquet/create/commit/restart tests pass.
-    That does not establish Spark, Flink, Trino, official Rust-client or complete
-    REST Compatibility Kit acceptance.
-  - Recommendation: choose one engine from the first actual deployment as the
-    initial release gate; keep the other engine profiles explicitly pending.
-    Pin the selected version only after checking its official compatibility
-    requirements and the target deployment. No engine/version is selected here.
-  - Alternative: gate the first release on Spark, Flink and Trino together, with
-    additional environment and cross-engine test work.
-  - Decision needed: first engine, required version/deployment if already known,
-    and whether all three must pass before release. Common protocol and harness
-    work can proceed independently.
-
-- **OI-3 — No-GC trial capacity and write-stop policy (pending):**
-  What storage budget and reserved free-space margin govern the trial before R183?
-  - Evidence: physical GC remains deferred. Current request/file/session limits
-    bound active work, not total retained files, orphan chunks or abandoned data.
-    Catalog clear is logical retirement, not capacity reclamation.
-  - Recommendation: use an explicitly capacity-limited, monitored trial, with a
-    defined write-stop threshold and responsible operator. Prefer a dedicated
-    budget initially; automatic enforcement still needs trustworthy accounting
-    and must be implemented/tested before claiming that protection.
-  - Alternative: use backend-capacity-based admission for shared storage, after
-    defining reliable capacity attribution, reserved margin and unavailable-metric
-    behavior. Neither policy is supplied by multipart credits alone.
-  - Decision needed: dedicated versus shared deployment, usable capacity/budget,
-    reserved margin or stop threshold, and manual monitored trial versus automatic
-    enforcement as a release gate. No numeric defaults are assumed.
-    Do not enable unattended sustained writes or claim production capacity safety
-    before the policy and its required enforcement are in place.
-
-Already settled, not open issues: independent writer credentials; direct v1-to-v3
-upgrade; the SDK-safe name-mapping profile; standard S3 upload with selected-use
-FileKind validation; ORC deferral to R186; physical GC deferral to R183. These
-decisions are not reopened by documentation cleanup.
+Unfinished implementation and unexecuted acceptance remain in the working plans.
+Resolving these decisions does not close R179–R184 or imply engine/GC conformance.

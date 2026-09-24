@@ -3,6 +3,12 @@
 
 ### R184: access server / Iceberg — REST integration and core conformance
 
+Status: engine acceptance (Spark/Flink/Trino) is deferred by the user's
+2026-09-24 decision to a separate testing project they will establish later.
+Track it in the functional catalog plan's Next section; do not run it during the
+current implementation phase or claim it has passed. The acceptance contract
+below remains outstanding rather than being removed.
+
 ## Problem
 
 Component repositories can be locally correct while the public catalog remains

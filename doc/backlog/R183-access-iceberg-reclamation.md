@@ -3,6 +3,13 @@
 
 ### R183: access server / Iceberg — Reachability and bounded reclamation
 
+Status: physical GC remains deferred. The capacity behavior confirmed on
+2026-09-24 uses the existing disk provisioning/allocation flow. Current disks
+are file-backed simulations with configured capacity limits; they are not
+unbounded growable files. When available managed capacity cannot satisfy an
+allocation, a new chunk cannot be created. No separate Iceberg capacity quota or
+pre-full write-stop threshold is required for the current functional checkpoint.
+
 ## Problem
 
 Catalog clear, table purge, snapshot expiration, failed commits, staged uploads,
@@ -14,6 +21,13 @@ catalog into memory would fail at Iceberg scale.
 R177 selects generation-indexed candidates plus reachability traversal, mandatory
 retention and pins, and no racing reference counts. This requirement implements the
 durable background proof and deletion workflow.
+
+Before GC is implemented, unreachable storage remains allocated and can exhaust
+the provisioned capacity. DiskDB/ChunkDB allocation failure is the capacity
+boundary, not an Iceberg-layer free-space policy. This requirement owns later
+reclamation and full-capacity recovery acceptance. Allocation can fail when
+eligible placement capacity is insufficient, not only when every physical disk
+contains zero free bytes.
 
 ## Solution
 
@@ -28,6 +42,8 @@ durable background proof and deletion workflow.
   cannot erase reachable state or restore visibility.
 - **GC-I5 — Foreground isolation:** cleanup has separate CPU, memory, KV, chunk I/O,
   bandwidth, and concurrency admission from catalog and FileIO requests.
+- **GC-I6 — Capacity exhaustion preserves authority:** failed allocation cannot
+  publish incomplete bytes, replace a committed head, or authorize unsafe deletion.
 
 1. Add `gc/candidate.rs`, `reachability.rs`, `task.rs`, `repository.rs`,
    `worker.rs`, and `pins.rs`. Store tasks and generation-indexed candidate pages
@@ -53,6 +69,22 @@ durable background proof and deletion workflow.
 7. Expose pause, resume, inspect, pin, unpin, rate, progress, stalled reason, and
    retry controls. Validate every configured item, byte, time, and concurrency cap;
    use bounded exponential backoff and terminal quarantine for repeated corruption.
+8. Reuse provisioned disk capacity and authoritative DiskDB/ChunkDB allocation
+   outcomes. For the current file-backed simulated disks, use their configured
+   capacity limits, not all remaining space on the host filesystem; exhausted
+   capacity must not silently expand the emulated disk. Future physical disks
+   follow the same allocation boundary. Do not introduce an independent Iceberg
+   quota, reserved-space ratio
+   or pre-full write ban as a prerequisite. Requests needing new chunks fail
+   through the existing bounded storage-error path when allocation is impossible;
+   operations that need no new allocation are not globally disabled solely by
+   such a failure. Preserve durable intent and any uncertain publication outcome.
+9. Verify full-capacity recovery: lack of space may also prevent writing GC mark
+   pages or progress records. Retain resumable state and report the resource
+   failure rather than spinning, dropping proof data or bypassing reachability.
+   Resume after capacity is added through the normal storage flow or safe
+   reclamation makes allocation possible. Do not promise GC can make progress at
+   absolute exhaustion without verifying its own durable-work requirements.
 
 ## Dependencies
 
@@ -90,6 +122,17 @@ durable background proof and deletion workflow.
   chunk-delete error, when workers process them, assert they fail closed into
   inspectable retry or quarantine state without guessing reachability. Invariants:
   GC-I2 and GC-I4. Integration test.
+- Given file-backed simulated disks at their configured allocation limit, even
+  with host filesystem space remaining, or physical disks with insufficient
+  eligible capacity for another chunk,
+  when PUT, multipart completion or candidate metadata writing needs allocation,
+  assert bounded failure, no partial file/head publication, intact committed
+  authority and recoverable uncertain intent. No separate Iceberg quota is needed
+  to trigger this boundary. Invariant: GC-I6. E2E test.
+- Given full storage and a GC task needing durable workspace, when that allocation
+  fails and capacity is later added or safely reclaimed, assert the task retains
+  its proof/continuation and resumes without unsafe deletion, duplicate publication
+  or an unbounded retry loop. Invariants: GC-I2, GC-I4 and GC-I6. Integration test.
 
 Required gates:
 

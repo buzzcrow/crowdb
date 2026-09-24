@@ -88,27 +88,40 @@ acceptance cases, full engine matrices, lifecycle operations or physical GC.
   publisher or rebasing an uncertain operation.
   Files: commit tests, `iceberg_file_http_test.rs`, native fault harness.
 - [ ] **Release conformance — R184**: run the Apache REST Compatibility Kit,
-  official Rust client and R177 OI-2 engine profiles. Include row-level deletes,
+  and official Rust client. Engine acceptance is deferred to the separate testing
+  project in Next, not part of the current implementation phase. Include row-level deletes,
   defaults, lineage, statistics, time travel, expiry and table lifecycle.
   Produce a pinned executable capability matrix; untested profiles stay pending.
-  Files: conformance environments, SDK/engine fixtures and capability tests.
+  Files: conformance environments, SDK fixtures and capability tests.
 - [ ] **Requirement closure**: compare each requirement's acceptance cases with
   executable evidence; update affected permanent architecture only as needed.
   Remove each completed requirement/index entry and its plan together.
   The full R177/R184 milestone remains open while GC acceptance is deferred.
 
+## Next — Separate engine testing project
+
+- [ ] **Engine interoperability — deferred by user**: the user will create a
+  separate testing project later. Do not start Spark, Flink or Trino tests now.
+  Select and pin engine versions/deployment profiles when that project starts;
+  no immediate first-engine decision is needed.
+- Preserve the acceptance scope: create/evolve/write/commit/load, time travel,
+  row-level deletes, rename/expire/drop, cross-engine results and server restarts.
+  Reuse existing SDK/native evidence, but do not treat it as engine certification.
+- Keep R184 engine acceptance pending until that project supplies executable
+  results. Its project location and test commands are intentionally not invented.
+
 ## Human decisions
 
 Only [R177 Open Questions](../backlog/R177-access-iceberg-catalog-foundation.md#open-questions)
-is authoritative:
-
-- OI-2: first release engine/version/deployment matrix.
-- OI-3: capacity and write-stop policy before physical GC.
-
-These are not missing implementations. Continue tasks independent of a pending
-decision; do not infer approval from an existing runtime default or passing test.
+is authoritative. No human decision is currently pending; implementation and
+acceptance tasks remain open.
 
 OI-1 is resolved: functionality and performance are separate acceptance tracks.
+OI-2 is deferred by agreement to the user's later testing project, listed in Next.
+OI-3 is resolved: provisioned disk capacity and chunk allocation failure provide
+the capacity boundary, including configured limits for file-backed simulated
+disks. R183 owns remaining GC/full-capacity recovery requirements;
+no separate Iceberg quota or pre-full stop threshold is required.
 Fix evidence-backed obvious performance bugs; record architectural optimization
 work below for a consolidated backlog after functional implementation. Never
 trade away durability, fencing, bounds or assertions for a passing timing result.
@@ -136,7 +149,9 @@ trade away durability, fencing, bounds or assertions for a passing timing result
   support; the initial selected data/delete profile remains plaintext Parquet.
 - R185 decoded-cache optimization is outside this milestone.
 - Active request/session limits do not bound cumulative retained orphan storage.
-  Until OI-3 is settled, do not claim unattended sustained-write safety.
+  Existing disk allocation fails when eligible capacity cannot create new chunks.
+  Keep failure bounded and retain committed authority/recovery evidence. R183
+  tracks full-capacity acceptance; do not claim automatic space reclamation.
 - New runtime catalogs persist five-minute requests and fifteen-minute delegation.
   Restart cannot widen legacy bounds. Explicit clear can expand them under the
   full maintenance grace; legacy zero-delegation catalogs require a subsequent

@@ -62,7 +62,9 @@ Goal: close immutable native FileIO acceptance with bounded work and no physical
   Incomplete EOF, corruption, cancellation and uncertain storage cannot yield proof.
 - ORC selected semantics belong to deferred R186; encrypted data remains unsupported.
 - Physical cleanup belongs to deferred R183. Multipart credits bound active work,
-  not total retained storage. Capacity policy is R177 OI-3.
+  not total retained storage. Capacity uses existing provisioned disks and chunk
+  allocation failure; R183 owns full-capacity failure/recovery acceptance. No
+  separate Iceberg quota or pre-full write-stop threshold is required.
 - Native table admission and credential wiring are already implemented; old
   “future enumerator” and “vending disconnected” handovers were removed.
 - Workspace declares Rust 1.75, but locked LZ4 frame dependencies have a higher
