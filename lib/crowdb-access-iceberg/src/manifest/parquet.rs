@@ -10,7 +10,8 @@ mod schema;
 mod statistics;
 pub use schema::{validate_parquet_schema, ParquetFieldMapping, SelectedParquetSchema};
 pub use statistics::{
-    validate_partition_statistics_rows, validate_partition_statistics_schema, PartitionStatisticsRowLimits,
+    validate_partition_statistics_inventory, validate_partition_statistics_rows,
+    validate_partition_statistics_schema, PartitionStatisticsRowLimits,
 };
 
 use super::{EntryStatus, FileContentKind, ManifestScalarEntry};

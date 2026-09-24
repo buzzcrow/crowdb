@@ -159,6 +159,7 @@ pub fn limits() -> StagedCommitLimits {
             puffin_encoded_bytes: 100_000,
             puffin_decoded_bytes: 100_000,
             parquet: snapshot::limits().position_deletes.metadata,
+            manifests: snapshot::limits().manifests,
             partition_rows: crowdb_access_iceberg::manifest::PartitionStatisticsRowLimits {
                 page: snapshot::limits().position_deletes.page,
                 rows: 1000,

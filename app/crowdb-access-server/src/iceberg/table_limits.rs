@@ -105,6 +105,7 @@ pub(super) fn commits() -> CommitProofLimits {
             },
         },
         auxiliary: CandidateAuxiliaryLimits {
+            manifests,
             files: 1000,
             bytes: 64 * 1024 * 1024,
             work: 1_000_000,

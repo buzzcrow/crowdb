@@ -3,6 +3,7 @@ mod blocks;
 #[path = "common/table_metadata.rs"]
 #[allow(dead_code)]
 mod fixture;
+use fixture as metadata;
 #[path = "common/parquet_metadata.rs"]
 #[allow(dead_code)]
 mod parquet;

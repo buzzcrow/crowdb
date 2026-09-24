@@ -46,8 +46,9 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   `lib/crowdb-access-iceberg/src/commit/files/auxiliary.rs`, `commit/proof.rs`,
   relevant Parquet readers and crate tests.
   Remaining substeps:
-  - Compare per-spec projected tuples and data/delete/DV counts with selected
-    manifest inventory; omitted historical values remain unknown, never NULL.
+  - Inventory comparison is implemented: per-spec projected tuples and
+    data/delete/DV counts are reconciled with selected manifests. Omitted
+    historical values remain unknown; collapsed tuples aggregate their counters.
     The pinned SDK's full computation includes zero-count rows from deleted
     entries; incremental computation can retain older zero-count partitions.
     Do not reject these as invented live partitions or require their last-update
@@ -297,3 +298,28 @@ Goal: complete atomic commit acceptance without bypassing selected-file validati
   the corrected condition preserves its rejection. All 22 focused preservation,
   selected-file and publication tests pass, with fmt, all-target library clippy
   and workspace lint. The full library all-target regression also passes.
+
+## Statistics inventory checkpoint
+
+- Added bounded manifest inventory reconciliation to auxiliary-file validation.
+  It compares present statistics counters with live manifest entries by spec ID
+  and normalized projected partition tuple, rejects missing live partitions and
+  swapped per-partition counts, and accepts historical zero-count rows.
+- Missing optional counters stay unknown. Exact total records are checked only
+  when there are no ordinary position/equality delete files; no data-row scan or
+  writer row-equivalence computation is introduced. Manifest I/O/source failures
+  preserve their error category instead of becoming terminal row-validation errors.
+- Inventory keys normalize numeric promotions, temporal units, decimals, UUIDs,
+  NaNs and signed zero consistently with statistics rows. Inventory retention and
+  page buffers share the configured memory allowance; manifest count/entry/byte
+  budgets are shared across auxiliary files, and comparisons consume work.
+- Six new inventory tests cover wrong record/file/byte totals, optional unknown
+  counters, metadata-derived totals, work exhaustion, partition-specific counts,
+  missing partitions and deleted-source projection collisions. Existing official
+  zero-row-count fixtures are paired with an empty manifest list rather than
+  pretending they describe unrelated live files.
+- Focused suites, library all-targets and Iceberg-enabled server all-targets pass.
+  Fmt, library all-target clippy, workspace lint and server E2E-feature all-target
+  clippy pass. Retained-file evolution,
+  real SDK publication and native interruption acceptance remain pending; both
+  publication guards remain in place.

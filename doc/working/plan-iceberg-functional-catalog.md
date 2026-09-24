@@ -102,7 +102,8 @@ do not close a requirement by ignoring its dependency's unsupported selected use
   Unified schema validation and Boolean/float/double/fixed-byte physical decoding
   are implemented. Typed logical values, cross-page/group tuple ordering,
   spec membership, provable duplicates and local count consistency are now wired
-  into auxiliary validation. Snapshot-inventory reconciliation, retained-file
+  into auxiliary validation. Snapshot-inventory reconciliation now checks
+  projected per-spec counter aggregates without computing data rows. Retained-file
   evolution and successful SDK publication remain pending; the 406 guard stays.
   R177 OI-4 records the
   confirmed SDK-compatible omission of fields with deleted source columns;

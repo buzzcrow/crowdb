@@ -18,6 +18,26 @@ pub struct PartitionStatisticsRowLimits {
     pub buffered_bytes: usize,
 }
 
+impl PartitionStatisticsRowLimits {
+    pub(super) fn validate(self, rows: u64) -> Result<(), Error> {
+        if self.rows == 0
+            || self.rows > 1_000_000
+            || rows > self.rows
+            || self.buffered_bytes == 0
+            || self.buffered_bytes > 64 * 1024 * 1024
+            || self.page.bytes == 0
+            || self.page.bytes > 8 * 1024 * 1024
+            || self.page.values == 0
+            || self.page.values > 1_048_576
+            || self.page.pages == 0
+            || self.page.pages > 1_000_000
+        {
+            return Err(ParquetMetadataError::Bounds.into());
+        }
+        Ok(())
+    }
+}
+
 /// Validates canonical statistics pages, typed tuple ordering, spec membership and count consistency.
 /// Does not prove that the statistics equal a snapshot's complete manifest inventory.
 /// # Errors
@@ -30,14 +50,19 @@ pub async fn validate_partition_statistics_rows(
     limits: PartitionStatisticsRowLimits,
     work: &mut usize,
 ) -> Result<(), Error> {
-    if limits.rows == 0
-        || limits.rows > 1_000_000
-        || metadata.rows > limits.rows
-        || limits.buffered_bytes == 0
-        || limits.buffered_bytes > 64 * 1024 * 1024
-    {
-        return Err(ParquetMetadataError::Bounds.into());
-    }
+    validate(store, record, metadata, document, limits, work, None).await
+}
+
+pub(super) async fn validate(
+    store: Arc<dyn FileBlockStore>,
+    record: &FileRecord,
+    metadata: &ParquetMetadata,
+    document: &TableMetadataDocument,
+    limits: PartitionStatisticsRowLimits,
+    work: &mut usize,
+    mut inventory: Option<&mut super::inventory::Inventory>,
+) -> Result<(), Error> {
+    limits.validate(metadata.rows)?;
     let projection = super::validated_projection(metadata, document, work)?;
     let partition_index = metadata
         .schema
@@ -100,6 +125,9 @@ pub async fn validate_partition_statistics_rows(
                         .get_mut(usize::try_from(id).map_err(|_| Error::Schema)?)
                         .ok_or(Error::Schema)? = count;
                 }
+            }
+            if let Some(inventory) = inventory.as_deref_mut() {
+                inventory.row(&tuple, &counts, work)?;
             }
             state.observe(tuple, &counts, &projection, work)?;
         }

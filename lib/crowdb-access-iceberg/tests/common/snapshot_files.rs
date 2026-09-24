@@ -305,7 +305,7 @@ async fn finish_input(
     }
 }
 
-fn ocf(metadata: Vec<(&str, Vec<u8>)>, records: &[Vec<u8>]) -> Vec<u8> {
+pub fn ocf(metadata: Vec<(&str, Vec<u8>)>, records: &[Vec<u8>]) -> Vec<u8> {
     let mut bytes = b"Obj\x01".to_vec();
     long(i64::try_from(metadata.len()).unwrap(), &mut bytes);
     for (key, value) in metadata {

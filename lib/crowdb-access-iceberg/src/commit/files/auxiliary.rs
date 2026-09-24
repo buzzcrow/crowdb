@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::sync::Arc;
 
 use super::{file_error, CandidateFileSource};
 use crate::{
@@ -7,7 +8,8 @@ use crate::{
         FileReader, FileRecord, ParquetMetadataLimits, PuffinBlob,
     },
     manifest::{
-        validate_partition_statistics_rows, PartitionStatisticsRowLimits, SnapshotValidationError as Error,
+        validate_partition_statistics_inventory, ManifestVersion, PartitionStatisticsRowLimits,
+        SnapshotManifestLimits, SnapshotManifestReader, SnapshotValidationError as Error,
     },
 };
 
@@ -20,6 +22,7 @@ pub struct CandidateAuxiliaryLimits {
     pub puffin_decoded_bytes: usize,
     pub parquet: ParquetMetadataLimits,
     pub partition_rows: PartitionStatisticsRowLimits,
+    pub manifests: SnapshotManifestLimits,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -31,11 +34,11 @@ pub struct CandidateAuxiliarySummary {
 
 impl CandidateFileSource {
     /// Resolves auxiliary references and validates canonical framing, lengths and statistics descriptors.
-    /// Partition statistics receive typed row validation, not snapshot inventory reconciliation.
+    /// Partition statistics counters are reconciled with their selected snapshot's manifest inventory.
     /// # Errors
     /// Rejects unavailable files, incorrect descriptors, encryption and exhausted aggregate budgets.
     pub async fn validate_auxiliary_files(
-        &self,
+        self: &Arc<Self>,
         limits: CandidateAuxiliaryLimits,
     ) -> Result<CandidateAuxiliarySummary, Error> {
         self.ensure_current().await?;
@@ -47,6 +50,7 @@ impl CandidateFileSource {
         }
         let mut summary = CandidateAuxiliarySummary::default();
         let mut work = limits.work;
+        let mut manifests = limits.manifests;
         for field in ["statistics", "partition-statistics"] {
             let Some(entries) = self.candidate.fields().get(field) else {
                 continue;
@@ -73,19 +77,8 @@ impl CandidateFileSource {
                 if field == "statistics" {
                     summary.blobs += self.statistics(entry, &record, limits, &mut work).await?;
                 } else {
-                    let metadata = read_parquet_metadata(self.blocks.clone(), &record, limits.parquet)
-                        .await
-                        .map_err(file_error)?;
-                    validate_partition_statistics_rows(
-                        self.blocks.clone(),
-                        &record,
-                        &metadata,
-                        &self.candidate,
-                        limits.partition_rows,
-                        &mut work,
-                    )
-                    .await
-                    .map_err(file_error)?;
+                    self.partition_statistics(entry, &record, limits, &mut manifests, &mut work)
+                        .await?;
                 }
                 let mut reader =
                     FileReader::new(self.blocks.clone(), record, None, 16 * 1024).map_err(file_error)?;
@@ -94,6 +87,70 @@ impl CandidateFileSource {
         }
         self.ensure_current().await?;
         Ok(summary)
+    }
+
+    async fn partition_statistics(
+        self: &Arc<Self>,
+        entry: &Value,
+        record: &FileRecord,
+        limits: CandidateAuxiliaryLimits,
+        remaining: &mut SnapshotManifestLimits,
+        work: &mut usize,
+    ) -> Result<(), Error> {
+        let snapshot_id = entry["snapshot-id"].as_i64().ok_or(Error::Binding)?;
+        let snapshot = self
+            .candidate
+            .snapshots()
+            .get(&snapshot_id)
+            .ok_or(Error::Binding)?;
+        let version = match self.candidate.selected_head().format_version {
+            1 => ManifestVersion::V1,
+            2 => ManifestVersion::V2,
+            3 => ManifestVersion::V3,
+            _ => return Err(Error::Binding),
+        };
+        let mut reader = if snapshot.manifest_list.is_some() {
+            let selection = snapshot.manifest_selection(version).map_err(file_error)?;
+            let list = self.load(&selection.location).await?;
+            SnapshotManifestReader::open(self.blocks.clone(), self.clone(), list, selection, *remaining)
+                .await?
+        } else {
+            SnapshotManifestReader::open_legacy(
+                self.blocks.clone(),
+                self.clone(),
+                record.location.table(),
+                snapshot_id,
+                snapshot.manifests.clone(),
+                *remaining,
+            )?
+        };
+        let metadata = read_parquet_metadata(self.blocks.clone(), record, limits.parquet)
+            .await
+            .map_err(file_error)?;
+        validate_partition_statistics_inventory(
+            self.blocks.clone(),
+            record,
+            &metadata,
+            &self.candidate,
+            &mut reader,
+            limits.partition_rows,
+            work,
+        )
+        .await?;
+        let summary = reader.finish()?;
+        remaining.manifests = remaining
+            .manifests
+            .checked_sub(summary.manifests)
+            .ok_or(Error::Bounds)?;
+        remaining.entries = remaining
+            .entries
+            .checked_sub(summary.entries)
+            .ok_or(Error::Bounds)?;
+        remaining.manifest_bytes = remaining
+            .manifest_bytes
+            .checked_sub(summary.manifest_bytes)
+            .ok_or(Error::Bounds)?;
+        Ok(())
     }
 
     async fn statistics(

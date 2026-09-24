@@ -1,4 +1,4 @@
-use super::{blocks::TestBlocks, fixture, parquet::*};
+use super::{blocks::TestBlocks, metadata as fixture, parquet::*};
 use crowdb_access_iceberg::{file::FileRecord, table::TableMetadataDocument};
 use serde_json::json;
 use std::sync::Arc;
@@ -64,6 +64,10 @@ pub async fn file(
     group_rows: usize,
     page_rows: usize,
 ) -> (Arc<TestBlocks>, FileRecord) {
+    stored_content(&bytes(columns, group_rows, page_rows), fixture::table()).await
+}
+
+pub fn bytes(columns: &[TestColumn], group_rows: usize, page_rows: usize) -> Vec<u8> {
     let rows = columns[0].values.len();
     assert!(columns.iter().all(|column| column.values.len() == rows));
     let partition_count = columns.iter().filter(|column| column.id >= 1000).count();
@@ -138,7 +142,7 @@ pub async fn file(
     bytes.extend(&footer);
     bytes.extend(u32::try_from(footer.len()).unwrap().to_le_bytes());
     bytes.extend(b"PAR1");
-    stored_content(&bytes, fixture::table()).await
+    bytes
 }
 
 fn page(bytes: &mut Vec<u8>, column: &TestColumn, values: &[Option<Vec<u8>>]) {

@@ -6,9 +6,11 @@ use crate::{
     table::TableMetadataDocument,
 };
 
+mod inventory;
 mod projection;
 mod rows;
 mod value;
+pub use inventory::validate_partition_statistics_inventory;
 pub use rows::{validate_partition_statistics_rows, PartitionStatisticsRowLimits};
 
 /// Validates partition-statistics field IDs, requiredness and the unified partition type.

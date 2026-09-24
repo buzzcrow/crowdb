@@ -41,6 +41,7 @@ use serde_json::{json, Value};
 
 fn limits() -> CandidateAuxiliaryLimits {
     CandidateAuxiliaryLimits {
+        manifests: snapshot::limits().manifests,
         files: 10,
         bytes: 1_000_000,
         work: 1000,
@@ -55,27 +56,46 @@ fn limits() -> CandidateAuxiliaryLimits {
     }
 }
 
-async fn source(fixture: &TestPrior, entry: Value, field: &str) -> CandidateFileSource {
+async fn source(fixture: &TestPrior, entry: Value, field: &str) -> Arc<CandidateFileSource> {
     let mut value = Value::Object(fixture.document.fields().clone());
     value[field] = json!([entry]);
     source_document(fixture, &value).await
 }
 
-async fn source_document(fixture: &TestPrior, value: &Value) -> CandidateFileSource {
-    CandidateFileSource::new(
-        fixture.namespace.store.clone(),
-        fixture.blocks.clone(),
-        fixture.namespace.context,
-        Arc::new(fixture.build(provenance::limits()).await.unwrap()),
-        fixture.candidate_value(value),
-        provenance::limits().manifests.framing,
+async fn source_document(fixture: &TestPrior, value: &Value) -> Arc<CandidateFileSource> {
+    Arc::new(
+        CandidateFileSource::new(
+            fixture.namespace.store.clone(),
+            fixture.blocks.clone(),
+            fixture.namespace.context,
+            Arc::new(fixture.build(provenance::limits()).await.unwrap()),
+            fixture.candidate_value(value),
+            provenance::limits().manifests.framing,
+        )
+        .unwrap(),
     )
-    .unwrap()
 }
 
 #[tokio::test]
 async fn auxiliary_validation_reads_official_partition_rows_and_shares_work_budget() {
     let fixture = TestPrior::new().await;
+    let empty = snapshot::store(
+        fixture.blocks.clone(),
+        "metadata/empty-list.avro",
+        ContentFormat::Avro,
+        &snapshot::ocf(
+            vec![(
+                "avro.schema",
+                list_fixture::TestManifestList::new().schema_bytes(),
+            )],
+            &[],
+        ),
+    )
+    .await;
+    FileRepository::new(fixture.namespace.store.clone())
+        .publish(fixture.namespace.context, &empty)
+        .await
+        .unwrap();
     let bytes = data_encoding::BASE64
         .decode(statistics_official::STATS_2_TRUE.as_bytes())
         .unwrap();
@@ -91,6 +111,7 @@ async fn auxiliary_validation_reads_official_partition_rows_and_shares_work_budg
         .await
         .unwrap();
     let mut value = Value::Object(fixture.document.fields().clone());
+    value["snapshots"][0]["manifest-list"] = json!(empty.location.to_string());
     value["schemas"] = json!([{"schema-id":1,"type":"struct","fields":[
         {"id":2,"name":"kept","type":"int","required":false}]}]);
     value["current-schema-id"] = json!(1);
