@@ -119,7 +119,9 @@ system root -> active CatalogId/activation epoch
 
 1. R178 establishes the library, active catalog domain, management safety, stable
    key/value envelope, server lifecycle, and `/v1/config` baseline.
-2. R179 implements namespace authority and standard namespace operations.
+2. R179 is complete: namespace authority, bounded standard REST operations,
+   child/drop fencing, official-client boundary acceptance and native restart.
+   Its contract is retained in [Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
 3. R180 implements native immutable files, streaming/range FileIO, multipart, and
    generation-local metadata projections. It can proceed after R178 in parallel
    with R179.
@@ -176,14 +178,14 @@ and must not carry independent open questions.
    publication. Drop CASes the parent to `Dropping` before probing those same index
    ranges. Unresolved reservations prevent an empty proof; recovery settles them
    before removal. A published child restores `Ready` and returns not-empty;
-   tombstoning requires a complete empty proof. R179 owns the bounded recovery and
-   single-key-CAS protocol; there is no cross-key transaction or process lock.
+   tombstoning requires a complete empty proof. The namespace layer implements
+   bounded recovery and single-key CAS; there is no cross-key transaction or process lock.
 8. **Namespace listing:** scan ordered mappings with bounded over-fetch, validate
    targets in bounded batches, and bind the opaque continuation token to catalog,
    parent, parameters, and last scanned key. Stale mappings are omitted. An absent
    `pageToken` requires one complete response with a null next token; an empty
-   `pageToken` starts pagination. R179 defines bounded spooling and a pre-response
-   503 on resource exhaustion, never a successful truncated listing.
+   `pageToken` starts pagination. The namespace layer implements bounded spooling
+   and a pre-response 503 on resource exhaustion, never a successful truncated listing.
 9. **Namespace properties:** at most 256 entries; keys and values are UTF-8 without
    NUL, at most 1 KiB and 8 KiB respectively; the encoded authority is at most
    64 KiB. Duplicate remove/update keys return the standard 422 response. Mapping
@@ -349,4 +351,5 @@ OI-3 uses the existing disk/chunk allocation capacity boundary, with remaining
 GC and exhaustion-recovery requirements recorded in R183.
 
 Unfinished implementation and unexecuted acceptance remain in the working plans.
-Resolving these decisions does not close R179–R184 or imply engine/GC conformance.
+R179 is closed by its acceptance gates, not by these decisions. R180–R184 remain
+open; namespace acceptance does not imply engine/GC conformance.

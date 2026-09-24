@@ -1,7 +1,6 @@
 # Iceberg Functional Catalog Plan
 
 Upstream: [R177](../backlog/R177-access-iceberg-catalog-foundation.md),
-[R179](../backlog/R179-access-iceberg-namespace.md),
 [R180](../backlog/R180-access-iceberg-fileio.md),
 [R181](../backlog/R181-access-iceberg-table-lifecycle.md),
 [R182](../backlog/R182-access-iceberg-table-commit.md),
@@ -34,7 +33,7 @@ Verified integration checkpoint: `a832e699` (2026-09-24).
   Real Java 1.11.0 writes v1 data, upgrades to v3, appends with retained history,
   publishes a staged table, and reads both after catalog-process restart.
 
-This does not close R179–R184. Existing tests do not substitute for unexecuted
+This does not close R180–R184. Existing tests do not substitute for unexecuted
 acceptance cases, full engine matrices, requirement-closure audits or physical GC.
 
 Verified lifecycle implementation checkpoint (2026-09-24):
@@ -56,17 +55,25 @@ Verified lifecycle implementation checkpoint (2026-09-24):
   Iceberg-E2E feature clippy pass. No unsafe exception, runtime lock, timeout
   increase, assertion reduction or test-side retry was introduced.
 
+Namespace acceptance closed (2026-09-24), implementation `442f26c7`:
+
+- R179's acceptance audit is complete. Property-limit HTTP tests cover exact
+  UTF-8/cardinality/encoded-authority boundaries and unchanged authority bytes
+  and revision after rejection. PyIceberg covers item/byte/scan/time/concurrency
+  spool limits and resource release; Java 1.11.0 follows stale-only pages to the
+  final result with an exact scan-count assertion. Missing namespace errors pass.
+- Deadline regression fixed: dispatch reserves response headroom inside the
+  unchanged absolute connection lifetime, allowing timeout 503s before teardown.
+  No new runtime locks, unsafe exceptions, added SDK retries or relaxed assertions.
+- Full library, default/Iceberg-enabled server, namespace SDK, fmt, workspace
+  clippy and explicit E2E-feature clippy pass. Native two-listener CRUD/storage
+  restart and the independent 500-ms maintenance fixture pass together under
+  default concurrency. Fault-phase integration tests cover namespace/table
+  creation and rename-in versus namespace drop; no claim of native process kills
+  at every phase. R180–R184 retain their separate outstanding acceptance.
+
 ## Remaining tasks in dependency order
 
-- [ ] **Namespace acceptance — R179**: the source audit at `a52cfb72` confirms
-  rename-in/table-create versus namespace-drop fault coverage, but identifies
-  remaining property-limit E2E and official-client pagination/exhaustion/error
-  evidence. Complete those cases, then rerun native namespace closure gates;
-  existing two-listener CRUD/restart and separate 500-ms maintenance results
-  predate the lifecycle integration. Do not reimplement admission or claim raw
-  HTTP boundary tests as SDK coverage. No new human decision is required.
-  Files: namespace modules, `iceberg_full_stack_test.rs`,
-  [namespace execution plan](plan-iceberg-namespace.md).
 - [ ] **Selected-use gaps — R180/R182**: implement partition-statistics schema,
   ordered-row and count validation before removing its explicit rejection.
   Audit equality-delete rewrites, position-delete removal without replacement DV,
@@ -152,6 +159,14 @@ trade away durability, fencing, bounds or assertions for a passing timing result
 - Historical namespace diagnostics measured roughly 45–75 ms per durable phase
   and intermittent failure under a 500-ms total bound. Refresh measurements before
   attributing current cost to any component; these are not current p95/p99 values.
+- Full namespace CRUD uses the bounded 300,000-ms functional profile with
+  delegation disabled; raw HTTP client timeouts remain five seconds. The separate
+  maintenance fixture retains 500 ms. Their passing results are not evidence that
+  every namespace mutation meets 500 ms. Earlier redundant immutable-payload and
+  terminal-cleanup writes were fixed without altering publication CAS.
+- Maintenance fixture repair errors for synthetic reserved name mappings without
+  journals are expected from `verify_name_index`; retain the diagnostics rather
+  than interpreting them as production corruption or suppressing them.
 - Profile journal/retry-ledger round trips and durable payload/checkpoint writes
   on identical storage, concurrency and data. Prior redundant writes already
   received no-op/read-before-put fixes; do not reimplement them blindly.
@@ -184,6 +199,12 @@ trade away durability, fencing, bounds or assertions for a passing timing result
 - HTTP: `pixi run clean-env && pixi run -- cargo test -p crowdb-access-server --features iceberg --all-targets`.
   Default server tests alone skip the Iceberg suites.
 - SDK: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_table_sdk_test -- --ignored --nocapture --test-threads=1`.
+- Namespace SDK: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_namespace_sdk_test -- --ignored --nocapture`.
+  Set `CROWDB_ICEBERG_E2E_PYTHON=$PWD/.pixi/envs/iceberg-e2e/bin/python` and the
+  Java environment below. The pinned PyIceberg method requests complete lists;
+  Java RESTCatalog implements token continuation. Neither client is patched.
+- Native namespace: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_full_stack_test -- --nocapture`.
+  Use the same Python variable and an isolated cleaned runtime root as below.
 - Native: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test official_java_catalog_commits -- --ignored --nocapture`.
 - For Java tests, use default Pixi for Cargo; set
   `JAVA_HOME=$PWD/.pixi/envs/iceberg-e2e/lib/jvm` and

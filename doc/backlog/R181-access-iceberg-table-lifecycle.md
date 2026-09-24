@@ -64,7 +64,7 @@ supplies immutable metadata files and projections.
 
 ## Dependencies
 
-- Depends on R177, R178, R179, and R180.
+- Depends on R177, completed R178/R179 foundations, and R180.
 - Produces TableId, TableHead generation, name epoch, lifecycle, metadata validator,
   and selected-generation load contract for R182 through R185.
 - R182 owns create, staged create, and metadata updates. Tests here may install
