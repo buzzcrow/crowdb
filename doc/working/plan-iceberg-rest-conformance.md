@@ -26,6 +26,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
 - New catalog authorities persist zero capability bits. Listener startup, REST,
   FileIO and credential refresh reject every nonzero capability set. This is a
   foundation-era constraint, not an implemented per-version admission policy.
+  The legacy activation policy is tracked as R177 OI-6; independent tasks proceed.
 - `http.rs` separately assembles endpoint strings and dispatches by broad path
   prefixes. Table builders can be installed without namespaces, but dispatch
   rejects every non-config route in that combination: discovery can overstate
@@ -41,7 +42,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
 
 ## Tasks in execution order
 
-- [ ] **1. Unified route discovery — medium**: introduce a bounded endpoint
+- [x] **1. Unified route discovery — medium**: introduce a bounded endpoint
   descriptor/classifier used by both config discovery and dispatch admission.
   Keep identifiers encoded until the owning decoder validates them. Do not
   duplicate an independent route list for metrics later.
@@ -59,7 +60,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
   - Exit: real HTTP calls agree with discovery, disabled calls preserve authority
     and ledger bytes, and existing Java discovery/list/load fixtures still pass.
 
-- [ ] **2. Common protocol and authorization boundaries — medium**: add a
+- [~] **2. Common protocol and authorization boundaries — medium**: add a
   table-driven conformance matrix and repair only demonstrated differences.
   Files: server `iceberg/http.rs`, `namespace_read.rs`, `namespace_request.rs`,
   `table_read.rs`, `table_write/request.rs`, `table_write/lifecycle.rs`,

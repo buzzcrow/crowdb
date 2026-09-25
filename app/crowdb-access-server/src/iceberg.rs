@@ -18,6 +18,7 @@ mod namespace_read;
 mod namespace_request;
 mod namespace_write;
 mod recovery;
+mod routes;
 mod runtime;
 mod table_credentials;
 mod table_limits;

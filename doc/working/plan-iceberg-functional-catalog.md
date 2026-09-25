@@ -81,8 +81,8 @@ The initial inspection is complete; implementation has not started.
 ## Human decisions
 
 Only [R177 Open Questions](../backlog/R177-access-iceberg-catalog-foundation.md#open-questions)
-is authoritative. No human decision is currently pending; implementation and
-acceptance tasks remain open.
+is authoritative. OI-6 needs a decision on existing zero-bit catalog activation;
+independent REST and conformance work continues.
 
 OI-1 is resolved: functionality and performance are separate acceptance tracks.
 OI-2 is deferred by agreement to the user's later testing project, listed in Next.

@@ -7,6 +7,7 @@ use super::body::IcebergBody;
 use super::connection::{ActiveIo, ConnectionActivity};
 use super::file_http::FileHttp;
 use super::namespace_read::NamespaceHttp;
+use super::routes::{InstalledRoutes, Route};
 use crowdb_access_iceberg::catalog::{CatalogError, CatalogLifecycle, CatalogRepository, RootState};
 use crowdb_access_iceberg::wire::{BearerAuthenticator, CatalogConfig, IcebergErrorResponse};
 use hyper::body::Incoming;
@@ -167,11 +168,11 @@ impl IcebergHttpService {
                 None => super::file_http::unavailable(request.uri().path()),
             });
         }
-        let authorization = request
-            .headers()
-            .get(hyper::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default();
+        let mut authorizations = request.headers().get_all(hyper::header::AUTHORIZATION).iter();
+        let authorization = match (authorizations.next(), authorizations.next()) {
+            (Some(value), None) => value.to_str().unwrap_or_default(),
+            _ => "",
+        };
         let Some(principal) = self.authentication.authenticate(authorization) else {
             return Err(IcebergErrorResponse::new(
                 401,
@@ -182,13 +183,9 @@ impl IcebergHttpService {
         if request.uri().to_string().len() > 32 * 1024 {
             return Err(bad_request());
         }
-        if request.uri().path() != "/v1/config" && self.namespaces.is_none() {
-            return Err(IcebergErrorResponse::new(
-                406,
-                "UnsupportedOperationException",
-                "This endpoint is not implemented",
-            ));
-        }
+        let route = Route::classify(request.method(), request.uri().path())
+            .filter(|route| route.enabled(&self.installed_routes()))
+            .ok_or_else(super::table_read::unsupported)?;
         let (root, authority) = self
             .repository
             .status()
@@ -202,87 +199,64 @@ impl IcebergHttpService {
         {
             return Err(service_unavailable());
         }
-        if request.method() == hyper::Method::GET && request.uri().path() == "/v1/config" {
+        if route == Route::Config {
             return self.config(request.uri().query());
         }
-        if super::table_read::TableHttp::handles(request.uri().path())
-            || request.uri().path() == "/v1/tables/rename"
-        {
-            if request.uri().path() == "/v1/tables/rename" && request.method() != hyper::Method::POST {
-                return Err(super::table_read::unsupported());
+        match route {
+            Route::TableCredentials => {
+                self.table_credentials
+                    .as_ref()
+                    .ok_or_else(super::table_read::unsupported)?
+                    .load(&self.repository, root.context, principal, &request)
+                    .await
             }
-            if request.uri().path().ends_with("/credentials") {
-                return match &self.table_credentials {
-                    Some(credentials) => {
-                        credentials
-                            .load(&self.repository, root.context, principal, &request)
-                            .await
-                    }
-                    None => Err(super::table_read::unsupported()),
-                };
+            Route::TableCreate | Route::TableUpdate | Route::TableDrop | Route::TableRename => {
+                let writes = self
+                    .table_writes
+                    .as_ref()
+                    .ok_or_else(super::table_read::unsupported)?;
+                Box::pin(writes.execute(root.context, principal, request)).await
             }
-            if request.method() == hyper::Method::POST || request.method() == hyper::Method::DELETE {
-                return match &self.table_writes {
-                    Some(writes) => Box::pin(writes.execute(root.context, principal, request)).await,
-                    None => Err(super::table_read::unsupported()),
-                };
+            Route::TableList | Route::TableLoad | Route::TableExists => {
+                self.tables
+                    .as_ref()
+                    .ok_or_else(super::table_read::unsupported)?
+                    .read(root.context, &request)
+                    .await
             }
-            return match &self.tables {
-                Some(tables) => tables.read(root.context, &request).await,
-                None => Err(super::table_read::unsupported()),
-            };
+            _ => {
+                self.namespaces
+                    .as_ref()
+                    .ok_or_else(super::table_read::unsupported)?
+                    .dispatch(root.context, principal, request)
+                    .await
+            }
         }
-        match &self.namespaces {
-            Some(namespaces) => namespaces.dispatch(root.context, principal, request).await,
-            None => Err(IcebergErrorResponse::new(
-                406,
-                "UnsupportedOperationException",
-                "This endpoint is not implemented",
-            )),
+    }
+
+    fn installed_routes(&self) -> InstalledRoutes {
+        let mut bits = 0;
+        if self.namespaces.is_some() {
+            bits |= InstalledRoutes::NAMESPACES;
         }
+        if self.tables.is_some() {
+            bits |= InstalledRoutes::TABLES;
+        }
+        if self.table_writes.is_some() {
+            bits |= InstalledRoutes::WRITES;
+        }
+        if self.table_credentials.is_some() {
+            bits |= InstalledRoutes::CREDENTIALS;
+        }
+        InstalledRoutes(bits)
     }
 
     fn config(&self, query: Option<&str>) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         let warehouse = warehouse(query)?;
         let mut config = CatalogConfig::foundation(warehouse.as_deref())?;
+        config.endpoints = Route::endpoints(&self.installed_routes());
         if self.namespaces.is_some() {
-            config.endpoints = [
-                "GET /v1/{prefix}/namespaces",
-                "GET /v1/{prefix}/namespaces/{namespace}",
-                "HEAD /v1/{prefix}/namespaces/{namespace}",
-                "POST /v1/{prefix}/namespaces",
-                "POST /v1/{prefix}/namespaces/{namespace}/properties",
-                "DELETE /v1/{prefix}/namespaces/{namespace}",
-            ]
-            .map(str::to_owned)
-            .to_vec();
             config.idempotency_key_lifetime = Some("PT24H".into());
-        }
-        if self.tables.is_some() {
-            config.endpoints.extend(
-                [
-                    "GET /v1/{prefix}/namespaces/{namespace}/tables",
-                    "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-                    "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-                ]
-                .map(str::to_owned),
-            );
-        }
-        if self.table_writes.is_some() {
-            config.endpoints.extend(
-                [
-                    "POST /v1/{prefix}/namespaces/{namespace}/tables",
-                    "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-                    "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-                    "POST /v1/{prefix}/tables/rename",
-                ]
-                .map(str::to_owned),
-            );
-        }
-        if self.table_credentials.is_some() {
-            config
-                .endpoints
-                .push("GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials".into());
         }
         Ok(response(
             200,

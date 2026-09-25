@@ -52,11 +52,6 @@ impl TableHttp {
         })
     }
 
-    pub(super) fn handles(path: &str) -> bool {
-        path.strip_prefix("/v1/namespaces/")
-            .is_some_and(|suffix| suffix.split('/').nth(1) == Some("tables"))
-    }
-
     pub(super) async fn read(
         &self,
         context: CatalogContext,
