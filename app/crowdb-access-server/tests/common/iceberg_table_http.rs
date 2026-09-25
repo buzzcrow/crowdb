@@ -21,6 +21,7 @@ use crate::{blocks::TestFileBlocks, common::TestStore};
 
 pub struct TestTableHttp {
     pub store: Arc<TestStore>,
+    pub service: Arc<IcebergHttpService>,
     pub context: CatalogContext,
     pub namespace: NamespaceId,
     address: std::net::SocketAddr,
@@ -118,8 +119,9 @@ impl TestTableHttp {
             service
         });
         let (stop, stopped) = tokio::sync::oneshot::channel();
+        let listener_service = service.clone();
         let server = tokio::spawn(async move {
-            serve(listener, service, async {
+            serve(listener, listener_service, async {
                 let _ = stopped.await;
             })
             .await
@@ -127,6 +129,7 @@ impl TestTableHttp {
         });
         Self {
             store,
+            service,
             context,
             namespace,
             address,

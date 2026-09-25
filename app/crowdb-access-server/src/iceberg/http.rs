@@ -6,9 +6,12 @@ use std::time::Duration;
 use super::body::IcebergBody;
 use super::connection::{ActiveIo, ConnectionActivity};
 use super::file_http::FileHttp;
+use super::metrics::{self, IcebergMetrics, IcebergMetricsSnapshot, RequestObservation};
 use super::namespace_read::NamespaceHttp;
 use super::routes::{InstalledRoutes, Route};
-use crowdb_access_iceberg::catalog::{CatalogError, CatalogLifecycle, CatalogRepository, RootState};
+use crowdb_access_iceberg::catalog::{
+    Capabilities, CatalogError, CatalogLifecycle, CatalogRepository, ManagementPrivilege, RootState,
+};
 use crowdb_access_iceberg::wire::{BearerAuthenticator, CatalogConfig, IcebergErrorResponse};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -27,6 +30,7 @@ pub struct IcebergHttpService {
     tables: Option<super::table_read::TableHttp>,
     table_writes: Option<super::table_write::TableWrites>,
     table_credentials: Option<super::table_credentials::TableCredentials>,
+    metrics: Arc<IcebergMetrics>,
 }
 
 impl IcebergHttpService {
@@ -45,7 +49,13 @@ impl IcebergHttpService {
             tables: None,
             table_writes: None,
             table_credentials: None,
+            metrics: Arc::new(IcebergMetrics::default()),
         }
+    }
+
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> IcebergMetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     /// # Errors
@@ -140,8 +150,16 @@ impl IcebergHttpService {
         request: Request<Incoming>,
         deadline: tokio::time::Instant,
     ) -> Result<Response<IcebergBody>, Infallible> {
+        let observation = RequestObservation::new(
+            self.metrics.clone(),
+            metrics::route_index(request.method(), request.uri().path()),
+        );
         let head = request.method() == hyper::Method::HEAD;
-        let result = Box::pin(tokio::time::timeout_at(deadline, self.dispatch(request))).await;
+        let result = Box::pin(tokio::time::timeout_at(
+            deadline,
+            metrics::observe(observation.clone(), self.dispatch(request)),
+        ))
+        .await;
         let mut response = match result {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => response(error.error.code, serde_json::to_vec(&error).unwrap_or_default()),
@@ -153,6 +171,9 @@ impl IcebergHttpService {
         if head {
             *response.body_mut() = IcebergBody::new(Vec::new());
         }
+        observation.dispatched(response.status().as_u16());
+        let body = std::mem::replace(response.body_mut(), IcebergBody::new(Vec::new()));
+        *response.body_mut() = body.with_observation(observation);
         Ok(response)
     }
 
@@ -186,6 +207,19 @@ impl IcebergHttpService {
         let route = Route::classify(request.method(), request.uri().path())
             .filter(|route| route.enabled(&self.installed_routes()))
             .ok_or_else(super::table_read::unsupported)?;
+        if route == Route::AdminMetrics {
+            if principal.management != ManagementPrivilege::Manage {
+                return Err(IcebergErrorResponse::new(
+                    403,
+                    "ForbiddenException",
+                    "Management privilege is required",
+                ));
+            }
+            return Ok(response(
+                200,
+                serde_json::to_vec(&self.metrics.snapshot()).map_err(|_| service_unavailable())?,
+            ));
+        }
         let (root, authority) = self
             .repository
             .status()
@@ -200,7 +234,7 @@ impl IcebergHttpService {
             return Err(service_unavailable());
         }
         if route == Route::Config {
-            return self.config(request.uri().query());
+            return self.config(request.uri().query(), authority.capabilities);
         }
         match route {
             Route::TableCredentials => {
@@ -251,9 +285,13 @@ impl IcebergHttpService {
         InstalledRoutes(bits)
     }
 
-    fn config(&self, query: Option<&str>) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
+    fn config(
+        &self,
+        query: Option<&str>,
+        capabilities: Capabilities,
+    ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         let warehouse = warehouse(query)?;
-        let mut config = CatalogConfig::foundation(warehouse.as_deref())?;
+        let mut config = CatalogConfig::for_capabilities(warehouse.as_deref(), capabilities)?;
         config.endpoints = Route::endpoints(&self.installed_routes());
         if self.namespaces.is_some() {
             config.idempotency_key_lifetime = Some("PT24H".into());

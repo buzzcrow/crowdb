@@ -8,8 +8,8 @@ leave engine and reclamation-dependent acceptance explicitly pending.
 
 ## Scope and starting point
 
-- Planning checkpoint only: no production changes or new tests have been run for
-  this requirement. R179–R182 already supply the storage and mutation foundation.
+- Tasks 1, 2 and 4 are implemented and verified. R179–R182 supply the storage
+  and mutation foundation; task 3 awaits the R177 OI-6 activation decision.
 - Implement tasks 1–4 first, then extend client evidence in task 5. Each task can
   be committed independently after its affected tests and quality gates pass.
 - Do not run Spark/Flink/Trino, physical GC or broad performance experiments.
@@ -60,7 +60,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
   - Exit: real HTTP calls agree with discovery, disabled calls preserve authority
     and ledger bytes, and existing Java discovery/list/load fixtures still pass.
 
-- [~] **2. Common protocol and authorization boundaries — medium**: add a
+- [x] **2. Common protocol and authorization boundaries — medium**: add a
   table-driven conformance matrix and repair only demonstrated differences.
   Files: server `iceberg/http.rs`, `namespace_read.rs`, `namespace_request.rs`,
   `table_read.rs`, `table_write/request.rs`, `table_write/lifecycle.rs`,
@@ -106,7 +106,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
   - Exit: config does not understate or overstate actual version admission, and
     old catalogs cannot silently acquire broader persisted capabilities.
 
-- [ ] **4. Bounded protocol observability — medium, cancellation edge medium-high**:
+- [x] **4. Bounded protocol observability — medium, cancellation edge medium-high**:
   add lock-free counters and bounded latency measurements using fixed labels.
   Files: new library `metrics.rs` and tests; server `iceberg/http.rs`, `body.rs`,
   request-body readers, table retry/outcome paths and runtime status integration.
@@ -125,7 +125,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
   - Exit: deterministic unit/body tests prove counts and cleanup; endpoint labels
     remain bounded even under arbitrary paths and error input.
 
-- [ ] **5. Official-client and compatibility evidence — medium-high**: extend
+- [~] **5. Official-client and compatibility evidence — medium-high**: extend
   existing Java/native fixtures, add a pinned official Rust client harness and
   investigate the Apache REST Compatibility Kit's actual runner/artifacts.
   Files: server `tests/common/iceberg_java/`, new Rust/kit fixtures under tests,
@@ -144,6 +144,83 @@ leave engine and reclamation-dependent acceptance explicitly pending.
     remain pending and full R184 closure is not claimed.
 
 ## Verification
+
+Current verified foreground evidence:
+
+- Complete route classification and config discovery share one descriptor set.
+  Real HTTP tests cover four installation combinations, absent routes, unchanged
+  store records, authentication order and ambiguous duplicate Authorization.
+- Existing namespace/table/lifecycle/credential/admission suites pass with the
+  shared route gate; a pinned OpenAPI access-delegation list preserves table load.
+- Initial protocol metrics count fixed route/outcome classes, actual consumed
+  request bytes, emitted response bytes, dispatch and body lifetime, retry
+  classification and selected load version. Real HTTP tests cover create, HEAD,
+  unsupported requests, timeout/cancellation classification and v3 load. A
+  manager-only diagnostic endpoint exports the snapshot even when catalog reads
+  stall, without adding an Iceberg REST capability. File body error and drop
+  tests retain bounded streaming and cancellation behavior.
+- R177 OI-6 records the pending legacy capability activation decision. Task 3
+  has not changed persisted bits or widened existing admission. Config rendering
+  now accepts an explicit, validated capability profile, but the live authority
+  remains zero-bit until durable activation is defined.
+- Apache Iceberg Rust 0.10.0 official REST client compiles in a separate pinned
+  Cargo fixture and passes namespace and table create/list/load/drop against the
+  live CROWDB HTTP service through two independent listeners sharing one test
+  store. Its dependency lockfile is retained; its injected memory storage
+  factory is not evidence for S3 data I/O.
+- The official Apache Iceberg 1.11.0 RCK is pinned to tag commit
+  `6976e020b894f6a6777704df2b8c4458cb291ae9`. It runs from an external
+  source checkout with a native CROWDB stack. The initial Gradle bootstrap found
+  an inherited invalid `JAVA_HOME`; the fixture now selects the Pixi Java home.
+  The initial full catalog suite ran with its default assumption that namespaces
+  need not be created: 106 tests, 83 failures, 12 skipped, largely at missing
+  namespace admission. The supported `rck.requires-namespace-create=true`
+  setting corrects that harness assumption; its isolated `testBasicCreateTable`
+  and `testCreateNamespace` both pass against native CROWDB. A full configured
+  diagnostic exposed tests that assume
+  register-table/views, direct filesystem metadata paths, or externally supplied
+  data files without CROWDB's selected-file authorization. Unsupported view
+  cleanup then leaves shared test namespaces in place and causes cascading
+  duplicate-namespace and bounded-operation failures. That diagnostic was
+  terminated after the independent failure classes were identified; no full-kit
+  pass is claimed. The pinned harness defaults to the passing basic-create test
+  and accepts `CROWDB_ICEBERG_RCK_SELECTOR` for isolated diagnostics.
+
+Executable foreground evidence matrix (not engine certification):
+
+- Namespace and table lifecycle: Apache Rust 0.10.0
+  `iceberg_rust_sdk_test` (passing); Apache Java 1.11.0
+  `iceberg_table_sdk_test` (all four official RESTCatalog fixtures passing) and
+  `iceberg_commit_sdk_test` (existing passing fixture); Apache RCK 1.11.0 basic
+  create and namespace create (passing as isolated selectors).
+- v1/v2/v3 metadata and selected versions: library
+  `table_metadata_sdk_snapshot_test`, `commit_evaluator_sdk_test`,
+  `table_create_sdk_test` and server `iceberg_table_http_test` (passing). These
+  validate metadata and REST, not an end-to-end row scan.
+- Delete and auxiliary encodings: library `parquet_position_delete_test`,
+  `commit_retained_statistics_test`, `partition_statistics_rows_test` and
+  `snapshot_manifest_reader_test` (passing). Their selected-file validation is
+  not a substitute for a Spark/Flink/Trino read.
+- Durable retry, restart and response-loss cases: existing server native
+  `iceberg_commit_sdk_test`, `iceberg_file_http_test` and R180–R182 fault suites.
+  `iceberg_full_stack_test::namespace_functional_crud_survives_native_storage_and_listener_restart`
+  passes pinned PyIceberg namespace CRUD against two listeners before and after
+  a Chunk-KV restart. No cross-server Rust/Java table-fault fixture is claimed.
+- Pending: nonzero persisted capability profiles, complete configured RCK
+  catalog suite, multi-server official-client response-loss matrix, engine row-level
+  visibility and R183 physical reclamation.
+
+Pinned client commands:
+
+- Rust 0.10.0: `pixi run cargo test -p crowdb-access-server --features
+  iceberg-e2e --test iceberg_rust_sdk_test -- --ignored --nocapture`.
+- Apache RCK 1.11.0: clone tag `apache-iceberg-1.11.0` outside the workspace,
+  set `CROWDB_ICEBERG_RCK_ROOT` to its root, clean an isolated
+  `CROWDB_RUNTIME_ROOT`, then run `pixi run cargo test -p
+  crowdb-access-server --features iceberg-e2e --test iceberg_rck_test --
+  --ignored --nocapture --test-threads=1`. The test executes the unmodified
+  upstream Gradle task and injects `rck.local=false` and
+  `rck.requires-namespace-create=true`.
 
 - Unit: capability bit/profile tests, wire/config/parameter tests, bounded metrics
   counters and body lifecycle. Place all Rust tests under each crate's `tests/`.

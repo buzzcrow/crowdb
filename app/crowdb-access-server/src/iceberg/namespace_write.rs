@@ -86,8 +86,18 @@ impl NamespaceWrites {
             body: Vec::new(),
         };
         let retry = match self.admit(retry, request_key, now).await? {
-            RetryAdmission::Replay(record) => return Ok(response(record.status, record.body)),
-            RetryAdmission::New(record) | RetryAdmission::Resume(record) => record,
+            RetryAdmission::Replay(record) => {
+                super::metrics::record_retry(3);
+                return Ok(response(record.status, record.body));
+            }
+            RetryAdmission::New(record) => {
+                super::metrics::record_retry(1);
+                record
+            }
+            RetryAdmission::Resume(record) => {
+                super::metrics::record_retry(2);
+                record
+            }
         };
         let result = match namespace_request::parse(route, &uri, &bytes) {
             Ok(mutation) => self.mutate(&retry, mutation).await,
@@ -184,6 +194,7 @@ pub(super) async fn read_body(mut body: Incoming) -> Result<Vec<u8>, IcebergErro
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|_| bad_request())?;
         if let Ok(data) = frame.into_data() {
+            super::metrics::record_request_bytes(data.len());
             if bytes.len() + data.len() > 2 * 1024 * 1024 {
                 return Err(bad_request());
             }

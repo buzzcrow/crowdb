@@ -1,4 +1,4 @@
-use crowdb_access_iceberg::catalog::ManagementPrivilege;
+use crowdb_access_iceberg::catalog::{Capabilities, ManagementPrivilege};
 use crowdb_access_iceberg::wire::{BearerAuthenticator, CatalogConfig};
 
 #[test]
@@ -17,6 +17,21 @@ fn config_advertises_only_landed_support_and_rejects_nonempty_warehouse() {
     let value = serde_json::to_value(error).unwrap();
     assert_eq!(value["error"]["code"], 404);
     assert_eq!(value["error"]["type"], "NoSuchWarehouseException");
+}
+
+#[test]
+fn config_uses_the_selected_capability_profile_without_expanding_it() {
+    let capabilities = Capabilities::from_bits(0x11f3).unwrap();
+    let config = CatalogConfig::for_capabilities(None, capabilities).unwrap();
+    let overrides = config.overrides;
+    assert_eq!(overrides["crowdb.iceberg.v1.read"], "true");
+    assert_eq!(overrides["crowdb.iceberg.v1.write"], "false");
+    assert_eq!(overrides["crowdb.iceberg.v2.write"], "true");
+    assert_eq!(overrides["crowdb.iceberg.v3.parse"], "true");
+    assert_eq!(overrides["crowdb.iceberg.v3.read"], "false");
+    assert_eq!(overrides["crowdb.iceberg.upgrade-v1-v2"], "true");
+    assert_eq!(overrides["crowdb.iceberg.upgrade-v2-v3"], "false");
+    assert!(CatalogConfig::for_capabilities(Some("unknown"), capabilities).is_err());
 }
 
 #[test]

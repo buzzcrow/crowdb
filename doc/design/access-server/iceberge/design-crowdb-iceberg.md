@@ -192,6 +192,15 @@ derived from the configured credentials so equally configured listeners interope
 The REST Catalog is the portable control surface. It exposes only capabilities
 CROWDB implements with compliant Iceberg semantics.
 
+The listener classifies complete method/path pairs before domain mutation and
+uses the same fixed route set for discovery and protocol metric labels. Request
+measurements use bounded atomic counters and follow response bodies through
+completion or cancellation; streamed file bytes are measured when emitted.
+Protocol counters never use principal, table name, token or raw path as a label.
+An authenticated management-credential-only `GET /_crowdb/metrics` exposes a
+bounded snapshot, including while catalog storage is unavailable. This local
+diagnostic is not an Iceberg REST endpoint and is absent from `/v1/config`.
+
 The catalog listener exposes authenticated config and namespace REST. An absent or
 empty warehouse selects the sole active catalog; other selectors fail with
 `NoSuchWarehouseException`. Its endpoint list advertises installed namespace and

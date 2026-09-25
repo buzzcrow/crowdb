@@ -117,8 +117,18 @@ impl TableWrites {
         };
         let admission = self.admit(&mut record, key, now).await?;
         let record = match admission {
-            RetryAdmission::Replay(record) => return Ok(response(record.status, record.body)),
-            RetryAdmission::New(record) | RetryAdmission::Resume(record) => record,
+            RetryAdmission::Replay(record) => {
+                super::metrics::record_retry(3);
+                return Ok(response(record.status, record.body));
+            }
+            RetryAdmission::New(record) => {
+                super::metrics::record_retry(1);
+                record
+            }
+            RetryAdmission::Resume(record) => {
+                super::metrics::record_retry(2);
+                record
+            }
         };
         if method == Method::DELETE || uri.path() == "/v1/tables/rename" {
             let result = self.mutate_lifecycle(&record, &method, &uri, &bytes).await;

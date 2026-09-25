@@ -148,6 +148,7 @@ impl TableHttp {
             TableLoad::Missing => return Err(missing_table()),
             TableLoad::NotModified { etag } => (response(304, Vec::new()), etag),
             TableLoad::Loaded { head, etag, metadata } => {
+                super::metrics::record_selected_version(head.format_version);
                 let location = serde_json::to_vec(&head.metadata_location.to_string())
                     .map_err(|_| service_unavailable())?;
                 let mut bytes = b"{\"metadata-location\":".to_vec();

@@ -42,6 +42,7 @@ async fn authenticated_config_warehouse_errors_and_shutdown_use_real_http() {
         authentication,
         Duration::from_secs(2),
     ));
+    let observed = service.clone();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -107,6 +108,10 @@ async fn authenticated_config_warehouse_errors_and_shutdown_use_real_http() {
         .await
         .unwrap()
         .unwrap();
+    let metrics = observed.metrics_snapshot();
+    assert_eq!(metrics.routes[0][0].requests, 3);
+    assert_eq!(metrics.routes[0][1].requests, 1);
+    assert_eq!(metrics.routes[0][4].requests + metrics.routes[0][6].requests, 1);
 }
 
 async fn get(address: std::net::SocketAddr, path: &str, token: &str) -> String {

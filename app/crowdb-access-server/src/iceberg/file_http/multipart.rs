@@ -450,6 +450,7 @@ async fn read_complete_body(mut body: Incoming) -> Result<Vec<u8>, FileS3ErrorCo
             .map_err(|_| FileS3ErrorCode::InvalidRequest)?
             .into_data()
             .map_err(|_| FileS3ErrorCode::InvalidRequest)?;
+        crate::iceberg::metrics::record_request_bytes(data.len());
         if bytes
             .len()
             .checked_add(data.len())

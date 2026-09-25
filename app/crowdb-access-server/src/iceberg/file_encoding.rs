@@ -138,6 +138,7 @@ impl<Input: Body<Data = Bytes> + Unpin> FileUploadBody<Input> {
             match std::task::ready!(Pin::new(&mut self.input).poll_frame(context)) {
                 Some(Ok(frame)) => {
                     self.buffered = frame.into_data().map_err(|_| FileEncodingError::Framing)?;
+                    super::metrics::record_request_bytes(self.buffered.len());
                     self.wire_bytes = self
                         .wire_bytes
                         .checked_add(self.buffered.len() as u64)

@@ -27,6 +27,7 @@ async fn start(
     credentials: bool,
 ) -> (
     Arc<common::TestStore>,
+    Arc<IcebergHttpService>,
     String,
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
@@ -70,14 +71,16 @@ async fn start(
             .unwrap();
     }
     let (stop, stopped) = tokio::sync::oneshot::channel();
+    let service = Arc::new(service);
+    let observed = service.clone();
     let server = tokio::spawn(async move {
-        serve(listener, Arc::new(service), async {
+        serve(listener, service, async {
             let _ = stopped.await;
         })
         .await
         .unwrap();
     });
-    (store, origin, stop, server)
+    (store, observed, origin, stop, server)
 }
 
 async fn send(client: &Client, origin: &str, method: Method, path: &str, token: &str) -> reqwest::Response {
@@ -89,6 +92,42 @@ async fn send(client: &Client, origin: &str, method: Method, path: &str, token: 
         .unwrap()
 }
 
+async fn reject_unsupported(client: &Client, origin: &str, store: &common::TestStore) {
+    let authority = store.values.load_full();
+    for (method, path) in [
+        (Method::POST, "/v1/namespaces/analytics/tables/events/plan"),
+        (Method::POST, "/v1/namespaces/analytics/tables/events/metrics"),
+        (Method::POST, "/v1/namespaces/analytics/register"),
+        (Method::POST, "/v1/transactions/commit"),
+        (Method::POST, "/v1/oauth/tokens"),
+        (Method::DELETE, "/v1/namespaces/analytics/tables"),
+        (Method::POST, "/v1/namespaces/analytics/tables/events/credentials"),
+    ] {
+        let response = send(client, origin, method, path, "w").await;
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE, "{path}");
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"]["type"],
+            "UnsupportedOperationException"
+        );
+        assert_eq!(*store.values.load_full(), *authority, "{path}");
+    }
+}
+
+async fn check_admin_metrics(client: &Client, origin: &str) {
+    for role in ["r", "w", "c"] {
+        assert_eq!(
+            send(client, origin, Method::GET, "/_crowdb/metrics", role)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    let diagnostic = send(client, origin, Method::GET, "/_crowdb/metrics", "m").await;
+    assert_eq!(diagnostic.status(), StatusCode::OK);
+    let diagnostic: serde_json::Value = diagnostic.json().await.unwrap();
+    assert_eq!(diagnostic["routes"].as_array().unwrap().len(), 9);
+}
+
 #[tokio::test]
 async fn discovery_uses_installed_routes_and_unsupported_paths_leave_no_record() {
     let client = Client::builder().timeout(Duration::from_secs(3)).build().unwrap();
@@ -98,7 +137,7 @@ async fn discovery_uses_installed_routes_and_unsupported_paths_leave_no_record()
         (true, false, false, 6),
         (true, true, true, 14),
     ] {
-        let (store, origin, stop, server) = start(namespaces, tables, credentials).await;
+        let (store, service, origin, stop, server) = start(namespaces, tables, credentials).await;
         let config = send(&client, &origin, Method::GET, "/v1/config", "r")
             .await
             .json::<serde_json::Value>()
@@ -111,29 +150,18 @@ async fn discovery_uses_installed_routes_and_unsupported_paths_leave_no_record()
         }
         for endpoint in endpoints {
             let template = endpoint.as_str().unwrap();
+            assert!(!template.contains("/_crowdb/"));
             assert!(!template.contains("/plan"));
             assert!(!template.contains("/metrics"));
             assert!(!template.contains("/register"));
             assert!(!template.contains("/oauth"));
         }
-        let authority = store.values.load_full();
-        for (method, path) in [
-            (Method::POST, "/v1/namespaces/analytics/tables/events/plan"),
-            (Method::POST, "/v1/namespaces/analytics/tables/events/metrics"),
-            (Method::POST, "/v1/namespaces/analytics/register"),
-            (Method::POST, "/v1/transactions/commit"),
-            (Method::POST, "/v1/oauth/tokens"),
-            (Method::DELETE, "/v1/namespaces/analytics/tables"),
-            (Method::POST, "/v1/namespaces/analytics/tables/events/credentials"),
-        ] {
-            let response = send(&client, &origin, method, path, "w").await;
-            assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE, "{path}");
-            assert_eq!(
-                response.json::<serde_json::Value>().await.unwrap()["error"]["type"],
-                "UnsupportedOperationException"
-            );
-            assert_eq!(*store.values.load_full(), *authority, "{path}");
-        }
+        reject_unsupported(&client, &origin, &store).await;
+        store
+            .read_delay_ms
+            .store(5_000, std::sync::atomic::Ordering::SeqCst);
+        check_admin_metrics(&client, &origin).await;
+        store.read_delay_ms.store(0, std::sync::atomic::Ordering::SeqCst);
         let unauthenticated = client
             .post(format!("{origin}/v1/namespaces/analytics/register"))
             .send()
@@ -166,7 +194,40 @@ async fn discovery_uses_installed_routes_and_unsupported_paths_leave_no_record()
                 StatusCode::NOT_ACCEPTABLE
             }
         );
+        let _ = table_read.bytes().await.unwrap();
+        let mut admitted_bytes = None;
+        if namespaces {
+            let body = br#"{"namespace":["analytics"]}"#;
+            let created = client
+                .post(format!("{origin}/v1/namespaces"))
+                .bearer_auth("w".repeat(32))
+                .body(body.as_slice())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(created.status(), StatusCode::OK);
+            let _ = created.bytes().await.unwrap();
+            let head = send(&client, &origin, Method::HEAD, "/v1/namespaces/analytics", "r").await;
+            assert_eq!(head.status(), StatusCode::NO_CONTENT);
+            assert!(head.bytes().await.unwrap().is_empty());
+            admitted_bytes = Some(body.len() as u64);
+        }
         stop.send(()).unwrap();
         server.await.unwrap();
+        let snapshot = service.metrics_snapshot();
+        if let Some(bytes) = admitted_bytes {
+            assert_eq!(snapshot.routes[2][0].requests, 1);
+            assert_eq!(snapshot.routes[2][0].request_bytes, bytes);
+            assert!(snapshot.routes[2][0].response_bytes > 0);
+            assert_eq!(snapshot.retry_new, 1);
+            assert_eq!(snapshot.routes[1][0].requests, 1);
+            assert_eq!(snapshot.routes[1][0].response_bytes, 0);
+        }
+        assert_eq!(snapshot.routes[0][0].requests, 1);
+        assert!(snapshot.routes[0][0].response_bytes > 0);
+        assert_eq!(snapshot.routes[0][1].requests, 1);
+        assert_eq!(snapshot.routes[8][3].requests, 7);
+        assert_eq!(snapshot.routes[7][0].requests, 1);
+        assert_eq!(snapshot.routes[7][1].requests, 3);
     }
 }

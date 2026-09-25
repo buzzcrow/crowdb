@@ -14,6 +14,7 @@ mod file_response;
 mod file_selection;
 mod file_upload;
 mod http;
+mod metrics;
 mod namespace_read;
 mod namespace_request;
 mod namespace_write;
@@ -36,6 +37,7 @@ pub use file_response::{FileResponseError, FileS3ErrorCode, MultipartResponses};
 pub use file_selection::{CompletePart, CompleteRequestError, CompleteResolveError, CompleteSelection};
 pub use file_upload::{FileUploadBudget, FileUploadConstraints, FileUploadError};
 pub use http::{serve, IcebergHttpService};
+pub use metrics::{IcebergMetricsSnapshot, MetricCounts, ICEBERG_OUTCOME_NAMES, ICEBERG_ROUTE_NAMES};
 pub use runtime::{run, IcebergRuntimeConfig};
 
 #[cfg(feature = "test-util")]

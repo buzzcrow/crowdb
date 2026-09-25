@@ -16,6 +16,7 @@ impl InstalledRoutes {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Route {
     Config,
+    AdminMetrics,
     NamespaceList,
     NamespaceCreate,
     NamespaceLoad,
@@ -51,6 +52,9 @@ impl Route {
     ];
 
     pub(super) fn classify(method: &Method, path: &str) -> Option<Self> {
+        if path == "/_crowdb/metrics" {
+            return (method == Method::GET).then_some(Self::AdminMetrics);
+        }
         if path == "/v1/config" {
             return (method == Method::GET).then_some(Self::Config);
         }
@@ -107,7 +111,7 @@ impl Route {
 
     pub(super) fn enabled(self, installed: &InstalledRoutes) -> bool {
         match self {
-            Self::Config => true,
+            Self::Config | Self::AdminMetrics => true,
             Self::NamespaceList
             | Self::NamespaceCreate
             | Self::NamespaceLoad
@@ -137,7 +141,7 @@ impl Route {
 
     fn template(self) -> Option<&'static str> {
         match self {
-            Self::Config => None,
+            Self::Config | Self::AdminMetrics => None,
             Self::NamespaceList => Some("GET /v1/{prefix}/namespaces"),
             Self::NamespaceCreate => Some("POST /v1/{prefix}/namespaces"),
             Self::NamespaceLoad => Some("GET /v1/{prefix}/namespaces/{namespace}"),

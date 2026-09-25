@@ -16,6 +16,15 @@ impl CatalogConfig {
     /// # Errors
     /// Returns the standard unknown-warehouse error for nonempty selectors.
     pub fn foundation(warehouse: Option<&str>) -> Result<Self, IcebergErrorResponse> {
+        Self::for_capabilities(warehouse, Capabilities::default())
+    }
+
+    /// # Errors
+    /// Returns the standard unknown-warehouse error or rejects invalid support flags.
+    pub fn for_capabilities(
+        warehouse: Option<&str>,
+        capabilities: Capabilities,
+    ) -> Result<Self, IcebergErrorResponse> {
         if warehouse.is_some_and(|value| !value.is_empty()) {
             return Err(IcebergErrorResponse::new(
                 404,
@@ -23,8 +32,15 @@ impl CatalogConfig {
                 "The given warehouse does not exist",
             ));
         }
+        capabilities.validate().map_err(|_| {
+            IcebergErrorResponse::new(
+                503,
+                "ServiceUnavailableException",
+                "Catalog capabilities are invalid",
+            )
+        })?;
         let mut overrides = BTreeMap::new();
-        for (index, version) in Capabilities::default().versions.iter().enumerate() {
+        for (index, version) in capabilities.versions.iter().enumerate() {
             for (name, action) in [
                 ("parse", FormatAction::Parse),
                 ("read", FormatAction::Read),
@@ -37,8 +53,14 @@ impl CatalogConfig {
                 );
             }
         }
-        overrides.insert("crowdb.iceberg.upgrade-v1-v2".into(), "false".into());
-        overrides.insert("crowdb.iceberg.upgrade-v2-v3".into(), "false".into());
+        overrides.insert(
+            "crowdb.iceberg.upgrade-v1-v2".into(),
+            capabilities.upgrade_v1_v2.to_string(),
+        );
+        overrides.insert(
+            "crowdb.iceberg.upgrade-v2-v3".into(),
+            capabilities.upgrade_v2_v3.to_string(),
+        );
         Ok(Self {
             defaults: BTreeMap::new(),
             overrides,

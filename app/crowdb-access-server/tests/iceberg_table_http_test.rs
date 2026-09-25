@@ -16,6 +16,50 @@ use serde_json::Value;
 const PATH: &str = "/v1/namespaces/analytics/tables/events";
 
 #[tokio::test]
+async fn optional_access_delegation_list_does_not_change_table_identity() {
+    let fixture = TestTableHttp::vending().await;
+    fixture.install("events").await;
+    let client = reqwest::Client::new();
+    let origin = fixture.endpoint();
+    let plain = client
+        .get(format!("{origin}{PATH}?snapshots=refs"))
+        .bearer_auth("r".repeat(32))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain.status(), 200);
+    let plain: Value = plain.json().await.unwrap();
+    let delegated = client
+        .get(format!("{origin}{PATH}?snapshots=refs"))
+        .bearer_auth("r".repeat(32))
+        .header("X-Iceberg-Access-Delegation", "vended-credentials,remote-signing")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delegated.status(), 200);
+    let delegated: Value = delegated.json().await.unwrap();
+    assert_eq!(plain, delegated);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn successful_load_counts_selected_version_and_emitted_response() {
+    let fixture = TestTableHttp::new().await;
+    fixture.install("events").await;
+    let service = fixture.service.clone();
+    let response = fixture.request(Method::GET, PATH, "r", None).await;
+    assert_eq!(response.status(), 200);
+    let length = response.bytes().await.unwrap().len() as u64;
+    fixture.finish().await;
+    let snapshot = service.metrics_snapshot();
+    assert_eq!(snapshot.selected_versions, [0, 0, 1]);
+    assert_eq!(snapshot.routes[3][0].requests, 1);
+    assert_eq!(snapshot.routes[3][0].response_bytes, length);
+    assert!(snapshot.routes[3][0].dispatch_latency_ns > 0);
+    assert!(snapshot.routes[3][0].lifetime_ns >= snapshot.routes[3][0].dispatch_latency_ns);
+}
+
+#[tokio::test]
 async fn configured_load_etag_includes_sdk_configuration_and_preserves_conditionals() {
     use sha2::{Digest, Sha256};
     let fixture = TestTableHttp::vending().await;
