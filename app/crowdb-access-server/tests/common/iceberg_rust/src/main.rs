@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use iceberg::io::MemoryStorageFactory;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
@@ -27,6 +28,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             HashMap::from([("uri".to_owned(), second_origin), ("token".to_owned(), token)]),
         )
         .await?;
+
+    if let Ok(control) = env::var("CROWDB_ICEBERG_RUST_RETIRE_CONTROL") {
+        catalog.create_namespace(&namespace, HashMap::new()).await?;
+        let table = TableIdent::new(namespace.clone(), "rust_retired".to_owned());
+        let schema = Schema::builder()
+            .with_fields(vec![NestedField::required(
+                1,
+                "id",
+                Type::Primitive(PrimitiveType::Long),
+            )
+            .into()])
+            .build()?;
+        catalog
+            .create_table(
+                &namespace,
+                TableCreation::builder()
+                    .name(table.name().to_owned())
+                    .schema(schema.clone())
+                    .build(),
+            )
+            .await?;
+        second_catalog.load_table(&table).await?;
+        let mut control = tokio::net::TcpStream::connect(control).await?;
+        control.write_all(&[1]).await?;
+        control.read_exact(&mut [0]).await?;
+        assert!(catalog.load_table(&table).await.is_err());
+        assert!(!second_catalog.namespace_exists(&namespace).await?);
+        second_catalog.create_namespace(&namespace, HashMap::new()).await?;
+        second_catalog
+            .create_table(
+                &namespace,
+                TableCreation::builder()
+                    .name(table.name().to_owned())
+                    .schema(schema)
+                    .build(),
+            )
+            .await?;
+        catalog.load_table(&table).await?;
+        second_catalog.drop_table(&table).await?;
+        catalog.drop_namespace(&namespace).await?;
+        return Ok(());
+    }
 
     if env::var_os("CROWDB_ICEBERG_RUST_VERIFY_EXISTING").is_some() {
         let table = TableIdent::new(namespace.clone(), "rust_lost_reply".to_owned());

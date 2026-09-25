@@ -216,6 +216,13 @@ Executable foreground evidence matrix (not engine certification):
   scenario with two real Access Server processes, then restarts Chunk-KV and both
   listeners before the official client loads and removes the retained table.
   Neither case claims automatic SDK retry after the lost response.
+- **Retired context:** Rust 0.10.0
+  `iceberg_rust_retired_sdk_test::official_rust_client_rejects_retired_catalog_after_clear`
+  keeps two official client instances open across a durable clear and explicit
+  reactivation. The old table becomes unreadable, while the same clients can
+  create and load a new table with the same name in the replacement catalog.
+  This two-listener case uses the in-memory store; it does not claim a native
+  15-minute delegated-access grace run or same-key SDK mutation retry.
 - **v1, table create/update/load:** Java 1.11.0
   `iceberg_table_sdk_test::official_catalog_creates_commits_upgrades_stages_and_refreshes_native_credentials`
   creates v1 and commits schema/properties over REST. The same-version creation
@@ -246,10 +253,10 @@ Executable foreground evidence matrix (not engine certification):
   recovery. `iceberg_full_stack_test::namespace_functional_crud_survives_native_storage_and_listener_restart`
   passes pinned PyIceberg namespace CRUD against two listeners before and after
   a Chunk-KV restart. The native Rust response-loss fixture above covers a
-  successful create response lost at the HTTP boundary; retired-context SDK
-  retry is not yet demonstrated.
+  successful create response lost at the HTTP boundary; the in-memory retired
+  fixture covers stale official-client reads but not same-key mutation retry.
 - **Pending:** complete configured RCK catalog suite, remaining official-client
-  response-loss/retired-context retry matrix, engine
+  same-key retry and native retirement-grace matrix, engine
   row-level visibility and R183 physical reclamation.
 
 Native Java FileIO diagnostic on 2026-09-25: the three-test serial suite passed

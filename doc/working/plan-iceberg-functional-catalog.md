@@ -56,8 +56,9 @@ conformance gates remain open.
   native variant also passes after Chunk-KV/listener restart. Apache RCK 1.11.0
   isolated namespace, basic-create, rename, drop and list tests pass. The full
   kit requires unsupported register/view cleanup and assumes external locations/
-  files outside native selected-file authority. Finish the remaining
-  retired-context and supported-profile client matrix and stable native Java
+  files outside native selected-file authority. An official Rust client also
+  rejects stale reads after clear/reactivation in the two-listener memory fixture.
+  Finish same-key SDK retry, native retirement grace and stable native Java
   FileIO checks; keep engine acceptance in Next and GC in R183.
   Files: conformance environments, SDK fixtures and capability tests.
 - [ ] **Requirement closure**: compare each requirement's acceptance cases with
