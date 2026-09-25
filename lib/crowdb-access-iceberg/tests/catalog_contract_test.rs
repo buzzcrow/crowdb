@@ -1,4 +1,4 @@
-use crowdb_access_iceberg::catalog::{Capabilities, ClearBounds, FormatSupport};
+use crowdb_access_iceberg::catalog::{Capabilities, ClearBounds, FormatAction, FormatSupport};
 use crowdb_access_iceberg::catalog::{CatalogAuthority, CatalogContext, CatalogLifecycle, ClearTransition};
 use crowdb_access_iceberg::error::ValidationError;
 use crowdb_access_iceberg::key::{CatalogId, OperationId};
@@ -21,6 +21,26 @@ fn capability_decoding_rejects_unknown_and_incoherent_flags() {
         upgrade_v2_v3: true,
     };
     assert_eq!(Capabilities::from_bits(complete.bits()).unwrap(), complete);
+}
+
+#[test]
+fn capability_actions_and_direct_upgrade_require_each_enabled_edge() {
+    let partial = Capabilities::from_bits(0x11f3).unwrap();
+    assert!(partial.supports(1, FormatAction::Parse));
+    assert!(partial.supports(1, FormatAction::Read));
+    assert!(!partial.supports(1, FormatAction::Create));
+    assert!(!partial.supports(1, FormatAction::Write));
+    assert!(partial.supports(2, FormatAction::Write));
+    assert!(partial.supports(3, FormatAction::Parse));
+    assert!(!partial.supports(3, FormatAction::Read));
+    assert!(!partial.supports(0, FormatAction::Read));
+    assert!(!partial.supports(4, FormatAction::Read));
+    assert!(partial.supports_upgrade(1, 2));
+    assert!(!partial.supports_upgrade(1, 3));
+    assert!(!partial.supports_upgrade(2, 3));
+    let complete = Capabilities::from_bits(0x3fff).unwrap();
+    assert!(complete.supports_upgrade(1, 3));
+    assert!(!complete.supports_upgrade(3, 1));
 }
 
 #[test]

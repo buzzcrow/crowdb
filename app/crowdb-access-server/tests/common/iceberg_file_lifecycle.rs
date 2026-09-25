@@ -194,6 +194,7 @@ async fn clear(
         expected_epoch: context.activation_epoch,
         display_name: "after-clear".into(),
         confirmation: Some(context.catalog),
+        capabilities: None,
     };
     assert!(matches!(
         repository

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use super::{TableHead, TableMetadataDocument, TableMetadataError, TableMetadataLimits, TableRepository};
 use crate::{
-    catalog::{CatalogContext, CatalogError},
+    catalog::{Capabilities, CatalogContext, CatalogError, FormatAction},
     file::FileBlockStore,
     metadata_projection::ProjectionStore,
     namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
@@ -39,6 +39,8 @@ pub enum TableLoadError {
     Catalog(#[from] CatalogError),
     #[error(transparent)]
     Metadata(#[from] TableMetadataError),
+    #[error("the selected table version is not enabled for reading")]
+    UnsupportedVersion,
 }
 
 pub struct TableLoader {
@@ -78,8 +80,20 @@ impl TableLoader {
         namespace: &NamespaceIdentifier,
         name: &str,
     ) -> Result<bool, TableLoadError> {
+        Ok(self.head(context, namespace, name).await?.is_some())
+    }
+
+    /// Resolves the selected head without materializing metadata bytes.
+    /// # Errors
+    /// Corruption, retirement and changed namespace/head identity remain errors.
+    pub async fn head(
+        &self,
+        context: CatalogContext,
+        namespace: &NamespaceIdentifier,
+        name: &str,
+    ) -> Result<Option<TableHead>, TableLoadError> {
         let Some(parent) = self.namespaces.load(context, namespace).await? else {
-            return Ok(false);
+            return Ok(None);
         };
         let selected = self.tables.select(context, parent.namespace, name).await?;
         if let Some(selected) = &selected {
@@ -87,7 +101,7 @@ impl TableLoader {
         }
         self.check_namespace(context, namespace, parent.namespace, parent.name_epoch)
             .await?;
-        Ok(selected.is_some())
+        Ok(selected.map(|value| value.head))
     }
 
     /// Builds a bounded read representation, never a commit-validation proof.
@@ -103,6 +117,34 @@ impl TableLoader {
         mode: SnapshotLoadingMode,
         if_none_match: Option<&str>,
     ) -> Result<TableLoad, TableLoadError> {
+        self.load_inner(context, namespace, name, mode, if_none_match, None)
+            .await
+    }
+
+    /// Reads canonical metadata only for an enabled selected format version.
+    /// # Errors
+    /// Rejects disabled versions before file I/O, corruption and changed bindings.
+    pub async fn load_with_capabilities(
+        &self,
+        context: CatalogContext,
+        namespace: &NamespaceIdentifier,
+        name: &str,
+        mode: SnapshotLoadingMode,
+        capabilities: Capabilities,
+    ) -> Result<TableLoad, TableLoadError> {
+        self.load_inner(context, namespace, name, mode, None, Some(capabilities))
+            .await
+    }
+
+    async fn load_inner(
+        &self,
+        context: CatalogContext,
+        namespace: &NamespaceIdentifier,
+        name: &str,
+        mode: SnapshotLoadingMode,
+        if_none_match: Option<&str>,
+        capabilities: Option<Capabilities>,
+    ) -> Result<TableLoad, TableLoadError> {
         if if_none_match.is_some_and(|value| value.len() > 8192) {
             return Err(TableMetadataError::Bounds.into());
         }
@@ -114,6 +156,11 @@ impl TableLoader {
                 .await?;
             return Ok(TableLoad::Missing);
         };
+        if capabilities
+            .is_some_and(|profile| !profile.supports(selected.head.format_version, FormatAction::Read))
+        {
+            return Err(TableLoadError::UnsupportedVersion);
+        }
         let canonical =
             super::metadata::read_table_metadata_bytes(self.blocks.clone(), &selected, self.limits).await?;
         let etag = etag(&selected.head, mode);

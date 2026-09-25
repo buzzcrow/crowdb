@@ -32,6 +32,21 @@ async fn start(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 ) {
+    start_with_capabilities(namespaces, tables, credentials, Some(0x3fff)).await
+}
+
+async fn start_with_capabilities(
+    namespaces: bool,
+    tables: bool,
+    credentials: bool,
+    capability_bits: Option<u16>,
+) -> (
+    Arc<common::TestStore>,
+    Arc<IcebergHttpService>,
+    String,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
     let store = Arc::new(common::TestStore::default());
     let repository = Arc::new(CatalogRepository::new(store.clone(), ClearBounds::default()).unwrap());
     repository
@@ -46,12 +61,16 @@ async fn start(
                 expected_epoch: 0,
                 display_name: "catalog".into(),
                 confirmation: None,
+                capabilities: None,
             },
             ManagementPrivilege::Manage,
             100,
         )
         .await
         .unwrap();
+    if let Some(bits) = capability_bits {
+        common::activate_bits(&repository, bits).await;
+    }
     let authentication =
         BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
     let mut service = IcebergHttpService::new(repository, authentication, Duration::from_secs(2));
@@ -126,6 +145,56 @@ async fn check_admin_metrics(client: &Client, origin: &str) {
     assert_eq!(diagnostic.status(), StatusCode::OK);
     let diagnostic: serde_json::Value = diagnostic.json().await.unwrap();
     assert_eq!(diagnostic["routes"].as_array().unwrap().len(), 9);
+}
+
+#[tokio::test]
+async fn explicit_partial_activation_limits_discovery_and_table_admission() {
+    let client = Client::new();
+    let (_, _, origin, stop, server) = start_with_capabilities(true, true, true, None).await;
+    assert_eq!(
+        send(&client, &origin, Method::GET, "/v1/config", "r")
+            .await
+            .status(),
+        503
+    );
+    assert_eq!(
+        send(&client, &origin, Method::GET, "/v1/namespaces/a/tables/t", "r")
+            .await
+            .status(),
+        StatusCode::NOT_ACCEPTABLE
+    );
+    stop.send(()).unwrap();
+    server.await.unwrap();
+
+    let (_, _, origin, stop, server) = start_with_capabilities(true, true, true, Some(0x0033)).await;
+    let config = send(&client, &origin, Method::GET, "/v1/config", "r")
+        .await
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(config["overrides"]["crowdb.iceberg.v1.read"], "true");
+    assert_eq!(config["overrides"]["crowdb.iceberg.v2.create"], "false");
+    assert_eq!(config["endpoints"].as_array().unwrap().len(), 10);
+    assert!(!config["endpoints"].as_array().unwrap().iter().any(|endpoint| {
+        endpoint
+            .as_str()
+            .unwrap()
+            .starts_with("POST /v1/{prefix}/namespaces/{namespace}/tables")
+    }));
+    assert_eq!(
+        send(&client, &origin, Method::POST, "/v1/namespaces/a/tables", "w")
+            .await
+            .status(),
+        StatusCode::NOT_ACCEPTABLE
+    );
+    assert_eq!(
+        send(&client, &origin, Method::GET, "/v1/namespaces/a/tables/t", "r")
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    stop.send(()).unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

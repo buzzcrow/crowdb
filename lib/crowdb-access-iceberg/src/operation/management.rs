@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-use crate::catalog::{CatalogAuthority, ClearBounds};
+use crate::catalog::{Capabilities, CatalogAuthority, ClearBounds};
 use crate::error::ValidationError;
 use crate::key::{CatalogId, OperationId};
 
@@ -12,6 +12,7 @@ pub enum ManagementAction {
     Initialize = 0,
     Rename = 1,
     Clear = 2,
+    Activate = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +32,7 @@ pub struct ManagementRequest {
     pub expected_epoch: u64,
     pub display_name: String,
     pub confirmation: Option<CatalogId>,
+    pub capabilities: Option<Capabilities>,
 }
 
 impl ManagementRequest {
@@ -50,8 +52,15 @@ impl ManagementRequest {
         )?;
         if (self.action == ManagementAction::Initialize) != (self.expected_epoch == 0)
             || (self.action == ManagementAction::Clear) != self.confirmation.is_some()
+            || (self.action == ManagementAction::Activate) != self.capabilities.is_some()
         {
             return Err(ValidationError::Record);
+        }
+        if let Some(capabilities) = self.capabilities {
+            capabilities.validate()?;
+            if capabilities.bits() == 0 {
+                return Err(ValidationError::Capabilities);
+            }
         }
         Ok(())
     }
@@ -68,6 +77,9 @@ impl ManagementRequest {
             digest.update(text.as_bytes());
         }
         digest.update(self.confirmation.as_ref().map_or(&[0; 16], CatalogId::as_bytes));
+        if let Some(capabilities) = self.capabilities {
+            digest.update(capabilities.bits().to_be_bytes());
+        }
         digest.finalize().into()
     }
 }
@@ -200,6 +212,13 @@ impl ManagementOperation {
         match self.request.action {
             ManagementAction::Initialize => return Err(ValidationError::Record),
             ManagementAction::Rename if original.renamed(self.request.display_name.clone())? != result => {
+                return Err(ValidationError::Record)
+            }
+            ManagementAction::Activate
+                if original.display_name != self.request.display_name
+                    || original.activated(self.request.capabilities.ok_or(ValidationError::Record)?)?
+                        != result =>
+            {
                 return Err(ValidationError::Record)
             }
             ManagementAction::Clear

@@ -33,6 +33,18 @@ struct RawRequest<'request> {
 }
 
 impl CommitRequest {
+    #[must_use]
+    pub fn create_version(&self) -> u8 {
+        self.upgrade_targets().max().unwrap_or(2)
+    }
+
+    pub fn upgrade_targets(&self) -> impl Iterator<Item = u8> + '_ {
+        self.updates.iter().filter_map(|update| match update {
+            TableUpdate::UpgradeFormatVersion { format_version } => u8::try_from(*format_version).ok(),
+            _ => None,
+        })
+    }
+
     /// Decodes the complete closed requirement/update union under independent JSON and count limits.
     /// Scalar parameters are checked, but nested payloads and selected-state semantics still need evaluation.
     /// # Errors

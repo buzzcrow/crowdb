@@ -1,3 +1,4 @@
+use crowdb_access_iceberg::catalog::{Capabilities, FormatAction};
 use hyper::Method;
 
 pub(super) struct InstalledRoutes(pub u8);
@@ -130,10 +131,25 @@ impl Route {
         }
     }
 
-    pub(super) fn endpoints(installed: &InstalledRoutes) -> Vec<String> {
+    pub(super) fn supported(self, capabilities: Capabilities) -> bool {
+        let any = |action| (1..=3).any(|version| capabilities.supports(version, action));
+        match self {
+            Self::TableList | Self::TableLoad | Self::TableExists | Self::TableCredentials => {
+                any(FormatAction::Read)
+            }
+            Self::TableCreate => any(FormatAction::Create),
+            Self::TableUpdate => {
+                any(FormatAction::Write) || capabilities.upgrade_v1_v2 || capabilities.upgrade_v2_v3
+            }
+            Self::TableDrop | Self::TableRename => any(FormatAction::Write),
+            _ => true,
+        }
+    }
+
+    pub(super) fn endpoints(installed: &InstalledRoutes, capabilities: Capabilities) -> Vec<String> {
         Self::ADVERTISED
             .iter()
-            .filter(|route| route.enabled(installed))
+            .filter(|route| route.enabled(installed) && route.supported(capabilities))
             .filter_map(|route| route.template())
             .map(str::to_owned)
             .collect()

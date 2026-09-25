@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crowdb_access_iceberg::catalog::{
-    CatalogError, CatalogLifecycle, CatalogRepository, ClearBounds, ManagementPrivilege, RootState,
-    RoutedCatalogStore,
+    Capabilities, CatalogError, CatalogLifecycle, CatalogRepository, ClearBounds, ManagementPrivilege,
+    RootState, RoutedCatalogStore,
 };
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
@@ -136,10 +136,7 @@ async fn start_listener(
         }
     }
     let (root, authority) = repository.status().await?;
-    if root.state != RootState::Ready
-        || authority.lifecycle != CatalogLifecycle::Ready
-        || authority.capabilities.bits() != 0
-    {
+    if root.state != RootState::Ready || authority.lifecycle != CatalogLifecycle::Ready {
         return Err("Iceberg catalog is not ready for this server".into());
     }
     let timeout = Duration::from_millis(authority.admission_bounds.request_ms);
@@ -199,7 +196,9 @@ async fn manage(
         println!(
             "{}",
             serde_json::json!({"catalog_id": authority.catalog.to_string(), "display_name": authority.display_name,
-            "activation_epoch": root.context.activation_epoch, "state": format!("{:?}", root.state)})
+            "activation_epoch": root.context.activation_epoch, "state": format!("{:?}", root.state),
+            "capability_bits": format!("0x{:04x}", authority.capabilities.bits()),
+            "config_generation": authority.config_generation})
         );
         return Ok(());
     }
@@ -207,7 +206,8 @@ async fn manage(
         Some("initialize") if arguments.len() == 3 => ManagementAction::Initialize,
         Some("rename") if arguments.len() == 4 => ManagementAction::Rename,
         Some("clear") if arguments.len() == 5 => ManagementAction::Clear,
-        _ => return Err("usage: crowdb-iceberg initialize UUIDv7 NAME | rename UUIDv7 NAME EPOCH | clear UUIDv7 NAME EPOCH CONFIRM_CATALOG_ID | status | serve".into()),
+        Some("activate") if arguments.len() == 5 => ManagementAction::Activate,
+        _ => return Err("usage: crowdb-iceberg initialize UUIDv7 NAME | rename UUIDv7 NAME EPOCH | clear UUIDv7 NAME EPOCH CONFIRM_CATALOG_ID | activate UUIDv7 NAME EPOCH CAPABILITY_BITS_HEX | status | serve".into()),
     };
     let request = ManagementRequest {
         identity: RequestIdentity::parse(&arguments[1], now_ms()?)?,
@@ -219,7 +219,19 @@ async fn manage(
             .map(|value| value.parse())
             .transpose()?
             .unwrap_or(0),
-        confirmation: arguments.get(4).map(|value| value.parse()).transpose()?,
+        confirmation: if action == ManagementAction::Clear {
+            arguments.get(4).map(|value| value.parse()).transpose()?
+        } else {
+            None
+        },
+        capabilities: if action == ManagementAction::Activate {
+            Some(Capabilities::from_bits(u16::from_str_radix(
+                arguments[4].trim_start_matches("0x"),
+                16,
+            )?)?)
+        } else {
+            None
+        },
     };
     for _ in 0..600 {
         match repository
@@ -230,7 +242,9 @@ async fn manage(
                 println!(
                     "{}",
                     serde_json::json!({"catalog_id": authority.catalog.to_string(), "display_name": authority.display_name,
-                    "name_generation": authority.name_generation, "operation_id": request.identity.operation.to_string()})
+                    "name_generation": authority.name_generation, "config_generation": authority.config_generation,
+                    "capability_bits": format!("0x{:04x}", authority.capabilities.bits()),
+                    "operation_id": request.identity.operation.to_string()})
                 );
                 return Ok(());
             }

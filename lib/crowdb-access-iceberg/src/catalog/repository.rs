@@ -211,13 +211,25 @@ impl CatalogRepository {
             (ManagementAction::Rename, Some((current, _))) => {
                 current.context.activation_epoch == request.expected_epoch
             }
+            (ManagementAction::Activate, Some((current, _))) => {
+                current.context.activation_epoch == request.expected_epoch
+                    && original_authority.as_ref().is_some_and(|authority| {
+                        authority.display_name == request.display_name
+                            && request
+                                .capabilities
+                                .is_some_and(|capabilities| authority.activated(capabilities).is_ok())
+                    })
+            }
             (ManagementAction::Clear, Some((current, _))) => {
                 current.context.activation_epoch == request.expected_epoch
                     && request.confirmation == Some(current.context.catalog)
             }
             _ => false,
         };
-        let candidate = if request.action == ManagementAction::Rename {
+        let candidate = if matches!(
+            request.action,
+            ManagementAction::Rename | ManagementAction::Activate
+        ) {
             root.as_ref()
                 .map_or_else(CatalogId::random, |(current, _)| current.context.catalog)
         } else {
@@ -238,13 +250,16 @@ impl CatalogRepository {
         } else {
             bounds
         };
-        let mut result = if request.action == ManagementAction::Rename && valid {
-            original_authority
+        let mut result = match (request.action, valid) {
+            (ManagementAction::Rename, true) => original_authority
                 .as_ref()
                 .ok_or(ValidationError::Record)?
-                .renamed(request.display_name.clone())?
-        } else {
-            CatalogAuthority::new(candidate, request.display_name.clone())?
+                .renamed(request.display_name.clone())?,
+            (ManagementAction::Activate, true) => original_authority
+                .as_ref()
+                .ok_or(ValidationError::Record)?
+                .activated(request.capabilities.ok_or(ValidationError::Record)?)?,
+            _ => CatalogAuthority::new(candidate, request.display_name.clone())?,
         };
         result.admission_bounds = bounds;
         Ok(ManagementOperation {

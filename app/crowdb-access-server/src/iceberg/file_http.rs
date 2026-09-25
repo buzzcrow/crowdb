@@ -98,7 +98,6 @@ impl FileHttp {
         let (root, authority) = catalog.status().await.map_err(catalog_error)?;
         if root.state != RootState::Ready
             || authority.lifecycle != CatalogLifecycle::Ready
-            || authority.capabilities.bits() != 0
             || request_timeout.is_zero()
             || request_timeout > Duration::from_millis(authority.admission_bounds.request_ms)
         {

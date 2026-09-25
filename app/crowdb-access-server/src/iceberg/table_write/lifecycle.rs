@@ -3,6 +3,7 @@ use super::{
     TableWrites,
 };
 use crowdb_access_iceberg::{
+    catalog::{Capabilities, FormatAction},
     commit::TableCommitOutcome,
     key::NameSuffix,
     namespace::NamespaceIdentifier,
@@ -43,6 +44,8 @@ impl TableWrites {
     pub(super) async fn mutate_lifecycle(
         &self,
         record: &RetryRecord,
+        capabilities: Capabilities,
+        resuming: bool,
         method: &Method,
         uri: &Uri,
         bytes: &[u8],
@@ -78,6 +81,34 @@ impl TableWrites {
                 TableLifecycleAction::Drop { purge_requested },
             )
         };
+        let existing = if resuming {
+            self.lifecycles
+                .load(record.context, record.identity.operation)
+                .await
+                .map_err(|_| service_unavailable())?
+        } else {
+            None
+        };
+        let version = if let Some(operation) = existing {
+            operation.before.format_version
+        } else {
+            let parent = self
+                .namespaces
+                .load(record.context, &namespace)
+                .await
+                .map_err(|_| service_unavailable())?
+                .ok_or_else(super::super::table_read::missing_table)?;
+            self.tables
+                .select(record.context, parent.namespace, &name)
+                .await
+                .map_err(|_| service_unavailable())?
+                .ok_or_else(super::super::table_read::missing_table)?
+                .head
+                .format_version
+        };
+        if !capabilities.supports(version, FormatAction::Write) {
+            return Err(super::super::table_read::unsupported());
+        }
         self.lifecycles.execute(&TableLifecycleRequest { context: record.context, identity: record.identity,
             principal: record.principal.clone(), namespace, name, action }).await.map_err(|error| {
                 tracing::error!(%error, "table lifecycle remains recoverable; retry with the same request key");

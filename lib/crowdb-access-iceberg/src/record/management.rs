@@ -49,6 +49,7 @@ pub(super) fn encode<'buffer>(
             retained_until_ms: operation.retained_until_ms,
             publication_proof: Some(publication_proof),
             grace_completed_ms: operation.grace_completed_ms,
+            capability_bits: operation.request.capabilities.map_or(0, |value| value.bits()),
         },
     ))
 }
@@ -63,6 +64,9 @@ pub(super) fn decode(value: FBManagementOperation<'_>) -> Result<ManagementOpera
     {
         return Err(ValidationError::RecordTooLarge);
     }
+    if value.action() != ManagementAction::Activate as u8 && value.capability_bits() != 0 {
+        return Err(ValidationError::Record);
+    }
     let request = ManagementRequest {
         identity: RequestIdentity {
             operation: OperationId::from_bytes(value.operation().bytes())?,
@@ -73,6 +77,7 @@ pub(super) fn decode(value: FBManagementOperation<'_>) -> Result<ManagementOpera
             0 => ManagementAction::Initialize,
             1 => ManagementAction::Rename,
             2 => ManagementAction::Clear,
+            3 => ManagementAction::Activate,
             _ => return Err(ValidationError::Record),
         },
         expected_epoch: value.expected_epoch(),
@@ -80,6 +85,9 @@ pub(super) fn decode(value: FBManagementOperation<'_>) -> Result<ManagementOpera
         confirmation: value
             .confirmation()
             .map(|bytes| CatalogId::from_bytes(bytes.bytes()))
+            .transpose()?,
+        capabilities: (value.action() == ManagementAction::Activate as u8)
+            .then(|| crate::catalog::Capabilities::from_bits(value.capability_bits()))
             .transpose()?,
     };
     if value.request_digest().bytes() != request.digest() {

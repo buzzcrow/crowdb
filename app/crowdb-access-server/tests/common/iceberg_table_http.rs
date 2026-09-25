@@ -35,18 +35,30 @@ impl TestTableHttp {
     }
 
     pub async fn new() -> Self {
-        Self::start(false, false).await
+        Self::start(false, false, 0x3fff).await
     }
 
     pub async fn writable() -> Self {
-        Self::start(true, false).await
+        Self::start(true, false, 0x3fff).await
     }
 
     pub async fn vending() -> Self {
-        Self::start(true, true).await
+        Self::start(true, true, 0x3fff).await
     }
 
-    async fn start(writable: bool, vending: bool) -> Self {
+    pub async fn with_capabilities(bits: u16) -> Self {
+        Self::start(false, false, bits).await
+    }
+
+    pub async fn writable_with_capabilities(bits: u16) -> Self {
+        Self::start(true, false, bits).await
+    }
+
+    pub async fn vending_with_capabilities(bits: u16) -> Self {
+        Self::start(true, true, bits).await
+    }
+
+    async fn start(writable: bool, vending: bool, bits: u16) -> Self {
         let store = Arc::new(TestStore::default());
         let repository = Arc::new(
             CatalogRepository::new(
@@ -70,12 +82,14 @@ impl TestTableHttp {
                     expected_epoch: 0,
                     display_name: "catalog".into(),
                     confirmation: None,
+                    capabilities: None,
                 },
                 ManagementPrivilege::Manage,
                 100,
             )
             .await
             .unwrap();
+        crate::common::activate_bits(&repository, bits).await;
         let context = repository.status().await.unwrap().0.context;
         let identifier = NamespaceIdentifier::new(vec!["analytics".into()]).unwrap();
         NamespaceCreator::new(store.clone())

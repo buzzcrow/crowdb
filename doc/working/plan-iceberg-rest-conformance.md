@@ -9,7 +9,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
 ## Scope and starting point
 
 - Tasks 1, 2 and 4 are implemented and verified. R179–R182 supply the storage
-  and mutation foundation; task 3 awaits the R177 OI-6 activation decision.
+  and mutation foundation; task 3 follows the resolved R177 OI-6 activation decision.
 - Implement tasks 1–4 first, then extend client evidence in task 5. Each task can
   be committed independently after its affected tests and quality gates pass.
 - Do not run Spark/Flink/Trino, physical GC or broad performance experiments.
@@ -23,10 +23,10 @@ leave engine and reclamation-dependent acceptance explicitly pending.
 
 - `wire/config.rs` builds all format overrides from `Capabilities::default()`;
   these are false even when table routes are installed.
-- New catalog authorities persist zero capability bits. Listener startup, REST,
-  FileIO and credential refresh reject every nonzero capability set. This is a
-  foundation-era constraint, not an implemented per-version admission policy.
-  The legacy activation policy is tracked as R177 OI-6; independent tasks proceed.
+- Initial code persisted zero capability bits, rejected every nonzero profile
+  at listener/REST/FileIO/credential boundaries and nevertheless accepted
+  table routes. R177 OI-6 selects explicit, authenticated activation rather
+  than silently treating zero as unrestricted or migrating at startup.
 - `http.rs` separately assembles endpoint strings and dispatches by broad path
   prefixes. Table builders can be installed without namespaces, but dispatch
   rejects every non-config route in that combination: discovery can overstate
@@ -81,7 +81,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
   - Exit: stable status/error types and exact authority/ledger behavior at each
     rejected boundary, with no widened timeout or client retry policy.
 
-- [ ] **3. Persisted format capability reconciliation — high**: establish one
+- [x] **3. Persisted format capability reconciliation — high**: establish one
   effective profile from durable authority, supported implementation and installed
   services, then use it consistently for discovery and admission.
   Files: library `catalog/capability.rs`, `catalog/state.rs`,
@@ -159,12 +159,20 @@ Current verified foreground evidence:
   manager-only diagnostic endpoint exports the snapshot even when catalog reads
   stall, without adding an Iceberg REST capability. File body error and drop
   tests retain bounded streaming and cancellation behavior.
-- R177 OI-6 records the pending legacy capability activation decision. Task 3
-  has not changed persisted bits or widened existing admission. Config rendering
-  now accepts an explicit, validated capability profile, but the live authority
-  remains zero-bit until durable activation is defined.
+- R177 OI-6 selects explicit management activation. The implementation adds
+  authenticated `activate UUIDv7 NAME EPOCH CAPABILITY_BITS_HEX` with durable
+  CAS/retry/audit, monotonic bits, unchanged catalog ID/epoch/name/bounds and
+  incremented config generation. Zero-profile config returns 503; table routes
+  reject without mutating while namespace operations remain available. Discovery
+  filters installed routes by the durable profile. Selected-version read,
+  conditional load, HEAD, create, update, lifecycle and credential refresh use
+  the same profile; direct v1-to-v3 upgrade requires both intermediate edges.
+  FileIO grants intersect role and selected read/write/create support rather
+  than infer format from a Parquet PUT. Library and real HTTP tests cover
+  partial profiles, expansion, replay after response loss, direct upgrade and
+  clear reset.
 - Apache Iceberg Rust 0.10.0 official REST client compiles in a separate pinned
-  Cargo fixture and passes namespace and table create/list/load/drop against the
+  Cargo fixture and passes namespace and table create/list/load/rename/drop against the
   live CROWDB HTTP service through two independent listeners sharing one test
   store. Its dependency lockfile is retained; its injected memory storage
   factory is not evidence for S3 data I/O.
@@ -184,31 +192,64 @@ Current verified foreground evidence:
   duplicate-namespace and bounded-operation failures. That diagnostic was
   terminated after the independent failure classes were identified; no full-kit
   pass is claimed. The pinned harness defaults to the passing basic-create test
-  and accepts `CROWDB_ICEBERG_RCK_SELECTOR` for isolated diagnostics.
+  and accepts `CROWDB_ICEBERG_RCK_SELECTOR` for isolated diagnostics. Isolated
+  `testLoadTable` fails at create with HTTP 400: upstream `CatalogTests` calls
+  `withLocation(baseTableLocation(TBL))`, which supplies a `file:/tmp/...` path, while
+  CROWDB requires its reserved native table location. This is not fixed by
+  accepting an unservable path or weakening native FileIO authority.
 
 Executable foreground evidence matrix (not engine certification):
 
-- Namespace and table lifecycle: Apache Rust 0.10.0
-  `iceberg_rust_sdk_test` (passing); Apache Java 1.11.0
-  `iceberg_table_sdk_test` (all four official RESTCatalog fixtures passing) and
-  `iceberg_commit_sdk_test` (existing passing fixture); Apache RCK 1.11.0 basic
-  create and namespace create (passing as isolated selectors).
-- v1/v2/v3 metadata and selected versions: library
-  `table_metadata_sdk_snapshot_test`, `commit_evaluator_sdk_test`,
-  `table_create_sdk_test` and server `iceberg_table_http_test` (passing). These
-  validate metadata and REST, not an end-to-end row scan.
-- Delete and auxiliary encodings: library `parquet_position_delete_test`,
-  `commit_retained_statistics_test`, `partition_statistics_rows_test` and
-  `snapshot_manifest_reader_test` (passing). Their selected-file validation is
-  not a substitute for a Spark/Flink/Trino read.
-- Durable retry, restart and response-loss cases: existing server native
-  `iceberg_commit_sdk_test`, `iceberg_file_http_test` and R180–R182 fault suites.
-  `iceberg_full_stack_test::namespace_functional_crud_survives_native_storage_and_listener_restart`
+- **Namespace, version-independent:** Rust 0.10.0 `iceberg_rust_sdk_test`
+  covers create/list/load/rename/drop through two listeners; Java 1.11.0
+  `iceberg_namespace_sdk_test` and Apache RCK 1.11.0 isolated
+  `testCreateNamespace` cover the official REST namespace surface. The Rust
+  command is below; the RCK selector is
+  `org.apache.iceberg.rest.RESTCompatibilityKitCatalogTests.testCreateNamespace`.
+- **v1, table create/update/load:** Java 1.11.0
+  `iceberg_table_sdk_test::official_catalog_creates_commits_upgrades_stages_and_refreshes_native_credentials`
+  creates v1 and commits schema/properties over REST. The same-version creation
+  and update metadata are compared structurally with Java fixtures by
+  `pixi run cargo test -p crowdb-access-iceberg --test table_create_sdk_test`
+  and `pixi run cargo test -p crowdb-access-iceberg --test commit_evaluator_sdk_test`.
+  All pass. The in-memory Java run alone does not prove data-file visibility.
+- **v2, table create/update/load:** the same library commands exercise v2
+  fixture rows. Rust 0.10.0 `iceberg_rust_sdk_test` creates its default v2
+  table on one listener, then lists/loads/renames it across both; Apache RCK 1.11.0
+  isolated `testBasicCreateTable` passes against native storage. All pass.
+- **v3 and upgrades:** the same library commands exercise v3 fixture rows;
+  `pixi run cargo test -p crowdb-access-iceberg --test table_metadata_sdk_snapshot_test`
+  checks v1/v2/v3 refs and v3 row lineage. Java 1.11.0's table SDK fixture
+  requests direct v1-to-v3 upgrade over REST, and
+  `pixi run cargo test -p crowdb-access-server --features iceberg --test iceberg_table_http_test`
+  verifies selected v3 load metrics. All pass. These are metadata and REST
+  checks, not an end-to-end v3 row scan.
+- **Deletes and auxiliary files, selected formats:**
+  `pixi run cargo test -p crowdb-access-iceberg --test parquet_position_delete_test`,
+  `--test commit_retained_statistics_test`,
+  `--test partition_statistics_rows_test` and
+  `--test snapshot_manifest_reader_test` pass with pinned format fixtures.
+  Selected-file validation is not a Spark/Flink/Trino read.
+- **Durable retry/restart:** existing server native `iceberg_commit_sdk_test`,
+  `iceberg_file_http_test` and R180–R182 fault suites cover response loss and
+  recovery. `iceberg_full_stack_test::namespace_functional_crud_survives_native_storage_and_listener_restart`
   passes pinned PyIceberg namespace CRUD against two listeners before and after
-  a Chunk-KV restart. No cross-server Rust/Java table-fault fixture is claimed.
-- Pending: nonzero persisted capability profiles, complete configured RCK
-  catalog suite, multi-server official-client response-loss matrix, engine row-level
-  visibility and R183 physical reclamation.
+  a Chunk-KV restart. No cross-server Rust/Java table response-loss fixture is
+  claimed.
+- **Pending:** complete configured RCK catalog suite, multi-server official-client
+  response-loss matrix, engine
+  row-level visibility and R183 physical reclamation.
+
+Native Java FileIO diagnostic on 2026-09-25: the three-test serial suite passed
+two cases, but the catalog/Parquet case returned HTTP 503 during partition
+statistics publication. The corresponding native chunk-stream log showed an
+append stuck in `append_durability` and `WriteStalled`; a second serial run
+failed earlier during catalog initialization with `Store(Client(Deadline))`.
+The exact catalog/Parquet case passed alone, including restart verification.
+This is not counted as a stable suite pass or attributed to REST metrics without
+evidence. No timeout, retry or assertion was weakened. Capture client routing,
+chunk-stream durability and backend timing on the next recurrence before fixing
+the underlying native issue.
 
 Pinned client commands:
 

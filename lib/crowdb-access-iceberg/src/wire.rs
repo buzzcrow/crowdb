@@ -7,5 +7,7 @@ mod retry;
 
 pub use auth::{BearerAuthenticator, Principal};
 pub use config::{CatalogConfig, IcebergErrorResponse};
-pub use credentials::{FileDelegationLimits, LoadCredentialsResponse, StorageCredential};
+pub use credentials::{
+    FileDelegationLimits, FileDelegationTarget, LoadCredentialsResponse, StorageCredential,
+};
 pub use retry::RequestKey;

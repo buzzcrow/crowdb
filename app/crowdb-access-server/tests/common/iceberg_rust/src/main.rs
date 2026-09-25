@@ -58,8 +58,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(second_catalog.table_exists(&table).await?);
     assert!(second_catalog.list_tables(&namespace).await?.contains(&table));
     second_catalog.load_table(&table).await?;
-    catalog.drop_table(&table).await?;
+    let renamed = TableIdent::new(namespace.clone(), "rust_renamed".to_owned());
+    second_catalog.rename_table(&table, &renamed).await?;
     assert!(!second_catalog.table_exists(&table).await?);
+    assert!(catalog.table_exists(&renamed).await?);
+    catalog.load_table(&renamed).await?;
+    catalog.drop_table(&renamed).await?;
+    assert!(!second_catalog.table_exists(&renamed).await?);
     catalog.drop_namespace(&namespace).await?;
     assert!(!second_catalog.namespace_exists(&namespace).await?);
     Ok(())

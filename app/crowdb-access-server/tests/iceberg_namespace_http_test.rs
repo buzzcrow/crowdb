@@ -37,12 +37,14 @@ async fn setup() -> (
                 expected_epoch: 0,
                 display_name: "catalog".into(),
                 confirmation: None,
+                capabilities: None,
             },
             ManagementPrivilege::Manage,
             100,
         )
         .await
         .unwrap();
+    common::activate(&repository).await;
     let context = repository.status().await.unwrap().0.context;
     let auth =
         BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();

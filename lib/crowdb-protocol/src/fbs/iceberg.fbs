@@ -58,6 +58,7 @@ table FBManagementOperation {
     retained_until_ms:ulong;
     publication_proof:[ubyte] (required);
     grace_completed_ms:ulong;
+    capability_bits:ushort;
 }
 
 table FBRetryRecord {

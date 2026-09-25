@@ -192,11 +192,13 @@ async fn initialize(stack: &common::TestIcebergStack) -> CatalogContext {
                 expected_epoch: 0,
                 display_name: "commit-crashes".into(),
                 confirmation: None,
+                capabilities: None,
             },
             ManagementPrivilege::Manage,
             now,
         )
         .await
         .unwrap();
+    common::activate(&repository).await;
     repository.status().await.unwrap().0.context
 }

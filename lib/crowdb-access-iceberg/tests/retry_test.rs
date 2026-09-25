@@ -69,6 +69,7 @@ async fn setup() -> (Arc<TestStore>, CatalogRepository, RetryRecord) {
                 expected_epoch: 0,
                 display_name: "catalog".into(),
                 confirmation: None,
+                capabilities: None,
             },
             ManagementPrivilege::Manage,
             100,
@@ -152,6 +153,7 @@ async fn changed_principal_digest_and_retired_domain_never_replay() {
         expected_epoch: 1,
         display_name: "empty".into(),
         confirmation: Some(request.context.catalog),
+        capabilities: None,
     };
     let _ = repository
         .execute(clear.clone(), ManagementPrivilege::Clear, 103)

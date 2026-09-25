@@ -6,6 +6,47 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
+#[allow(dead_code)]
+pub async fn activate(repository: &crowdb_access_iceberg::catalog::CatalogRepository) {
+    activate_bits(repository, 0x3fff).await;
+}
+
+#[allow(dead_code)]
+pub async fn activate_bits(repository: &crowdb_access_iceberg::catalog::CatalogRepository, bits: u16) {
+    use crowdb_access_iceberg::{
+        catalog::{Capabilities, ManagementPrivilege},
+        key::OperationId,
+        operation::{ManagementAction, ManagementRequest, RequestIdentity},
+    };
+    let (root, authority) = repository.status().await.unwrap();
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    repository
+        .execute(
+            ManagementRequest {
+                identity: RequestIdentity {
+                    operation: OperationId::random(),
+                    issued_ms: now,
+                },
+                principal: "manager".into(),
+                action: ManagementAction::Activate,
+                expected_epoch: root.context.activation_epoch,
+                display_name: authority.display_name,
+                confirmation: None,
+                capabilities: Some(Capabilities::from_bits(bits).unwrap()),
+            },
+            ManagementPrivilege::Manage,
+            now,
+        )
+        .await
+        .unwrap();
+}
+
 #[derive(Default)]
 pub struct TestStore {
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,

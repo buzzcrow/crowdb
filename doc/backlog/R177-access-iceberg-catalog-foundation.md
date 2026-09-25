@@ -396,17 +396,16 @@ Unfinished implementation and unexecuted acceptance remain in the working plans.
 R179–R182 are closed by their acceptance gates, not by these decisions.
 R183–R184 remain open; this does not imply engine/GC conformance.
 
-- **OI-6 — Legacy zero format capability bits (pending):** existing catalog
+- **OI-6 — Legacy zero format capability bits (resolved):** existing catalog
   authorities persist zero even though installed table routes currently accept
   v1/v2/v3 operations. Startup, REST, FileIO and credential refresh reject any
   nonzero bits; config therefore advertises false while table operations work.
   R184 must establish a durable version policy before changing these checks.
-  - Explicit management activation keeps zero literal and existing data intact,
-    but requires a new authenticated, CAS-backed operation and operator rollout.
-  - A documented legacy compatibility mode can preserve current admission, but
-    zero cannot simultaneously mean disabled and enabled in discovery; it needs
-    a distinct persisted marker and carefully fenced migration.
-  - Enabling only newly created catalogs avoids legacy migration, but leaves old
-    catalogs with inconsistent behavior until an explicit upgrade path exists.
-  Decide how old active catalogs become honest without silently expanding durable
-  authority, clearing data, or interrupting previously admitted tables.
+  The operator explicitly activates a validated supported profile with an
+  authenticated, CAS-backed management operation. Zero remains literal and is
+  never silently widened on startup. The operation preserves catalog identity,
+  activation epoch, names, bounds, tables and prior retry records, and advances
+  only configuration generation. A pre-activation config request must not
+  advertise unsupported values as an operational profile; existing table data
+  remains intact while the operator rolls out activation. Clear creates a new
+  zero-profile catalog and therefore requires explicit activation again.

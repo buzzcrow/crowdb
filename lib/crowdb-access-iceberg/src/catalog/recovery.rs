@@ -66,7 +66,7 @@ impl CatalogRepository {
             return Ok(None);
         }
         match operation.request.action {
-            ManagementAction::Initialize | ManagementAction::Rename => {
+            ManagementAction::Initialize | ManagementAction::Rename | ManagementAction::Activate => {
                 self.publish_authority(&operation).await?;
                 self.phase(&operation, ManagementPhase::Published).await?;
             }
@@ -186,7 +186,10 @@ impl CatalogRepository {
 
     async fn publish_authority(&self, operation: &ManagementOperation) -> Result<(), CatalogError> {
         let key = authority_key(operation.candidate);
-        let expected = if operation.request.action == ManagementAction::Rename {
+        let expected = if matches!(
+            operation.request.action,
+            ManagementAction::Rename | ManagementAction::Activate
+        ) {
             Some(operation.original_authority.as_slice())
         } else {
             None

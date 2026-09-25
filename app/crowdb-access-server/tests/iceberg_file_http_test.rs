@@ -77,12 +77,14 @@ async fn setup_with_bounds(
                 expected_epoch: 0,
                 display_name: "file-http".into(),
                 confirmation: None,
+                capabilities: None,
             },
             ManagementPrivilege::Manage,
             now_ms(),
         )
         .await
         .unwrap();
+    common::activate(&repository).await;
     let context = repository.status().await.unwrap().0.context;
     let table = TableLocation {
         catalog: context.catalog,

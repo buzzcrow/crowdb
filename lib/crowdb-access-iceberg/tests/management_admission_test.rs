@@ -22,6 +22,7 @@ fn request(seed: u8, action: ManagementAction, epoch: u64, name: &str) -> Manage
         expected_epoch: epoch,
         display_name: name.into(),
         confirmation: None,
+        capabilities: None,
     }
 }
 

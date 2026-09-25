@@ -48,19 +48,15 @@ R179–R182 are complete. Continue foreground R184; R183 and R186 stay deferred.
 
 Execution detail and difficulty: [R184 REST conformance plan](plan-iceberg-rest-conformance.md).
 R184 route discovery, common admission and bounded metrics are implemented;
-the capability migration policy and full conformance gates remain open.
+explicit capability activation is selected and implemented, while final
+conformance gates remain open.
 
-- [ ] **REST/capability consistency — R184**: reconcile persisted format flags,
-  currently foundation-default config overrides and actually installed routes.
-  Cover supported/unsupported combinations, precise errors, data-access/prefix/
-  snapshot/purge parameters, retired retries and credential lifecycle races.
-  Add bounded protocol metrics without credentials or high-cardinality labels.
-  Files: `catalog/capability.rs`, `wire/config.rs`, server `iceberg/`, tests.
-- [ ] **Release conformance — R184**: run the Apache REST Compatibility Kit,
-  and official Rust client. Engine acceptance is deferred to the separate testing
-  project in Next, not part of the current implementation phase. Include row-level deletes,
-  defaults, lineage, statistics, time travel, expiry and table lifecycle.
-  Produce a pinned executable capability matrix; untested profiles stay pending.
+- [ ] **Release conformance — R184**: official Rust 0.10.0 namespace/table
+  lifecycle passes across two listeners; Apache RCK 1.11.0 isolated namespace
+  and basic-create tests pass. The full kit requires unsupported register/view
+  cleanup and assumes external locations/files outside native selected-file authority.
+  Finish the supported-profile matrix, cross-server response-loss client evidence,
+  and native Java FileIO checks; keep engine acceptance in Next and GC in R183.
   Files: conformance environments, SDK fixtures and capability tests.
 - [ ] **Requirement closure**: compare each requirement's acceptance cases with
   executable evidence; update affected permanent architecture only as needed.
@@ -82,8 +78,8 @@ the capability migration policy and full conformance gates remain open.
 ## Human decisions
 
 Only [R177 Open Questions](../backlog/R177-access-iceberg-catalog-foundation.md#open-questions)
-is authoritative. OI-6 needs a decision on existing zero-bit catalog activation;
-independent REST and conformance work continues.
+is authoritative. OI-6 is resolved as explicit management activation; no human
+decision remains for the currently executable REST work.
 
 OI-1 is resolved: functionality and performance are separate acceptance tracks.
 OI-2 is deferred by agreement to the user's later testing project, listed in Next.

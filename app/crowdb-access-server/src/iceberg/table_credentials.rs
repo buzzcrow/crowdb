@@ -1,13 +1,15 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, CatalogLifecycle, CatalogRepository, CatalogStore, RootState},
+    catalog::{CatalogContext, CatalogLifecycle, CatalogRepository, CatalogStore, FormatAction, RootState},
     commit::{TableCreateJournal, TableCreatePhase},
     file::FileGrantIssuer,
     key::{OperationId, TableId},
     namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
     table::TableRepository,
-    wire::{FileDelegationLimits, IcebergErrorResponse, LoadCredentialsResponse, Principal},
+    wire::{
+        FileDelegationLimits, FileDelegationTarget, IcebergErrorResponse, LoadCredentialsResponse, Principal,
+    },
 };
 use hyper::{Request, Response};
 
@@ -15,7 +17,7 @@ use super::{
     body::IcebergBody,
     http::{bad_request, decode_query, response, service_unavailable},
     namespace_write::now_ms,
-    table_read::missing_table,
+    table_read::{missing_table, unsupported},
 };
 
 pub(super) struct TableCredentials {
@@ -135,14 +137,14 @@ impl TableCredentials {
             .await
             .map_err(|_| service_unavailable())?;
         let mut ttl_ms = 900_000;
-        let table = if let Some(selected) =
+        let (table, version, staged) = if let Some(selected) =
             selected.filter(|selected| selector.map_or(true, |table| table == selected.head.table))
         {
             self.tables
                 .ensure_current(context, &selected)
                 .await
                 .map_err(|_| service_unavailable())?;
-            selected.head.table
+            (selected.head.table, selected.head.format_version, false)
         } else {
             let table = selector.ok_or_else(missing_table)?;
             let identity = OperationId::from_bytes(table.as_bytes()).map_err(|_| bad_request())?;
@@ -179,22 +181,51 @@ impl TableCredentials {
             {
                 return Err(service_unavailable());
             }
-            table
+            (table, operation.candidate.format_version, true)
         };
+        self.issue_response(
+            repository,
+            context,
+            principal,
+            FileDelegationTarget {
+                table,
+                format_version: version,
+                staged,
+            },
+            ttl_ms,
+            now,
+        )
+        .await
+    }
+
+    async fn issue_response(
+        &self,
+        repository: &CatalogRepository,
+        context: CatalogContext,
+        principal: Principal,
+        target: FileDelegationTarget,
+        ttl_ms: u64,
+        now: u64,
+    ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         let (root, authority) = repository.status().await.map_err(|_| service_unavailable())?;
         if root.context != context
             || root.state != RootState::Ready
             || authority.lifecycle != CatalogLifecycle::Ready
-            || authority.capabilities.bits() != 0
         {
             return Err(service_unavailable());
+        }
+        if !authority
+            .capabilities
+            .supports(target.format_version, FormatAction::Read)
+        {
+            return Err(unsupported());
         }
         let credentials = FileDelegationLimits {
             ttl_ms,
             max_request_bytes: 1024 * 1024 * 1024,
             max_file_bytes: 1024 * 1024 * 1024 * 1024,
         }
-        .issue(&self.issuer, principal, context, &authority, table, now)
+        .issue(&self.issuer, principal, context, &authority, target, now)
         .map_err(|_| service_unavailable())?;
         Ok(response(
             200,

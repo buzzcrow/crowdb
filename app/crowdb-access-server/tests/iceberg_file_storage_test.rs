@@ -49,12 +49,14 @@ async fn seed_root(stack: &TestIcebergStack) -> CatalogContext {
                 expected_epoch: 0,
                 display_name: "native-files".into(),
                 confirmation: None,
+                capabilities: None,
             },
             ManagementPrivilege::Manage,
             100,
         )
         .await
         .unwrap();
+    common::activate(&repository).await;
     repository.status().await.unwrap().0.context
 }
 

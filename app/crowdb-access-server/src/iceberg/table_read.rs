@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, CatalogError},
+    catalog::{Capabilities, CatalogContext, CatalogError, FormatAction},
     error::ValidationError,
     key::NameSuffix,
     namespace::NamespaceIdentifier,
@@ -55,6 +55,7 @@ impl TableHttp {
     pub(super) async fn read(
         &self,
         context: CatalogContext,
+        capabilities: Capabilities,
         request: &Request<hyper::body::Incoming>,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         if request.method() != Method::GET && request.method() != Method::HEAD {
@@ -88,18 +89,26 @@ impl TableHttp {
                 if !parameters.is_empty() {
                     return Err(bad_request());
                 }
-                if !self
+                let head = self
                     .loader
-                    .exists(context, &namespace, &name)
+                    .head(context, &namespace, &name)
                     .await
                     .map_err(|_| service_unavailable())?
-                {
-                    return Err(missing_table());
+                    .ok_or_else(missing_table)?;
+                if !capabilities.supports(head.format_version, FormatAction::Read) {
+                    return Err(unsupported());
                 }
                 response(204, Vec::new())
             } else {
-                self.load(context, &namespace, &name, &mut parameters, request.headers())
-                    .await?
+                self.load(
+                    context,
+                    capabilities,
+                    &namespace,
+                    &name,
+                    &mut parameters,
+                    request.headers(),
+                )
+                .await?
             }
         } else {
             if request.method() != Method::GET {
@@ -115,6 +124,7 @@ impl TableHttp {
     async fn load(
         &self,
         context: CatalogContext,
+        capabilities: Capabilities,
         namespace: &NamespaceIdentifier,
         name: &str,
         parameters: &mut BTreeMap<String, String>,
@@ -131,23 +141,19 @@ impl TableHttp {
         let condition = condition(headers)?;
         let loaded = self
             .loader
-            .load(
-                context,
-                namespace,
-                name,
-                mode,
-                if self.file_config.is_some() {
-                    None
-                } else {
-                    condition.as_deref()
-                },
-            )
+            .load_with_capabilities(context, namespace, name, mode, capabilities)
             .await
-            .map_err(|_| service_unavailable())?;
+            .map_err(|error| match error {
+                crowdb_access_iceberg::table::TableLoadError::UnsupportedVersion => unsupported(),
+                _ => service_unavailable(),
+            })?;
         let (mut result, etag) = match loaded {
             TableLoad::Missing => return Err(missing_table()),
             TableLoad::NotModified { etag } => (response(304, Vec::new()), etag),
             TableLoad::Loaded { head, etag, metadata } => {
+                if !capabilities.supports(head.format_version, FormatAction::Read) {
+                    return Err(unsupported());
+                }
                 super::metrics::record_selected_version(head.format_version);
                 let location = serde_json::to_vec(&head.metadata_location.to_string())
                     .map_err(|_| service_unavailable())?;

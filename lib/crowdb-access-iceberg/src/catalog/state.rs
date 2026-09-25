@@ -103,6 +103,28 @@ impl CatalogAuthority {
             admission_bounds: self.admission_bounds,
         })
     }
+
+    /// # Errors
+    /// Rejects capability removal, retired authorities and generation exhaustion.
+    pub fn activated(&self, capabilities: Capabilities) -> Result<Self, ValidationError> {
+        self.validate()?;
+        capabilities.validate()?;
+        if self.lifecycle != CatalogLifecycle::Ready
+            || capabilities.bits() == 0
+            || self.capabilities.bits() & !capabilities.bits() != 0
+            || self.capabilities == capabilities
+        {
+            return Err(ValidationError::Capabilities);
+        }
+        Ok(Self {
+            capabilities,
+            config_generation: self
+                .config_generation
+                .checked_add(1)
+                .ok_or(ValidationError::GenerationExhausted)?,
+            ..self.clone()
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

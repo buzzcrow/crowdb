@@ -9,6 +9,7 @@ mod common;
 #[allow(dead_code)]
 mod fixture;
 
+use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds};
 use fixture::TestTableHttp;
 use reqwest::Method;
 use serde_json::{json, Value};
@@ -40,6 +41,41 @@ async fn value(response: reqwest::Response, status: u16) -> Value {
     let text = response.text().await.unwrap();
     assert_eq!(actual.as_u16(), status, "{text}");
     serde_json::from_str(&text).unwrap()
+}
+
+#[tokio::test]
+async fn create_and_upgrade_follow_the_selected_persisted_version_profile() {
+    let fixture = TestTableHttp::writable_with_capabilities(0x003f).await;
+    let refused = value(fixture.post(TABLES, "w", None, &create(false)).await, 406).await;
+    assert_eq!(refused["error"]["type"], "UnsupportedOperationException");
+    let mut v1 = create(false);
+    v1["properties"] = json!({"format-version":"1"});
+    let created = value(fixture.post(TABLES, "w", None, &v1).await, 200).await;
+    assert_eq!(created["metadata"]["format-version"], 1);
+    let upgrade =
+        json!({"requirements":[],"updates":[{"action":"upgrade-format-version","format-version":2}]});
+    value(fixture.post(TABLE, "w", None, &upgrade).await, 406).await;
+    let repository = CatalogRepository::new(fixture.store.clone(), ClearBounds::default()).unwrap();
+    common::activate_bits(&repository, 0x1fff).await;
+    let upgraded = value(fixture.post(TABLE, "w", None, &upgrade).await, 200).await;
+    assert_eq!(upgraded["metadata"]["format-version"], 2);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn direct_v1_to_v3_upgrade_requires_both_persisted_edges() {
+    let fixture = TestTableHttp::writable_with_capabilities(0x1fff).await;
+    let mut v1 = create(false);
+    v1["properties"] = json!({"format-version":"1"});
+    value(fixture.post(TABLES, "w", None, &v1).await, 200).await;
+    let upgrade =
+        json!({"requirements":[],"updates":[{"action":"upgrade-format-version","format-version":3}]});
+    value(fixture.post(TABLE, "w", None, &upgrade).await, 406).await;
+    let repository = CatalogRepository::new(fixture.store.clone(), ClearBounds::default()).unwrap();
+    common::activate_bits(&repository, 0x3fff).await;
+    let updated = value(fixture.post(TABLE, "w", None, &upgrade).await, 200).await;
+    assert_eq!(updated["metadata"]["format-version"], 3);
+    fixture.finish().await;
 }
 
 #[tokio::test]

@@ -33,6 +33,36 @@ pub fn now_ms() -> u64 {
         .unwrap()
 }
 
+#[allow(dead_code)]
+pub async fn activate(repository: &crowdb_access_iceberg::catalog::CatalogRepository) {
+    use crowdb_access_iceberg::{
+        catalog::{Capabilities, ManagementPrivilege},
+        key::OperationId,
+        operation::{ManagementAction, ManagementRequest, RequestIdentity},
+    };
+    let (root, authority) = repository.status().await.unwrap();
+    let now = now_ms();
+    repository
+        .execute(
+            ManagementRequest {
+                identity: RequestIdentity {
+                    operation: OperationId::random(),
+                    issued_ms: now,
+                },
+                principal: "manager".into(),
+                action: ManagementAction::Activate,
+                expected_epoch: root.context.activation_epoch,
+                display_name: authority.display_name,
+                confirmation: None,
+                capabilities: Some(Capabilities::from_bits(0x3fff).unwrap()),
+            },
+            ManagementPrivilege::Manage,
+            now,
+        )
+        .await
+        .unwrap();
+}
+
 impl TestIcebergStack {
     pub async fn start() -> Self {
         let mut cluster = KvCluster::start().await;

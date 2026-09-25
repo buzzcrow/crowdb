@@ -48,6 +48,7 @@ fn request(
         confirmation: previous
             .filter(|_| action == ManagementAction::Clear)
             .map(|(_, authority)| authority.catalog),
+        capabilities: None,
     }
 }
 
@@ -162,6 +163,7 @@ async fn namespace_functional_crud_survives_native_storage_and_listener_restart(
         request(ManagementAction::Initialize, "functional", None),
     )
     .await;
+    common::activate(&repository).await;
     let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     frontend.check_official_client();

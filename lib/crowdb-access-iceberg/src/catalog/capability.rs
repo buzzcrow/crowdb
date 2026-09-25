@@ -41,6 +41,36 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
+    #[must_use]
+    pub fn supports(&self, version: u8, action: FormatAction) -> bool {
+        usize::from(version)
+            .checked_sub(1)
+            .and_then(|index| self.versions.get(index))
+            .is_some_and(|support| support.supports(action))
+    }
+
+    #[must_use]
+    pub fn supports_upgrade(&self, source: u8, target: u8) -> bool {
+        if !(1..=3).contains(&source) || !(source..=3).contains(&target) {
+            return false;
+        }
+        (source == target
+            || (source..target).all(|version| match version {
+                1 => self.upgrade_v1_v2,
+                2 => self.upgrade_v2_v3,
+                _ => false,
+            }))
+            && self.supports(
+                source,
+                if source == target {
+                    FormatAction::Write
+                } else {
+                    FormatAction::Read
+                },
+            )
+            && self.supports(target, FormatAction::Write)
+    }
+
     /// # Errors
     /// Rejects contradictory capabilities and unavailable upgrade targets.
     pub fn validate(&self) -> Result<(), ValidationError> {

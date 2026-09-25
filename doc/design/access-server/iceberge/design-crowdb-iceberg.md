@@ -69,7 +69,7 @@ rename updates its authority without moving descendant keys. System-scoped
 management receipts, audit and retry bindings survive catalog replacement;
 resource records and retained REST response bodies are catalog-scoped.
 
-Initialize, rename and clear use bounded single-key CAS state machines, not a
+Initialize, rename, capability activation and clear use bounded single-key CAS state machines, not a
 global lock or a multi-key transaction. A root retains the operation identity
 until its durable outcome and audit can be recovered by any instance. Clear
 fences admission, records a maintenance observation after the durable fence,
@@ -77,6 +77,14 @@ publishes an empty replacement under maintenance, and persists the grace proof
 before reopening admission. Completion uses persisted lease, request, delegated
 access and clock-skew limits, never shorter restart configuration. Retired
 authorities remain unreachable; physical deletion is not implemented.
+
+Format capability bits are durable catalog authority. Zero means no advertised
+table format service; startup never rewrites or widens a legacy zero profile.
+An authenticated management operation explicitly activates a validated profile
+under the root fence. It preserves the catalog ID, activation epoch, table keys,
+name generation and admission bounds, advances config generation, and may only
+add support. A resumed operation replays its original profile and audit result.
+Clear creates a new zero-profile catalog that requires separate activation.
 
 The baseline has no root lease. Each HTTP connection
 has an absolute lifetime starting at acceptance and covering header parsing,
@@ -204,7 +212,15 @@ diagnostic is not an Iceberg REST endpoint and is absent from `/v1/config`.
 The catalog listener exposes authenticated config and namespace REST. An absent or
 empty warehouse selects the sole active catalog; other selectors fail with
 `NoSuchWarehouseException`. Its endpoint list advertises installed namespace and
-table read/create/commit/credential routes, not unimplemented lifecycle operations.
+table read/create/commit/lifecycle/credential routes only when the persisted
+format profile permits them. A zero-profile catalog returns unavailable config
+rather than publishing a misleading set of false overrides; table routes reject
+until management activation. Selected table versions gate load, HEAD, credential
+refresh, create and commit. Version upgrades require each intermediate edge,
+including direct v1-to-v3 requests. FileIO bytes alone do not identify a table
+file's semantic kind or grant format-version authority. File grants intersect
+the principal role with the selected version: published tables require write
+support for upload permission, while staged drafts require create support.
 Runtime table routes require a persisted delegation bound of at least fifteen
 minutes. Legacy catalogs below that bound retain foundation-only service; activation
 requires an explicit clear with expanded bounds and a listener restart after the

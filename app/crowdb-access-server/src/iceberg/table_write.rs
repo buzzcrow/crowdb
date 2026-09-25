@@ -1,7 +1,7 @@
 use std::sync::{atomic::AtomicUsize, Arc};
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, CatalogStore},
+    catalog::{Capabilities, CatalogContext, CatalogStore},
     commit::{CommitProofLimits, StagedCommitLimits, TableCreator},
     file::FileBlockStore,
     namespace::{NamespaceRepository, NamespaceStore},
@@ -67,6 +67,7 @@ impl TableWrites {
     pub(super) async fn execute(
         &self,
         context: CatalogContext,
+        capabilities: Capabilities,
         principal: Principal,
         request: Request<Incoming>,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
@@ -116,22 +117,24 @@ impl TableWrites {
             body: Vec::new(),
         };
         let admission = self.admit(&mut record, key, now).await?;
-        let record = match admission {
+        let (record, resuming) = match admission {
             RetryAdmission::Replay(record) => {
                 super::metrics::record_retry(3);
                 return Ok(response(record.status, record.body));
             }
             RetryAdmission::New(record) => {
                 super::metrics::record_retry(1);
-                record
+                (record, false)
             }
             RetryAdmission::Resume(record) => {
                 super::metrics::record_retry(2);
-                record
+                (record, true)
             }
         };
         if method == Method::DELETE || uri.path() == "/v1/tables/rename" {
-            let result = self.mutate_lifecycle(&record, &method, &uri, &bytes).await;
+            let result = self
+                .mutate_lifecycle(&record, capabilities, resuming, &method, &uri, &bytes)
+                .await;
             let (status, body) = self.outcome_response(result, None, context).await?;
             self.ledger
                 .finish(record, status, body.clone(), now_ms()?)
@@ -152,7 +155,7 @@ impl TableWrites {
             Some((target.namespace.clone(), name))
         });
         let result = match target {
-            Ok(target) => self.mutate(&record, target, bytes, now).await,
+            Ok(target) => self.mutate(&record, capabilities, target, bytes, now).await,
             Err(error) => Err(error),
         };
         let (status, body) = self

@@ -24,6 +24,7 @@ async fn maintenance_observation_includes_time_spent_awaiting_fence_cas() {
         expected_epoch: 0,
         display_name: "catalog".into(),
         confirmation: None,
+        capabilities: None,
     };
     let authority = repository
         .execute(request.clone(), ManagementPrivilege::Manage, 100)

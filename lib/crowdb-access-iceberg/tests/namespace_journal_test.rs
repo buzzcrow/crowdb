@@ -28,6 +28,7 @@ async fn setup(action: NamespaceAction) -> (Arc<TestStore>, NamespaceOperation) 
                 expected_epoch: 0,
                 display_name: "catalog".into(),
                 confirmation: None,
+                capabilities: None,
             },
             ManagementPrivilege::Manage,
             100,
@@ -343,6 +344,7 @@ async fn retired_catalog_cannot_resume_namespace_phases() {
         expected_epoch: operation.context.activation_epoch,
         display_name: "replacement".into(),
         confirmation: Some(operation.context.catalog),
+        capabilities: None,
     };
     let _ = catalog
         .execute(clear.clone(), ManagementPrivilege::Clear, 101)

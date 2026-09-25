@@ -1,7 +1,9 @@
-use crowdb_access_iceberg::catalog::{CatalogAuthority, CatalogContext, CatalogLifecycle};
+use crowdb_access_iceberg::catalog::{Capabilities, CatalogAuthority, CatalogContext, CatalogLifecycle};
 use crowdb_access_iceberg::file::{FileGrantError, FileGrantIssuer, FileOperation, TableLocation};
 use crowdb_access_iceberg::key::{CatalogId, TableId};
-use crowdb_access_iceberg::wire::{BearerAuthenticator, FileDelegationLimits, LoadCredentialsResponse};
+use crowdb_access_iceberg::wire::{
+    BearerAuthenticator, FileDelegationLimits, FileDelegationTarget, LoadCredentialsResponse,
+};
 
 fn limits() -> FileDelegationLimits {
     FileDelegationLimits {
@@ -25,7 +27,16 @@ fn authenticator() -> BearerAuthenticator {
 fn authority(context: CatalogContext) -> CatalogAuthority {
     let mut authority = CatalogAuthority::new(context.catalog, "catalog".into()).unwrap();
     authority.admission_bounds.delegated_access_ms = 900_000;
+    authority.capabilities = Capabilities::from_bits(0x3fff).unwrap();
     authority
+}
+
+fn target(table: TableId) -> FileDelegationTarget {
+    FileDelegationTarget {
+        table,
+        format_version: 2,
+        staged: false,
+    }
 }
 
 #[test]
@@ -44,7 +55,14 @@ fn only_independent_writer_receives_file_mutations() {
     for role in ["r", "w", "m", "c"] {
         let principal = auth.authenticate(&format!("Bearer {}", role.repeat(32))).unwrap();
         let credentials = limits()
-            .issue(&issuer, principal, context, &authority(context), table, 1000)
+            .issue(
+                &issuer,
+                principal,
+                context,
+                &authority(context),
+                target(table),
+                1000,
+            )
             .unwrap();
         let grant = credentials.grant();
         fingerprints.push(grant.principal);
@@ -93,6 +111,53 @@ fn only_independent_writer_receives_file_mutations() {
 }
 
 #[test]
+fn delegated_file_operations_follow_selected_version_and_draft_stage() {
+    let context = context();
+    let mut authority = authority(context);
+    authority.capabilities = Capabilities::from_bits(0x0070).unwrap();
+    let principal = authenticator()
+        .authenticate(&format!("Bearer {}", "w".repeat(32)))
+        .unwrap();
+    let issuer = FileGrantIssuer::new([1; 32], 900_000).unwrap();
+    let table = TableId::random();
+    let published = limits()
+        .issue(&issuer, principal, context, &authority, target(table), 1000)
+        .unwrap();
+    assert!(published.grant().operations.allows(FileOperation::Get));
+    assert!(!published.grant().operations.allows(FileOperation::Put));
+    let staged = limits()
+        .issue(
+            &issuer,
+            principal,
+            context,
+            &authority,
+            FileDelegationTarget {
+                table,
+                format_version: 2,
+                staged: true,
+            },
+            1000,
+        )
+        .unwrap();
+    assert!(staged.grant().operations.allows(FileOperation::Put));
+    assert!(matches!(
+        limits().issue(
+            &issuer,
+            principal,
+            context,
+            &authority,
+            FileDelegationTarget {
+                table,
+                format_version: 3,
+                staged: false,
+            },
+            1000,
+        ),
+        Err(FileGrantError::Forbidden)
+    ));
+}
+
+#[test]
 fn refresh_rotates_credentials_and_serializes_official_sdk_properties() {
     let principal = authenticator()
         .authenticate(&format!("Bearer {}", "w".repeat(32)))
@@ -101,10 +166,24 @@ fn refresh_rotates_credentials_and_serializes_official_sdk_properties() {
     let context = context();
     let table = TableId::random();
     let initial = limits()
-        .issue(&issuer, principal, context, &authority(context), table, 1000)
+        .issue(
+            &issuer,
+            principal,
+            context,
+            &authority(context),
+            target(table),
+            1000,
+        )
         .unwrap();
     let refreshed = limits()
-        .issue(&issuer, principal, context, &authority(context), table, 1000)
+        .issue(
+            &issuer,
+            principal,
+            context,
+            &authority(context),
+            target(table),
+            1000,
+        )
         .unwrap();
     assert_ne!(initial.access_key_id(), refreshed.access_key_id());
     assert_ne!(initial.session_token(), refreshed.session_token());
@@ -157,7 +236,14 @@ fn delegation_rejects_invalid_limits_and_unrepresentable_sdk_expiry() {
             _ => now_ms = i64::MAX as u64,
         }
         assert!(matches!(
-            limits.issue(&issuer, principal, context, &authority, TableId::random(), now_ms),
+            limits.issue(
+                &issuer,
+                principal,
+                context,
+                &authority,
+                target(TableId::random()),
+                now_ms
+            ),
             Err(FileGrantError::Invalid)
         ));
     }
@@ -174,7 +260,7 @@ fn persisted_delegation_bound_is_independent_of_issuer_configuration() {
     for bound in [0, 1, 899_999, 900_000, 900_001] {
         let mut authority = authority(context);
         authority.admission_bounds.delegated_access_ms = bound;
-        let result = limits().issue(&issuer, principal, context, &authority, table, 1000);
+        let result = limits().issue(&issuer, principal, context, &authority, target(table), 1000);
         if bound < 900_000 {
             assert!(matches!(result, Err(FileGrantError::Bounds)));
         } else {
@@ -184,19 +270,19 @@ fn persisted_delegation_bound_is_independent_of_issuer_configuration() {
     let mut retired = authority(context);
     retired.lifecycle = CatalogLifecycle::Retired;
     assert!(matches!(
-        limits().issue(&issuer, principal, context, &retired, table, 1000),
+        limits().issue(&issuer, principal, context, &retired, target(table), 1000),
         Err(FileGrantError::Forbidden)
     ));
     let mut foreign = authority(context);
     foreign.catalog = CatalogId::random();
     assert!(matches!(
-        limits().issue(&issuer, principal, context, &foreign, table, 1000),
+        limits().issue(&issuer, principal, context, &foreign, target(table), 1000),
         Err(FileGrantError::Forbidden)
     ));
     let mut invalid = authority(context);
     invalid.admission_bounds.request_ms = 0;
     assert!(matches!(
-        limits().issue(&issuer, principal, context, &invalid, table, 1000),
+        limits().issue(&issuer, principal, context, &invalid, target(table), 1000),
         Err(FileGrantError::Invalid)
     ));
 }

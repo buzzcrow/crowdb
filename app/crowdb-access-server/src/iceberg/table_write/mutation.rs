@@ -4,7 +4,7 @@ use super::super::{
 };
 use super::{request::Target, TableWrites};
 use crowdb_access_iceberg::{
-    catalog::CatalogError,
+    catalog::{Capabilities, CatalogError, FormatAction},
     commit::{
         recover_table_commit, CommitPublicationError, CommitRequest, CreateTableRequest, StagedCommitRequest,
         TableCommitJournal, TableCommitOperation, TableCommitOutcome, TableCommitPhase, TableCreationRequest,
@@ -14,10 +14,16 @@ use crowdb_access_iceberg::{
     wire::IcebergErrorResponse,
 };
 
+struct CommitInput<'input> {
+    parsed: &'input CommitRequest,
+    body: &'input [u8],
+}
+
 impl TableWrites {
     pub(super) async fn mutate(
         &self,
         record: &RetryRecord,
+        capabilities: Capabilities,
         target: Target,
         body: Vec<u8>,
         now: u64,
@@ -26,6 +32,14 @@ impl TableWrites {
         let Some(name) = target.name else {
             let parsed = CreateTableRequest::decode(&body, self.limits.preparation.request.json)
                 .map_err(|_| bad_request())?;
+            if !capabilities.supports(
+                parsed
+                    .format_version(self.limits.preparation.request.json)
+                    .map_err(|_| bad_request())?,
+                FormatAction::Create,
+            ) {
+                return Err(super::super::table_read::unsupported());
+            }
             let staged = parsed.stage_create();
             let request = TableCreationRequest {
                 context: record.context,
@@ -55,6 +69,9 @@ impl TableWrites {
             .iter()
             .any(|requirement| matches!(requirement, TableRequirement::AssertCreate))
         {
+            if !capabilities.supports(parsed.create_version(), FormatAction::Create) {
+                return Err(super::super::table_read::unsupported());
+            }
             return self
                 .creator
                 .commit_staged(&StagedCommitRequest {
@@ -69,16 +86,27 @@ impl TableWrites {
                 .await
                 .map_err(creation_error);
         }
-        self.update(record, &target.namespace, &name, &body, timestamp_ms)
-            .await
+        self.update(
+            record,
+            capabilities,
+            &target.namespace,
+            &name,
+            CommitInput {
+                parsed: &parsed,
+                body: &body,
+            },
+            timestamp_ms,
+        )
+        .await
     }
 
     async fn update(
         &self,
         record: &RetryRecord,
+        capabilities: Capabilities,
         namespace: &crowdb_access_iceberg::namespace::NamespaceIdentifier,
         name: &str,
-        body: &[u8],
+        input: CommitInput<'_>,
         timestamp_ms: i64,
     ) -> Result<TableCommitOutcome, IcebergErrorResponse> {
         let journal = TableCommitJournal::new(self.store.clone());
@@ -104,9 +132,20 @@ impl TableWrites {
             if selected.head.pending_operation.is_some() {
                 return Err(service_unavailable());
             }
+            let mut version = selected.head.format_version;
+            let mut upgrades = input.parsed.upgrade_targets().peekable();
+            if upgrades.peek().is_none() && !capabilities.supports(version, FormatAction::Write) {
+                return Err(super::super::table_read::unsupported());
+            }
+            for target in upgrades {
+                if !capabilities.supports_upgrade(version, target) {
+                    return Err(super::super::table_read::unsupported());
+                }
+                version = target;
+            }
             let input = self
                 .payloads
-                .put(record.context.catalog, record.identity.operation, body)
+                .put(record.context.catalog, record.identity.operation, input.body)
                 .await
                 .map_err(|error| storage_error(&error))?;
             let initial = TableCommitOperation {
@@ -139,7 +178,7 @@ impl TableWrites {
                 .get(&operation.input)
                 .await
                 .map_err(|error| storage_error(&error))?
-                != body
+                != input.body
         {
             return Err(IcebergErrorResponse::new(
                 409,

@@ -9,11 +9,27 @@ mod common;
 #[allow(dead_code)]
 mod fixture;
 
+use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds};
 use fixture::TestTableHttp;
 use reqwest::Method;
 use serde_json::Value;
 
 const PATH: &str = "/v1/namespaces/analytics/tables/events";
+
+#[tokio::test]
+async fn selected_version_requires_read_even_for_head_and_conditional_load() {
+    let fixture = TestTableHttp::with_capabilities(0x0033).await;
+    fixture.install("events").await;
+    for method in [Method::HEAD, Method::GET] {
+        let response = fixture.request(method, PATH, "r", Some("*")).await;
+        assert_eq!(response.status(), 406);
+    }
+    let repository = CatalogRepository::new(fixture.store.clone(), ClearBounds::default()).unwrap();
+    common::activate_bits(&repository, 0x3fff).await;
+    assert_eq!(fixture.request(Method::HEAD, PATH, "r", None).await.status(), 204);
+    assert_eq!(fixture.request(Method::GET, PATH, "r", None).await.status(), 200);
+    fixture.finish().await;
+}
 
 #[tokio::test]
 async fn optional_access_delegation_list_does_not_change_table_identity() {

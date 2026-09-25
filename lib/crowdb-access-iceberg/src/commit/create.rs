@@ -69,6 +69,12 @@ impl CreateTableRequest {
     pub fn stage_create(&self) -> bool {
         self.fields["stage-create"].as_bool().unwrap_or(false)
     }
+
+    /// # Errors
+    /// Rejects invalid version properties before capability admission.
+    pub fn format_version(&self, limits: TableMetadataLimits) -> Result<u8, Error> {
+        Ok(properties::prepare(&self.fields, limits)?.0)
+    }
 }
 
 /// Pure initial metadata, not a namespace admission or publication proof.

@@ -3,7 +3,7 @@ mod common;
 
 use common::TestStore;
 use crowdb_access_iceberg::catalog::{
-    CatalogError, CatalogRepository, ClearBounds, ManagementPrivilege, RootState,
+    Capabilities, CatalogError, CatalogRepository, ClearBounds, ManagementPrivilege, RootState,
 };
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
@@ -39,7 +39,92 @@ fn request(action: ManagementAction, epoch: u64, name: &str) -> ManagementReques
         expected_epoch: epoch,
         display_name: name.into(),
         confirmation: None,
+        capabilities: None,
     }
+}
+
+#[tokio::test]
+async fn explicit_activation_preserves_catalog_and_replays_across_restarts() {
+    let store = Arc::new(TestStore::default());
+    let catalog = repository(&store);
+    let initialized = catalog
+        .execute(
+            request(ManagementAction::Initialize, 0, "catalog"),
+            ManagementPrivilege::Manage,
+            100,
+        )
+        .await
+        .unwrap();
+    let mut activate = request(ManagementAction::Activate, 1, "catalog");
+    activate.capabilities = Some(Capabilities::from_bits(0x0033).unwrap());
+    assert!(matches!(
+        catalog
+            .execute(activate.clone(), ManagementPrivilege::None, 101)
+            .await,
+        Err(CatalogError::Forbidden)
+    ));
+    let first = catalog
+        .execute(activate.clone(), ManagementPrivilege::Manage, 101)
+        .await
+        .unwrap();
+    assert_eq!(first.catalog, initialized.catalog);
+    assert_eq!(first.name_generation, initialized.name_generation);
+    assert_eq!(first.config_generation, initialized.config_generation + 1);
+    assert_eq!(first.admission_bounds, initialized.admission_bounds);
+    assert_eq!(first.capabilities.bits(), 0x0033);
+    assert_eq!(catalog.status().await.unwrap().0.context.activation_epoch, 1);
+    assert_eq!(
+        repository(&store)
+            .execute(activate.clone(), ManagementPrivilege::Manage, 102)
+            .await
+            .unwrap(),
+        first
+    );
+
+    let mut expansion = request(ManagementAction::Activate, 1, "catalog");
+    expansion.identity.operation = OperationId::random();
+    expansion.capabilities = Some(Capabilities::from_bits(0x3fff).unwrap());
+    let expanded = repository(&store)
+        .execute(expansion, ManagementPrivilege::Manage, 103)
+        .await
+        .unwrap();
+    assert_eq!(expanded.config_generation, first.config_generation + 1);
+    assert_eq!(expanded.capabilities.bits(), 0x3fff);
+    assert_eq!(
+        repository(&store)
+            .execute(activate, ManagementPrivilege::Manage, 104)
+            .await
+            .unwrap(),
+        first
+    );
+
+    let mut downgrade = request(ManagementAction::Activate, 1, "catalog");
+    downgrade.identity.operation = OperationId::random();
+    downgrade.capabilities = Some(Capabilities::from_bits(0x0033).unwrap());
+    assert!(matches!(
+        repository(&store)
+            .execute(downgrade, ManagementPrivilege::Manage, 105)
+            .await,
+        Err(CatalogError::Conflict)
+    ));
+    let mut clear = request(ManagementAction::Clear, 1, "replacement");
+    clear.confirmation = Some(expanded.catalog);
+    assert!(matches!(
+        repository(&store)
+            .execute(clear.clone(), ManagementPrivilege::Clear, 106)
+            .await,
+        Err(CatalogError::Busy)
+    ));
+    let RootState::Published(transition) = repository(&store).status().await.unwrap().0.state else {
+        panic!("expected published maintenance");
+    };
+    let replacement = repository(&store)
+        .execute(clear, ManagementPrivilege::Clear, transition.complete_after_ms)
+        .await
+        .unwrap();
+    assert_ne!(replacement.catalog, expanded.catalog);
+    assert_eq!(replacement.capabilities.bits(), 0);
+    assert_eq!(replacement.config_generation, 1);
 }
 
 #[tokio::test]
@@ -122,6 +207,54 @@ async fn every_lost_initialize_response_recovers_on_another_server() {
         assert_eq!(
             repository(&store)
                 .execute(initialize, ManagementPrivilege::Manage, 102)
+                .await
+                .unwrap(),
+            recovered
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_lost_activation_response_recovers_one_profile_without_replacing_tables() {
+    for failure in 1..=8 {
+        let store = Arc::new(TestStore::default());
+        let original = repository(&store)
+            .execute(
+                request(ManagementAction::Initialize, 0, "catalog"),
+                ManagementPrivilege::Manage,
+                100,
+            )
+            .await
+            .unwrap();
+        let baseline_writes = store.writes.load(Ordering::SeqCst);
+        store
+            .fail_after
+            .store(baseline_writes + failure, Ordering::SeqCst);
+        let mut activation = request(ManagementAction::Activate, 1, "catalog");
+        activation.capabilities = Some(Capabilities::from_bits(0x3fff).unwrap());
+        let _ = repository(&store)
+            .execute(activation.clone(), ManagementPrivilege::Manage, 101)
+            .await;
+        let recovered = repository(&store)
+            .execute(activation.clone(), ManagementPrivilege::Manage, 102)
+            .await
+            .unwrap();
+        assert_eq!(recovered.catalog, original.catalog);
+        assert_eq!(recovered.config_generation, original.config_generation + 1);
+        assert_eq!(recovered.capabilities.bits(), 0x3fff);
+        assert_eq!(
+            repository(&store)
+                .status()
+                .await
+                .unwrap()
+                .0
+                .context
+                .activation_epoch,
+            1
+        );
+        assert_eq!(
+            repository(&store)
+                .execute(activation, ManagementPrivilege::Manage, 103)
                 .await
                 .unwrap(),
             recovered

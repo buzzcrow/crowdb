@@ -229,12 +229,17 @@ impl IcebergHttpService {
             || authority.lifecycle != CatalogLifecycle::Ready
             || self.request_timeout.is_zero()
             || self.request_timeout > Duration::from_millis(authority.admission_bounds.request_ms)
-            || authority.capabilities.bits() != 0
         {
             return Err(service_unavailable());
         }
         if route == Route::Config {
+            if authority.capabilities.bits() == 0 {
+                return Err(service_unavailable());
+            }
             return self.config(request.uri().query(), authority.capabilities);
+        }
+        if !route.supported(authority.capabilities) {
+            return Err(super::table_read::unsupported());
         }
         match route {
             Route::TableCredentials => {
@@ -249,13 +254,13 @@ impl IcebergHttpService {
                     .table_writes
                     .as_ref()
                     .ok_or_else(super::table_read::unsupported)?;
-                Box::pin(writes.execute(root.context, principal, request)).await
+                Box::pin(writes.execute(root.context, authority.capabilities, principal, request)).await
             }
             Route::TableList | Route::TableLoad | Route::TableExists => {
                 self.tables
                     .as_ref()
                     .ok_or_else(super::table_read::unsupported)?
-                    .read(root.context, &request)
+                    .read(root.context, authority.capabilities, &request)
                     .await
             }
             _ => {
@@ -292,7 +297,7 @@ impl IcebergHttpService {
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         let warehouse = warehouse(query)?;
         let mut config = CatalogConfig::for_capabilities(warehouse.as_deref(), capabilities)?;
-        config.endpoints = Route::endpoints(&self.installed_routes());
+        config.endpoints = Route::endpoints(&self.installed_routes(), capabilities);
         if self.namespaces.is_some() {
             config.idempotency_key_lifetime = Some("PT24H".into());
         }

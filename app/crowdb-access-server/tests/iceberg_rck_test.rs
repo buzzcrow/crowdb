@@ -52,12 +52,14 @@ async fn apache_rest_compatibility_kit_basic_create() {
                 expected_epoch: 0,
                 display_name: "rest-kit".into(),
                 confirmation: None,
+                capabilities: None,
             },
             ManagementPrivilege::Manage,
             now_ms(),
         )
         .await
         .unwrap();
+    common::activate(&repository).await;
     let process = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let origin = format!("http://{}", process.address);
     let selector = std::env::var("CROWDB_ICEBERG_RCK_SELECTOR").unwrap_or_else(|_| {
