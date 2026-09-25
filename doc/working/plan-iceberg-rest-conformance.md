@@ -184,7 +184,8 @@ Current verified foreground evidence:
   need not be created: 106 tests, 83 failures, 12 skipped, largely at missing
   namespace admission. The supported `rck.requires-namespace-create=true`
   setting corrects that harness assumption; its isolated `testBasicCreateTable`
-  and `testCreateNamespace` both pass against native CROWDB. A full configured
+  and `testCreateNamespace` both pass against native CROWDB. Isolated
+  `testRenameTable`, `testDropTable` and `testListTables` also pass. A full configured
   diagnostic exposed tests that assume
   register-table/views, direct filesystem metadata paths, or externally supplied
   data files without CROWDB's selected-file authorization. Unsupported view
@@ -206,6 +207,15 @@ Executable foreground evidence matrix (not engine certification):
   `testCreateNamespace` cover the official REST namespace surface. The Rust
   command is below; the RCK selector is
   `org.apache.iceberg.rest.RESTCompatibilityKitCatalogTests.testCreateNamespace`.
+- **Official-client response loss:** Rust 0.10.0
+  `iceberg_rust_sdk_test::official_rust_client_observes_lost_create_reply_on_another_listener`
+  discards the successful create response after publication. The official client
+  sees an error while another independent listener lists and loads the committed
+  table. The separate ignored
+  `official_rust_client_lost_reply_survives_native_storage_restart` repeats the
+  scenario with two real Access Server processes, then restarts Chunk-KV and both
+  listeners before the official client loads and removes the retained table.
+  Neither case claims automatic SDK retry after the lost response.
 - **v1, table create/update/load:** Java 1.11.0
   `iceberg_table_sdk_test::official_catalog_creates_commits_upgrades_stages_and_refreshes_native_credentials`
   creates v1 and commits schema/properties over REST. The same-version creation
@@ -216,7 +226,8 @@ Executable foreground evidence matrix (not engine certification):
 - **v2, table create/update/load:** the same library commands exercise v2
   fixture rows. Rust 0.10.0 `iceberg_rust_sdk_test` creates its default v2
   table on one listener, then lists/loads/renames it across both; Apache RCK 1.11.0
-  isolated `testBasicCreateTable` passes against native storage. All pass.
+  isolated `testBasicCreateTable`, `testRenameTable`, `testDropTable` and
+  `testListTables` pass against native storage. All pass.
 - **v3 and upgrades:** the same library commands exercise v3 fixture rows;
   `pixi run cargo test -p crowdb-access-iceberg --test table_metadata_sdk_snapshot_test`
   checks v1/v2/v3 refs and v3 row lineage. Java 1.11.0's table SDK fixture
@@ -234,10 +245,11 @@ Executable foreground evidence matrix (not engine certification):
   `iceberg_file_http_test` and R180–R182 fault suites cover response loss and
   recovery. `iceberg_full_stack_test::namespace_functional_crud_survives_native_storage_and_listener_restart`
   passes pinned PyIceberg namespace CRUD against two listeners before and after
-  a Chunk-KV restart. No cross-server Rust/Java table response-loss fixture is
-  claimed.
-- **Pending:** complete configured RCK catalog suite, multi-server official-client
-  response-loss matrix, engine
+  a Chunk-KV restart. The native Rust response-loss fixture above covers a
+  successful create response lost at the HTTP boundary; retired-context SDK
+  retry is not yet demonstrated.
+- **Pending:** complete configured RCK catalog suite, remaining official-client
+  response-loss/retired-context retry matrix, engine
   row-level visibility and R183 physical reclamation.
 
 Native Java FileIO diagnostic on 2026-09-25: the three-test serial suite passed

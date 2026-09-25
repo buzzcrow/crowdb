@@ -28,6 +28,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
+    if env::var_os("CROWDB_ICEBERG_RUST_VERIFY_EXISTING").is_some() {
+        let table = TableIdent::new(namespace.clone(), "rust_lost_reply".to_owned());
+        assert!(second_catalog.namespace_exists(&namespace).await?);
+        assert!(catalog.table_exists(&table).await?);
+        second_catalog.load_table(&table).await?;
+        catalog.drop_table(&table).await?;
+        second_catalog.drop_namespace(&namespace).await?;
+        return Ok(());
+    }
+
+    if env::var_os("CROWDB_ICEBERG_RUST_RESPONSE_LOSS").is_some() {
+        second_catalog.create_namespace(&namespace, HashMap::new()).await?;
+        let table = TableIdent::new(namespace.clone(), "rust_lost_reply".to_owned());
+        let schema = Schema::builder()
+            .with_fields(vec![NestedField::required(
+                1,
+                "id",
+                Type::Primitive(PrimitiveType::Long),
+            )
+            .into()])
+            .build()?;
+        assert!(catalog
+            .create_table(
+                &namespace,
+                TableCreation::builder()
+                    .name(table.name().to_owned())
+                    .schema(schema)
+                    .build(),
+            )
+            .await
+            .is_err());
+        assert!(second_catalog.table_exists(&table).await?);
+        second_catalog.load_table(&table).await?;
+        if env::var_os("CROWDB_ICEBERG_RUST_KEEP_TABLE").is_none() {
+            second_catalog.drop_table(&table).await?;
+            second_catalog.drop_namespace(&namespace).await?;
+        }
+        return Ok(());
+    }
+
     assert!(!catalog.namespace_exists(&namespace).await?);
     catalog.create_namespace(&namespace, HashMap::new()).await?;
     assert!(catalog.namespace_exists(&namespace).await?);

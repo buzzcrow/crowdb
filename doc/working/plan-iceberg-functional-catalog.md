@@ -52,11 +52,13 @@ explicit capability activation is selected and implemented, while final
 conformance gates remain open.
 
 - [ ] **Release conformance — R184**: official Rust 0.10.0 namespace/table
-  lifecycle passes across two listeners; Apache RCK 1.11.0 isolated namespace
-  and basic-create tests pass. The full kit requires unsupported register/view
-  cleanup and assumes external locations/files outside native selected-file authority.
-  Finish the supported-profile matrix, cross-server response-loss client evidence,
-  and native Java FileIO checks; keep engine acceptance in Next and GC in R183.
+  lifecycle and lost-create-response recovery pass across two listeners; the
+  native variant also passes after Chunk-KV/listener restart. Apache RCK 1.11.0
+  isolated namespace, basic-create, rename, drop and list tests pass. The full
+  kit requires unsupported register/view cleanup and assumes external locations/
+  files outside native selected-file authority. Finish the remaining
+  retired-context and supported-profile client matrix and stable native Java
+  FileIO checks; keep engine acceptance in Next and GC in R183.
   Files: conformance environments, SDK fixtures and capability tests.
 - [ ] **Requirement closure**: compare each requirement's acceptance cases with
   executable evidence; update affected permanent architecture only as needed.
