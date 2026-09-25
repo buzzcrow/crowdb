@@ -54,7 +54,9 @@ conformance gates remain open.
 - [ ] **Release conformance — R184**: official Rust 0.10.0 namespace/table
   lifecycle and lost-create-response recovery pass across two listeners; the
   native variant also passes after Chunk-KV/listener restart. Apache RCK 1.11.0
-  isolated namespace, basic-create, rename, drop and list tests pass. The full
+  isolated namespace, basic-create, rename, drop, missing-drop and list tests
+  pass; Java 1.11.0 RESTCatalog also reports a lost create response while a
+  second listener sees the committed table. The full
   kit requires unsupported register/view cleanup and assumes external locations/
   files outside native selected-file authority. An official Rust client also
   rejects stale reads after clear/reactivation in the two-listener memory fixture.

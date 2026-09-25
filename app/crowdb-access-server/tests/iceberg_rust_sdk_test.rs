@@ -14,6 +14,8 @@ mod native_stack;
 #[path = "common/iceberg_process.rs"]
 #[allow(dead_code)]
 mod process;
+#[path = "common/iceberg_response_loss.rs"]
+mod response_loss;
 
 use crowdb_access_iceberg::{
     catalog::{CatalogRepository, ClearBounds, ManagementPrivilege},
@@ -23,14 +25,8 @@ use crowdb_access_iceberg::{
 };
 use crowdb_access_server::iceberg::{serve, IcebergHttpService};
 use fixture::TestTableHttp;
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use response_loss::TestResponseLossProxy;
+use std::{sync::Arc, time::Duration};
 
 #[tokio::test]
 #[ignore = "builds the pinned official Apache Iceberg Rust client"]
@@ -67,8 +63,8 @@ async fn run_official_client(response_loss: bool) {
         .unwrap();
     });
     let (origin, proxy) = if response_loss {
-        let (origin, proxy, observed) = start_loss_proxy(backend_origin).await;
-        (origin, Some((proxy, observed)))
+        let proxy = TestResponseLossProxy::start(backend_origin, "/v1/namespaces/rust_sdk_loss/tables").await;
+        (proxy.origin.clone(), Some(proxy))
     } else {
         (backend_origin, None)
     };
@@ -100,12 +96,8 @@ async fn run_official_client(response_loss: bool) {
     })
     .await
     .unwrap();
-    if let Some((proxy, observed)) = proxy {
-        proxy.abort();
-        assert!(
-            observed.load(Ordering::SeqCst),
-            "proxy did not drop the create response"
-        );
+    if let Some(proxy) = proxy {
+        proxy.assert_dropped();
     }
     stop.send(()).unwrap();
     server.await.unwrap();
@@ -148,10 +140,22 @@ async fn official_rust_client_lost_reply_survives_native_storage_restart() {
     native_stack::activate(&repository).await;
     let first = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let second = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let (origin, proxy, observed) = start_loss_proxy(format!("http://{}", first.address)).await;
-    assert!(run_rust_fixture(&origin, &format!("http://{}", second.address), true, false, true).await);
-    proxy.abort();
-    assert!(observed.load(Ordering::SeqCst));
+    let proxy = TestResponseLossProxy::start(
+        format!("http://{}", first.address),
+        "/v1/namespaces/rust_sdk_loss/tables",
+    )
+    .await;
+    assert!(
+        run_rust_fixture(
+            &proxy.origin,
+            &format!("http://{}", second.address),
+            true,
+            false,
+            true
+        )
+        .await
+    );
+    proxy.assert_dropped();
     drop(first);
     drop(second);
     stack.chunk_kv.restart().await;
@@ -205,61 +209,4 @@ async fn run_rust_fixture(
     })
     .await
     .unwrap()
-}
-
-async fn start_loss_proxy(backend_origin: String) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicBool>) {
-    let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin = format!("http://{}", proxy_listener.local_addr().unwrap());
-    let lost = Arc::new(AtomicBool::new(false));
-    let observed = lost.clone();
-    let proxy = tokio::spawn(async move {
-        loop {
-            let (client, _) = proxy_listener.accept().await.unwrap();
-            let backend = backend_origin.clone();
-            let lost = lost.clone();
-            tokio::spawn(async move {
-                forward_or_lose(client, &backend, lost).await.unwrap();
-            });
-        }
-    });
-    (origin, proxy, observed)
-}
-
-async fn forward_or_lose(
-    mut client: tokio::net::TcpStream,
-    backend_origin: &str,
-    lost: Arc<AtomicBool>,
-) -> std::io::Result<()> {
-    let mut header = Vec::new();
-    while !header.windows(4).any(|window| window == b"\r\n\r\n") {
-        let mut buffer = [0_u8; 4096];
-        let count = client.read(&mut buffer).await?;
-        if count == 0 || header.len() + count > 16 * 1024 {
-            return Err(std::io::Error::other("invalid proxy request header"));
-        }
-        header.extend_from_slice(&buffer[..count]);
-    }
-    let backend = backend_origin.trim_start_matches("http://");
-    let mut upstream = tokio::net::TcpStream::connect(backend).await?;
-    upstream.write_all(&header).await?;
-    let create = header.starts_with(b"POST /v1/namespaces/rust_sdk_loss/tables ");
-    if create && !lost.swap(true, Ordering::SeqCst) {
-        let (mut client_read, client_write) = client.into_split();
-        let (mut upstream_read, mut upstream_write) = upstream.into_split();
-        let forwarding = tokio::spawn(async move {
-            let _ = tokio::io::copy(&mut client_read, &mut upstream_write).await;
-        });
-        let mut response = [0_u8; 4096];
-        let count = upstream_read.read(&mut response).await?;
-        forwarding.abort();
-        drop(client_write);
-        if count == 0 || !response.starts_with(b"HTTP/1.1 200") {
-            return Err(std::io::Error::other(
-                "upstream did not publish the create response",
-            ));
-        }
-        return Ok(());
-    }
-    tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
-    Ok(())
 }

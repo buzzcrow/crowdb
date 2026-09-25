@@ -185,7 +185,8 @@ Current verified foreground evidence:
   namespace admission. The supported `rck.requires-namespace-create=true`
   setting corrects that harness assumption; its isolated `testBasicCreateTable`
   and `testCreateNamespace` both pass against native CROWDB. Isolated
-  `testRenameTable`, `testDropTable` and `testListTables` also pass. A full configured
+  `testRenameTable`, `testDropTable`, `testDropMissingTable` and `testListTables`
+  also pass. A full configured
   diagnostic exposed tests that assume
   register-table/views, direct filesystem metadata paths, or externally supplied
   data files without CROWDB's selected-file authorization. Unsupported view
@@ -198,6 +199,14 @@ Current verified foreground evidence:
   `withLocation(baseTableLocation(TBL))`, which supplies a `file:/tmp/...` path, while
   CROWDB requires its reserved native table location. This is not fixed by
   accepting an unservable path or weakening native FileIO authority.
+- Upstream Java 1.11.0 `RESTSessionCatalog` supplies a fresh UUIDv7
+  `Idempotency-Key` for mutations when config advertises a lifetime, but its
+  `ExponentialHttpRequestRetryStrategy` retries I/O failures only for idempotent
+  HTTP methods, not POST. Rust 0.10.0's `RestCatalog::create_table` builds a POST
+  without a generated idempotency header. Consequently the official SDK
+  create-response-loss fixtures verify an error plus durable visibility rather
+  than inventing automatic same-key mutation retry; that server contract remains
+  covered by direct HTTP fault tests.
 
 Executable foreground evidence matrix (not engine certification):
 
@@ -216,6 +225,10 @@ Executable foreground evidence matrix (not engine certification):
   scenario with two real Access Server processes, then restarts Chunk-KV and both
   listeners before the official client loads and removes the retained table.
   Neither case claims automatic SDK retry after the lost response.
+  Java 1.11.0 `iceberg_java_response_loss_test` independently verifies that
+  `RESTCatalog` reports the lost POST response while another listener loads and
+  drops the one committed table. Its proxy accepts ordinary client connection
+  closes but rejects an upstream create response other than HTTP 200.
 - **Retired context:** Rust 0.10.0
   `iceberg_rust_retired_sdk_test::official_rust_client_rejects_retired_catalog_after_clear`
   keeps two official client instances open across a durable clear and explicit
@@ -233,7 +246,8 @@ Executable foreground evidence matrix (not engine certification):
 - **v2, table create/update/load:** the same library commands exercise v2
   fixture rows. Rust 0.10.0 `iceberg_rust_sdk_test` creates its default v2
   table on one listener, then lists/loads/renames it across both; Apache RCK 1.11.0
-  isolated `testBasicCreateTable`, `testRenameTable`, `testDropTable` and
+  isolated `testBasicCreateTable`, `testRenameTable`, `testDropTable`,
+  `testDropMissingTable` and
   `testListTables` pass against native storage. All pass.
 - **v3 and upgrades:** the same library commands exercise v3 fixture rows;
   `pixi run cargo test -p crowdb-access-iceberg --test table_metadata_sdk_snapshot_test`
