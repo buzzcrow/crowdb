@@ -1,10 +1,13 @@
 #[path = "common/store.rs"]
 mod common;
+#[path = "common/gc_store.rs"]
+mod gc_store;
 
 use common::TestStore;
 use crowdb_access_iceberg::catalog::{
     Capabilities, CatalogError, CatalogRepository, ClearBounds, ManagementPrivilege, RootState,
 };
+use crowdb_access_iceberg::gc::{GcLimits, GcRepository, GcTaskKind};
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use std::sync::{atomic::Ordering, Arc};
@@ -41,6 +44,55 @@ fn request(action: ManagementAction, epoch: u64, name: &str) -> ManagementReques
         confirmation: None,
         capabilities: None,
     }
+}
+
+#[tokio::test]
+async fn completed_clear_admits_one_retired_catalog_task() {
+    let store = Arc::new(TestStore::default());
+    let catalog = repository(&store);
+    let initialized = catalog
+        .execute(
+            request(ManagementAction::Initialize, 0, "catalog"),
+            ManagementPrivilege::Manage,
+            100,
+        )
+        .await
+        .unwrap();
+    let mut clear = request(ManagementAction::Clear, 1, "replacement");
+    clear.confirmation = Some(initialized.catalog);
+    let identity = clear.identity.operation;
+    assert!(matches!(
+        catalog
+            .execute(clear.clone(), ManagementPrivilege::Clear, 101)
+            .await,
+        Err(CatalogError::Busy)
+    ));
+    let RootState::Published(transition) = catalog.status().await.unwrap().0.state else {
+        panic!("expected published maintenance");
+    };
+    catalog
+        .execute(clear, ManagementPrivilege::Clear, transition.complete_after_ms)
+        .await
+        .unwrap();
+    let operation = catalog.operation(identity).await.unwrap().unwrap();
+    let gc = GcRepository::new(store.clone());
+    store
+        .fail_after
+        .store(store.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    let task = gc
+        .admit_retired(&operation, 1000, GcLimits::default())
+        .await
+        .unwrap();
+    store.fail_after.store(0, Ordering::SeqCst);
+    assert_eq!(task.kind, GcTaskKind::RetiredCatalog);
+    assert_eq!(task.context.catalog, initialized.catalog);
+    assert_eq!(task.identity, identity);
+    assert_eq!(
+        gc.admit_retired(&operation, 1001, GcLimits::default())
+            .await
+            .unwrap(),
+        task
+    );
 }
 
 #[tokio::test]

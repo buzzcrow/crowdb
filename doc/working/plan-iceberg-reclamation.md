@@ -62,10 +62,9 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   validated rate configuration and atomic per-step KV/chunk request and byte
   budgets. Enabled runtimes admit one durable purge marker per bounded scan;
   its task scan consumes the same budget, while a bounded reserve can
-  persist a task's resource failure. Replace live-table head fencing with the
-  candidate-scoped seal/reproof/delete protocol selected in R177 OI-8, then add
-  automatic task creation before default activation. Files: GC worker, file and
-  commit admission, Access Server GC runtime and worker limits.
+  persist a task's resource failure. Auto-admit completed clear operations and
+  retire legacy live tasks instead of scheduling their deletion. Files: GC
+  admission/fence, Access Server GC runtime and control tests.
 - [ ] **Crash and race acceptance**: reader, credential, commit, clear and
   pin interleavings across restart; preserve conservative deferred work.
 - [ ] **Capacity and SDK acceptance**: configured disk exhaustion and recovery,
@@ -160,8 +159,8 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   remain mandatory. Rescan discovers files that landed after the original scan,
   preserving existing deletion cursors and retention deadlines.
 
-- Before runtime activation, bound table-fence occupancy and validate foreground
-  availability under large sweeps. Complete resource accounting across proof KV
+- Before default runtime activation, validate foreground availability under
+  large purge and retired-catalog sweeps. Complete resource accounting across proof KV
   writes and chunk reads, cancellation/recovery controls and scheduler fairness.
 - Performance follow-up: metadata is reparsed per bounded link batch and shared
   manifests can be revisited across snapshot roots. Keep the bounded proof and
@@ -197,42 +196,15 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
 
 ## Next Integration
 
-- Candidate `Sealing` now round-trips durably and rejects fresh FileIO reads,
-  publication, and commit validation; this is only the admission foundation,
-  not an active GC transition. An already admitted read has its pin before
-  loading the file, so a read racing the seal either finishes under that pin or
-  observes the seal and fails without starting I/O. Keep live GC on its existing
-  table fence until the complete replacement protocol is tested.
-- Replace the live table fence with bounded per-file admission and optimistic
-  candidate sealing, then establish a short table-head version barrier after
-  the final seal. A head CAS
-  after all seals invalidates any commit that validated against the pre-seal
-  head; it does not put the table in `Reclaiming`. Persist the barrier's before
-  head before attempting CAS, so crash recovery can recognize a concurrent
-  head advance as an equally valid barrier. A generation change during sealing
-  is not itself a barrier. Concurrent commits may encounter an ordinary CAS
-  conflict, but no commit waits for the traversal.
-- Reprove the head selected at the barrier and scan pre-barrier pins and commit
-  operations. Ignore post-barrier table-wide admission only after proving it
-  cannot access sealed files. Unseal any protected/reachable candidate before
-  retry; never reclaim bytes on ambiguous proof, unknown CAS outcome, or
-  changed catalog authority. Resume sealing/unsealing and proof after restart.
-- Preserve uninterrupted reads for any candidate made reachable by a
-  concurrent commit; a plain seal that rejects all new GETs fails this
-  requirement. Build a file-specific admission/publication handshake before
-  activating live sealing. A new read of an actually unreachable orphan may
-  fail, but selected table files must remain readable throughout reproof.
-- Add adversarial races for GET pin versus seal, credential issuance during
-  sealing, commit validation versus seal and barrier, lost CAS responses,
-  continuous post-barrier commits, and restart in every phase.
-
-- Enabled background GC now admits durable purge markers into one deterministic
-  table-scoped GC task, independently of live-table protocol changes. The safe
-  candidate admission foundation is committed; the live worker still uses its
-  existing table fence and automatic live scheduling remains disabled. Continue
-  retired-catalog task admission and storage capacity acceptance in parallel
-  with the confirmed uninterrupted-read protocol.
-- Add event-driven purge and retired task creation, bounded live-task discovery,
-  saturated foreground namespace/commit/FileIO acceptance, and full-storage
+- No new live-table deletion tasks. An unreachable live orphan may remain until
+  drop or clear. The operator command accepts tombstoned tables only; the
+  scheduler never runs a legacy live deletion step and releases any owned head
+  fence before completing such a task. Candidate `Sealing`, unused `Unseal`, and
+  duplicate commit file lookup are removed.
+- Enabled background GC admits durable purge markers and completed clear
+  operations into deterministic tasks. Native admission and advancement tests
+  pass; uncertain task-creation replies and multi-restart completion remain in
+  the crash acceptance matrix.
+- Add saturated foreground namespace/commit/FileIO acceptance and full-storage
   GC-workspace recovery. Existing tests establish fail-closed workspace denial
   and independent file-write capacity recovery, not those combined conditions.

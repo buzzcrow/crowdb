@@ -101,7 +101,12 @@ async fn live_proof_keeps_write_intents_for_reachable_owners_and_fences_orphans(
                 panic!()
             };
             task = GcTask::plan(task.context, OperationId::random(), Some(*head), 1001, limits).unwrap();
-            repository.create(&task).await.unwrap();
+            let key = task.key().encode().unwrap();
+            let bytes = StorageRecord::GcTask(Box::new(task.clone())).encode().unwrap();
+            store
+                .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+                .await
+                .unwrap();
         }
     }
     assert!(store

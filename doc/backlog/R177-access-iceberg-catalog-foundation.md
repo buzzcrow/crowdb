@@ -429,25 +429,10 @@ R183–R184 remain open; this does not imply engine/GC conformance.
   all possible storage stalls. A new failure requires its own trace. R183 owns
   physical reclamation of expired slot and overflow records.
 
-- **OI-8 — Live GC table-fence occupancy (confirmed):** live reclamation must
-  continue on large tables without holding a table-wide `Reclaiming` fence across
-  bounded traversal or blocking unrelated commits. The user selected
-  candidate-scoped optimistic deletion fences, not a finite table-wide
-  maintenance window that could starve reclamation. Publication and commit
-  validation must reject a sealed candidate; already admitted readers remain
-  readable until a second durable root/protector check authorizes physical
-  deletion. Candidate seals survive crash/restart and are released without
-  deleting bytes when the second check discovers protection. Keep automatic
-  scheduling disabled until this race protocol and foreground acceptance pass.
-- **OI-9 — Live GC read availability during a concurrent commit (confirmed):** a
-  candidate that was unreachable in the first proof may become reachable in a
-  commit whose validation preceded the seal. Sealing must reject new reads to
-  prevent a late request pin from racing the second protection scan, but that
-  also makes the newly reachable file temporarily unreadable until the second
-  proof unseals it. On a large table this interval is not necessarily short.
-  The user requires uninterrupted reads, so candidate-only sealing is not an
-  acceptable live-worker protocol. Introduce a stronger per-file admission and
-  publication handshake that lets reachable files remain readable while still
-  excluding new unprotected readers before physical deletion. No live seal
-  transitions or automatic live scheduling are enabled until that protocol and
-  its races pass acceptance.
+- **OI-8/OI-9 — Live GC scope (confirmed):** never interrupt reads or hold a
+  live table in `Reclaiming` for reclamation. R183 may leak unreachable files in
+  a Ready table. It physically reclaims only after table purge or catalog
+  retirement makes the entire authority inactive. A file selected by a pending
+  or future commit is therefore never sealed or deleted by a live pass. Existing
+  live tasks are retired without further deletion and any owned head fence is
+  released. No candidate-sealing or optimistic reproof protocol is required.

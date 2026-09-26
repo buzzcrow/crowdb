@@ -1,7 +1,8 @@
 use crate::{
-    catalog::{check_context, CatalogContext, CatalogError},
+    catalog::{check_context, CatalogContext, CatalogError, CatalogLifecycle, RootState},
     error::ValidationError,
-    key::OperationId,
+    key::{CatalogScope, IcebergKey, OperationId, SystemScope},
+    operation::{ledger_locate, LedgerLocation, ManagementAction, ManagementOperation, ManagementPhase},
     record::StorageRecord,
     table::{head_key, TablePurgeTask},
 };
@@ -9,6 +10,87 @@ use crate::{
 use super::{GcLimits, GcRepository, GcTask, GcTaskKind};
 
 impl GcRepository {
+    /// Installs one replayable retired-catalog worker for a completed clear.
+    /// # Errors
+    /// Rejects unretired authority, stale roots and changed operation identity.
+    pub async fn admit_retired(
+        &self,
+        clear: &ManagementOperation,
+        now_ms: u64,
+        limits: GcLimits,
+    ) -> Result<GcTask, CatalogError> {
+        clear.validate()?;
+        if clear.request.action != ManagementAction::Clear || clear.phase != ManagementPhase::Complete {
+            return Err(CatalogError::Busy);
+        }
+        let LedgerLocation::Existing(key, stored) =
+            ledger_locate(self.store.as_ref(), SystemScope::ManagementOperation, clear.id()).await?
+        else {
+            return Err(CatalogError::Busy);
+        };
+        if StorageRecord::decode(&key, &stored.bytes)? != StorageRecord::Management(Box::new(clear.clone())) {
+            return Err(CatalogError::Conflict);
+        }
+        let context = CatalogContext {
+            catalog: clear.request.confirmation.ok_or(ValidationError::Record)?,
+            activation_epoch: clear.request.expected_epoch,
+        };
+        context.validate()?;
+        let root_key = IcebergKey::System {
+            scope: SystemScope::ActiveRoot,
+            suffix: Vec::new(),
+        };
+        let value = self
+            .store
+            .get(&root_key.encode()?)
+            .await?
+            .ok_or(CatalogError::Busy)?;
+        let StorageRecord::Active(root) = StorageRecord::decode(&root_key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if root.state != RootState::Ready
+            || root.context.catalog == context.catalog
+            || root.context.activation_epoch <= context.activation_epoch
+        {
+            return Err(CatalogError::Busy);
+        }
+        let authority_key = IcebergKey::Catalog {
+            catalog: context.catalog,
+            scope: CatalogScope::Authority,
+            suffix: Vec::new(),
+        };
+        let value = self
+            .store
+            .get(&authority_key.encode()?)
+            .await?
+            .ok_or(CatalogError::Busy)?;
+        let StorageRecord::Authority(authority) = StorageRecord::decode(&authority_key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if authority.lifecycle != CatalogLifecycle::Retired {
+            return Err(CatalogError::Busy);
+        }
+        let identity = clear.request.identity.operation;
+        if let Some(existing) = self.task(context.catalog, identity).await? {
+            if existing.context != context || existing.kind != GcTaskKind::RetiredCatalog {
+                return Err(CatalogError::Conflict);
+            }
+            return Ok(existing);
+        }
+        let task = GcTask::plan(context, identity, None, now_ms, limits)?;
+        match self.create(&task).await {
+            Ok(()) => Ok(task),
+            Err(error) => match self.task(context.catalog, identity).await? {
+                Some(existing)
+                    if existing.context == context && existing.kind == GcTaskKind::RetiredCatalog =>
+                {
+                    Ok(existing)
+                }
+                _ => Err(error),
+            },
+        }
+    }
+
     /// Installs one replayable purge worker for a durable table purge marker.
     /// # Errors
     /// Rejects stale catalog epochs, changed markers and conflicting task identities.
@@ -53,7 +135,18 @@ impl GcRepository {
             return Err(CatalogError::Conflict);
         }
         let task = GcTask::plan(context, identity, Some(marker.head.clone()), now_ms, limits)?;
-        self.create(&task).await?;
-        Ok(task)
+        match self.create(&task).await {
+            Ok(()) => Ok(task),
+            Err(error) => match self.task(context.catalog, identity).await? {
+                Some(existing)
+                    if existing.context == context
+                        && existing.kind == GcTaskKind::PurgeTable
+                        && existing.head.as_ref() == Some(&marker.head) =>
+                {
+                    Ok(existing)
+                }
+                _ => Err(error),
+            },
+        }
     }
 }

@@ -104,6 +104,55 @@ async fn seed_table(stack: &common::TestIcebergStack) -> (Arc<RoutedCatalogStore
     (store, context, table)
 }
 
+async fn check_operator_pin(
+    stack: &common::TestIcebergStack,
+    store: Arc<RoutedCatalogStore>,
+    context: CatalogContext,
+    table: TableId,
+) {
+    let pin_id = OperationId::random().to_string();
+    let table_id = table.to_string();
+    let catalog_id = context.catalog.to_string();
+    response(command(stack, 'm', &["pin", &pin_id, &table_id]));
+    let pin_identity = pin_id.parse().unwrap();
+    let pins = ReaderPins::new(store);
+    assert!(pins
+        .get(context.catalog, table, pin_identity)
+        .await
+        .unwrap()
+        .unwrap()
+        .protects(common::now_ms()));
+    response(command(stack, 'm', &["unpin", &catalog_id, &table_id, &pin_id]));
+    assert!(!pins
+        .get(context.catalog, table, pin_identity)
+        .await
+        .unwrap()
+        .unwrap()
+        .protects(common::now_ms()));
+}
+
+async fn tombstone_head(store: &RoutedCatalogStore, context: CatalogContext, table: TableId) {
+    let key = head_key(context.catalog, table);
+    let previous = store.get(&key.encode().unwrap()).await.unwrap().unwrap();
+    let StorageRecord::TableHead(mut head) = StorageRecord::decode(&key, &previous.bytes).unwrap() else {
+        panic!("table head");
+    };
+    head.lifecycle = TableLifecycle::Tombstone;
+    head.operation_fence += 1;
+    head.pending_operation = Some(OperationId::random());
+    let next = StorageRecord::TableHead(head).encode().unwrap();
+    let key = key.encode().unwrap();
+    store
+        .compare_exchange(
+            &key,
+            Some(&previous.bytes),
+            &next,
+            mutation_identity(&key, Some(&previous.bytes), &next),
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn authenticated_gc_controls_survive_separate_processes() {
     let stack = common::TestIcebergStack::start().await;
@@ -113,6 +162,12 @@ async fn authenticated_gc_controls_survive_separate_processes() {
     let catalog_id = context.catalog.to_string();
     let denied = command(&stack, 'w', &["start-table", &identity, &table_id]);
     assert!(!denied.status.success());
+    let live = command(&stack, 'm', &["start-table", &identity, &table_id]);
+    assert!(!live.status.success());
+    assert!(String::from_utf8_lossy(&live.stderr).contains("live-table GC is disabled"));
+
+    check_operator_pin(&stack, store.clone(), context, table).await;
+    tombstone_head(store.as_ref(), context, table).await;
     let created = response(command(&stack, 'm', &["start-table", &identity, &table_id]));
     assert_eq!(created["phase"], "Discover");
     assert_eq!(created["task_id"], identity);
@@ -144,24 +199,6 @@ async fn authenticated_gc_controls_survive_separate_processes() {
     let retried = response(command(&stack, 'm', &["retry", &catalog_id, &identity]));
     assert_eq!(retried["stalled"], "None");
     assert_eq!(retried["attempts"], 0);
-
-    let pin_id = OperationId::random().to_string();
-    response(command(&stack, 'm', &["pin", &pin_id, &table_id]));
-    let pin_identity = pin_id.parse().unwrap();
-    let pins = ReaderPins::new(store);
-    assert!(pins
-        .get(context.catalog, table, pin_identity)
-        .await
-        .unwrap()
-        .unwrap()
-        .protects(common::now_ms()));
-    response(command(&stack, 'm', &["unpin", &catalog_id, &table_id, &pin_id]));
-    assert!(!pins
-        .get(context.catalog, table, pin_identity)
-        .await
-        .unwrap()
-        .unwrap()
-        .protects(common::now_ms()));
 
     let server = process::TestIcebergProcess::start_with_gc(&stack.cluster.mgmt_endpoints, true).await;
     check_foreground_namespace(&server);
@@ -258,6 +295,64 @@ async fn enabled_scheduler_admits_durable_purge_markers_once() {
     assert_eq!(resumed.created_ms, task.created_ms);
     assert_eq!(resumed.head, task.head);
     drop(restarted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn enabled_scheduler_admits_and_advances_completed_clear() {
+    let stack = common::TestIcebergStack::start().await;
+    let (store, old, _) = seed_table(&stack).await;
+    let catalog = CatalogRepository::new(
+        store.clone(),
+        ClearBounds {
+            request_ms: 300_000,
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+    )
+    .unwrap();
+    let now_ms = common::now_ms();
+    let identity = OperationId::random();
+    let clear = ManagementRequest {
+        identity: RequestIdentity {
+            operation: identity,
+            issued_ms: now_ms,
+        },
+        principal: "manager".into(),
+        action: ManagementAction::Clear,
+        expected_epoch: old.activation_epoch,
+        display_name: "gc-replacement".into(),
+        confirmation: Some(old.catalog),
+        capabilities: None,
+    };
+    assert!(catalog
+        .execute(clear.clone(), ManagementPrivilege::Clear, now_ms)
+        .await
+        .is_err());
+    let crowdb_access_iceberg::catalog::RootState::Published(transition) =
+        catalog.status().await.unwrap().0.state
+    else {
+        panic!("expected published maintenance");
+    };
+    catalog
+        .execute(clear, ManagementPrivilege::Clear, transition.complete_after_ms)
+        .await
+        .unwrap();
+    let server = process::TestIcebergProcess::start_with_gc(&stack.cluster.mgmt_endpoints, true).await;
+    let repository = GcRepository::new(store);
+    let task = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if let Some(task) = repository.task(old.catalog, identity).await.unwrap() {
+                if task.revision > 1 {
+                    break task;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(task.kind, crowdb_access_iceberg::gc::GcTaskKind::RetiredCatalog);
+    drop(server);
 }
 
 fn check_foreground_namespace(server: &process::TestIcebergProcess) {

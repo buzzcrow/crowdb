@@ -8,7 +8,7 @@ use crate::{
     record::StorageRecord,
 };
 
-use super::{GcCandidate, GcPage, GcStalledReason, GcStore, GcTask};
+use super::{GcCandidate, GcPage, GcStalledReason, GcStore, GcTask, GcTaskKind};
 
 #[derive(Clone)]
 pub struct GcRepository {
@@ -22,8 +22,11 @@ impl GcRepository {
     }
 
     /// # Errors
-    /// Rejects malformed tasks or an identity already bound to another task.
+    /// Rejects live-table work, malformed tasks or an identity already bound to another task.
     pub async fn create(&self, task: &GcTask) -> Result<(), CatalogError> {
+        if task.kind == GcTaskKind::LiveTable {
+            return Err(CatalogError::Busy);
+        }
         self.change(&task.key(), None, &StorageRecord::GcTask(Box::new(task.clone())))
             .await
     }

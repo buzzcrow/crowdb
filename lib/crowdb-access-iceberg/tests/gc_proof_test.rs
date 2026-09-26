@@ -135,7 +135,7 @@ async fn fixture_graph(
         },
     )
     .unwrap();
-    GcRepository::new(store.clone()).create(&task).await.unwrap();
+    put(&store, task.key(), StorageRecord::GcTask(Box::new(task.clone()))).await;
     (store, task, files)
 }
 
@@ -614,7 +614,7 @@ async fn historical_reader_root_is_retained_after_the_current_head_changes() {
     )
     .unwrap();
     let repository = GcRepository::new(store.clone());
-    repository.create(&task).await.unwrap();
+    put(&store, task.key(), StorageRecord::GcTask(Box::new(task.clone()))).await;
     let task = finish(store, task).await;
     for file in old_files {
         assert!(repository.proof_contains(&task, file).await.unwrap());

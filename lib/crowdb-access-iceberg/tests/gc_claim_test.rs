@@ -107,40 +107,39 @@ async fn claims_reject_changed_file_authority_and_mutable_progress_as_a_claim() 
 }
 
 #[tokio::test]
-async fn sealed_candidate_rejects_new_file_access_and_publication() {
+async fn deleting_candidate_rejects_new_file_access_and_publication() {
     let (fixture, candidate) = candidate().await;
     let files = FileRepository::new(fixture.store.clone());
     files.publish(fixture.context, &candidate.file).await.unwrap();
     let repository = GcRepository::new(fixture.store.clone());
     repository.claim_candidate(&candidate).await.unwrap();
-    let mut sealed = candidate.clone();
-    sealed.phase = CandidatePhase::Sealing;
-    sealed.revision += 1;
-    repository.candidate(Some(&candidate), &sealed).await.unwrap();
+    let mut deleting = candidate.clone();
+    deleting.phase = CandidatePhase::Deleting;
+    deleting.revision += 1;
+    repository.candidate(Some(&candidate), &deleting).await.unwrap();
     assert_eq!(
         StorageRecord::decode(
-            &sealed.key(),
+            &deleting.key(),
             &fixture
                 .store
-                .get(&sealed.key().encode().unwrap())
+                .get(&deleting.key().encode().unwrap())
                 .await
                 .unwrap()
                 .unwrap()
                 .bytes
         )
         .unwrap(),
-        StorageRecord::GcCandidate(Box::new(sealed.clone()))
+        StorageRecord::GcCandidate(Box::new(deleting.clone()))
     );
-    assert!(files.load(fixture.context, &sealed.file.location).await.is_err());
     assert!(files
-        .load_for_commit(fixture.context, &sealed.file.location)
+        .load(fixture.context, &deleting.file.location)
         .await
         .is_err());
-    assert!(files.publish(fixture.context, &sealed.file).await.is_err());
-    let mut released = sealed.clone();
+    assert!(files.publish(fixture.context, &deleting.file).await.is_err());
+    let mut released = deleting.clone();
     released.phase = CandidatePhase::Retained;
     released.revision += 1;
-    repository.candidate(Some(&sealed), &released).await.unwrap();
+    repository.candidate(Some(&deleting), &released).await.unwrap();
     assert_eq!(
         files
             .load(fixture.context, &released.file.location)

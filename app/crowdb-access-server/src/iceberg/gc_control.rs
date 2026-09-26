@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use crowdb_access_iceberg::{
     catalog::{
-        CatalogContext, CatalogLifecycle, CatalogRepository, CatalogStore, ManagementPrivilege, RootState,
-        RoutedCatalogStore,
+        CatalogContext, CatalogRepository, CatalogStore, ManagementPrivilege, RootState, RoutedCatalogStore,
     },
     gc::{GcLimits, GcPin, GcRepository, GcTask, ReaderPins},
-    key::{CatalogId, CatalogScope, IcebergKey, OperationId, TableId},
+    key::{CatalogId, OperationId, TableId},
     operation::{ManagementAction, ManagementPhase},
     record::StorageRecord,
-    table::{head_key, TableHead},
+    table::{head_key, TableHead, TableLifecycle},
     wire::BearerAuthenticator,
 };
 
@@ -61,7 +60,7 @@ pub(super) async fn manage(
             if principal.management != ManagementPrivilege::Clear {
                 return Err("clear privilege is required for retired catalogs".into());
             }
-            start_retired(catalog, store.as_ref(), &repository, identity, catalog_id, epoch, limits).await?;
+            start_retired(catalog, &repository, identity, catalog_id, epoch, limits).await?;
         }
         ["inspect" | "pause" | "resume" | "retry", catalog_id, identity] => {
             let catalog_id: CatalogId = catalog_id.parse()?;
@@ -101,6 +100,9 @@ async fn start_table(
     let table: TableId = table.parse()?;
     let identity: OperationId = identity.parse()?;
     let head = load_head(store, root.context.catalog, table).await?;
+    if head.lifecycle != TableLifecycle::Tombstone {
+        return Err("live-table GC is disabled; only tombstoned tables can be reclaimed".into());
+    }
     if let Some(existing) = repository.task(root.context.catalog, identity).await? {
         if existing.context != root.context || existing.head.as_ref() != Some(&head) {
             return Err("GC task identity is already bound to another table state".into());
@@ -122,7 +124,6 @@ async fn start_table(
 
 async fn start_retired(
     catalog: &CatalogRepository,
-    store: &RoutedCatalogStore,
     repository: &GcRepository,
     identity: &str,
     catalog_id: &str,
@@ -146,34 +147,9 @@ async fn start_retired(
     {
         return Err("clear operation does not authorize this retired context".into());
     }
-    let (root, _) = catalog.status().await?;
-    if root.state != RootState::Ready || root.context.activation_epoch <= context.activation_epoch {
-        return Err("retired catalog epoch is not older than the active root".into());
-    }
-    let key = IcebergKey::Catalog {
-        catalog: context.catalog,
-        scope: CatalogScope::Authority,
-        suffix: Vec::new(),
-    };
-    let value = store
-        .get(&key.encode()?)
-        .await?
-        .ok_or("retired catalog authority is missing")?;
-    let StorageRecord::Authority(authority) = StorageRecord::decode(&key, &value.bytes)? else {
-        return Err("retired catalog authority has an invalid record".into());
-    };
-    if authority.lifecycle != CatalogLifecycle::Retired {
-        return Err("catalog is not retired".into());
-    }
-    if let Some(existing) = repository.task(context.catalog, identity).await? {
-        if existing.context != context || existing.head.is_some() {
-            return Err("GC task identity is already bound to another catalog state".into());
-        }
-        show(&existing);
-        return Ok(());
-    }
-    let task = GcTask::plan(context, identity, None, super::runtime::now_ms()?, limits)?;
-    repository.create(&task).await?;
+    let task = repository
+        .admit_retired(&clear, super::runtime::now_ms()?, limits)
+        .await?;
     show(&task);
     Ok(())
 }

@@ -26,7 +26,10 @@ catalog into memory would fail at Iceberg scale.
 
 R177 selects generation-indexed candidates plus reachability traversal, mandatory
 retention and pins, and no racing reference counts. This requirement implements the
-durable background proof and deletion workflow.
+durable background proof and deletion workflow for purged tables and retired
+catalogs. Unreachable files under a live table may remain allocated until that
+authority becomes inactive; completeness is subordinate to avoiding mistaken
+deletion and uninterrupted reads.
 
 Before GC is implemented, unreachable storage remains allocated and can exhaust
 the provisioned capacity. DiskDB/ChunkDB allocation failure is the capacity
@@ -50,6 +53,8 @@ contains zero free bytes.
   bandwidth, and concurrency admission from catalog and FileIO requests.
 - **GC-I6 — Capacity exhaustion preserves authority:** failed allocation cannot
   publish incomplete bytes, replace a committed head, or authorize unsafe deletion.
+- **GC-I7 — No live reclamation fence:** a Ready table is never put in
+  `Reclaiming` for GC, and a live file is never sealed to deny GET or commit.
 
 1. Add `gc/candidate.rs`, `reachability.rs`, `task.rs`, `repository.rs`,
    `worker.rs`, and `pins.rs`. Store tasks and generation-indexed candidate pages
@@ -68,12 +73,14 @@ contains zero free bytes.
    tasks emitted by logical table drop, retaining their activation epoch, stable
    table identity and selected metadata generation. A pending purge task is input
    to reachability proof, not authorization to delete files or a completed purge.
+   Defer physical deletion of all files belonging to a Ready table, including
+   failed commits and aborted uploads, until table purge or catalog retirement.
 3. Traverse standard metadata JSON, metadata logs, retained snapshots and refs,
    manifest lists, manifests, data/delete files, deletion vectors, and statistics
    files according to the owning format version. Spill bounded sorted mark pages to
    durable task state instead of retaining the graph in memory.
-4. Compare candidate pages with the retained mark set under a captured table or
-   catalog fence. Revalidate the fence, retention deadline, active operations,
+4. Compare candidate pages with the retained mark set under a purged-table or
+   retired-catalog fence. Revalidate the fence, retention deadline, active operations,
    delegated credentials, reader leases, and operator pins immediately before
    scheduling deletion.
 5. For catalog clear, wait for R178's maintenance publication, lease-plus-grace
@@ -112,6 +119,10 @@ contains zero free bytes.
    Resume after capacity is added through the normal storage flow or safe
    reclamation makes allocation possible. Do not promise GC can make progress at
    absolute exhaustion without verifying its own durable-work requirements.
+10. Reject new live-table GC task creation and do not schedule legacy live tasks
+    for deletion. Release any head fence owned by a legacy task before marking it
+    complete; conflicting or uncertain fence ownership remains inspectable and
+    retryable. Neither path may reclaim another file.
 
 ## Dependencies
 
@@ -152,9 +163,10 @@ contains zero free bytes.
   referenced files are marked and no task memory or KV value grows with the graph.
   Invariants: GC-I2 and GC-I3. Integration test.
 - Given a failed commit candidate, expired stage, aborted multipart upload, and
-  orphan projection, when cleanup runs after deadlines, assert only unreachable
-  state is removed and repeated execution is idempotent. Invariants: GC-I1 and
-  GC-I4. Integration test.
+  orphan projection, when the owning table remains Ready, assert physical cleanup
+  defers; after table purge or catalog retirement and required deadlines, assert
+  only unreachable state is removed and repeated execution is idempotent.
+  Invariants: GC-I1, GC-I4 and GC-I7. Integration test.
 - Given colliding retry identities with primary and exact-identity overflow
   records, when one expires and the other remains retained or pending, assert
   cleanup removes only the expired binding after its result and active-root
@@ -164,6 +176,10 @@ contains zero free bytes.
   operator pin, when each fence expires or releases in every order, assert deletion
   starts only after the last valid fence and never affects the reader's bytes.
   Invariant: GC-I2. E2E test.
+- Given a Ready table and an unreachable candidate or a legacy live task, when
+  operator or background GC runs, assert no file is deleted, new GET and commit
+  remain admitted, and an owned legacy fence is released. Invariants: GC-I2,
+  GC-I4 and GC-I7. Integration test.
 - Given clear of a catalog containing billions of simulated keys across partitions,
   when workers crash and resume, assert foreground clear does not scan children,
   continuation makes progress, every batch stays bounded, and the new CatalogId is

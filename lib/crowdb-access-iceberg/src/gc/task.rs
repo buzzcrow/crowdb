@@ -32,7 +32,6 @@ pub enum GcPhase {
     SweepWrites,
     VerifyCleanup,
     CleanupGc,
-    Unseal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,7 +107,6 @@ impl GcTask {
             || self.scan_after.len() > crate::key::MAX_KEY_BYTES
             || self.queue_read > self.queue_write
             || (matches!(self.phase, GcPhase::Sweep | GcPhase::SweepWrites) && self.sweep_round == 0)
-            || (self.phase == GcPhase::Unseal && self.kind != GcTaskKind::LiveTable)
             || (matches!(
                 self.phase,
                 GcPhase::CleanupSystem

@@ -6,6 +6,7 @@ use crowdb_access_iceberg::{
     record::StorageRecord,
     table::{head_key, TableHead, TableLifecycle},
 };
+use std::sync::atomic::Ordering;
 
 mod common {
     pub mod store;
@@ -69,11 +70,20 @@ async fn fixture() -> (common::file::TestFile, GcTask) {
     (fixture, task)
 }
 
+async fn seed_legacy_task(store: &common::TestStore, task: &GcTask) {
+    let key = task.key().encode().unwrap();
+    let bytes = StorageRecord::GcTask(Box::new(task.clone())).encode().unwrap();
+    store
+        .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn publication_using_pre_sweep_head_cannot_succeed_after_release() {
     let (fixture, task) = fixture().await;
     let repository = GcRepository::new(fixture.store.clone());
-    repository.create(&task).await.unwrap();
+    seed_legacy_task(&fixture.store, &task).await;
     repository.fence_table(&task).await.unwrap();
     repository.verify_table_fence(&task).await.unwrap();
     repository.release_table_fence(&task).await.unwrap();
@@ -99,6 +109,68 @@ async fn publication_using_pre_sweep_head_cannot_succeed_after_release() {
 }
 
 #[tokio::test]
+async fn retiring_legacy_live_work_releases_an_unrecorded_fence() {
+    let (fixture, mut task) = fixture().await;
+    task.paused = true;
+    let repository = GcRepository::new(fixture.store.clone());
+    seed_legacy_task(&fixture.store, &task).await;
+    repository.fence_table(&task).await.unwrap();
+    let retired = repository.retire_live(&task).await.unwrap();
+    assert_eq!(retired.phase, GcPhase::Complete);
+    assert!(!retired.fenced);
+    assert!(!retired.paused);
+    let mut expected = task.head.as_ref().unwrap().clone();
+    expected.operation_fence += 2;
+    let key = head_key(expected.catalog, expected.table);
+    let stored = fixture.store.get(&key.encode().unwrap()).await.unwrap().unwrap();
+    assert_eq!(
+        StorageRecord::decode(&key, &stored.bytes).unwrap(),
+        StorageRecord::TableHead(Box::new(expected))
+    );
+    assert_eq!(repository.retire_live(&retired).await.unwrap(), retired);
+}
+
+#[tokio::test]
+async fn retiring_unfenced_live_work_does_not_change_the_ready_head() {
+    let (fixture, task) = fixture().await;
+    let repository = GcRepository::new(fixture.store.clone());
+    assert!(repository.create(&task).await.is_err());
+    seed_legacy_task(&fixture.store, &task).await;
+    let head = task.head.as_ref().unwrap();
+    let key = head_key(head.catalog, head.table);
+    let before = fixture.store.get(&key.encode().unwrap()).await.unwrap().unwrap();
+    let retired = repository.retire_live(&task).await.unwrap();
+    assert_eq!(retired.phase, GcPhase::Complete);
+    assert_eq!(
+        fixture
+            .store
+            .get(&key.encode().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        before.bytes
+    );
+}
+
+#[tokio::test]
+async fn lost_legacy_fence_release_reply_is_recovered_on_retry() {
+    let (fixture, task) = fixture().await;
+    let repository = GcRepository::new(fixture.store.clone());
+    seed_legacy_task(&fixture.store, &task).await;
+    repository.fence_table(&task).await.unwrap();
+    fixture
+        .store
+        .fail_after
+        .store(fixture.store.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    assert!(repository.retire_live(&task).await.is_err());
+    fixture.store.fail_after.store(0, Ordering::SeqCst);
+    let retired = repository.retire_live(&task).await.unwrap();
+    assert_eq!(retired.phase, GcPhase::Complete);
+    assert!(!retired.fenced);
+}
+
+#[tokio::test]
 async fn new_reader_pin_cannot_be_acknowledged_during_sweep() {
     let (fixture, task) = fixture().await;
     let pins = ReaderPins::new(fixture.store.clone());
@@ -114,7 +186,7 @@ async fn new_reader_pin_cannot_be_acknowledged_during_sweep() {
     };
     pins.acquire(&pin).await.unwrap();
     let repository = GcRepository::new(fixture.store.clone());
-    repository.create(&task).await.unwrap();
+    seed_legacy_task(&fixture.store, &task).await;
     repository.fence_table(&task).await.unwrap();
     let mut newcomer = pin.clone();
     newcomer.identity = OperationId::random();

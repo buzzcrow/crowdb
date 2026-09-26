@@ -57,7 +57,7 @@ pub async fn evaluate_durable_commit(
     let payload = PayloadStore::new(store.clone()).get(&operation.input).await?;
     let request = CommitRequest::decode(&payload, limits.request)?;
     let metadata = FileRepository::new(store.clone())
-        .load_for_commit(operation.context, &operation.before.metadata_location)
+        .load(operation.context, &operation.before.metadata_location)
         .await?
         .ok_or(TableMetadataError::Binding)?;
     let selected = SelectedTable {

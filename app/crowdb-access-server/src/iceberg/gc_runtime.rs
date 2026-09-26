@@ -3,8 +3,9 @@ use std::{sync::Arc, time::Duration};
 use crowdb_access_iceberg::{
     catalog::{CatalogContext, CatalogRepository, RootState, RoutedCatalogStore},
     file::FileBlockStore,
-    gc::{GcLimits, GcPhase, GcRepository, GcScan, GcStore, GcWorker},
-    key::{CatalogId, CatalogScope, IcebergKey},
+    gc::{GcLimits, GcPhase, GcRepository, GcScan, GcStore, GcSystemScan, GcTaskKind, GcWorker},
+    key::{CatalogId, CatalogScope, IcebergKey, SystemScope},
+    operation::{ManagementAction, ManagementPhase},
     record::StorageRecord,
 };
 use crowdb_chunk_client::ChunkIoClient;
@@ -15,6 +16,7 @@ pub(super) mod budget;
 struct ScanPosition {
     task: Vec<u8>,
     purge: Vec<u8>,
+    system: Vec<u8>,
 }
 
 pub(super) struct GcRuntimeConfig {
@@ -212,6 +214,11 @@ async fn scan_and_advance(
     } else {
         Vec::new()
     };
+    let next_system = if active.is_some() {
+        scan_retired(store.clone(), worker, after.system, limits).await?
+    } else {
+        Vec::new()
+    };
     let scan = GcScan {
         catalog,
         scope: Some(CatalogScope::GcTask),
@@ -229,6 +236,17 @@ async fn scan_and_advance(
         let StorageRecord::GcTask(task) = StorageRecord::decode(&key, &item.value)? else {
             return Err("GC task scan encountered a non-task record".into());
         };
+        if task.kind == GcTaskKind::LiveTable && task.phase != GcPhase::Complete {
+            match GcRepository::new(store.clone()).retire_live(&task).await {
+                Ok(progress) => {
+                    tracing::info!(catalog = %catalog, task = %task.identity, phase = ?progress.phase, "retired legacy live GC task");
+                }
+                Err(error) => {
+                    tracing::error!(catalog = %catalog, task = %task.identity, %error, "legacy live GC task still requires fence recovery");
+                }
+            }
+            break;
+        }
         if !matches!(task.phase, GcPhase::Complete | GcPhase::Quarantined) && !task.paused {
             let now_ms = super::runtime::now_ms()?;
             if now_ms >= task.retry_at_ms {
@@ -247,7 +265,51 @@ async fn scan_and_advance(
     Ok(ScanPosition {
         task: next,
         purge: next_purge,
+        system: next_system,
     })
+}
+
+async fn scan_retired(
+    store: Arc<budget::BudgetedGcStore>,
+    worker: &GcWorker,
+    after: Vec<u8>,
+    limits: GcLimits,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let scan = GcSystemScan {
+        after,
+        items: 1,
+        bytes: limits.page_bytes as usize,
+    };
+    let page = store.scan_gc_system(scan.clone()).await?;
+    scan.validate_page(&page)?;
+    let Some(item) = page.items.first() else {
+        return Ok(Vec::new());
+    };
+    let key = IcebergKey::decode(&item.key)?;
+    if matches!(
+        key,
+        IcebergKey::System {
+            scope: SystemScope::ManagementOperation,
+            ..
+        }
+    ) {
+        let StorageRecord::Management(operation) = StorageRecord::decode(&key, &item.value)? else {
+            return Err("management scan encountered a non-management record".into());
+        };
+        if operation.request.action == ManagementAction::Clear && operation.phase == ManagementPhase::Complete
+        {
+            let task = GcRepository::new(store)
+                .admit_retired(&operation, super::runtime::now_ms()?, limits)
+                .await?;
+            if !matches!(task.phase, GcPhase::Complete | GcPhase::Quarantined) && !task.paused {
+                let now_ms = super::runtime::now_ms()?;
+                if now_ms >= task.retry_at_ms {
+                    worker.run(&task, now_ms).await?;
+                }
+            }
+        }
+    }
+    Ok(item.key.clone())
 }
 
 async fn scan_purge(
