@@ -72,15 +72,42 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   The pinned PyIceberg environment includes `s3fs`; the test obtains the
   standard REST credential response explicitly before using PyIceberg FileIO.
   Files: Access Server native E2E tests and pixi environment.
-- [ ] **Capacity acceptance**: configured disk exhaustion and recovery,
+- [x] **Capacity acceptance**: configured disk exhaustion and recovery,
   foreground Iceberg SDK operations during GC, affected tests and gates. Native
   full-disk FileIO failure/recovery and committed-file readability pass; the
-  full-disk GC-workspace case remains. A fault-injected workspace denial proves
-  the mark continuation survives a resource stall and resumes after admission;
-  inactive discovery likewise retains the file and resumes after GC candidate
-  workspace is available again.
-- [ ] **Architecture cleanup**: update permanent design, remove temporary plan
+  full-disk GC-workspace case now runs with deterministic admission failure at
+  candidate persistence while the native simulated disk reports zero free
+  bytes. The task retains its continuation, obeys retry backoff, and completes
+  after block release and compaction without touching another table's committed
+  file. A separate fault-injected mark test verifies the same fail-closed
+  behavior for proof pages.
+- [~] **Architecture cleanup**: update permanent design, remove temporary plan
   and requirement only after the acceptance matrix passes.
+
+## Blocked
+
+- Full Access Server acceptance is not green. The existing native S3 test
+  `signed_standard_put_get_and_multipart_publish_unbound_files` originally
+  returned 409 on its first PUT: its fixture minted a grant for a random table
+  with no published head or staged draft, which the GC reader pin correctly
+  rejects. The fixture now creates a real staged draft before issuing the
+  grant, preserving unbound file-kind coverage without bypassing protection.
+  The test then advances through PUT, GET and multipart upload but fails while
+  reading the successful CompleteMultipartUpload response with
+  `UnexpectedEof` in the chunk-size line at
+  `app/crowdb-access-server/tests/iceberg_file_http_test.rs:237`.
+- Six isolated/root-cause-directed runs reached this point: the initial full
+  server suite, a single-test reproduction, two instrumented single-test
+  reproductions, and the staged-draft fixture runs. The first fixture run
+  exposed disabled table routes because the persisted delegation bound was
+  zero; setting the test bound to fifteen minutes resolved that and exposed
+  the multipart response failure. Do not relax `ReaderPins::protect_files` or
+  claim the full acceptance gate passed. Next diagnose the listener-side
+  multipart response stream and rerun the full suite in a fresh runtime.
+- Workspace `pixi run rs-lint` is independently blocked by the concurrent
+  uncommitted `container/crowdb-monitor` crate: one unused import and four
+  missing `# Errors` sections. Targeted Iceberg clippy passed; do not alter
+  unrelated container work as part of R183.
 
 ## Storage findings
 
@@ -104,9 +131,13 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   drop three tables while reading committed metadata through PyIceberg FileIO;
   GC advances during those requests against a 128-record purge backlog.
   Command: `CROWDB_ICEBERG_E2E_PYTHON=.pixi/envs/iceberg-e2e/bin/python CROWDB_RUNTIME_ROOT=.crowdb-runtime/artifacts/gc-sdk-pressure-20260926e pixi run cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_gc_control_test official_sdk_foreground_progresses_under_gc_backlog -- --ignored --nocapture`.
+- A native capacity test fills the configured simulated disk, injects denial
+  at GC candidate persistence, confirms the durable task and file remain,
+  checks retry backoff, then frees/compacts disk blocks and completes the GC
+  task. The unrelated committed file remains readable after completion.
 
-- Iceberg library all-target tests and Access Server Iceberg-enabled all-target
-  tests pass. Focused coverage includes checkpoint forests, live shared-root
+- Iceberg library all-target tests pass; the current Access Server
+  Iceberg-enabled all-target gate is blocked as recorded above. Focused coverage includes checkpoint forests, live shared-root
   protection, write-intent readback, exact byte ranges, deferred writes, stale
   publication, owner adoption, retired cleanup and lost progress/delete replies.
 - Native storage E2E passes: exact pre-authority block intents are present before
@@ -118,10 +149,11 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   above avoids those claims without changing or deleting the persistent cluster.
 - Chunk-client small-object and reclamation tests pass, including pre-DiskIO
   callback failure and readable-cursor/terminal-state reconciliation.
-- Targeted clippy with Iceberg E2E targets and warnings denied, Rust fmt check,
-  and workspace `pixi run rs-lint` pass.
-- GC runtime remains disabled by default. Foreground saturation, GC workspace
-  failure under full storage and full SDK foreground-during-GC acceptance remain.
+- Targeted clippy with Iceberg E2E targets and warnings denied and Rust fmt check
+  pass. Workspace `pixi run rs-lint` is blocked as recorded above.
+- GC runtime remains disabled by default. Foreground saturation and the
+  full-disk workspace-failure acceptance above have focused coverage; the
+  Access Server all-target gate remains blocked as recorded above.
 - Authenticated native-process control and opt-in scheduler restart E2E pass;
   the scheduler advances a durable task while foreground configuration remains
   available. KV/chunk admission tests deny dispatch after independent budgets

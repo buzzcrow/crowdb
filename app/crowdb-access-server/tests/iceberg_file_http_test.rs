@@ -19,7 +19,7 @@ use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds, ManagementP
 use crowdb_access_iceberg::file::{
     FileGrant, FileGrantIssuer, FileKind, FileOperation, FileOperations, FileRepository, TableLocation,
 };
-use crowdb_access_iceberg::key::{OperationId, TableId};
+use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use reqwest::{Client, Method};
@@ -52,7 +52,11 @@ async fn setup() -> (
     TestFileClient,
     TableLocation,
 ) {
-    setup_with_bounds(ClearBounds::default()).await
+    setup_with_bounds(ClearBounds {
+        delegated_access_ms: 900_000,
+        ..ClearBounds::default()
+    })
+    .await
 }
 
 async fn setup_with_bounds(
@@ -86,10 +90,30 @@ async fn setup_with_bounds(
         .unwrap();
     common::activate(&repository).await;
     let context = repository.status().await.unwrap().0.context;
-    let table = TableLocation {
-        catalog: context.catalog,
-        table: TableId::random(),
-    };
+    let process = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let client = Client::new();
+    let endpoint = format!("http://{}", process.address);
+    let namespace = client
+        .post(format!("{endpoint}/v1/namespaces"))
+        .bearer_auth("w".repeat(32))
+        .json(&serde_json::json!({"namespace": ["analytics"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(namespace.status(), 200, "{}", namespace.text().await.unwrap());
+    let draft = client
+        .post(format!("{endpoint}/v1/namespaces/analytics/tables"))
+        .bearer_auth("w".repeat(32))
+        .json(&serde_json::json!({"name": "files", "stage-create": true,
+            "schema": {"type": "struct", "fields": []}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(draft.status(), 200, "{}", draft.text().await.unwrap());
+    let draft: serde_json::Value = draft.json().await.unwrap();
+    let table: TableLocation = format!("{}/", draft["metadata"]["location"].as_str().unwrap())
+        .parse()
+        .unwrap();
     let authenticator =
         BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
     let issuer = FileGrantIssuer::new(authenticator.namespace_token_key(), 15 * 60 * 1000).unwrap();
@@ -117,9 +141,8 @@ async fn setup_with_bounds(
             max_file_bytes: 64 * 1024 * 1024,
         })
         .unwrap();
-    let process = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let client = TestFileClient {
-        client: Client::new(),
+        client,
         credentials,
         address: process.address,
     };

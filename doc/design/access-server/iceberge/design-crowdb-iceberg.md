@@ -554,7 +554,14 @@ it uses a separate storage client pool, one-step concurrency admission, bounded
 KV and chunk request/byte budgets, and durable retry state. The enabled
 scheduler admits persisted table purge markers and completed catalog clears;
 management may also start inactive tasks. The scheduler is disabled by default
-until foreground saturation has acceptance evidence.
+and requires explicit operator activation with validated resource limits.
+
+Provisioned disk capacity is the allocation boundary for both foreground files
+and GC durable workspace. A failed GC workspace write retains the last durable
+continuation and defers retry; it never substitutes an incomplete proof or
+authorizes deletion. Committed files remain readable when new chunk allocation
+fails. Progress resumes after capacity is restored through the normal storage
+flow. Shared-chunk ranges remain pending while range deletion is unsupported.
 
 Metadata readers, direct FileIO, file publication and both published and staged
 credentials persist pins before rechecking their authority. Pin expiry includes

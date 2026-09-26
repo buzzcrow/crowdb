@@ -1,18 +1,23 @@
 #[path = "common/iceberg_stack.rs"]
 #[allow(dead_code)]
 mod common;
+#[path = "common/iceberg_gc_capacity.rs"]
+mod gc_capacity;
 
 use std::sync::Arc;
 
 use common::TestIcebergStack;
 use crowdb_access_iceberg::{
-    catalog::{CatalogRepository, ClearBounds, ManagementPrivilege},
+    catalog::{CatalogContext, CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege},
     file::{
-        ContentFormat, FileContent, FileIdentity, FileKind, FileReader, FileRecord, FileRepository,
+        file_key, ContentFormat, FileContent, FileIdentity, FileKind, FileReader, FileRecord, FileRepository,
         FileTreeWriter, NativeFileBlocks, TableLocation,
     },
+    gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{FileId, OperationId, TableId},
-    operation::{ManagementAction, ManagementRequest, RequestIdentity},
+    operation::{mutation_identity, ManagementAction, ManagementRequest, RequestIdentity},
+    record::StorageRecord,
+    table::{head_key, TableHead, TableLifecycle, TablePurgeTask},
 };
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
 use crowdb_diskdb_client::{DiskdbClient, DiskdbClientError, DiskdbRpcTransport};
@@ -22,6 +27,7 @@ use crowdb_protocol::{
         AllocateBlocksRequest, CommitBlocksRequest, CompactZoneRequest, FreeBlocksRequest, Segment,
     },
 };
+use sha2::{Digest, Sha256};
 
 async fn seed_catalog(stack: &TestIcebergStack) -> crowdb_access_iceberg::catalog::CatalogContext {
     let repository = CatalogRepository::new(stack.store().await, ClearBounds::default()).unwrap();
@@ -146,6 +152,172 @@ async fn read_file(stack: &TestIcebergStack, client: &ChunkIoClient, file: FileR
     bytes
 }
 
+async fn seed_gc_workspace_task(
+    stack: &TestIcebergStack,
+    context: CatalogContext,
+) -> (
+    Arc<gc_capacity::TestGcWorkspace>,
+    GcRepository,
+    GcTask,
+    FileId,
+    GcLimits,
+) {
+    let store = stack.store().await;
+    let table = TableLocation {
+        catalog: context.catalog,
+        table: TableId::random(),
+    };
+    let metadata = FileRecord {
+        file: FileId::random(),
+        location: table.file("metadata/gc-candidate.json").unwrap(),
+        kind: FileKind::Metadata,
+        format: ContentFormat::Json,
+        length: 2,
+        digest: Sha256::digest(b"{}").into(),
+        content: FileContent::select_inline(FileKind::Metadata, b"{}").unwrap(),
+        hint: None,
+    };
+    FileRepository::new(store.clone())
+        .publish(context, &metadata)
+        .await
+        .unwrap();
+    let head = TableHead {
+        catalog: context.catalog,
+        table: table.table,
+        namespace: crowdb_access_iceberg::key::NamespaceId::random(),
+        name: "gc-capacity".into(),
+        name_epoch: 1,
+        lifecycle: TableLifecycle::Tombstone,
+        generation: 1,
+        metadata_file: metadata.file,
+        metadata_location: metadata.location,
+        metadata_digest: metadata.digest,
+        format_version: 1,
+        table_uuid: None,
+        operation_fence: 2,
+        pending_operation: Some(OperationId::random()),
+    };
+    let key = head_key(context.catalog, table.table).encode().unwrap();
+    let bytes = StorageRecord::TableHead(Box::new(head.clone())).encode().unwrap();
+    store
+        .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+        .await
+        .unwrap();
+    let marker = TablePurgeTask {
+        activation_epoch: context.activation_epoch,
+        head: head.clone(),
+    };
+    let key = marker.key().encode().unwrap();
+    let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();
+    store
+        .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+        .await
+        .unwrap();
+    let workspace = Arc::new(gc_capacity::TestGcWorkspace::new(store));
+    let repository = GcRepository::new(workspace.clone());
+    let limits = GcLimits {
+        minimum_retention_ms: 1,
+        ..GcLimits::default()
+    };
+    let task = GcTask::plan(
+        context,
+        OperationId::random(),
+        Some(head),
+        common::now_ms(),
+        limits,
+    )
+    .unwrap();
+    repository.create(&task).await.unwrap();
+    (workspace, repository, task, metadata.file, limits)
+}
+
+async fn run_gc_until_resource_stall(worker: &GcWorker, mut task: GcTask) -> GcTask {
+    for _ in 0..20 {
+        task = worker
+            .run(&task, common::now_ms().max(task.retry_at_ms))
+            .await
+            .unwrap();
+        if task.stalled == GcStalledReason::Resource {
+            break;
+        }
+    }
+    assert_eq!(task.phase, GcPhase::Discover);
+    assert_eq!(task.stalled, GcStalledReason::Resource);
+    assert_eq!(task.deleted, 0);
+    task
+}
+
+async fn run_gc_until_complete(worker: &GcWorker, mut task: GcTask) -> GcTask {
+    for _ in 0..300 {
+        task = worker
+            .run(&task, common::now_ms().max(task.retry_at_ms))
+            .await
+            .unwrap();
+        if task.phase == GcPhase::Complete {
+            break;
+        }
+    }
+    assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
+    task
+}
+
+async fn assert_gc_workspace_stall(
+    stack: &TestIcebergStack,
+    client: &ChunkIoClient,
+    workspace: &Arc<gc_capacity::TestGcWorkspace>,
+    repository: &GcRepository,
+    task: GcTask,
+    file: FileId,
+    limits: GcLimits,
+) -> GcTask {
+    workspace.deny(true);
+    let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
+    let worker = GcWorker::new(repository.clone(), blocks, limits).unwrap();
+    let stalled = run_gc_until_resource_stall(&worker, task).await;
+    assert_eq!(
+        worker.run(&stalled, stalled.retry_at_ms - 1).await.unwrap(),
+        stalled
+    );
+    assert!(stack
+        .store()
+        .await
+        .get(&file_key(stalled.context.catalog, file).encode().unwrap())
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        repository
+            .task(stalled.context.catalog, stalled.identity)
+            .await
+            .unwrap(),
+        Some(stalled.clone())
+    );
+    stalled
+}
+
+async fn assert_gc_workspace_recovered(
+    stack: &TestIcebergStack,
+    client: &ChunkIoClient,
+    workspace: &Arc<gc_capacity::TestGcWorkspace>,
+    repository: GcRepository,
+    task: GcTask,
+    file: FileId,
+    limits: GcLimits,
+) {
+    workspace.deny(false);
+    let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
+    let worker = GcWorker::new(repository, blocks, limits).unwrap();
+    let finished = run_gc_until_complete(&worker, task).await;
+    assert!(finished.deleted >= 1);
+    assert!(stack
+        .store()
+        .await
+        .get(&file_key(finished.context.catalog, file).encode().unwrap())
+        .await
+        .unwrap()
+        .is_none());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compaction() {
     let stack = TestIcebergStack::start().await;
@@ -166,6 +338,8 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
     committed.location = owner.table.file("data/committed.parquet").unwrap();
     let files = FileRepository::new(stack.store().await);
     files.publish(context, &committed).await.unwrap();
+    let (workspace, gc_repository, gc_task, gc_file, gc_limits) =
+        seed_gc_workspace_task(&stack, context).await;
     client.shutdown_small_writes().await.unwrap();
     drop(client);
     let disk = DiskdbClient::new(
@@ -190,6 +364,16 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
         read_file(&stack, &client, committed.clone()).await,
         vec![31; 32 * 1024]
     );
+    let stalled = assert_gc_workspace_stall(
+        &stack,
+        &client,
+        &workspace,
+        &gc_repository,
+        gc_task,
+        gc_file,
+        gc_limits,
+    )
+    .await;
     drop(client);
     for batch in held.chunks(100) {
         assert_eq!(
@@ -216,5 +400,20 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
     files.publish(context, &file).await.unwrap();
     assert_eq!(files.load(context, &location).await.unwrap(), Some(file.clone()));
     assert_eq!(read_file(&stack, &client, file).await, vec![31; 32 * 1024]);
+    assert_gc_workspace_recovered(
+        &stack,
+        &client,
+        &workspace,
+        gc_repository,
+        stalled,
+        gc_file,
+        gc_limits,
+    )
+    .await;
+    assert_eq!(
+        files.load(context, &committed.location).await.unwrap(),
+        Some(committed.clone())
+    );
+    assert_eq!(read_file(&stack, &client, committed).await, vec![31; 32 * 1024]);
     client.shutdown_small_writes().await.unwrap();
 }
