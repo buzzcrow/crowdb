@@ -94,8 +94,9 @@ and verifiable release assets.
   `container/crowdb-monitor/tests/kv_bootstrap_test.rs`. The existing management
   API contract is used for Group 0/1, with exact identity/readiness checks,
   response-loss proof before replay, and validation-only Ready restart. Mock
-  HTTP tests pass and monitor events are verified; process staging and real KV
-  integration remain.
+  HTTP tests pass and monitor events are verified. A real-process test now
+  starts KV through `Supervisor`, creates Group 0/1 through the management API,
+  shuts down, and validates both after restart. `run` command staging remains.
 - [~] **Four-disk storage bootstrap**: create sparse files without truncating
   existing bytes; write rack/node/disk-group/four-disk authority to Group 0;
   render and start DiskDB and DiskIO; validate all stable disk IDs, one-zone 16
