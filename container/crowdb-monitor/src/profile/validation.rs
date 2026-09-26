@@ -195,6 +195,7 @@ fn validate_services(profile: &DeploymentProfile) -> Result<(), ProfileError> {
         if restart.max_attempts == 0
             || restart.backoff_base_ms == 0
             || restart.backoff_base_ms > restart.backoff_max_ms
+            || restart.stable_after_ms == 0
         {
             return invalid(format!("service {} has invalid restart bounds", service.id));
         }

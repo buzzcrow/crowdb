@@ -39,6 +39,7 @@ pub struct Supervisor {
     status: MonitorStatus,
     environment: BTreeMap<String, BTreeMap<String, String>>,
     probe_failures: BTreeMap<String, u32>,
+    healthy_since: BTreeMap<String, Instant>,
     bootstrapped: bool,
 }
 
@@ -71,6 +72,7 @@ impl Supervisor {
             status,
             environment: BTreeMap::new(),
             probe_failures: BTreeMap::new(),
+            healthy_since: BTreeMap::new(),
             bootstrapped: false,
         })
     }
@@ -123,6 +125,7 @@ impl Supervisor {
             return Err(error);
         }
         self.environment.insert(id.to_owned(), environment);
+        self.healthy_since.insert(id.to_owned(), Instant::now());
         self.status.services.insert(
             id.to_owned(),
             ServiceStatus {
@@ -173,6 +176,25 @@ impl Supervisor {
             let healthy = alive && self.probes.probe_service(&service).await.is_ok();
             if healthy {
                 self.probe_failures.insert(id.clone(), 0);
+                if self.healthy_since.get(&id).is_some_and(|since| {
+                    since.elapsed() >= Duration::from_millis(service.restart.stable_after_ms)
+                }) {
+                    if let Some(state) = self.status.services.get_mut(&id) {
+                        if state.restart_attempts != 0 {
+                            state.restart_attempts = 0;
+                            self.status_store.publish(&mut self.status)?;
+                            let pid = self.processes.pid(&id);
+                            self.processes
+                                .record_event(&MonitorEvent {
+                                    kind: MonitorEventKind::RestartBudgetReset,
+                                    service: Some(&id),
+                                    pid,
+                                    attempt: None,
+                                })
+                                .await?;
+                        }
+                    }
+                }
                 if let Some(state) = self.status.services.get_mut(&id) {
                     if !state.healthy {
                         state.healthy = true;
@@ -193,6 +215,7 @@ impl Supervisor {
                 continue;
             }
             let failures = self.probe_failures.entry(id.clone()).or_default();
+            self.healthy_since.remove(&id);
             *failures = failures.saturating_add(1);
             if *failures == 1 {
                 self.processes
@@ -432,6 +455,7 @@ impl Supervisor {
                 state.generation = state.generation.saturating_add(1);
                 state.healthy = true;
             }
+            self.healthy_since.insert(id.clone(), Instant::now());
             self.status_store.publish(&mut self.status)?;
         }
         Ok(true)

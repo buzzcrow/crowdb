@@ -31,6 +31,7 @@ pub enum MonitorEventKind {
     ChildExited,
     ChildStartFailed,
     Restarting,
+    RestartBudgetReset,
     RestartExhausted,
     BootstrapStepStarted,
     BootstrapStepCompleted,

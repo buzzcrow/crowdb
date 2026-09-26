@@ -130,6 +130,40 @@ async fn repeated_exits_exhaust_budget_and_leave_unready() {
 }
 
 #[tokio::test]
+async fn stable_health_resets_crash_loop_budget() {
+    let roots = TestRoots::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut profile = roots.profile(
+        "sleep 0.3; exit 1".into(),
+        listener.local_addr().unwrap().port(),
+        1,
+    );
+    profile.services[0].restart.stable_after_ms = 50;
+    let mut supervisor = Supervisor::new(
+        profile,
+        Uuid::new_v4(),
+        &roots.0.join("data/log"),
+        &roots.0.join("run"),
+    )
+    .await
+    .unwrap();
+    supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
+    supervisor.mark_ready().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().services["kv"].restart_attempts, 1);
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().services["kv"].restart_attempts, 0);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().services["kv"].generation, 3);
+    supervisor.shutdown().await.unwrap();
+    let body = fs::read_to_string(roots.0.join("data/log/monitor/monitor.log")).unwrap();
+    assert!(body.contains("restart_budget_reset"));
+}
+
+#[tokio::test]
 async fn transient_probe_failure_clears_readiness_without_restarting() {
     let roots = TestRoots::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -64,8 +64,9 @@ and verifiable release assets.
   healthy dependencies, drops readiness on probe failure, restarts affected
   services with finite backoff, handles SIGTERM drain, and tests exit recovery
   and budget exhaustion. Dependent cascade and transient-probe recovery tests
-  also pass. Remaining: real-bootstrap staging, listener-fencing tests,
-  stable-period budget reset, and PID 1 acceptance.
+  also pass. A configurable stable-health period now resets the crash-loop
+  budget and logs that transition. Remaining: real-bootstrap staging,
+  listener-fencing tests, and PID 1 acceptance.
 - [~] **Monitor lifecycle log**: persist important bootstrap, readiness, child
   lifecycle, probe failure, restart, drain, and exhaustion events under durable
   `log/monitor/`; retain bounded rotation, redact by using fixed event fields,

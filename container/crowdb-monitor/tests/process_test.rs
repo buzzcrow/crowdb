@@ -55,6 +55,7 @@ fn service(script: &str) -> ServiceProfile {
             max_attempts: 1,
             backoff_base_ms: 1,
             backoff_max_ms: 1,
+            stable_after_ms: 60_000,
         },
     }
 }

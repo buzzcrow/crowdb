@@ -127,6 +127,12 @@ pub struct RestartProfile {
     pub max_attempts: u32,
     pub backoff_base_ms: u64,
     pub backoff_max_ms: u64,
+    #[serde(default = "default_stable_after_ms")]
+    pub stable_after_ms: u64,
+}
+
+const fn default_stable_after_ms() -> u64 {
+    60_000
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
