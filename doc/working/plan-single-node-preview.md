@@ -27,7 +27,7 @@ and verifiable release assets.
   `container/single-node-preview/profile.toml`,
   `container/single-node-preview/templates/*.toml`,
   `container/crowdb-monitor/tests/single_node_profile_test.rs`.
-- [~] **Manifest state machine**: implement atomic, mode-0600
+- [x] **Manifest state machine**: implement atomic, mode-0600
   `Initializing`/`Ready` manifest persistence, stable generated identities,
   exact-profile/config digests, empty-root classification, interrupted-step
   replay, Ready validation-only restart, and fail-closed handling for unknown or

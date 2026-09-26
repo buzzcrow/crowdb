@@ -2,8 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 mod layout;
+mod manifest;
 mod profile;
 
+pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use profile::{
     DeploymentProfile, DiskProfile, GroupProfile, GroupRole, LogProfile, NodeProfile, PathProfile, ProbeKind,
     ProbeProfile, ProfileError, PublicEndpoint, RestartProfile, ServiceProfile,
