@@ -44,6 +44,7 @@ impl TestRoots {
         service.program = self.0.join("bin/sh");
         service.args = vec!["-c".into(), script];
         service.config_template = None;
+        service.fence_listeners.clear();
         service.probe.kind = ProbeKind::Tcp;
         service.probe.target = format!("127.0.0.1:{port}");
         service.probe.failure_threshold = 1;
@@ -161,6 +162,36 @@ async fn stable_health_resets_crash_loop_budget() {
     supervisor.shutdown().await.unwrap();
     let body = fs::read_to_string(roots.0.join("data/log/monitor/monitor.log")).unwrap();
     assert!(body.contains("restart_budget_reset"));
+}
+
+#[tokio::test]
+async fn live_listener_prevents_replacement_after_child_exit() {
+    let roots = TestRoots::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let mut profile = roots.profile(
+        "sleep 0.2; exit 1".into(),
+        listener.local_addr().unwrap().port(),
+        1,
+    );
+    profile.services[0].fence_listeners = vec![address];
+    let mut supervisor = Supervisor::new(
+        profile,
+        Uuid::new_v4(),
+        &roots.0.join("data/log"),
+        &roots.0.join("run"),
+    )
+    .await
+    .unwrap();
+    supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
+    supervisor.mark_ready().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(supervisor.poll_once().await.is_err());
+    assert_eq!(supervisor.status().phase, MonitorPhase::Failed);
+    assert_eq!(supervisor.status().services["kv"].generation, 1);
+    assert_eq!(supervisor.status().services["kv"].pid, None);
+    let body = fs::read_to_string(roots.0.join("data/log/monitor/monitor.log")).unwrap();
+    assert!(body.contains("listener_fence_failed"));
 }
 
 #[tokio::test]

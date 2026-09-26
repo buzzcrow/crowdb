@@ -41,6 +41,10 @@ impl TestRoot {
         service.program = self.0.join("bin/crowdb-kv-server");
         symlink(binary, &service.program).unwrap();
         service.config_template = None;
+        service.fence_listeners = vec![
+            format!("127.0.0.1:{management_port}"),
+            format!("127.0.0.1:{rpc_port}"),
+        ];
         service.args = vec![
             "--root".into(),
             self.0.join("data/kv/node-1").to_string_lossy().into_owned(),

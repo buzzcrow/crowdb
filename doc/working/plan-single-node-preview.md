@@ -66,7 +66,9 @@ and verifiable release assets.
   and budget exhaustion. Dependent cascade and transient-probe recovery tests
   also pass. A configurable stable-health period now resets the crash-loop
   budget and logs that transition. Remaining: real-bootstrap staging,
-  listener-fencing tests, and PID 1 acceptance.
+  PID 1 acceptance and durable-authority revalidation after child recovery.
+  Profile-declared listeners are now fenced after reaping and before replacement;
+  a surviving listener fails the monitor instead of admitting overlap.
 - [~] **Monitor lifecycle log**: persist important bootstrap, readiness, child
   lifecycle, probe failure, restart, drain, and exhaustion events under durable
   `log/monitor/`; retain bounded rotation, redact by using fixed event fields,

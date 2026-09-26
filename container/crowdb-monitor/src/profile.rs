@@ -146,6 +146,8 @@ pub struct ServiceProfile {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub fence_listeners: Vec<String>,
     pub config_template: Option<PathBuf>,
     pub probe: ProbeProfile,
     pub restart: RestartProfile,

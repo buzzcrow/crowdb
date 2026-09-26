@@ -44,6 +44,7 @@ fn service(script: &str) -> ServiceProfile {
         args: vec!["-c".into(), script.into()],
         env: BTreeMap::new(),
         dependencies: Vec::new(),
+        fence_listeners: Vec::new(),
         config_template: None,
         probe: ProbeProfile {
             kind: ProbeKind::Tcp,

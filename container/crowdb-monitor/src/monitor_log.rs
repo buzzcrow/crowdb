@@ -32,6 +32,7 @@ pub enum MonitorEventKind {
     ChildStartFailed,
     Restarting,
     RestartBudgetReset,
+    ListenerFenceFailed,
     RestartExhausted,
     BootstrapStepStarted,
     BootstrapStepCompleted,
@@ -46,6 +47,7 @@ impl MonitorEventKind {
                 | Self::ChildExited
                 | Self::ChildStartFailed
                 | Self::Restarting
+                | Self::ListenerFenceFailed
                 | Self::RestartExhausted
                 | Self::BootstrapFailed
         )

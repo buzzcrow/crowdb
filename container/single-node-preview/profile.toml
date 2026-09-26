@@ -86,6 +86,7 @@ id = "kv"
 program = "/opt/crowdb/bin/crowdb-kv-server"
 args = ["--root", "/opt/crowdb/data/kv/node-1", "--config", "/opt/crowdb/run/config/kv.toml", "--management-port", "10000", "--ports", "10100,10101", "--log-dir", "/opt/crowdb/data/log/kv", "--log"]
 dependencies = []
+fence_listeners = ["127.0.0.1:10000", "127.0.0.1:10100", "127.0.0.1:10101"]
 config_template = "/opt/crowdb/etc/templates/kv.toml"
 [services.probe]
 kind = "http"
@@ -102,6 +103,7 @@ id = "diskdb"
 program = "/opt/crowdb/bin/crowdb-diskdb"
 args = ["--config", "/opt/crowdb/run/config/diskdb.toml", "--log-dir", "/opt/crowdb/data/log/diskdb", "--log"]
 dependencies = ["kv"]
+fence_listeners = ["127.0.0.1:11000", "127.0.0.1:11100", "127.0.0.1:11200"]
 config_template = "/opt/crowdb/etc/templates/diskdb.toml"
 [services.probe]
 kind = "http"
@@ -118,6 +120,7 @@ id = "diskio"
 program = "/opt/crowdb/bin/crowdb-diskio"
 args = ["--config", "/opt/crowdb/run/config/diskio.toml"]
 dependencies = ["kv", "diskdb"]
+fence_listeners = ["127.0.0.1:13000"]
 config_template = "/opt/crowdb/etc/templates/diskio.toml"
 [services.probe]
 kind = "tcp"
@@ -134,6 +137,7 @@ id = "chunkdb"
 program = "/opt/crowdb/bin/crowdb-chunkdb"
 args = ["--config", "/opt/crowdb/run/config/chunkdb.toml", "--log-dir", "/opt/crowdb/data/log/chunkdb", "--log"]
 dependencies = ["kv", "diskdb", "diskio"]
+fence_listeners = ["127.0.0.1:12100", "127.0.0.1:12200"]
 config_template = "/opt/crowdb/etc/templates/chunkdb.toml"
 [services.probe]
 kind = "http"
@@ -150,6 +154,7 @@ id = "chunk-kv"
 program = "/opt/crowdb/bin/crowdb-chunk-kv-server"
 args = ["--config", "/opt/crowdb/run/config/chunk-kv.toml", "--log-dir", "/opt/crowdb/data/log/chunk-kv", "--log"]
 dependencies = ["kv", "chunkdb", "diskio"]
+fence_listeners = ["127.0.0.1:15100", "127.0.0.1:15200"]
 config_template = "/opt/crowdb/etc/templates/chunk-kv.toml"
 [services.probe]
 kind = "http"
@@ -167,6 +172,7 @@ program = "/opt/crowdb/bin/crowdb-access-server"
 args = []
 env = { CROWDB_S3_LISTEN = "0.0.0.0:16000", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_S3_TENANT = "preview", CROWDB_S3_REGION = "us-east-1", CROWDB_S3_EC_DATA = "2", CROWDB_S3_EC_CODE = "1" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
+fence_listeners = ["127.0.0.1:16000"]
 [services.probe]
 kind = "http"
 target = "http://127.0.0.1:16000/_crowdb/health/ready"
@@ -183,6 +189,7 @@ program = "/opt/crowdb/bin/crowdb-iceberg"
 args = ["serve"]
 env = { CROWDB_ICEBERG_LISTEN = "0.0.0.0:8181", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost:8181", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ICEBERG_GC_ENABLED = "0" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
+fence_listeners = ["127.0.0.1:8181"]
 [services.probe]
 kind = "http"
 target = "http://127.0.0.1:8181/v1/config"
@@ -198,6 +205,7 @@ id = "web"
 program = "/opt/crowdb/bin/crowdb-web"
 args = ["--config", "/opt/crowdb/run/config/crowdb-web.toml"]
 dependencies = ["s3", "iceberg"]
+fence_listeners = ["127.0.0.1:14000"]
 config_template = "/opt/crowdb/etc/templates/crowdb-web.toml"
 [services.probe]
 kind = "http"

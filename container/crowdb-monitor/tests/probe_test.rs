@@ -14,6 +14,7 @@ fn service(kind: ProbeKind, target: String) -> ServiceProfile {
         args: Vec::new(),
         env: BTreeMap::new(),
         dependencies: Vec::new(),
+        fence_listeners: Vec::new(),
         config_template: None,
         probe: ProbeProfile {
             kind,

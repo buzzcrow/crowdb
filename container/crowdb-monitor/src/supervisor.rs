@@ -15,6 +15,7 @@ use crate::{
 const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 const PROBE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const STOP_GRACE: Duration = Duration::from_secs(10);
+const LISTENER_FENCE_DEADLINE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Error)]
 pub enum SupervisorError {
@@ -408,6 +409,27 @@ impl Supervisor {
             if let Some(state) = self.status.services.get_mut(id) {
                 state.pid = None;
                 state.healthy = false;
+            }
+            self.status_store.publish(&mut self.status)?;
+            let service = self.service(id)?.clone();
+            for address in &service.fence_listeners {
+                if let Err(error) = self
+                    .processes
+                    .wait_listener_closed(address, LISTENER_FENCE_DEADLINE)
+                    .await
+                {
+                    self.status.phase = MonitorPhase::Failed;
+                    self.status_store.publish(&mut self.status)?;
+                    self.processes
+                        .record_event(&MonitorEvent {
+                            kind: MonitorEventKind::ListenerFenceFailed,
+                            service: Some(id),
+                            pid: None,
+                            attempt: None,
+                        })
+                        .await?;
+                    return Err(error.into());
+                }
             }
         }
         self.status_store.publish(&mut self.status)?;

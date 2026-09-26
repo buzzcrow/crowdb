@@ -190,6 +190,18 @@ fn validate_services(profile: &DeploymentProfile) -> Result<(), ProfileError> {
                 ));
             }
         }
+        let mut listeners = BTreeSet::new();
+        for listener in &service.fence_listeners {
+            let address = listener.parse::<SocketAddr>().map_err(|_| {
+                ProfileError::Invalid(format!("service {} has an invalid fence listener", service.id))
+            })?;
+            if !address.ip().is_loopback() || !listeners.insert(address) {
+                return invalid(format!(
+                    "service {} has a non-loopback or duplicate fence listener",
+                    service.id
+                ));
+            }
+        }
         validate_probe(service)?;
         let restart = &service.restart;
         if restart.max_attempts == 0
