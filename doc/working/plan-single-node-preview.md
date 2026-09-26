@@ -143,7 +143,7 @@ and verifiable release assets.
   `container/crowdb-monitor/src/bootstrap/s3.rs`,
   `container/crowdb-monitor/tests/access_bootstrap_test.rs`. Verified by two
   focused monitor tests and the 17-case real S3 full-stack suite.
-- [~] **Iceberg catalog and access listeners**: initialize/activate the
+- [x] **Iceberg catalog and access listeners**: initialize/activate the
   catalog with durable UUIDv7 request identities, start authenticated S3 and
   Iceberg listeners on container ports 16000/80, default client-visible
   Iceberg URI to host port 80, and validate discovery/health without
@@ -159,7 +159,10 @@ and verifiable release assets.
   `/v1/config` probes; the supervisor passes it from runtime-only environment
   during start, periodic health, and restart. Focused probe and restart tests
   pass. Monitor `run` stages catalog and access listeners after storage and S3
-  bootstrap. Remaining: real-process catalog and listener tests.
+  bootstrap. The real KV/DiskDB/DiskIO/ChunkDB/Chunk-KV test now initializes
+  and activates the catalog, starts the authenticated Iceberg listener, and
+  validates both after persisted restart. Full container acceptance remains in
+  Phase 5.
 
 ## Phase 4 — Web authority cleanup
 

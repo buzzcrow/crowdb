@@ -7,8 +7,9 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use crowdb_monitor::{
-    disk_step_names, ensure_disk_files, hardware_step_names, kv_step_names, render_configs,
-    verify_diskio_disks, BootstrapSession, DeploymentProfile, HardwareBootstrap, KvBootstrap, Supervisor,
+    disk_step_names, ensure_disk_files, hardware_step_names, iceberg_step_names, kv_step_names,
+    render_configs, verify_diskio_disks, BootstrapSession, DeploymentProfile, HardwareBootstrap,
+    IcebergBootstrap, KvBootstrap, ServerCredentials, Supervisor,
 };
 use uuid::Uuid;
 
@@ -39,9 +40,9 @@ impl TestRoot {
         for disk in &mut profile.disks {
             disk.path = self.0.join("data/disks").join(disk.path.file_name().unwrap());
         }
-        profile.services.retain(|service| {
-            ["kv", "diskdb", "diskio", "chunkdb", "chunk-kv"].contains(&service.id.as_str())
-        });
+        profile
+            .services
+            .retain(|service| binaries.iter().any(|(id, _)| *id == service.id));
         for service in &mut profile.services {
             let name = service.program.file_name().unwrap();
             let binary = binaries.iter().find(|(id, _)| *id == service.id).unwrap().1;
@@ -78,14 +79,30 @@ impl TestRoot {
                         .to_string_lossy()
                         .into_owned(),
                 ],
+                "iceberg" => vec!["serve".into()],
                 _ => unreachable!(),
             };
+            if service.id == "iceberg" {
+                service.env.insert(
+                    "CROWDB_MANAGEMENT_SEEDS".into(),
+                    format!("http://127.0.0.1:{}", ports.kv_management),
+                );
+                service.env.insert(
+                    "CROWDB_ICEBERG_LISTEN".into(),
+                    format!("127.0.0.1:{}", ports.iceberg),
+                );
+                service.env.insert(
+                    "CROWDB_ICEBERG_PUBLIC_URI".into(),
+                    format!("http://127.0.0.1:{}", ports.iceberg),
+                );
+            }
             service.fence_listeners = match service.id.as_str() {
                 "kv" => vec![ports.kv_management, ports.kv_rpc],
                 "diskdb" => vec![ports.diskdb_listen, ports.diskdb_http, ports.diskdb_rpc],
                 "diskio" => vec![ports.diskio_rpc],
                 "chunkdb" => vec![ports.chunkdb_http, ports.chunkdb_rpc],
                 "chunk-kv" => vec![ports.chunk_kv_http, ports.chunk_kv_rpc],
+                "iceberg" => vec![ports.iceberg],
                 _ => unreachable!(),
             }
             .into_iter()
@@ -97,6 +114,7 @@ impl TestRoot {
                 "diskio" => format!("127.0.0.1:{}", ports.diskio_rpc),
                 "chunkdb" => format!("http://127.0.0.1:{}/ready", ports.chunkdb_http),
                 "chunk-kv" => format!("http://127.0.0.1:{}/ready", ports.chunk_kv_http),
+                "iceberg" => format!("http://127.0.0.1:{}/v1/config", ports.iceberg),
                 _ => unreachable!(),
             };
         }
@@ -137,6 +155,16 @@ impl TestRoot {
             .into_iter()
             .chain(disk_step_names(profile))
             .chain(hardware_step_names())
+            .chain(
+                profile
+                    .services
+                    .iter()
+                    .any(|service| service.id == "iceberg")
+                    .then(iceberg_step_names)
+                    .into_iter()
+                    .flatten()
+                    .map(str::to_owned),
+            )
             .collect::<Vec<_>>();
         let steps = names.iter().map(String::as_str).collect::<Vec<_>>();
         BootstrapSession::open(&self.0.join("data"), b"profile", b"config", &steps).unwrap()
@@ -162,12 +190,13 @@ struct Ports {
     chunkdb_rpc: u16,
     chunk_kv_http: u16,
     chunk_kv_rpc: u16,
+    iceberg: u16,
 }
 
 impl Ports {
     async fn allocate() -> Self {
         let mut listeners = Vec::new();
-        for _ in 0..10 {
+        for _ in 0..11 {
             listeners.push(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
         }
         let ports = listeners
@@ -185,6 +214,7 @@ impl Ports {
             chunkdb_rpc: ports[7],
             chunk_kv_http: ports[8],
             chunk_kv_rpc: ports[9],
+            iceberg: ports[10],
         }
     }
 }
@@ -284,4 +314,91 @@ async fn start_preview_storage(
         .start_service("chunk-kv", BTreeMap::new())
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn preview_real_iceberg_catalog_and_listener_survive_restart() {
+    let Some(kv_binary) = crowdb_test_harness::cluster::crowdb_kv_server_bin() else {
+        eprintln!("skipping real Iceberg bootstrap: KV binary unavailable");
+        return;
+    };
+    let binary_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug");
+    let diskio_binary =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/crowdb-diskio/build/crowdb-diskio");
+    let binaries = [
+        ("diskdb", binary_root.join("crowdb-diskdb")),
+        ("diskio", diskio_binary),
+        ("chunkdb", binary_root.join("crowdb-chunkdb")),
+        ("chunk-kv", binary_root.join("crowdb-chunk-kv-server")),
+        ("iceberg", binary_root.join("crowdb-iceberg")),
+    ];
+    if binaries.iter().any(|(_, binary)| !binary.exists()) {
+        eprintln!("skipping real Iceberg bootstrap: storage or Iceberg binary unavailable");
+        return;
+    }
+    let root = TestRoot::new();
+    let ports = Ports::allocate().await;
+    root.templates(&ports);
+    let mut links = vec![("kv", kv_binary.as_path())];
+    links.extend(binaries.iter().map(|(id, path)| (*id, path.as_path())));
+    let profile = root.profile(&ports, &links);
+    let mut session = root.session(&profile);
+    let credentials = ServerCredentials::load_or_create(&root.0.join("data")).unwrap();
+    fs::create_dir_all(root.0.join("data/kv/node-1")).unwrap();
+    fs::create_dir_all(root.0.join("data/log")).unwrap();
+    render_configs(&profile, &root.0.join("templates"), &root.0.join("run")).unwrap();
+    let seed = format!("http://127.0.0.1:{}", ports.kv_management);
+    let mut supervisor = Supervisor::new(
+        profile.clone(),
+        session.manifest().deployment_id(),
+        &root.0.join("data/log"),
+        &root.0.join("run"),
+    )
+    .await
+    .unwrap();
+    start_preview_storage(&mut supervisor, &mut session, &profile, &seed).await;
+    IcebergBootstrap::reconcile(&mut session, &profile, &credentials, supervisor.monitor_log_mut())
+        .await
+        .unwrap();
+    let environment = iceberg_environment(&credentials);
+    supervisor
+        .start_service("iceberg", environment.clone())
+        .await
+        .unwrap();
+    session.mark_ready().unwrap();
+    supervisor.mark_ready().await.unwrap();
+    supervisor.shutdown().await.unwrap();
+    drop(supervisor);
+
+    let mut restarted_session = root.session(&profile);
+    let mut restarted = Supervisor::new(
+        profile.clone(),
+        restarted_session.manifest().deployment_id(),
+        &root.0.join("data/log"),
+        &root.0.join("run"),
+    )
+    .await
+    .unwrap();
+    start_preview_storage(&mut restarted, &mut restarted_session, &profile, &seed).await;
+    IcebergBootstrap::reconcile(
+        &mut restarted_session,
+        &profile,
+        &credentials,
+        restarted.monitor_log_mut(),
+    )
+    .await
+    .unwrap();
+    restarted.start_service("iceberg", environment).await.unwrap();
+    restarted.mark_ready().await.unwrap();
+    restarted.shutdown().await.unwrap();
+}
+
+fn iceberg_environment(credentials: &ServerCredentials) -> BTreeMap<String, String> {
+    credentials
+        .server_env()
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(key, _)| key.starts_with("CROWDB_ICEBERG_"))
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
 }
