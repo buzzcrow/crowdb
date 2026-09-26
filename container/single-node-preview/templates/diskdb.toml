@@ -6,7 +6,7 @@ rpc_listen_addr = "127.0.0.1:11200"
 kv_server_mgmt_seeds = ["http://127.0.0.1:10000"]
 
 [storage]
-zone_size_bytes = 17179869184
+zone_size_bytes = {{disk.0.capacity_bytes}}
 block_size_bytes = 1048576
 allocate_granularity = 1048576
 zone_rotate_count = 4

@@ -22,4 +22,4 @@ partition_id = { high = 1, low = 1 }
 tree_id = 1
 stream_name = { high = 2, low = 1 }
 owner_epoch = 1
-metadata_group_id = 1
+metadata_group_id = {{group.1.id}}

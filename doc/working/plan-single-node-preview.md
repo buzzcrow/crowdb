@@ -46,7 +46,7 @@ and verifiable release assets.
 
 ## Phase 2 — Process supervision and health
 
-- [ ] **Config rendering**: render all child configs into
+- [x] **Config rendering**: render all child configs into
   `/opt/crowdb/run/config` from immutable templates and validated profile values;
   pass durable/log paths explicitly and prevent secrets from entering command
   arguments or rendered non-secret configs. Files:
