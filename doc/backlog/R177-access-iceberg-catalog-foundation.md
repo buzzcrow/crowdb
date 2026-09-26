@@ -428,3 +428,14 @@ R183–R184 remain open; this does not imply engine/GC conformance.
   resolve the collision policy, not the unproven cause of the earlier 503 or
   all possible storage stalls. A new failure requires its own trace. R183 owns
   physical reclamation of expired slot and overflow records.
+
+- **OI-8 — Live GC table-fence occupancy (open):** the current live worker keeps
+  the table head in `Reclaiming` while it repeats root proof and sweeps bounded
+  batches. Per-step CPU and I/O budgets do not bound the total fence duration;
+  automatically starting this work on a very large table could prevent normal
+  commits for a long time. A hard fence deadline with abort/retry preserves
+  foreground availability but may starve reclamation forever on large tables.
+  Candidate-scoped optimistic deletion fences could let commits continue, but
+  require a new reader/publication race proof and crash acceptance. Choose the
+  foreground contract before enabling automatic live-table task creation. The
+  background scheduler remains opt-in and task creation remains manual.

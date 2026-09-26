@@ -192,3 +192,18 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
 
 - Preserve unrelated work; commit verified requirement tasks coherently.
 - Engine interoperability and ORC remain in their previously deferred tracks.
+
+## Blocked
+
+- Automatic live-table GC has two materially different safe designs. A bounded
+  table-wide fence can abort when a large pass exceeds its foreground window,
+  but may never reclaim that table. A candidate-scoped optimistic fence can
+  avoid a long commit blackout, but needs a new proof across commit, reader,
+  credential and publication races and native restart acceptance. The current
+  `Reclaiming` fence has no total-duration bound. Keep GC disabled by default
+  and retain R183 until the foreground contract in R177 OI-8 is selected.
+- After that decision, implement event-driven purge and retired task creation,
+  bounded live-task discovery, saturated foreground namespace/commit/FileIO
+  acceptance, and full-storage GC-workspace recovery. Existing tests establish
+  fail-closed workspace denial and independent file-write capacity recovery,
+  not those combined conditions.
