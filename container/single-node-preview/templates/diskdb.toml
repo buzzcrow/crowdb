@@ -3,6 +3,7 @@ rpc_workers = 2
 listen_addr = "127.0.0.1:11000"
 http_listen_addr = "127.0.0.1:11100"
 rpc_listen_addr = "127.0.0.1:11200"
+instance_id = "{{node.0.id}}"
 kv_server_mgmt_seeds = ["http://127.0.0.1:10000"]
 
 [storage]

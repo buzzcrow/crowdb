@@ -99,6 +99,10 @@ async fn writes_and_validates_hardware_with_real_group_zero() {
     assert!(disks
         .iter()
         .all(|disk| disk.capacity_bytes() == 16 * 1024 * 1024 * 1024));
+    let owner = hardware.get_owner(1, 1, 101).await.unwrap().unwrap();
+    assert_eq!(owner.instance_id, 1);
+    let bind = hardware.get_bind(1, 1, 101).await.unwrap().unwrap();
+    assert_eq!((bind.store_id, bind.group_id), (0, 1));
     let body = fs::read_to_string(root.0.join("data/log/monitor/monitor.log")).unwrap();
     assert_eq!(body.matches("bootstrap_step_completed").count(), 1);
 }

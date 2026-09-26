@@ -6,8 +6,8 @@ use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 use thiserror::Error;
 
 use crate::{
-    BootstrapSession, DeploymentProfile, ManifestError, MonitorEvent, MonitorEventKind, MonitorLog,
-    MonitorLogError,
+    BootstrapSession, DeploymentProfile, GroupRole, ManifestError, MonitorEvent, MonitorEventKind,
+    MonitorLog, MonitorLogError,
 };
 
 const STEP: &str = "hardware-topology";
@@ -29,18 +29,37 @@ struct ExpectedHardware {
     rack_id: u64,
     node_id: u64,
     group_id: u64,
+    bind_store_id: u64,
+    bind_group_id: u64,
     rack: RackValue,
     node: NodeValue,
     group: DiskGroupValue,
     disks: Vec<(DiskId, DiskValue)>,
 }
 
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum HardwarePart {
+    Rack,
+    Node,
+    Group,
+    Owner,
+    Bind,
+}
+
 #[derive(Default)]
 struct ExistingHardware {
-    rack: bool,
-    node: bool,
-    group: bool,
+    parts: BTreeSet<HardwarePart>,
     disks: BTreeSet<(u64, u64)>,
+}
+
+impl ExistingHardware {
+    fn has(&self, part: HardwarePart) -> bool {
+        self.parts.contains(&part)
+    }
+
+    fn complete(&self, disk_count: usize) -> bool {
+        self.parts.len() == 5 && self.disks.len() == disk_count
+    }
 }
 
 pub struct HardwareBootstrap {
@@ -93,9 +112,7 @@ impl HardwareBootstrap {
             ))?;
         self.client.kv().refresh_topology().await?;
         let found = self.preflight(&expected).await?;
-        if complete
-            && (!found.rack || !found.node || !found.group || found.disks.len() != expected.disks.len())
-        {
+        if complete && !found.complete(expected.disks.len()) {
             return Err(HardwareBootstrapError::Invalid(
                 "completed hardware topology is incomplete",
             ));
@@ -107,36 +124,78 @@ impl HardwareBootstrap {
             return Err(HardwareBootstrapError::Invalid("hardware step is out of order"));
         }
         record(events, MonitorEventKind::BootstrapStepStarted).await?;
-        if !found.rack {
+        self.write_missing(&expected, &found).await?;
+        let final_state = self.preflight(&expected).await?;
+        if !final_state.complete(expected.disks.len()) {
+            return Err(HardwareBootstrapError::Invalid("hardware topology is incomplete"));
+        }
+        session.complete_step(STEP)?;
+        record(events, MonitorEventKind::BootstrapStepCompleted).await?;
+        Ok(())
+    }
+
+    async fn write_missing(
+        &self,
+        expected: &ExpectedHardware,
+        found: &ExistingHardware,
+    ) -> Result<(), HardwareBootstrapError> {
+        if !found.has(HardwarePart::Rack) {
             let write = self.client.add_rack(expected.rack_id, &expected.rack).await;
             let actual = self.client.get_rack(expected.rack_id).await?;
-            verify_written(write, actual.is_some_and(|value| rack_matches(&value, &expected)))?;
+            verify_written(write, actual.is_some_and(|value| rack_matches(&value, expected)))?;
         }
-        if !found.node {
+        if !found.has(HardwarePart::Node) {
             let write = self
                 .client
                 .add_node(expected.rack_id, expected.node_id, &expected.node)
                 .await;
             let actual = self.client.get_node(expected.rack_id, expected.node_id).await?;
-            verify_written(write, actual.is_some_and(|value| node_matches(&value, &expected)))?;
+            verify_written(write, actual.is_some_and(|value| node_matches(&value, expected)))?;
         }
-        if !found.group {
+        if !found.has(HardwarePart::Group) {
             let write = self
                 .client
-                .add_disk_group(
+                .add_disk_group_with_owner(
                     expected.rack_id,
                     expected.node_id,
                     expected.group_id,
                     &expected.group,
+                    expected.node_id,
+                    u64::MAX,
                 )
                 .await;
             let actual = self
                 .client
                 .get_disk_group(expected.rack_id, expected.node_id, expected.group_id)
                 .await?;
+            let owner = self
+                .client
+                .get_owner(expected.rack_id, expected.node_id, expected.group_id)
+                .await?;
             verify_written(
                 write,
-                actual.is_some_and(|value| group_matches(&value.value, &expected)),
+                actual.is_some_and(|value| group_matches(&value.value, expected))
+                    && owner.is_some_and(|value| value.instance_id == expected.node_id),
+            )?;
+        }
+        if !found.has(HardwarePart::Owner) && found.has(HardwarePart::Group) {
+            let write = self
+                .client
+                .set_owner(
+                    expected.rack_id,
+                    expected.node_id,
+                    expected.group_id,
+                    expected.node_id,
+                    u64::MAX,
+                )
+                .await;
+            let actual = self
+                .client
+                .get_owner(expected.rack_id, expected.node_id, expected.group_id)
+                .await?;
+            verify_written(
+                write,
+                actual.is_some_and(|value| value.instance_id == expected.node_id),
             )?;
         }
         for (disk_id, disk_value) in &expected.disks {
@@ -162,10 +221,38 @@ impl HardwareBootstrap {
                 actual.is_some_and(|value| disk_matches(&value, disk_value)),
             )?;
         }
-        self.preflight(&expected).await?;
-        session.complete_step(STEP)?;
-        record(events, MonitorEventKind::BootstrapStepCompleted).await?;
+        self.ensure_bind(expected, found).await?;
         Ok(())
+    }
+
+    async fn ensure_bind(
+        &self,
+        expected: &ExpectedHardware,
+        found: &ExistingHardware,
+    ) -> Result<(), HardwareBootstrapError> {
+        if found.has(HardwarePart::Bind) {
+            return Ok(());
+        }
+        let write = self
+            .client
+            .set_bind(
+                expected.rack_id,
+                expected.node_id,
+                expected.group_id,
+                expected.bind_store_id,
+                expected.bind_group_id,
+            )
+            .await;
+        let actual = self
+            .client
+            .get_bind(expected.rack_id, expected.node_id, expected.group_id)
+            .await?;
+        verify_written(
+            write,
+            actual.is_some_and(|value| {
+                value.store_id == expected.bind_store_id && value.group_id == expected.bind_group_id
+            }),
+        )
     }
 
     async fn preflight(
@@ -179,7 +266,7 @@ impl HardwareBootstrap {
                     "Group 0 rack conflicts with profile",
                 ));
             }
-            found.rack = true;
+            found.parts.insert(HardwarePart::Rack);
         }
         for (rack_id, node_id, value) in self.client.list_nodes().await? {
             if rack_id != expected.rack_id || node_id != expected.node_id || !node_matches(&value, expected) {
@@ -187,7 +274,7 @@ impl HardwareBootstrap {
                     "Group 0 node conflicts with profile",
                 ));
             }
-            found.node = true;
+            found.parts.insert(HardwarePart::Node);
         }
         for entry in self.client.list_disk_groups().await? {
             if entry.rack_id != expected.rack_id
@@ -199,7 +286,32 @@ impl HardwareBootstrap {
                     "Group 0 disk group conflicts with profile",
                 ));
             }
-            found.group = true;
+            found.parts.insert(HardwarePart::Group);
+        }
+        for owner in self.client.list_owners().await? {
+            if owner.rack_id != expected.rack_id
+                || owner.node_id != expected.node_id
+                || owner.dg_id != expected.group_id
+                || owner.instance_id != expected.node_id
+            {
+                return Err(HardwareBootstrapError::Invalid(
+                    "Group 0 owner conflicts with profile",
+                ));
+            }
+            found.parts.insert(HardwarePart::Owner);
+        }
+        for bind in self.client.list_binds().await? {
+            if bind.rack_id != expected.rack_id
+                || bind.node_id != expected.node_id
+                || bind.dg_id != expected.group_id
+                || bind.store_id != expected.bind_store_id
+                || bind.group_id != expected.bind_group_id
+            {
+                return Err(HardwareBootstrapError::Invalid(
+                    "Group 0 bind conflicts with profile",
+                ));
+            }
+            found.parts.insert(HardwarePart::Bind);
         }
         for entry in self.client.list_all_disks().await? {
             let matching = expected
@@ -248,6 +360,16 @@ fn expected(profile: &DeploymentProfile) -> Result<ExpectedHardware, HardwareBoo
             "preview disk layout is incompatible",
         ));
     }
+    let mut data_groups = profile
+        .groups
+        .iter()
+        .filter(|group| group.role == GroupRole::Data);
+    let data_group = data_groups
+        .next()
+        .ok_or(HardwareBootstrapError::Invalid("preview has no data group"))?;
+    if data_groups.next().is_some() {
+        return Err(HardwareBootstrapError::Invalid("preview requires one data group"));
+    }
     let mut disks = profile
         .disks
         .iter()
@@ -276,6 +398,8 @@ fn expected(profile: &DeploymentProfile) -> Result<ExpectedHardware, HardwareBoo
         rack_id: node.rack_id,
         node_id: node.node_id,
         group_id: first_disk.disk_group_id,
+        bind_store_id: data_group.store_id,
+        bind_group_id: data_group.group_id,
         rack: RackValue {
             status: HwStatus::Up as i32,
             node_ids: vec![node.node_id],
