@@ -83,13 +83,17 @@ and verifiable release assets.
 
 ## Phase 3 — Single-node runtime bootstrap
 
-- [ ] **KV bootstrap**: start one `crowdb-kv-server` at the fixed root/ports,
+- [~] **KV bootstrap**: start one `crowdb-kv-server` at the fixed root/ports,
   create Group 0 through `/system/init`, create Group 1 through management APIs,
   wait for exact leadership/readiness, and on restart prove both groups' durable
   identities without issuing creation calls. Files:
   `container/crowdb-monitor/src/bootstrap/{kv,http}.rs`,
   `container/single-node-preview/templates/kv.toml`,
-  `container/crowdb-monitor/tests/kv_bootstrap_test.rs`.
+  `container/crowdb-monitor/tests/kv_bootstrap_test.rs`. The existing management
+  API contract is used for Group 0/1, with exact identity/readiness checks,
+  response-loss proof before replay, and validation-only Ready restart. Mock
+  HTTP tests pass; process staging, real KV integration, and monitor event
+  wiring remain.
 - [ ] **Four-disk storage bootstrap**: create sparse files without truncating
   existing bytes; write rack/node/disk-group/four-disk authority to Group 0;
   render and start DiskDB and DiskIO; validate all stable disk IDs, one-zone 16

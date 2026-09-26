@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod bootstrap;
 mod credentials;
 mod layout;
 mod manifest;
@@ -12,6 +13,7 @@ mod render;
 mod status;
 mod supervisor;
 
+pub use bootstrap::{kv_step_names, KvBootstrap, KvBootstrapError};
 pub use credentials::{show_client_credentials, ClientCredentials, CredentialError, ServerCredentials};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};

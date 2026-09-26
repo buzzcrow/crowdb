@@ -69,6 +69,14 @@ impl BootstrapManifest {
             .map(|step| step.name.as_str())
     }
 
+    #[must_use]
+    pub fn step_complete(&self, name: &str) -> Option<bool> {
+        self.steps
+            .iter()
+            .find(|step| step.name == name)
+            .map(|step| step.complete)
+    }
+
     /// # Errors
     /// Rejects a step outside the persisted bootstrap plan.
     pub fn operation_id(&self, step: &str) -> Result<[u8; 16], ManifestError> {
