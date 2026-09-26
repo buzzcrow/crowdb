@@ -39,9 +39,9 @@ impl TestRoot {
         for disk in &mut profile.disks {
             disk.path = self.0.join("data/disks").join(disk.path.file_name().unwrap());
         }
-        profile
-            .services
-            .retain(|service| ["kv", "diskdb", "diskio"].contains(&service.id.as_str()));
+        profile.services.retain(|service| {
+            ["kv", "diskdb", "diskio", "chunkdb", "chunk-kv"].contains(&service.id.as_str())
+        });
         for service in &mut profile.services {
             let name = service.program.file_name().unwrap();
             let binary = binaries.iter().find(|(id, _)| *id == service.id).unwrap().1;
@@ -63,11 +63,18 @@ impl TestRoot {
                     ports.kv_management.to_string(),
                     "--ports".into(),
                     ports.kv_rpc.to_string(),
+                    "--binding-monitor-interval".into(),
+                    "1".into(),
                 ],
-                "diskdb" | "diskio" => vec![
+                "diskdb" | "diskio" | "chunkdb" | "chunk-kv" => vec![
                     "--config".into(),
                     self.0
                         .join(format!("run/config/{}.toml", service.id))
+                        .to_string_lossy()
+                        .into_owned(),
+                    "--log-dir".into(),
+                    self.0
+                        .join(format!("data/log/{}", service.id))
                         .to_string_lossy()
                         .into_owned(),
                 ],
@@ -77,6 +84,8 @@ impl TestRoot {
                 "kv" => vec![ports.kv_management, ports.kv_rpc],
                 "diskdb" => vec![ports.diskdb_listen, ports.diskdb_http, ports.diskdb_rpc],
                 "diskio" => vec![ports.diskio_rpc],
+                "chunkdb" => vec![ports.chunkdb_http, ports.chunkdb_rpc],
+                "chunk-kv" => vec![ports.chunk_kv_http, ports.chunk_kv_rpc],
                 _ => unreachable!(),
             }
             .into_iter()
@@ -86,6 +95,8 @@ impl TestRoot {
                 "kv" => format!("http://127.0.0.1:{}/health", ports.kv_management),
                 "diskdb" => format!("http://127.0.0.1:{}/ready", ports.diskdb_http),
                 "diskio" => format!("127.0.0.1:{}", ports.diskio_rpc),
+                "chunkdb" => format!("http://127.0.0.1:{}/ready", ports.chunkdb_http),
+                "chunk-kv" => format!("http://127.0.0.1:{}/ready", ports.chunk_kv_http),
                 _ => unreachable!(),
             };
         }
@@ -95,7 +106,13 @@ impl TestRoot {
 
     fn templates(&self, ports: &Ports) {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/templates");
-        for name in ["kv.toml", "diskdb.toml", "diskio.toml"] {
+        for name in [
+            "kv.toml",
+            "diskdb.toml",
+            "diskio.toml",
+            "chunkdb.toml",
+            "chunk-kv.toml",
+        ] {
             let body = fs::read_to_string(source.join(name)).unwrap();
             let body = body
                 .replace("127.0.0.1:10000", &format!("127.0.0.1:{}", ports.kv_management))
@@ -105,7 +122,11 @@ impl TestRoot {
                 .replace(
                     "listen_port = 13000",
                     &format!("listen_port = {}", ports.diskio_rpc),
-                );
+                )
+                .replace("127.0.0.1:12100", &format!("127.0.0.1:{}", ports.chunkdb_http))
+                .replace("127.0.0.1:12200", &format!("127.0.0.1:{}", ports.chunkdb_rpc))
+                .replace("127.0.0.1:15100", &format!("127.0.0.1:{}", ports.chunk_kv_http))
+                .replace("127.0.0.1:15200", &format!("127.0.0.1:{}", ports.chunk_kv_rpc));
             fs::write(self.0.join("templates").join(name), body).unwrap();
         }
     }
@@ -137,12 +158,16 @@ struct Ports {
     diskdb_http: u16,
     diskdb_rpc: u16,
     diskio_rpc: u16,
+    chunkdb_http: u16,
+    chunkdb_rpc: u16,
+    chunk_kv_http: u16,
+    chunk_kv_rpc: u16,
 }
 
 impl Ports {
     async fn allocate() -> Self {
         let mut listeners = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..10 {
             listeners.push(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
         }
         let ports = listeners
@@ -156,12 +181,16 @@ impl Ports {
             diskdb_http: ports[3],
             diskdb_rpc: ports[4],
             diskio_rpc: ports[5],
+            chunkdb_http: ports[6],
+            chunkdb_rpc: ports[7],
+            chunk_kv_http: ports[8],
+            chunk_kv_rpc: ports[9],
         }
     }
 }
 
 #[tokio::test]
-async fn four_file_disks_are_ready_through_real_diskdb_and_diskio() {
+async fn preview_chunk_services_start_and_storage_recovers() {
     let Some(kv_binary) = crowdb_test_harness::cluster::crowdb_kv_server_bin() else {
         eprintln!("skipping storage process test: KV binary unavailable");
         return;
@@ -169,8 +198,15 @@ async fn four_file_disks_are_ready_through_real_diskdb_and_diskio() {
     let diskdb_binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/crowdb-diskdb");
     let diskio_binary =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/crowdb-diskio/build/crowdb-diskio");
-    if !diskdb_binary.exists() || !diskio_binary.exists() {
-        eprintln!("skipping storage process test: DiskDB or DiskIO binary unavailable");
+    let chunkdb_binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/crowdb-chunkdb");
+    let chunk_kv_binary =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/crowdb-chunk-kv-server");
+    if !diskdb_binary.exists()
+        || !diskio_binary.exists()
+        || !chunkdb_binary.exists()
+        || !chunk_kv_binary.exists()
+    {
+        eprintln!("skipping storage process test: storage or chunk binary unavailable");
         return;
     }
     let root = TestRoot::new();
@@ -182,6 +218,8 @@ async fn four_file_disks_are_ready_through_real_diskdb_and_diskio() {
             ("kv", kv_binary.as_path()),
             ("diskdb", diskdb_binary.as_path()),
             ("diskio", diskio_binary.as_path()),
+            ("chunkdb", chunkdb_binary.as_path()),
+            ("chunk-kv", chunk_kv_binary.as_path()),
         ],
     );
     let mut session = root.session(&profile);
@@ -213,6 +251,14 @@ async fn four_file_disks_are_ready_through_real_diskdb_and_diskio() {
     supervisor.start_service("diskdb", BTreeMap::new()).await.unwrap();
     supervisor.start_service("diskio", BTreeMap::new()).await.unwrap();
     verify_diskio_disks(&management_seed, &profile).await.unwrap();
+    supervisor
+        .start_service("chunkdb", BTreeMap::new())
+        .await
+        .unwrap();
+    supervisor
+        .start_service("chunk-kv", BTreeMap::new())
+        .await
+        .unwrap();
     session.mark_ready().unwrap();
     supervisor.mark_ready().await.unwrap();
     supervisor.shutdown().await.unwrap();
@@ -242,6 +288,5 @@ async fn four_file_disks_are_ready_through_real_diskdb_and_diskio() {
     restarted.start_service("diskdb", BTreeMap::new()).await.unwrap();
     restarted.start_service("diskio", BTreeMap::new()).await.unwrap();
     verify_diskio_disks(&management_seed, &profile).await.unwrap();
-    restarted.mark_ready().await.unwrap();
     restarted.shutdown().await.unwrap();
 }

@@ -84,7 +84,7 @@ port = 14000
 [[services]]
 id = "kv"
 program = "/opt/crowdb/bin/crowdb-kv-server"
-args = ["--root", "/opt/crowdb/data/kv/node-1", "--config", "/opt/crowdb/run/config/kv.toml", "--management-port", "10000", "--ports", "10100,10101", "--log-dir", "/opt/crowdb/data/log/kv", "--log"]
+args = ["--root", "/opt/crowdb/data/kv/node-1", "--config", "/opt/crowdb/run/config/kv.toml", "--management-port", "10000", "--ports", "10100,10101", "--binding-monitor-interval", "1", "--log-dir", "/opt/crowdb/data/log/kv", "--log"]
 dependencies = []
 fence_listeners = ["127.0.0.1:10000", "127.0.0.1:10100", "127.0.0.1:10101"]
 config_template = "/opt/crowdb/etc/templates/kv.toml"
