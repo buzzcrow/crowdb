@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R187** — Bump this line in the same commit when adding a new item.
+**Next R number: R188** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -84,6 +84,14 @@ cache optimization.
   Area: access server / Iceberg — **Deferred until the Parquet catalog path is
   functional.** Add bounded canonical ORC schema, row-count and delete validation
   with official-client fixtures; not a prerequisite for the initial catalog.
+
+### Planned — Single-container preview
+
+- **[R187](R187-deployment-single-node-docker-preview.md)** — single-node Docker
+  preview — Area: deployment / S3 / Iceberg / web console — Build one
+  non-production image that idempotently bootstraps and supervises the normal
+  CROWDB process graph, exposes S3, Iceberg, and web endpoints, persists through
+  one mounted data root, and proves client workflows and restart behavior.
 
 ### High Priority
 
