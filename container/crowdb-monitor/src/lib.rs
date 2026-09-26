@@ -10,6 +10,7 @@ mod process;
 mod profile;
 mod render;
 mod status;
+mod supervisor;
 
 pub use credentials::{show_client_credentials, ClientCredentials, CredentialError, ServerCredentials};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
@@ -22,3 +23,4 @@ pub use profile::{
 };
 pub use render::{render_configs, RenderError, RenderedConfig};
 pub use status::{MonitorPhase, MonitorStatus, ServiceStatus, StatusError, StatusStore};
+pub use supervisor::{Supervisor, SupervisorError};

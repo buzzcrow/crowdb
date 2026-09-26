@@ -118,6 +118,11 @@ impl ProcessManager {
         self.processes.get(id).and_then(|process| process.child.id())
     }
 
+    #[must_use]
+    pub fn owns(&self, id: &str) -> bool {
+        self.processes.contains_key(id)
+    }
+
     /// # Errors
     /// Returns process observation failures. A completed process remains owned until stopped.
     pub fn alive(&mut self, id: &str) -> Result<bool, ProcessError> {

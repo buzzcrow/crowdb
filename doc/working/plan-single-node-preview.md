@@ -60,13 +60,18 @@ and verifiable release assets.
   `container/crowdb-monitor/src/{main,process,probe,supervisor,status}.rs`,
   `container/crowdb-monitor/tests/supervisor_test.rs`. Bounded probes, atomic
   status snapshots, child ownership/reaping, TERM/KILL escalation, and bounded
-  per-child logs are implemented. The dependency/restart/drain event loop remains.
+  per-child logs are implemented. The single-loop supervisor now starts after
+  healthy dependencies, drops readiness on probe failure, restarts affected
+  services with finite backoff, handles SIGTERM drain, and tests exit recovery
+  and budget exhaustion. Remaining: real-bootstrap staging, dependent restart
+  and listener-fencing tests, stable-period budget reset, and PID 1 acceptance.
 - [~] **Monitor lifecycle log**: persist important bootstrap, readiness, child
   lifecycle, probe failure, restart, drain, and exhaustion events under durable
   `log/monitor/`; retain bounded rotation, redact by using fixed event fields,
   and mirror warning-class transitions to stderr. Event storage and child
-  start/stop logging are implemented; connect remaining events in the supervisor
-  and bootstrap orchestration. Files: `container/crowdb-monitor/src/monitor_log.rs`,
+  start/stop plus supervisor readiness, probe failure, restart, drain, and
+  exhaustion logging are implemented; connect bootstrap-step events. Files:
+  `container/crowdb-monitor/src/monitor_log.rs`,
   `container/crowdb-monitor/tests/monitor_log_test.rs`.
 - [~] **Monitor commands**: expose `run`, `liveness`, `readiness`, and credentials
   subcommands with bounded local operation and stable exit codes for Docker

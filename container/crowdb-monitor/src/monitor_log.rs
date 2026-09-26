@@ -29,6 +29,7 @@ pub enum MonitorEventKind {
     ChildStopped,
     ProbeFailed,
     ChildExited,
+    ChildStartFailed,
     Restarting,
     RestartExhausted,
     BootstrapStepStarted,
@@ -42,6 +43,7 @@ impl MonitorEventKind {
             self,
             Self::ProbeFailed
                 | Self::ChildExited
+                | Self::ChildStartFailed
                 | Self::Restarting
                 | Self::RestartExhausted
                 | Self::BootstrapFailed
