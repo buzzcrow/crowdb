@@ -30,6 +30,9 @@ pub enum FileIoError {
 pub trait FileBlockStore: Send + Sync {
     async fn put(&self, owner: FileIdentity, height: u8, bytes: &[u8]) -> Result<ChunkRoot, FileIoError>;
     async fn read(&self, root: &ChunkRoot) -> Result<Vec<u8>, FileIoError>;
+    async fn reclaim(&self, _root: &ChunkRoot) -> Result<crowdb_chunk_client::ReclaimOutcome, FileIoError> {
+        Ok(crowdb_chunk_client::ReclaimOutcome::Deferred)
+    }
 }
 
 #[derive(Clone)]
@@ -46,6 +49,19 @@ impl NativeFileBlocks {
 
 #[async_trait]
 impl FileBlockStore for NativeFileBlocks {
+    async fn reclaim(&self, root: &ChunkRoot) -> Result<crowdb_chunk_client::ReclaimOutcome, FileIoError> {
+        root.validate()?;
+        let location = Location {
+            chunk_id: Some(root.chunk),
+            offset: root.offset,
+            length: root.physical_length,
+            logical_offset: root.logical_offset,
+            logical_length: root.logical_length,
+        };
+        let (allocator, _) = self.client.storage_parts();
+        Ok(crowdb_chunk_client::reclaim_location(allocator.as_ref(), &location).await?)
+    }
+
     async fn put(&self, owner: FileIdentity, height: u8, bytes: &[u8]) -> Result<ChunkRoot, FileIoError> {
         if bytes.is_empty()
             || bytes.len() > NATIVE_FILE_BLOCK_BYTES

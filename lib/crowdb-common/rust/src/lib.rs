@@ -14,12 +14,14 @@
 //!   appender initialization.
 //! - [`time`] — process-wide monotonic-time anchor helpers.
 //! - [`report`] — multi-step operation error aggregation.
+//! - [`hash_slot`] — stable slot selection and exact-key overflow routing.
 //! - [`config`] — shared TOML config plumbing: `BaseConfig` trait,
 //!   `load_from_file`, `watch` (file watcher), `log_diff`.
 
 pub mod config;
 pub mod ec;
 pub mod ec_isal;
+pub mod hash_slot;
 pub mod logging;
 pub mod metrics;
 pub mod report;

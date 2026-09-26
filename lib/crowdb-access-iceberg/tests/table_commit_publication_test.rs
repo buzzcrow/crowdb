@@ -496,10 +496,11 @@ async fn chunked_candidate_authority_reply_loss_reuses_the_original_tree() {
     let fixture = TestPrior::new().await;
     let (operation, proof) = prepare(&fixture, &"large".repeat(18_000)).await;
     let candidate = proof.head().clone();
-    fixture.namespace.store.fail_after.store(
-        fixture.namespace.store.writes.load(Ordering::SeqCst) + 3,
-        Ordering::SeqCst,
-    );
+    fixture
+        .namespace
+        .store
+        .file_record_reply_loss
+        .store(true, Ordering::SeqCst);
     assert!(proof.publish().await.is_err());
     let blocks = fixture.blocks.writes.load(Ordering::SeqCst);
     assert_eq!(

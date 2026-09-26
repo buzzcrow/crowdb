@@ -72,6 +72,24 @@ impl RoutedCatalogStore {
         ) {
             return Err(ValidationError::Key.into());
         }
+        self.delete_gc_record_if(key, expected, identity).await
+    }
+
+    pub(crate) async fn delete_gc_record_if(
+        &self,
+        key: &[u8],
+        expected: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        if matches!(
+            IcebergKey::decode(key)?,
+            IcebergKey::System {
+                scope: crate::key::SystemScope::ActiveRoot,
+                ..
+            }
+        ) {
+            return Err(ValidationError::Key.into());
+        }
         validate_value(expected)?;
         let response = self
             .client

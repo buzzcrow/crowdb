@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod commit;
 pub mod error;
 pub mod file;
+pub mod gc;
 pub mod key;
 pub mod manifest;
 pub mod metadata_projection;

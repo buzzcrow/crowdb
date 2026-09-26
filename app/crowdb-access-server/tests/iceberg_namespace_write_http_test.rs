@@ -4,7 +4,7 @@
 mod common;
 
 use crowdb_access_iceberg::catalog::{CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege};
-use crowdb_access_iceberg::key::{OperationId, SystemScope};
+use crowdb_access_iceberg::key::{IcebergKey, OperationId, SystemScope};
 use crowdb_access_iceberg::operation::{ledger_key, ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_server::iceberg::{serve, IcebergHttpService};
@@ -82,17 +82,21 @@ async fn fresh_key(store: &common::TestStore) -> String {
         {
             continue;
         }
-        let hex = operation.to_string();
-        return format!(
-            "{}-{}-{}-{}-{}",
-            &hex[..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..]
-        );
+        return wire_key(operation);
     }
     panic!("no free retry fixture slot");
+}
+
+fn wire_key(operation: OperationId) -> String {
+    let hex = operation.to_string();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
 }
 
 async fn send(
@@ -296,6 +300,86 @@ async fn malformed_and_missing_parent_results_are_retained_before_any_later_retr
             .0,
         409
     );
+    stop.send(()).unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn colliding_uuidv7_headers_have_independent_durable_http_replay() {
+    let (store, address, stop, server) = setup().await;
+    let now = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
+    let mut seen = std::collections::BTreeMap::new();
+    let mut collision = None;
+    for sequence in 0_u16..=4096 {
+        let mut bytes = [0; 16];
+        bytes[..6].copy_from_slice(&now.to_be_bytes()[2..]);
+        bytes[6] = 0x70;
+        bytes[8] = 0x80;
+        bytes[14..].copy_from_slice(&sequence.to_be_bytes());
+        let operation = OperationId::from_bytes(&bytes).unwrap();
+        let slot = ledger_key(SystemScope::RetryBinding, operation)
+            .unwrap()
+            .encode()
+            .unwrap();
+        if let Some(first) = seen.insert(slot, operation) {
+            collision = Some((first, operation));
+            break;
+        }
+    }
+    let (first, second) = collision.expect("4097 identities must collide in 4096 slots");
+    let first_key = wire_key(first);
+    let second_key = wire_key(second);
+    let first_body = r#"{"namespace":["first"]}"#;
+    let second_body = r#"{"namespace":["second"]}"#;
+    let first_response = send(
+        address,
+        "POST",
+        "/v1/namespaces",
+        "w",
+        Some(&first_key),
+        first_body,
+    )
+    .await;
+    let second_response = send(
+        address,
+        "POST",
+        "/v1/namespaces",
+        "w",
+        Some(&second_key),
+        second_body,
+    )
+    .await;
+    assert_eq!(first_response.0, 200);
+    assert_eq!(second_response.0, 200);
+    assert_eq!(
+        send(
+            address,
+            "POST",
+            "/v1/namespaces",
+            "w",
+            Some(&first_key),
+            first_body
+        )
+        .await,
+        first_response
+    );
+    assert_eq!(
+        send(
+            address,
+            "POST",
+            "/v1/namespaces",
+            "w",
+            Some(&second_key),
+            second_body
+        )
+        .await,
+        second_response
+    );
+    let overflow = IcebergKey::System {
+        scope: SystemScope::RetryOverflow,
+        suffix: second.as_bytes().to_vec(),
+    };
+    assert!(store.values.load().contains_key(&overflow.encode().unwrap()));
     stop.send(()).unwrap();
     server.await.unwrap();
 }

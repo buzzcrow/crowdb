@@ -8,6 +8,7 @@ use crate::{
 pub enum TableLifecycle {
     Ready,
     Tombstone,
+    Reclaiming,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,7 +41,7 @@ impl TableHead {
             || self.metadata_location.table().catalog != self.catalog
             || self.metadata_location.table().table != self.table
             || (self.format_version > 1 && self.table_uuid.is_none())
-            || (self.lifecycle == TableLifecycle::Tombstone && self.pending_operation.is_none())
+            || (self.lifecycle != TableLifecycle::Ready && self.pending_operation.is_none())
         {
             return Err(ValidationError::Record);
         }

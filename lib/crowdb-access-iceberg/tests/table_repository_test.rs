@@ -56,9 +56,27 @@ async fn put(store: &common::TestStore, key: IcebergKey, record: StorageRecord) 
         .unwrap();
 }
 
+async fn new_fixture() -> fixture::TestFile {
+    let fixture = fixture::TestFile::new(common::TestStore::default()).await;
+    put(
+        &fixture.store,
+        IcebergKey::Catalog {
+            catalog: fixture.context.catalog,
+            scope: crowdb_access_iceberg::key::CatalogScope::Authority,
+            suffix: Vec::new(),
+        },
+        StorageRecord::Authority(
+            crowdb_access_iceberg::catalog::CatalogAuthority::new(fixture.context.catalog, "test".into())
+                .unwrap(),
+        ),
+    )
+    .await;
+    fixture
+}
+
 #[tokio::test]
 async fn selection_pins_one_head_and_immutable_metadata_generation() {
-    let fixture = fixture::TestFile::new(common::TestStore::default()).await;
+    let fixture = new_fixture().await;
     let file = fixture.record("metadata/one.json", b"{\"generation\":1}");
     FileRepository::new(fixture.store.clone())
         .publish(fixture.context, &file)
@@ -160,7 +178,7 @@ async fn reservations_stale_names_and_tombstones_do_not_resolve() {
 
 #[tokio::test]
 async fn corrupt_selected_file_is_not_reported_as_table_absence() {
-    let fixture = fixture::TestFile::new(common::TestStore::default()).await;
+    let fixture = new_fixture().await;
     let file = fixture.record("metadata/one.json", b"{}");
     let mut head = head(&file);
     let mapping = mapping(&head);

@@ -12,6 +12,34 @@ use crowdb_access_iceberg::key::{CatalogId, FileId, TableId};
 
 const SYNC: [u8; 16] = [42; 16];
 
+#[tokio::test]
+async fn avro_gc_resume_preserves_digest_and_advances_across_blocks() {
+    let store = Arc::new(TestBlocks::default());
+    let mut bytes = header(false);
+    block(&mut bytes, 2, &[2, 4]);
+    block(&mut bytes, 2, &[6, 8]);
+    let record = record(store.clone(), &bytes).await;
+    let mut reader = AvroBlocks::resume(store.clone(), record.clone(), limits(), None)
+        .await
+        .unwrap();
+    assert_eq!(reader.next().await.unwrap().unwrap().encoded, [2, 4]);
+    let checkpoint = reader.checkpoint().unwrap();
+    let mut resumed = AvroBlocks::resume(store.clone(), record.clone(), limits(), Some(&checkpoint))
+        .await
+        .unwrap();
+    assert_eq!(resumed.next().await.unwrap().unwrap().encoded, [6, 8]);
+    let end = resumed.checkpoint().unwrap();
+    let mut resumed = AvroBlocks::resume(store.clone(), record.clone(), limits(), Some(&end))
+        .await
+        .unwrap();
+    assert!(resumed.next().await.unwrap().is_none());
+    let mut corrupt = checkpoint;
+    corrupt[80] ^= 1;
+    assert!(AvroBlocks::resume(store, record, limits(), Some(&corrupt))
+        .await
+        .is_err());
+}
+
 fn datum_limits() -> AvroDatumLimits {
     AvroDatumLimits {
         depth: 16,

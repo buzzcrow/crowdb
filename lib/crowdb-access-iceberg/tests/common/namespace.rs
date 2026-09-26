@@ -30,6 +30,27 @@ impl TestNamespace {
     }
 
     pub async fn root(&self, context: CatalogContext, state: RootState) {
+        let authority_key = IcebergKey::Catalog {
+            catalog: context.catalog,
+            scope: crowdb_access_iceberg::key::CatalogScope::Authority,
+            suffix: Vec::new(),
+        };
+        if self
+            .store
+            .get(&authority_key.encode().unwrap())
+            .await
+            .unwrap()
+            .is_none()
+        {
+            self.put(
+                authority_key,
+                StorageRecord::Authority(
+                    crowdb_access_iceberg::catalog::CatalogAuthority::new(context.catalog, "test".into())
+                        .unwrap(),
+                ),
+            )
+            .await;
+        }
         self.put(
             IcebergKey::System {
                 scope: SystemScope::ActiveRoot,

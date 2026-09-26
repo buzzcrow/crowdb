@@ -13,6 +13,7 @@ use crowdb_protocol::chunk_kv::ClientRequestId;
 pub struct TestStore {
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub fail_after: AtomicUsize,
+    pub file_record_reply_loss: AtomicBool,
     pub writes: AtomicUsize,
     pub fencing_delay_ms: AtomicUsize,
     pub fencing_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -23,6 +24,9 @@ pub struct TestStore {
     pub namespace_reservation_visits: AtomicUsize,
     pub file_mapping_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub file_mapping_visits: AtomicUsize,
+    pub file_mapping_pause: AtomicBool,
+    pub file_mapping_entered: tokio::sync::Notify,
+    pub file_mapping_release: tokio::sync::Notify,
     pub table_reservation_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub table_reservation_visits: AtomicUsize,
     pub stage_transition_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -34,6 +38,23 @@ pub struct TestStore {
 }
 
 impl TestStore {
+    async fn pause_file_mapping(&self) {
+        if self.file_mapping_pause.swap(false, Ordering::SeqCst) {
+            self.file_mapping_entered.notify_one();
+            self.file_mapping_release.notified().await;
+        }
+    }
+
+    fn lose_file_reply(&self, key: &[u8]) -> bool {
+        matches!(
+            crowdb_access_iceberg::key::IcebergKey::decode(key),
+            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
+                scope: crowdb_access_iceberg::key::CatalogScope::File,
+                ..
+            })
+        ) && self.file_record_reply_loss.swap(false, Ordering::SeqCst)
+    }
+
     async fn pause_table_head(&self, key: &[u8], expected: Option<&[u8]>, value: &[u8], after: bool) {
         if expected.is_none() {
             return;
@@ -94,6 +115,7 @@ impl CatalogStore for TestStore {
                 ..
             })
         ) {
+            self.pause_file_mapping().await;
             if let Some(barrier) = &self.file_mapping_barrier {
                 if self.file_mapping_visits.fetch_add(1, Ordering::SeqCst) < 2 {
                     barrier.wait().await;
@@ -171,6 +193,9 @@ impl CatalogStore for TestStore {
             if Arc::ptr_eq(&current, &observed) {
                 let writes = self.writes.fetch_add(1, Ordering::SeqCst) + 1;
                 if self.fail_after.load(Ordering::SeqCst) == writes {
+                    return Err(StoreError::Response);
+                }
+                if self.lose_file_reply(key) {
                     return Err(StoreError::Response);
                 }
                 self.pause_table_head(key, expected, value, true).await;

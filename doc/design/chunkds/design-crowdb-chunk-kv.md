@@ -17,8 +17,9 @@ name, and one partition-local mutation sequence. Unbounded endpoints are
 allowed. A split key must be strictly inside the source range and its two
 child ranges must be adjacent and exactly cover the parent.
 
-The lifecycle is `Closed`, `Recovering`, `WriteStalled`, `Prepared`,
-`Serving`, `SplitPreparing`, `SplitFinalizing`, `Retired`, or `Faulted`.
+The lifecycle is `Closed`, `Recovering`, `TransferQuiesced`, `Prepared`,
+`Serving`, `TransferFencing`, `SplitPreparing`, `SplitFinalizing`, `Retired`,
+or `Faulted`.
 Data-path admission reads atomics and reserves bounded request and byte
 capacity. Lifecycle control closes mutation admission and waits
 asynchronously for the admitted count to reach zero. The manager registry and
@@ -96,11 +97,14 @@ WAL trim cannot cross the checkpoint's replay offset. Requests below the
 declared retained floor return `RequestExpired` and are not executed anew.
 
 The frontiers satisfy
-`checkpoint_seq <= applied_seq <= journal_durable_seq`. A journal uncertainty
-enters `WriteStalled` and preserves reads from the healthy applied prefix. A
-non-OK tree result after durable append is `ApplyStateUnknown`, moves only that
-partition to `Recovering`, and prevents later records from applying. The C ABI
-catches C++ exceptions before they can cross into Rust.
+`checkpoint_seq <= applied_seq <= journal_durable_seq`. The stream resolves
+uncertain cursor and manifest outcomes against durable state before completing
+the append. If a journal append nevertheless returns an error, the partition
+enters `Recovering`; later writes and reads require recovery rather than
+mistaking that failure for a quiesced transfer source. A non-OK tree result
+after durable append is `ApplyStateUnknown`, also moves only that partition to
+`Recovering`, and prevents later records from applying. The C ABI catches C++
+exceptions before they can cross into Rust.
 
 ## 5. Overlay Split and Writer Handoff
 
@@ -224,7 +228,8 @@ assigning new records to the source WAL, drains only records already assigned
 there, and records their final durable sequence and byte offset as `C`. One
 short `TransferFencing` lifecycle closes public mutation admission while the
 existing mutation worker drains the already-admitted set; it is not a second
-queue or an independent authority flag. The
+queue or an independent authority flag. Only after that drain does the source
+enter `TransferQuiesced`, which permits the exact handoff checkpoint. The
 target artifact is extended from `P` to `C`. The live target keeps its opened
 tree, memtable, and replay coroutine and reads only `P+1..C`; reopening the
 pinned base and replaying the complete retained suffix is crash recovery, not
@@ -273,8 +278,8 @@ post-journal apply state require recovery of the affected partition only.
 Checkpoint and GC failures retain the prior manifest and WAL authority.
 
 Per-partition lock-free counters cover mutation requests and outcomes, ordered
-seeks and scans, range and stale-epoch rejection, admission backpressure, write
-stalls, unknown apply outcomes, recoveries, checkpoints, and split lifecycle
+seeks and scans, range and stale-epoch rejection, admission backpressure,
+journal failures, unknown apply outcomes, recoveries, checkpoints, and split lifecycle
 events. Split counters distinguish preparation and base-checkpoint time,
 tail records and bytes, catch-up lag and finalization duration, overlay replay records and
 bytes, and materialization duration. Snapshot frontiers expose lifecycle,

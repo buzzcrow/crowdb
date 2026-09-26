@@ -36,6 +36,7 @@ pub(super) fn encode_head<'buffer>(
             lifecycle: match head.lifecycle {
                 TableLifecycle::Ready => 0,
                 TableLifecycle::Tombstone => 1,
+                TableLifecycle::Reclaiming => 2,
             },
             generation: head.generation,
             metadata_file: Some(metadata_file),
@@ -59,6 +60,7 @@ pub(super) fn decode_head(value: FBTableHead<'_>) -> Result<TableHead, Validatio
         lifecycle: match value.lifecycle() {
             0 => TableLifecycle::Ready,
             1 => TableLifecycle::Tombstone,
+            2 => TableLifecycle::Reclaiming,
             _ => return Err(ValidationError::Record),
         },
         generation: value.generation(),

@@ -142,6 +142,7 @@ async fn same_name_drafts_refresh_only_the_exact_original_writer_scope() {
             .parse()
             .unwrap();
         assert_eq!(grant.grant().table, table.table);
+        assert_credential_pin(&fixture, grant.grant()).await;
         assert!(grant.grant().operations.allows(FileOperation::Put));
         let wrong = path.replace("/events/", "/other/");
         assert_eq!(
@@ -175,6 +176,19 @@ async fn same_name_drafts_refresh_only_the_exact_original_writer_scope() {
     );
     expire_first(&fixture, &first, &second).await;
     fixture.finish().await;
+}
+
+async fn assert_credential_pin(fixture: &TestTableHttp, grant: &crowdb_access_iceberg::file::FileGrant) {
+    use crowdb_access_iceberg::{key::IcebergKey, record::StorageRecord};
+    let repository = CatalogRepository::new(fixture.store.clone(), ClearBounds::default()).unwrap();
+    let (_, authority) = repository.status().await.unwrap();
+    let expiry =
+        grant.expires_ms + authority.admission_bounds.request_ms + authority.admission_bounds.clock_skew_ms;
+    assert!(fixture.store.values.load().iter().any(|(key, value)| {
+        matches!(IcebergKey::decode(key).and_then(|key| StorageRecord::decode(&key, &value.bytes)),
+            Ok(StorageRecord::GcPin(pin)) if pin.head.table == grant.table && pin.expires_ms == expiry
+                && pin.protects_uploads && !pin.released)
+    }));
 }
 
 async fn expire_first(fixture: &TestTableHttp, first: &Value, second: &Value) {

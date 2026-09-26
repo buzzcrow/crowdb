@@ -227,6 +227,14 @@ impl TableCredentials {
         }
         .issue(&self.issuer, principal, context, &authority, target, now)
         .map_err(|_| service_unavailable())?;
+        let pins = crowdb_access_iceberg::gc::ReaderPins::new(self.store.clone());
+        let expires_ms = pins
+            .request_expiry(context, credentials.grant().expires_ms)
+            .await
+            .map_err(|_| service_unavailable())?;
+        pins.protect_files(context, target.table, principal.name, expires_ms, now)
+            .await
+            .map_err(|_| service_unavailable())?;
         Ok(response(
             200,
             serde_json::to_vec(&LoadCredentialsResponse::from(credentials))

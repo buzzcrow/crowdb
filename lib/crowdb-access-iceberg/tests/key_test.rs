@@ -34,6 +34,9 @@ fn keys_round_trip_and_catalog_ranges_exclude_system_records() {
             SystemScope::ManagementOperation,
             SystemScope::Audit,
             SystemScope::RetryBinding,
+            SystemScope::ManagementOverflow,
+            SystemScope::AuditOverflow,
+            SystemScope::RetryOverflow,
         ] {
             let suffix = if scope == SystemScope::ActiveRoot {
                 Vec::new()

@@ -376,7 +376,91 @@ table FBTablePurgeTask {
     head:FBTableHead (required);
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask }
+table FBGcTask {
+    mark_root:FBPayloadReference;
+    mark_pending:FBPayloadReference;
+    proof_complete:bool;
+    deferred_ranges:bool;
+    sweep_round:ulong;
+    catalog:[ubyte] (required);
+    activation_epoch:ulong;
+    identity:[ubyte] (required);
+    kind:ubyte = 255;
+    phase:ubyte = 255;
+    revision:ulong;
+    created_ms:ulong;
+    not_before_ms:ulong;
+    retry_at_ms:ulong;
+    attempts:uint;
+    paused:bool;
+    fenced:bool;
+    stalled:ubyte = 255;
+    head:FBTableHead;
+    scan_after:[ubyte] (required);
+    queue_read:ulong;
+    queue_write:ulong;
+    marked:ulong;
+    deleted:ulong;
+    reclaimed_bytes:ulong;
+}
+
+table FBGcFrame {
+    root:FBFileChunkRoot (required);
+    length:ulong;
+    next_child:ushort;
+}
+
+table FBGcCandidate {
+    completed_round:ulong;
+    task:[ubyte] (required);
+    generation:ulong;
+    first_seen_ms:ulong;
+    not_before_ms:ulong;
+    revision:ulong;
+    phase:ubyte = 255;
+    file:FBFileRecord (required);
+    frames:[FBGcFrame] (required);
+    pending:FBFileChunkRoot;
+}
+
+table FBGcEntry {
+    key:[ubyte] (required);
+}
+
+table FBGcPage {
+    catalog:[ubyte] (required);
+    task:[ubyte] (required);
+    kind:ubyte = 255;
+    sequence:ulong;
+    entries:[FBGcEntry] (required);
+}
+
+table FBGcPin {
+    catalog:[ubyte] (required);
+    activation_epoch:ulong;
+    identity:[ubyte] (required);
+    head:FBTableHead (required);
+    principal:string (required);
+    expires_ms:ulong;
+    released:bool;
+    operator_pin:bool;
+    protects_uploads:bool;
+}
+
+table FBGcNode {
+    continuation:FBPayloadReference;
+    head:FBTableHead;
+    task:[ubyte] (required);
+    file_id:[ubyte] (required);
+    location:string (required);
+    digest:[ubyte] (required);
+    kind:ubyte = 255;
+    checkpoint:[ubyte] (required);
+    record_offset:ulong;
+    complete:bool;
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcPin, FBGcNode }
 
 table FBIcebergRecord {
     schema_version:ushort;

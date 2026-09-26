@@ -31,6 +31,13 @@ pub struct DurableCursor {
     pub sealed: bool,
 }
 
+#[derive(Clone)]
+pub struct MirrorStripImage {
+    pub block_offset: u64,
+    pub data: Bytes,
+    pub full_image: Bytes,
+}
+
 #[async_trait]
 pub trait StreamRegistry: Send + Sync {
     async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>>;
@@ -80,13 +87,14 @@ pub trait StreamChunkStore: Send + Sync {
     ) -> Result<Option<ActiveChunkDescriptor>> {
         Ok(None)
     }
-    async fn write_mirrors(
+    async fn write_mirrors_with_images(
         &self,
         stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
         physical_offset: u64,
         data: Bytes,
+        images: &[MirrorStripImage],
     ) -> Result<()>;
     async fn advance_cursor(
         &self,

@@ -15,6 +15,9 @@ pub enum SystemScope {
     ManagementOperation = 1,
     Audit = 2,
     RetryBinding = 3,
+    ManagementOverflow = 4,
+    AuditOverflow = 5,
+    RetryOverflow = 6,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +41,13 @@ pub enum CatalogScope {
     TableCommitOperation = 15,
     TableCreateOperation = 16,
     TableLifecycleOperation = 17,
+    GcTask = 18,
+    GcCandidate = 19,
+    GcPage = 20,
+    GcPin = 21,
+    GcNode = 22,
+    GcPending = 23,
+    GcClaim = 24,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +160,9 @@ fn system_scope(value: u8) -> Result<SystemScope, ValidationError> {
         1 => Ok(SystemScope::ManagementOperation),
         2 => Ok(SystemScope::Audit),
         3 => Ok(SystemScope::RetryBinding),
+        4 => Ok(SystemScope::ManagementOverflow),
+        5 => Ok(SystemScope::AuditOverflow),
+        6 => Ok(SystemScope::RetryOverflow),
         _ => Err(ValidationError::Key),
     }
 }
@@ -174,6 +187,13 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         15 => Ok(CatalogScope::TableCommitOperation),
         16 => Ok(CatalogScope::TableCreateOperation),
         17 => Ok(CatalogScope::TableLifecycleOperation),
+        18 => Ok(CatalogScope::GcTask),
+        19 => Ok(CatalogScope::GcCandidate),
+        20 => Ok(CatalogScope::GcPage),
+        21 => Ok(CatalogScope::GcPin),
+        22 => Ok(CatalogScope::GcNode),
+        23 => Ok(CatalogScope::GcPending),
+        24 => Ok(CatalogScope::GcClaim),
         _ => Err(ValidationError::Key),
     }
 }
@@ -216,6 +236,7 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
         | CatalogScope::TableCommitOperation
         | CatalogScope::TableCreateOperation
         | CatalogScope::TableLifecycleOperation
+        | CatalogScope::GcTask
         | CatalogScope::MultipartSession => super::OperationId::from_bytes(suffix).map(|_| ()),
         CatalogScope::MultipartPart => {
             if suffix.len() != 18 || !(1..=10_000).contains(&u16::from_be_bytes([suffix[16], suffix[17]])) {
@@ -230,13 +251,41 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
             }
             Ok(())
         }
-        CatalogScope::Reclamation => {
+        CatalogScope::GcClaim => {
+            if suffix.len() != 32 {
+                return Err(ValidationError::Key);
+            }
+            super::TableId::from_bytes(&suffix[..16])?;
+            super::FileId::from_bytes(&suffix[16..])?;
+            Ok(())
+        }
+        CatalogScope::Reclamation | CatalogScope::GcCandidate => {
             if suffix.len() != 40 {
                 return Err(ValidationError::Key);
             }
             super::TableId::from_bytes(&suffix[..16])?;
             super::FileId::from_bytes(&suffix[24..])?;
             Ok(())
+        }
+        CatalogScope::GcPage => {
+            if suffix.len() != 25 || suffix[16] > 3 {
+                return Err(ValidationError::Key);
+            }
+            super::OperationId::from_bytes(&suffix[..16]).map(|_| ())
+        }
+        CatalogScope::GcPin => {
+            if suffix.len() != 32 {
+                return Err(ValidationError::Key);
+            }
+            super::TableId::from_bytes(&suffix[..16])?;
+            super::OperationId::from_bytes(&suffix[16..]).map(|_| ())
+        }
+        CatalogScope::GcNode | CatalogScope::GcPending => {
+            if suffix.len() != 32 {
+                return Err(ValidationError::Key);
+            }
+            super::OperationId::from_bytes(&suffix[..16])?;
+            super::FileId::from_bytes(&suffix[16..]).map(|_| ())
         }
         CatalogScope::OperationPayload => {
             if suffix.len() != 50 || u16::from_be_bytes([suffix[48], suffix[49]]) >= 64 {

@@ -72,6 +72,36 @@ async fn idle_active_chunk_renews_liveness_without_advancing_cursor() {
     assert_eq!(store.cursor_advance_count(), 1);
 }
 
+#[tokio::test(start_paused = true)]
+async fn idle_liveness_uses_the_configured_interval() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let config = StreamConfig {
+        liveness_interval: Duration::from_secs(10),
+        ..StreamConfig::default()
+    };
+    let stream = create_stream(&store, 64, config).await;
+    stream.append(&[Bytes::from_static(b"idle")]).await.unwrap();
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(store.liveness_renew_count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_liveness_failures_rotate_without_fencing_the_stream() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let stream = create_stream(&store, 64, StreamConfig::default()).await;
+    stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    store.fail_next_renewals(3);
+    tokio::time::advance(Duration::from_secs(12 * 60)).await;
+    tokio::time::advance(Duration::from_millis(400)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        stream.append(&[Bytes::from_static(b"new")]).await.unwrap().begin,
+        3
+    );
+    assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
+}
+
 #[tokio::test]
 async fn registered_binding_initializes_metadata_without_recreating_registry_record() {
     let store = Arc::new(MemoryStreamStore::new(64));
@@ -331,16 +361,34 @@ async fn ambiguous_cursor_is_resolved_without_resubmission() {
         .queue_cursor_outcome(CursorAdvance::Ambiguous, false)
         .await;
     let absent = create_stream(&absent_store, 31, StreamConfig::default()).await;
-    assert!(matches!(
-        absent.append(&[Bytes::from_static(b"no")]).await,
-        Err(StreamError::DefinitelyNotCommitted(_))
-    ));
-    assert_eq!(absent.tail(), 0);
+    assert_eq!(absent.append(&[Bytes::from_static(b"no")]).await.unwrap().end, 2);
+    assert_eq!(absent.tail(), 2);
     assert_eq!(
-        absent.append(&[Bytes::from_static(b"later")]).await,
-        Err(StreamError::WriteStalled)
+        absent
+            .append(&[Bytes::from_static(b"later")])
+            .await
+            .unwrap()
+            .begin,
+        2
     );
-    assert_eq!(absent_store.chunk_write_count(), 1);
+    assert_eq!(absent_store.chunk_write_count(), 3);
+}
+
+#[tokio::test]
+async fn repeated_mirror_failures_rotate_until_the_same_append_commits() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let stream = create_stream(&store, 64, StreamConfig::default()).await;
+    store.fail_next_writes(3);
+    assert_eq!(
+        stream
+            .append(&[Bytes::from_static(b"record")])
+            .await
+            .unwrap()
+            .begin,
+        0
+    );
+    assert_eq!(store.chunk_write_count(), 4);
+    assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"record"));
 }
 
 #[tokio::test]
@@ -593,16 +641,13 @@ async fn higher_epoch_reopens_same_bytes_and_fences_old_writer() {
 }
 
 #[tokio::test]
-async fn reopen_repairs_rollover_interrupted_before_manifest_publish() {
+async fn rollover_retries_failed_manifest_publication_without_reopen() {
     let store = Arc::new(MemoryStreamStore::new(4));
     let stream = create_stream(&store, 4, StreamConfig::default()).await;
     let name = StreamName { high: 1, low: 4 };
     stream.append(&[Bytes::from_static(b"abcd")]).await.unwrap();
     store.fail_next_publish();
-    assert!(matches!(
-        stream.append(&[Bytes::from_static(b"e")]).await,
-        Err(StreamError::Internal(_))
-    ));
+    assert_eq!(stream.append(&[Bytes::from_static(b"e")]).await.unwrap().begin, 4);
     drop(stream);
     tokio::task::yield_now().await;
 
@@ -612,13 +657,13 @@ async fn reopen_repairs_rollover_interrupted_before_manifest_publish() {
     let reopened = ChunkStream::open(name, 9, StreamConfig::default(), registry, metadata, chunks)
         .await
         .unwrap();
-    assert_eq!(reopened.tail(), 4);
+    assert_eq!(reopened.tail(), 5);
     assert_eq!(
-        reopened.append(&[Bytes::from_static(b"e")]).await.unwrap().begin,
-        4
+        reopened.append(&[Bytes::from_static(b"f")]).await.unwrap().begin,
+        5
     );
     assert_eq!(
-        reopened.read_at(0, 5).await.unwrap(),
-        Bytes::from_static(b"abcde")
+        reopened.read_at(0, 6).await.unwrap(),
+        Bytes::from_static(b"abcdef")
     );
 }

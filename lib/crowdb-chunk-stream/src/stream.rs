@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::extent_cache::ExtentPageCache;
 use crate::metadata::{resolve_extent, validate_manifest};
 use crate::metrics::{StreamMetrics, StreamMetricsSnapshot};
+use crate::mirror_shadow::MirrorShadow;
 use crate::storage::{CursorAdvance, StreamChunkStore, StreamMetadataStore, StreamRegistry};
 use crate::{Result, StreamError};
 
@@ -35,6 +36,7 @@ pub struct StreamConfig {
     pub read_concurrency: usize,
     pub gc_bytes_per_pass: u64,
     pub watchdog_interval: Duration,
+    pub liveness_interval: Duration,
 }
 
 impl Default for StreamConfig {
@@ -51,6 +53,7 @@ impl Default for StreamConfig {
             read_concurrency: 8,
             gc_bytes_per_pass: 64 * 1024 * 1024,
             watchdog_interval: Duration::from_millis(500),
+            liveness_interval: Duration::from_secs(12 * 60),
         }
     }
 }
@@ -68,6 +71,7 @@ impl StreamConfig {
             || self.read_concurrency == 0
             || self.gc_bytes_per_pass == 0
             || self.watchdog_interval.is_zero()
+            || self.liveness_interval.is_zero()
             || self.batch_bytes > self.max_append_bytes
             || self.queue_bytes < self.max_append_bytes as u64
         {
@@ -181,6 +185,7 @@ struct WorkerState {
     closed_view: Arc<AtomicBool>,
     manifest: StreamManifest,
     extents: Vec<Extent>,
+    mirror_shadow: MirrorShadow,
     stalled: bool,
     metrics: Arc<StreamMetrics>,
 }
@@ -456,6 +461,7 @@ impl ChunkStream {
             closed_view: Arc::clone(&closed),
             manifest,
             extents,
+            mirror_shadow: MirrorShadow::default(),
             stalled: false,
             metrics: Arc::clone(&metrics),
         };
@@ -1042,7 +1048,7 @@ impl StreamReader {
 
 async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command>) {
     let mut pending = None;
-    let mut liveness = tokio::time::interval(Duration::from_secs(12 * 60));
+    let mut liveness = tokio::time::interval(state.config.liveness_interval);
     liveness.tick().await;
     loop {
         let command = if let Some(command) = pending.take() {
@@ -1054,10 +1060,8 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command
                     None => break,
                 },
                 _ = liveness.tick() => {
-                    if let Some(active) = &state.manifest.active {
-                        if state.chunks.renew_liveness(active.chunk_id, state.writer_epoch).await.is_err() {
-                            state.stalled = true;
-                        }
+                    if let Some(chunk_id) = state.manifest.active.as_ref().map(|active| active.chunk_id) {
+                        maintain_liveness(&mut state, chunk_id).await;
                     }
                     continue;
                 }
@@ -1080,6 +1084,44 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command
     state.closed_view.store(true, Ordering::Release);
 }
 
+async fn maintain_liveness(state: &mut WorkerState, chunk_id: ChunkId) {
+    let mut attempts = 0_u32;
+    loop {
+        match state.chunks.renew_liveness(chunk_id, state.writer_epoch).await {
+            Ok(()) => return,
+            Err(error) => {
+                attempts += 1;
+                tracing::warn!(
+                    stream_high = state.stream_name.high,
+                    stream_low = state.stream_name.low,
+                    writer_epoch = state.writer_epoch,
+                    attempts,
+                    %error,
+                    "chunk-stream idle liveness renewal failed"
+                );
+                if matches!(error, StreamError::StaleWriter) || attempts >= 3 {
+                    match rollover(state).await {
+                        Ok(()) => return,
+                        Err(
+                            error @ (StreamError::StaleWriter
+                            | StreamError::Corruption(_)
+                            | StreamError::InvalidRequest(_)),
+                        ) => {
+                            tracing::warn!(%error, "chunk-stream idle rollover cannot continue safely");
+                            state.stalled = true;
+                            return;
+                        }
+                        Err(rollover_error) => {
+                            tracing::warn!(%rollover_error, "chunk-stream idle rollover remains unavailable");
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
 async fn process_append_batch(
     state: &mut WorkerState,
     first: AppendRequest,
@@ -1090,11 +1132,6 @@ async fn process_append_batch(
         finish_failed(state, vec![first], &StreamError::WriteStalled);
         return;
     }
-    if let Err(error) = ensure_active(state).await {
-        state.stalled = true;
-        finish_failed(state, vec![first], &error);
-        return;
-    }
     let first_len = match first.physical_len() {
         Ok(length) => length,
         Err(error) => {
@@ -1102,19 +1139,9 @@ async fn process_append_batch(
             return;
         }
     };
-    if !fits_active(state, first_len) {
-        if let Err(error) = grow_or_rollover(state, first_len).await {
-            state.stalled = true;
-            finish_failed(state, vec![first], &error);
-            return;
-        }
-    }
-    if !fits_active(state, first_len) {
-        finish_failed(
-            state,
-            vec![first],
-            &StreamError::InvalidRequest("append exceeds allocated chunk capacity".into()),
-        );
+    if let Err(error) = prepare_active_for_append(state, first_len).await {
+        state.stalled = true;
+        finish_failed(state, vec![first], &error);
         return;
     }
 
@@ -1137,22 +1164,7 @@ async fn process_append_batch(
             Err(_) => break,
         }
     }
-    let mut result = write_batch_with_watchdog(state, &requests, bytes).await;
-    if matches!(result, Err(BatchFailure::MirrorWrite(_))) {
-        // The failed bytes have not reached cursor publication. Seal the old
-        // chunk at its confirmed cursor, publish a successor, then replay the
-        // same logical batch only on that successor.
-        result = match rollover(state).await {
-            Ok(()) => {
-                state.stalled = false;
-                write_batch_with_watchdog(state, &requests, bytes).await
-            }
-            Err(error) => Err(BatchFailure::Other(error)),
-        };
-    }
-    if result.is_err() && matches!(rotate_externally_sealed_active(state).await, Ok(true)) {
-        result = write_batch_with_watchdog(state, &requests, bytes).await;
-    }
+    let result = write_with_recovery(state, &requests, bytes).await;
     match result {
         Ok(ranges) => {
             for (request, range) in requests.into_iter().zip(ranges) {
@@ -1171,6 +1183,103 @@ async fn process_append_batch(
         Err(BatchFailure::MirrorWrite(error) | BatchFailure::Other(error)) => {
             state.stalled = true;
             finish_failed(state, requests, &error);
+        }
+    }
+}
+
+async fn prepare_active_for_append(state: &mut WorkerState, first_len: usize) -> Result<()> {
+    loop {
+        if state.manifest.active.is_none() {
+            match ensure_active(state).await {
+                Ok(()) => {}
+                Err(
+                    error @ (StreamError::StaleWriter
+                    | StreamError::Corruption(_)
+                    | StreamError::InvalidRequest(_)),
+                ) => {
+                    return Err(error);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "chunk-stream allocation remains unavailable");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            }
+        }
+        if fits_active(state, first_len) {
+            return Ok(());
+        }
+        match grow_or_rollover(state, first_len).await {
+            Ok(()) if fits_active(state, first_len) => return Ok(()),
+            Ok(()) => return Err(StreamError::Corruption("new chunk cannot fit the append".into())),
+            Err(
+                error @ (StreamError::StaleWriter
+                | StreamError::Corruption(_)
+                | StreamError::InvalidRequest(_)),
+            ) => {
+                return Err(error);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "chunk-stream growth remains unavailable");
+                match rollover(state).await {
+                    Ok(()) if fits_active(state, first_len) => return Ok(()),
+                    Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
+                    _ => tokio::time::sleep(Duration::from_millis(100)).await,
+                }
+            }
+        }
+    }
+}
+
+async fn write_with_recovery(
+    state: &mut WorkerState,
+    requests: &[AppendRequest],
+    bytes: usize,
+) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
+    loop {
+        match write_batch_with_watchdog(state, requests, bytes).await {
+            Err(BatchFailure::MirrorWrite(
+                error @ (StreamError::StaleWriter
+                | StreamError::Corruption(_)
+                | StreamError::InvalidRequest(_)),
+            )) => return Err(BatchFailure::Other(error)),
+            Err(
+                BatchFailure::MirrorWrite(error)
+                | BatchFailure::Other(error @ StreamError::DefinitelyNotCommitted(_)),
+            ) => {
+                tracing::warn!(
+                    stream_high = state.stream_name.high,
+                    stream_low = state.stream_name.low,
+                    writer_epoch = state.writer_epoch,
+                    %error,
+                    "chunk-stream append will rotate after an uncommitted write"
+                );
+                loop {
+                    match rollover(state).await {
+                        Ok(()) => break,
+                        Err(
+                            error @ (StreamError::StaleWriter
+                            | StreamError::Corruption(_)
+                            | StreamError::InvalidRequest(_)),
+                        ) => {
+                            state.stalled = true;
+                            return Err(BatchFailure::Other(error));
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "chunk-stream rollover remains unavailable");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(BatchFailure::Other(error)) => {
+                if matches!(rotate_externally_sealed_active(state).await, Ok(true)) {
+                    continue;
+                }
+                return Err(BatchFailure::Other(error));
+            }
+            success => return success,
         }
     }
 }
@@ -1273,17 +1382,24 @@ async fn write_batch(
         });
     }
     let staging = staging.freeze();
-    if let Err(error) = state
+    let images = state
+        .mirror_shadow
+        .stage(active.chunk_id, expected_cursor, &staging)
+        .map_err(BatchFailure::Other)?;
+    let write = state
         .chunks
-        .write_mirrors(
+        .write_mirrors_with_images(
             state.stream_name,
             state.writer_epoch,
             active.chunk_id,
             expected_cursor,
             staging.clone(),
+            &images,
         )
-        .await
-    {
+        .await;
+    drop(images);
+    state.mirror_shadow.finish();
+    if let Err(error) = write {
         return Err(BatchFailure::MirrorWrite(error));
     }
     state
@@ -1329,40 +1445,41 @@ async fn resolve_cursor_advance(
             new_cursor,
             checksum,
         )
-        .await
-        .map_err(|error| {
-            state.stalled = true;
-            error
-        })?;
+        .await;
     match outcome {
-        CursorAdvance::Committed => Ok(()),
-        CursorAdvance::DefinitelyNotCommitted => {
-            state.stalled = true;
-            Err(StreamError::DefinitelyNotCommitted(
-                "durable cursor did not advance".into(),
-            ))
-        }
-        CursorAdvance::Ambiguous => {
-            let durable = state
-                .chunks
-                .durable_cursor(chunk_id, state.writer_epoch)
-                .await
-                .map_err(|error| {
-                    state.stalled = true;
-                    error
-                })?;
-            state.stalled = true;
-            if durable.offset == expected_cursor {
-                Err(StreamError::DefinitelyNotCommitted(
-                    "ambiguous write proved absent".into(),
-                ))
-            } else if durable.offset == new_cursor && durable.last_advance_checksum == Some(checksum) {
-                state.stalled = false;
-                Ok(())
-            } else {
-                Err(StreamError::WriteStalled)
+        Ok(CursorAdvance::Committed) => Ok(()),
+        Ok(CursorAdvance::DefinitelyNotCommitted) => Err(StreamError::DefinitelyNotCommitted(
+            "durable cursor did not advance".into(),
+        )),
+        Ok(CursorAdvance::Ambiguous) | Err(_) => loop {
+            match state.chunks.durable_cursor(chunk_id, state.writer_epoch).await {
+                Ok(durable) if durable.offset == expected_cursor => {
+                    return Err(StreamError::DefinitelyNotCommitted(
+                        "ambiguous write proved absent".into(),
+                    ));
+                }
+                Ok(durable)
+                    if durable.offset == new_cursor && durable.last_advance_checksum == Some(checksum) =>
+                {
+                    return Ok(());
+                }
+                Ok(durable) if durable.offset == new_cursor => {
+                    return Err(StreamError::Corruption(
+                        "committed cursor has an unexpected checksum".into(),
+                    ));
+                }
+                Ok(_) => {
+                    return Err(StreamError::Corruption(
+                        "durable cursor is outside the append bounds".into(),
+                    ));
+                }
+                Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
+                Err(error) => {
+                    tracing::warn!(%error, "chunk-stream cursor resolution remains unavailable");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
             }
-        }
+        },
     }
 }
 
@@ -1388,12 +1505,24 @@ async fn rollover(state: &mut WorkerState) -> Result<()> {
     let active = state
         .manifest
         .active
-        .take()
+        .as_ref()
         .ok_or_else(|| StreamError::Internal("rollover has no active chunk".into()))?;
-    state
+    let active = active.clone();
+    let durable = state
         .chunks
-        .seal(active.chunk_id, state.writer_epoch, active.acknowledged_cursor)
+        .durable_cursor(active.chunk_id, state.writer_epoch)
         .await?;
+    if durable.offset != active.acknowledged_cursor {
+        return Err(StreamError::Corruption(
+            "rollover cursor differs from the acknowledged cursor".into(),
+        ));
+    }
+    if !durable.sealed {
+        state
+            .chunks
+            .seal(active.chunk_id, state.writer_epoch, active.acknowledged_cursor)
+            .await?;
+    }
     let tail = state.tail_view.load(Ordering::Acquire);
     state.manifest.sealed_tail = tail;
     let mut successor = state
@@ -1550,18 +1679,45 @@ async fn publish_state(state: &mut WorkerState) -> Result<()> {
         state.config.extent_page_entries,
     );
     state.manifest.extent_pages = fences_for(&pages);
-    if let Err(error) = state
-        .metadata
-        .publish(
-            Some((state.writer_epoch, expected)),
-            state.manifest.clone(),
-            pages,
-        )
-        .await
-    {
-        state.manifest.generation = expected;
-        state.stalled = true;
-        return Err(error);
+    loop {
+        match state
+            .metadata
+            .publish(
+                Some((state.writer_epoch, expected)),
+                state.manifest.clone(),
+                pages.clone(),
+            )
+            .await
+        {
+            Ok(()) => break,
+            Err(error) => {
+                match state.metadata.load_current(state.stream_name).await {
+                    Ok(Some(current)) if current == state.manifest => break,
+                    Ok(Some(current))
+                        if current.writer_epoch == state.writer_epoch && current.generation == expected =>
+                    {
+                        if matches!(error, StreamError::InvalidRequest(_) | StreamError::Corruption(_)) {
+                            state.stalled = true;
+                            return Err(error);
+                        }
+                    }
+                    Ok(Some(current)) if current.writer_epoch > state.writer_epoch => {
+                        state.stalled = true;
+                        return Err(StreamError::StaleWriter);
+                    }
+                    Ok(_) => {
+                        state.stalled = true;
+                        return Err(StreamError::Corruption(
+                            "stream manifest head differs from both prior and candidate state".into(),
+                        ));
+                    }
+                    Err(load_error) => {
+                        tracing::warn!(%load_error, "chunk-stream manifest publication remains unresolved");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
     }
     state
         .metrics

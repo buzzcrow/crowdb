@@ -1,6 +1,8 @@
 use crate::error::ValidationError;
 use crate::key::SystemScope;
-use crate::operation::{ledger_key, ManagementAction, ManagementOperation, ManagementPhase};
+use crate::operation::{
+    ledger_locate, LedgerLocation, ManagementAction, ManagementOperation, ManagementPhase,
+};
 use crate::record::StorageRecord;
 
 use super::repository::{authority_key, decode_authority, elapsed_now, operation_bytes, root_key};
@@ -172,8 +174,17 @@ impl CatalogRepository {
                 published.phase = ManagementPhase::Published;
                 published.publication_proof = StorageRecord::Active(root).encode()?;
                 published.grace_completed_ms = now_ms;
+                let LedgerLocation::Existing(key, _) = ledger_locate(
+                    self.store.as_ref(),
+                    SystemScope::ManagementOperation,
+                    operation.id(),
+                )
+                .await?
+                else {
+                    return Err(ValidationError::Record.into());
+                };
                 self.cas(
-                    &ledger_key(SystemScope::ManagementOperation, operation.id())?,
+                    &key,
                     Some(&operation_bytes(operation)?),
                     &operation_bytes(&published)?,
                 )
@@ -209,7 +220,9 @@ impl CatalogRepository {
     }
 
     async fn audit(&self, operation: &ManagementOperation, now_ms: u64) -> Result<(), CatalogError> {
-        let key = ledger_key(SystemScope::Audit, operation.id())?;
+        let key = match ledger_locate(self.store.as_ref(), SystemScope::Audit, operation.id()).await? {
+            LedgerLocation::Existing(key, _) | LedgerLocation::Vacant(key) => key,
+        };
         let bytes = operation_bytes(operation)?;
         let old = self.store.get(&key.encode()?).await?;
         if let Some(value) = &old {

@@ -18,7 +18,7 @@ use crowdb_access_iceberg::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pinned Apache Iceberg 1.11.0 source, Gradle and native storage"]
-async fn apache_rest_compatibility_kit_basic_create() {
+async fn apache_rest_compatibility_kit_supported_catalog_surface() {
     let source =
         std::env::var("CROWDB_ICEBERG_RCK_ROOT").expect("set the pinned Apache Iceberg 1.11.0 source root");
     let revision = std::process::Command::new("git")
@@ -62,16 +62,27 @@ async fn apache_rest_compatibility_kit_basic_create() {
     common::activate(&repository).await;
     let process = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let origin = format!("http://{}", process.address);
-    let selector = std::env::var("CROWDB_ICEBERG_RCK_SELECTOR").unwrap_or_else(|_| {
-        "org.apache.iceberg.rest.RESTCompatibilityKitCatalogTests.testBasicCreateTable".into()
+    let selectors = std::env::var("CROWDB_ICEBERG_RCK_SELECTOR").unwrap_or_else(|_| {
+        [
+            "testCreateNamespace",
+            "testBasicCreateTable",
+            "testRenameTable",
+            "testDropTable",
+            "testDropMissingTable",
+            "testListTables",
+        ]
+        .iter()
+        .map(|name| format!("org.apache.iceberg.rest.RESTCompatibilityKitCatalogTests.{name}"))
+        .collect::<Vec<_>>()
+        .join(",")
     });
     let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("timeout")
-            .arg("900")
-            .arg("./gradlew")
-            .arg(":iceberg-open-api:test")
-            .arg("--tests")
-            .arg(selector)
+        let mut command = std::process::Command::new("timeout");
+        command.arg("900").arg("./gradlew").arg(":iceberg-open-api:test");
+        for selector in selectors.split(',') {
+            command.arg("--tests").arg(selector);
+        }
+        command
             .args([
                 "--no-daemon",
                 "-Drck.local=false",

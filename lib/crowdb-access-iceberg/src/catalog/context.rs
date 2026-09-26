@@ -4,8 +4,8 @@ use crate::record::StorageRecord;
 
 use super::{CatalogContext, CatalogError, CatalogStore, RootState};
 
-pub(crate) async fn check_context(
-    store: &dyn CatalogStore,
+pub(crate) async fn check_context<Store: CatalogStore + ?Sized>(
+    store: &Store,
     context: CatalogContext,
 ) -> Result<(), CatalogError> {
     context.validate()?;

@@ -40,13 +40,64 @@ impl FileRepository {
         candidate: &FileRecord,
     ) -> Result<FileRecord, CatalogError> {
         candidate.validate()?;
+        let pin = Box::pin(self.publication_pin(context, &candidate.location)).await?;
+        let result = self.publish_inner(context, candidate).await;
+        if result.is_ok() {
+            if let Some(pin) = pin {
+                crate::gc::ReaderPins::new(self.store.clone())
+                    .release(&pin)
+                    .await?;
+            }
+        }
+        result
+    }
+
+    async fn publication_pin(
+        &self,
+        context: CatalogContext,
+        location: &FileLocation,
+    ) -> Result<Option<crate::gc::GcPin>, CatalogError> {
+        let key = crate::table::head_key(context.catalog, location.table().table);
+        if self.store.get(&key.encode()?).await?.is_none() {
+            return Ok(None);
+        }
+        let now_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| ValidationError::Deadline)?
+                .as_millis(),
+        )
+        .map_err(|_| ValidationError::Deadline)?;
+        let pins = crate::gc::ReaderPins::new(self.store.clone());
+        let expiry = pins.request_expiry(context, now_ms).await?;
+        Ok(Some(
+            pins.protect_files(
+                context,
+                location.table().table,
+                "file-publication",
+                expiry,
+                now_ms,
+            )
+            .await?,
+        ))
+    }
+
+    async fn publish_inner(
+        &self,
+        context: CatalogContext,
+        candidate: &FileRecord,
+    ) -> Result<FileRecord, CatalogError> {
+        candidate.validate()?;
+        self.check_deletion(candidate).await?;
         self.check_context(context, &candidate.location).await?;
+        self.check_publication_table(context, &candidate.location).await?;
         if let Some(existing) = self.resolve(&candidate.location).await? {
             self.check_context(context, &candidate.location).await?;
             return compatible(existing, candidate);
         }
         self.stage(candidate).await?;
         self.check_context(context, &candidate.location).await?;
+        self.check_publication_table(context, &candidate.location).await?;
         let key = location_key(&candidate.location).encode()?;
         let bytes = StorageRecord::FileMapping(FileMapping {
             location: candidate.location.clone(),
@@ -65,6 +116,7 @@ impl FileRepository {
                 .ok_or(ValidationError::Record)?,
         };
         self.check_context(context, &candidate.location).await?;
+        self.check_publication_table(context, &candidate.location).await?;
         compatible(published, candidate)
     }
 
@@ -89,6 +141,24 @@ impl FileRepository {
         }
     }
 
+    async fn check_publication_table(
+        &self,
+        context: CatalogContext,
+        location: &FileLocation,
+    ) -> Result<(), CatalogError> {
+        let key = crate::table::head_key(context.catalog, location.table().table);
+        let Some(value) = self.store.get(&key.encode()?).await? else {
+            return Ok(());
+        };
+        let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if head.lifecycle != crate::table::TableLifecycle::Ready {
+            return Err(CatalogError::Busy);
+        }
+        Ok(())
+    }
+
     async fn resolve(&self, location: &FileLocation) -> Result<Option<FileRecord>, CatalogError> {
         let key = location_key(location);
         let Some(value) = self.store.get(&key.encode()?).await? else {
@@ -109,7 +179,39 @@ impl FileRepository {
         if record.location != *location {
             return Err(ValidationError::IdentityMismatch.into());
         }
+        self.check_deletion(&record).await?;
         Ok(Some(*record))
+    }
+
+    async fn check_deletion(&self, record: &FileRecord) -> Result<(), CatalogError> {
+        let mut suffix = record.location.table().table.as_bytes().to_vec();
+        suffix.extend_from_slice(record.file.as_bytes());
+        let key = crate::key::IcebergKey::Catalog {
+            catalog: record.location.table().catalog,
+            scope: crate::key::CatalogScope::GcClaim,
+            suffix,
+        };
+        let Some(value) = self.store.get(&key.encode()?).await? else {
+            return Ok(());
+        };
+        let StorageRecord::GcCandidate(claim) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if claim.file != *record {
+            return Err(ValidationError::Record.into());
+        }
+        let key = claim.key();
+        let value = self.store.get(&key.encode()?).await?.ok_or(CatalogError::Busy)?;
+        let StorageRecord::GcCandidate(candidate) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if candidate.file != *record {
+            return Err(ValidationError::Record.into());
+        }
+        if candidate.phase != crate::gc::CandidatePhase::Retained {
+            return Err(CatalogError::Busy);
+        }
+        Ok(())
     }
 
     async fn check_context(

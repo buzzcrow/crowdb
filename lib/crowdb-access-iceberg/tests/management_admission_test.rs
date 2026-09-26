@@ -117,3 +117,51 @@ async fn stale_clear_has_an_exact_durable_conflict_audit() {
     assert_eq!(audit.phase, ManagementPhase::Conflict);
     assert_eq!(audit.request, clear);
 }
+
+#[tokio::test]
+async fn colliding_management_and_audit_slots_use_exact_overflow() {
+    let store = Arc::new(TestStore::default());
+    let repository = CatalogRepository::new(store.clone(), ClearBounds::default()).unwrap();
+    let initialize = request(1, ManagementAction::Initialize, 0, "original");
+    let original = repository
+        .execute(initialize.clone(), ManagementPrivilege::Manage, 100)
+        .await
+        .unwrap();
+    let occupied = ledger_key(SystemScope::ManagementOperation, initialize.identity.operation).unwrap();
+    let collision = (2_u128..1_000_000)
+        .find_map(|number| {
+            let operation = OperationId::from_bytes(&number.to_be_bytes()).unwrap();
+            (ledger_key(SystemScope::ManagementOperation, operation).unwrap() == occupied)
+                .then_some(operation)
+        })
+        .expect("colliding slot");
+    let mut rename = request(2, ManagementAction::Rename, 1, "renamed");
+    rename.identity.operation = collision;
+    let renamed = repository
+        .execute(rename.clone(), ManagementPrivilege::Manage, 101)
+        .await
+        .unwrap();
+    assert_eq!(renamed.display_name, "renamed");
+    assert_eq!(
+        repository
+            .execute(rename.clone(), ManagementPrivilege::Manage, 102)
+            .await
+            .unwrap(),
+        renamed
+    );
+    assert_eq!(
+        repository
+            .execute(initialize, ManagementPrivilege::Manage, 102)
+            .await
+            .unwrap(),
+        original
+    );
+    let values = store.values.load();
+    for scope in [SystemScope::ManagementOverflow, SystemScope::AuditOverflow] {
+        let key = IcebergKey::System {
+            scope,
+            suffix: collision.as_bytes().to_vec(),
+        };
+        assert!(values.contains_key(&key.encode().unwrap()));
+    }
+}

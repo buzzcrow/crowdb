@@ -1297,6 +1297,14 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
     assert_eq!(sealed.capacity, 1024);
     assert!(sealed.cleanup_intents.is_empty());
     eprintln!("chunk sealed");
+    let owned_segments: Vec<_> = sealed
+        .strips
+        .iter()
+        .flat_map(|strip| match strip.strip.as_ref().unwrap() {
+            Strip::MirrorStrip(mirror) => mirror.segments.clone(),
+            Strip::EcStrip(ec) => ec.segments.clone(),
+        })
+        .collect();
 
     // 8. Delete the chunk.
     let deleted = harness
@@ -1306,6 +1314,25 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
         .expect("delete_chunk");
     assert_eq!(deleted.state, ChunkState::Deleted as i32);
     eprintln!("chunk deleted");
+    assert!(deleted.strips.is_empty());
+    let disk_records = cluster.make_ddb_kv_client();
+    for segment in &owned_segments {
+        let records = disk_records
+            .read_zone_records(
+                (STORE_ID, DATA_GROUP_ID),
+                &segment.disk_id.unwrap(),
+                segment.zone_index,
+            )
+            .await
+            .unwrap();
+        assert!(
+            records.free.iter().any(|record| {
+                record.key.unit_offset == segment.unit_offset
+                    && record.key.allocation_ts == segment.allocation_ts
+            }),
+            "disk block must be freed before chunk layout is cleared: {segment:?}"
+        );
+    }
 
     // 9. Delete again → should return the same idempotent tombstone.
     let deleted_again = harness
@@ -3174,7 +3201,8 @@ async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
         )
         .await
         .expect("renew liveness without advancing cursor");
-    assert_eq!(renewed.modify_ts, advanced.modify_ts);
+    assert!(renewed.modify_ts > advanced.modify_ts);
+    assert!(renewed.writer_lease_deadline_ms >= advanced.writer_lease_deadline_ms);
     assert_eq!(renewed.acknowledged_cursor, advanced.acknowledged_cursor);
     assert!(matches!(
         harness

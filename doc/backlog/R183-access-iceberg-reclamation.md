@@ -3,7 +3,13 @@
 
 ### R183: access server / Iceberg — Reachability and bounded reclamation
 
-Status: physical GC remains deferred. The capacity behavior confirmed on
+Status: implementation authorized, including physical reclamation of exclusively
+owned chunks. Shared-chunk objects call the existing delete-chunk-range API;
+the storage implementation of range reclamation remains deferred by the user.
+The range API uses two independent u32 byte parameters for offset and length;
+small-object frame boundaries must be passed exactly without KiB conversion.
+An unsupported response must retain inspectable pending reclamation, never count
+as reclaimed bytes or authorize deleting the shared chunk. The capacity behavior confirmed on
 2026-09-24 uses the existing disk provisioning/allocation flow. Current disks
 are file-backed simulations with configured capacity limits; they are not
 unbounded growable files. When available managed capacity cannot satisfy an
@@ -48,9 +54,16 @@ contains zero free bytes.
 1. Add `gc/candidate.rs`, `reachability.rs`, `task.rs`, `repository.rs`,
    `worker.rs`, and `pins.rs`. Store tasks and generation-indexed candidate pages
    under their CatalogId/TableId; do not create one key per file in Group 0.
+   A catalog-sharded, file-scoped immutable claim selects exactly one
+   generation-indexed deletion intent. Superseding inactive tasks reuse that
+   intent and its pending cursor instead of starting another traversal of a
+   partially deleted tree. Retention cannot shorten during ownership transfer.
 2. Emit candidates for failed/abandoned metadata generations, expired staged table
    creates, multipart sessions and parts, orphan projections, expired snapshots,
-   purge-requested dropped tables, and retired catalog ranges. Candidate creation
+   purge-requested dropped tables, expired management/audit/REST retry bindings
+   in both primary slots and exact-identity overflow keys, and retired catalog
+   ranges. Preserve pending operations, retained retry results and the active
+   root's referenced management operation. Candidate creation
    never performs physical deletion. Consume the durable tombstoned-head purge
    tasks emitted by logical table drop, retaining their activation epoch, stable
    table identity and selected metadata generation. A pending purge task is input
@@ -69,6 +82,10 @@ contains zero free bytes.
 6. Delete file records and chunk roots idempotently only after proof. Delete derived
    projections before or with their owning unreachable generation. A partial chunk
    failure leaves durable retry state and never reconstructs a removed authority.
+   An exclusively owned chunk is fenced against access, its disk blocks are freed,
+   and only then may its layout/metadata be removed; preserve durable cleanup
+   intent across partial failures. Shared chunks use delete-chunk-range only,
+   retaining deferred work while that API reports unsupported.
 7. Expose pause, resume, inspect, pin, unpin, rate, progress, stalled reason, and
    retry controls. Validate every configured item, byte, time, and concurrency cap;
    use bounded exponential backoff and terminal quarantine for repeated corruption.
@@ -102,6 +119,12 @@ contains zero free bytes.
 
 ## Acceptance
 
+- Given purge has physically deleted a child but not acknowledged its durable
+  cursor, when catalog retirement adopts its deletion intent after protection
+  checks, assert the same cursor resumes without rereading the deleted child,
+  paused owners remain protected, and stale-owner updates conflict. Invariants:
+  GC-I2 and GC-I4. Integration test.
+
 - Given retained v1, v2, and v3 snapshots, branches, tags, metadata logs, data and
   delete files, deletion vectors, and statistics, when reachability runs, assert all
   referenced files are marked and no task memory or KV value grows with the graph.
@@ -110,6 +133,11 @@ contains zero free bytes.
   orphan projection, when cleanup runs after deadlines, assert only unreachable
   state is removed and repeated execution is idempotent. Invariants: GC-I1 and
   GC-I4. Integration test.
+- Given colliding retry identities with primary and exact-identity overflow
+  records, when one expires and the other remains retained or pending, assert
+  cleanup removes only the expired binding after its result and active-root
+  references are ruled out; fresh collisions continue to admit and replay.
+  Invariants: GC-I1, GC-I2 and GC-I4. Integration test.
 - Given a drop with purge and concurrent reader, credential, commit operation, and
   operator pin, when each fence expires or releases in every order, assert deletion
   starts only after the last valid fence and never affects the reader's bytes.

@@ -6,6 +6,7 @@ use super::{ContentFormat, FileBlockStore, FileIoError, FileReader, FileRecord, 
 mod codec;
 mod input;
 mod records;
+mod resume;
 mod schema;
 pub use codec::AvroCodec;
 use input::Input;
@@ -68,6 +69,7 @@ pub struct AvroBlocks {
     metadata: BTreeMap<String, Vec<u8>>,
     sync: Vec<u8>,
     limits: AvroLimits,
+    expected_digest: [u8; 32],
     header: FormatHint,
     failed: bool,
 }
@@ -81,12 +83,29 @@ impl AvroBlocks {
         record: FileRecord,
         limits: AvroLimits,
     ) -> Result<Self, AvroContainerError> {
+        Self::open_inner(store, record, limits, false).await
+    }
+
+    async fn open_inner(
+        store: Arc<dyn FileBlockStore>,
+        record: FileRecord,
+        limits: AvroLimits,
+        resumable: bool,
+    ) -> Result<Self, AvroContainerError> {
         limits.validate()?;
         if record.format != ContentFormat::Avro {
             return Err(AvroContainerError::Framing);
         }
         let length = record.length;
+        let expected_digest = record.digest;
+        let digest = resumable.then(|| {
+            super::FileDigest::new(super::FileIdentity {
+                table: record.location.table(),
+                file: record.file,
+            })
+        });
         let mut input = Input::new(FileReader::new(store, record, None, 16 * 1024)?, length);
+        input.digest = digest;
         input.end = length.min(limits.header_bytes as u64);
         if input.take(4).await? != b"Obj\x01" {
             return Err(AvroContainerError::Framing);
@@ -112,6 +131,7 @@ impl AvroBlocks {
             metadata,
             sync,
             limits,
+            expected_digest,
             header,
             failed: false,
         })
@@ -143,6 +163,15 @@ impl AvroBlocks {
             return Err(AvroContainerError::Failed);
         }
         if self.input.position == self.input.end {
+            if self
+                .input
+                .digest
+                .as_ref()
+                .is_some_and(|digest| digest.clone().finish() != self.expected_digest)
+            {
+                self.failed = true;
+                return Err(AvroContainerError::Framing);
+            }
             return Ok(None);
         }
         self.failed = true;

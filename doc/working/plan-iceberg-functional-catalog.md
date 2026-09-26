@@ -48,8 +48,14 @@ R179–R182 are complete. Continue foreground R184; R183 and R186 stay deferred.
 
 Execution detail and difficulty: [R184 REST conformance plan](plan-iceberg-rest-conformance.md).
 R184 route discovery, common admission and bounded metrics are implemented;
-explicit capability activation is selected and implemented, while final
-conformance gates remain open.
+explicit capability activation is selected and implemented. Foreground R184
+client/REST gates pass; engine and reclamation-dependent closure remains open.
+
+Pixi already pins OpenJDK 21 and Maven in the `iceberg-e2e` environment. The
+`test-java-iceberg-fileio-e2e` task now runs all three official Java native
+cases serially; two consecutive complete runs passed. A real HTTP UUIDv7
+collision test also confirms independent admission and replay. This resolves
+the fixed-slot collision policy, not every historical storage deadline.
 
 - [ ] **Release conformance — R184**: official Rust 0.10.0 namespace/table
   lifecycle and lost-create-response recovery pass across two listeners; the
@@ -60,8 +66,10 @@ conformance gates remain open.
   kit requires unsupported register/view cleanup and assumes external locations/
   files outside native selected-file authority. An official Rust client also
   rejects stale reads after clear/reactivation in the two-listener memory fixture.
-  Finish same-key SDK retry, native retirement grace and stable native Java
-  FileIO checks; keep engine acceptance in Next and GC in R183.
+  The official Java SDK does not automatically retry mutation POST after a lost
+  response; direct HTTP fixtures cover same-key server replay. Native retirement
+  grace and two consecutive native Java FileIO suites pass. Keep engine
+  acceptance in Next and physical GC in R183.
   Files: conformance environments, SDK fixtures and capability tests.
 - [ ] **Requirement closure**: compare each requirement's acceptance cases with
   executable evidence; update affected permanent architecture only as needed.

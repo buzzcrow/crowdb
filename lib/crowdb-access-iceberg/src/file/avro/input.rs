@@ -6,6 +6,7 @@ pub(super) struct Input {
     offset: usize,
     pub(super) position: u64,
     pub(super) end: u64,
+    pub(super) digest: Option<crate::file::FileDigest>,
 }
 
 impl Input {
@@ -16,6 +17,7 @@ impl Input {
             offset: 0,
             position: 0,
             end,
+            digest: None,
         }
     }
 
@@ -39,6 +41,9 @@ impl Input {
             self.fill().await?;
             let count = (length - result.len()).min(self.frame.len() - self.offset);
             result.extend_from_slice(&self.frame[self.offset..self.offset + count]);
+            if let Some(digest) = &mut self.digest {
+                digest.update(&self.frame[self.offset..self.offset + count])?;
+            }
             self.offset += count;
             self.position += count as u64;
         }
@@ -50,6 +55,9 @@ impl Input {
         for shift in (0..70).step_by(7) {
             self.fill().await?;
             let byte = self.frame[self.offset];
+            if let Some(digest) = &mut self.digest {
+                digest.update(&[byte])?;
+            }
             self.offset += 1;
             self.position += 1;
             if shift == 63 && byte > 1 {

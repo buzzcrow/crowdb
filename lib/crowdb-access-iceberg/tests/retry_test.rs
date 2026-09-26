@@ -184,11 +184,11 @@ fn uuidv7_wire_keys_validate_version_and_clock() {
 }
 
 #[tokio::test]
-async fn collisions_preserve_unfinished_and_retained_results_then_admit_fresh_keys() {
+async fn colliding_keys_use_exact_overflow_and_replay_independently() {
     use crowdb_access_iceberg::key::SystemScope;
-    use crowdb_access_iceberg::operation::{ledger_key, RETRY_WINDOW_MS};
+    use crowdb_access_iceberg::operation::ledger_key;
     let (store, _, request) = setup().await;
-    let ledger = RetryLedger::new(store);
+    let ledger = RetryLedger::new(store.clone());
     let target = ledger_key(SystemScope::RetryBinding, request.identity.operation).unwrap();
     let mut collision = request.clone();
     collision.identity.operation = (1_u128..1_000_000)
@@ -199,30 +199,35 @@ async fn collisions_preserve_unfinished_and_retained_results_then_admit_fresh_ke
                 .then_some(candidate)
         })
         .expect("colliding bounded slot");
-    ledger.begin(request.clone(), 100).await.unwrap();
     assert!(matches!(
-        ledger.begin(collision.clone(), 101).await,
-        Err(CatalogError::Busy)
+        ledger.begin(request.clone(), 100).await.unwrap(),
+        RetryAdmission::New(_)
     ));
-    let expired = 100 + RETRY_WINDOW_MS + 30_001;
-    collision.identity.issued_ms = expired;
     assert!(matches!(
-        ledger.begin(collision.clone(), expired).await,
-        Err(CatalogError::Busy)
+        ledger.begin(collision.clone(), 101).await.unwrap(),
+        RetryAdmission::New(_)
     ));
+    let overflow = crowdb_access_iceberg::key::IcebergKey::System {
+        scope: SystemScope::RetryOverflow,
+        suffix: collision.identity.operation.as_bytes().to_vec(),
+    };
+    assert!(store.values.load().contains_key(&overflow.encode().unwrap()));
     ledger
-        .finish(request.clone(), 204, Vec::new(), 101)
+        .finish(request.clone(), 204, Vec::new(), 102)
+        .await
+        .unwrap();
+    ledger
+        .finish(collision.clone(), 409, b"collision".to_vec(), 102)
         .await
         .unwrap();
     assert!(matches!(
-        ledger.begin(collision.clone(), 102).await,
-        Err(CatalogError::Busy)
+        ledger.begin(request, 103).await.unwrap(),
+        RetryAdmission::Replay(record) if record.status == 204
     ));
     assert!(matches!(
-        ledger.begin(collision, expired).await.unwrap(),
-        RetryAdmission::New(_)
+        ledger.begin(collision, 103).await.unwrap(),
+        RetryAdmission::Replay(record) if record.status == 409 && record.body == b"collision"
     ));
-    assert!(ledger.begin(request, expired).await.is_err());
 }
 
 #[tokio::test]

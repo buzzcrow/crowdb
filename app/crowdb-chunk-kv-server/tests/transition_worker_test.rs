@@ -444,7 +444,7 @@ async fn source_worker_quiesces_before_returning_release_proof() {
             durable_tail_offset: 0,
         }
     );
-    assert_eq!(source.lifecycle(), PartitionLifecycle::WriteStalled);
+    assert_eq!(source.lifecycle(), PartitionLifecycle::TransferQuiesced);
 }
 
 #[tokio::test]

@@ -70,7 +70,8 @@ pub struct MemoryStreamStore {
     active_reads: AtomicUsize,
     max_active_reads: AtomicUsize,
     fail_next_publish: AtomicBool,
-    fail_next_write: AtomicBool,
+    fail_next_writes: AtomicUsize,
+    fail_next_renewals: AtomicUsize,
     write_started: Notify,
     resume_write: Notify,
     read_started: Notify,
@@ -104,7 +105,8 @@ impl MemoryStreamStore {
             active_reads: AtomicUsize::new(0),
             max_active_reads: AtomicUsize::new(0),
             fail_next_publish: AtomicBool::new(false),
-            fail_next_write: AtomicBool::new(false),
+            fail_next_writes: AtomicUsize::new(0),
+            fail_next_renewals: AtomicUsize::new(0),
             write_started: Notify::new(),
             resume_write: Notify::new(),
             read_started: Notify::new(),
@@ -129,7 +131,15 @@ impl MemoryStreamStore {
     }
 
     pub fn fail_next_write(&self) {
-        self.fail_next_write.store(true, Ordering::Release);
+        self.fail_next_writes(1);
+    }
+
+    pub fn fail_next_writes(&self, count: usize) {
+        self.fail_next_writes.store(count, Ordering::Release);
+    }
+
+    pub fn fail_next_renewals(&self, count: usize) {
+        self.fail_next_renewals.store(count, Ordering::Release);
     }
 
     pub async fn wait_for_write(&self) {
@@ -347,16 +357,21 @@ impl StreamChunkStore for MemoryStreamStore {
         })
     }
 
-    async fn write_mirrors(
+    async fn write_mirrors_with_images(
         &self,
         _stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
         physical_offset: u64,
         data: Bytes,
+        _images: &[crate::MirrorStripImage],
     ) -> Result<()> {
         self.chunk_writes.fetch_add(1, Ordering::AcqRel);
-        if self.fail_next_write.swap(false, Ordering::AcqRel) {
+        if self
+            .fail_next_writes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1))
+            .is_ok()
+        {
             return Err(StreamError::Internal("injected mirror write failure".into()));
         }
         if self.pause_writes.load(Ordering::Acquire) {
@@ -445,6 +460,13 @@ impl StreamChunkStore for MemoryStreamStore {
     }
 
     async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
+        if self
+            .fail_next_renewals
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1))
+            .is_ok()
+        {
+            return Err(StreamError::ReadUnavailable("injected liveness failure".into()));
+        }
         let state = self.state.lock().await;
         let chunk = state
             .chunks

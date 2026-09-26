@@ -29,6 +29,7 @@ pub mod error;
 pub mod io;
 pub mod metrics;
 mod negative_list;
+mod reclamation;
 pub mod traits;
 pub mod worker;
 pub mod writer;
@@ -40,8 +41,8 @@ pub use benchmark::{
 };
 pub use chunk::{
     ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
-    FailedReadRange, MirrorChunkWriter, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader,
-    StripResult, StripWriter, STREAM_CHUNK_BYTES,
+    FailedReadRange, MirrorChunkWriter, MirrorStripFlow, MirrorStripWriter, PartialReadResult, ReadRangeData,
+    StripReader, StripResult, StripWriter, STREAM_CHUNK_BYTES,
 };
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
@@ -54,9 +55,8 @@ pub use metrics::{
     ChunkClientMetrics, LargeWriteBufferMetricsSnapshot, LargeWriteRepairMetricsSnapshot,
     SmallWriteMetricsSnapshot,
 };
-#[cfg(feature = "test-util")]
-#[doc(hidden)]
 pub use negative_list::FailedDiskList;
+pub use reclamation::{reclaim_location, ReclaimOutcome};
 pub use traits::ChunkAllocator;
 pub use worker::{EcWorker, HashWorker};
 pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SharedObjectWriter, WriterPool};

@@ -26,6 +26,7 @@ use super::file_upload::FileUploadBudget;
 mod multipart;
 
 pub(super) struct FileHttp {
+    pins: crowdb_access_iceberg::gc::ReaderPins,
     repository: FileRepository,
     multipart: MultipartRepository,
     admission: MultipartAdmission,
@@ -54,6 +55,7 @@ impl FileHttp {
             return Err(FileGrantError::Invalid);
         }
         Ok(Self {
+            pins: crowdb_access_iceberg::gc::ReaderPins::new(store.clone()),
             repository: FileRepository::new(store.clone()),
             multipart: MultipartRepository::new(store.clone()),
             admission: MultipartAdmission::new(store.clone()),
@@ -115,6 +117,21 @@ impl FileHttp {
         grant
             .authorize(file_request.operation, &file_request.location, 0, 0)
             .map_err(|_| FileS3ErrorCode::AccessDenied)?;
+        let expires_ms = self
+            .pins
+            .request_expiry(root.context, now_ms)
+            .await
+            .map_err(catalog_error)?;
+        self.pins
+            .protect_files(
+                root.context,
+                file_request.location.table().table,
+                "file-request",
+                expires_ms,
+                now_ms,
+            )
+            .await
+            .map_err(catalog_error)?;
         let session = self.load_session(root.context, &file_request).await?;
         let admission =
             FileTransferAdmission::authorize(&grant, &file_request, self.limits, session.as_ref(), now_ms)

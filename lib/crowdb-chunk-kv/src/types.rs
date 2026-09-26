@@ -96,7 +96,7 @@ impl PartitionRange {
 pub enum PartitionLifecycle {
     Closed,
     Recovering,
-    WriteStalled,
+    TransferQuiesced,
     Prepared,
     Serving,
     TransferFencing,

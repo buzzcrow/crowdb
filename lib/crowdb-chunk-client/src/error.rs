@@ -20,6 +20,8 @@ pub enum IoError {
     ChunkNotFound(String),
     #[error("chunk metadata conflict: {0}")]
     MetadataConflict(String),
+    #[error("chunk operation is not supported: {0}")]
+    Unsupported(String),
     #[error("source read failed: {0}")]
     SourceRead(String),
     #[error("invalid disk IO topology: {0}")]
@@ -78,6 +80,7 @@ impl From<crowdb_chunkdb_client::ChunkdbClientError> for IoError {
         match e {
             crowdb_chunkdb_client::ChunkdbClientError::NotFound(message) => Self::ChunkNotFound(message),
             crowdb_chunkdb_client::ChunkdbClientError::Aborted(message) => Self::MetadataConflict(message),
+            crowdb_chunkdb_client::ChunkdbClientError::Unimplemented(message) => Self::Unsupported(message),
             other => Self::AllocationFailed(other.to_string()),
         }
     }

@@ -5,13 +5,15 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use crowdb_chunk_client::{
-    ChunkAllocator, ChunkReadPolicy, ChunkReader, DiskWriter, MirrorChunkWriter, ProtoLocation,
+    ChunkAllocator, ChunkReadPolicy, ChunkReader, DiskWriter, FailedDiskList, MirrorChunkWriter,
+    MirrorStripFlow, ProtoLocation,
 };
 use crowdb_protocol::chunk_stream::{ActiveChunkDescriptor, StreamName};
 use crowdb_protocol::chunkdb::rpc::{
@@ -21,7 +23,9 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::FrameMagic;
 
-use crate::{CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, TrimmedChunk};
+use crate::{
+    CursorAdvance, DurableCursor, MirrorStripImage, Result, StreamChunkStore, StreamError, TrimmedChunk,
+};
 
 struct ChunkStateView {
     chunk: ArcSwap<Chunk>,
@@ -41,6 +45,7 @@ pub struct ProductionStreamChunkStore {
     reader: ChunkReader,
     writer_lease_ms: u64,
     mirror_copies: u32,
+    failed_disks: Arc<FailedDiskList>,
     chunks: SkipMap<(u64, u64), Arc<ChunkStateView>>,
 }
 
@@ -84,6 +89,7 @@ impl ProductionStreamChunkStore {
             reader,
             writer_lease_ms,
             mirror_copies,
+            failed_disks: Arc::new(FailedDiskList::new(Duration::from_secs(60))),
             chunks: SkipMap::new(),
         })
     }
@@ -268,38 +274,58 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         unreachable!("two append attempts either return or fail")
     }
 
-    async fn write_mirrors(
+    async fn write_mirrors_with_images(
         &self,
         _stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
         physical_offset: u64,
         data: Bytes,
+        images: &[MirrorStripImage],
     ) -> Result<()> {
         let state = self.state(chunk_id).await?;
-        let chunk = state.chunk.load_full();
+        let mut chunk = (*state.chunk.load_full()).clone();
         if chunk.writer_epoch != writer_epoch
             || state.sealed.load(Ordering::Acquire)
             || state.cursor.load(Ordering::Acquire) != physical_offset
         {
             return Err(StreamError::StaleWriter);
         }
-        let mut writes = tokio::task::JoinSet::new();
         let data_end = physical_offset
-            .checked_add(
-                u64::try_from(data.len())
-                    .map_err(|_| StreamError::InvalidRequest("stream write length exceeds u64".into()))?,
-            )
+            .checked_add(data.len() as u64)
             .ok_or_else(|| StreamError::InvalidRequest("stream write cursor overflows".into()))?;
+        let flow = MirrorStripFlow::with_shared_failures(
+            Arc::clone(&self.allocator),
+            Arc::clone(&self.disk_writer),
+            Arc::clone(&self.failed_disks),
+            writer_epoch,
+            3,
+            true,
+        )
+        .map_err(io_error)?
+        .resolve_ambiguity();
         let mut copied = 0_usize;
-        let mut written_segments = Vec::new();
-        for strip in &chunk.strips {
+        let mut image_index = 0_usize;
+        for strip_index in 0..chunk.strips.len() {
+            let strip = chunk.strips[strip_index].clone();
             let strip_start = u64::from(strip.chunk_offset) * 1024;
             let strip_end = strip_start.saturating_add(u64::from(strip.capacity) * 1024);
             let write_start = physical_offset.max(strip_start);
             let write_end = data_end.min(strip_end);
             if write_start >= write_end {
                 continue;
+            }
+            let count = usize::try_from(write_end - write_start)
+                .map_err(|_| StreamError::InvalidRequest("stream write view is too large".into()))?;
+            let image = images
+                .get(image_index)
+                .ok_or_else(|| StreamError::InvalidRequest("stream mirror image is missing".into()))?;
+            if image.block_offset != write_start - strip_start
+                || image.data != data.slice(copied..copied + count)
+            {
+                return Err(StreamError::InvalidRequest(
+                    "stream mirror image does not match data".into(),
+                ));
             }
             let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
                 return Err(StreamError::Corruption(
@@ -311,55 +337,32 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                     "stream chunk mirror count differs from configuration".into(),
                 ));
             }
-            let count = usize::try_from(write_end - write_start)
-                .map_err(|_| StreamError::InvalidRequest("stream write view is too large".into()))?;
-            let view = data.slice(copied..copied + count);
-            copied += count;
-            let unit_bytes = u64::from(strip.unit_kb) * 1024;
-            for segment in &mirror.segments {
-                let segment = *segment;
-                written_segments.push(segment);
-                let disk_writer = Arc::clone(&self.disk_writer);
-                let view = view.clone();
-                let offset = write_start - strip_start;
-                tracing::debug!(
-                    chunk_high = chunk_id.high,
-                    chunk_low = chunk_id.low,
-                    segment = ?segment,
-                    byte_offset = offset,
-                    byte_count = view.len(),
-                    "stream mirror write scheduled"
-                );
-                writes.spawn(async move {
-                    disk_writer
-                        .write_at_byte_offset(&segment, unit_bytes, offset, view)
-                        .await
-                });
+            let mut pending_advance = None;
+            let result = flow
+                .write(
+                    &mut chunk,
+                    physical_offset,
+                    strip.strip_sequence,
+                    image.block_offset,
+                    image.data.clone(),
+                    image.full_image.clone(),
+                    &mut pending_advance,
+                )
+                .await;
+            if chunk.modify_ts != state.modify_ts.load(Ordering::Acquire) {
+                update_state(&state, chunk.clone());
             }
+            result.map_err(|error| match error {
+                crowdb_chunk_client::IoError::MetadataConflict(_) => StreamError::StaleWriter,
+                other => io_error(other),
+            })?;
+            copied += count;
+            image_index += 1;
         }
-        if copied != data.len() {
+        if copied != data.len() || image_index != images.len() {
             return Err(StreamError::Corruption(
-                "stream chunk strips do not cover the write range".into(),
+                "stream mirror images do not cover the write range".into(),
             ));
-        }
-        while let Some(result) = writes.join_next().await {
-            result
-                .map_err(|error| StreamError::Internal(format!("mirror write task failed: {error}")))?
-                .map_err(io_error)?;
-        }
-        // The cursor published below is the stream's durable read boundary.
-        // Every mirror backing this append must reach stable storage before
-        // that boundary can advance, including when the active stream chunk
-        // stays open across a DiskIO process restart.
-        let mut syncs = tokio::task::JoinSet::new();
-        for segment in written_segments {
-            let disk_writer = Arc::clone(&self.disk_writer);
-            syncs.spawn(async move { disk_writer.fsync(&segment).await });
-        }
-        while let Some(result) = syncs.join_next().await {
-            result
-                .map_err(|error| StreamError::Internal(format!("mirror fsync task failed: {error}")))?
-                .map_err(io_error)?;
         }
         Ok(())
     }
@@ -390,6 +393,9 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 writer_lease_ms: self.writer_lease_ms,
             })
             .await;
+        if let Err(error) = &advance {
+            tracing::warn!(?chunk_id, writer_epoch, expected_cursor, new_cursor, %error, "stream cursor advance failed; querying durable state");
+        }
         if let Ok(response) = advance {
             let chunk = response
                 .chunk

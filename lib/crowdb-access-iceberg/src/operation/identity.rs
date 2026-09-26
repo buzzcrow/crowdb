@@ -1,3 +1,4 @@
+use crowdb_common::hash_slot::HashSlotFallback;
 use crowdb_protocol::chunk_kv::{ClientRequestId, Id128};
 use sha2::{Digest, Sha256};
 
@@ -57,14 +58,51 @@ impl RequestIdentity {
 /// # Errors
 /// Rejects a non-ledger scope or malformed internal key.
 pub fn ledger_key(scope: SystemScope, operation: OperationId) -> Result<IcebergKey, ValidationError> {
-    if scope == SystemScope::ActiveRoot {
+    if !matches!(
+        scope,
+        SystemScope::ManagementOperation | SystemScope::Audit | SystemScope::RetryBinding
+    ) {
         return Err(ValidationError::Key);
     }
-    let digest = Sha256::digest(operation.as_bytes());
-    let slot = u16::from_be_bytes([digest[0], digest[1]]) % LEDGER_SLOTS + 1;
+    let slot = HashSlotFallback::new(LEDGER_SLOTS)
+        .ok_or(ValidationError::Key)?
+        .slot(operation.as_bytes())
+        + 1;
     let mut suffix = vec![0; 16];
     suffix[14..].copy_from_slice(&slot.to_be_bytes());
     Ok(IcebergKey::System { scope, suffix })
+}
+
+pub(crate) fn overflow_key(
+    scope: SystemScope,
+    operation: OperationId,
+) -> Result<IcebergKey, ValidationError> {
+    let overflow_scope = match scope {
+        SystemScope::ManagementOperation => SystemScope::ManagementOverflow,
+        SystemScope::Audit => SystemScope::AuditOverflow,
+        SystemScope::RetryBinding => SystemScope::RetryOverflow,
+        _ => return Err(ValidationError::Key),
+    };
+    Ok(IcebergKey::System {
+        scope: overflow_scope,
+        suffix: operation.as_bytes().to_vec(),
+    })
+}
+
+pub(crate) fn ledger_key_matches(scope: SystemScope, operation: OperationId, key: &IcebergKey) -> bool {
+    let IcebergKey::System { scope: key_scope, .. } = key else {
+        return false;
+    };
+    let expected = match key_scope {
+        SystemScope::ManagementOperation | SystemScope::Audit | SystemScope::RetryBinding => {
+            ledger_key(scope, operation)
+        }
+        SystemScope::ManagementOverflow | SystemScope::AuditOverflow | SystemScope::RetryOverflow => {
+            overflow_key(scope, operation)
+        }
+        SystemScope::ActiveRoot => return false,
+    };
+    expected.is_ok_and(|candidate| &candidate == key)
 }
 
 #[must_use]

@@ -99,9 +99,11 @@ neither clear nor smaller restart settings can shorten existing bounds.
 Listeners stop admission before bounded draining;
 startup and periodic reconciliation resume interrupted management operations.
 
-Management and shared REST retry ledgers each use 4096 deterministic hash slots.
-A slot occupied by an unfinished or unexpired operation rejects new admission;
-it is never evicted for capacity. Management audit uses the same slot mapping.
+Management, audit and shared REST retry ledgers each use 4096 deterministic
+fast-hash slots with exact-identity overflow keys. An occupied slot does not
+reject a different identity: it routes that identity to its own durable key.
+Neither slot nor overflow records are evicted inside their retention window;
+overflow storage is subject to normal disk capacity and physical reclamation.
 Client identities use UUIDv7 issuance time with a 24-hour admission window and
 30-second future-clock allowance. Retention starts at first admission and includes
 grace. Principal, digest and catalog context must match before REST replay;
@@ -532,6 +534,22 @@ Drop, replacement, and snapshot expiration remove logical reachability first.
 Physical reclamation follows a proof that no live metadata, snapshot, reference,
 lease, or retained operation can reach the file. General S3 deletion and
 lifecycle rules cannot reclaim Iceberg-owned data.
+
+The reclamation proof binds current and pinned historical metadata to their
+captured heads. Its immutable traversal stack and compressed binary file-ID index
+use content-addressed payload pages. A task CAS publishes the pending stack and
+mark root together; a missing page is an error, including during a nonmembership
+query. The worker fences the selected head and repeats root admission checks
+before sweeping. Retained operations and table-wide credentials conservatively
+defer reclamation. Automatic runtime scheduling remains disabled.
+
+Metadata readers, direct FileIO, file publication and both published and staged
+credentials persist pins before rechecking their authority. Pin expiry includes
+the applicable persisted request and clock-skew bounds. Once a file's canonical
+deletion intent has started, ordinary resolution and publication reject it even
+if physical range reclamation is deferred. Live passes release their table fence
+after finishing or observing a newly admitted table-wide protector; retained and
+deferred candidates remain durable work for later passes.
 
 ## 5. Compatibility
 

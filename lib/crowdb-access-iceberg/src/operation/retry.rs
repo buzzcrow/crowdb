@@ -6,7 +6,8 @@ use crate::key::{CatalogScope, IcebergKey, SystemScope};
 use crate::record::StorageRecord;
 
 use super::{
-    ledger_key, mutation_identity, PayloadStore, RequestIdentity, MAX_PAYLOAD_BYTES, RETRY_WINDOW_MS,
+    ledger_locate, mutation_identity, LedgerLocation, PayloadStore, RequestIdentity, MAX_PAYLOAD_BYTES,
+    RETRY_WINDOW_MS,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -88,36 +89,34 @@ impl RetryLedger {
             .ok_or(ValidationError::Deadline)?;
         request.validate()?;
         self.check_context(request.context).await?;
-        let key = ledger_key(SystemScope::RetryBinding, request.identity.operation)?;
-        let previous = self.store.get(&key.encode()?).await?;
-        if let Some(value) = &previous {
-            let StorageRecord::Retry(existing) = StorageRecord::decode(&key, &value.bytes)? else {
-                return Err(ValidationError::Record.into());
-            };
-            if existing.identity.operation == request.identity.operation {
-                if !existing.same_request(&request) || now_ms > existing.retained_until_ms {
-                    return Err(CatalogError::Conflict);
-                }
-                return self.existing(*existing).await;
-            }
-            if existing.status == 0 || now_ms <= existing.retained_until_ms {
-                return Err(CatalogError::Busy);
-            }
-        }
-        request.identity.validate(now_ms)?;
         let bytes = StorageRecord::Retry(Box::new(request.clone())).encode()?;
-        if self
-            .cas(
-                &key,
-                previous.as_ref().map(|value| value.bytes.as_slice()),
-                &bytes,
+        for _ in 0..4 {
+            let key = match ledger_locate(
+                self.store.as_ref(),
+                SystemScope::RetryBinding,
+                request.identity.operation,
             )
             .await?
-        {
-            Ok(RetryAdmission::New(request))
-        } else {
-            Err(CatalogError::Busy)
+            {
+                LedgerLocation::Existing(key, value) => {
+                    let StorageRecord::Retry(existing) = StorageRecord::decode(&key, &value.bytes)? else {
+                        return Err(ValidationError::Record.into());
+                    };
+                    if !existing.same_request(&request) || now_ms > existing.retained_until_ms {
+                        return Err(CatalogError::Conflict);
+                    }
+                    return self.existing(*existing).await;
+                }
+                LedgerLocation::Vacant(key) => {
+                    request.identity.validate(now_ms)?;
+                    key
+                }
+            };
+            if self.cas(&key, None, &bytes).await? {
+                return Ok(RetryAdmission::New(request));
+            }
         }
+        Err(CatalogError::Busy)
     }
 
     /// # Errors
@@ -133,12 +132,15 @@ impl RetryLedger {
             return Ok(false);
         }
         self.check_context(request.context).await?;
-        let key = ledger_key(SystemScope::RetryBinding, request.identity.operation)?;
-        let previous = self
-            .store
-            .get(&key.encode()?)
-            .await?
-            .ok_or(CatalogError::Conflict)?;
+        let LedgerLocation::Existing(key, previous) = ledger_locate(
+            self.store.as_ref(),
+            SystemScope::RetryBinding,
+            request.identity.operation,
+        )
+        .await?
+        else {
+            return Err(CatalogError::Conflict);
+        };
         let StorageRecord::Retry(binding) = StorageRecord::decode(&key, &previous.bytes)? else {
             return Err(ValidationError::Record.into());
         };
@@ -197,7 +199,15 @@ impl RetryLedger {
             return Err(ValidationError::Record.into());
         }
         if binding.status == 0 {
-            let binding_key = ledger_key(SystemScope::RetryBinding, binding.identity.operation)?;
+            let LedgerLocation::Existing(binding_key, _) = ledger_locate(
+                self.store.as_ref(),
+                SystemScope::RetryBinding,
+                binding.identity.operation,
+            )
+            .await?
+            else {
+                return Err(CatalogError::Conflict);
+            };
             let previous = StorageRecord::Retry(Box::new(binding.clone())).encode()?;
             let mut completed = binding;
             completed.status = result.status;

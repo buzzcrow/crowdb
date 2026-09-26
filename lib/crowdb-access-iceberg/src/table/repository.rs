@@ -97,6 +97,9 @@ impl TableRepository {
         let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
             return Err(ValidationError::Record.into());
         };
+        if head.lifecycle == super::TableLifecycle::Reclaiming {
+            return Err(CatalogError::Busy);
+        }
         if !mapping.resolves(&head) {
             return Ok(None);
         }

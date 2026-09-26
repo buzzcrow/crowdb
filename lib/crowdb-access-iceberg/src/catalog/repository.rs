@@ -4,8 +4,8 @@ use std::time::Instant;
 use crate::error::ValidationError;
 use crate::key::{CatalogId, CatalogScope, IcebergKey, OperationId, SystemScope};
 use crate::operation::{
-    ledger_key, mutation_identity, ManagementAction, ManagementOperation, ManagementPhase, ManagementRequest,
-    RETRY_WINDOW_MS,
+    ledger_locate, mutation_identity, LedgerLocation, ManagementAction, ManagementOperation, ManagementPhase,
+    ManagementRequest, RETRY_WINDOW_MS,
 };
 use crate::record::StorageRecord;
 
@@ -72,7 +72,6 @@ impl CatalogRepository {
         }
         request.validate()?;
         let started = Instant::now();
-        let key = ledger_key(SystemScope::ManagementOperation, request.identity.operation)?;
         for _ in 0..32 {
             if let Some(operation) = self.operation(request.identity.operation).await? {
                 if now_ms > operation.retained_until_ms {
@@ -90,7 +89,7 @@ impl CatalogRepository {
             let operation = self
                 .prepare(request.clone(), elapsed_now(now_ms, started)?)
                 .await?;
-            self.install_operation(&key, &operation, now_ms).await?;
+            self.install_operation(&operation).await?;
         }
         Err(CatalogError::Busy)
     }
@@ -140,14 +139,15 @@ impl CatalogRepository {
         &self,
         identity: OperationId,
     ) -> Result<Option<ManagementOperation>, CatalogError> {
-        let key = ledger_key(SystemScope::ManagementOperation, identity)?;
-        let Some(value) = self.store.get(&key.encode()?).await? else {
+        let LedgerLocation::Existing(key, value) =
+            ledger_locate(self.store.as_ref(), SystemScope::ManagementOperation, identity).await?
+        else {
             return Ok(None);
         };
         let StorageRecord::Management(operation) = StorageRecord::decode(&key, &value.bytes)? else {
             return Err(ValidationError::Record.into());
         };
-        Ok((operation.id() == identity).then_some(*operation))
+        Ok(Some(*operation))
     }
 
     pub(super) async fn cas(
@@ -173,12 +173,17 @@ impl CatalogRepository {
     ) -> Result<bool, CatalogError> {
         let mut next = operation.clone();
         next.phase = phase;
-        self.cas(
-            &ledger_key(SystemScope::ManagementOperation, operation.id())?,
-            Some(&operation_bytes(operation)?),
-            &operation_bytes(&next)?,
+        let LedgerLocation::Existing(key, _) = ledger_locate(
+            self.store.as_ref(),
+            SystemScope::ManagementOperation,
+            operation.id(),
         )
-        .await
+        .await?
+        else {
+            return Err(ValidationError::Record.into());
+        };
+        self.cas(&key, Some(&operation_bytes(operation)?), &operation_bytes(&next)?)
+            .await
     }
 
     async fn prepare(
@@ -286,36 +291,27 @@ impl CatalogRepository {
         })
     }
 
-    async fn install_operation(
-        &self,
-        key: &IcebergKey,
-        operation: &ManagementOperation,
-        now_ms: u64,
-    ) -> Result<(), CatalogError> {
+    async fn install_operation(&self, operation: &ManagementOperation) -> Result<(), CatalogError> {
+        let LedgerLocation::Vacant(key) = ledger_locate(
+            self.store.as_ref(),
+            SystemScope::ManagementOperation,
+            operation.id(),
+        )
+        .await?
+        else {
+            return Ok(());
+        };
         let previous = self.store.get(&key.encode()?).await?;
         if let Some(value) = &previous {
-            let StorageRecord::Management(old) = StorageRecord::decode(key, &value.bytes)? else {
+            let StorageRecord::Management(old) = StorageRecord::decode(&key, &value.bytes)? else {
                 return Err(ValidationError::Record.into());
             };
             if old.id() == operation.id() {
                 return Ok(());
             }
-            if !old.terminal()
-                || now_ms <= old.retained_until_ms
-                || self
-                    .root()
-                    .await?
-                    .is_some_and(|(root, _)| root.operation == old.id())
-            {
-                return Err(CatalogError::Busy);
-            }
+            return Err(CatalogError::Busy);
         }
-        self.cas(
-            key,
-            previous.as_ref().map(|value| value.bytes.as_slice()),
-            &operation_bytes(operation)?,
-        )
-        .await?;
+        self.cas(&key, None, &operation_bytes(operation)?).await?;
         Ok(())
     }
 }

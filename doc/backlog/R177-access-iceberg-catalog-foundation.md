@@ -352,6 +352,12 @@ Required gates:
 
 ## Open Questions
 
+- **Shared-chunk deletion range contract (confirmed 2026-09-26):**
+  `DeleteChunkRange.chunk_offset/chunk_size` remain two independent u32 fields,
+  both measured in bytes. No KiB conversion, alignment requirement, rounding or
+  u64 widening is needed. The API receives exact object ranges; physical shared
+  reclamation remains deferred and unsupported responses retain durable work.
+
 OI-1 separates functional/performance acceptance; OI-2 defers engine testing to
 the user's later independent project;
 OI-3 uses the existing disk/chunk allocation capacity boundary, with remaining
@@ -409,3 +415,16 @@ R183–R184 remain open; this does not imply engine/GC conformance.
   advertise unsupported values as an operational profile; existing table data
   remains intact while the operator rolls out activation. Clear creates a new
   zero-profile catalog and therefore requires explicit activation again.
+
+- **OI-7 — REST retry-slot collision (resolved):** a prior native Java run
+  returned 503 when `TableWrites::admit` received `CatalogError::Busy`; that
+  observation did not establish whether the request carried a client key or
+  whether the Busy was a slot collision. The user selected stable fast-hash
+  primary slots with exact-identity durable overflow keys in `crowdb-common`;
+  C++ RPC remains unchanged. No old SHA-256 slot compatibility is required.
+  Deliberate library and real HTTP UUIDv7 collisions now admit and independently
+  replay both operations. The unmodified three-case Apache Java 1.11.0 native
+  FileIO suite passed twice consecutively under Pixi JDK 21. These results
+  resolve the collision policy, not the unproven cause of the earlier 503 or
+  all possible storage stalls. A new failure requires its own trace. R183 owns
+  physical reclamation of expired slot and overflow records.

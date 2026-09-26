@@ -51,6 +51,9 @@ impl PreparedTableCommit {
         let publisher = Publisher::new(self.store.clone(), self.blocks.clone());
         let mut operation = self.operation;
         publisher.current(&operation).await?;
+        if let Some(rejected) = publisher.reject_superseded(&operation).await? {
+            return publisher.finish(rejected).await;
+        }
         candidate::response(self.document.selected_head(), self.document.canonical())?;
         if operation.phase == Phase::Prepared {
             let mut next = advance(&operation, Phase::Validated)?;

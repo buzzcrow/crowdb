@@ -148,6 +148,13 @@ The response barrier is:
 4. Coalesce cursor progress in the background metadata chain. Strip close and
    batched append execute there in revision order.
 
+The physical mirror-strip flow is shared with chunk streams: it writes mirrors
+in parallel, excludes failed disks, writes a prefix-complete replacement image,
+and publishes the fenced strip swap. Each single-owner caller retains its own
+current-strip shadow and controls its publication barrier. Journal streams also
+fsync the final mirror set before advancing their durable cursor and resolve an
+uncertain replacement result against chunk metadata before retrying it.
+
 No location is visible before its complete physical range exists on every
 configured mirror. Cursor persistence is an asynchronous availability and
 orphan-recovery checkpoint; readers can transiently report `NotYetAvailable`

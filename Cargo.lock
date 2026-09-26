@@ -620,6 +620,7 @@ dependencies = [
  "crowdb-access-iceberg",
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
+ "crowdb-common",
  "crowdb-protocol",
  "data-encoding",
  "flatbuffers",
@@ -633,6 +634,7 @@ dependencies = [
  "subtle",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
  "zstd",
 ]
@@ -916,6 +918,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "xxhash-rust",
 ]
 
 [[package]]

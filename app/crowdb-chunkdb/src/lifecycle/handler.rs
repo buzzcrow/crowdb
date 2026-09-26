@@ -588,9 +588,6 @@ impl LifecycleHandler {
             }
         }
         let now_ms = self.renew_liveness_if_due(chunk_id, writer_epoch).await?;
-        if acknowledged_cursor == chunk.acknowledged_cursor && closed_strip_sequence.is_none() {
-            return Ok(chunk);
-        }
         if let Some(sequence) = closed_strip_sequence {
             for strip in &mut chunk.strips {
                 if strip.strip_sequence <= sequence && strip.sealed_ts_ms == 0 {

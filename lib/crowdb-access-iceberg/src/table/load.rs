@@ -49,6 +49,8 @@ pub struct TableLoader {
     blocks: Arc<dyn FileBlockStore>,
     limits: TableMetadataLimits,
     projections: ProjectionStore,
+    pins: crate::gc::ReaderPins,
+    pin_lifetime_ms: Option<u64>,
     #[cfg(feature = "test-util")]
     projection_hits: std::sync::atomic::AtomicUsize,
 }
@@ -61,6 +63,8 @@ impl TableLoader {
         limits: TableMetadataLimits,
     ) -> Self {
         Self {
+            pins: crate::gc::ReaderPins::new(store.clone()),
+            pin_lifetime_ms: None,
             namespaces: NamespaceRepository::new(store.clone()),
             projections: ProjectionStore::new(store.clone(), blocks.clone()),
             tables: TableRepository::new(store),
@@ -69,6 +73,22 @@ impl TableLoader {
             #[cfg(feature = "test-util")]
             projection_hits: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// # Errors
+    /// Rejects zero or excessive request protection lifetimes.
+    pub fn with_reader_pins(mut self, lifetime_ms: u64) -> Result<Self, crate::error::ValidationError> {
+        if lifetime_ms == 0 || lifetime_ms > 24 * 60 * 60 * 1000 {
+            return Err(crate::error::ValidationError::Deadline);
+        }
+        self.pin_lifetime_ms = Some(lifetime_ms);
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn with_catalog_reader_pins(mut self) -> Self {
+        self.pin_lifetime_ms = Some(0);
+        self
     }
 
     /// Resolves live namespace identity before table selection. No table publisher is implied.
@@ -161,6 +181,35 @@ impl TableLoader {
         {
             return Err(TableLoadError::UnsupportedVersion);
         }
+        let pin = if let Some(lifetime_ms) = self.pin_lifetime_ms {
+            let now_ms = u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| TableMetadataError::Bounds)?
+                    .as_millis(),
+            )
+            .map_err(|_| TableMetadataError::Bounds)?;
+            let pin = crate::gc::GcPin {
+                context,
+                identity: crate::key::OperationId::random(),
+                head: selected.head.clone(),
+                principal: "catalog-metadata-reader".into(),
+                expires_ms: if lifetime_ms == 0 {
+                    self.pins.request_expiry(context, now_ms).await?
+                } else {
+                    now_ms
+                        .checked_add(lifetime_ms)
+                        .ok_or(TableMetadataError::Bounds)?
+                },
+                released: false,
+                operator: false,
+                protects_uploads: false,
+            };
+            self.pins.acquire(&pin).await?;
+            Some(pin)
+        } else {
+            None
+        };
         let canonical =
             super::metadata::read_table_metadata_bytes(self.blocks.clone(), &selected, self.limits).await?;
         let etag = etag(&selected.head, mode);
@@ -171,6 +220,9 @@ impl TableLoader {
         self.tables.ensure_current(context, &selected).await?;
         self.check_namespace(context, namespace, parent.namespace, parent.name_epoch)
             .await?;
+        if let Some(pin) = &pin {
+            self.pins.release(pin).await?;
+        }
         if if_none_match.is_some_and(|header| {
             header.split(',').any(|tag| {
                 let tag = tag.trim();

@@ -9,13 +9,18 @@ use crate::file::{
 };
 use crate::key::{CatalogScope, IcebergKey, SystemScope};
 use crate::namespace::{authority_key, name_key, NamespaceAuthority, NamespaceMapping, NamespaceOperation};
-use crate::operation::{ledger_key, ManagementOperation, PayloadPage, RetryRecord, RetryResult};
+use crate::operation::{ledger_key_matches, ManagementOperation, PayloadPage, RetryRecord, RetryResult};
 
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageRecord {
+    GcNode(Box<crate::gc::GcNode>),
+    GcTask(Box<crate::gc::GcTask>),
+    GcCandidate(Box<crate::gc::GcCandidate>),
+    GcPage(Box<crate::gc::GcPage>),
+    GcPin(Box<crate::gc::GcPin>),
     TableLifecycleOperation(Box<crate::table::TableLifecycleOperation>),
     TablePurgeTask(Box<crate::table::TablePurgeTask>),
     TableCreateOperation(Box<crate::commit::TableCreateOperation>),
@@ -43,88 +48,7 @@ impl StorageRecord {
     /// Rejects invalid identities, unknown capabilities and record-size overflow.
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
-        let (value_type, value) = match self {
-            Self::TableLifecycleOperation(operation) => (
-                FBRecordValue::FBTableLifecycleOperation,
-                super::table_lifecycle::encode(&mut builder, operation)?.as_union_value(),
-            ),
-            Self::TablePurgeTask(task) => (
-                FBRecordValue::FBTablePurgeTask,
-                super::table_lifecycle::encode_purge(&mut builder, task)?.as_union_value(),
-            ),
-            Self::TableCreateOperation(operation) => (
-                FBRecordValue::FBTableCreateOperation,
-                super::table_create::encode(&mut builder, operation)?.as_union_value(),
-            ),
-            Self::TableCommitOperation(operation) => (
-                FBRecordValue::FBTableCommitOperation,
-                super::table_commit::encode(&mut builder, operation)?.as_union_value(),
-            ),
-            Self::TableHead(head) => (
-                FBRecordValue::FBTableHead,
-                super::table::encode_head(&mut builder, head)?.as_union_value(),
-            ),
-            Self::TableMapping(mapping) => (
-                FBRecordValue::FBTableMapping,
-                super::table::encode_mapping(&mut builder, mapping)?.as_union_value(),
-            ),
-            Self::MultipartAdmission(record) => (
-                FBRecordValue::FBMultipartAdmission,
-                super::multipart_admission::encode(&mut builder, record)?.as_union_value(),
-            ),
-            Self::MultipartSession(session) => (
-                FBRecordValue::FBMultipartSession,
-                super::multipart::encode_session(&mut builder, session)?.as_union_value(),
-            ),
-            Self::MultipartPart(part) => (
-                FBRecordValue::FBMultipartPart,
-                super::multipart::encode_part(&mut builder, part)?.as_union_value(),
-            ),
-            Self::File(record) => (
-                FBRecordValue::FBFileRecord,
-                super::file::encode(&mut builder, record)?.as_union_value(),
-            ),
-            Self::FileMapping(mapping) => (
-                FBRecordValue::FBFileMapping,
-                super::file::encode_mapping(&mut builder, mapping).as_union_value(),
-            ),
-            Self::NamespaceOperation(operation) => (
-                FBRecordValue::FBNamespaceOperation,
-                super::namespace_operation::encode(&mut builder, operation)?.as_union_value(),
-            ),
-            Self::PayloadPage(page) => (
-                FBRecordValue::FBPayloadPage,
-                super::payload::encode_page(&mut builder, page)?.as_union_value(),
-            ),
-            Self::RetryResult(result) => (
-                FBRecordValue::FBRetryResult,
-                super::payload::encode_result(&mut builder, result)?.as_union_value(),
-            ),
-            Self::NamespaceAuthority(authority) => (
-                FBRecordValue::FBNamespaceAuthority,
-                super::namespace::encode_authority(&mut builder, authority)?.as_union_value(),
-            ),
-            Self::NamespaceMapping(mapping) => (
-                FBRecordValue::FBNamespaceMapping,
-                super::namespace::encode_mapping(&mut builder, mapping)?.as_union_value(),
-            ),
-            Self::Retry(record) => (
-                FBRecordValue::FBRetryRecord,
-                super::retry::encode(&mut builder, record)?.as_union_value(),
-            ),
-            Self::Management(operation) => (
-                FBRecordValue::FBManagementOperation,
-                super::management::encode(&mut builder, operation)?.as_union_value(),
-            ),
-            Self::Active(root) => (
-                FBRecordValue::FBActiveCatalog,
-                super::root::encode(&mut builder, *root)?.as_union_value(),
-            ),
-            Self::Authority(authority) => (
-                FBRecordValue::FBCatalogAuthority,
-                super::authority::encode(&mut builder, authority)?.as_union_value(),
-            ),
-        };
+        let (value_type, value) = self.encode_value(&mut builder)?;
         let envelope = FBIcebergRecord::create(
             &mut builder,
             &FBIcebergRecordArgs {
@@ -139,6 +63,130 @@ impl StorageRecord {
             return Err(ValidationError::RecordTooLarge);
         }
         Ok(bytes.to_vec())
+    }
+
+    fn encode_value(
+        &self,
+        builder: &mut FlatBufferBuilder<'_>,
+    ) -> Result<(FBRecordValue, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>), ValidationError> {
+        if let Some(value) = self.encode_gc_value(builder)? {
+            return Ok(value);
+        }
+        Ok(match self {
+            Self::GcNode(_) | Self::GcTask(_) | Self::GcCandidate(_) | Self::GcPage(_) | Self::GcPin(_) => {
+                return Err(ValidationError::Record);
+            }
+            Self::TableLifecycleOperation(operation) => (
+                FBRecordValue::FBTableLifecycleOperation,
+                super::table_lifecycle::encode(builder, operation)?.as_union_value(),
+            ),
+            Self::TablePurgeTask(task) => (
+                FBRecordValue::FBTablePurgeTask,
+                super::table_lifecycle::encode_purge(builder, task)?.as_union_value(),
+            ),
+            Self::TableCreateOperation(operation) => (
+                FBRecordValue::FBTableCreateOperation,
+                super::table_create::encode(builder, operation)?.as_union_value(),
+            ),
+            Self::TableCommitOperation(operation) => (
+                FBRecordValue::FBTableCommitOperation,
+                super::table_commit::encode(builder, operation)?.as_union_value(),
+            ),
+            Self::TableHead(head) => (
+                FBRecordValue::FBTableHead,
+                super::table::encode_head(builder, head)?.as_union_value(),
+            ),
+            Self::TableMapping(mapping) => (
+                FBRecordValue::FBTableMapping,
+                super::table::encode_mapping(builder, mapping)?.as_union_value(),
+            ),
+            Self::MultipartAdmission(record) => (
+                FBRecordValue::FBMultipartAdmission,
+                super::multipart_admission::encode(builder, record)?.as_union_value(),
+            ),
+            Self::MultipartSession(session) => (
+                FBRecordValue::FBMultipartSession,
+                super::multipart::encode_session(builder, session)?.as_union_value(),
+            ),
+            Self::MultipartPart(part) => (
+                FBRecordValue::FBMultipartPart,
+                super::multipart::encode_part(builder, part)?.as_union_value(),
+            ),
+            Self::File(record) => (
+                FBRecordValue::FBFileRecord,
+                super::file::encode(builder, record)?.as_union_value(),
+            ),
+            Self::FileMapping(mapping) => (
+                FBRecordValue::FBFileMapping,
+                super::file::encode_mapping(builder, mapping).as_union_value(),
+            ),
+            Self::NamespaceOperation(operation) => (
+                FBRecordValue::FBNamespaceOperation,
+                super::namespace_operation::encode(builder, operation)?.as_union_value(),
+            ),
+            Self::PayloadPage(page) => (
+                FBRecordValue::FBPayloadPage,
+                super::payload::encode_page(builder, page)?.as_union_value(),
+            ),
+            Self::RetryResult(result) => (
+                FBRecordValue::FBRetryResult,
+                super::payload::encode_result(builder, result)?.as_union_value(),
+            ),
+            Self::NamespaceAuthority(authority) => (
+                FBRecordValue::FBNamespaceAuthority,
+                super::namespace::encode_authority(builder, authority)?.as_union_value(),
+            ),
+            Self::NamespaceMapping(mapping) => (
+                FBRecordValue::FBNamespaceMapping,
+                super::namespace::encode_mapping(builder, mapping)?.as_union_value(),
+            ),
+            Self::Retry(record) => (
+                FBRecordValue::FBRetryRecord,
+                super::retry::encode(builder, record)?.as_union_value(),
+            ),
+            Self::Management(operation) => (
+                FBRecordValue::FBManagementOperation,
+                super::management::encode(builder, operation)?.as_union_value(),
+            ),
+            Self::Active(root) => (
+                FBRecordValue::FBActiveCatalog,
+                super::root::encode(builder, *root)?.as_union_value(),
+            ),
+            Self::Authority(authority) => (
+                FBRecordValue::FBCatalogAuthority,
+                super::authority::encode(builder, authority)?.as_union_value(),
+            ),
+        })
+    }
+
+    fn encode_gc_value(
+        &self,
+        builder: &mut FlatBufferBuilder<'_>,
+    ) -> Result<Option<(FBRecordValue, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)>, ValidationError>
+    {
+        Ok(Some(match self {
+            Self::GcNode(node) => (
+                FBRecordValue::FBGcNode,
+                super::gc_node::encode(builder, node)?.as_union_value(),
+            ),
+            Self::GcTask(task) => (
+                FBRecordValue::FBGcTask,
+                super::gc::encode_task(builder, task)?.as_union_value(),
+            ),
+            Self::GcCandidate(candidate) => (
+                FBRecordValue::FBGcCandidate,
+                super::gc::encode_candidate(builder, candidate)?.as_union_value(),
+            ),
+            Self::GcPage(page) => (
+                FBRecordValue::FBGcPage,
+                super::gc::encode_page(builder, page)?.as_union_value(),
+            ),
+            Self::GcPin(pin) => (
+                FBRecordValue::FBGcPin,
+                super::gc::encode_pin(builder, pin)?.as_union_value(),
+            ),
+            _ => return Ok(None),
+        }))
     }
 
     /// # Errors
@@ -160,6 +208,36 @@ impl StorageRecord {
     }
 
     fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
+        match envelope.value_type() {
+            FBRecordValue::FBGcNode => {
+                return Ok(Self::GcNode(Box::new(super::gc_node::decode(
+                    envelope.value_as_fbgc_node().ok_or(ValidationError::Record)?,
+                )?)))
+            }
+            FBRecordValue::FBGcTask => {
+                return Ok(Self::GcTask(Box::new(super::gc::decode_task(
+                    envelope.value_as_fbgc_task().ok_or(ValidationError::Record)?,
+                )?)))
+            }
+            FBRecordValue::FBGcCandidate => {
+                return Ok(Self::GcCandidate(Box::new(super::gc::decode_candidate(
+                    envelope
+                        .value_as_fbgc_candidate()
+                        .ok_or(ValidationError::Record)?,
+                )?)))
+            }
+            FBRecordValue::FBGcPage => {
+                return Ok(Self::GcPage(Box::new(super::gc::decode_page(
+                    envelope.value_as_fbgc_page().ok_or(ValidationError::Record)?,
+                )?)))
+            }
+            FBRecordValue::FBGcPin => {
+                return Ok(Self::GcPin(Box::new(super::gc::decode_pin(
+                    envelope.value_as_fbgc_pin().ok_or(ValidationError::Record)?,
+                )?)))
+            }
+            _ => {}
+        }
         if matches!(
             envelope.value_type(),
             FBRecordValue::FBTableCreateOperation
@@ -302,6 +380,18 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::GcNode(node), key) if *key == node.key() || *key == node.pending_key() => Ok(()),
+            (Self::GcTask(task), key) if *key == task.key() => Ok(()),
+            (Self::GcCandidate(candidate), key) if *key == candidate.key() => Ok(()),
+            (Self::GcCandidate(candidate), key)
+                if *key == candidate.claim_key()
+                    && candidate.phase == crate::gc::CandidatePhase::Retained
+                    && candidate.revision == 1 =>
+            {
+                Ok(())
+            }
+            (Self::GcPage(page), key) if *key == page.key() => Ok(()),
+            (Self::GcPin(pin), key) if *key == pin.key() => Ok(()),
             (Self::TableLifecycleOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::TablePurgeTask(task), key) if *key == task.key() => Ok(()),
             (Self::TableCreateOperation(operation), key) if *key == operation.key() => Ok(()),
@@ -337,11 +427,11 @@ impl StorageRecord {
             (
                 Self::Retry(record),
                 IcebergKey::System {
-                    scope: SystemScope::RetryBinding,
+                    scope: SystemScope::RetryBinding | SystemScope::RetryOverflow,
                     ..
                 },
             ) if record.body.is_empty()
-                && *key == ledger_key(SystemScope::RetryBinding, record.identity.operation)? =>
+                && ledger_key_matches(SystemScope::RetryBinding, record.identity.operation, key) =>
             {
                 Ok(())
             }
@@ -351,8 +441,22 @@ impl StorageRecord {
                 Ok(())
             }
             (Self::Management(operation), IcebergKey::System { scope, .. })
-                if matches!(scope, SystemScope::ManagementOperation | SystemScope::Audit)
-                    && *key == ledger_key(*scope, operation.id())? =>
+                if matches!(
+                    scope,
+                    SystemScope::ManagementOperation
+                        | SystemScope::ManagementOverflow
+                        | SystemScope::Audit
+                        | SystemScope::AuditOverflow
+                ) && ledger_key_matches(
+                    match scope {
+                        SystemScope::ManagementOperation | SystemScope::ManagementOverflow => {
+                            SystemScope::ManagementOperation
+                        }
+                        _ => SystemScope::Audit,
+                    },
+                    operation.id(),
+                    key,
+                ) =>
             {
                 Ok(())
             }

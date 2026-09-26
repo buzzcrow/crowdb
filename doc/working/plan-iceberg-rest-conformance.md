@@ -8,16 +8,16 @@ leave engine and reclamation-dependent acceptance explicitly pending.
 
 ## Scope and starting point
 
-- Tasks 1, 2 and 4 are implemented and verified. R179–R182 supply the storage
-  and mutation foundation; task 3 follows the resolved R177 OI-6 activation decision.
-- Implement tasks 1–4 first, then extend client evidence in task 5. Each task can
-  be committed independently after its affected tests and quality gates pass.
+- Tasks 1–5 are implemented and verified for the declared foreground profile.
+  R179–R182 supply the storage and mutation foundation; the R177 OI-6
+  activation decision is implemented. Engine and reclamation-dependent R184
+  acceptance remains pending in separate work.
 - Do not run Spark/Flink/Trino, physical GC or broad performance experiments.
   Do not update the user guide. Human decisions belong in R177, not this plan.
 - Use the backed-up OpenAPI and table spec under
   `doc/design/access-server/iceberge/` before selecting behavior. Java fixtures
-  currently pin Iceberg 1.11.0. Pin and inspect upstream sources before adding a
-  Rust client or Compatibility Kit; their compatibility is not yet established.
+  pin Iceberg 1.11.0; the Rust client pins 0.10.0, and the RCK pins the Apache
+  1.11.0 source revision. The supported foreground subset has executable proof.
 
 ## Findings from the initial code inspection
 
@@ -125,7 +125,7 @@ leave engine and reclamation-dependent acceptance explicitly pending.
   - Exit: deterministic unit/body tests prove counts and cleanup; endpoint labels
     remain bounded even under arbitrary paths and error input.
 
-- [~] **5. Official-client and compatibility evidence — medium-high**: extend
+- [x] **5. Official-client and compatibility evidence — medium-high**: extend
   existing Java/native fixtures, add a pinned official Rust client harness and
   investigate the Apache REST Compatibility Kit's actual runner/artifacts.
   Files: server `tests/common/iceberg_java/`, new Rust/kit fixtures under tests,
@@ -147,6 +147,11 @@ leave engine and reclamation-dependent acceptance explicitly pending.
 
 Current verified foreground evidence:
 
+- The retry ledger now uses only fast-hash primary slots and exact-identity
+  overflow keys; no previous SHA-256 slot lookup remains. The complete Iceberg
+  library suite, four namespace-write HTTP tests, workspace formatting and
+  lint, and Iceberg-E2E server Clippy pass after the cleanup. The three-case
+  official Java native suite passed twice serially with Pixi OpenJDK 21.
 - Complete route classification and config discovery share one descriptor set.
   Real HTTP tests cover four installation combinations, absent routes, unchanged
   store records, authentication order and ambiguous duplicate Authorization.
@@ -193,12 +198,18 @@ Current verified foreground evidence:
   cleanup then leaves shared test namespaces in place and causes cascading
   duplicate-namespace and bounded-operation failures. That diagnostic was
   terminated after the independent failure classes were identified; no full-kit
-  pass is claimed. The pinned harness defaults to the passing basic-create test
+  pass is claimed. The pinned harness defaults to six passing supported tests
   and accepts `CROWDB_ICEBERG_RCK_SELECTOR` for isolated diagnostics. Isolated
   `testLoadTable` fails at create with HTTP 400: upstream `CatalogTests` calls
   `withLocation(baseTableLocation(TBL))`, which supplies a `file:/tmp/...` path, while
   CROWDB requires its reserved native table location. This is not fixed by
   accepting an unservable path or weakening native FileIO authority.
+- The RCK harness now selects its six supported catalog cases in one Gradle
+  invocation by default. Its JUnit report confirms six tests, zero failures,
+  zero errors and zero skips: create namespace, basic table create, rename,
+  drop, missing-drop and list. `CROWDB_ICEBERG_RCK_SELECTOR` still permits an
+  exact comma-separated diagnostic subset. This is supported-surface evidence,
+  not a claim that the full catalog suite passes.
 - Upstream Java 1.11.0 `RESTSessionCatalog` supplies a fresh UUIDv7
   `Idempotency-Key` for mutations when config advertises a lifetime, but its
   `ExponentialHttpRequestRetryStrategy` retries I/O failures only for idempotent
@@ -209,6 +220,28 @@ Current verified foreground evidence:
   covered by direct HTTP fault tests.
 
 Executable foreground evidence matrix (not engine certification):
+
+- **All versions / namespace REST / Rust 0.10.0, Java 1.11.0 and RCK 1.11.0:**
+  `iceberg_rust_sdk_test`, `iceberg_namespace_sdk_test` and the RCK harness.
+  Namespace create/list/load/rename/drop and pagination pass; no data format is
+  selected by these calls.
+- **v1/v2/v3 / table metadata REST / Java 1.11.0:**
+  `iceberg_table_sdk_test`, `table_create_sdk_test`,
+  `commit_evaluator_sdk_test` and `table_metadata_sdk_snapshot_test` pass.
+  These rows select canonical metadata JSON, not data-file reads.
+- **Native selected Parquet and S3 FileIO / Java 1.11.0:**
+  all three `iceberg_file_http_test::official_java_` cases pass serially under
+  Pixi JDK 21, including catalog/Parquet publication, selected data/delete use
+  and restart; this does not establish an ORC or engine row scan.
+- **Fault and retirement / Rust 0.10.0 and Java 1.11.0:**
+  `iceberg_rust_sdk_test`, `iceberg_rust_retired_sdk_test` and
+  `iceberg_java_response_loss_test` pass two-listener response-loss and
+  clear/reactivation checks. The Rust native response-loss case also passes
+  after Chunk-KV and listener restart. SDKs do not automatically replay a
+  lost mutation POST with the same key; direct HTTP tests cover that contract.
+- **Not certified:** the full configured RCK suite needs register/views or
+  external file locations outside the declared native authority; Spark/Flink/
+  Trino results, ORC and R183 physical reclamation remain separate pending work.
 
 - **Namespace, version-independent:** Rust 0.10.0 `iceberg_rust_sdk_test`
   covers create/list/load/rename/drop through two listeners; Java 1.11.0
@@ -269,23 +302,63 @@ Executable foreground evidence matrix (not engine certification):
   a Chunk-KV restart. The native Rust response-loss fixture above covers a
   successful create response lost at the HTTP boundary; the in-memory retired
   fixture covers stale official-client reads but not same-key mutation retry.
-- **Pending:** complete configured RCK catalog suite, remaining official-client
-  same-key retry and native retirement-grace matrix, engine
-  row-level visibility and R183 physical reclamation.
+- **Outside the declared foreground profile:** the full configured RCK catalog
+  suite exercises register/views and foreign file locations; official SDKs do
+  not issue automatic same-key retries for lost mutation POST responses.
+  Engine row-level visibility and R183 physical reclamation remain pending.
 
 Native Java FileIO diagnostic on 2026-09-25: the three-test serial suite passed
 two cases, but the catalog/Parquet case returned HTTP 503 during partition
 statistics publication. The corresponding native chunk-stream log showed an
 append stuck in `append_durability` and `WriteStalled`; a second serial run
 failed earlier during catalog initialization with `Store(Client(Deadline))`.
-The exact catalog/Parquet case passed alone, including restart verification.
-This is not counted as a stable suite pass or attributed to REST metrics without
-evidence. No timeout, retry or assertion was weakened. Capture client routing,
-chunk-stream durability and backend timing on the next recurrence before fixing
-the underlying native issue.
+After the service binaries were rebuilt, the exact catalog/Parquet case passed
+alone twice, including restart verification; two serial suites still failed at
+different table operations while another serial suite passed all three cases.
+Temporary stage instrumentation localized one new 503 to `TableWrites::admit`
+returning `CatalogError::Busy` from the REST retry ledger before mutation. The
+earlier journal stall and this retry-admission failure are separate observations.
+The retry-slot collision policy now uses exact-identity overflow after a
+fast-hash primary slot. Deliberate library and real HTTP UUIDv7 collisions
+admit and replay independently. The unmodified three-case Java native suite
+passed twice consecutively under Pixi JDK 21; `test-java-iceberg-fileio-e2e`
+now runs all three serially. The earlier Busy remains unattributed to a
+specific request header or collision. The temporary instrumentation was
+removed; do not weaken fixtures or widen timeouts if the failure recurs.
+
+The native official Rust retired-catalog full-grace case also reaches
+`Store(Client(Deadline))` after about 20 minutes; Chunk-KV reports a partition
+already in `WriteStalled`, but the old logs omit the first stream error. The
+uncommitted diagnostic work records journal append and idle renewal failures.
+The first instrumented recurrence showed a journal `WriteStalled` at the clear
+write and a failed ChunkDB cursor advance, without a disk-capacity error. The
+underlying idle writer had a 30-second lease, while Chunk Stream scheduled
+renewal every 12 minutes; ChunkDB's same-cursor advance also returned without
+persisting the renewed lease. Production now schedules renewal within one
+third of the configured lease and persists the same-cursor renewal. The
+first rerun still failed because the test launched a prebuilt Chunk-KV server
+binary from before those fixes. After explicitly rebuilding ChunkDB and
+Chunk-KV, the isolated native Rust full-grace test passed in 1242.99 seconds.
+This covers retired-catalog reads and clear/reactivation over refreshed native
+storage, not the full RCK suite or physical reclamation.
+Chunk Stream now retries confirmed-absent appends by repeated rollover and
+resolves cursor/manifest uncertainty against durable state. Small write and
+production Chunk Stream share the mirror-strip write and replacement flow;
+the stream worker retains the active strip image, including its acknowledged
+prefix, and replacement resolves uncertain publication against chunk metadata
+before another attempt. Focused small-write, stream, production-adapter and
+partition tests pass. Chunk-KV now names the drained handoff state
+`TransferQuiesced`; any journal append error, including a malformed position
+count, instead moves that partition to `Recovering`. A focused injected journal
+failure test confirms no later write or handoff checkpoint can treat it as a
+healthy transfer source. The transfer worker and partition suites pass.
 
 Pinned client commands:
 
+- Native harnesses launch prebuilt service executables; run
+  `pixi run cargo build -p crowdb-chunkdb -p crowdb-chunk-kv-server`
+  after changing those services or their dependencies, before running a native
+  test. `cargo test -p crowdb-access-server` alone does not rebuild them.
 - Rust 0.10.0: `pixi run cargo test -p crowdb-access-server --features
   iceberg-e2e --test iceberg_rust_sdk_test -- --ignored --nocapture`.
 - Apache RCK 1.11.0: clone tag `apache-iceberg-1.11.0` outside the workspace,
@@ -293,8 +366,8 @@ Pinned client commands:
   `CROWDB_RUNTIME_ROOT`, then run `pixi run cargo test -p
   crowdb-access-server --features iceberg-e2e --test iceberg_rck_test --
   --ignored --nocapture --test-threads=1`. The test executes the unmodified
-  upstream Gradle task and injects `rck.local=false` and
-  `rck.requires-namespace-create=true`.
+  upstream Gradle task for six supported catalog cases and injects
+  `rck.local=false` and `rck.requires-namespace-create=true`.
 
 - Unit: capability bit/profile tests, wire/config/parameter tests, bounded metrics
   counters and body lifecycle. Place all Rust tests under each crate's `tests/`.
@@ -314,6 +387,15 @@ Pinned client commands:
   section. Rust/kit commands must be recorded after the actual harness is pinned.
 - No new runtime locks or unsafe exceptions. Investigate timing failures instead
   of weakening assertions, widening deadlines or adding test-side retries.
+
+Foreground gate on 2026-09-25: workspace Rust format and lint, Iceberg-E2E
+Clippy, complete Chunk-KV and Iceberg library suites, default, Iceberg-enabled
+and no-default Iceberg Access Server suites, the six-case Apache RCK subset,
+official Rust two-listener and native restart cases, Java response-loss and
+four table SDK cases, and all three native Java FileIO cases pass. One Rust
+native test invocation without an isolated runtime root hit the test harness's
+paired-port assertion after the RCK run; the same test passed under the plan's
+isolated runtime root.
 
 ## Completion boundaries
 

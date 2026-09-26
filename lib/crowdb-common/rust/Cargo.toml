@@ -22,6 +22,7 @@ toml = "0.8"
 notify = "8.2"
 notify-debouncer-mini = "0.7"
 thiserror = { workspace = true }
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
