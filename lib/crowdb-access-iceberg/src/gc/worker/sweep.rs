@@ -62,7 +62,7 @@ impl GcWorker {
                     DeleteProgress::Accounted
                 }
             } else {
-                self.delete_candidate(&candidate, now_ms, task.sweep_round)
+                self.delete_candidate(task, &candidate, now_ms, task.sweep_round)
                     .await?
             };
             match progress {
@@ -103,13 +103,20 @@ impl GcWorker {
         next.phase = if task.deferred_ranges {
             next.stalled = GcStalledReason::UnsupportedRange;
             GcPhase::Waiting
+        } else if task.kind == GcTaskKind::RetiredCatalog {
+            GcPhase::CleanupSystem
         } else {
             GcPhase::Complete
         };
         next.scan_after.clear();
-        next.retry_at_ms = now_ms
-            .checked_add(u64::from(self.limits.retry_max_ms))
-            .ok_or(ValidationError::Deadline)?;
+        next.retry_at_ms = if next.phase == GcPhase::Waiting {
+            now_ms
+                .checked_add(u64::from(self.limits.retry_max_ms))
+                .ok_or(ValidationError::Deadline)?
+        } else {
+            next.stalled = GcStalledReason::None;
+            0
+        };
         if task.kind == GcTaskKind::LiveTable {
             self.repository.release_table_fence(task).await?;
             next.fenced = false;
@@ -124,12 +131,36 @@ impl GcWorker {
 
     async fn delete_candidate(
         &self,
+        task: &GcTask,
         candidate: &GcCandidate,
         now_ms: u64,
         sweep_round: u64,
     ) -> Result<DeleteProgress, GcWorkError> {
         if now_ms < candidate.not_before_ms {
             return Err(CatalogError::Busy.into());
+        }
+        if let Some(part) = &candidate.part {
+            let key = part.key();
+            let stored = self
+                .repository
+                .store
+                .get(&key.encode()?)
+                .await
+                .map_err(CatalogError::from)?;
+            if stored.is_none() && (!candidate.cursor.frames.is_empty() || candidate.cursor.pending.is_some())
+            {
+                return Err(ValidationError::Record.into());
+            }
+            if let Some(stored) = stored {
+                if StorageRecord::decode(&key, &stored.bytes)?
+                    != StorageRecord::MultipartPart(Box::new(part.clone()))
+                {
+                    return Err(CatalogError::Conflict.into());
+                }
+            }
+            if !self.repository.part_is_abandoned(task, part, now_ms).await? {
+                return Err(CatalogError::Busy.into());
+            }
         }
         let mut next = candidate.clone();
         next.revision = next
@@ -172,6 +203,11 @@ impl GcWorker {
     }
 
     async fn remove_file_authority(&self, candidate: &GcCandidate) -> Result<(), GcWorkError> {
+        if let Some(part) = &candidate.part {
+            return self
+                .remove_record(&part.key(), &StorageRecord::MultipartPart(Box::new(part.clone())))
+                .await;
+        }
         let mapping = crate::file::FileMapping {
             file: candidate.file.file,
             location: candidate.file.location.clone(),

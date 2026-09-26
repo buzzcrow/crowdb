@@ -25,6 +25,10 @@ pub enum GcPhase {
     Complete,
     Quarantined,
     Rescan,
+    CleanupSystem,
+    CleanupCatalog,
+    RootsSystem,
+    PreSweepSystem,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,14 +92,26 @@ impl GcTask {
             || self.scan_after.len() > crate::key::MAX_KEY_BYTES
             || self.queue_read > self.queue_write
             || (self.phase == GcPhase::Sweep && self.sweep_round == 0)
+            || (matches!(
+                self.phase,
+                GcPhase::CleanupSystem
+                    | GcPhase::CleanupCatalog
+                    | GcPhase::RootsSystem
+                    | GcPhase::PreSweepSystem
+            ) && self.kind != GcTaskKind::RetiredCatalog)
             || ((self.kind == GcTaskKind::RetiredCatalog) != self.head.is_none())
         {
             return Err(ValidationError::Record);
         }
-        if !self.scan_after.is_empty()
-            && !IcebergKey::catalog_range(self.context.catalog).contains(&self.scan_after)
-        {
-            return Err(ValidationError::Key);
+        if !self.scan_after.is_empty() {
+            if matches!(
+                self.phase,
+                GcPhase::CleanupSystem | GcPhase::RootsSystem | GcPhase::PreSweepSystem
+            ) {
+                super::GcSystemScan::validate_cursor(&self.scan_after)?;
+            } else if !IcebergKey::catalog_range(self.context.catalog).contains(&self.scan_after) {
+                return Err(ValidationError::Key);
+            }
         }
         if let Some(head) = &self.head {
             head.validate()?;

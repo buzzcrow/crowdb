@@ -16,9 +16,11 @@ use super::{
 };
 
 mod admission;
+mod cleanup;
 mod inactive;
 mod live;
 mod sweep;
+mod system;
 pub use admission::GcWorkerStatus;
 
 #[derive(Debug, thiserror::Error)]
@@ -94,9 +96,16 @@ impl GcWorker {
             GcPhase::Fence if task.kind == GcTaskKind::LiveTable => self.live_fence(task, now_ms).await,
             GcPhase::Fence => self.fence(task, now_ms).await,
             GcPhase::Sweep => self.sweep(task, now_ms).await,
+            GcPhase::CleanupSystem => self.cleanup_system(task, now_ms).await,
+            GcPhase::CleanupCatalog => self.cleanup_catalog(task, now_ms).await,
+            GcPhase::RootsSystem | GcPhase::PreSweepSystem => self.scan_system_protection(task, now_ms).await,
             GcPhase::Waiting => {
                 let mut next = task.advance()?;
-                next.phase = GcPhase::Roots;
+                next.phase = if task.kind == GcTaskKind::RetiredCatalog {
+                    GcPhase::RootsSystem
+                } else {
+                    GcPhase::Roots
+                };
                 next.scan_after.clear();
                 next.stalled = GcStalledReason::None;
                 self.repository.update(task, &next).await?;

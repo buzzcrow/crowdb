@@ -46,6 +46,7 @@ async fn directory_deletion_resumes_without_rereading_deleted_children() {
         phase: CandidatePhase::Deleting,
         cursor: TreeReclaimCursor::new(&record).unwrap(),
         file: record,
+        part: None,
     };
     let root = candidate.cursor.frames[0].root.chunk.low;
     let mut deleted = Vec::new();

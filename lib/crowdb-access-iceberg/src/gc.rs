@@ -29,7 +29,7 @@ pub use reachability::{
     avro_links, metadata_links, AvroMarkCursor, AvroMarkLimits, AvroMarkPage, ReachableFile, ReachableKind,
 };
 pub use repository::GcRepository;
-pub use storage::{GcScan, GcStore};
+pub use storage::{GcScan, GcStore, GcSystemScan};
 pub use task::{GcPhase, GcStalledReason, GcTask, GcTaskKind};
 pub use tree::{ReclaimFrame, ReclaimStep, TreeReclaimCursor};
 pub use worker::{GcWorkError, GcWorker, GcWorkerStatus};

@@ -26,6 +26,7 @@ async fn candidate() -> (common::file::TestFile, GcCandidate) {
         completed_round: 0,
         cursor: TreeReclaimCursor::new(&file).unwrap(),
         file,
+        part: None,
     };
     (fixture, candidate)
 }

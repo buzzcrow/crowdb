@@ -1,6 +1,7 @@
 use crate::{
     catalog::{CatalogContext, CatalogError},
     error::ValidationError,
+    file::MultipartPhase,
     key::{CatalogScope, IcebergKey, OperationId},
     record::StorageRecord,
     table::{TableHead, TableLifecycle},
@@ -76,7 +77,7 @@ impl GcRepository {
         }
         let scan = GcScan {
             catalog: task.context.catalog,
-            scope: Some(CatalogScope::File),
+            scope: None,
             prefix: Vec::new(),
             after: task.scan_after.clone(),
             items: usize::from(limits.page_items),
@@ -87,8 +88,29 @@ impl GcRepository {
         scan.validate_page(&page)?;
         for item in &page.items {
             let key = IcebergKey::decode(&item.key)?;
-            let StorageRecord::File(file) = StorageRecord::decode(&key, &item.value)? else {
-                return Err(ValidationError::Record.into());
+            let (file, part) = match key {
+                IcebergKey::Catalog {
+                    scope: CatalogScope::File,
+                    ..
+                } => {
+                    let StorageRecord::File(file) = StorageRecord::decode(&key, &item.value)? else {
+                        return Err(ValidationError::Record.into());
+                    };
+                    (*file, None)
+                }
+                IcebergKey::Catalog {
+                    scope: CatalogScope::MultipartPart,
+                    ..
+                } => {
+                    let StorageRecord::MultipartPart(part) = StorageRecord::decode(&key, &item.value)? else {
+                        return Err(ValidationError::Record.into());
+                    };
+                    if !self.part_is_abandoned(task, &part, now_ms).await? {
+                        continue;
+                    }
+                    (GcCandidate::part_file(&part)?, Some(*part))
+                }
+                _ => continue,
             };
             if task
                 .head
@@ -109,7 +131,8 @@ impl GcRepository {
                 revision: 1,
                 phase: CandidatePhase::Retained,
                 cursor: TreeReclaimCursor::new(&file)?,
-                file: *file,
+                file,
+                part,
             };
             self.claim_candidate(&candidate).await?;
         }
@@ -119,17 +142,73 @@ impl GcRepository {
         } else {
             next.scan_after.clear();
             if task.phase == GcPhase::Rescan {
-                next.phase = GcPhase::Sweep;
+                next.phase = if task.kind == GcTaskKind::RetiredCatalog {
+                    GcPhase::PreSweepSystem
+                } else {
+                    GcPhase::Sweep
+                };
                 next.deferred_ranges = false;
                 next.sweep_round = task
                     .sweep_round
                     .checked_add(1)
                     .ok_or(ValidationError::GenerationExhausted)?;
             } else {
-                next.phase = GcPhase::Roots;
+                next.phase = if task.kind == GcTaskKind::RetiredCatalog {
+                    GcPhase::RootsSystem
+                } else {
+                    GcPhase::Roots
+                };
             }
         }
         self.update(task, &next).await?;
         Ok(next)
+    }
+
+    pub(super) async fn part_is_abandoned(
+        &self,
+        task: &GcTask,
+        part: &crate::file::MultipartPart,
+        now_ms: u64,
+    ) -> Result<bool, CatalogError> {
+        let key = IcebergKey::Catalog {
+            catalog: task.context.catalog,
+            scope: CatalogScope::MultipartSession,
+            suffix: part.upload.as_bytes().to_vec(),
+        };
+        let Some(value) = self.store.get(&key.encode()?).await? else {
+            return Ok(false);
+        };
+        let StorageRecord::MultipartSession(session) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        part.validate_for(&session)?;
+        let terminal = matches!(
+            session.phase,
+            MultipartPhase::Published | MultipartPhase::Aborted | MultipartPhase::Conflicted
+        );
+        let authority_key = IcebergKey::Catalog {
+            catalog: task.context.catalog,
+            scope: CatalogScope::Authority,
+            suffix: Vec::new(),
+        };
+        let value = self
+            .store
+            .get(&authority_key.encode()?)
+            .await?
+            .ok_or(ValidationError::Record)?;
+        let StorageRecord::Authority(authority) = StorageRecord::decode(&authority_key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        let deadline = session
+            .expires_ms
+            .checked_add(authority.admission_bounds.request_ms)
+            .and_then(|time| time.checked_add(authority.admission_bounds.clock_skew_ms))
+            .ok_or(ValidationError::Deadline)?;
+        Ok(
+            terminal
+                && session.context == task.context
+                && session.upload == part.upload
+                && now_ms >= deadline,
+        )
     }
 }

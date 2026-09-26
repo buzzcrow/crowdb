@@ -419,6 +419,7 @@ table FBGcCandidate {
     revision:ulong;
     phase:ubyte = 255;
     file:FBFileRecord (required);
+    part:FBMultipartPart;
     frames:[FBGcFrame] (required);
     pending:FBFileChunkRoot;
 }

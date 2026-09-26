@@ -5,7 +5,7 @@ use crowdb_protocol::chunk_kv::{ClientRequestId, ScanDirection};
 use crate::{
     catalog::{CasOutcome, CatalogStore, RoutedCatalogStore, StoreError},
     error::ValidationError,
-    key::{CatalogId, CatalogScope, IcebergKey},
+    key::{CatalogId, CatalogScope, IcebergKey, SystemScope},
 };
 
 #[derive(Clone, Debug)]
@@ -16,6 +16,88 @@ pub struct GcScan {
     pub after: Vec<u8>,
     pub items: usize,
     pub bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct GcSystemScan {
+    pub after: Vec<u8>,
+    pub items: usize,
+    pub bytes: usize,
+}
+
+impl GcSystemScan {
+    fn range() -> (Vec<u8>, Vec<u8>) {
+        let mut start = b"ICE\0".to_vec();
+        start.extend_from_slice(&[1, 0, SystemScope::ManagementOperation as u8]);
+        let mut end = b"ICE\0".to_vec();
+        end.extend_from_slice(&[1, 0, SystemScope::RetryOverflow as u8 + 1]);
+        (start, end)
+    }
+
+    /// # Errors
+    /// Rejects a cursor outside the system ledger range.
+    pub fn validate_cursor(cursor: &[u8]) -> Result<(), ValidationError> {
+        let (start, end) = Self::range();
+        if cursor < start.as_slice() || cursor >= end.as_slice() {
+            return Err(ValidationError::Key);
+        }
+        match IcebergKey::decode(cursor)? {
+            IcebergKey::System {
+                scope: SystemScope::ActiveRoot,
+                ..
+            }
+            | IcebergKey::Catalog { .. } => Err(ValidationError::Key),
+            IcebergKey::System { .. } => Ok(()),
+        }
+    }
+
+    /// # Errors
+    /// Rejects oversized scans and invalid continuations.
+    pub fn request(&self) -> Result<MultiScanRequest, ValidationError> {
+        if self.items == 0 || self.items > 256 || self.bytes == 0 || self.bytes > 16 * 1024 * 1024 {
+            return Err(ValidationError::RecordTooLarge);
+        }
+        let (mut start, end) = Self::range();
+        if !self.after.is_empty() {
+            Self::validate_cursor(&self.after)?;
+            start.clone_from(&self.after);
+            start.push(0);
+        }
+        Ok(MultiScanRequest {
+            start: Some(start),
+            end: Some(end),
+            direction: ScanDirection::Forward,
+            max_items: self.items,
+            max_bytes: self.bytes,
+            continuation: None,
+        })
+    }
+
+    /// # Errors
+    /// Rejects unordered or oversized system pages.
+    pub fn validate_page(&self, page: &MultiScanPage) -> Result<(), StoreError> {
+        let request = self.request()?;
+        let start = request.start.ok_or(ValidationError::Key)?;
+        let end = request.end.ok_or(ValidationError::Key)?;
+        if page.terminal_failure.is_some()
+            || page.items.len() > self.items
+            || page
+                .items
+                .iter()
+                .map(|item| item.key.len() + item.value.len())
+                .sum::<usize>()
+                > self.bytes
+            || page.items.windows(2).any(|items| items[0].key >= items[1].key)
+            || page
+                .items
+                .iter()
+                .any(|item| item.key < start || item.key >= end || item.revision == 0)
+            || (page.items.is_empty() && page.continuation.is_some())
+        {
+            return Err(StoreError::Response);
+        }
+        Ok(())
+    }
 }
 
 impl GcScan {
@@ -99,6 +181,7 @@ impl GcScan {
 #[async_trait]
 pub trait GcStore: CatalogStore {
     async fn scan_gc(&self, request: GcScan) -> Result<MultiScanPage, StoreError>;
+    async fn scan_gc_system(&self, request: GcSystemScan) -> Result<MultiScanPage, StoreError>;
     async fn delete_gc_record(
         &self,
         key: &[u8],
@@ -110,6 +193,12 @@ pub trait GcStore: CatalogStore {
 #[async_trait]
 impl GcStore for RoutedCatalogStore {
     async fn scan_gc(&self, request: GcScan) -> Result<MultiScanPage, StoreError> {
+        let page = self.scan(request.request()?).await?;
+        request.validate_page(&page)?;
+        Ok(page)
+    }
+
+    async fn scan_gc_system(&self, request: GcSystemScan) -> Result<MultiScanPage, StoreError> {
         let page = self.scan(request.request()?).await?;
         request.validate_page(&page)?;
         Ok(page)

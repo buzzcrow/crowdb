@@ -108,6 +108,10 @@ pub(super) fn decode_task(value: FBGcTask<'_>) -> Result<GcTask, ValidationError
             6 => GcPhase::Complete,
             7 => GcPhase::Quarantined,
             8 => GcPhase::Rescan,
+            9 => GcPhase::CleanupSystem,
+            10 => GcPhase::CleanupCatalog,
+            11 => GcPhase::RootsSystem,
+            12 => GcPhase::PreSweepSystem,
             _ => return Err(ValidationError::Record),
         },
         revision: value.revision(),
@@ -147,6 +151,11 @@ pub(super) fn encode_candidate<'buffer>(
     candidate.validate()?;
     let task = builder.create_vector(candidate.task.as_bytes());
     let file = super::file::encode(builder, &candidate.file)?;
+    let part = candidate
+        .part
+        .as_ref()
+        .map(|part| super::multipart::encode_part(builder, part))
+        .transpose()?;
     let frames = candidate
         .cursor
         .frames
@@ -180,6 +189,7 @@ pub(super) fn encode_candidate<'buffer>(
             revision: candidate.revision,
             phase: candidate.phase as u8,
             file: Some(file),
+            part,
             frames: Some(frames),
             pending,
         },
@@ -221,6 +231,7 @@ pub(super) fn decode_candidate(value: FBGcCandidate<'_>) -> Result<GcCandidate, 
             _ => return Err(ValidationError::Record),
         },
         file,
+        part: value.part().map(super::multipart::decode_part).transpose()?,
         cursor: TreeReclaimCursor {
             owner,
             frames,

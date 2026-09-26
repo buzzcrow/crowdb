@@ -551,6 +551,16 @@ if physical range reclamation is deferred. Live passes release their table fence
 after finishing or observing a newly admitted table-wide protector; retained and
 deferred candidates remain durable work for later passes.
 
+Retired catalog recovery scans system retry and management ledgers before file
+deletion and after the final file rescan. Pending or retained bindings stop the
+pass; exact-identity overflow entries remain independent of occupied primary
+slots. After files are reclaimed, the worker conditionally removes expired
+bindings, audits, projections and non-GC catalog records while preserving the
+active root's management operation. Multipart parts have their own durable tree
+candidates. A terminal session with an assembly checkpoint stays retained until
+its frontier of chunk roots can be reclaimed through a durable cursor. The
+retired authority tombstone and GC records remain inspectable after this pass.
+
 ## 5. Compatibility
 
 CROWDB covers the core Iceberg format semantics for v1, v2, and v3, including

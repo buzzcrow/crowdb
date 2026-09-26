@@ -21,9 +21,12 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   clock-skew bounds come from catalog authority; deleting candidates cannot be
   read or republished. Final head fencing is followed by another root scan.
   Files: `gc/protection.rs`, `file/repository.rs`, `table/load.rs`, Access Server admission.
-- [ ] **Candidate discovery**: durable bounded scans for purge, retired catalogs,
+- [~] **Candidate discovery**: durable bounded scans for purge, retired catalogs,
   abandoned operations/uploads, expired bindings and orphan generations; retain
-  active-root and retry-result dependencies. Files: GC repository and discovery.
+  active-root and retry-result dependencies. File records and expired terminal
+  multipart parts have durable candidates. Abandoned assembly checkpoints and
+  writes without a published authority still need their own bounded source.
+  Files: GC repository and discovery.
 - [x] **Canonical reachability**: current and pinned historical metadata are parsed
   against captured heads. An immutable traversal stack and compressed binary
   mark index are content-addressed; one task CAS publishes both continuations.
@@ -32,7 +35,10 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   the pass. Files: `gc/proof/`, `gc/worker/live.rs`, `record/gc.rs`.
 - [ ] **Deletion worker**: revalidate fences and retention, persist children before
   deleting directory roots, dispatch exclusive/range deletion, conditionally remove
-  records, retain uncertain outcomes and quarantined corruption. Files: GC worker.
+  records, retain uncertain outcomes and quarantined corruption. The retired pass
+  checks system bindings before initial and final file scans, then removes expired
+  primary/overflow retry and management/audit records and non-GC catalog records.
+  GC records and authority remain for terminal cleanup. Files: GC worker.
 - [ ] **Operator and runtime integration**: authenticated pause/resume/inspect,
   pin/unpin, rate and retry controls; separate budgets and background progress.
   Files: Access Server Iceberg runtime/config/management.
@@ -60,6 +66,14 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   passes 80 tests, including durable staged-credential pin assertions. Workspace
   fmt and affected library/server all-target clippy pass with warnings denied.
   SDK/engine tests behind separate feature gates are not claimed by this run.
+- Retired candidate/record cleanup: terminal multipart parts use their sealed tree
+  as a candidate with persisted request/skew grace and source revalidation before
+  physical steps. Seventeen GC worker tests cover pending system bindings before
+  and after the first protection scan, primary/overflow collisions, active-root
+  management replay, audit and orphan projection cleanup, and retaining aborted
+  assembly checkpoints. The library all-target suite passes 665 tests and the
+  Iceberg-enabled server suite passes 80 tests. Workspace fmt and affected
+  all-target clippy pass with warnings denied.
 
 - Chunk-client deletion dispatch: 5 focused tests passed (exclusive ownership,
   failed-delete retry, unsupported shared ranges, invalid/active chunks and exact
@@ -149,6 +163,15 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   manifests can be revisited across snapshot roots. Keep the bounded proof and
   publication semantics when optimizing these paths; measure in the separate
   performance project before selecting caches or batched storage changes.
+- Multipart assembly checkpoints contain a bounded frontier of chunk roots in a
+  separate `ICFW` block. Terminal sessions retain that block and its child trees
+  until a durable per-root cursor can verify and reclaim them. Writes that fail
+  before any durable FileRecord or checkpoint have no catalog candidate source;
+  storage-level ownership discovery is still required for those orphans.
+- Retired completion currently means non-GC catalog records were scanned. The
+  authority tombstone, task, claims, candidates and proof pages remain for
+  inspection. A final GC-metadata cleanup must keep incomplete-owner replay
+  fail-closed.
 
 - Unit/integration: chunk-client dispatch, ChunkDB partial free/retry, GC record
   validation, deterministic reachability and retention, pin/publication races,

@@ -126,6 +126,7 @@ impl GcRepository {
             if before.key() != after.key()
                 || before.task != after.task
                 || before.file != after.file
+                || before.part != after.part
                 || before.first_seen_ms != after.first_seen_ms
                 || before.not_before_ms != after.not_before_ms
                 || before.revision.checked_add(1) != Some(after.revision)
