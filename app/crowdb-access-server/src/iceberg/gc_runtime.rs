@@ -214,11 +214,18 @@ async fn scan_and_advance(
     } else {
         Vec::new()
     };
-    let next_system = if active.is_some() {
+    let (next_system, advanced_retired) = if active.is_some() {
         scan_retired(store.clone(), worker, after.system, limits).await?
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
+    if advanced_retired {
+        return Ok(ScanPosition {
+            task: after.task,
+            purge: next_purge,
+            system: next_system,
+        });
+    }
     let scan = GcScan {
         catalog,
         scope: Some(CatalogScope::GcTask),
@@ -274,7 +281,7 @@ async fn scan_retired(
     worker: &GcWorker,
     after: Vec<u8>,
     limits: GcLimits,
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(Vec<u8>, bool), Box<dyn std::error::Error + Send + Sync>> {
     let scan = GcSystemScan {
         after,
         items: 1,
@@ -283,8 +290,9 @@ async fn scan_retired(
     let page = store.scan_gc_system(scan.clone()).await?;
     scan.validate_page(&page)?;
     let Some(item) = page.items.first() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     };
+    let mut advanced = false;
     let key = IcebergKey::decode(&item.key)?;
     if matches!(
         key,
@@ -305,11 +313,12 @@ async fn scan_retired(
                 let now_ms = super::runtime::now_ms()?;
                 if now_ms >= task.retry_at_ms {
                     worker.run(&task, now_ms).await?;
+                    advanced = true;
                 }
             }
         }
     }
-    Ok(item.key.clone())
+    Ok((item.key.clone(), advanced))
 }
 
 async fn scan_purge(

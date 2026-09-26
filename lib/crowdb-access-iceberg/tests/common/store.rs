@@ -46,7 +46,9 @@ impl TestStore {
             && matches!(
                 crowdb_access_iceberg::key::IcebergKey::decode(key),
                 Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                    scope: crowdb_access_iceberg::key::CatalogScope::OperationPayload,
+                    scope: crowdb_access_iceberg::key::CatalogScope::OperationPayload
+                        | crowdb_access_iceberg::key::CatalogScope::GcClaim
+                        | crowdb_access_iceberg::key::CatalogScope::GcCandidate,
                     ..
                 })
             )

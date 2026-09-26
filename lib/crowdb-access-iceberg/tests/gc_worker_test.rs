@@ -124,6 +124,37 @@ async fn retired_file_reclamation_survives_worker_restart_at_every_step() {
 }
 
 #[tokio::test]
+async fn inactive_discovery_preserves_file_when_gc_workspace_is_unavailable() {
+    let (fixture, blocks, task, limits, file) = fixture(true).await;
+    let repository = GcRepository::new(fixture.store.clone());
+    let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
+    fixture.store.gc_workspace_denied.store(true, Ordering::SeqCst);
+    let mut task = worker.run(&task, 1_000_000).await.unwrap();
+    assert_eq!(task.phase, GcPhase::Discover);
+    assert_eq!(task.stalled, GcStalledReason::Resource);
+    assert_eq!(task.deleted, 0);
+    assert!(fixture
+        .store
+        .get(&file_key(fixture.context.catalog, file).encode().unwrap())
+        .await
+        .unwrap()
+        .is_some());
+    fixture.store.gc_workspace_denied.store(false, Ordering::SeqCst);
+    for _ in 0..300 {
+        task = worker
+            .run(&task, 1_000_000_u64.max(task.retry_at_ms))
+            .await
+            .unwrap();
+        if task.phase == GcPhase::Complete {
+            break;
+        }
+    }
+    assert_eq!(task.phase, GcPhase::Complete);
+    assert_eq!(task.deleted, 1);
+    assert!(blocks.blocks.values.load().is_empty());
+}
+
+#[tokio::test]
 async fn expired_aborted_multipart_part_reclaims_tree_before_session_record() {
     use crowdb_access_iceberg::file::{MultipartPart, MultipartPhase};
     let (fixture, blocks, mut task, limits, _) = fixture(true).await;

@@ -60,7 +60,8 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   concurrency, CPU, memory, KV and chunk I/O budgets, scheduler fairness and
   restart progress. The opt-in scheduler uses dedicated clients, one-step work,
   validated rate configuration and atomic per-step KV/chunk request and byte
-  budgets. Enabled runtimes admit one durable purge marker per bounded scan;
+  budgets. A retired task step consumes the tick, rather than letting another
+  task scan exceed the same step budget. Enabled runtimes admit one durable purge marker per bounded scan;
   its task scan consumes the same budget, while a bounded reserve can
   persist a task's resource failure. Auto-admit completed clear operations and
   retire legacy live tasks instead of scheduling their deletion. Files: GC
@@ -71,7 +72,9 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   foreground Iceberg SDK operations during GC, affected tests and gates. Native
   full-disk FileIO failure/recovery and committed-file readability pass; the
   full-disk GC-workspace case remains. A fault-injected workspace denial proves
-  the mark continuation survives a resource stall and resumes after admission.
+  the mark continuation survives a resource stall and resumes after admission;
+  inactive discovery likewise retains the file and resumes after GC candidate
+  workspace is available again.
 - [ ] **Architecture cleanup**: update permanent design, remove temporary plan
   and requirement only after the acceptance matrix passes.
 
