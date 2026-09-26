@@ -85,6 +85,22 @@ impl ServerCredentials {
         )
     }
 
+    #[must_use]
+    pub fn s3_master_key(&self) -> &str {
+        &self.s3_master_key
+    }
+
+    /// # Errors
+    /// Requires an existing client file to match the authoritative user and endpoints.
+    pub fn verify_client(&self, client: &ClientCredentials) -> Result<(), CredentialError> {
+        client.validate()?;
+        let existing = read_private(&self.directory.join(CLIENT_FILE))?;
+        if existing != client.env(&self.iceberg_write_token) {
+            return Err(CredentialError::Invalid("existing client credentials conflict"));
+        }
+        Ok(())
+    }
+
     /// # Errors
     /// Rejects conflicting, incomplete, or invalid client credentials.
     pub fn persist_client(&self, client: &ClientCredentials) -> Result<(), CredentialError> {

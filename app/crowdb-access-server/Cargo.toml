@@ -36,7 +36,7 @@ iceberg = [
     "dep:sha1",
     "dep:crc",
 ]
-s3-e2e = ["s3"]
+s3-e2e = ["s3", "dep:crowdb-protocol"]
 iceberg-e2e = ["iceberg"]
 s3 = [
     "dep:async-trait",

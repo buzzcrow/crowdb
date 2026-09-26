@@ -461,6 +461,14 @@ fn assert_native_write_metrics(listen: &str) {
 }
 
 fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
+    let missing = Command::new(access_binary)
+        .args(["lookup-user", "boto3-e2e"])
+        .env("CROWDB_MANAGEMENT_SEEDS", seeds)
+        .env("CROWDB_S3_MASTER_KEY", MASTER_KEY)
+        .output()
+        .expect("look up absent S3 user");
+    assert!(!missing.status.success());
+    assert!(!String::from_utf8_lossy(&missing.stdout).contains("AWS_ACCESS_KEY_ID="));
     let issued = Command::new(access_binary)
         .args(["issue-user", "boto3-e2e"])
         .env("CROWDB_MANAGEMENT_SEEDS", seeds)
@@ -473,6 +481,23 @@ fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
         String::from_utf8_lossy(&issued.stderr)
     );
     let issued = String::from_utf8(issued.stdout).expect("token issuer output is UTF-8");
+    for command in ["ensure-user", "lookup-user", "ensure-user"] {
+        let resumed = Command::new(access_binary)
+            .args([command, "boto3-e2e"])
+            .env("CROWDB_MANAGEMENT_SEEDS", seeds)
+            .env("CROWDB_S3_MASTER_KEY", MASTER_KEY)
+            .output()
+            .expect("run replay-safe S3 user-token issuer");
+        assert!(
+            resumed.status.success(),
+            "token reconciliation failed:\n{}",
+            String::from_utf8_lossy(&resumed.stderr)
+        );
+        let resumed = String::from_utf8(resumed.stdout).unwrap();
+        for name in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] {
+            assert_eq!(output_value(&resumed, name), output_value(&issued, name));
+        }
+    }
     (
         output_value(&issued, "AWS_ACCESS_KEY_ID").to_owned(),
         output_value(&issued, "AWS_SECRET_ACCESS_KEY").to_owned(),

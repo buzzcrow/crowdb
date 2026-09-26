@@ -30,6 +30,10 @@ pub enum CredentialAuthorityError {
     Record(#[from] SecretError),
     #[error("S3 credential key is malformed")]
     InvalidKey,
+    #[error("S3 user has multiple credential records")]
+    DuplicateUser,
+    #[error("S3 user credential is disabled or malformed")]
+    InvalidUserCredential,
 }
 
 impl CredentialAuthority {
@@ -62,6 +66,75 @@ impl CredentialAuthority {
             }
         }
         Err(CredentialAuthorityError::Collision)
+    }
+
+    /// Reuses an existing credential for a single-writer bootstrap, including
+    /// after an issuance response is lost. Never creates a second credential
+    /// when the user's durable record is already present.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on duplicate or invalid user records and storage errors.
+    pub async fn ensure_user(&self, user: &[u8]) -> Result<IssuedUserToken, CredentialAuthorityError> {
+        match self.lookup_user(user).await? {
+            Some(token) => Ok(token),
+            None => self.issue_user(user).await,
+        }
+    }
+
+    /// Reads one user's credential without creating durable state.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on duplicate or invalid user records and storage errors.
+    pub async fn lookup_user(
+        &self,
+        user: &[u8],
+    ) -> Result<Option<IssuedUserToken>, CredentialAuthorityError> {
+        if user.is_empty() {
+            return Err(CredentialAuthorityError::EmptyUser);
+        }
+        let outcome = self
+            .control
+            .scan(
+                0,
+                0,
+                CREDENTIAL_PREFIX,
+                b"",
+                b"",
+                u32::MAX,
+                ReadMode::Linearizable,
+                None,
+                false,
+                None,
+            )
+            .await?;
+        let mut found = None;
+        for (key, value) in outcome.items {
+            let access_key = key
+                .strip_prefix(CREDENTIAL_PREFIX)
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .filter(|value| !value.is_empty())
+                .ok_or(CredentialAuthorityError::InvalidKey)?;
+            let record = DurableCredentialRecord::decode(&value)?;
+            if record.user != user {
+                continue;
+            }
+            if found.is_some() {
+                return Err(CredentialAuthorityError::DuplicateUser);
+            }
+            let credential = self.cipher.decrypt(user, access_key, &record.encrypted)?;
+            if !credential.enabled {
+                return Err(CredentialAuthorityError::InvalidUserCredential);
+            }
+            let secret_key = String::from_utf8(credential.secret_key.clone())
+                .map_err(|_| CredentialAuthorityError::InvalidUserCredential)?;
+            found = Some(IssuedUserToken {
+                access_key_id: access_key.to_owned(),
+                secret_key,
+            });
+        }
+        Ok(found)
     }
 
     /// Loads and decrypts the complete credential snapshot from group 0.

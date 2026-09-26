@@ -41,8 +41,9 @@ and verifiable release assets.
   `container/crowdb-monitor/src/{credentials,command}.rs`,
   `container/crowdb-monitor/tests/credentials_test.rs`. Server master key and
   four bearer tokens, private file persistence, and explicit client-file retrieval
-  are done. The S3 pair must still be issued through the existing Group 0
-  credential authority during Phase 3, then persisted to `client.env`.
+  are done. Group 0-backed S3 issuance and `client.env` persistence are
+  implemented and tested as an isolated Phase 3 bootstrap step; invoking that
+  step from monitor `run` remains.
 
 ## Phase 2 — Process supervision and health
 
@@ -127,13 +128,23 @@ and verifiable release assets.
   for byte-range requests; a 238-byte RPC regression test and the full
   KV/DiskDB/DiskIO/ChunkDB/Chunk-KV persisted-restart test pass. Monitor `run`
   staging and separate ChunkDB/Chunk-KV authority checks remain.
-- [ ] **S3 and Iceberg bootstrap**: issue the preview S3 user after Group 0 is
-  ready, initialize/activate the Iceberg catalog with durable request identities,
-  start authenticated listeners on container ports 16000/80, default the
-  client-visible Iceberg URI to host port 80, and validate
-  discovery/health without trusted-network bypass. Files:
-  `container/crowdb-monitor/src/bootstrap/{s3,iceberg}.rs`,
-  `container/crowdb-monitor/tests/access_bootstrap_test.rs`.
+- [x] **S3 credential bootstrap**: after Group 0 readiness, issue one preview
+  user through the existing authority, recover a lost issuance response via
+  `ensure-user`, and use read-only `lookup-user` on Ready restart. Persist
+  `client.env` before advancing the manifest, validate it against Group 0 on
+  restart, and reject a conflict. The focused monitor tests and real S3 stack
+  cover replay. Files: `app/crowdb-access-server/src/{credentials,main}.rs`,
+  `container/crowdb-monitor/src/bootstrap/s3.rs`,
+  `container/crowdb-monitor/tests/access_bootstrap_test.rs`. Verified by two
+  focused monitor tests and the 17-case real S3 full-stack suite.
+- [ ] **Iceberg catalog and access listeners**: initialize/activate the
+  catalog with durable UUIDv7 request identities, start authenticated S3 and
+  Iceberg listeners on container ports 16000/80, default client-visible
+  Iceberg URI to host port 80, and validate discovery/health without
+  trusted-network bypass. Wire both bootstrap steps into monitor `run` after
+  the storage services. Files:
+  `container/crowdb-monitor/src/bootstrap/iceberg.rs`,
+  `container/crowdb-monitor/src/main.rs`, and matching real-process tests.
 
 ## Phase 4 — Web authority cleanup
 
