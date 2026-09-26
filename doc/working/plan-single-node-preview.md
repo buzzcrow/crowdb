@@ -166,7 +166,10 @@ and verifiable release assets.
   reject registry in monitor-managed mode, reject inline secrets/topology/runtime
   fields, and remove the unreleased old parser/writer/fixtures without migration
   or aliases. Files: `lib/crowdb-console-shared/src/config.rs` and focused child
-  modules, `app/crowdb-web/src/main.rs`, affected config tests.
+  modules, `app/crowdb-web/src/main.rs`, affected config tests. Strict versioned
+  `WebProcessConfig` and `LaunchRegistry` schemas now parse and validate the
+  packaged template, reject unknown topology/secrets and malformed paths, and
+  have focused tests. Binary wiring and old-format removal remain.
 - [ ] **Group 0 authority reads/writes**: make web topology reads and mutations
   use Group 0 as the sole authority, remove local-first/best-effort sync and local
   topology restore, preserve response-loss/conflict semantics, and fail visibly
@@ -177,7 +180,10 @@ and verifiable release assets.
   lifecycle controls, and show source/unavailable state in the UI. Add focused
   Rust, component, and real-backend Playwright assertions. Files:
   `app/crowdb-web/src/**`, `app/crowdb-web/ui/src/**`, and the matching
-  `app/crowdb-web/ui/e2e/flows/*` specs.
+  `app/crowdb-web/ui/e2e/flows/*` specs. The monitor now also requires
+  `/api/authority` to affirm `source=group0` and `available=true` before
+  publishing readiness, so the existing web health-only behavior cannot
+  falsely mark the preview ready. The endpoint and authority model remain.
 
 ## Phase 5 — Image and local acceptance
 

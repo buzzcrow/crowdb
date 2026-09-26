@@ -41,6 +41,8 @@ pub enum PreviewError {
     S3(#[from] S3BootstrapError),
     #[error("preview Iceberg bootstrap failed: {0}")]
     Iceberg(#[from] IcebergBootstrapError),
+    #[error("preview Web authority probe failed: {0}")]
+    WebAuthority(&'static str),
     #[error("preview state is invalid: {0}")]
     Invalid(&'static str),
 }
@@ -152,6 +154,44 @@ async fn bootstrap_services(
         .collect();
     supervisor.start_service("iceberg", iceberg_environment).await?;
     supervisor.start_service("web", BTreeMap::new()).await?;
+    verify_web_authority(profile).await?;
+    Ok(())
+}
+
+async fn verify_web_authority(profile: &DeploymentProfile) -> Result<(), PreviewError> {
+    let web = profile
+        .services
+        .iter()
+        .find(|service| service.id == "web")
+        .ok_or(PreviewError::Invalid("Web service is absent"))?;
+    let origin = web
+        .probe
+        .target
+        .strip_suffix("/healthz")
+        .ok_or(PreviewError::Invalid("Web health endpoint is incompatible"))?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(2))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| PreviewError::WebAuthority("cannot construct authority probe"))?;
+    let response = client
+        .get(format!("{origin}/api/authority"))
+        .send()
+        .await
+        .map_err(|_| PreviewError::WebAuthority("authority endpoint is unavailable"))?;
+    if !response.status().is_success() {
+        return Err(PreviewError::WebAuthority("Group 0 authority is not ready"));
+    }
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|_| PreviewError::WebAuthority("authority response is invalid"))?;
+    if body.get("source").and_then(serde_json::Value::as_str) != Some("group0")
+        || body.get("available").and_then(serde_json::Value::as_bool) != Some(true)
+    {
+        return Err(PreviewError::WebAuthority("Web is not serving Group 0 authority"));
+    }
     Ok(())
 }
 
