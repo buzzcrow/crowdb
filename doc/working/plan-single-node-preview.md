@@ -131,7 +131,7 @@ and verifiable release assets.
   claiming durable Chunk-KV readiness. The monitor `run` staging remains.
 - [ ] **S3 and Iceberg bootstrap**: issue the preview S3 user after Group 0 is
   ready, initialize/activate the Iceberg catalog with durable request identities,
-  start authenticated listeners on container ports 16000/8181, default the
+  start authenticated listeners on container ports 16000/80, default the
   client-visible Iceberg URI to host port 80, and validate
   discovery/health without trusted-network bypass. Files:
   `container/crowdb-monitor/src/bootstrap/{s3,iceberg}.rs`,
@@ -165,8 +165,8 @@ and verifiable release assets.
   immutable UI/templates/profile, entrypoint, OCI labels from `VERSION`, exposed
   public ports only, and monitor health checks. Files:
   `container/single-node-preview/{Dockerfile,.dockerignore}` and build support.
-  Default invocation maps host `80:8181` for Iceberg; the non-root container
-  process retains its unprivileged 8181 listener.
+  Default invocation maps host `80:80` for Iceberg. Enable binding container
+  port 80 for the non-root Iceberg process without running the whole image as root.
 - [ ] **Pixi tasks**: add `build-docker-preview` and `test-docker-preview`, include
   the monitor in workspace build/test coverage, and keep Docker prerequisite
   failures explicit. Files: `pixi.toml`, task-coverage configuration/tests.

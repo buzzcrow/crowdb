@@ -37,7 +37,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         endpoints,
-        BTreeMap::from([("iceberg", 8181), ("s3", 16000), ("web", 14000)])
+        BTreeMap::from([("iceberg", 80), ("s3", 16000), ("web", 14000)])
     );
     let iceberg = profile
         .services
@@ -48,6 +48,11 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         iceberg.env.get("CROWDB_ICEBERG_PUBLIC_URI"),
         Some(&"http://localhost".to_owned())
     );
+    assert_eq!(
+        iceberg.env.get("CROWDB_ICEBERG_LISTEN"),
+        Some(&"0.0.0.0:80".to_owned())
+    );
+    assert_eq!(iceberg.probe.target, "http://127.0.0.1:80/v1/config");
 }
 
 #[test]

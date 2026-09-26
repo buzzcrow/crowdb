@@ -74,7 +74,7 @@ port = 16000
 [[public_endpoints]]
 id = "iceberg"
 bind = "0.0.0.0"
-port = 8181
+port = 80
 
 [[public_endpoints]]
 id = "web"
@@ -187,12 +187,12 @@ backoff_max_ms = 5000
 id = "iceberg"
 program = "/opt/crowdb/bin/crowdb-iceberg"
 args = ["serve"]
-env = { CROWDB_ICEBERG_LISTEN = "0.0.0.0:8181", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ICEBERG_GC_ENABLED = "0" }
+env = { CROWDB_ICEBERG_LISTEN = "0.0.0.0:80", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ICEBERG_GC_ENABLED = "0" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
-fence_listeners = ["127.0.0.1:8181"]
+fence_listeners = ["127.0.0.1:80"]
 [services.probe]
 kind = "http"
-target = "http://127.0.0.1:8181/v1/config"
+target = "http://127.0.0.1:80/v1/config"
 timeout_ms = 1000
 failure_threshold = 5
 [services.restart]

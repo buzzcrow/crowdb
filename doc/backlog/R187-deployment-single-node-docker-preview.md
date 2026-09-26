@@ -51,8 +51,8 @@ fault-tolerant deployment.
 
 - **DOCKER-I1 — One-command service:** one documented container invocation
   starts one usable CROWDB instance and exposes only S3 on port 16000, Iceberg
-  REST/FileIO on host port 80 (mapped to container port 8181), and the web
-  console on port 14000.
+  REST/FileIO on container port 80 (mapped to host port 80 by default), and
+  the web console on port 14000.
 - **DOCKER-I2 — Product-path fidelity:** the image runs the normal
   `crowdb-kv-server`, `crowdb-diskdb`, `crowdb-diskio`, `crowdb-chunkdb`,
   `crowdb-chunk-kv-server`, `crowdb-access-server`, `crowdb-iceberg`, and
@@ -303,9 +303,8 @@ passes explicit data and log paths to every child.
    declared as public image ports.
 5. Configure `crowdb-access-server` with normal S3 authentication on
    `0.0.0.0:16000`, `crowdb-iceberg` with its independent authenticated catalog
-   and native FileIO listener on `0.0.0.0:8181`, and `crowdb-web` on
-   `0.0.0.0:14000`. The quick start maps S3 and web one-to-one, maps host port
-   80 to container port 8181 for Iceberg, and uses
+   and native FileIO listener on `0.0.0.0:80`, and `crowdb-web` on
+   `0.0.0.0:14000`. The quick start maps all three ports one-to-one and uses
    `http://localhost:16000`, `http://localhost`, and
    `http://localhost:14000`. `CROWDB_ICEBERG_PUBLIC_URI` defaults to the local
    Iceberg URI and is the one documented override when a remote hostname,
@@ -372,7 +371,7 @@ passes explicit data and log paths to every child.
     read-only/unwritable volume, and missing, corrupt, incompatible, or conflicting
     bootstrap manifest outcomes.
 11. Publish a minimal quick start that pins an image tag, maps ports 16000:16000,
-    80:8181, and 14000:14000, mounts one host data path at `/opt/crowdb/data`, configures the
+    80:80, and 14000:14000, mounts one host data path at `/opt/crowdb/data`, configures the
     container runtime restart policy for monitor-budget exhaustion, retrieves
     generated preview credentials with the explicit monitor command, and includes
     independent S3 and Iceberg examples. The compatibility list names exact
