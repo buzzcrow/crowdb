@@ -1,0 +1,210 @@
+version = 1
+name = "crowdb-single-node-preview"
+display_name = "CROWDB Single-Node Preview"
+placement_mode = "unsafe-colocated"
+s3_tenant = "preview"
+iceberg_catalog = "preview"
+
+[paths]
+install_root = "/opt/crowdb"
+bin_root = "/opt/crowdb/bin"
+template_root = "/opt/crowdb/etc/templates"
+data_root = "/opt/crowdb/data"
+run_root = "/opt/crowdb/run"
+log_root = "/opt/crowdb/data/log"
+
+[logs]
+max_file_bytes = 31457280
+max_files = 5
+mirror_warnings_to_stderr = true
+
+[[nodes]]
+node_id = 1
+rack_id = 1
+
+[[groups]]
+store_id = 0
+group_id = 0
+replica_id = 1
+role = "system"
+
+[[groups]]
+store_id = 0
+group_id = 1
+replica_id = 2
+role = "data"
+
+[[disks]]
+disk_id = "00000000000000010000000000000001"
+disk_group_id = 101
+node_id = 1
+path = "/opt/crowdb/data/disks/disk-0001.img"
+capacity_bytes = 17179869184
+zone_size_bytes = 17179869184
+
+[[disks]]
+disk_id = "00000000000000010000000000000002"
+disk_group_id = 101
+node_id = 1
+path = "/opt/crowdb/data/disks/disk-0002.img"
+capacity_bytes = 17179869184
+zone_size_bytes = 17179869184
+
+[[disks]]
+disk_id = "00000000000000010000000000000003"
+disk_group_id = 101
+node_id = 1
+path = "/opt/crowdb/data/disks/disk-0003.img"
+capacity_bytes = 17179869184
+zone_size_bytes = 17179869184
+
+[[disks]]
+disk_id = "00000000000000010000000000000004"
+disk_group_id = 101
+node_id = 1
+path = "/opt/crowdb/data/disks/disk-0004.img"
+capacity_bytes = 17179869184
+zone_size_bytes = 17179869184
+
+[[public_endpoints]]
+id = "s3"
+bind = "0.0.0.0"
+port = 16000
+
+[[public_endpoints]]
+id = "iceberg"
+bind = "0.0.0.0"
+port = 8181
+
+[[public_endpoints]]
+id = "web"
+bind = "0.0.0.0"
+port = 14000
+
+[[services]]
+id = "kv"
+program = "/opt/crowdb/bin/crowdb-kv-server"
+args = ["--root", "/opt/crowdb/data/kv/node-1", "--config", "/opt/crowdb/run/config/kv.toml", "--management-port", "10000", "--ports", "10100,10101", "--log-dir", "/opt/crowdb/data/log/kv", "--log"]
+dependencies = []
+config_template = "/opt/crowdb/etc/templates/kv.toml"
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:10000/health"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "diskdb"
+program = "/opt/crowdb/bin/crowdb-diskdb"
+args = ["--config", "/opt/crowdb/run/config/diskdb.toml", "--log-dir", "/opt/crowdb/data/log/diskdb", "--log"]
+dependencies = ["kv"]
+config_template = "/opt/crowdb/etc/templates/diskdb.toml"
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:11100/health"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "diskio"
+program = "/opt/crowdb/bin/crowdb-diskio"
+args = ["--config", "/opt/crowdb/run/config/diskio.toml"]
+dependencies = ["kv", "diskdb"]
+config_template = "/opt/crowdb/etc/templates/diskio.toml"
+[services.probe]
+kind = "tcp"
+target = "127.0.0.1:13000"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "chunkdb"
+program = "/opt/crowdb/bin/crowdb-chunkdb"
+args = ["--config", "/opt/crowdb/run/config/chunkdb.toml", "--log-dir", "/opt/crowdb/data/log/chunkdb", "--log"]
+dependencies = ["kv", "diskdb", "diskio"]
+config_template = "/opt/crowdb/etc/templates/chunkdb.toml"
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:12100/ready"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "chunk-kv"
+program = "/opt/crowdb/bin/crowdb-chunk-kv-server"
+args = ["--config", "/opt/crowdb/run/config/chunk-kv.toml", "--log-dir", "/opt/crowdb/data/log/chunk-kv", "--log"]
+dependencies = ["kv", "chunkdb", "diskio"]
+config_template = "/opt/crowdb/etc/templates/chunk-kv.toml"
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:15100/ready"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "s3"
+program = "/opt/crowdb/bin/crowdb-access-server"
+args = []
+env = { CROWDB_S3_LISTEN = "0.0.0.0:16000", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_S3_TENANT = "preview", CROWDB_S3_REGION = "us-east-1", CROWDB_S3_EC_DATA = "2", CROWDB_S3_EC_CODE = "1" }
+dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:16000/_crowdb/health/ready"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "iceberg"
+program = "/opt/crowdb/bin/crowdb-iceberg"
+args = ["serve"]
+env = { CROWDB_ICEBERG_LISTEN = "0.0.0.0:8181", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost:8181", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ICEBERG_GC_ENABLED = "0" }
+dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:8181/v1/config"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000
+
+[[services]]
+id = "web"
+program = "/opt/crowdb/bin/crowdb-web"
+args = ["--config", "/opt/crowdb/run/config/crowdb-web.toml"]
+dependencies = ["s3", "iceberg"]
+config_template = "/opt/crowdb/etc/templates/crowdb-web.toml"
+[services.probe]
+kind = "http"
+target = "http://127.0.0.1:14000/healthz"
+timeout_ms = 1000
+failure_threshold = 5
+[services.restart]
+max_attempts = 5
+backoff_base_ms = 250
+backoff_max_ms = 5000

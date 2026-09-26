@@ -1104,6 +1104,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdb-monitor"
+version = "0.0.0-dev"
+dependencies = [
+ "clap",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "crowdb-protocol"
 version = "0.0.0-dev"
 dependencies = [

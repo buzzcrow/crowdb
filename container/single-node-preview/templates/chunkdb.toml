@@ -1,0 +1,26 @@
+[server]
+rpc_workers = 2
+http_listen_addr = "127.0.0.1:12100"
+rpc_listen_addr = "127.0.0.1:12200"
+instance_id = "1"
+kv_server_mgmt_seeds = ["http://127.0.0.1:10000"]
+keepalive_interval_secs = 1
+kv_pool_size = 1
+kv_rpc_workers = 2
+diskdb_pool_size = 1
+diskdb_rpc_workers = 2
+
+[topology]
+refresh_interval_secs = 1
+
+[range_guard]
+allow_all_when_empty = false
+
+[lifecycle]
+cache_capacity = 10000
+sweep_chunk_lock_interval_secs = 60
+lock_hold_warn_threshold_ms = 1000
+
+[placement]
+allow_unsafe_ec = true
+allow_degraded_failure_domains = true

@@ -23,6 +23,7 @@ members = [
     "lib/crowdb-test-harness",
     "app/crowdb-chunk-kv-server",
     "app/crowdb-access-server",
+    "container/crowdb-monitor",
     "lib/crowdb-access-s3",
     "lib/crowdb-access-iceberg",
 ]

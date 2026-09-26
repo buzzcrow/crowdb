@@ -1,0 +1,25 @@
+instance_id = 1
+rpc_listen_addr = "127.0.0.1:15200"
+rpc_advertise_addr = "127.0.0.1:15200"
+http_listen_addr = "127.0.0.1:15100"
+group0_mgmt_seeds = ["http://127.0.0.1:10000"]
+catalog_refresh_interval_ms = 200
+
+[balance]
+enabled = false
+target_partitions_per_owner = 1
+target_partition_bytes = 9223372036854775807
+minimum_weighted_improvement_percent = 100
+cooldown_ms = 9223372036854775807
+max_owner_request_rate = 0
+
+[storage]
+metadata_store_id = 0
+stream_mirror_copies = 1
+
+[bootstrap_partition]
+partition_id = { high = 1, low = 1 }
+tree_id = 1
+stream_name = { high = 2, low = 1 }
+owner_epoch = 1
+metadata_group_id = 1

@@ -11,7 +11,7 @@ and verifiable release assets.
 
 ## Phase 1 — Deployment runtime foundation
 
-- [~] **Profile and layout model**: add the `crowdb-monitor` workspace crate under
+- [x] **Profile and layout model**: add the `crowdb-monitor` workspace crate under
   `container/crowdb-monitor`; define versioned deployment-profile, path, service,
   dependency, probe, restart, public-endpoint, and bootstrap inputs; validate
   cycles, duplicate identities/listeners, path escape, missing dependencies,
@@ -20,14 +20,14 @@ and verifiable release assets.
   `Cargo.toml`, `container/crowdb-monitor/Cargo.toml`,
   `container/crowdb-monitor/src/{lib,profile,layout}.rs`,
   `container/crowdb-monitor/tests/profile_test.rs`.
-- [ ] **Single-node profile**: add the named `crowdb-single-node-preview`
+- [x] **Single-node profile**: add the named `crowdb-single-node-preview`
   profile with Group 0/1, four stable 16 GiB file disks, process graph, ports,
   `/opt/crowdb` paths, probes, log bounds, and public preview labels. Install only
   this profile in R187; add no future-profile placeholders. Files:
   `container/single-node-preview/profile.toml`,
   `container/single-node-preview/templates/*.toml`,
   `container/crowdb-monitor/tests/single_node_profile_test.rs`.
-- [ ] **Manifest state machine**: implement atomic, mode-0600
+- [~] **Manifest state machine**: implement atomic, mode-0600
   `Initializing`/`Ready` manifest persistence, stable generated identities,
   exact-profile/config digests, empty-root classification, interrupted-step
   replay, Ready validation-only restart, and fail-closed handling for unknown or

@@ -1,0 +1,62 @@
+[server]
+rpc_workers = 2
+listen_addr = "127.0.0.1:11000"
+http_listen_addr = "127.0.0.1:11100"
+rpc_listen_addr = "127.0.0.1:11200"
+kv_server_mgmt_seeds = ["http://127.0.0.1:10000"]
+
+[storage]
+zone_size_bytes = 17179869184
+block_size_bytes = 1048576
+allocate_granularity = 1048576
+zone_rotate_count = 4
+cas_retry_limit = 100
+
+[heartbeat]
+interval_secs = 10
+miss_threshold = 3
+temp_failure_timeout_secs = 900
+
+[persistence]
+free_batch_enabled = false
+free_flush_max_batch = 256
+compaction_cadence_secs = 300
+snapshot_compaction_threshold = 4096
+load_concurrency = 16
+
+[scanner]
+scan_interval_secs = 600
+tentative_owner_scan_interval_secs = 600
+tentative_owner_zone_delay_secs = 3
+tentative_owner_grace_secs = 86400
+reverify_delay_ms = 1000
+
+[scanner.ghost]
+detect = true
+auto_correct = false
+
+[scanner.integrity]
+verify = true
+detect_owner_mismatch = false
+
+[rebalance]
+enabled = true
+plan_interval_secs = 300
+imbalance_threshold_pct = 20
+max_jobs_per_cycle = 1
+zone_delay_secs = 3
+
+[allocator]
+load_aware = true
+load_aware_weight = "free_bytes"
+
+[sync]
+group0_store_id = 0
+group0_group_id = 0
+sync_interval_secs = 10
+
+[reporting]
+interval_secs = 10
+
+[notify]
+notify_enabled = false
