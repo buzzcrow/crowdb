@@ -190,7 +190,7 @@ impl Ports {
 }
 
 #[tokio::test]
-async fn preview_chunk_services_start_and_storage_recovers() {
+async fn preview_chunk_services_start_and_recover() {
     let Some(kv_binary) = crowdb_test_harness::cluster::crowdb_kv_server_bin() else {
         eprintln!("skipping storage process test: KV binary unavailable");
         return;
@@ -235,30 +235,7 @@ async fn preview_chunk_services_start_and_storage_recovers() {
     )
     .await
     .unwrap();
-    supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
-    KvBootstrap::new(&management_seed)
-        .unwrap()
-        .reconcile(&mut session, &profile, supervisor.monitor_log_mut())
-        .await
-        .unwrap();
-    ensure_disk_files(&mut session, &profile, supervisor.monitor_log_mut())
-        .await
-        .unwrap();
-    HardwareBootstrap::new(management_seed.clone())
-        .reconcile(&mut session, &profile, supervisor.monitor_log_mut())
-        .await
-        .unwrap();
-    supervisor.start_service("diskdb", BTreeMap::new()).await.unwrap();
-    supervisor.start_service("diskio", BTreeMap::new()).await.unwrap();
-    verify_diskio_disks(&management_seed, &profile).await.unwrap();
-    supervisor
-        .start_service("chunkdb", BTreeMap::new())
-        .await
-        .unwrap();
-    supervisor
-        .start_service("chunk-kv", BTreeMap::new())
-        .await
-        .unwrap();
+    start_preview_storage(&mut supervisor, &mut session, &profile, &management_seed).await;
     session.mark_ready().unwrap();
     supervisor.mark_ready().await.unwrap();
     supervisor.shutdown().await.unwrap();
@@ -272,21 +249,39 @@ async fn preview_chunk_services_start_and_storage_recovers() {
     )
     .await
     .unwrap();
-    restarted.start_service("kv", BTreeMap::new()).await.unwrap();
-    KvBootstrap::new(&management_seed)
-        .unwrap()
-        .reconcile(&mut restarted_session, &profile, restarted.monitor_log_mut())
-        .await
-        .unwrap();
-    ensure_disk_files(&mut restarted_session, &profile, restarted.monitor_log_mut())
-        .await
-        .unwrap();
-    HardwareBootstrap::new(management_seed.clone())
-        .reconcile(&mut restarted_session, &profile, restarted.monitor_log_mut())
-        .await
-        .unwrap();
-    restarted.start_service("diskdb", BTreeMap::new()).await.unwrap();
-    restarted.start_service("diskio", BTreeMap::new()).await.unwrap();
-    verify_diskio_disks(&management_seed, &profile).await.unwrap();
+    start_preview_storage(&mut restarted, &mut restarted_session, &profile, &management_seed).await;
+    restarted.mark_ready().await.unwrap();
     restarted.shutdown().await.unwrap();
+}
+
+async fn start_preview_storage(
+    supervisor: &mut Supervisor,
+    session: &mut BootstrapSession,
+    profile: &DeploymentProfile,
+    management_seed: &str,
+) {
+    supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
+    KvBootstrap::new(management_seed)
+        .unwrap()
+        .reconcile(session, profile, supervisor.monitor_log_mut())
+        .await
+        .unwrap();
+    ensure_disk_files(session, profile, supervisor.monitor_log_mut())
+        .await
+        .unwrap();
+    HardwareBootstrap::new(management_seed.to_owned())
+        .reconcile(session, profile, supervisor.monitor_log_mut())
+        .await
+        .unwrap();
+    supervisor.start_service("diskdb", BTreeMap::new()).await.unwrap();
+    supervisor.start_service("diskio", BTreeMap::new()).await.unwrap();
+    verify_diskio_disks(management_seed, profile).await.unwrap();
+    supervisor
+        .start_service("chunkdb", BTreeMap::new())
+        .await
+        .unwrap();
+    supervisor
+        .start_service("chunk-kv", BTreeMap::new())
+        .await
+        .unwrap();
 }

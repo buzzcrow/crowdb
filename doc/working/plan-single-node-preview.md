@@ -123,12 +123,10 @@ and verifiable release assets.
   `container/crowdb-monitor/tests/chunk_bootstrap_test.rs`. The named ChunkDB
   template now explicitly selects `unsafe_colocated`. Real-process first boot
   reaches ChunkDB and Chunk-KV readiness with Group 0-issued binding and serving
-  grant. A full restart still fails when Chunk-KV reloads its persisted tree:
-  DiskIO returns an error for a 238-byte file-disk read, but the C++ chunk
-  transport previously misreported the error response without a data payload as
-  malformed. Keep the restart acceptance open; inspect the DiskIO file-backed
-  O_DIRECT read alignment and add a product-path read/recovery test before
-  claiming durable Chunk-KV readiness. The monitor `run` staging remains.
+  grant. The file-backed O_DIRECT read path now uses an aligned bounce buffer
+  for byte-range requests; a 238-byte RPC regression test and the full
+  KV/DiskDB/DiskIO/ChunkDB/Chunk-KV persisted-restart test pass. Monitor `run`
+  staging and separate ChunkDB/Chunk-KV authority checks remain.
 - [ ] **S3 and Iceberg bootstrap**: issue the preview S3 user after Group 0 is
   ready, initialize/activate the Iceberg catalog with durable request identities,
   start authenticated listeners on container ports 16000/80, default the

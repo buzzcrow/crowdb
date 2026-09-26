@@ -183,6 +183,14 @@ TEST(DiskioServerTest, WriteAndReadRoundTrip)
 
     auto disk_set = std::make_shared<crowdb::diskio::DiskSet>();
     disk_set->add(disk);
+    std::string direct_path = temp_path();
+    ASSERT_EQ(::truncate(direct_path.c_str(), 1 << 16), 0);
+    std::vector<crowdb::diskio::Zone> direct_zones;
+    direct_zones.push_back({0, 0, 1 << 16});
+    auto direct_disk = std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{1, 2}, direct_path, engine,
+                                                                   std::move(direct_zones), true);
+    ASSERT_GE(direct_disk->fd(), 0);
+    disk_set->add(direct_disk);
 
     // Start the RPC server.
     RpcServer server;
@@ -242,6 +250,26 @@ TEST(DiskioServerTest, WriteAndReadRoundTrip)
     EXPECT_EQ(read_state.ret_code.load(), static_cast<int16_t>(dproto::FBDiskIoRetCode_Success));
     ASSERT_EQ(read_state.recv_data.size(), DATA_SIZE);
     EXPECT_EQ(std::memcmp(read_state.recv_data.data(), payload.data(), DATA_SIZE), 0);
+
+    Buffer *direct_write_ctrl = build_write_request(pool, 21, {1, 2}, 0, 0, DATA_SIZE, wall_time_ms());
+    Buffer *direct_write_data = pool->alloc(DATA_SIZE);
+    direct_write_data->write(payload.data(), DATA_SIZE);
+    DioState direct_write_state;
+    ASSERT_TRUE(caller.send(&client_transport, conn.get(), 21, direct_write_ctrl, direct_write_data,
+                            static_cast<uint16_t>(rproto::FBMsgType_EDiskWriteRequest), dio_on_complete,
+                            &direct_write_state));
+    ASSERT_TRUE(wait_for(direct_write_state));
+    ASSERT_EQ(direct_write_state.ret_code.load(), static_cast<int16_t>(dproto::FBDiskIoRetCode_Success));
+
+    Buffer  *direct_read_ctrl = build_read_request(pool, 22, {1, 2}, 0, 2048, 238);
+    DioState direct_read_state;
+    ASSERT_TRUE(caller.send(&client_transport, conn.get(), 22, direct_read_ctrl, nullptr,
+                            static_cast<uint16_t>(rproto::FBMsgType_EDiskReadRequest), dio_on_complete,
+                            &direct_read_state));
+    ASSERT_TRUE(wait_for(direct_read_state));
+    ASSERT_EQ(direct_read_state.ret_code.load(), static_cast<int16_t>(dproto::FBDiskIoRetCode_Success));
+    ASSERT_EQ(direct_read_state.recv_data.size(), 238);
+    EXPECT_EQ(std::memcmp(direct_read_state.recv_data.data(), payload.data() + 2048, 238), 0);
 
     client_transport.stop();
     server.stop();
