@@ -37,6 +37,8 @@ pub enum ManifestState {
 struct ManifestStep {
     name: String,
     complete: bool,
+    operation_id: Option<Uuid>,
+    catalog_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -77,6 +79,16 @@ impl BootstrapManifest {
             .map(|step| step.complete)
     }
 
+    #[must_use]
+    pub fn step_operation(&self, name: &str) -> Option<Uuid> {
+        self.steps.iter().find(|step| step.name == name)?.operation_id
+    }
+
+    #[must_use]
+    pub fn step_catalog(&self, name: &str) -> Option<Uuid> {
+        self.steps.iter().find(|step| step.name == name)?.catalog_id
+    }
+
     /// # Errors
     /// Rejects a step outside the persisted bootstrap plan.
     pub fn operation_id(&self, step: &str) -> Result<[u8; 16], ManifestError> {
@@ -109,7 +121,12 @@ impl BootstrapManifest {
         }
         let mut pending = false;
         for (actual, expected) in self.steps.iter().zip(steps) {
-            if actual.name != *expected || (pending && actual.complete) {
+            if actual.name != *expected
+                || (pending && actual.complete)
+                || actual.operation_id.is_some_and(|id| id.get_version_num() != 7)
+                || actual.catalog_id.is_some_and(|id| id.is_nil())
+                || (actual.catalog_id.is_some() && !actual.complete)
+            {
                 return invalid("bootstrap step order or completion is invalid");
             }
             pending |= !actual.complete;
@@ -176,6 +193,8 @@ impl BootstrapSession {
                 .map(|name| ManifestStep {
                     name: (*name).to_owned(),
                     complete: false,
+                    operation_id: None,
+                    catalog_id: None,
                 })
                 .collect(),
         };
@@ -186,6 +205,53 @@ impl BootstrapSession {
     #[must_use]
     pub fn manifest(&self) -> &BootstrapManifest {
         &self.manifest
+    }
+
+    /// # Errors
+    /// Persists a `UUIDv7` before an external mutation is attempted.
+    pub fn reserve_operation(&mut self, step: &str) -> Result<Uuid, ManifestError> {
+        if self.manifest.state == ManifestState::Ready || self.manifest.next_step() != Some(step) {
+            return invalid("operation step is not current");
+        }
+        if let Some(id) = self.manifest.step_operation(step) {
+            return Ok(id);
+        }
+        let mut updated = self.manifest.clone();
+        let entry = updated
+            .steps
+            .iter_mut()
+            .find(|entry| entry.name == step)
+            .ok_or_else(|| ManifestError::Invalid("operation step is missing".into()))?;
+        let id = Uuid::now_v7();
+        entry.operation_id = Some(id);
+        persist(&self.directory, &updated)?;
+        self.manifest = updated;
+        Ok(id)
+    }
+
+    /// # Errors
+    /// Records the observed catalog identity in the same durable step advance.
+    pub fn complete_catalog_step(&mut self, step: &str, catalog: Uuid) -> Result<(), ManifestError> {
+        if catalog.is_nil()
+            || self.manifest.state == ManifestState::Ready
+            || self.manifest.next_step() != Some(step)
+        {
+            return invalid("catalog step or identity is invalid");
+        }
+        let mut updated = self.manifest.clone();
+        let entry = updated
+            .steps
+            .iter_mut()
+            .find(|entry| entry.name == step)
+            .ok_or_else(|| ManifestError::Invalid("catalog step is missing".into()))?;
+        if entry.operation_id.is_none() {
+            return invalid("catalog step has no reserved operation");
+        }
+        entry.catalog_id = Some(catalog);
+        entry.complete = true;
+        persist(&self.directory, &updated)?;
+        self.manifest = updated;
+        Ok(())
     }
 
     /// # Errors

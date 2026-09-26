@@ -90,6 +90,11 @@ impl ServerCredentials {
         &self.s3_master_key
     }
 
+    #[must_use]
+    pub fn iceberg_manage_token(&self) -> &str {
+        &self.iceberg_manage_token
+    }
+
     /// # Errors
     /// Requires an existing client file to match the authoritative user and endpoints.
     pub fn verify_client(&self, client: &ClientCredentials) -> Result<(), CredentialError> {

@@ -145,6 +145,12 @@ and verifiable release assets.
   the storage services. Files:
   `container/crowdb-monitor/src/bootstrap/iceberg.rs`,
   `container/crowdb-monitor/src/main.rs`, and matching real-process tests.
+  The isolated catalog reconciler now reserves durable UUIDv7 operation IDs
+  before management calls, pins the catalog identity in the manifest, proves
+  lost responses through read-only inspection, and rejects foreign or changed
+  catalog state on restart. Mock-process replay and conflict tests pass.
+  Remaining: real-process catalog test, authenticated listener probes, and
+  monitor `run` staging after storage and S3 bootstrap.
 
 ## Phase 4 — Web authority cleanup
 

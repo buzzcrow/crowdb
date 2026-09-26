@@ -25,7 +25,7 @@ sha2 = "0.10"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["kv-client"] }

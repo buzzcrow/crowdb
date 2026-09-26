@@ -122,3 +122,23 @@ fn invalid_plan_is_rejected_before_root_mutation() {
     assert!(BootstrapSession::open(root.path(), b"profile", b"configuration", &["bad/name"]).is_err());
     assert!(fs::read_dir(root.path()).unwrap().next().is_none());
 }
+
+#[test]
+fn reserved_uuidv7_survives_interruption_before_catalog_commit() {
+    let root = TestDataRoot::new();
+    let mut session = open(&root);
+    let operation = session.reserve_operation("kv").unwrap();
+    assert_eq!(operation.get_version_num(), 7);
+    drop(session);
+
+    let mut resumed = open(&root);
+    assert_eq!(resumed.reserve_operation("kv").unwrap(), operation);
+    assert!(resumed.complete_catalog_step("kv", Uuid::nil()).is_err());
+    let catalog = Uuid::new_v4();
+    resumed.complete_catalog_step("kv", catalog).unwrap();
+    drop(resumed);
+
+    let reopened = open(&root);
+    assert_eq!(reopened.manifest().step_operation("kv"), Some(operation));
+    assert_eq!(reopened.manifest().step_catalog("kv"), Some(catalog));
+}

@@ -226,12 +226,26 @@ async fn manage(
         );
         return Ok(());
     }
+    if arguments == ["inspect"] {
+        match repository.status().await {
+            Ok((root, authority)) => println!(
+                "{}",
+                serde_json::json!({"initialized": true, "catalog_id": authority.catalog.to_string(),
+                "display_name": authority.display_name, "activation_epoch": root.context.activation_epoch,
+                "state": format!("{:?}", root.state), "capability_bits": format!("0x{:04x}", authority.capabilities.bits()),
+                "root_operation_id": root.operation.to_string()})
+            ),
+            Err(CatalogError::Uninitialized) => println!("{{\"initialized\":false}}"),
+            Err(error) => return Err(error.into()),
+        }
+        return Ok(());
+    }
     let action = match arguments.first().map(String::as_str) {
         Some("initialize") if arguments.len() == 3 => ManagementAction::Initialize,
         Some("rename") if arguments.len() == 4 => ManagementAction::Rename,
         Some("clear") if arguments.len() == 5 => ManagementAction::Clear,
         Some("activate") if arguments.len() == 5 => ManagementAction::Activate,
-        _ => return Err("usage: crowdb-iceberg initialize UUIDv7 NAME | rename UUIDv7 NAME EPOCH | clear UUIDv7 NAME EPOCH CONFIRM_CATALOG_ID | activate UUIDv7 NAME EPOCH CAPABILITY_BITS_HEX | status | serve".into()),
+        _ => return Err("usage: crowdb-iceberg initialize UUIDv7 NAME | rename UUIDv7 NAME EPOCH | clear UUIDv7 NAME EPOCH CONFIRM_CATALOG_ID | activate UUIDv7 NAME EPOCH CAPABILITY_BITS_HEX | status | inspect | serve".into()),
     };
     let request = ManagementRequest {
         identity: RequestIdentity::parse(&arguments[1], now_ms()?)?,
