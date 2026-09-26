@@ -71,7 +71,8 @@ and verifiable release assets.
   `log/monitor/`; retain bounded rotation, redact by using fixed event fields,
   and mirror warning-class transitions to stderr. Event storage and child
   start/stop plus supervisor readiness, probe failure, restart, drain, and
-  exhaustion logging are implemented; connect bootstrap-step events. Files:
+  exhaustion logging are implemented. KV bootstrap step start/completion/failure
+  events are connected; remaining bootstrap domains need the same wiring. Files:
   `container/crowdb-monitor/src/monitor_log.rs`,
   `container/crowdb-monitor/tests/monitor_log_test.rs`.
 - [~] **Monitor commands**: expose `run`, `liveness`, `readiness`, and credentials
@@ -92,8 +93,8 @@ and verifiable release assets.
   `container/crowdb-monitor/tests/kv_bootstrap_test.rs`. The existing management
   API contract is used for Group 0/1, with exact identity/readiness checks,
   response-loss proof before replay, and validation-only Ready restart. Mock
-  HTTP tests pass; process staging, real KV integration, and monitor event
-  wiring remain.
+  HTTP tests pass and monitor events are verified; process staging and real KV
+  integration remain.
 - [ ] **Four-disk storage bootstrap**: create sparse files without truncating
   existing bytes; write rack/node/disk-group/four-disk authority to Group 0;
   render and start DiskDB and DiskIO; validate all stable disk IDs, one-zone 16

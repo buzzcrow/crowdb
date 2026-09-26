@@ -6,7 +6,10 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::time::{sleep, Instant};
 
-use crate::{BootstrapSession, DeploymentProfile, GroupProfile, GroupRole, ManifestError};
+use crate::{
+    BootstrapSession, DeploymentProfile, GroupProfile, GroupRole, ManifestError, MonitorEvent,
+    MonitorEventKind, MonitorLog, MonitorLogError,
+};
 
 const READY_DEADLINE: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -17,6 +20,8 @@ pub enum KvBootstrapError {
     Http(#[from] reqwest::Error),
     #[error("bootstrap manifest failed: {0}")]
     Manifest(#[from] ManifestError),
+    #[error("monitor lifecycle log failed: {0}")]
+    MonitorLog(#[from] MonitorLogError),
     #[error("KV bootstrap state is invalid: {0}")]
     Invalid(&'static str),
 }
@@ -59,6 +64,27 @@ impl KvBootstrap {
         &self,
         session: &mut BootstrapSession,
         profile: &DeploymentProfile,
+        events: &mut MonitorLog,
+    ) -> Result<(), KvBootstrapError> {
+        let result = self.reconcile_inner(session, profile, events).await;
+        if result.is_err() {
+            events
+                .record(&MonitorEvent {
+                    kind: MonitorEventKind::BootstrapFailed,
+                    service: session.manifest().next_step().or(Some("kv")),
+                    pid: None,
+                    attempt: None,
+                })
+                .await?;
+        }
+        result
+    }
+
+    async fn reconcile_inner(
+        &self,
+        session: &mut BootstrapSession,
+        profile: &DeploymentProfile,
+        events: &mut MonitorLog,
     ) -> Result<(), KvBootstrapError> {
         let ordered = ordered_groups(profile)?;
         self.reject_unknown_stores().await?;
@@ -76,6 +102,16 @@ impl KvBootstrap {
                 .manifest()
                 .step_complete(&name)
                 .ok_or(KvBootstrapError::Invalid("KV step is absent from manifest"))?;
+            if !complete {
+                events
+                    .record(&MonitorEvent {
+                        kind: MonitorEventKind::BootstrapStepStarted,
+                        service: Some(&name),
+                        pid: None,
+                        attempt: None,
+                    })
+                    .await?;
+            }
             if let Some(existing) = self
                 .list_groups()
                 .await?
@@ -86,6 +122,7 @@ impl KvBootstrap {
                 self.wait_ready(group).await?;
                 if !complete {
                     session.complete_step(&name)?;
+                    record_step_completed(events, &name).await?;
                 }
                 continue;
             }
@@ -97,6 +134,7 @@ impl KvBootstrap {
             verify_group(&existing, group)?;
             self.wait_ready(group).await?;
             session.complete_step(&name)?;
+            record_step_completed(events, &name).await?;
         }
         Ok(())
     }
@@ -205,6 +243,17 @@ impl KvBootstrap {
             .join(path)
             .expect("validated origin accepts relative paths")
     }
+}
+
+async fn record_step_completed(events: &mut MonitorLog, name: &str) -> Result<(), MonitorLogError> {
+    events
+        .record(&MonitorEvent {
+            kind: MonitorEventKind::BootstrapStepCompleted,
+            service: Some(name),
+            pid: None,
+            attempt: None,
+        })
+        .await
 }
 
 /// # Errors

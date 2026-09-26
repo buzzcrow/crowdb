@@ -80,6 +80,10 @@ impl Supervisor {
         &self.status
     }
 
+    pub fn monitor_log_mut(&mut self) -> &mut crate::MonitorLog {
+        self.processes.monitor_log_mut()
+    }
+
     /// # Errors
     /// Starts one service only after its dependencies are healthy and waits for its probe.
     pub async fn start_service(

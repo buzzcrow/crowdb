@@ -226,4 +226,8 @@ impl ProcessManager {
         self.events.record(event).await?;
         Ok(())
     }
+
+    pub fn monitor_log_mut(&mut self) -> &mut MonitorLog {
+        &mut self.events
+    }
 }

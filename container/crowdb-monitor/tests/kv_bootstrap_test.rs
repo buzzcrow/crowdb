@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crowdb_monitor::{kv_step_names, BootstrapSession, DeploymentProfile, KvBootstrap};
+use crowdb_monitor::{kv_step_names, BootstrapSession, DeploymentProfile, KvBootstrap, MonitorLog};
 use crowdb_protocol::mgmt::GroupSummary;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -44,6 +44,12 @@ fn session(root: &TestDataRoot, profile: &DeploymentProfile) -> BootstrapSession
     let names = kv_step_names(profile).unwrap();
     let steps = names.iter().map(String::as_str).collect::<Vec<_>>();
     BootstrapSession::open(root.path(), b"profile", b"config", &steps).unwrap()
+}
+
+async fn monitor_log(root: &TestDataRoot, profile: &DeploymentProfile) -> MonitorLog {
+    let log_root = root.path().join("log");
+    fs::create_dir_all(&log_root).unwrap();
+    MonitorLog::open(&log_root, profile.logs.clone()).await.unwrap()
 }
 
 #[derive(Default)]
@@ -179,14 +185,32 @@ async fn creates_once_then_ready_restart_only_validates() {
     let server = MockKvServer::start(MockState::default()).await;
     let bootstrap = KvBootstrap::new(&server.base_url).unwrap();
     let mut initial = session(&root, &profile);
-    bootstrap.reconcile(&mut initial, &profile).await.unwrap();
+    let mut events = monitor_log(&root, &profile).await;
+    bootstrap
+        .reconcile(&mut initial, &profile, &mut events)
+        .await
+        .unwrap();
     assert_eq!(initial.manifest().next_step(), None);
     initial.mark_ready().unwrap();
     drop(initial);
     let mut ready = session(&root, &profile);
-    bootstrap.reconcile(&mut ready, &profile).await.unwrap();
+    bootstrap
+        .reconcile(&mut ready, &profile, &mut events)
+        .await
+        .unwrap();
     let state = server.finish().await;
     assert_eq!((state.system_posts, state.data_posts), (1, 1));
+    let body = fs::read_to_string(root.path().join("log/monitor/monitor.log")).unwrap();
+    let entries = body
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0]["kind"], "bootstrap_step_started");
+    assert_eq!(entries[0]["service"], "kv-group-0-0");
+    assert_eq!(entries[1]["kind"], "bootstrap_step_completed");
+    assert_eq!(entries[2]["service"], "kv-group-0-1");
+    assert_eq!(entries[3]["kind"], "bootstrap_step_completed");
 }
 
 #[tokio::test]
@@ -200,7 +224,11 @@ async fn lost_create_response_is_proven_without_replaying_post() {
     .await;
     let bootstrap = KvBootstrap::new(&server.base_url).unwrap();
     let mut session = session(&root, &profile);
-    bootstrap.reconcile(&mut session, &profile).await.unwrap();
+    let mut events = monitor_log(&root, &profile).await;
+    bootstrap
+        .reconcile(&mut session, &profile, &mut events)
+        .await
+        .unwrap();
     let state = server.finish().await;
     assert_eq!((state.system_posts, state.data_posts), (1, 1));
 }
@@ -221,8 +249,19 @@ async fn conflicting_existing_group_fails_without_mutation() {
     .await;
     let bootstrap = KvBootstrap::new(&server.base_url).unwrap();
     let mut session = session(&root, &profile);
-    assert!(bootstrap.reconcile(&mut session, &profile).await.is_err());
+    let mut events = monitor_log(&root, &profile).await;
+    assert!(bootstrap
+        .reconcile(&mut session, &profile, &mut events)
+        .await
+        .is_err());
     assert_eq!(session.manifest().next_step(), Some("kv-group-0-0"));
     let state = server.finish().await;
     assert_eq!((state.system_posts, state.data_posts), (0, 0));
+    let body = fs::read_to_string(root.path().join("log/monitor/monitor.log")).unwrap();
+    let entries = body
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.last().unwrap()["kind"], "bootstrap_failed");
+    assert_eq!(entries.last().unwrap()["service"], "kv-group-0-0");
 }
