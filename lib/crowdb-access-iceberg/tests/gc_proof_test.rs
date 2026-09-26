@@ -7,7 +7,7 @@ use crowdb_access_iceberg::{
     key::{CatalogScope, FileId, IcebergKey, OperationId, SystemScope},
     operation::mutation_identity,
     record::StorageRecord,
-    table::head_key,
+    table::{head_key, TableLifecycle, TablePurgeTask},
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -178,6 +178,61 @@ async fn finish(store: Arc<common::TestStore>, mut task: GcTask) -> GcTask {
         }
     }
     panic!("proof failed to finish")
+}
+
+#[tokio::test]
+async fn purge_marker_admission_is_idempotent_and_head_bound() {
+    let (store, task, _) = fixture(3, 0).await;
+    let mut tombstone = task.head.unwrap();
+    let original = StorageRecord::TableHead(Box::new(tombstone.clone()))
+        .encode()
+        .unwrap();
+    tombstone.lifecycle = TableLifecycle::Tombstone;
+    tombstone.operation_fence += 1;
+    tombstone.pending_operation = Some(OperationId::random());
+    let key = head_key(tombstone.catalog, tombstone.table).encode().unwrap();
+    let updated = StorageRecord::TableHead(Box::new(tombstone.clone()))
+        .encode()
+        .unwrap();
+    store
+        .compare_exchange(
+            &key,
+            Some(&original),
+            &updated,
+            mutation_identity(&key, Some(&original), &updated),
+        )
+        .await
+        .unwrap();
+    let marker = TablePurgeTask {
+        activation_epoch: task.context.activation_epoch,
+        head: tombstone,
+    };
+    put(
+        &store,
+        marker.key(),
+        StorageRecord::TablePurgeTask(Box::new(marker.clone())),
+    )
+    .await;
+    let repository = GcRepository::new(store.clone());
+    let limits = GcLimits::default();
+    let admitted = repository
+        .admit_purge(task.context, &marker, 100, limits)
+        .await
+        .unwrap();
+    assert_eq!(admitted.kind, crowdb_access_iceberg::gc::GcTaskKind::PurgeTable);
+    assert_eq!(
+        repository
+            .admit_purge(task.context, &marker, 200, limits)
+            .await
+            .unwrap(),
+        admitted
+    );
+    let mut changed = marker.clone();
+    changed.head.operation_fence += 1;
+    assert!(repository
+        .admit_purge(task.context, &changed, 300, limits)
+        .await
+        .is_err());
 }
 
 #[tokio::test]

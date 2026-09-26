@@ -1,5 +1,6 @@
 //! Durable, bounded reclamation after reachability and retention proof.
 
+mod admission;
 mod candidate;
 mod claim;
 mod discovery;

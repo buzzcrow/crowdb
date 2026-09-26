@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogRepository, RootState, RoutedCatalogStore},
+    catalog::{CatalogContext, CatalogRepository, RootState, RoutedCatalogStore},
     file::FileBlockStore,
     gc::{GcLimits, GcPhase, GcRepository, GcScan, GcStore, GcWorker},
     key::{CatalogId, CatalogScope, IcebergKey},
@@ -10,6 +10,12 @@ use crowdb_access_iceberg::{
 use crowdb_chunk_client::ChunkIoClient;
 
 pub(super) mod budget;
+
+#[derive(Clone, Default)]
+struct ScanPosition {
+    task: Vec<u8>,
+    purge: Vec<u8>,
+}
 
 pub(super) struct GcRuntimeConfig {
     pub limits: GcLimits,
@@ -134,7 +140,7 @@ pub(super) async fn run(
     };
     let mut interval = tokio::time::interval(Duration::from_millis(config.interval_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut cursors = Vec::<(CatalogId, Vec<u8>)>::new();
+    let mut cursors = Vec::<(CatalogId, ScanPosition)>::new();
     let mut index = 0_usize;
     loop {
         interval.tick().await;
@@ -157,15 +163,18 @@ pub(super) async fn run(
         let selected = catalogs[index % catalogs.len()];
         index = index.wrapping_add(1);
         let cursor = cursors.iter_mut().find(|(catalog, _)| *catalog == selected);
-        let after = cursor.as_ref().map_or_else(Vec::new, |(_, after)| after.clone());
+        let after = cursor
+            .as_ref()
+            .map_or_else(ScanPosition::default, |(_, after)| after.clone());
         let result = tokio::time::timeout(
             Duration::from_millis(u64::from(config.limits.step_ms) * 2 + 1000),
             scan_and_advance(
-                metered_store.as_ref(),
+                metered_store.clone(),
                 &worker,
                 budget.as_ref(),
                 selected,
                 after,
+                (selected == root.context.catalog).then_some(root.context),
                 config.limits,
             ),
         )
@@ -189,19 +198,25 @@ pub(super) async fn run(
 }
 
 async fn scan_and_advance(
-    store: &budget::BudgetedGcStore,
+    store: Arc<budget::BudgetedGcStore>,
     worker: &GcWorker,
     budget: &budget::GcIoBudget,
     catalog: CatalogId,
-    after: Vec<u8>,
+    after: ScanPosition,
+    active: Option<CatalogContext>,
     limits: GcLimits,
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ScanPosition, Box<dyn std::error::Error + Send + Sync>> {
     budget.reset();
+    let next_purge = if let Some(context) = active {
+        scan_purge(store.clone(), context, after.purge, limits).await?
+    } else {
+        Vec::new()
+    };
     let scan = GcScan {
         catalog,
         scope: Some(CatalogScope::GcTask),
         prefix: Vec::new(),
-        after,
+        after: after.task,
         items: usize::from(limits.page_items),
         bytes: limits.page_bytes as usize,
     };
@@ -229,5 +244,37 @@ async fn scan_and_advance(
             }
         }
     }
-    Ok(next)
+    Ok(ScanPosition {
+        task: next,
+        purge: next_purge,
+    })
+}
+
+async fn scan_purge(
+    store: Arc<budget::BudgetedGcStore>,
+    context: CatalogContext,
+    after: Vec<u8>,
+    limits: GcLimits,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let scan = GcScan {
+        catalog: context.catalog,
+        scope: Some(CatalogScope::Reclamation),
+        prefix: Vec::new(),
+        after,
+        items: 1,
+        bytes: limits.page_bytes as usize,
+    };
+    let page = store.scan_gc(scan.clone()).await?;
+    scan.validate_page(&page)?;
+    let Some(item) = page.items.first() else {
+        return Ok(Vec::new());
+    };
+    let key = IcebergKey::decode(&item.key)?;
+    let StorageRecord::TablePurgeTask(marker) = StorageRecord::decode(&key, &item.value)? else {
+        return Err("purge scan encountered a non-purge record".into());
+    };
+    GcRepository::new(store)
+        .admit_purge(context, &marker, super::runtime::now_ms()?, limits)
+        .await?;
+    Ok(item.key.clone())
 }

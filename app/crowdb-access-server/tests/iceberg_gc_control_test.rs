@@ -14,7 +14,7 @@ use crowdb_access_iceberg::{
     key::{FileId, NamespaceId, OperationId, TableId},
     operation::{mutation_identity, ManagementAction, ManagementRequest, RequestIdentity},
     record::StorageRecord,
-    table::{head_key, TableHead, TableLifecycle},
+    table::{head_key, TableHead, TableLifecycle, TablePurgeTask},
 };
 use std::sync::Arc;
 
@@ -201,6 +201,62 @@ async fn authenticated_gc_controls_survive_separate_processes() {
         .unwrap()
         .unwrap();
     assert!(persisted.revision >= progress.revision);
+    drop(restarted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn enabled_scheduler_admits_durable_purge_markers_once() {
+    let stack = common::TestIcebergStack::start().await;
+    let (store, context, table) = seed_table(&stack).await;
+    let key = head_key(context.catalog, table);
+    let before = store.get(&key.encode().unwrap()).await.unwrap().unwrap();
+    let StorageRecord::TableHead(mut head) = StorageRecord::decode(&key, &before.bytes).unwrap() else {
+        panic!("table head");
+    };
+    head.lifecycle = TableLifecycle::Tombstone;
+    head.operation_fence += 1;
+    head.pending_operation = Some(OperationId::random());
+    let after = StorageRecord::TableHead(head.clone()).encode().unwrap();
+    let encoded = key.encode().unwrap();
+    store
+        .compare_exchange(
+            &encoded,
+            Some(&before.bytes),
+            &after,
+            mutation_identity(&encoded, Some(&before.bytes), &after),
+        )
+        .await
+        .unwrap();
+    let marker = TablePurgeTask {
+        activation_epoch: context.activation_epoch,
+        head: *head,
+    };
+    let encoded = marker.key().encode().unwrap();
+    let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();
+    store
+        .compare_exchange(&encoded, None, &bytes, mutation_identity(&encoded, None, &bytes))
+        .await
+        .unwrap();
+    let server = process::TestIcebergProcess::start_with_gc(&stack.cluster.mgmt_endpoints, true).await;
+    let repository = GcRepository::new(store);
+    let identity = OperationId::from_bytes(table.as_bytes()).unwrap();
+    let task = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(task) = repository.task(context.catalog, identity).await.unwrap() {
+                break task;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(task.kind, crowdb_access_iceberg::gc::GcTaskKind::PurgeTable);
+    assert_eq!(task.head.as_ref().unwrap().table, table);
+    drop(server);
+    let restarted = process::TestIcebergProcess::start_with_gc(&stack.cluster.mgmt_endpoints, true).await;
+    let resumed = repository.task(context.catalog, identity).await.unwrap().unwrap();
+    assert_eq!(resumed.created_ms, task.created_ms);
+    assert_eq!(resumed.head, task.head);
     drop(restarted);
 }
 

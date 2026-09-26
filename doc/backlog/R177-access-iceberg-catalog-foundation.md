@@ -439,3 +439,15 @@ R183–R184 remain open; this does not imply engine/GC conformance.
   deletion. Candidate seals survive crash/restart and are released without
   deleting bytes when the second check discovers protection. Keep automatic
   scheduling disabled until this race protocol and foreground acceptance pass.
+- **OI-9 — Live GC read availability during a concurrent commit (confirmed):** a
+  candidate that was unreachable in the first proof may become reachable in a
+  commit whose validation preceded the seal. Sealing must reject new reads to
+  prevent a late request pin from racing the second protection scan, but that
+  also makes the newly reachable file temporarily unreadable until the second
+  proof unseals it. On a large table this interval is not necessarily short.
+  The user requires uninterrupted reads, so candidate-only sealing is not an
+  acceptable live-worker protocol. Introduce a stronger per-file admission and
+  publication handshake that lets reachable files remain readable while still
+  excluding new unprotected readers before physical deletion. No live seal
+  transitions or automatic live scheduling are enabled until that protocol and
+  its races pass acceptance.
