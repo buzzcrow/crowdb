@@ -86,12 +86,14 @@ name generation and admission bounds, advances config generation, and may only
 add support. A resumed operation replays its original profile and audit result.
 Clear creates a new zero-profile catalog that requires separate activation.
 
-The baseline has no root lease. Each HTTP connection
-has an absolute lifetime starting at acceptance and covering header parsing,
-request execution and response transmission, including streamed file bodies and
-multipart completion heartbeats. Network progress cannot extend this lifetime.
-REST and FileIO admission reject listener lifetimes exceeding the persisted catalog
-request bound. Newly initialized runtime catalogs use a five-minute request bound;
+The baseline has no root lease. Each HTTP connection closes after five minutes
+without network progress; active streamed file bodies and multipart completion
+heartbeats extend the idle deadline. Request dispatch has a separate deadline
+starting at connection acceptance; incomplete request headers close at that
+deadline, while an active response remains governed by network idleness. REST
+and FileIO admission reject configured request timeouts exceeding the persisted
+catalog request bound. Newly initialized runtime catalogs use a five-minute
+request bound;
 new catalogs also persist a fifteen-minute delegated-access bound. Restart never
 increases persisted bounds. Explicit catalog clear may expand them componentwise
 under the maintenance fence and waits the resulting full grace before admission;
@@ -186,13 +188,12 @@ bind the catalog activation, stable parent identity, spelling, page size and las
 scanned key. A stale-only page can therefore be empty while retaining a token.
 Unpaginated lists build a complete in-memory spool before success headers, capped
 independently at 2 MiB, 1024 results, 4096 scanned mappings and four concurrent
-spools. Atomic admission rejects excess work without waiting. The connection's
-absolute lifetime bounds construction and sending. Dispatch stops before that
-deadline, reserving the smaller of 100 ms or 10% of the lifetime for emitting a
-bounded error response. Header receipt does not restart this budget. This keeps
-deadline exhaustion before success headers on the 503 path rather than racing
-connection teardown; a stalled transport still closes at the unchanged hard
-deadline. Cancellation drops the spool permit. Completed
+spools. Atomic admission rejects excess work without waiting. The request
+deadline bounds construction before success headers. Dispatch stops before that
+deadline, reserving the smaller of 100 ms or 10% of the request timeout for
+emitting a bounded error response. Header receipt does not restart this budget.
+A stalled transport closes after the independent idle timeout. Cancellation
+drops the spool permit. Completed
 responses stream in 16-KiB frames. Absent page tokens request complete results;
 empty page tokens begin paginated mode. Tokens use a domain-separated signing key
 derived from the configured credentials so equally configured listeners interoperate.

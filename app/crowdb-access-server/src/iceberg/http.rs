@@ -329,11 +329,16 @@ pub async fn serve(
                 let (stream, peer) = match accepted { Ok(value) => value, Err(error) => { failure = Some(error); break; } };
                 let service = Arc::clone(&service);
                 connections.spawn(async move {
-                    let lifetime = service.request_timeout;
+                    let request_timeout = service.request_timeout;
                     let activity = ConnectionActivity::new();
-                    let deadline = activity.dispatch_deadline(lifetime);
+                    let deadline = activity.dispatch_deadline(request_timeout);
                     let stream = ActiveIo::new(stream, activity.clone());
-                    let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { Box::pin(service.handle(request, deadline)).await } });
+                    let request_activity = activity.clone();
+                    let handler = service_fn(move |request| {
+                        request_activity.mark_request_started();
+                        let service = Arc::clone(&service);
+                        async move { Box::pin(service.handle(request, deadline)).await }
+                    });
                     let connection = http1::Builder::new().keep_alive(false).max_buf_size(64 * 1024)
                         .serve_connection(TokioIo::new(stream), handler);
                     tokio::select! {
@@ -342,8 +347,11 @@ pub async fn serve(
                                 tracing::debug!(%peer, %error, "Iceberg HTTP connection failed");
                             }
                         }
-                        () = activity.expired(Duration::from_secs(300), lifetime) => {
-                            tracing::debug!(%peer, "Iceberg HTTP connection lifetime or idle deadline exhausted");
+                        () = activity.expired(Duration::from_secs(300)) => {
+                            tracing::debug!(%peer, "Iceberg HTTP connection idle deadline exhausted");
+                        }
+                        () = activity.header_expired(deadline) => {
+                            tracing::debug!(%peer, "Iceberg HTTP request header deadline exhausted");
                         }
                     }
                 });

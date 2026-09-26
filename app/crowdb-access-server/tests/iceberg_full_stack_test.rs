@@ -81,6 +81,7 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     let repository = Arc::new(CatalogRepository::new(stack.store().await, bounds).unwrap());
     let initialize = request(ManagementAction::Initialize, "original", None);
     let original = execute(&repository, initialize.clone()).await;
+    common::activate(&repository).await;
     let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     frontend.check_official_reads();
@@ -128,6 +129,7 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     assert_eq!(execute(&repository, clear).await, replacement);
     assert_eq!(execute(&repository, initialize).await, original);
     assert_eq!(repository.status().await.unwrap().0.context.activation_epoch, 3);
+    common::activate(&repository).await;
     verify_retry_scan(&stack, &repository).await;
     drop(frontend);
     drop(second_frontend);
@@ -141,6 +143,7 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     drop(second_frontend);
     journal::verify_recovery(&mut stack, repository.status().await.unwrap().0.context).await;
     verify_interrupted_clear(&stack, &repository).await;
+    common::activate(&repository).await;
     let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     frontend.check_official_reads();

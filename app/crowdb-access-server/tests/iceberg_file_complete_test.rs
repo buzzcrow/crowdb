@@ -119,10 +119,9 @@ async fn disconnect_drops_pending_completion_without_detached_work() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn connection_activity_extends_idle_deadline_within_absolute_lifetime() {
+async fn connection_activity_extends_idle_deadline() {
     let (stream, mut peer) = tokio::io::duplex(64);
-    let (mut stream, expired) =
-        active_io_for_tests(stream, Duration::from_secs(30), Duration::from_secs(300));
+    let (mut stream, expired) = active_io_for_tests(stream, Duration::from_secs(30));
     tokio::pin!(expired);
     for _ in 0..4 {
         tokio::select! {
@@ -140,12 +139,12 @@ async fn connection_activity_extends_idle_deadline_within_absolute_lifetime() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn active_response_transmission_cannot_extend_absolute_lifetime() {
+async fn active_response_transmission_survives_prior_absolute_lifetime() {
     let (stream, mut peer) = tokio::io::duplex(64);
-    let (mut stream, expired) = active_io_for_tests(stream, Duration::from_secs(30), Duration::from_secs(65));
+    let (mut stream, expired) = active_io_for_tests(stream, Duration::from_secs(30));
     tokio::pin!(expired);
     let start = tokio::time::Instant::now();
-    for _ in 0..3 {
+    for _ in 0..4 {
         tokio::select! {
             () = &mut expired => panic!("connection expired before its deadline"),
             () = tokio::time::sleep(Duration::from_secs(20)) => {}
@@ -153,6 +152,7 @@ async fn active_response_transmission_cannot_extend_absolute_lifetime() {
         stream.write_all(b" ").await.unwrap();
         assert_eq!(peer.read_u8().await.unwrap(), b' ');
     }
+    assert_eq!(start.elapsed(), Duration::from_secs(80));
     expired.await;
-    assert_eq!(start.elapsed(), Duration::from_secs(65));
+    assert_eq!(start.elapsed(), Duration::from_secs(110));
 }

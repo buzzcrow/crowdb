@@ -1,7 +1,7 @@
 use std::io;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::task::{Context, Poll};
@@ -13,6 +13,7 @@ use tokio::time::Instant;
 pub(super) struct ConnectionActivity {
     start: Instant,
     latest_ms: AtomicU64,
+    request_started: AtomicBool,
 }
 
 impl ConnectionActivity {
@@ -20,6 +21,7 @@ impl ConnectionActivity {
         Arc::new(Self {
             start: Instant::now(),
             latest_ms: AtomicU64::new(0),
+            request_started: AtomicBool::new(false),
         })
     }
 
@@ -28,17 +30,27 @@ impl ConnectionActivity {
         self.latest_ms.fetch_max(elapsed, Ordering::Relaxed);
     }
 
-    pub(super) fn dispatch_deadline(&self, lifetime: Duration) -> Instant {
-        self.start + lifetime - (lifetime / 10).min(Duration::from_millis(100))
+    pub(super) fn dispatch_deadline(&self, request_timeout: Duration) -> Instant {
+        self.start + request_timeout - (request_timeout / 10).min(Duration::from_millis(100))
     }
 
-    pub(super) async fn expired(&self, idle: Duration, lifetime: Duration) {
-        let deadline = self.start + lifetime;
+    pub(super) fn mark_request_started(&self) {
+        self.request_started.store(true, Ordering::Release);
+    }
+
+    pub(super) async fn header_expired(&self, deadline: Instant) {
+        tokio::time::sleep_until(deadline).await;
+        if self.request_started.load(Ordering::Acquire) {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    pub(super) async fn expired(&self, idle: Duration) {
         loop {
             let latest = self.latest_ms.load(Ordering::Relaxed);
             let idle_deadline = self.start + Duration::from_millis(latest) + idle;
-            tokio::time::sleep_until(idle_deadline.min(deadline)).await;
-            if Instant::now() >= deadline || self.latest_ms.load(Ordering::Relaxed) == latest {
+            tokio::time::sleep_until(idle_deadline).await;
+            if self.latest_ms.load(Ordering::Relaxed) == latest {
                 return;
             }
         }
@@ -95,12 +107,11 @@ impl<Stream: AsyncWrite + Unpin> AsyncWrite for ActiveIo<Stream> {
 pub fn active_io_for_tests<Stream: AsyncRead + AsyncWrite + Unpin>(
     stream: Stream,
     idle: Duration,
-    lifetime: Duration,
 ) -> (
     impl AsyncRead + AsyncWrite + Unpin,
     impl std::future::Future<Output = ()>,
 ) {
     let activity = ConnectionActivity::new();
     let tracked = ActiveIo::new(stream, activity.clone());
-    (tracked, async move { activity.expired(idle, lifetime).await })
+    (tracked, async move { activity.expired(idle).await })
 }
