@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use crowdb_monitor::{show_client_credentials, DeploymentProfile, StatusStore};
+use crowdb_monitor::{run_preview, show_client_credentials, DeploymentProfile, StatusStore};
 
 #[derive(Debug, Parser)]
 #[command(name = "crowdb-monitor")]
@@ -16,6 +16,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Run {
+        #[arg(long, default_value = "/opt/crowdb/etc/profile.toml")]
+        profile: PathBuf,
+    },
     Validate {
         profile: PathBuf,
     },
@@ -48,9 +52,11 @@ enum CredentialFormat {
     Env,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Run { profile } => run_preview(&profile).await?,
         Command::Validate { profile } => {
             let profile = DeploymentProfile::load(profile)?;
             println!("{}", profile.name);

@@ -83,8 +83,11 @@ and verifiable release assets.
   subcommands with bounded local operation and stable exit codes for Docker
   health checks. Files: `container/crowdb-monitor/src/{main,command}.rs`,
   `container/crowdb-monitor/tests/command_test.rs`. `validate`, `credentials
-  show`, `liveness`, and `readiness` are implemented; `run` awaits supervisor
-  and bootstrap wiring.
+  show`, `liveness`, and `readiness` are implemented. `run` now stages KV,
+  disks, hardware, DiskDB/DiskIO, chunk services, S3 credentials, Iceberg
+  catalog, S3/Iceberg listeners, then Web; failed startup drains children and
+  cannot mark readiness. The preflight rejects template digest drift and
+  foreign nonempty roots. Full-process/container acceptance still remains.
 
 ## Phase 3 — Single-node runtime bootstrap
 
@@ -137,7 +140,7 @@ and verifiable release assets.
   `container/crowdb-monitor/src/bootstrap/s3.rs`,
   `container/crowdb-monitor/tests/access_bootstrap_test.rs`. Verified by two
   focused monitor tests and the 17-case real S3 full-stack suite.
-- [ ] **Iceberg catalog and access listeners**: initialize/activate the
+- [~] **Iceberg catalog and access listeners**: initialize/activate the
   catalog with durable UUIDv7 request identities, start authenticated S3 and
   Iceberg listeners on container ports 16000/80, default client-visible
   Iceberg URI to host port 80, and validate discovery/health without
@@ -152,8 +155,8 @@ and verifiable release assets.
   The profile now references the Iceberg read token for authenticated
   `/v1/config` probes; the supervisor passes it from runtime-only environment
   during start, periodic health, and restart. Focused probe and restart tests
-  pass. Remaining: real-process catalog test and monitor `run` staging after
-  storage and S3 bootstrap.
+  pass. Monitor `run` stages catalog and access listeners after storage and S3
+  bootstrap. Remaining: real-process catalog and listener tests.
 
 ## Phase 4 — Web authority cleanup
 

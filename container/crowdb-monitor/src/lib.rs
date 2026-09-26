@@ -6,6 +6,7 @@ mod credentials;
 mod layout;
 mod manifest;
 mod monitor_log;
+mod preview;
 mod probe;
 mod process;
 mod profile;
@@ -22,6 +23,7 @@ pub use bootstrap::{
 pub use credentials::{show_client_credentials, ClientCredentials, CredentialError, ServerCredentials};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};
+pub use preview::{run_preview, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};
 pub use process::{ProcessError, ProcessManager};
 pub use profile::{

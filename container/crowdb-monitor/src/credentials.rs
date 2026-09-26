@@ -31,6 +31,18 @@ pub struct ServerCredentials {
 
 impl ServerCredentials {
     /// # Errors
+    /// Rejects missing or incompatible credentials without creating new secrets.
+    pub fn load_existing(data_root: &Path) -> Result<Self, CredentialError> {
+        let directory = data_root.join("secrets");
+        let metadata = fs::symlink_metadata(&directory)?;
+        if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
+            return Err(CredentialError::Invalid("secrets directory must have mode 0700"));
+        }
+        let body = read_private(&directory.join(SERVER_FILE))?;
+        Self::parse(directory, &body)
+    }
+
+    /// # Errors
     /// Rejects missing or incompatible secret state without replacing it.
     pub fn load_or_create(data_root: &Path) -> Result<Self, CredentialError> {
         let directory = data_root.join("secrets");
