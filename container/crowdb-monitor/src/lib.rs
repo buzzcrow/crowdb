@@ -13,7 +13,9 @@ mod render;
 mod status;
 mod supervisor;
 
-pub use bootstrap::{kv_step_names, KvBootstrap, KvBootstrapError};
+pub use bootstrap::{
+    disk_step_names, ensure_disk_files, kv_step_names, DiskBootstrapError, KvBootstrap, KvBootstrapError,
+};
 pub use credentials::{show_client_credentials, ClientCredentials, CredentialError, ServerCredentials};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};

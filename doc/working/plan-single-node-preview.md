@@ -95,13 +95,16 @@ and verifiable release assets.
   response-loss proof before replay, and validation-only Ready restart. Mock
   HTTP tests pass and monitor events are verified; process staging and real KV
   integration remain.
-- [ ] **Four-disk storage bootstrap**: create sparse files without truncating
+- [~] **Four-disk storage bootstrap**: create sparse files without truncating
   existing bytes; write rack/node/disk-group/four-disk authority to Group 0;
   render and start DiskDB and DiskIO; validate all stable disk IDs, one-zone 16
   GiB capacities, registration, and direct per-disk readiness. Files:
   `container/crowdb-monitor/src/bootstrap/{hardware,storage}.rs`,
   `container/single-node-preview/templates/{diskdb,diskio}.toml`,
-  `container/crowdb-monitor/tests/storage_bootstrap_test.rs`.
+  `container/crowdb-monitor/tests/storage_bootstrap_test.rs`. Sparse-file
+  provisioning, restart validation, missing/changed disk rejection, and step
+  logging are implemented in `bootstrap/disk_files.rs`; Group 0 hardware
+  authority, DiskDB/DiskIO staging, and direct readiness remain.
 - [ ] **Chunk services bootstrap**: render/start ChunkDB in explicit
   `unsafe_colocated` mode and Chunk-KV with metadata Group 1; establish service
   registry/catalog authority and readiness without enabling split or claiming
