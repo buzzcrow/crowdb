@@ -33,6 +33,14 @@ impl GcRepository {
         {
             return Err(ValidationError::IdentityMismatch.into());
         }
+        if let Some(key) = selected.assembly_claim_key() {
+            self.change(
+                &key,
+                None,
+                &StorageRecord::GcCandidate(Box::new(selected.clone())),
+            )
+            .await?;
+        }
         let key = selected.key();
         if let Some(value) = self.store.get(&key.encode()?).await? {
             let StorageRecord::GcCandidate(current) = StorageRecord::decode(&key, &value.bytes)? else {

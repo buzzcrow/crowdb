@@ -54,20 +54,53 @@ impl GcWorker {
         tracing::error!(catalog = %task.context.catalog, task = %task.identity,
             error = %error, reason = ?reason, "reclamation step failed; retaining intent and deferring retry");
         let persist = async {
-            let current = self
-                .repository
-                .task(task.context.catalog, task.identity)
-                .await?
-                .ok_or(CatalogError::Conflict)?;
-            if current != *task {
-                return Ok(current);
+            match self.record_failure(task, reason, now_ms).await {
+                Ok(current) => Ok(current),
+                Err(error) => {
+                    let observed = self.repository.task(task.context.catalog, task.identity).await?;
+                    match observed {
+                        Some(current) if current.revision > task.revision => Ok(current),
+                        _ => Err(error),
+                    }
+                }
             }
-            self.repository.defer(task, reason, now_ms, self.limits).await
         };
         tokio::time::timeout(timeout, persist)
             .await
             .map_err(|_| GcWorkError::Timeout)?
             .map_err(GcWorkError::from)
+    }
+
+    async fn record_failure(
+        &self,
+        task: &GcTask,
+        reason: GcStalledReason,
+        now_ms: u64,
+    ) -> Result<GcTask, CatalogError> {
+        let current = self
+            .repository
+            .task(task.context.catalog, task.identity)
+            .await?
+            .ok_or(CatalogError::Conflict)?;
+        if current != *task {
+            return Ok(current);
+        }
+        if reason == GcStalledReason::ChangedAuthority {
+            if let Some(cancelled) = self.abandon_changed_live(&current).await? {
+                return Ok(cancelled);
+            }
+        }
+        if current.phase == super::GcPhase::VerifyCleanup {
+            if let Some(owner) = self.repository.retirement(task.context.catalog).await? {
+                if owner.identity == current.identity
+                    && current.revision.checked_add(1) == Some(owner.revision)
+                {
+                    self.repository.update(&current, &owner).await?;
+                    return Ok(owner);
+                }
+            }
+        }
+        self.repository.defer(task, reason, now_ms, self.limits).await
     }
 }
 

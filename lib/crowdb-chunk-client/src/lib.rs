@@ -59,7 +59,9 @@ pub use negative_list::FailedDiskList;
 pub use reclamation::{reclaim_location, ReclaimOutcome};
 pub use traits::ChunkAllocator;
 pub use worker::{EcWorker, HashWorker};
-pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SharedObjectWriter, WriterPool};
+pub use writer::{
+    LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SharedObjectWriter, SmallWriteIntent, WriterPool,
+};
 
 // Re-export key protocol types for convenience.
 pub use crowdb_protocol::chunkdb::rpc::Location as ProtoLocation;

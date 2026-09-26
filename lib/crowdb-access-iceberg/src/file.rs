@@ -28,7 +28,9 @@ mod reader;
 mod record;
 mod repository;
 mod seal;
+mod write_intent;
 mod writer;
+pub use write_intent::FileWriteIntent;
 
 pub use assembly::{AssemblyPart, AssemblyProgress, FileAssembly, PartFingerprint};
 pub use avro::{

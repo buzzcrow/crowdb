@@ -55,7 +55,7 @@ pub async fn run() {
         boundary: boundary.clone(),
     });
     let blocks = Arc::new(TestCommitBlocks {
-        inner: Arc::new(NativeFileBlocks::new(chunks)),
+        inner: Arc::new(NativeFileBlocks::new(chunks, store.clone())),
         boundary,
     });
     let repository = Arc::new(

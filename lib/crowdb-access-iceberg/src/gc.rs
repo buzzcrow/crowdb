@@ -13,6 +13,7 @@ mod proof;
 mod protection;
 mod reachability;
 mod repository;
+mod retirement;
 mod storage;
 mod task;
 mod tree;

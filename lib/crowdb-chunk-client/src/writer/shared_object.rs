@@ -15,6 +15,11 @@ use crate::{IoError, Result};
 
 use super::small_pool::{PendingObject, PipelineRoute, RouteCharge, SmallPoolRuntime};
 
+#[async_trait::async_trait]
+pub trait SmallWriteIntent: Send + Sync {
+    async fn before_write(&self, location: &ProtoLocation) -> Result<()>;
+}
+
 /// A single-use object handle backed by the client's shared small-write pool.
 pub struct SharedObjectWriter {
     runtime: Option<Arc<SmallPoolRuntime>>,
@@ -26,6 +31,7 @@ pub struct SharedObjectWriter {
     fragments: Vec<Bytes>,
     finished: bool,
     durable_completion: bool,
+    intent: Option<Arc<dyn SmallWriteIntent>>,
 }
 
 impl SharedObjectWriter {
@@ -46,6 +52,7 @@ impl SharedObjectWriter {
             fragments: Vec::new(),
             finished: false,
             durable_completion: false,
+            intent: None,
         }
     }
 
@@ -60,6 +67,7 @@ impl SharedObjectWriter {
             fragments: Vec::new(),
             finished: false,
             durable_completion: false,
+            intent: None,
         }
     }
 
@@ -77,6 +85,18 @@ impl SharedObjectWriter {
     pub async fn finish_durable(&mut self) -> Result<Vec<ProtoLocation>> {
         self.durable_completion = true;
         self.on_finish().await
+    }
+
+    /// Persists exact object ownership before any physical write for the batch.
+    /// # Errors
+    /// A failed intent aborts the batch without issuing its disk writes.
+    pub async fn finish_durable_with_intent(
+        &mut self,
+        intent: Arc<dyn SmallWriteIntent>,
+    ) -> Result<Vec<ProtoLocation>> {
+        self.ensure_open()?;
+        self.intent = Some(intent);
+        self.finish_durable().await
     }
 
     fn fail_size(&mut self, actual: usize) -> IoError {
@@ -130,6 +150,7 @@ impl ChunkIoWriter for SharedObjectWriter {
             .ok_or_else(|| IoError::Internal("small writer missing route charge".into()))?;
         let (completion, result) = oneshot::channel();
         let object = PendingObject {
+            intent: self.intent.take(),
             durable_completion: self.durable_completion,
             route_hash: self.route_hash,
             route: self

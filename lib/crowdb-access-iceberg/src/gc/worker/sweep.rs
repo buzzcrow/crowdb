@@ -12,7 +12,7 @@ impl GcWorker {
         if now_ms < task.not_before_ms {
             return Err(CatalogError::Busy.into());
         }
-        let scan = Self::candidates(task);
+        let scan = self.candidates(task);
         let page = self
             .repository
             .store
@@ -94,12 +94,18 @@ impl GcWorker {
         Ok(next)
     }
 
-    async fn finish_sweep(
+    pub(super) async fn finish_sweep(
         &self,
         task: &GcTask,
         mut next: GcTask,
         now_ms: u64,
     ) -> Result<GcTask, GcWorkError> {
+        if task.phase == GcPhase::Sweep && !task.deferred_ranges {
+            next.phase = GcPhase::SweepWrites;
+            next.scan_after.clear();
+            self.repository.update(task, &next).await?;
+            return Ok(next);
+        }
         next.phase = if task.deferred_ranges {
             next.stalled = GcStalledReason::UnsupportedRange;
             GcPhase::Waiting

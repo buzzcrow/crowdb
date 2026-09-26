@@ -86,6 +86,13 @@ contains zero free bytes.
    and only then may its layout/metadata be removed; preserve durable cleanup
    intent across partial failures. Shared chunks use delete-chunk-range only,
    retaining deferred work while that API reports unsupported.
+   Native FileIO registers exact block ownership before shared-write DiskIO, so
+   process loss before a file record or writer checkpoint does not hide allocated
+   ranges. Uncertain registration requires durable readback; an unsettled chunk
+   write cannot be reclaimed until its readable cursor or terminal state resolves
+   the outcome. Reachable file owners and unfinished tree cursors protect their
+   block intents. Final retired-catalog cleanup fences stale GC work and removes
+   completed per-file state, retaining only bounded authority and task receipts.
 7. Expose pause, resume, inspect, pin, unpin, rate, progress, stalled reason, and
    retry controls. Validate every configured item, byte, time, and concurrency cap;
    use bounded exponential backoff and terminal quarantine for repeated corruption.
@@ -118,6 +125,21 @@ contains zero free bytes.
   the durable lease boundary defined in R177, not for physical cache eviction.
 
 ## Acceptance
+
+- Given a terminal multipart checkpoint with a multi-level frontier, when cleanup
+  restarts or loses a delete reply, assert each abandoned subtree finishes before
+  the checkpoint block, published-file subtrees remain readable, and malformed
+  checkpoints quarantine without deletion. Invariants: GC-I2, GC-I3 and GC-I4.
+  Integration test.
+- Given a native shared write preceding any file authority, when intent persistence
+  fails or its response is lost, assert physical IO starts only after confirmed
+  ownership; on restart, unreachable ranges remain discoverable and unacknowledged
+  active-chunk ranges defer deletion. Invariants: GC-I2 and GC-I4. Integration test.
+- Given completed retired-catalog work, when final cleanup loses record/progress
+  responses, assert bounded restart removes per-file GC state, preserves constant
+  retirement receipts and rejects stale owner replay; paused owners and late
+  unfinished records block terminal cleanup. Invariants: GC-I3 and GC-I4.
+  Integration test.
 
 - Given purge has physically deleted a child but not acknowledged its durable
   cursor, when catalog retirement adopts its deletion intent after protection

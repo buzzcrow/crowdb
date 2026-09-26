@@ -12,7 +12,7 @@ use crate::common::TestIcebergStack;
 
 pub async fn verify_restart(stack: &mut TestIcebergStack, context: CatalogContext, table: TableLocation) {
     let client = crate::chunks(stack).await;
-    let blocks = Arc::new(NativeFileBlocks::new(client.clone()));
+    let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
     let initial = MultipartSession {
         context,
         upload: OperationId::random(),
@@ -89,7 +89,7 @@ pub async fn verify_restart(stack: &mut TestIcebergStack, context: CatalogContex
 
 async fn verify_resumed(stack: &TestIcebergStack, initial: &MultipartSession) {
     let client = crate::chunks(stack).await;
-    let blocks = Arc::new(NativeFileBlocks::new(client.clone()));
+    let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
     let repository = MultipartRepository::new(stack.store().await);
     let recovered = repository
         .load(initial.context, initial.upload)

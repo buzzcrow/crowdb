@@ -32,6 +32,17 @@ pub struct GcCandidate {
 }
 
 impl GcCandidate {
+    pub(crate) fn assembly_claim_key(&self) -> Option<IcebergKey> {
+        let session = self.assembly.as_ref()?;
+        let mut suffix = session.owner.table.table.as_bytes().to_vec();
+        suffix.extend_from_slice(session.owner.file.as_bytes());
+        Some(IcebergKey::Catalog {
+            catalog: session.context.catalog,
+            scope: CatalogScope::GcAssemblyClaim,
+            suffix,
+        })
+    }
+
     pub(crate) fn assembly_file(session: &MultipartSession) -> Result<FileRecord, ValidationError> {
         session.validate()?;
         let checkpoint = session

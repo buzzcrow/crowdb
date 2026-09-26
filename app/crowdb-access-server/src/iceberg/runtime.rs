@@ -143,8 +143,9 @@ async fn start_listener(
     if timeout.is_zero() || timeout > Duration::from_secs(300) {
         return Err("catalog request timeout is outside server bounds".into());
     }
-    let blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> =
-        Arc::new(crowdb_access_iceberg::file::NativeFileBlocks::new(chunks.clone()));
+    let blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> = Arc::new(
+        crowdb_access_iceberg::file::NativeFileBlocks::new(chunks.clone(), store.clone()),
+    );
     let mut service = IcebergHttpService::new(repository.clone(), authentication, timeout)
         .with_namespaces(store.clone())?
         .with_fileio(store.clone(), blocks.clone(), "us-east-1".into())?;

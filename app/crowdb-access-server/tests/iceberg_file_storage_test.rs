@@ -35,6 +35,37 @@ async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
     .unwrap()
 }
 
+async fn assert_checkpoint_intent(
+    stack: &TestIcebergStack,
+    owner: FileIdentity,
+    checkpoint: &crowdb_access_iceberg::file::FileWriterCheckpoint,
+) {
+    let intents = crowdb_access_iceberg::gc::GcStore::scan_gc(
+        stack.store().await.as_ref(),
+        crowdb_access_iceberg::gc::GcScan {
+            catalog: owner.table.catalog,
+            scope: Some(crowdb_access_iceberg::key::CatalogScope::FileWriteIntent),
+            prefix: owner.table.table.as_bytes().to_vec(),
+            after: Vec::new(),
+            items: 32,
+            bytes: 64 * 1024,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(intents.items.len(), 3);
+    assert!(intents.items.iter().any(|item| {
+        let key = crowdb_access_iceberg::key::IcebergKey::decode(&item.key).unwrap();
+        let crowdb_access_iceberg::record::StorageRecord::FileWriteIntent(intent) =
+            crowdb_access_iceberg::record::StorageRecord::decode(&key, &item.value).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(intent.owner, owner);
+        intent.root == checkpoint.root
+    }));
+}
+
 async fn seed_root(stack: &TestIcebergStack) -> CatalogContext {
     let repository = CatalogRepository::new(stack.store().await, ClearBounds::default()).unwrap();
     repository
@@ -84,7 +115,7 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
         file: FileId::random(),
     };
     let client = chunks(&stack).await;
-    let blocks = Arc::new(NativeFileBlocks::new(client.clone()));
+    let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
     let mut writer = FileTreeWriter::new(blocks.clone(), owner, 16 * 1024).unwrap();
     let bytes: Vec<u8> = (0..50_000)
         .map(|index| u8::try_from(index % 251).unwrap())
@@ -93,12 +124,13 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
         writer.push(piece).await.unwrap();
     }
     let checkpoint = writer.checkpoint().await.unwrap();
+    assert_checkpoint_intent(&stack, owner, &checkpoint).await;
     drop(writer);
     client.shutdown_small_writes().await.unwrap();
     drop(blocks);
     drop(client);
     let client = chunks(&stack).await;
-    let blocks = Arc::new(NativeFileBlocks::new(client.clone()));
+    let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
     let mut writer = FileTreeWriter::restore(blocks.clone(), owner, 16 * 1024, &checkpoint)
         .await
         .unwrap();
@@ -135,7 +167,7 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     assert_eq!(recovered, candidate);
     let client = chunks(&stack).await;
     let reader = FileReader::new(
-        Arc::new(NativeFileBlocks::new(client.clone())),
+        Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await)),
         recovered,
         Some(ByteRange {
             start: 16_380,

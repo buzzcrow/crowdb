@@ -288,6 +288,12 @@ coverage. SHA-256 compression uses RustCrypto; versioned digest checkpoints reta
 only chaining state, byte length and a partial block. They are trusted-storage
 recovery records, not client authentication assertions. Failed checkpoint writes
 poison the current writer without invalidating earlier durable checkpoints.
+Native block writes persist an exact physical-range ownership intent in the
+catalog before DiskIO. A shared-writer callback receives the assigned location;
+uncertain catalog writes are read back before the physical batch proceeds.
+This ledger also covers process loss before file publication and checkpoints
+superseded by later assembly progress. Reclamation waits for the chunk readable
+cursor or terminal state to settle any unconfirmed physical write.
 Staged-tree readers validate physical roots, byte lengths and digests without
 assigning a semantic file kind or declaring an incomplete multipart fragment to
 be a valid complete-format file. Published-file reads retain record validation.
@@ -563,8 +569,18 @@ tree is traversed once instead of revisiting its shared frontier. Published
 sessions reclaim only the checkpoint block, preserving the assembled data tree.
 Each physical step rechecks the terminal session and retention. The checkpoint
 block is deleted after its children, and session cleanup requires its completed
-claim. The
-retired authority tombstone and GC records remain inspectable after this pass.
+claim. Block intents are swept after tree candidates, preserving reachable owners
+and any unfinished file or assembly cursor. An owner fence prevents publication
+or new block writes once orphan deletion begins. Superseded intents of a reachable
+owner are conservatively retained until that owner becomes unreachable.
+
+Final catalog cleanup verifies that all candidates are complete and that no owner
+is paused or quarantined. A durable retirement marker selects the cleanup owner
+and rejects stale GC mutations before bounded deletion of claims, candidates,
+proof pages, write fences and old tasks. Only the retired authority, winning task
+result and retirement marker remain. Late unfinished records stop cleanup.
+Uncertain progress responses are resolved by reading durable state; an unfenced
+live proof whose authority changed terminates without deleting files.
 
 ## 5. Compatibility
 

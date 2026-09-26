@@ -14,6 +14,8 @@ pub struct TestStore {
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub fail_after: AtomicUsize,
     pub file_record_reply_loss: AtomicBool,
+    #[allow(dead_code)]
+    pub gc_delete_reply_loss: AtomicBool,
     pub writes: AtomicUsize,
     pub fencing_delay_ms: AtomicUsize,
     pub fencing_barrier: Option<Arc<tokio::sync::Barrier>>,

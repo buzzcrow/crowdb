@@ -31,24 +31,26 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   Terminal-session and retention checks precede each physical step; cleanup
   requires a completed claim. Files: FileIO checkpoint decoder, GC assembly
   worker, candidate/discovery/codec, `tests/gc_assembly_test.rs`.
-- [~] **Pre-authority write discovery**: shared ChunkIO has no durable per-object
-  ownership ledger. Add a pre-DiskIO exact-location callback and catalog-sharded
-  block intents; reconcile readable cursor or terminal chunk state before GC.
-  Sweep intents after tree candidates, protect reachable owners and persist an
-  owner deletion fence before dispatch. Files: FileIO native blocks, chunk-client
-  shared writer, GC discovery/worker, records and failure/restart tests.
+- [x] **Pre-authority write discovery**: native FileIO persists catalog-sharded
+  exact-location intents before shared-write DiskIO. Uncertain KV replies are
+  read back; unresolved chunk writes defer reclamation until the readable cursor
+  or terminal state settles them. Intents sweep after tree candidates, with
+  reachable-owner and unfinished-tree protection and durable publication fences.
+  Files: FileIO `write_intent`, native blocks, shared writer, GC `worker/writes`,
+  records and failure/restart tests.
 - [x] **Canonical reachability**: current and pinned historical metadata are parsed
   against captured heads. An immutable traversal stack and compressed binary
   mark index are content-addressed; one task CAS publishes both continuations.
   Missing frames/pages fail closed, including when proving nonmembership.
   Retained operations and table-wide upload/credential pins conservatively defer
   the pass. Files: `gc/proof/`, `gc/worker/live.rs`, `record/gc.rs`.
-- [ ] **Deletion worker**: revalidate fences and retention, persist children before
-  deleting directory roots, dispatch exclusive/range deletion, conditionally remove
-  records, retain uncertain outcomes and quarantined corruption. The retired pass
-  checks system bindings before initial and final file scans, then removes expired
-  primary/overflow retry and management/audit records and non-GC catalog records.
-  GC records and authority remain for terminal cleanup. Files: GC worker.
+- [x] **Deletion worker**: final catalog scans require completed
+  candidates and no paused/quarantined owner. A retirement marker fences stale
+  GC mutations before bounded cleanup of candidates, claims, proof pages, owner
+  fences and old tasks. Retain only the retired authority, winning task result
+  and retirement marker. Uncertain progress writes are read back; stale unfenced
+  live proofs terminate without deleting files. Files: GC retirement/terminal
+  worker and failure/restart tests. Focused tests, native restart E2E and gates pass.
 - [ ] **Operator and runtime integration**: authenticated pause/resume/inspect,
   pin/unpin, rate and retry controls; separate budgets and background progress.
   Files: Access Server Iceberg runtime/config/management.
@@ -68,60 +70,23 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
 
 ## Verification
 
-- Live proof/protection: 11 focused tests pass for v1/v2/v3 graph traversal,
-  manifest/status/DV/statistics links, historical readers, missing proof/stack
-  pages, restart and lost replies, late credentials, in-flight file publication,
-  persisted request/skew bounds and selective live-file sweep. The final library
-  all-target run passes 659 tests. Access Server's Iceberg-enabled all-target suite
-  passes 80 tests, including durable staged-credential pin assertions. Workspace
-  fmt and affected library/server all-target clippy pass with warnings denied.
-  SDK/engine tests behind separate feature gates are not claimed by this run.
-- Retired candidate/record cleanup: terminal multipart parts use their sealed tree
-  as a candidate with persisted request/skew grace and source revalidation before
-  physical steps. Seventeen GC worker tests cover pending system bindings before
-  and after the first protection scan, primary/overflow collisions, active-root
-  management replay, audit and orphan projection cleanup, and retaining aborted
-  assembly checkpoints. The library all-target suite passes 665 tests and the
-  Iceberg-enabled server suite passes 80 tests. Workspace fmt and affected
-  all-target clippy pass with warnings denied.
-
-- Chunk-client deletion dispatch: 5 focused tests passed (exclusive ownership,
-  failed-delete retry, unsupported shared ranges, invalid/active chunks and exact
-  unaligned byte ranges, 256 MiB/1 GiB endpoints and protocol overflow rejection).
-- GC task/page codecs and bounds: 3 focused tests passed.
-- Directory deletion cursor: 2 tests passed, including persisted pending deletion
-  replay after child bytes disappear and corruption before child discovery.
-- Reader/head fencing: 3 tests passed before the inactive worker integration.
-- Avro OCF checkpoint/resume: the 8-test existing framing suite passed, including
-  the new across-block SHA state and corrupt-checkpoint checks.
-- Native ChunkDB full-stack allocate/seal/delete passed against real KV and DiskDB
-  services; the test checks every captured segment is free after the chunk layout
-  is cleared. No native test skip was used.
-- Inactive worker: the existing 9 tests cover restart at every step, reader/purge fencing, deferred ranges,
-  lost delete replies, timeout admission release, corruption quarantine and
-  repeated sweep accounting, retention starting at candidate discovery and
-  rediscovery of files arriving after the initial scan.
-  Completion currently covers files,
-  not the retired catalog's full record range.
-- Canonical ownership: 3 focused tests pass for cross-generation deduplication,
-  lost claim/candidate replies and invalid authority rejection. A worker test
-  passes for retirement adopting a paused/resumed purge's existing pending cursor
-  after the child block was physically removed; stale-owner progress is rejected.
-  Missing claims fail closed before physical deletion. All 11 worker tests and
-  3 claim tests pass; affected-crate all-target clippy passes with warnings denied.
-  These cases remain covered by the current full library run.
-- Canonical link extraction: 3 tests cover v1/v2/v3 metadata references, bounded
-  and foreign inputs, paginated manifest entries and DV referenced data files.
-  These extraction tests supplement the current authenticated live-table proof tests.
-- The Iceberg library all-target suite passed after fixing stale prepared commit
-  publication to settle its original conflict before attempting file publication.
-  Final rerun after the latest retention/sweep changes also passed.
-- Workspace fmt check and clippy for the Iceberg library, chunk client and Access
-  Server (with `iceberg` enabled, all targets, warnings denied) passed.
-  GC is not wired into the Access Server runtime.
-- Access Server `--features iceberg --all-targets` passed, including table reads,
-  delegated credentials, lifecycle and commit HTTP regressions. The default
-  feature gate alone runs no Iceberg tests and is not Iceberg acceptance evidence.
+- Iceberg library all-target tests and Access Server Iceberg-enabled all-target
+  tests pass. Focused coverage includes checkpoint forests, live shared-root
+  protection, write-intent readback, exact byte ranges, deferred writes, stale
+  publication, owner adoption, retired cleanup and lost progress/delete replies.
+- Native storage E2E passes: exact pre-authority block intents are present before
+  publication; checkpoint restoration, multipart recovery and byte-range reads
+  survive catalog storage restart. Command:
+  `CROWDB_RUNTIME_ROOT=/nv/cpp/crowdb/.crowdb-runtime/artifacts/reclamation-validation pixi run cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_storage_test`.
+- The default runtime's persistent port claims caused an existing harness
+  listen/RPC offset assertion before storage work began. The isolated runtime
+  above avoids those claims without changing or deleting the persistent cluster.
+- Chunk-client small-object and reclamation tests pass, including pre-DiskIO
+  callback failure and readable-cursor/terminal-state reconciliation.
+- Targeted clippy with Iceberg E2E targets and warnings denied, Rust fmt check,
+  and workspace `pixi run rs-lint` pass.
+- GC runtime remains disabled. Resource-isolation, capacity exhaustion/recovery
+  and full SDK foreground-during-GC acceptance remain in the final task.
 
 ## Remaining integration
 
@@ -150,8 +115,7 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
 - Scope metadata-log retention to its retained metadata files; use explicit reader
   pins as historical snapshot roots. The pinned Java 1.11.0 `ReachableFileUtil`
   distinguishes recursive metadata enumeration from snapshot/data traversal.
-- Finish generation/operation/projection cleanup, system retry-slot/overflow cleanup,
-  authenticated controls and independent runtime admission. Keep R183 open until
+- Finish authenticated controls and independent runtime admission. Keep R183 open until
   the complete acceptance matrix has executable evidence.
 - File-scoped immutable GcClaim records now select one generation-indexed candidate.
   Discovery reuses that record without resetting progress or retention. Sweep
@@ -159,7 +123,8 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   adopt an unfinished live/purge candidate; purge can adopt a live candidate.
   Adoption preserves the exact pending cursor and extends, never shortens,
   retention. Paused/quarantined owners are not automatically adopted. Remaining
-  work includes operator recovery and stale live-task cancellation; this is
+  work includes operator recovery; stale unfenced live tasks now terminate after
+  a confirmed authority change. This is
   not permission to enable background GC yet.
 - Inactive tasks now persist a bounded Rescan phase after protection checks and
   before each sweep. Purge retains/revalidates its table fence; retirement checks
@@ -173,16 +138,19 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   manifests can be revisited across snapshot roots. Keep the bounded proof and
   publication semantics when optimizing these paths; measure in the separate
   performance project before selecting caches or batched storage changes.
+  Measure the new per-block durable intent cost and bounded callback batching
+  there as well; do not remove write-before-authority coverage to improve throughput.
 - Multipart assembly checkpoints now have a bounded, authenticated forest cursor.
   A completed claim permits terminal-session cleanup after part reclamation;
   published checkpoints never delete the frontier shared with the final file.
-  Writes that fail
-  before any durable FileRecord or checkpoint have no catalog candidate source;
-  storage-level ownership discovery is still required for those orphans.
-- Retired completion currently means non-GC catalog records were scanned. The
-  authority tombstone, task, claims, candidates and proof pages remain for
-  inspection. A final GC-metadata cleanup must keep incomplete-owner replay
-  fail-closed.
+  Native block intents also cover writes preceding a FileRecord/checkpoint and
+  superseded checkpoints. Intents belonging to a reachable file are conservatively
+  retained until that owner becomes unreachable; the selected terminal checkpoint
+  has its separate immediate-after-retention cleanup path.
+- Terminal catalog cleanup leaves three bounded receipts, rather than a record
+  per reclaimed file. Stale tasks cannot recreate candidates through the GC
+  repository once the retirement marker is installed. Late unfinished records
+  fail closed instead of being removed as completed work.
 
 - Unit/integration: chunk-client dispatch, ChunkDB partial free/retry, GC record
   validation, deterministic reachability and retention, pin/publication races,
@@ -195,5 +163,5 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
 
 ## Scope
 
-- Existing uncommitted work is preserved. No commits without an explicit request.
+- Preserve unrelated work; commit verified requirement tasks coherently.
 - Engine interoperability and ORC remain in their previously deferred tracks.

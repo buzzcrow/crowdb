@@ -98,6 +98,14 @@ recovers the unique mutable shadow after completion without another
 steady-state copy.
 Each returned location covers only its object's exact bytes.
 
+A caller can attach a `SmallWriteIntent` to durable completion. Once the batch
+has assigned exact locations, every attached callback completes before any of
+the batch's DiskIO. Failure aborts the batch and its pipeline; cancellation of
+the caller does not detach ownership registration from the physical operation.
+The callback has no default storage policy: FileIO uses it to persist its own
+catalog-sharded block ledger. Range reclamation defers active shared-chunk ranges
+that extend beyond the acknowledged cursor, preserving uncertain writes.
+
 Chunk allocation reserves a bounded group of hidden strips. A reserved strip
 becomes `Consumed` immediately before its first DiskIO and is confirmed into
 the readable layout only after its mirror write succeeds. Confirmation and

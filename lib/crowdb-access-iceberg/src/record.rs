@@ -4,6 +4,7 @@ mod authority;
 mod envelope;
 mod file;
 mod gc;
+mod gc_key;
 mod gc_node;
 mod management;
 mod multipart;
@@ -17,5 +18,6 @@ mod table;
 mod table_commit;
 mod table_create;
 mod table_lifecycle;
+mod write_intent;
 
 pub use envelope::{StorageRecord, MAX_RECORD_BYTES};

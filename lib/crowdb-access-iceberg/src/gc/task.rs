@@ -29,6 +29,9 @@ pub enum GcPhase {
     CleanupCatalog,
     RootsSystem,
     PreSweepSystem,
+    SweepWrites,
+    VerifyCleanup,
+    CleanupGc,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +76,14 @@ pub struct GcTask {
 }
 
 impl GcTask {
+    pub(crate) fn retirement_key(catalog: crate::key::CatalogId) -> IcebergKey {
+        IcebergKey::Catalog {
+            catalog,
+            scope: CatalogScope::GcRetirement,
+            suffix: Vec::new(),
+        }
+    }
+
     #[must_use]
     pub fn key(&self) -> IcebergKey {
         IcebergKey::Catalog {
@@ -94,13 +105,15 @@ impl GcTask {
             || self.not_before_ms < self.created_ms
             || self.scan_after.len() > crate::key::MAX_KEY_BYTES
             || self.queue_read > self.queue_write
-            || (self.phase == GcPhase::Sweep && self.sweep_round == 0)
+            || (matches!(self.phase, GcPhase::Sweep | GcPhase::SweepWrites) && self.sweep_round == 0)
             || (matches!(
                 self.phase,
                 GcPhase::CleanupSystem
                     | GcPhase::CleanupCatalog
                     | GcPhase::RootsSystem
                     | GcPhase::PreSweepSystem
+                    | GcPhase::VerifyCleanup
+                    | GcPhase::CleanupGc
             ) && self.kind != GcTaskKind::RetiredCatalog)
             || ((self.kind == GcTaskKind::RetiredCatalog) != self.head.is_none())
         {

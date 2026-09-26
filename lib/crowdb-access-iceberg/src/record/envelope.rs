@@ -16,6 +16,7 @@ const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageRecord {
+    FileWriteIntent(Box<crate::file::FileWriteIntent>),
     GcNode(Box<crate::gc::GcNode>),
     GcTask(Box<crate::gc::GcTask>),
     GcCandidate(Box<crate::gc::GcCandidate>),
@@ -73,6 +74,10 @@ impl StorageRecord {
             return Ok(value);
         }
         Ok(match self {
+            Self::FileWriteIntent(intent) => (
+                FBRecordValue::FBFileWriteIntent,
+                super::write_intent::encode(builder, intent)?.as_union_value(),
+            ),
             Self::GcNode(_) | Self::GcTask(_) | Self::GcCandidate(_) | Self::GcPage(_) | Self::GcPin(_) => {
                 return Err(ValidationError::Record);
             }
@@ -209,6 +214,13 @@ impl StorageRecord {
 
     fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         match envelope.value_type() {
+            FBRecordValue::FBFileWriteIntent => {
+                return Ok(Self::FileWriteIntent(Box::new(super::write_intent::decode(
+                    envelope
+                        .value_as_fbfile_write_intent()
+                        .ok_or(ValidationError::Record)?,
+                )?)));
+            }
             FBRecordValue::FBGcNode => {
                 return Ok(Self::GcNode(Box::new(super::gc_node::decode(
                     envelope.value_as_fbgc_node().ok_or(ValidationError::Record)?,
@@ -379,19 +391,10 @@ impl StorageRecord {
     }
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
+        if let Some(result) = self.validate_gc_key(key) {
+            return result;
+        }
         match (self, key) {
-            (Self::GcNode(node), key) if *key == node.key() || *key == node.pending_key() => Ok(()),
-            (Self::GcTask(task), key) if *key == task.key() => Ok(()),
-            (Self::GcCandidate(candidate), key) if *key == candidate.key() => Ok(()),
-            (Self::GcCandidate(candidate), key)
-                if *key == candidate.claim_key()
-                    && candidate.phase == crate::gc::CandidatePhase::Retained
-                    && candidate.revision == 1 =>
-            {
-                Ok(())
-            }
-            (Self::GcPage(page), key) if *key == page.key() => Ok(()),
-            (Self::GcPin(pin), key) if *key == pin.key() => Ok(()),
             (Self::TableLifecycleOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::TablePurgeTask(task), key) if *key == task.key() => Ok(()),
             (Self::TableCreateOperation(operation), key) if *key == operation.key() => Ok(()),

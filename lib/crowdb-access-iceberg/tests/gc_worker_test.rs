@@ -9,6 +9,8 @@ use crowdb_access_iceberg::{
     record::StorageRecord,
 };
 
+#[path = "common/gc_adoption.rs"]
+mod adoption;
 #[path = "common/file_blocks.rs"]
 mod blocks;
 #[path = "common/gc_blocks.rs"]
@@ -633,108 +635,6 @@ async fn insert_record(fixture: &common::file::TestFile, key: IcebergKey, record
         .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
         .await
         .unwrap();
-}
-
-#[tokio::test]
-async fn retirement_adopts_a_purge_cursor_after_a_child_was_physically_deleted() {
-    use crowdb_access_iceberg::{
-        file::FileBlockStore,
-        gc::{CandidatePhase, GcCandidate, ReclaimStep, TreeReclaimCursor},
-        key::NamespaceId,
-        table::{TableHead, TableLifecycle},
-    };
-    let (fixture, blocks, mut task, limits, file_id) = fixture(true).await;
-    let repository = GcRepository::new(fixture.store.clone());
-    let key = file_key(fixture.context.catalog, file_id);
-    let stored = fixture.store.get(&key.encode().unwrap()).await.unwrap().unwrap();
-    let StorageRecord::File(file) = StorageRecord::decode(&key, &stored.bytes).unwrap() else {
-        panic!()
-    };
-    let metadata = fixture.record("metadata/old.json", b"{}");
-    let head = TableHead {
-        catalog: fixture.context.catalog,
-        table: fixture.table.table,
-        namespace: NamespaceId::random(),
-        name: "dropped".into(),
-        name_epoch: 1,
-        lifecycle: TableLifecycle::Tombstone,
-        generation: 7,
-        metadata_file: metadata.file,
-        metadata_location: metadata.location,
-        metadata_digest: metadata.digest,
-        format_version: 1,
-        table_uuid: None,
-        operation_fence: 2,
-        pending_operation: Some(OperationId::random()),
-    };
-    let mut old = GcTask::plan(fixture.context, OperationId::random(), Some(head), 500, limits).unwrap();
-    old.paused = true;
-    repository.create(&old).await.unwrap();
-    let initial = GcCandidate {
-        assembly: None,
-        next_root: 0,
-        task: old.identity,
-        generation: 7,
-        first_seen_ms: 500,
-        not_before_ms: 510,
-        revision: 1,
-        phase: CandidatePhase::Retained,
-        completed_round: 0,
-        cursor: TreeReclaimCursor::new(&file).unwrap(),
-        file: *file,
-        part: None,
-    };
-    repository.claim_candidate(&initial).await.unwrap();
-    let mut interrupted = initial.clone();
-    interrupted.phase = CandidatePhase::Deleting;
-    interrupted.revision += 1;
-    loop {
-        match interrupted.cursor.next(blocks.as_ref()).await.unwrap() {
-            ReclaimStep::Descended(cursor) => interrupted.cursor = cursor,
-            ReclaimStep::Delete(cursor) => {
-                interrupted.cursor = cursor;
-                break;
-            }
-            ReclaimStep::Complete => panic!("expected a physical child"),
-        }
-    }
-    repository.candidate(Some(&initial), &interrupted).await.unwrap();
-    blocks
-        .reclaim(interrupted.cursor.pending.as_ref().unwrap())
-        .await
-        .unwrap();
-    let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
-    for _ in 0..50 {
-        task = worker.run(&task, 2000).await.unwrap();
-        if task.stalled == GcStalledReason::Protected {
-            break;
-        }
-    }
-    assert_eq!(task.stalled, GcStalledReason::Protected);
-    assert_eq!(blocks.deletes.load(Ordering::Relaxed), 1);
-    repository.pause(&old, false).await.unwrap();
-    let mut now = 10_000;
-    for _ in 0..300 {
-        now = now.max(task.retry_at_ms);
-        task = GcWorker::new(repository.clone(), blocks.clone(), limits)
-            .unwrap()
-            .run(&task, now)
-            .await
-            .unwrap();
-        if task.phase == GcPhase::Complete {
-            break;
-        }
-    }
-    assert_eq!(task.phase, GcPhase::Complete);
-    assert_eq!(task.deleted, 1);
-    assert!(blocks.blocks.values.load().is_empty());
-    let mut stale = interrupted.clone();
-    stale.revision += 1;
-    assert!(repository.candidate(Some(&interrupted), &stale).await.is_err());
-    let current = repository.claim_candidate(&initial).await.unwrap();
-    assert_eq!(current.task, task.identity);
-    assert_eq!(current.key(), initial.key());
-    assert_eq!(current.phase, CandidatePhase::Complete);
 }
 
 #[tokio::test]

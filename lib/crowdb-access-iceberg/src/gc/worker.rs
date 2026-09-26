@@ -22,6 +22,8 @@ mod inactive;
 mod live;
 mod sweep;
 mod system;
+mod terminal;
+mod writes;
 pub use admission::GcWorkerStatus;
 
 #[derive(Debug, thiserror::Error)]
@@ -82,6 +84,7 @@ impl GcWorker {
         {
             return Err(CatalogError::Conflict.into());
         }
+        self.repository.verify_retirement_access(task).await?;
         match task.phase {
             GcPhase::Discover => Ok(self.repository.discover_files(task, self.limits, now_ms).await?),
             GcPhase::Rescan => {
@@ -97,8 +100,11 @@ impl GcWorker {
             GcPhase::Fence if task.kind == GcTaskKind::LiveTable => self.live_fence(task, now_ms).await,
             GcPhase::Fence => self.fence(task, now_ms).await,
             GcPhase::Sweep => self.sweep(task, now_ms).await,
+            GcPhase::SweepWrites => self.sweep_writes(task, now_ms).await,
             GcPhase::CleanupSystem => self.cleanup_system(task, now_ms).await,
             GcPhase::CleanupCatalog => self.cleanup_catalog(task, now_ms).await,
+            GcPhase::VerifyCleanup => self.verify_cleanup(task).await,
+            GcPhase::CleanupGc => self.cleanup_gc(task).await,
             GcPhase::RootsSystem | GcPhase::PreSweepSystem => self.scan_system_protection(task, now_ms).await,
             GcPhase::Waiting => {
                 let mut next = task.advance()?;
@@ -191,7 +197,7 @@ impl GcWorker {
         Ok(())
     }
 
-    fn candidates(task: &GcTask) -> GcScan {
+    fn candidates(&self, task: &GcTask) -> GcScan {
         GcScan {
             catalog: task.context.catalog,
             scope: Some(CatalogScope::GcCandidate),
@@ -201,7 +207,8 @@ impl GcWorker {
                 .map_or_else(Vec::new, |head| head.table.as_bytes().to_vec()),
             after: task.scan_after.clone(),
             items: 1,
-            bytes: crate::record::MAX_RECORD_BYTES + crate::key::MAX_KEY_BYTES,
+            bytes: (crate::record::MAX_RECORD_BYTES + crate::key::MAX_KEY_BYTES)
+                .min(self.limits.step_bytes as usize),
         }
     }
 }

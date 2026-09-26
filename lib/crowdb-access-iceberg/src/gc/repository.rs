@@ -150,6 +150,7 @@ impl GcRepository {
         before: Option<&StorageRecord>,
         after: &StorageRecord,
     ) -> Result<(), CatalogError> {
+        self.check_retirement_mutation(key, after).await?;
         let key = key.encode()?;
         let after = after.encode()?;
         let before = before.map(StorageRecord::encode).transpose()?;

@@ -48,6 +48,10 @@ pub enum CatalogScope {
     GcNode = 22,
     GcPending = 23,
     GcClaim = 24,
+    FileWriteIntent = 25,
+    FileWriteFence = 26,
+    GcAssemblyClaim = 27,
+    GcRetirement = 28,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -194,6 +198,10 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         22 => Ok(CatalogScope::GcNode),
         23 => Ok(CatalogScope::GcPending),
         24 => Ok(CatalogScope::GcClaim),
+        25 => Ok(CatalogScope::FileWriteIntent),
+        26 => Ok(CatalogScope::FileWriteFence),
+        27 => Ok(CatalogScope::GcAssemblyClaim),
+        28 => Ok(CatalogScope::GcRetirement),
         _ => Err(ValidationError::Key),
     }
 }
@@ -210,24 +218,15 @@ fn validate_system(scope: SystemScope, suffix: &[u8]) -> Result<(), ValidationEr
 
 fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), ValidationError> {
     match scope {
-        CatalogScope::MetadataProjection => {
-            if suffix.len() != 62 {
-                return Err(ValidationError::Key);
-            }
-            let version = u16::from_be_bytes([suffix[56], suffix[57]]);
-            let child = u16::from_be_bytes([suffix[58], suffix[59]]);
-            let page = u16::from_be_bytes([suffix[60], suffix[61]]);
-            if version == 0
-                || child > 64
-                || page >= 64
-                || (child == 0 && page != 0 && !(version == 2 && page == 1))
-            {
-                return Err(ValidationError::Key);
-            }
-            super::TableId::from_bytes(&suffix[..16]).map(|_| ())
+        CatalogScope::MetadataProjection => validate_projection(suffix),
+        CatalogScope::Authority | CatalogScope::MultipartAdmission | CatalogScope::GcRetirement
+            if suffix.is_empty() =>
+        {
+            Ok(())
         }
-        CatalogScope::Authority | CatalogScope::MultipartAdmission if suffix.is_empty() => Ok(()),
-        CatalogScope::Authority | CatalogScope::MultipartAdmission => Err(ValidationError::Key),
+        CatalogScope::Authority | CatalogScope::MultipartAdmission | CatalogScope::GcRetirement => {
+            Err(ValidationError::Key)
+        }
         CatalogScope::NamespaceAuthority
         | CatalogScope::TableHead
         | CatalogScope::File
@@ -251,7 +250,16 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
             }
             Ok(())
         }
-        CatalogScope::GcClaim => {
+        CatalogScope::FileWriteIntent => {
+            if suffix.len() != 48 {
+                return Err(ValidationError::Key);
+            }
+            super::TableId::from_bytes(&suffix[..16])?;
+            super::FileId::from_bytes(&suffix[16..32])?;
+            super::OperationId::from_bytes(&suffix[32..])?;
+            Ok(())
+        }
+        CatalogScope::GcClaim | CatalogScope::FileWriteFence | CatalogScope::GcAssemblyClaim => {
             if suffix.len() != 32 {
                 return Err(ValidationError::Key);
             }
@@ -299,4 +307,17 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
             crate::file::validate_relative_key(relative)
         }
     }
+}
+
+fn validate_projection(suffix: &[u8]) -> Result<(), ValidationError> {
+    if suffix.len() != 62 {
+        return Err(ValidationError::Key);
+    }
+    let version = u16::from_be_bytes([suffix[56], suffix[57]]);
+    let child = u16::from_be_bytes([suffix[58], suffix[59]]);
+    let page = u16::from_be_bytes([suffix[60], suffix[61]]);
+    if version == 0 || child > 64 || page >= 64 || (child == 0 && page != 0 && !(version == 2 && page == 1)) {
+        return Err(ValidationError::Key);
+    }
+    super::TableId::from_bytes(&suffix[..16]).map(|_| ())
 }

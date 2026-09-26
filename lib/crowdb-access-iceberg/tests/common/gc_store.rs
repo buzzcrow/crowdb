@@ -98,6 +98,12 @@ impl GcStore for TestStore {
             next.remove(key);
             let observed = self.values.compare_and_swap(&current, Arc::new(next));
             if Arc::ptr_eq(&current, &observed) {
+                if self
+                    .gc_delete_reply_loss
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+                {
+                    return Err(StoreError::Response);
+                }
                 return Ok(CasOutcome::Applied(revision));
             }
         }

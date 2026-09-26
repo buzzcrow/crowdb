@@ -96,6 +96,7 @@ impl FileRepository {
             return compatible(existing, candidate);
         }
         self.stage(candidate).await?;
+        self.check_deletion(candidate).await?;
         self.check_context(context, &candidate.location).await?;
         self.check_publication_table(context, &candidate.location).await?;
         let key = location_key(&candidate.location).encode()?;
@@ -117,6 +118,7 @@ impl FileRepository {
         };
         self.check_context(context, &candidate.location).await?;
         self.check_publication_table(context, &candidate.location).await?;
+        self.check_deletion(&published).await?;
         compatible(published, candidate)
     }
 
@@ -184,6 +186,14 @@ impl FileRepository {
     }
 
     async fn check_deletion(&self, record: &FileRecord) -> Result<(), CatalogError> {
+        super::write_intent::check_write_fence(
+            self.store.as_ref(),
+            super::FileIdentity {
+                table: record.location.table(),
+                file: record.file,
+            },
+        )
+        .await?;
         let mut suffix = record.location.table().table.as_bytes().to_vec();
         suffix.extend_from_slice(record.file.as_bytes());
         let key = crate::key::IcebergKey::Catalog {

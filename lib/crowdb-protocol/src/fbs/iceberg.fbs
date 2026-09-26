@@ -427,6 +427,17 @@ table FBGcCandidate {
     pending:FBFileChunkRoot;
 }
 
+table FBFileWriteIntent {
+    catalog:[ubyte] (required);
+    table_id:[ubyte] (required);
+    file_id:[ubyte] (required);
+    identity:[ubyte] (required);
+    root:FBFileChunkRoot (required);
+    created_ms:ulong;
+    not_before_ms:ulong;
+    deleting:bool;
+}
+
 table FBGcEntry {
     key:[ubyte] (required);
 }
@@ -464,7 +475,7 @@ table FBGcNode {
     complete:bool;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcPin, FBGcNode }
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcPin, FBGcNode, FBFileWriteIntent }
 
 table FBIcebergRecord {
     schema_version:ushort;

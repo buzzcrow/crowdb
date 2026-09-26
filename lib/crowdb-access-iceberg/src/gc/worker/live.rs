@@ -10,6 +10,40 @@ use super::{
 };
 
 impl GcWorker {
+    pub(super) async fn abandon_changed_live(&self, task: &GcTask) -> Result<Option<GcTask>, CatalogError> {
+        if task.kind != super::GcTaskKind::LiveTable || task.fenced {
+            return Ok(None);
+        }
+        let changed_context = match check_context(self.repository.store.as_ref(), task.context).await {
+            Ok(()) => false,
+            Err(CatalogError::Conflict) => true,
+            Err(error) => return Err(error),
+        };
+        if !changed_context {
+            let head = task.head.as_ref().ok_or(ValidationError::Record)?;
+            let key = head_key(head.catalog, head.table);
+            if let Some(value) = self.repository.store.get(&key.encode()?).await? {
+                let StorageRecord::TableHead(current) = StorageRecord::decode(&key, &value.bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                if current.as_ref() == head
+                    || (current.lifecycle == crate::table::TableLifecycle::Reclaiming
+                        && current.pending_operation == Some(task.identity))
+                {
+                    return Ok(None);
+                }
+            }
+        }
+        let mut next = task.progress()?;
+        next.phase = GcPhase::Complete;
+        next.stalled = GcStalledReason::ChangedAuthority;
+        next.discovery_scope = 0;
+        next.scan_after.clear();
+        next.retry_at_ms = 0;
+        self.repository.update(task, &next).await?;
+        Ok(Some(next))
+    }
+
     pub(super) async fn live_fence(&self, task: &GcTask, now_ms: u64) -> Result<GcTask, GcWorkError> {
         check_context(self.repository.store.as_ref(), task.context).await?;
         if !task.proof.complete || now_ms < task.not_before_ms {

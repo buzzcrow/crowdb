@@ -139,6 +139,33 @@ async fn shared_range_remains_deferred_until_storage_supports_it() {
 }
 
 #[tokio::test]
+async fn uncertain_shared_write_waits_for_readable_cursor_or_terminal_chunk() {
+    let mut allocator = TestAllocator::new(true);
+    allocator.range_supported = true;
+    allocator.expected_range = (0, 4096);
+    allocator.chunk.state = ChunkState::Active as i32;
+    allocator.chunk.acknowledged_cursor = 4095;
+    let location = allocator.location();
+    assert_eq!(
+        reclaim_location(&allocator, &location).await.unwrap(),
+        ReclaimOutcome::Deferred
+    );
+    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 0);
+    allocator.chunk.acknowledged_cursor = 4096;
+    assert_eq!(
+        reclaim_location(&allocator, &location).await.unwrap(),
+        ReclaimOutcome::Reclaimed
+    );
+    allocator.chunk.acknowledged_cursor = 0;
+    allocator.chunk.state = ChunkState::Sealed as i32;
+    assert_eq!(
+        reclaim_location(&allocator, &location).await.unwrap(),
+        ReclaimOutcome::Reclaimed
+    );
+    assert_eq!(allocator.range_calls.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
 async fn active_dedicated_chunk_and_invalid_ranges_are_never_deleted() {
     let mut allocator = TestAllocator::new(false);
     allocator.chunk.state = ChunkState::Active as i32;

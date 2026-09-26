@@ -119,7 +119,7 @@ impl GcWorker {
             next.scan_after.clone_from(&last.key);
         } else {
             next.scan_after.clear();
-            next.phase = GcPhase::Complete;
+            next.phase = GcPhase::VerifyCleanup;
         }
         self.repository.update(task, &next).await?;
         Ok(next)
@@ -148,6 +148,9 @@ impl GcWorker {
                 | CatalogScope::GcPage
                 | CatalogScope::GcNode
                 | CatalogScope::GcPending
+                | CatalogScope::FileWriteFence
+                | CatalogScope::GcAssemblyClaim
+                | CatalogScope::GcRetirement
         ) {
             return Ok(false);
         }
@@ -156,7 +159,9 @@ impl GcWorker {
             return Err(CatalogError::Busy.into());
         }
         match &record {
-            StorageRecord::File(_) | StorageRecord::MultipartPart(_) => Err(ValidationError::Record.into()),
+            StorageRecord::File(_) | StorageRecord::MultipartPart(_) | StorageRecord::FileWriteIntent(_) => {
+                Err(ValidationError::Record.into())
+            }
             StorageRecord::MultipartSession(session) => {
                 if !matches!(
                     session.phase,
@@ -209,7 +214,7 @@ impl GcWorker {
         }
     }
 
-    async fn delete_exact(&self, key: &[u8], bytes: &[u8]) -> Result<(), GcWorkError> {
+    pub(super) async fn delete_exact(&self, key: &[u8], bytes: &[u8]) -> Result<(), GcWorkError> {
         match self
             .repository
             .store

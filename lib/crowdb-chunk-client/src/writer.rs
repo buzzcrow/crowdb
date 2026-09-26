@@ -15,4 +15,4 @@ pub(crate) mod small_pool;
 pub use large_async_object::LargeAsyncObjectWriter;
 pub use large_object::LargeObjectWriter;
 pub use pool::{PooledWriter, WriterPool};
-pub use shared_object::SharedObjectWriter;
+pub use shared_object::{SharedObjectWriter, SmallWriteIntent};

@@ -70,6 +70,7 @@ impl GcWorker {
                     scope:
                         CatalogScope::GcTask
                         | CatalogScope::GcClaim
+                        | CatalogScope::GcAssemblyClaim
                         | CatalogScope::GcCandidate
                         | CatalogScope::GcPage
                         | CatalogScope::GcNode

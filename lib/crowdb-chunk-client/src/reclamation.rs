@@ -39,6 +39,14 @@ pub async fn reclaim_location(allocator: &dyn ChunkAllocator, location: &Locatio
     }
     if chunk.writer_epoch != 0 {
         u32::try_from(end).map_err(|_| IoError::MetadataConflict("range end exceeds protocol".into()))?;
+        if chunk.acknowledged_cursor < end
+            && !matches!(
+                ChunkState::try_from(chunk.state),
+                Ok(ChunkState::Sealed | ChunkState::Deleted)
+            )
+        {
+            return Ok(ReclaimOutcome::Deferred);
+        }
         let request = DeleteChunkRangeRequest {
             chunk_id: Some(chunk_id),
             chunk_offset: u32::try_from(location.offset)

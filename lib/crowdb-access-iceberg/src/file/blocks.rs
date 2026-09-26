@@ -4,10 +4,13 @@ use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter};
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 use crate::error::ValidationError;
 
 use super::{ChunkRoot, FileIdentity};
+
+mod intent;
 
 pub const MAX_FILE_BLOCK_BYTES: usize = 256 * 1024;
 pub const NATIVE_FILE_BLOCK_BYTES: usize = MAX_FRAME_PAYLOAD_BYTES;
@@ -38,12 +41,13 @@ pub trait FileBlockStore: Send + Sync {
 #[derive(Clone)]
 pub struct NativeFileBlocks {
     client: ChunkIoClient,
+    store: Arc<dyn crate::catalog::CatalogStore>,
 }
 
 impl NativeFileBlocks {
     #[must_use]
-    pub fn new(client: ChunkIoClient) -> Self {
-        Self { client }
+    pub fn new(client: ChunkIoClient, store: Arc<dyn crate::catalog::CatalogStore>) -> Self {
+        Self { client, store }
     }
 }
 
@@ -76,7 +80,14 @@ impl FileBlockStore for NativeFileBlocks {
         key.extend_from_slice(owner.file.as_bytes());
         let mut writer = self.client.prepare_small_write_for_key(bytes.len(), &key).await?;
         writer.on_data(Bytes::copy_from_slice(bytes)).await?;
-        let locations = writer.finish_durable().await?;
+        let intent = Arc::new(intent::BlockIntent::new(
+            self.store.clone(),
+            owner,
+            height,
+            bytes,
+        )?);
+        let digest = intent.digest;
+        let locations = writer.finish_durable_with_intent(intent).await?;
         let [location] = locations.as_slice() else {
             return Err(ValidationError::Record.into());
         };
@@ -87,7 +98,7 @@ impl FileBlockStore for NativeFileBlocks {
             logical_offset: location.logical_offset,
             logical_length: location.logical_length,
             height,
-            digest: Sha256::digest(bytes).into(),
+            digest,
         };
         verify_block(&root, bytes)?;
         Ok(root)

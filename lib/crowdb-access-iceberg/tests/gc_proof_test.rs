@@ -19,6 +19,8 @@ mod graph;
 #[path = "common/table_metadata.rs"]
 #[allow(dead_code)]
 mod metadata;
+#[path = "common/gc_write_proof.rs"]
+mod write_proof;
 mod common {
     pub mod store;
     pub use store::TestStore;
@@ -586,11 +588,11 @@ async fn live_sweep_recovers_a_lost_final_fence_release_response() {
     .unwrap();
     let mut ready = false;
     for step in 0..100 {
-        if task.phase == GcPhase::Sweep {
+        if task.phase == GcPhase::SweepWrites {
             let page = store
                 .scan_gc(GcScan {
                     catalog: task.context.catalog,
-                    scope: Some(CatalogScope::GcCandidate),
+                    scope: Some(CatalogScope::FileWriteIntent),
                     prefix: task.head.as_ref().unwrap().table.as_bytes().to_vec(),
                     after: task.scan_after.clone(),
                     items: 1,

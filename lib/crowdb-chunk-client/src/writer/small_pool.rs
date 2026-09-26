@@ -20,6 +20,7 @@ use crate::{ChunkAllocator, DiskWriter, IoError, Result};
 use super::small_manager::{self, ManagerCommand};
 
 pub(crate) struct PendingObject {
+    pub intent: Option<Arc<dyn super::shared_object::SmallWriteIntent>>,
     pub durable_completion: bool,
     pub route_hash: u64,
     pub route: Arc<PipelineRoute>,
