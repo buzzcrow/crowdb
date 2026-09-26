@@ -1108,7 +1108,9 @@ name = "crowdb-monitor"
 version = "0.0.0-dev"
 dependencies = [
  "clap",
+ "crowdb-kv-client",
  "crowdb-protocol",
+ "crowdb-test-harness",
  "rand 0.8.6",
  "reqwest",
  "rustix",

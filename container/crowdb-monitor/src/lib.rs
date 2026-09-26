@@ -14,7 +14,8 @@ mod status;
 mod supervisor;
 
 pub use bootstrap::{
-    disk_step_names, ensure_disk_files, kv_step_names, DiskBootstrapError, KvBootstrap, KvBootstrapError,
+    disk_step_names, ensure_disk_files, hardware_step_names, kv_step_names, DiskBootstrapError,
+    HardwareBootstrap, HardwareBootstrapError, KvBootstrap, KvBootstrapError,
 };
 pub use credentials::{show_client_credentials, ClientCredentials, CredentialError, ServerCredentials};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};

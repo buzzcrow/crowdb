@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -24,3 +25,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["kv-client"] }
