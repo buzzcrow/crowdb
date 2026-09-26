@@ -8,8 +8,9 @@ use crate::{
     disk_step_names, ensure_disk_files, hardware_step_names, iceberg_step_names, kv_step_names,
     render_configs, s3_step_names, verify_diskio_disks, BootstrapSession, CredentialError, DeploymentProfile,
     DiskBootstrapError, HardwareBootstrap, HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError,
-    KvBootstrap, KvBootstrapError, ManifestError, ManifestState, ProfileError, RenderError, S3Bootstrap,
-    S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
+    KvBootstrap, KvBootstrapError, LivenessError, LivenessServer, ManifestError, ManifestState, ProfileError,
+    RenderError, S3Bootstrap, S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor,
+    SupervisorError,
 };
 
 const PROFILE_NAME: &str = "crowdb-single-node-preview";
@@ -27,6 +28,8 @@ pub enum PreviewError {
     Manifest(#[from] ManifestError),
     #[error("preview credentials failed: {0}")]
     Credentials(#[from] CredentialError),
+    #[error("preview liveness service failed: {0}")]
+    Liveness(#[from] LivenessError),
     #[error("preview supervision failed: {0}")]
     Supervisor(#[from] SupervisorError),
     #[error("preview KV bootstrap failed: {0}")]
@@ -76,6 +79,7 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
         ServerCredentials::load_or_create(&profile.paths.data_root)?
     };
     ensure_directory(&profile.paths.run_root)?;
+    let _liveness = LivenessServer::start(&profile.paths.run_root)?;
     ensure_directory(&profile.paths.log_root)?;
     let kv_root = kv_root(&profile)?;
     if session.manifest().state() == ManifestState::Ready {

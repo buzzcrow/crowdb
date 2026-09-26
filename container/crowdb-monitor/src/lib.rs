@@ -4,6 +4,7 @@
 mod bootstrap;
 mod credentials;
 mod layout;
+mod liveness;
 mod manifest;
 mod monitor_log;
 mod preview;
@@ -21,6 +22,7 @@ pub use bootstrap::{
     StorageProbeError,
 };
 pub use credentials::{show_client_credentials, ClientCredentials, CredentialError, ServerCredentials};
+pub use liveness::{probe_liveness, LivenessError, LivenessServer};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};
 pub use preview::{run_preview, PreviewError};

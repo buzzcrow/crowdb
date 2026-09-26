@@ -88,6 +88,9 @@ and verifiable release assets.
   catalog, S3/Iceberg listeners, then Web; failed startup drains children and
   cannot mark readiness. The preflight rejects template digest drift and
   foreign nonempty roots. Full-process/container acceptance still remains.
+  Liveness now round-trips a local 0700-directory Unix socket instead of
+  treating a fresh status file as proof that bootstrap/event-loop work advances;
+  readiness remains the durable status plus child-health gate.
 
 ## Phase 3 — Single-node runtime bootstrap
 

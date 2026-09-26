@@ -9,9 +9,7 @@ struct TestRoot(PathBuf);
 
 impl TestRoot {
     fn new() -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.crowdb-runtime/ephemeral")
-            .join(format!("monitor-preview-run-{}", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("cm-preview-{}", Uuid::new_v4().simple()));
         for name in ["bin", "templates", "data", "run"] {
             fs::create_dir_all(path.join(name)).unwrap();
         }

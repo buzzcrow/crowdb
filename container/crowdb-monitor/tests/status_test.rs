@@ -40,14 +40,14 @@ fn command(name: &str, root: &TestRunRoot) -> bool {
 }
 
 #[test]
-fn health_commands_require_fresh_ready_snapshot() {
+fn readiness_requires_fresh_ready_snapshot() {
     let root = TestRunRoot::new();
     assert!(!command("liveness", &root));
     assert!(!root.0.join("status").exists());
     let store = StatusStore::new(&root.0).unwrap();
     let mut status = MonitorStatus::new(Uuid::new_v4(), MonitorPhase::Initializing);
     store.publish(&mut status).unwrap();
-    assert!(command("liveness", &root));
+    assert!(!command("liveness", &root));
     assert!(!command("readiness", &root));
     status.phase = MonitorPhase::Ready;
     status.services.insert(
@@ -79,8 +79,8 @@ fn corrupt_or_symlinked_status_fails_closed() {
     let mut status = MonitorStatus::new(Uuid::new_v4(), MonitorPhase::Ready);
     store.publish(&mut status).unwrap();
     fs::write(root.0.join("status/monitor.json"), b"not json").unwrap();
-    assert!(!command("liveness", &root));
+    assert!(!command("readiness", &root));
     fs::remove_file(root.0.join("status/monitor.json")).unwrap();
     std::os::unix::fs::symlink("/etc/passwd", root.0.join("status/monitor.json")).unwrap();
-    assert!(!command("liveness", &root));
+    assert!(!command("readiness", &root));
 }

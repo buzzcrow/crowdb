@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use crowdb_monitor::{run_preview, show_client_credentials, DeploymentProfile, StatusStore};
+use crowdb_monitor::{probe_liveness, run_preview, show_client_credentials, DeploymentProfile, StatusStore};
 
 #[derive(Debug, Parser)]
 #[command(name = "crowdb-monitor")]
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", profile.name);
         }
         Command::Liveness { run_root } => {
-            StatusStore::open(&run_root)?.read(Duration::from_secs(10))?;
+            probe_liveness(&run_root).await?;
         }
         Command::Readiness { run_root } => {
             StatusStore::open(&run_root)?.readiness(Duration::from_secs(10))?;
