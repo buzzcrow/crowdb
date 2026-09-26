@@ -1108,6 +1108,7 @@ name = "crowdb-monitor"
 version = "0.0.0-dev"
 dependencies = [
  "clap",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2",

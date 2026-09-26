@@ -34,12 +34,15 @@ and verifiable release assets.
   conflicting state. Files:
   `container/crowdb-monitor/src/{manifest,bootstrap}.rs`,
   `container/crowdb-monitor/tests/manifest_test.rs`.
-- [ ] **Secrets and credentials command**: generate and atomically persist the
+- [~] **Secrets and credentials command**: generate and atomically persist the
   S3 master key/access pair and four distinct Iceberg bearer tokens, split
   server/client env files, redact diagnostics, and implement `credentials show
   --format env` without exposing server-only material. Files:
   `container/crowdb-monitor/src/{credentials,command}.rs`,
-  `container/crowdb-monitor/tests/credentials_test.rs`.
+  `container/crowdb-monitor/tests/credentials_test.rs`. Server master key and
+  four bearer tokens, private file persistence, and explicit client-file retrieval
+  are done. The S3 pair must still be issued through the existing Group 0
+  credential authority during Phase 3, then persisted to `client.env`.
 
 ## Phase 2 — Process supervision and health
 
