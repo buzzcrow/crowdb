@@ -17,6 +17,7 @@ struct ScanPosition {
     task: Vec<u8>,
     purge: Vec<u8>,
     system: Vec<u8>,
+    retired_turn: bool,
 }
 
 pub(super) struct GcRuntimeConfig {
@@ -214,16 +215,18 @@ async fn scan_and_advance(
     } else {
         Vec::new()
     };
-    let (next_system, advanced_retired) = if active.is_some() {
+    let (next_system, advanced_retired) = if active.is_some() && after.retired_turn {
         scan_retired(store.clone(), worker, after.system, limits).await?
     } else {
-        (Vec::new(), false)
+        (after.system, false)
     };
+    let retired_turn = !after.retired_turn;
     if advanced_retired {
         return Ok(ScanPosition {
             task: after.task,
             purge: next_purge,
             system: next_system,
+            retired_turn,
         });
     }
     let scan = GcScan {
@@ -273,6 +276,7 @@ async fn scan_and_advance(
         task: next,
         purge: next_purge,
         system: next_system,
+        retired_turn,
     })
 }
 

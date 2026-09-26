@@ -56,19 +56,23 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   GC repository, Access Server management runtime and control tests. A
   quarantined task resumes its exact prior phase; retired task admission
   verifies the completed clear operation and selected epoch.
-- [~] **Background admission**: bounded task enumeration, separate GC
-  concurrency, CPU, memory, KV and chunk I/O budgets, scheduler fairness and
-  restart progress. The opt-in scheduler uses dedicated clients, one-step work,
-  validated rate configuration and atomic per-step KV/chunk request and byte
-  budgets. A retired task step consumes the tick, rather than letting another
-  task scan exceed the same step budget. Enabled runtimes admit one durable purge marker per bounded scan;
-  its task scan consumes the same budget, while a bounded reserve can
-  persist a task's resource failure. Auto-admit completed clear operations and
-  retire legacy live tasks instead of scheduling their deletion. Files: GC
-  admission/fence, Access Server GC runtime and control tests.
-- [ ] **Crash and race acceptance**: reader, credential, commit, clear and
-  pin interleavings across restart; preserve conservative deferred work.
-- [ ] **Capacity and SDK acceptance**: configured disk exhaustion and recovery,
+- [x] **Background admission and fairness**: verify bounded task enumeration,
+  dedicated GC clients, one-step CPU/time and memory/work caps, independent KV
+  and chunk budgets, and cancellation/restart progress. Alternate retired and
+  active task turns so a long retired catalog cannot starve foreground catalog
+  cleanup. Preserve failure-record reserve. Files: Access Server GC runtime,
+  GC limits/worker, budget and scheduler tests.
+- [x] **Crash and race acceptance**: exercise inactive purge/clear with readers,
+  credential protection, changed authority and lost replies across worker or
+  server restart; never delete before the last protector expires or releases.
+  Files: GC worker/fence tests and native control tests.
+- [x] **Foreground saturation acceptance**: run namespace, commit and FileIO
+  requests with the official SDK while GC has a sustained task backlog; assert
+  foreground requests remain within the test deadline and GC remains bounded.
+  The pinned PyIceberg environment includes `s3fs`; the test obtains the
+  standard REST credential response explicitly before using PyIceberg FileIO.
+  Files: Access Server native E2E tests and pixi environment.
+- [ ] **Capacity acceptance**: configured disk exhaustion and recovery,
   foreground Iceberg SDK operations during GC, affected tests and gates. Native
   full-disk FileIO failure/recovery and committed-file readability pass; the
   full-disk GC-workspace case remains. A fault-injected workspace denial proves
@@ -89,6 +93,17 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   ownership. Exclusive deletion requires storage ownership evidence.
 
 ## Verification
+
+- Retired and active catalog cleanup alternate under a 48-record retired
+  backlog and one-item scan pages; the active purge task advances while the
+  retired worker remains in discovery. A reader and delegated-credential pin
+  survive worker reconstruction, and physical deletion starts only after both
+  pins release. Existing changed-generation, lost-reply and restart tests
+  cover the other crash/race boundaries.
+- Four concurrent official PyIceberg workers each create, commit, reload and
+  drop three tables while reading committed metadata through PyIceberg FileIO;
+  GC advances during those requests against a 128-record purge backlog.
+  Command: `CROWDB_ICEBERG_E2E_PYTHON=.pixi/envs/iceberg-e2e/bin/python CROWDB_RUNTIME_ROOT=.crowdb-runtime/artifacts/gc-sdk-pressure-20260926e pixi run cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_gc_control_test official_sdk_foreground_progresses_under_gc_backlog -- --ignored --nocapture`.
 
 - Iceberg library all-target tests and Access Server Iceberg-enabled all-target
   tests pass. Focused coverage includes checkpoint forests, live shared-root

@@ -90,6 +90,7 @@ iceberg-e2e = { features = ["iceberg-e2e"], no-default-feature = true }
 [feature.iceberg-e2e.dependencies]
 python = "3.12.*"
 pyiceberg = ">=0.10,<0.12"
+s3fs = "*"
 openjdk = "21.*"
 maven = "3.9.*"
 

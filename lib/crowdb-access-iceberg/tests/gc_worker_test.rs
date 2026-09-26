@@ -926,13 +926,67 @@ async fn late_candidate_discovery_starts_a_fresh_retention_window() {
 }
 
 #[tokio::test]
-async fn purge_fences_new_readers_and_waits_for_the_existing_pin() {
+async fn purge_fences_new_readers_and_waits_for_reader_and_delegated_pins() {
+    let (fixture, blocks, _, limits, _) = fixture(false).await;
+    let (head, pin, delegated, pins) = create_purge_with_pins(&fixture).await;
+    let repository = GcRepository::new(fixture.store.clone());
+    let mut task = GcTask::plan(fixture.context, OperationId::random(), Some(head), 1000, limits).unwrap();
+    repository.create(&task).await.unwrap();
+    let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
+    for _ in 0..50 {
+        task = worker.step(&task, 2000_u64.max(task.retry_at_ms)).await.unwrap();
+        if task.phase == GcPhase::Waiting {
+            break;
+        }
+    }
+    assert!(task.fenced);
+    assert_eq!(task.stalled, GcStalledReason::Protected);
+    assert_eq!(blocks.deletes.load(Ordering::Relaxed), 0);
+    let mut newcomer = pin.clone();
+    newcomer.identity = OperationId::random();
+    assert!(pins.acquire(&newcomer).await.is_err());
+    pins.release(&pin).await.unwrap();
+    let restarted = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
+    for _ in 0..30 {
+        task = restarted
+            .step(&task, 3000_u64.max(task.retry_at_ms))
+            .await
+            .unwrap();
+        assert_eq!(blocks.deletes.load(Ordering::Relaxed), 0);
+        if task.stalled == GcStalledReason::Protected {
+            break;
+        }
+    }
+    assert_eq!(task.stalled, GcStalledReason::Protected);
+    pins.release(&delegated).await.unwrap();
+    for _ in 0..300 {
+        task = restarted
+            .step(&task, 10_000_u64.max(task.retry_at_ms))
+            .await
+            .unwrap();
+        if task.phase == GcPhase::Complete {
+            break;
+        }
+    }
+    assert_eq!(task.phase, GcPhase::Complete);
+    assert_eq!(task.deleted, 2);
+    assert!(!task.fenced);
+    assert!(blocks.blocks.values.load().is_empty());
+}
+
+async fn create_purge_with_pins(
+    fixture: &common::file::TestFile,
+) -> (
+    crowdb_access_iceberg::table::TableHead,
+    crowdb_access_iceberg::gc::GcPin,
+    crowdb_access_iceberg::gc::GcPin,
+    crowdb_access_iceberg::gc::ReaderPins,
+) {
     use crowdb_access_iceberg::{
         gc::{GcPin, ReaderPins},
         key::NamespaceId,
         table::{head_key, TableHead, TableLifecycle, TablePurgeTask},
     };
-    let (fixture, blocks, _, limits, _) = fixture(false).await;
     let metadata = fixture.record("metadata/table.json", b"{}");
     FileRepository::new(fixture.store.clone())
         .publish(fixture.context, &metadata)
@@ -973,6 +1027,10 @@ async fn purge_fences_new_readers_and_waits_for_the_existing_pin() {
     };
     let pins = ReaderPins::new(fixture.store.clone());
     pins.acquire(&pin).await.unwrap();
+    let mut delegated = pin.clone();
+    delegated.identity = OperationId::random();
+    delegated.principal = "delegated-credential".into();
+    pins.acquire(&delegated).await.unwrap();
     head.lifecycle = TableLifecycle::Tombstone;
     head.operation_fence += 1;
     head.pending_operation = Some(OperationId::random());
@@ -998,31 +1056,5 @@ async fn purge_fences_new_readers_and_waits_for_the_existing_pin() {
         .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
         .await
         .unwrap();
-    let repository = GcRepository::new(fixture.store.clone());
-    let mut task = GcTask::plan(fixture.context, OperationId::random(), Some(head), 1000, limits).unwrap();
-    repository.create(&task).await.unwrap();
-    let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
-    for _ in 0..50 {
-        task = worker.step(&task, 2000_u64.max(task.retry_at_ms)).await.unwrap();
-        if task.phase == GcPhase::Waiting {
-            break;
-        }
-    }
-    assert!(task.fenced);
-    assert_eq!(task.stalled, GcStalledReason::Protected);
-    assert_eq!(blocks.deletes.load(Ordering::Relaxed), 0);
-    let mut newcomer = pin.clone();
-    newcomer.identity = OperationId::random();
-    assert!(pins.acquire(&newcomer).await.is_err());
-    pins.release(&pin).await.unwrap();
-    for _ in 0..300 {
-        task = worker.step(&task, 10_000).await.unwrap();
-        if task.phase == GcPhase::Complete {
-            break;
-        }
-    }
-    assert_eq!(task.phase, GcPhase::Complete);
-    assert_eq!(task.deleted, 2);
-    assert!(!task.fenced);
-    assert!(blocks.blocks.values.load().is_empty());
+    (head, pin, delegated, pins)
 }

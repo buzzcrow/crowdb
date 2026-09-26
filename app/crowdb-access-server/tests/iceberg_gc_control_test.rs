@@ -9,13 +9,14 @@ use crowdb_access_iceberg::{
     catalog::{
         CatalogContext, CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege, RoutedCatalogStore,
     },
-    file::TableLocation,
+    file::{file_key, ContentFormat, FileContent, FileKind, FileRecord, TableLocation},
     gc::{GcLimits, GcRepository, GcStalledReason, ReaderPins},
     key::{FileId, NamespaceId, OperationId, TableId},
     operation::{mutation_identity, ManagementAction, ManagementRequest, RequestIdentity},
     record::StorageRecord,
     table::{head_key, TableHead, TableLifecycle, TablePurgeTask},
 };
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 fn command(stack: &common::TestIcebergStack, token: char, arguments: &[&str]) -> std::process::Output {
@@ -74,6 +75,11 @@ async fn seed_table(stack: &common::TestIcebergStack) -> (Arc<RoutedCatalogStore
         .unwrap();
     common::activate(&catalog).await;
     let context = catalog.status().await.unwrap().0.context;
+    let table = seed_head(store.as_ref(), context).await;
+    (store, context, table)
+}
+
+async fn seed_head(store: &RoutedCatalogStore, context: CatalogContext) -> TableId {
     let table = TableId::random();
     let location = TableLocation {
         catalog: context.catalog,
@@ -101,7 +107,7 @@ async fn seed_table(stack: &common::TestIcebergStack) -> (Arc<RoutedCatalogStore
         .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
         .await
         .unwrap();
-    (store, context, table)
+    table
 }
 
 async fn check_operator_pin(
@@ -149,6 +155,52 @@ async fn tombstone_head(store: &RoutedCatalogStore, context: CatalogContext, tab
             &next,
             mutation_identity(&key, Some(&previous.bytes), &next),
         )
+        .await
+        .unwrap();
+}
+
+async fn seed_files(store: &RoutedCatalogStore, context: CatalogContext, table: TableId, count: usize) {
+    for index in 0..count {
+        let payload_json = format!("{{\"index\":{index}}}");
+        let file = FileRecord {
+            file: FileId::random(),
+            location: TableLocation {
+                catalog: context.catalog,
+                table,
+            }
+            .file(&format!("metadata/backlog-{index}.json"))
+            .unwrap(),
+            kind: FileKind::Metadata,
+            format: ContentFormat::Json,
+            length: payload_json.len() as u64,
+            digest: Sha256::digest(payload_json.as_bytes()).into(),
+            content: FileContent::select_inline(FileKind::Metadata, payload_json.as_bytes()).unwrap(),
+            hint: None,
+        };
+        let key = file_key(context.catalog, file.file).encode().unwrap();
+        let bytes = StorageRecord::File(Box::new(file)).encode().unwrap();
+        store
+            .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+            .await
+            .unwrap();
+    }
+}
+
+async fn seed_purge_marker(store: &RoutedCatalogStore, context: CatalogContext, table: TableId) {
+    tombstone_head(store, context, table).await;
+    let key = head_key(context.catalog, table);
+    let head = store.get(&key.encode().unwrap()).await.unwrap().unwrap();
+    let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &head.bytes).unwrap() else {
+        panic!("table head");
+    };
+    let marker = TablePurgeTask {
+        activation_epoch: context.activation_epoch,
+        head: *head,
+    };
+    let encoded = marker.key().encode().unwrap();
+    let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();
+    store
+        .compare_exchange(&encoded, None, &bytes, mutation_identity(&encoded, None, &bytes))
         .await
         .unwrap();
 }
@@ -245,35 +297,7 @@ async fn authenticated_gc_controls_survive_separate_processes() {
 async fn enabled_scheduler_admits_durable_purge_markers_once() {
     let stack = common::TestIcebergStack::start().await;
     let (store, context, table) = seed_table(&stack).await;
-    let key = head_key(context.catalog, table);
-    let before = store.get(&key.encode().unwrap()).await.unwrap().unwrap();
-    let StorageRecord::TableHead(mut head) = StorageRecord::decode(&key, &before.bytes).unwrap() else {
-        panic!("table head");
-    };
-    head.lifecycle = TableLifecycle::Tombstone;
-    head.operation_fence += 1;
-    head.pending_operation = Some(OperationId::random());
-    let after = StorageRecord::TableHead(head.clone()).encode().unwrap();
-    let encoded = key.encode().unwrap();
-    store
-        .compare_exchange(
-            &encoded,
-            Some(&before.bytes),
-            &after,
-            mutation_identity(&encoded, Some(&before.bytes), &after),
-        )
-        .await
-        .unwrap();
-    let marker = TablePurgeTask {
-        activation_epoch: context.activation_epoch,
-        head: *head,
-    };
-    let encoded = marker.key().encode().unwrap();
-    let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();
-    store
-        .compare_exchange(&encoded, None, &bytes, mutation_identity(&encoded, None, &bytes))
-        .await
-        .unwrap();
+    seed_purge_marker(store.as_ref(), context, table).await;
     let server = process::TestIcebergProcess::start_with_gc(&stack.cluster.mgmt_endpoints, true).await;
     let repository = GcRepository::new(store);
     let identity = OperationId::from_bytes(table.as_bytes()).unwrap();
@@ -301,6 +325,7 @@ async fn enabled_scheduler_admits_durable_purge_markers_once() {
 async fn enabled_scheduler_admits_and_advances_completed_clear() {
     let stack = common::TestIcebergStack::start().await;
     let (store, old, _) = seed_table(&stack).await;
+    seed_files(store.as_ref(), old, TableId::random(), 48).await;
     let catalog = CatalogRepository::new(
         store.clone(),
         ClearBounds {
@@ -337,7 +362,15 @@ async fn enabled_scheduler_admits_and_advances_completed_clear() {
         .execute(clear, ManagementPrivilege::Clear, transition.complete_after_ms)
         .await
         .unwrap();
-    let server = process::TestIcebergProcess::start_with_gc(&stack.cluster.mgmt_endpoints, true).await;
+    let active = catalog.status().await.unwrap().0.context;
+    let table = seed_head(store.as_ref(), active).await;
+    seed_purge_marker(store.as_ref(), active, table).await;
+    let server = process::TestIcebergProcess::start_with_gc_settings(
+        &stack.cluster.mgmt_endpoints,
+        true,
+        &[("CROWDB_ICEBERG_GC_PAGE_ITEMS", "1")],
+    )
+    .await;
     let repository = GcRepository::new(store);
     let task = tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
@@ -352,6 +385,28 @@ async fn enabled_scheduler_admits_and_advances_completed_clear() {
     .await
     .unwrap();
     assert_eq!(task.kind, crowdb_access_iceberg::gc::GcTaskKind::RetiredCatalog);
+    let active_task = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(task) = repository
+                .task(active.catalog, OperationId::from_bytes(table.as_bytes()).unwrap())
+                .await
+                .unwrap()
+            {
+                if task.revision > 1 {
+                    break task;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        active_task.kind,
+        crowdb_access_iceberg::gc::GcTaskKind::PurgeTable
+    );
+    let retired = repository.task(old.catalog, identity).await.unwrap().unwrap();
+    assert_eq!(retired.phase, crowdb_access_iceberg::gc::GcPhase::Discover);
     drop(server);
 }
 
@@ -381,4 +436,94 @@ assert not catalog.namespace_exists(namespace)
             .unwrap();
         assert!(status.success());
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the pinned PyIceberg environment"]
+async fn official_sdk_foreground_progresses_under_gc_backlog() {
+    let python = std::env::var_os("CROWDB_ICEBERG_E2E_PYTHON")
+        .expect("run with the pinned iceberg-e2e pixi environment");
+    let stack = common::TestIcebergStack::start().await;
+    let (store, context, table) = seed_table(&stack).await;
+    seed_files(store.as_ref(), context, table, 128).await;
+    seed_purge_marker(store.as_ref(), context, table).await;
+    let server = process::TestIcebergProcess::start_with_gc_settings(
+        &stack.cluster.mgmt_endpoints,
+        true,
+        &[("CROWDB_ICEBERG_GC_PAGE_ITEMS", "1")],
+    )
+    .await;
+    let script = r#"import sys
+from concurrent.futures import ThreadPoolExecutor
+import requests
+from pyiceberg.catalog import load_catalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import LongType, NestedField
+
+def run(worker):
+    catalog = load_catalog(f"gc-{worker}", type="rest", uri=sys.argv[1], token="w" * 32)
+    namespace = (f"gc-pressure-{worker}",)
+    catalog.create_namespace(namespace)
+    for index in range(3):
+        identifier = namespace + (f"events-{index}",)
+        table = catalog.create_table(identifier, Schema(NestedField(field_id=1, name="id", field_type=LongType(), required=True)))
+        table.transaction().set_properties({"gc-probe": str(index)}).commit_transaction()
+        loaded = catalog.load_table(identifier)
+        assert loaded.properties["gc-probe"] == str(index)
+        response = requests.get(
+            f"{sys.argv[1]}/v1/namespaces/{namespace[0]}/tables/{identifier[1]}/credentials",
+            headers={"Authorization": "Bearer " + "w" * 32},
+            timeout=5,
+        )
+        response.raise_for_status()
+        loaded.io.properties.update(response.json()["storage-credentials"][0]["config"])
+        with loaded.io.new_input(loaded.metadata_location).open() as stream:
+            assert stream.read().startswith(b"{")
+        catalog.drop_table(identifier)
+    catalog.drop_namespace(namespace)
+
+with ThreadPoolExecutor(max_workers=4) as executor:
+    list(executor.map(run, range(4)))
+"#;
+    let mut client = std::process::Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .arg(format!("http://{}", server.address))
+        .spawn()
+        .unwrap();
+    let repository = GcRepository::new(store);
+    let identity = OperationId::from_bytes(table.as_bytes()).unwrap();
+    let overlapped = tokio::time::timeout(std::time::Duration::from_secs(90), async {
+        loop {
+            if client.try_wait().unwrap().is_some() {
+                break false;
+            }
+            if repository
+                .task(context.catalog, identity)
+                .await
+                .unwrap()
+                .is_some_and(|task| task.revision > 1)
+            {
+                break true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let status = tokio::time::timeout(std::time::Duration::from_secs(90), async {
+        loop {
+            if let Some(status) = client.try_wait().unwrap() {
+                break status;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(status.success(), "official SDK foreground operations failed");
+    assert!(
+        overlapped,
+        "GC did not advance while the SDK requests were active"
+    );
 }
