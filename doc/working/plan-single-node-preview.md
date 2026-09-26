@@ -110,8 +110,10 @@ and verifiable release assets.
   logging are implemented in `bootstrap/disk_files.rs`. Group 0 rack/node/
   disk-group/four-disk authority, stable DiskDB owner, and Group 1 bind are
   reconciled through `HardwareClient` with preflight conflict rejection and
-  real-KV tests in `bootstrap/hardware.rs`; DiskDB/DiskIO staging and direct
-  readiness remain.
+  real-KV tests in `bootstrap/hardware.rs`. Real DiskDB/DiskIO processes now
+  register their owner in Group 0; the monitor waits for the matching registry
+  record and fsyncs all four disk IDs through DiskIO. The same authority and
+  disk probe pass after a persisted restart. `run` command staging remains.
 - [ ] **Chunk services bootstrap**: render/start ChunkDB in explicit
   `unsafe_colocated` mode and Chunk-KV with metadata Group 1; establish service
   registry/catalog authority and readiness without enabling split or claiming

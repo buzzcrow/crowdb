@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
+crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
