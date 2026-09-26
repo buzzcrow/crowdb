@@ -60,17 +60,13 @@ cuObject/RDMA acceleration after the TCP baseline is correct and measured.
 
 R177 is the program blueprint and resolves the shared design questions. The
 catalog/service foundation, namespace, FileIO, table-lifecycle and atomic-commit
-acceptance are complete. R183–R184 complete the correctness milestone; R185 is a later
-cache optimization.
+acceptance and R183 reclamation are complete. R184 remains the correctness
+milestone gate; R185 is a later cache optimization.
 
 - **[R177](R177-access-iceberg-catalog-foundation.md)** — native Iceberg storage
   blueprint — Area: access server / Iceberg / Chunk-KV / chunk I/O — Fix the
   authority model, v1/v2/v3 core profile, program invariants, requirement order,
   and all cross-cutting design decisions.
-- **[R183](R183-access-iceberg-reclamation.md)** — reachability and bounded
-  reclamation — Area: access server / Iceberg / chunk I/O — Prove v1/v2/v3
-  snapshot and operation reachability before reclaiming candidates, purged tables,
-  staged files, or retired catalogs.
 - **[R184](R184-access-iceberg-rest-conformance.md)** — REST integration and core
   conformance — Area: access server / Iceberg — Compose the public REST service,
   authentication, exact endpoint discovery and errors, compatibility kit, official

@@ -4,14 +4,14 @@ Upstream: [R184](../backlog/R184-access-iceberg-rest-conformance.md).
 Program: [functional catalog plan](plan-iceberg-functional-catalog.md).
 
 Goal: finish the foreground REST implementation and official-client evidence;
-leave engine and reclamation-dependent acceptance explicitly pending.
+leave engine acceptance explicitly pending.
 
 ## Scope and starting point
 
 - Tasks 1–5 are implemented and verified for the declared foreground profile.
-  R179–R182 supply the storage and mutation foundation; the R177 OI-6
-  activation decision is implemented. Engine and reclamation-dependent R184
-  acceptance remains pending in separate work.
+  R179–R183 supply the storage, mutation and reclamation foundation; the R177
+  OI-6 activation decision is implemented. Engine acceptance remains pending
+  in separate work.
 - Do not run Spark/Flink/Trino, physical GC or broad performance experiments.
   Do not update the user guide. Human decisions belong in R177, not this plan.
 - Use the backed-up OpenAPI and table spec under
@@ -241,7 +241,8 @@ Executable foreground evidence matrix (not engine certification):
   lost mutation POST with the same key; direct HTTP tests cover that contract.
 - **Not certified:** the full configured RCK suite needs register/views or
   external file locations outside the declared native authority; Spark/Flink/
-  Trino results, ORC and R183 physical reclamation remain separate pending work.
+  Trino results and ORC remain separate pending work. R183 reclamation has
+  separate native acceptance and remains opt-in at runtime.
 
 - **Namespace, version-independent:** Rust 0.10.0 `iceberg_rust_sdk_test`
   covers create/list/load/rename/drop through two listeners; Java 1.11.0
@@ -305,7 +306,8 @@ Executable foreground evidence matrix (not engine certification):
 - **Outside the declared foreground profile:** the full configured RCK catalog
   suite exercises register/views and foreign file locations; official SDKs do
   not issue automatic same-key retries for lost mutation POST responses.
-  Engine row-level visibility and R183 physical reclamation remain pending.
+  Engine row-level visibility remains pending; R183 native reclamation acceptance
+  is complete and remains separate from this foreground profile.
 
 Native Java FileIO diagnostic on 2026-09-25: the three-test serial suite passed
 two cases, but the catalog/Parquet case returned HTTP 503 during partition
@@ -402,6 +404,6 @@ isolated runtime root.
 - Main implementation checkpoint: tasks 1–4 and their targeted acceptance.
 - Foreground interoperability checkpoint: task 5, excluding explicitly deferred
   engine and reclamation gates.
-- Full R184 closure: only after the user's separate engine project and relevant
-  R183 evidence satisfy the remaining acceptance. Keep the requirement and this
+- Full R184 closure: only after the user's separate engine project satisfies
+  the remaining acceptance. R183 evidence is complete. Keep the requirement and this
   plan until then; keep completed summaries concise.

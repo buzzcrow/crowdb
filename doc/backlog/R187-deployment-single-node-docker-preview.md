@@ -398,11 +398,10 @@ passes explicit data and log paths to every child.
   chunk-tree GC, and R170 RDMA are not required for the initial image and must
   not be implied by its capability claims.
 - Depends on R177's native Iceberg authority and the implemented R178 through
-  R182 functionality. R183 reclamation and the outstanding R184 conformance
-  gates remain visible limitations. The image may expose only the R184 routes
-  and client operations that pass the pinned container matrix; it cannot close
-  or bypass either requirement. R185 caching and R186 ORC validation are not
-  dependencies.
+  R183 functionality. R183's opt-in GC and deferred shared-range deletion remain
+  visible limitations. The image may expose only the R184 routes and client
+  operations that pass the pinned container matrix; it cannot close or bypass
+  R184. R185 caching and R186 ORC validation are not dependencies.
 - Reuses existing process binaries, management APIs, service registration,
   health endpoints, runtime-root conventions, and the compiled
   `app/crowdb-web/ui` artifact. R187 owns the required `crowdb-web`/

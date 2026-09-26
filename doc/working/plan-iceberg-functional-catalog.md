@@ -38,13 +38,14 @@ after the program finishes. Human decisions live only in R177. No user-guide wor
   Iceberg-E2E clippy pass. Existing Maven warnings remain visible. Only the Pixi
   toolchain was verified; locked LZ4 dependencies exceed the declared Rust 1.75
   MSRV, so Rust 1.75 compatibility is not claimed.
-- ORC, physical GC and broad engine/performance acceptance remain separately
-  scoped below. Unconfirmed diagnostic deadlines are retained as observations,
+- ORC and broad engine/performance acceptance remain separately scoped below.
+  Physical GC has its own completed native acceptance and remains opt-in.
+  Unconfirmed diagnostic deadlines are retained as observations,
   not claimed fixes or pending human design choices.
 
 ## Remaining tasks in dependency order
 
-R179–R182 are complete. Continue foreground R184; R183 and R186 stay deferred.
+R179–R183 are complete. Continue foreground R184; R186 stays deferred.
 
 Execution detail and difficulty: [R184 REST conformance plan](plan-iceberg-rest-conformance.md).
 R184 route discovery, common admission and bounded metrics are implemented;
@@ -69,12 +70,12 @@ the fixed-slot collision policy, not every historical storage deadline.
   The official Java SDK does not automatically retry mutation POST after a lost
   response; direct HTTP fixtures cover same-key server replay. Native retirement
   grace and two consecutive native Java FileIO suites pass. Keep engine
-  acceptance in Next and physical GC in R183.
+  acceptance in Next; physical GC has separate native acceptance under R183.
   Files: conformance environments, SDK fixtures and capability tests.
 - [ ] **Requirement closure**: compare each requirement's acceptance cases with
   executable evidence; update affected permanent architecture only as needed.
   Remove each completed requirement/index entry and its plan together.
-  The full R177/R184 milestone remains open while GC acceptance is deferred.
+  The full R177/R184 milestone remains open while engine acceptance is deferred.
 
 ## Next — Separate engine testing project
 
@@ -98,7 +99,7 @@ OI-1 is resolved: functionality and performance are separate acceptance tracks.
 OI-2 is deferred by agreement to the user's later testing project, listed in Next.
 OI-3 is resolved: provisioned disk capacity and chunk allocation failure provide
 the capacity boundary, including configured limits for file-backed simulated
-disks. R183 owns remaining GC/full-capacity recovery requirements;
+disks. R183 completed GC/full-capacity recovery acceptance;
 no separate Iceberg quota or pre-full stop threshold is required.
 Fix evidence-backed obvious performance bugs; record architectural optimization
 work below for a consolidated backlog after functional implementation. Never
@@ -149,16 +150,17 @@ trade away durability, fencing, bounds or assertions for a passing timing result
 
 ## Deferred work and safety boundaries
 
-- R183 physical GC stays deferred. Clear, drop, expiry, abort and CAS loss may
-  remove logical visibility but never authorize physical deletion by TTL alone.
-  Retain ownership, generations, purge intent and recovery evidence.
+- R183 physical GC is separate and remains runtime opt-in. Clear, drop, expiry,
+  abort and CAS loss may remove logical visibility but never authorize physical
+  deletion by TTL alone. Retain ownership, generations, purge intent and recovery
+  evidence.
 - R186 owns selected ORC validation. Container probing/upload is not selection
   support; the initial selected data/delete profile remains plaintext Parquet.
 - R185 decoded-cache optimization is outside this milestone.
 - Active request/session limits do not bound cumulative retained orphan storage.
   Existing disk allocation fails when eligible capacity cannot create new chunks.
   Keep failure bounded and retain committed authority/recovery evidence. R183
-  tracks full-capacity acceptance; do not claim automatic space reclamation.
+  provides full-capacity acceptance; do not claim automatic space reclamation.
 - New runtime catalogs persist five-minute requests and fifteen-minute delegation.
   Restart cannot widen legacy bounds. Explicit clear can expand them under the
   full maintenance grace; legacy zero-delegation catalogs require a subsequent

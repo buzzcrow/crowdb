@@ -49,17 +49,15 @@ Unsupported endpoints and optional features return the precise standard
 unsupported response and perform no mutation.
 
 The user approved a foreground functional checkpoint before reclamation. R179
-through R182 are complete; continue foreground R184 conformance.
-Implement R183 afterward
-and finish the remaining R184 gates. This does not remove R183 or complete the
-original correctness milestone early. Before reclamation, unreachable storage is
-retained, physical file/chunk deletion remains disabled, and logical purge records
-a durable pending proof task without claiming that space has been reclaimed.
-Ownership and recovery evidence must survive until later candidate discovery.
+through R183 are complete; continue the remaining R184 conformance gates. This
+does not complete the original correctness milestone early. Reclamation requires
+durable positive proof, retention and pins; the worker is opt-in, and unsupported
+shared-range deletion retains pending work rather than claiming reclaimed space.
+Ownership and recovery evidence survive until candidate discovery.
 The functional checkpoint uses existing provisioned disk capacity: insufficient
 eligible space prevents new chunk allocation. It requires no separate Iceberg
-quota or pre-full write-stop policy. R183 owns full-capacity failure/recovery
-acceptance and later reclamation; per-request bounds do not bound retained
+quota or pre-full write-stop policy. Full-capacity failure/recovery acceptance
+belongs to reclamation; per-request bounds do not bound retained
 storage. No mandatory semantics of an advertised version are deferred.
 
 ### 2. Authority hierarchy
@@ -400,7 +398,7 @@ GC and exhaustion-recovery requirements recorded in R183.
 
 Unfinished implementation and unexecuted acceptance remain in the working plans.
 R179–R182 are closed by their acceptance gates, not by these decisions.
-R183–R184 remain open; this does not imply engine/GC conformance.
+R183 is complete; R184 and engine conformance remain open.
 
 - **OI-6 — Legacy zero format capability bits (resolved):** existing catalog
   authorities persist zero even though installed table routes currently accept
