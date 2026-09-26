@@ -63,8 +63,9 @@ and verifiable release assets.
   per-child logs are implemented. The single-loop supervisor now starts after
   healthy dependencies, drops readiness on probe failure, restarts affected
   services with finite backoff, handles SIGTERM drain, and tests exit recovery
-  and budget exhaustion. Remaining: real-bootstrap staging, dependent restart
-  and listener-fencing tests, stable-period budget reset, and PID 1 acceptance.
+  and budget exhaustion. Dependent cascade and transient-probe recovery tests
+  also pass. Remaining: real-bootstrap staging, listener-fencing tests,
+  stable-period budget reset, and PID 1 acceptance.
 - [~] **Monitor lifecycle log**: persist important bootstrap, readiness, child
   lifecycle, probe failure, restart, drain, and exhaustion events under durable
   `log/monitor/`; retain bounded rotation, redact by using fixed event fields,

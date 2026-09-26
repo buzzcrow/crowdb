@@ -128,3 +128,83 @@ async fn repeated_exits_exhaust_budget_and_leave_unready() {
     let body = fs::read_to_string(roots.0.join("data/log/monitor/monitor.log")).unwrap();
     assert!(body.contains("restart_exhausted"));
 }
+
+#[tokio::test]
+async fn transient_probe_failure_clears_readiness_without_restarting() {
+    let roots = TestRoots::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut profile = roots.profile("exec sleep 30".into(), address.port(), 2);
+    profile.services[0].probe.failure_threshold = 2;
+    let mut supervisor = Supervisor::new(
+        profile,
+        Uuid::new_v4(),
+        &roots.0.join("data/log"),
+        &roots.0.join("run"),
+    )
+    .await
+    .unwrap();
+    supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
+    supervisor.mark_ready().await.unwrap();
+    let original_pid = supervisor.status().services["kv"].pid;
+    drop(listener);
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().phase, MonitorPhase::Restarting);
+    assert!(!supervisor.status().services["kv"].healthy);
+    let listener = TcpListener::bind(address).await.unwrap();
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().phase, MonitorPhase::Ready);
+    assert_eq!(supervisor.status().services["kv"].pid, original_pid);
+    assert_eq!(supervisor.status().services["kv"].generation, 1);
+    supervisor.shutdown().await.unwrap();
+    drop(listener);
+}
+
+#[tokio::test]
+async fn dependency_restart_stops_dependents_before_replacement() {
+    let roots = TestRoots::new();
+    let root_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dependent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let marker = roots.0.join("first-exit");
+    let script = format!(
+        "if [ ! -e '{}' ]; then : > '{}'; sleep 0.2; exit 0; fi; exec sleep 30",
+        marker.display(),
+        marker.display()
+    );
+    let mut profile = roots.profile(script, root_listener.local_addr().unwrap().port(), 2);
+    let mut dependent = profile.services[0].clone();
+    dependent.id = "web".into();
+    dependent.dependencies = vec!["kv".into()];
+    dependent.args = vec!["-c".into(), "exec sleep 30".into()];
+    dependent.probe.target = dependent_listener.local_addr().unwrap().to_string();
+    profile.services.push(dependent);
+    profile.validate().unwrap();
+    let mut supervisor = Supervisor::new(
+        profile,
+        Uuid::new_v4(),
+        &roots.0.join("data/log"),
+        &roots.0.join("run"),
+    )
+    .await
+    .unwrap();
+    supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
+    supervisor.start_service("web", BTreeMap::new()).await.unwrap();
+    supervisor.mark_ready().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().phase, MonitorPhase::Ready);
+    assert_eq!(supervisor.status().services["kv"].generation, 2);
+    assert_eq!(supervisor.status().services["web"].generation, 2);
+    supervisor.shutdown().await.unwrap();
+    let body = fs::read_to_string(roots.0.join("data/log/monitor/monitor.log")).unwrap();
+    let events = body
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let stops = events
+        .iter()
+        .filter(|event| event["kind"] == "child_stopped")
+        .map(|event| event["service"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(&stops[..2], &["web", "kv"]);
+}
