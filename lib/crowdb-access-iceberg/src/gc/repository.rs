@@ -127,6 +127,7 @@ impl GcRepository {
                 || before.task != after.task
                 || before.file != after.file
                 || before.part != after.part
+                || before.assembly != after.assembly
                 || before.first_seen_ms != after.first_seen_ms
                 || before.not_before_ms != after.not_before_ms
                 || before.revision.checked_add(1) != Some(after.revision)

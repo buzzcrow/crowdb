@@ -153,6 +153,11 @@ pub(super) fn encode_candidate<'buffer>(
     candidate.validate()?;
     let task = builder.create_vector(candidate.task.as_bytes());
     let file = super::file::encode(builder, &candidate.file)?;
+    let assembly = candidate
+        .assembly
+        .as_ref()
+        .map(|session| super::multipart::encode_session(builder, session))
+        .transpose()?;
     let part = candidate
         .part
         .as_ref()
@@ -192,6 +197,8 @@ pub(super) fn encode_candidate<'buffer>(
             phase: candidate.phase as u8,
             file: Some(file),
             part,
+            assembly,
+            next_root: candidate.next_root,
             frames: Some(frames),
             pending,
         },
@@ -203,10 +210,18 @@ pub(super) fn decode_candidate(value: FBGcCandidate<'_>) -> Result<GcCandidate, 
         return Err(ValidationError::RecordTooLarge);
     }
     let file = super::file::decode(value.file())?;
-    let owner = FileIdentity {
-        table: file.location.table(),
-        file: file.file,
-    };
+    let assembly = value
+        .assembly()
+        .map(super::multipart::decode_session)
+        .transpose()?
+        .map(Box::new);
+    let owner = assembly.as_ref().map_or(
+        FileIdentity {
+            table: file.location.table(),
+            file: file.file,
+        },
+        |session| session.owner,
+    );
     let frames = value
         .frames()
         .iter()
@@ -234,6 +249,8 @@ pub(super) fn decode_candidate(value: FBGcCandidate<'_>) -> Result<GcCandidate, 
         },
         file,
         part: value.part().map(super::multipart::decode_part).transpose()?,
+        assembly,
+        next_root: value.next_root(),
         cursor: TreeReclaimCursor {
             owner,
             frames,

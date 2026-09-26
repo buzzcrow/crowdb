@@ -51,7 +51,7 @@ fn task_codec_rejects_foreign_keys_and_invalid_progress() {
     task.scan_after = foreign.key().encode().unwrap();
     assert!(task.validate().is_err());
     task.scan_after.clear();
-    task.discovery_scope = 2;
+    task.discovery_scope = 3;
     assert!(task.validate().is_err());
     task.discovery_scope = 1;
     task.validate().unwrap();

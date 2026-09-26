@@ -11,6 +11,20 @@ pub struct FileWriterCheckpoint {
 }
 
 impl FileTreeWriter {
+    pub(crate) async fn checkpoint_roots(
+        store: Arc<dyn FileBlockStore>,
+        owner: FileIdentity,
+        checkpoint: &FileWriterCheckpoint,
+    ) -> Result<Vec<super::ChunkEntry>, FileIoError> {
+        let writer = Self::restore(store, owner, 1, checkpoint)
+            .await
+            .map_err(|error| match error {
+                FileIoError::Bounds => FileIoError::Invalid(crate::error::ValidationError::Record),
+                error => error,
+            })?;
+        Ok(writer.levels.into_iter().rev().flatten().collect())
+    }
+
     /// Flushes pending bytes and persists the bounded frontier in a chunk block.
     /// Only the returned fixed-size root belongs in a durable operation record.
     /// # Errors

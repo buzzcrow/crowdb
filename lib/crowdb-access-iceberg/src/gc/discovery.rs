@@ -78,10 +78,10 @@ impl GcRepository {
         }
         let scan = GcScan {
             catalog: task.context.catalog,
-            scope: Some(if task.discovery_scope == 0 {
-                CatalogScope::File
-            } else {
-                CatalogScope::MultipartPart
+            scope: Some(match task.discovery_scope {
+                0 => CatalogScope::File,
+                1 => CatalogScope::MultipartPart,
+                _ => CatalogScope::MultipartSession,
             }),
             prefix: Vec::new(),
             after: task.scan_after.clone(),
@@ -105,8 +105,8 @@ impl GcRepository {
             next.scan_after.clone_from(&last.key);
         } else {
             next.scan_after.clear();
-            if task.discovery_scope == 0 {
-                next.discovery_scope = 1;
+            if task.discovery_scope < 2 {
+                next.discovery_scope += 1;
             } else if task.phase == GcPhase::Rescan {
                 next.discovery_scope = 0;
                 next.phase = if task.kind == GcTaskKind::RetiredCatalog {
@@ -140,7 +140,7 @@ impl GcRepository {
         limits: GcLimits,
         now_ms: u64,
     ) -> Result<Option<GcCandidate>, CatalogError> {
-        let (file, part) = match key {
+        let (file, part, assembly) = match key {
             IcebergKey::Catalog {
                 scope: CatalogScope::File,
                 ..
@@ -148,7 +148,7 @@ impl GcRepository {
                 let StorageRecord::File(file) = StorageRecord::decode(key, bytes)? else {
                     return Err(ValidationError::Record.into());
                 };
-                (*file, None)
+                (*file, None, None)
             }
             IcebergKey::Catalog {
                 scope: CatalogScope::MultipartPart,
@@ -160,7 +160,25 @@ impl GcRepository {
                 if !self.part_is_abandoned(task, &part, now_ms).await? {
                     return Ok(None);
                 }
-                (GcCandidate::part_file(&part)?, Some(*part))
+                (GcCandidate::part_file(&part)?, Some(*part), None)
+            }
+            IcebergKey::Catalog {
+                scope: CatalogScope::MultipartSession,
+                ..
+            } => {
+                let StorageRecord::MultipartSession(session) = StorageRecord::decode(key, bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                if session
+                    .completion
+                    .as_ref()
+                    .and_then(|completion| completion.progress.writer.as_ref())
+                    .is_none()
+                    || !self.session_is_abandoned(task, &session, now_ms).await?
+                {
+                    return Ok(None);
+                }
+                (GcCandidate::assembly_file(&session)?, None, Some(session))
             }
             _ => return Err(ValidationError::Record.into()),
         };
@@ -171,7 +189,7 @@ impl GcRepository {
         {
             return Ok(None);
         }
-        let candidate = GcCandidate {
+        let mut candidate = GcCandidate {
             completed_round: 0,
             task: task.identity,
             generation: task.head.as_ref().map_or(0, |head| head.generation),
@@ -185,7 +203,10 @@ impl GcRepository {
             cursor: TreeReclaimCursor::new(&file)?,
             file,
             part,
+            assembly,
+            next_root: 0,
         };
+        candidate.cursor = candidate.initial_cursor()?;
         Ok(Some(candidate))
     }
 
@@ -207,6 +228,15 @@ impl GcRepository {
             return Err(ValidationError::Record.into());
         };
         part.validate_for(&session)?;
+        self.session_is_abandoned(task, &session, now_ms).await
+    }
+
+    pub(super) async fn session_is_abandoned(
+        &self,
+        task: &GcTask,
+        session: &crate::file::MultipartSession,
+        now_ms: u64,
+    ) -> Result<bool, CatalogError> {
         let terminal = matches!(
             session.phase,
             MultipartPhase::Published | MultipartPhase::Aborted | MultipartPhase::Conflicted
@@ -229,11 +259,6 @@ impl GcRepository {
             .checked_add(authority.admission_bounds.request_ms)
             .and_then(|time| time.checked_add(authority.admission_bounds.clock_skew_ms))
             .ok_or(ValidationError::Deadline)?;
-        Ok(
-            terminal
-                && session.context == task.context
-                && session.upload == part.upload
-                && now_ms >= deadline,
-        )
+        Ok(terminal && session.context == task.context && session.pending.is_none() && now_ms >= deadline)
     }
 }

@@ -21,13 +21,22 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   clock-skew bounds come from catalog authority; deleting candidates cannot be
   read or republished. Final head fencing is followed by another root scan.
   Files: `gc/protection.rs`, `file/repository.rs`, `table/load.rs`, Access Server admission.
-- [~] **Candidate discovery**: durable bounded scans for purge, retired catalogs,
-  abandoned operations/uploads, expired bindings and orphan generations; retain
-  active-root and retry-result dependencies. File records and expired terminal
-  multipart parts have durable candidates. Abandoned assembly checkpoints and
-  writes without a published authority still need their own bounded source.
-  File and multipart-part scopes have separate durable scan cursors, so discovery
-  does not walk unrelated catalog records. Files: GC repository and discovery.
+- [x] **File and multipart-part discovery**: durable bounded, separate-scope scans
+  discover file records and expired terminal multipart parts without walking
+  unrelated catalog records. Retain active-root and retry-result dependencies.
+  Files: GC repository and discovery.
+- [x] **Assembly checkpoint reclamation**: authenticated `ICFW` frontier roots
+  use a durable root index and existing tree cursor. Conflicted final trees are
+  traversed once; published sessions reclaim only their checkpoint block.
+  Terminal-session and retention checks precede each physical step; cleanup
+  requires a completed claim. Files: FileIO checkpoint decoder, GC assembly
+  worker, candidate/discovery/codec, `tests/gc_assembly_test.rs`.
+- [~] **Pre-authority write discovery**: shared ChunkIO has no durable per-object
+  ownership ledger. Add a pre-DiskIO exact-location callback and catalog-sharded
+  block intents; reconcile readable cursor or terminal chunk state before GC.
+  Sweep intents after tree candidates, protect reachable owners and persist an
+  owner deletion fence before dispatch. Files: FileIO native blocks, chunk-client
+  shared writer, GC discovery/worker, records and failure/restart tests.
 - [x] **Canonical reachability**: current and pinned historical metadata are parsed
   against captured heads. An immutable traversal stack and compressed binary
   mark index are content-addressed; one task CAS publishes both continuations.
@@ -164,9 +173,10 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   manifests can be revisited across snapshot roots. Keep the bounded proof and
   publication semantics when optimizing these paths; measure in the separate
   performance project before selecting caches or batched storage changes.
-- Multipart assembly checkpoints contain a bounded frontier of chunk roots in a
-  separate `ICFW` block. Terminal sessions retain that block and its child trees
-  until a durable per-root cursor can verify and reclaim them. Writes that fail
+- Multipart assembly checkpoints now have a bounded, authenticated forest cursor.
+  A completed claim permits terminal-session cleanup after part reclamation;
+  published checkpoints never delete the frontier shared with the final file.
+  Writes that fail
   before any durable FileRecord or checkpoint have no catalog candidate source;
   storage-level ownership discovery is still required for those orphans.
 - Retired completion currently means non-GC catalog records were scanned. The

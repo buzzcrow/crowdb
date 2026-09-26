@@ -557,8 +557,13 @@ pass; exact-identity overflow entries remain independent of occupied primary
 slots. After files are reclaimed, the worker conditionally removes expired
 bindings, audits, projections and non-GC catalog records while preserving the
 active root's management operation. Multipart parts have their own durable tree
-candidates. A terminal session with an assembly checkpoint stays retained until
-its frontier of chunk roots can be reclaimed through a durable cursor. The
+candidates. Assembly checkpoints have separate claims and a durable frontier-root
+index. Abandoned frontiers are authenticated before traversal; a conflicted final
+tree is traversed once instead of revisiting its shared frontier. Published
+sessions reclaim only the checkpoint block, preserving the assembled data tree.
+Each physical step rechecks the terminal session and retention. The checkpoint
+block is deleted after its children, and session cleanup requires its completed
+claim. The
 retired authority tombstone and GC records remain inspectable after this pass.
 
 ## 5. Compatibility

@@ -37,6 +37,8 @@ async fn directory_deletion_resumes_without_rereading_deleted_children() {
         hint: None,
     };
     let mut candidate = GcCandidate {
+        assembly: None,
+        next_root: 0,
         completed_round: 0,
         task: OperationId::random(),
         generation: 1,

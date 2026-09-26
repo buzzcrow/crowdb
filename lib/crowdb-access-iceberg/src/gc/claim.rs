@@ -27,7 +27,10 @@ impl GcRepository {
             .await?;
             proposed.clone()
         };
-        if selected.file != proposed.file || selected.part != proposed.part {
+        if selected.file != proposed.file
+            || selected.part != proposed.part
+            || selected.assembly != proposed.assembly
+        {
             return Err(ValidationError::IdentityMismatch.into());
         }
         let key = selected.key();
@@ -35,7 +38,10 @@ impl GcRepository {
             let StorageRecord::GcCandidate(current) = StorageRecord::decode(&key, &value.bytes)? else {
                 return Err(ValidationError::Record.into());
             };
-            if current.file != selected.file || current.part != selected.part {
+            if current.file != selected.file
+                || current.part != selected.part
+                || current.assembly != selected.assembly
+            {
                 return Err(ValidationError::IdentityMismatch.into());
             }
             return Ok(*current);
@@ -54,7 +60,11 @@ impl GcRepository {
         let StorageRecord::GcCandidate(claim) = StorageRecord::decode(&key, &value.bytes)? else {
             return Err(ValidationError::Record.into());
         };
-        if claim.key() != candidate.key() || claim.file != candidate.file || claim.part != candidate.part {
+        if claim.key() != candidate.key()
+            || claim.file != candidate.file
+            || claim.part != candidate.part
+            || claim.assembly != candidate.assembly
+        {
             return Err(ValidationError::IdentityMismatch.into());
         }
         Ok(())

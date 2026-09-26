@@ -421,6 +421,8 @@ table FBGcCandidate {
     phase:ubyte = 255;
     file:FBFileRecord (required);
     part:FBMultipartPart;
+    assembly:FBMultipartSession;
+    next_root:ushort;
     frames:[FBGcFrame] (required);
     pending:FBFileChunkRoot;
 }

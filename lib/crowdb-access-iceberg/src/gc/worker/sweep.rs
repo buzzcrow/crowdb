@@ -139,6 +139,7 @@ impl GcWorker {
         if now_ms < candidate.not_before_ms {
             return Err(CatalogError::Busy.into());
         }
+        self.verify_assembly(task, candidate, now_ms).await?;
         if let Some(part) = &candidate.part {
             let key = part.key();
             let stored = self
@@ -188,6 +189,10 @@ impl GcWorker {
             match candidate.cursor.next(self.blocks.as_ref()).await? {
                 ReclaimStep::Descended(cursor) | ReclaimStep::Delete(cursor) => next.cursor = cursor,
                 ReclaimStep::Complete => {
+                    if self.advance_assembly(candidate, &mut next).await? {
+                        self.repository.candidate(Some(candidate), &next).await?;
+                        return Ok(DeleteProgress::Advanced);
+                    }
                     self.remove_file_authority(candidate).await?;
                     next.phase = CandidatePhase::Complete;
                     next.completed_round = sweep_round;
@@ -203,6 +208,9 @@ impl GcWorker {
     }
 
     async fn remove_file_authority(&self, candidate: &GcCandidate) -> Result<(), GcWorkError> {
+        if candidate.assembly.is_some() {
+            return Ok(());
+        }
         if let Some(part) = &candidate.part {
             return self
                 .remove_record(&part.key(), &StorageRecord::MultipartPart(Box::new(part.clone())))

@@ -17,6 +17,8 @@ async fn candidate() -> (common::file::TestFile, GcCandidate) {
     let fixture = common::file::TestFile::new(common::TestStore::default()).await;
     let file = fixture.record("metadata/orphan.json", b"{}");
     let candidate = GcCandidate {
+        assembly: None,
+        next_root: 0,
         task: OperationId::random(),
         generation: 7,
         first_seen_ms: 1000,

@@ -16,6 +16,7 @@ use super::{
 };
 
 mod admission;
+mod assembly;
 mod cleanup;
 mod inactive;
 mod live;

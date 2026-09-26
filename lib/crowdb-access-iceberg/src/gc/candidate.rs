@@ -1,7 +1,7 @@
 use crate::{
     error::ValidationError,
-    file::{ContentFormat, FileContent, FileKind, FileRecord, MultipartPart},
-    key::{CatalogScope, IcebergKey, OperationId},
+    file::{ContentFormat, FileContent, FileKind, FileRecord, MultipartPart, MultipartSession},
+    key::{CatalogScope, FileId, IcebergKey, OperationId},
 };
 
 use super::TreeReclaimCursor;
@@ -26,10 +26,50 @@ pub struct GcCandidate {
     pub completed_round: u64,
     pub file: FileRecord,
     pub part: Option<MultipartPart>,
+    pub assembly: Option<Box<MultipartSession>>,
+    pub next_root: u16,
     pub cursor: TreeReclaimCursor,
 }
 
 impl GcCandidate {
+    pub(crate) fn assembly_file(session: &MultipartSession) -> Result<FileRecord, ValidationError> {
+        session.validate()?;
+        let checkpoint = session
+            .completion
+            .as_ref()
+            .and_then(|completion| completion.progress.writer.as_ref())
+            .ok_or(ValidationError::Record)?;
+        let file = FileRecord {
+            file: FileId::from_bytes(&checkpoint.root.digest[..16])?,
+            location: session
+                .owner
+                .table
+                .file(&format!("gc-checkpoints/{}.parquet", session.upload))?,
+            kind: FileKind::Unbound,
+            format: ContentFormat::Parquet,
+            length: checkpoint.root.logical_length,
+            digest: checkpoint.root.digest,
+            content: FileContent::Chunks {
+                root: Some(checkpoint.root.clone()),
+            },
+            hint: None,
+        };
+        file.validate()?;
+        Ok(file)
+    }
+
+    pub(crate) fn initial_cursor(&self) -> Result<TreeReclaimCursor, ValidationError> {
+        if let Some(session) = &self.assembly {
+            Ok(TreeReclaimCursor {
+                owner: session.owner,
+                frames: Vec::new(),
+                pending: None,
+            })
+        } else {
+            TreeReclaimCursor::new(&self.file)
+        }
+    }
+
     /// # Errors
     /// Rejects an invalid part tree or synthetic location.
     pub fn part_file(part: &MultipartPart) -> Result<FileRecord, ValidationError> {
@@ -82,6 +122,24 @@ impl GcCandidate {
     pub fn validate(&self) -> Result<(), ValidationError> {
         self.file.validate()?;
         self.cursor.validate()?;
+        if let Some(session) = &self.assembly {
+            if self.part.is_some()
+                || Self::assembly_file(session)? != self.file
+                || self.cursor.owner != session.owner
+                || !matches!(
+                    session.phase,
+                    crate::file::MultipartPhase::Published
+                        | crate::file::MultipartPhase::Aborted
+                        | crate::file::MultipartPhase::Conflicted
+                )
+                || (self.next_root > 9 * 255 && self.next_root != u16::MAX)
+                || (self.phase == CandidatePhase::Complete && self.next_root != u16::MAX)
+            {
+                return Err(ValidationError::Record);
+            }
+        } else if self.next_root != 0 || self.cursor.owner.file != self.file.file {
+            return Err(ValidationError::Record);
+        }
         if self
             .part
             .as_ref()
@@ -94,8 +152,8 @@ impl GcCandidate {
             || self.revision == 0
             || ((self.phase == CandidatePhase::Complete) != (self.completed_round != 0))
             || self.cursor.owner.table != self.file.location.table()
-            || self.cursor.owner.file != self.file.file
-            || (self.phase == CandidatePhase::Retained && self.cursor != TreeReclaimCursor::new(&self.file)?)
+            || (self.phase == CandidatePhase::Retained
+                && (self.cursor != self.initial_cursor()? || self.next_root != 0))
             || (self.phase == CandidatePhase::Complete
                 && (!self.cursor.frames.is_empty() || self.cursor.pending.is_some()))
         {

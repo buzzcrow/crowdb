@@ -163,10 +163,15 @@ impl GcWorker {
                     MultipartPhase::Published | MultipartPhase::Aborted | MultipartPhase::Conflicted
                 ) || now_ms < session.expires_ms.saturating_add(grace_ms)
                     || session.pending.is_some()
-                    || session.completion.as_ref().is_some_and(|completion| {
-                        completion.progress.writer.is_some()
-                            || (completion.candidate.is_some() && session.phase != MultipartPhase::Published)
-                    })
+                {
+                    return Err(CatalogError::Busy.into());
+                }
+                if session
+                    .completion
+                    .as_ref()
+                    .and_then(|completion| completion.progress.writer.as_ref())
+                    .is_some()
+                    && !self.assembly_reclaimed(session).await?
                 {
                     return Err(CatalogError::Busy.into());
                 }

@@ -88,7 +88,7 @@ impl GcTask {
         self.context.validate()?;
         self.proof.validate(self)?;
         if self.revision == 0
-            || self.discovery_scope > 1
+            || self.discovery_scope > 2
             || (self.discovery_scope != 0 && !matches!(self.phase, GcPhase::Discover | GcPhase::Rescan))
             || self.created_ms == 0
             || self.not_before_ms < self.created_ms

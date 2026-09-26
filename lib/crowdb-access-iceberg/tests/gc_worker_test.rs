@@ -237,7 +237,7 @@ async fn retired_cleanup_removes_expired_primary_binding_and_projection_without_
 
 #[tokio::test]
 async fn retired_cleanup_retains_aborted_assembly_checkpoint_until_its_chunks_are_reclaimed() {
-    use crowdb_access_iceberg::file::{FileBlockStore, FileWriterCheckpoint, MultipartPhase};
+    use crowdb_access_iceberg::file::MultipartPhase;
     let (fixture, blocks, mut task, limits, _) = fixture(true).await;
     let mut session = multipart_fixtures::session();
     session.context = fixture.context;
@@ -247,8 +247,11 @@ async fn retired_cleanup_retains_aborted_assembly_checkpoint_until_its_chunks_ar
     session.part_count = 1;
     session.staged_bytes = 1;
     session.completion = Some(multipart_fixtures::completion(&session));
-    let checkpoint = blocks.put(session.owner, 0, b"checkpoint").await.unwrap();
-    session.completion.as_mut().unwrap().progress.writer = Some(FileWriterCheckpoint { root: checkpoint });
+    let mut writer = FileTreeWriter::new(blocks.clone(), session.owner, 1).unwrap();
+    writer.push(b"x").await.unwrap();
+    let progress = &mut session.completion.as_mut().unwrap().progress;
+    progress.writer = Some(writer.checkpoint().await.unwrap());
+    progress.completed_bytes = 1;
     let key = session.key().encode().unwrap();
     let bytes = StorageRecord::MultipartSession(Box::new(session))
         .encode()
@@ -264,14 +267,13 @@ async fn retired_cleanup_retains_aborted_assembly_checkpoint_until_its_chunks_ar
             .run(&task, 1_000_000_u64.max(task.retry_at_ms))
             .await
             .unwrap();
-        if task.phase == GcPhase::CleanupCatalog && task.stalled == GcStalledReason::Protected {
+        if task.phase == GcPhase::Complete {
             break;
         }
     }
-    assert_eq!(task.phase, GcPhase::CleanupCatalog, "{task:?}");
-    assert_eq!(task.stalled, GcStalledReason::Protected);
-    assert!(fixture.store.get(&key).await.unwrap().is_some());
-    assert_eq!(blocks.blocks.values.load().len(), 1);
+    assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
+    assert!(fixture.store.get(&key).await.unwrap().is_none());
+    assert!(blocks.blocks.values.load().is_empty());
 }
 
 #[tokio::test]
@@ -669,6 +671,8 @@ async fn retirement_adopts_a_purge_cursor_after_a_child_was_physically_deleted()
     old.paused = true;
     repository.create(&old).await.unwrap();
     let initial = GcCandidate {
+        assembly: None,
+        next_root: 0,
         task: old.identity,
         generation: 7,
         first_seen_ms: 500,
