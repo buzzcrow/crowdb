@@ -114,16 +114,19 @@ and verifiable release assets.
   register their owner in Group 0; the monitor waits for the matching registry
   record and fsyncs all four disk IDs through DiskIO. The same authority and
   disk probe pass after a persisted restart. `run` command staging remains.
-- [ ] **Chunk services bootstrap**: render/start ChunkDB in explicit
+- [~] **Chunk services bootstrap**: render/start ChunkDB in explicit
   `unsafe_colocated` mode and Chunk-KV with metadata Group 1; establish service
   registry/catalog authority and readiness without enabling split or claiming
   a failure domain. Files:
   `container/crowdb-monitor/src/bootstrap/chunk.rs`,
   `container/single-node-preview/templates/{chunkdb,chunk-kv}.toml`,
-  `container/crowdb-monitor/tests/chunk_bootstrap_test.rs`.
+  `container/crowdb-monitor/tests/chunk_bootstrap_test.rs`. The named ChunkDB
+  template now explicitly selects `unsafe_colocated`; process staging, range
+  authority, and Chunk-KV readiness remain.
 - [ ] **S3 and Iceberg bootstrap**: issue the preview S3 user after Group 0 is
   ready, initialize/activate the Iceberg catalog with durable request identities,
-  start authenticated listeners on 16000/8181, set public URI, and validate
+  start authenticated listeners on container ports 16000/8181, default the
+  client-visible Iceberg URI to host port 80, and validate
   discovery/health without trusted-network bypass. Files:
   `container/crowdb-monitor/src/bootstrap/{s3,iceberg}.rs`,
   `container/crowdb-monitor/tests/access_bootstrap_test.rs`.
@@ -156,6 +159,8 @@ and verifiable release assets.
   immutable UI/templates/profile, entrypoint, OCI labels from `VERSION`, exposed
   public ports only, and monitor health checks. Files:
   `container/single-node-preview/{Dockerfile,.dockerignore}` and build support.
+  Default invocation maps host `80:8181` for Iceberg; the non-root container
+  process retains its unprivileged 8181 listener.
 - [ ] **Pixi tasks**: add `build-docker-preview` and `test-docker-preview`, include
   the monitor in workspace build/test coverage, and keep Docker prerequisite
   failures explicit. Files: `pixi.toml`, task-coverage configuration/tests.

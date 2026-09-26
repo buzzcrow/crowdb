@@ -51,7 +51,8 @@ fault-tolerant deployment.
 
 - **DOCKER-I1 — One-command service:** one documented container invocation
   starts one usable CROWDB instance and exposes only S3 on port 16000, Iceberg
-  REST/FileIO on port 8181, and the web console on port 14000.
+  REST/FileIO on host port 80 (mapped to container port 8181), and the web
+  console on port 14000.
 - **DOCKER-I2 — Product-path fidelity:** the image runs the normal
   `crowdb-kv-server`, `crowdb-diskdb`, `crowdb-diskio`, `crowdb-chunkdb`,
   `crowdb-chunk-kv-server`, `crowdb-access-server`, `crowdb-iceberg`, and
@@ -303,8 +304,9 @@ passes explicit data and log paths to every child.
 5. Configure `crowdb-access-server` with normal S3 authentication on
    `0.0.0.0:16000`, `crowdb-iceberg` with its independent authenticated catalog
    and native FileIO listener on `0.0.0.0:8181`, and `crowdb-web` on
-   `0.0.0.0:14000`. The quick start maps these ports one-to-one and uses
-   `http://localhost:16000`, `http://localhost:8181`, and
+   `0.0.0.0:14000`. The quick start maps S3 and web one-to-one, maps host port
+   80 to container port 8181 for Iceberg, and uses
+   `http://localhost:16000`, `http://localhost`, and
    `http://localhost:14000`. `CROWDB_ICEBERG_PUBLIC_URI` defaults to the local
    Iceberg URI and is the one documented override when a remote hostname,
    reverse proxy, or different host-port mapping changes the client-visible
@@ -369,8 +371,8 @@ passes explicit data and log paths to every child.
     crash-loop budget exhaustion, monitor failure, `SIGTERM`, wrong secrets,
     read-only/unwritable volume, and missing, corrupt, incompatible, or conflicting
     bootstrap manifest outcomes.
-11. Publish a minimal quick start that pins an image tag, maps ports 16000, 8181,
-    and 14000, mounts one host data path at `/opt/crowdb/data`, configures the
+11. Publish a minimal quick start that pins an image tag, maps ports 16000:16000,
+    80:8181, and 14000:14000, mounts one host data path at `/opt/crowdb/data`, configures the
     container runtime restart policy for monitor-budget exhaustion, retrieves
     generated preview credentials with the explicit monitor command, and includes
     independent S3 and Iceberg examples. The compatibility list names exact
@@ -490,9 +492,9 @@ passes explicit data and log paths to every child.
   AWS CLI and PyIceberg authenticate with them, restart preserves the same
   values, and image layers, process arguments, probes, status, and ordinary logs
   contain none of those values. Invariants: DOCKER-I6 and DOCKER-I9. E2E test.
-- Given default one-to-one mappings and then an overridden external Iceberg URI,
+- Given the default host-port mappings and then an overridden external Iceberg URI,
   when clients discover and call all public services, assert S3 is available at
-  port 16000, Iceberg REST/FileIO at 8181, web at 14000, no internal listener is
+  port 16000, Iceberg REST/FileIO at host port 80, web at 14000, no internal listener is
   host-reachable, and Iceberg advertises the configured client-visible URI.
   Invariants: DOCKER-I1 and DOCKER-I7. E2E test.
 - Given first-time initialization is interrupted after each durable step, when

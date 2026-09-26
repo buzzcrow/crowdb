@@ -39,6 +39,15 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         endpoints,
         BTreeMap::from([("iceberg", 8181), ("s3", 16000), ("web", 14000)])
     );
+    let iceberg = profile
+        .services
+        .iter()
+        .find(|service| service.id == "iceberg")
+        .unwrap();
+    assert_eq!(
+        iceberg.env.get("CROWDB_ICEBERG_PUBLIC_URI"),
+        Some(&"http://localhost".to_owned())
+    );
 }
 
 #[test]
@@ -62,4 +71,10 @@ fn single_node_preview_declares_complete_dependency_order() {
             assert!(source.is_file(), "missing template for {}", service.id);
         }
     }
+    let chunkdb = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/templates/chunkdb.toml"),
+    )
+    .unwrap();
+    let config: toml::Value = toml::from_str(&chunkdb).unwrap();
+    assert_eq!(config["placement"]["mode"].as_str(), Some("unsafe_colocated"));
 }

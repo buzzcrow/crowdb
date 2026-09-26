@@ -187,7 +187,7 @@ backoff_max_ms = 5000
 id = "iceberg"
 program = "/opt/crowdb/bin/crowdb-iceberg"
 args = ["serve"]
-env = { CROWDB_ICEBERG_LISTEN = "0.0.0.0:8181", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost:8181", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ICEBERG_GC_ENABLED = "0" }
+env = { CROWDB_ICEBERG_LISTEN = "0.0.0.0:8181", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ICEBERG_GC_ENABLED = "0" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
 fence_listeners = ["127.0.0.1:8181"]
 [services.probe]

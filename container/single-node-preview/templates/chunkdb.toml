@@ -22,5 +22,6 @@ sweep_chunk_lock_interval_secs = 60
 lock_hold_warn_threshold_ms = 1000
 
 [placement]
+mode = "unsafe_colocated"
 allow_unsafe_ec = true
 allow_degraded_failure_domains = true
