@@ -1109,10 +1109,12 @@ version = "0.0.0-dev"
 dependencies = [
  "clap",
  "rand 0.8.6",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "tokio",
  "toml",
  "uuid",
 ]

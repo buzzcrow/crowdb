@@ -53,12 +53,13 @@ and verifiable release assets.
   `container/crowdb-monitor/src/render.rs`,
   `container/single-node-preview/templates/*.toml`,
   `container/crowdb-monitor/tests/render_test.rs`.
-- [ ] **PID 1 supervisor**: implement child ownership/reaping, dependency-order
+- [~] **PID 1 supervisor**: implement child ownership/reaping, dependency-order
   start, reverse-order drain, SIGTERM restart suppression, functional probes,
   readiness aggregation, affected-dependent restart, finite exponential backoff,
   crash-loop exit, non-overlap fencing, and atomic status/PID output. Files:
   `container/crowdb-monitor/src/{main,process,probe,supervisor,status}.rs`,
-  `container/crowdb-monitor/tests/supervisor_test.rs`.
+  `container/crowdb-monitor/tests/supervisor_test.rs`. Reusable bounded HTTP/TCP
+  probes are implemented; process ownership, restart/drain, and status remain.
 - [ ] **Monitor commands**: expose `run`, `liveness`, `readiness`, and credentials
   subcommands with bounded local operation and stable exit codes for Docker
   health checks. Files: `container/crowdb-monitor/src/{main,command}.rs`,
