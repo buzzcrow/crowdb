@@ -7,139 +7,90 @@ use std::net::SocketAddr;
 
 use clap::Parser;
 use crowdb_common::logging::init_file_and_console_logging_split;
+use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
 use crowdb_protocol::WEB_BASE;
 use tracing::info;
 
+#[derive(Parser, Debug)]
+#[command(name = "crowdb-web")]
+struct Args {
+    /// Bind address for the web server (default: 0.0.0.0)
+    #[arg(long, conflicts_with = "config")]
+    bind: Option<String>,
+
+    /// Port for the web server (default: 14000)
+    #[arg(long, conflicts_with = "config", value_parser = clap::value_parser!(u16).range(1..))]
+    port: Option<u16>,
+
+    /// Use an in-memory registry instead of the persisted console config.
+    #[arg(long, conflicts_with = "config")]
+    test_mode: bool,
+
+    /// Versioned web process configuration.
+    #[arg(long, value_name = "PATH")]
+    config: Option<std::path::PathBuf>,
+
+    /// Load the registry without reconciling service processes at startup.
+    #[arg(long, conflicts_with = "config")]
+    skip_startup_restore: bool,
+
+    /// Log directory. Default: ~/.crowdb-kv/log.
+    #[arg(long, conflicts_with = "config")]
+    log_dir: Option<std::path::PathBuf>,
+
+    /// Log level for both Rust and C++ stacks. Default: "info"
+    /// (or derived from `RUST_LOG`).
+    #[arg(long)]
+    log_level: Option<String>,
+
+    /// Max log file size in MiB before rotation. Default: 30.
+    #[arg(long, conflicts_with = "config")]
+    log_max_file_mb: Option<usize>,
+
+    /// Number of rotated log files to keep. Default: 5.
+    #[arg(long, conflicts_with = "config")]
+    log_max_files: Option<usize>,
+
+    /// Also print logs to console (in addition to file logging).
+    #[arg(short = 'l', long)]
+    log: bool,
+
+    /// Mirror C++ log lines at this level or above to stderr.
+    /// Default: "warn" (mirrors warn+error to stderr).
+    #[arg(long)]
+    log_stderr: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[derive(Parser, Debug)]
-    #[command(name = "crowdb-web")]
-    struct Args {
-        /// Bind address for the web server (default: 0.0.0.0)
-        #[arg(long, default_value = "0.0.0.0")]
-        bind: String,
-
-        /// Port for the web server (default: 14000)
-        #[arg(long, default_value_t = WEB_BASE, value_parser = clap::value_parser!(u16).range(1..))]
-        port: u16,
-
-        /// Use an in-memory registry instead of the persisted console config.
-        #[arg(long, conflicts_with = "config")]
-        test_mode: bool,
-
-        /// Console registry to load and persist instead of the default path.
-        #[arg(long, value_name = "PATH")]
-        config: Option<std::path::PathBuf>,
-
-        /// Load the registry without reconciling service processes at startup.
-        #[arg(long)]
-        skip_startup_restore: bool,
-
-        /// Log directory. Default: ~/.crowdb-kv/log.
-        #[arg(long)]
-        log_dir: Option<std::path::PathBuf>,
-
-        /// Log level for both Rust and C++ stacks. Default: "info"
-        /// (or derived from `RUST_LOG`).
-        #[arg(long)]
-        log_level: Option<String>,
-
-        /// Max log file size in MiB before rotation. Default: 30.
-        #[arg(long, default_value_t = crowdb_common::logging::DEFAULT_LOG_MAX_FILE_MB)]
-        log_max_file_mb: usize,
-
-        /// Number of rotated log files to keep. Default: 5.
-        #[arg(long, default_value_t = crowdb_common::logging::DEFAULT_LOG_MAX_FILES)]
-        log_max_files: usize,
-
-        /// Also print logs to console (in addition to file logging).
-        #[arg(short = 'l', long)]
-        log: bool,
-
-        /// Mirror C++ log lines at this level or above to stderr.
-        /// Default: "warn" (mirrors warn+error to stderr).
-        #[arg(long)]
-        log_stderr: Option<String>,
-    }
-
     let args = Args::parse();
-
-    // Layered logging: INFO+ to rotating file, WARN+ to console.
-    // RUST_LOG overrides both sinks for debugging. The file layer uses
-    // the persistent console namespace by default; the guard must outlive the process
-    // so the non-blocking appender flushes on exit.
-    let log_dir = args.log_dir.clone().unwrap_or_else(|| {
-        crowdb_protocol::port::namespace::runtime_root()
-            .join("persistent")
-            .join("console")
-            .join("log")
-    });
-    let log_dir_str = log_dir.to_string_lossy().to_string();
-    let cpp_level = args
-        .log_level
-        .clone()
-        .unwrap_or_else(|| crowdb_common::logging::cpp_level_from_rust_log("info"));
-
-    let _log_guards = if args.log {
-        init_file_and_console_logging_split(
-            &log_dir,
-            "console-web",
-            args.log_max_file_mb,
-            args.log_max_files,
-            "info",
-            "warn",
-        )
-        .map_err(|e| {
-            eprintln!("failed to initialize logging: {e}");
-            e
-        })?
-    } else {
-        crowdb_common::logging::init_file_logging(
-            &log_dir,
-            "console-web",
-            args.log_max_file_mb,
-            args.log_max_files,
-            "info",
-        )
-        .map_err(|e| {
-            eprintln!("failed to initialize logging: {e}");
-            e
-        })?
-    };
-
-    // Initialize the crowdb-rpc C++ spdlog logger so transport info/debug
-    // messages go to rotating files instead of spdlog's default stderr
-    // logger. Uses the SAME log directory as the Rust tracing init —
-    // not the literal "log" (fixes the previous directory mismatch).
-    // No-op without spdlog.
-    crowdb_rpc_ffi::init_logging(
-        &log_dir_str,
-        &cpp_level,
-        args.log_max_file_mb,
-        args.log_max_files,
-        "crowdb-web-rpc",
-    );
-
-    // Default: mirror warn+error to stderr (previous unconditional
-    // behavior). Override with --log-stderr <level> or disable with
-    // --log-stderr off.
-    let stderr_level = args.log_stderr.as_deref().unwrap_or("warn");
-    if stderr_level != "off" {
-        crowdb_rpc_ffi::add_log_stderr(stderr_level);
+    let process_config = args.config.as_deref().map(WebProcessConfig::load).transpose()?;
+    if process_config
+        .as_ref()
+        .is_some_and(|config| config.mode != WebMode::MonitorManaged)
+    {
+        return Err("standalone web process configuration is not yet supported".into());
     }
+    let _log_guards = init_logging(&args, process_config.as_ref())?;
 
-    let addr: SocketAddr = format!("{}:{}", args.bind, args.port).parse()?;
+    let bind = process_config.as_ref().map_or_else(
+        || args.bind.as_deref().unwrap_or("0.0.0.0"),
+        |config| config.bind.as_str(),
+    );
+    let port = process_config
+        .as_ref()
+        .map_or_else(|| args.port.unwrap_or(WEB_BASE), |config| config.port);
+    let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     info!(%addr, "crowdb-web starting");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Load the persisted registry; absence yields an empty default.
     // Mutating handlers (rack/node/server CRUD) write back to this path.
-    let path = if args.test_mode {
+    let path = if args.test_mode || process_config.is_some() {
         None
     } else {
-        args.config
-            .or_else(crowdb_console_shared::TomlFileEngine::default_path)
+        crowdb_console_shared::TomlFileEngine::default_path()
     };
     let cfg = match path.as_ref() {
         Some(p) => {
@@ -149,12 +100,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None => crowdb_console_shared::ConsoleConfig::default(),
     };
     let server_count = cfg.servers.len();
-    let state = crowdb_web::AppState::with_config(cfg, path).with_test_mode(args.test_mode);
+    let mut state = crowdb_web::AppState::with_config(cfg, path).with_test_mode(args.test_mode);
+    if let Some(config) = process_config {
+        state = state.with_managed_ui(config.ui_root);
+    }
     tracing::info!(servers = server_count, "loaded registry");
-    if !args.skip_startup_restore {
+    if !args.skip_startup_restore && !state.managed_mode {
         crowdb_web::mgmt::startup_topology_check(&state).await;
     }
 
     axum::serve(listener, crowdb_web::router(state)).await?;
     Ok(())
+}
+
+fn init_logging(
+    args: &Args,
+    process_config: Option<&WebProcessConfig>,
+) -> Result<crowdb_common::logging::LogGuards, String> {
+    let log_max_file_mb = process_config.map_or_else(
+        || {
+            args.log_max_file_mb
+                .unwrap_or(crowdb_common::logging::DEFAULT_LOG_MAX_FILE_MB)
+        },
+        |config| config.log_max_file_mb,
+    );
+    let log_max_files = process_config.map_or_else(
+        || {
+            args.log_max_files
+                .unwrap_or(crowdb_common::logging::DEFAULT_LOG_MAX_FILES)
+        },
+        |config| config.log_max_files,
+    );
+    let log_dir = process_config
+        .map(|config| config.log_dir.clone())
+        .or(args.log_dir.clone())
+        .unwrap_or_else(|| {
+            crowdb_protocol::port::namespace::runtime_root()
+                .join("persistent")
+                .join("console")
+                .join("log")
+        });
+    let guards = if args.log {
+        init_file_and_console_logging_split(
+            &log_dir,
+            "console-web",
+            log_max_file_mb,
+            log_max_files,
+            "info",
+            "warn",
+        )?
+    } else {
+        crowdb_common::logging::init_file_logging(
+            &log_dir,
+            "console-web",
+            log_max_file_mb,
+            log_max_files,
+            "info",
+        )?
+    };
+    let cpp_level = args
+        .log_level
+        .clone()
+        .unwrap_or_else(|| crowdb_common::logging::cpp_level_from_rust_log("info"));
+    crowdb_rpc_ffi::init_logging(
+        &log_dir.to_string_lossy(),
+        &cpp_level,
+        log_max_file_mb,
+        log_max_files,
+        "crowdb-web-rpc",
+    );
+    let stderr_level = args.log_stderr.as_deref().unwrap_or("warn");
+    if stderr_level != "off" {
+        crowdb_rpc_ffi::add_log_stderr(stderr_level);
+    }
+    Ok(guards)
 }

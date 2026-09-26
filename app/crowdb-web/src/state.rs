@@ -48,6 +48,8 @@ pub struct AppState {
     pub warn_dedup: Arc<std::sync::Mutex<HashMap<String, std::time::Instant>>>,
     /// Enables faster spawned-process intervals for E2E runs.
     pub test_mode: bool,
+    pub managed_mode: bool,
+    pub ui_root: Arc<PathBuf>,
 }
 
 impl Default for AppState {
@@ -104,7 +106,16 @@ impl AppState {
             discovery_client: Arc::new(tokio::sync::RwLock::new(None)),
             warn_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
             test_mode: false,
+            managed_mode: false,
+            ui_root: Arc::new(PathBuf::from(FRONTEND_DIST)),
         }
+    }
+
+    #[must_use]
+    pub fn with_managed_ui(mut self, ui_root: PathBuf) -> Self {
+        self.managed_mode = true;
+        self.ui_root = Arc::new(ui_root);
+        self
     }
 
     /// Enable or disable E2E test-mode behavior.

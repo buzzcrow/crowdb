@@ -166,7 +166,7 @@ and verifiable release assets.
 
 ## Phase 4 — Web authority cleanup
 
-- [ ] **Split configuration models**: replace mixed `ConsoleConfig` persistence
+- [~] **Split configuration models**: replace mixed `ConsoleConfig` persistence
   with versioned `crowdb-web.toml` process configuration and optional standalone
   launch-only `registry.toml`; use distinct `--config`/`--registry` inputs,
   reject registry in monitor-managed mode, reject inline secrets/topology/runtime
@@ -175,7 +175,11 @@ and verifiable release assets.
   modules, `app/crowdb-web/src/main.rs`, affected config tests. Strict versioned
   `WebProcessConfig` and `LaunchRegistry` schemas now parse and validate the
   packaged template, reject unknown topology/secrets and malformed paths, and
-  have focused tests. Binary wiring and old-format removal remain.
+  have focused tests. `crowdb-web --config` now loads the strict process schema
+  before logging or listener bind, uses its bind/log/UI paths, and never loads
+  the legacy mixed file in monitor-managed mode. The unreleased mixed file is
+  rejected as a `--config` input. Standalone launch-registry wiring and removal
+  of the old default parser/writer remain.
 - [ ] **Group 0 authority reads/writes**: make web topology reads and mutations
   use Group 0 as the sole authority, remove local-first/best-effort sync and local
   topology restore, preserve response-loss/conflict semantics, and fail visibly
@@ -189,7 +193,10 @@ and verifiable release assets.
   `app/crowdb-web/ui/e2e/flows/*` specs. The monitor now also requires
   `/api/authority` to affirm `source=group0` and `available=true` before
   publishing readiness, so the existing web health-only behavior cannot
-  falsely mark the preview ready. The endpoint and authority model remain.
+  falsely mark the preview ready. A managed Web process now reports unavailable
+  authority and rejects all `/api/*` topology reads/writes rather than serving
+  empty local state or accepting local-only mutations. Group 0 projection,
+  writes, and UI overlay remain; this deliberately keeps preview unready.
 
 ## Phase 5 — Image and local acceptance
 

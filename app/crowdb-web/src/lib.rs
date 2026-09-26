@@ -27,7 +27,17 @@ pub use state::AppState;
 /// Build the Axum router used by both the binary and integration tests.
 #[allow(clippy::too_many_lines)]
 pub fn router(state: AppState) -> axum::Router {
-    use axum::routing::{delete, get, post};
+    use axum::routing::{any, delete, get, post};
+
+    if state.managed_mode {
+        return axum::Router::new()
+            .route("/healthz", get(health::healthz))
+            .route("/api/authority", get(health::managed_authority))
+            .route("/api/*path", any(health::managed_api_unavailable))
+            .fallback(spa::spa_fallback)
+            .with_state(state)
+            .layer(axum::middleware::from_fn(corr_id::corr_id_layer));
+    }
 
     axum::Router::new()
         .route("/healthz", get(health::healthz))

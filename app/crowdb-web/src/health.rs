@@ -12,3 +12,14 @@
 pub async fn healthz() -> &'static str {
     "ok"
 }
+
+pub async fn managed_authority() -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({"source": "group0", "available": false})),
+    )
+}
+
+pub async fn managed_api_unavailable() -> axum::http::StatusCode {
+    axum::http::StatusCode::SERVICE_UNAVAILABLE
+}
