@@ -7,6 +7,7 @@ mod manifest;
 mod probe;
 mod profile;
 mod render;
+mod status;
 
 pub use credentials::{show_client_credentials, ClientCredentials, CredentialError, ServerCredentials};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
@@ -16,3 +17,4 @@ pub use profile::{
     ProbeProfile, ProfileError, PublicEndpoint, RestartProfile, ServiceProfile,
 };
 pub use render::{render_configs, RenderError, RenderedConfig};
+pub use status::{MonitorPhase, MonitorStatus, ServiceStatus, StatusError, StatusStore};

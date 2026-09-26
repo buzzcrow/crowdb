@@ -59,11 +59,14 @@ and verifiable release assets.
   crash-loop exit, non-overlap fencing, and atomic status/PID output. Files:
   `container/crowdb-monitor/src/{main,process,probe,supervisor,status}.rs`,
   `container/crowdb-monitor/tests/supervisor_test.rs`. Reusable bounded HTTP/TCP
-  probes are implemented; process ownership, restart/drain, and status remain.
-- [ ] **Monitor commands**: expose `run`, `liveness`, `readiness`, and credentials
+  probes and atomic status snapshots are implemented; process ownership and
+  restart/drain remain.
+- [~] **Monitor commands**: expose `run`, `liveness`, `readiness`, and credentials
   subcommands with bounded local operation and stable exit codes for Docker
   health checks. Files: `container/crowdb-monitor/src/{main,command}.rs`,
-  `container/crowdb-monitor/tests/command_test.rs`.
+  `container/crowdb-monitor/tests/command_test.rs`. `validate`, `credentials
+  show`, `liveness`, and `readiness` are implemented; `run` awaits supervisor
+  and bootstrap wiring.
 
 ## Phase 3 — Single-node runtime bootstrap
 
