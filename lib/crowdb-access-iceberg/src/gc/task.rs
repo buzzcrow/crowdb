@@ -65,6 +65,7 @@ pub struct GcTask {
     pub paused: bool,
     pub fenced: bool,
     pub stalled: GcStalledReason,
+    pub quarantined_from: Option<GcPhase>,
     pub head: Option<TableHead>,
     pub scan_after: Vec<u8>,
     pub queue_read: u64,
@@ -116,6 +117,10 @@ impl GcTask {
                     | GcPhase::CleanupGc
             ) && self.kind != GcTaskKind::RetiredCatalog)
             || ((self.kind == GcTaskKind::RetiredCatalog) != self.head.is_none())
+            || (self.phase == GcPhase::Quarantined) != self.quarantined_from.is_some()
+            || self
+                .quarantined_from
+                .is_some_and(|phase| matches!(phase, GcPhase::Quarantined | GcPhase::Complete))
         {
             return Err(ValidationError::Record);
         }

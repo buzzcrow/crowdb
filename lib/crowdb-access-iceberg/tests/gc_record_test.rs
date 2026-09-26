@@ -26,6 +26,7 @@ fn task() -> GcTask {
         paused: false,
         fenced: false,
         stalled: GcStalledReason::None,
+        quarantined_from: None,
         head: None,
         scan_after: Vec::new(),
         queue_read: 0,

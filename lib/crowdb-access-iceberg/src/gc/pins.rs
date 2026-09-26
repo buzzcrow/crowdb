@@ -32,6 +32,33 @@ impl ReaderPins {
         Self { store }
     }
 
+    /// # Errors
+    /// Rejects malformed or mismatched persisted pins.
+    pub async fn get(
+        &self,
+        catalog: crate::key::CatalogId,
+        table: crate::key::TableId,
+        identity: OperationId,
+    ) -> Result<Option<GcPin>, CatalogError> {
+        let mut suffix = table.as_bytes().to_vec();
+        suffix.extend_from_slice(identity.as_bytes());
+        let key = IcebergKey::Catalog {
+            catalog,
+            scope: CatalogScope::GcPin,
+            suffix,
+        };
+        let Some(value) = self.store.get(&key.encode()?).await? else {
+            return Ok(None);
+        };
+        let StorageRecord::GcPin(pin) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if pin.context.catalog != catalog || pin.head.table != table || pin.identity != identity {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        Ok(Some(*pin))
+    }
+
     /// Persists protection before checking the selected head against a concurrent sweep.
     /// # Errors
     /// Rejects retired catalogs, changed heads and reused identities.

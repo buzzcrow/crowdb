@@ -9,11 +9,17 @@ pub struct TestIcebergProcess {
 
 impl TestIcebergProcess {
     pub async fn start(seeds: &[String]) -> Self {
+        Self::start_with_gc(seeds, false).await
+    }
+
+    pub async fn start_with_gc(seeds: &[String], gc_enabled: bool) -> Self {
         let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = reservation.local_addr().unwrap();
         drop(reservation);
         let child = command(seeds)
             .env("CROWDB_ICEBERG_LISTEN", address.to_string())
+            .env("CROWDB_ICEBERG_GC_ENABLED", if gc_enabled { "1" } else { "0" })
+            .env("CROWDB_ICEBERG_GC_INTERVAL_MS", "100")
             .arg("serve")
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

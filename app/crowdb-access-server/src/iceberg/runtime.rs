@@ -64,10 +64,10 @@ impl IcebergRuntimeConfig {
 pub async fn run() -> Result<(), BoxError> {
     let config = IcebergRuntimeConfig::from_env()?;
     let arguments: Vec<_> = std::env::args().skip(1).collect();
-    if arguments.len() > 5 {
+    if arguments.len() > 7 {
         return Err("too many Iceberg command arguments".into());
     }
-    let (repository, store, chunks) = connect(config.management_seeds).await?;
+    let (repository, store, chunks) = connect(config.management_seeds.clone()).await?;
     let result = if arguments.is_empty() || arguments == ["serve"] {
         Box::pin(start_listener(
             &config.listen,
@@ -75,7 +75,16 @@ pub async fn run() -> Result<(), BoxError> {
             store,
             config.authentication,
             chunks.clone(),
+            config.management_seeds,
         ))
+        .await
+    } else if arguments.first().is_some_and(|argument| argument == "gc") {
+        super::gc_control::manage(
+            &repository,
+            store.clone(),
+            &config.authentication,
+            &arguments[1..],
+        )
         .await
     } else {
         manage(&repository, &config.authentication, &arguments).await
@@ -127,7 +136,9 @@ async fn start_listener(
     store: Arc<RoutedCatalogStore>,
     authentication: BearerAuthenticator,
     chunks: ChunkIoClient,
+    management_seeds: Vec<String>,
 ) -> Result<(), BoxError> {
+    let gc_config = super::gc_runtime::GcRuntimeConfig::from_env()?;
     for _ in 0..600 {
         match repository.recover(now_ms()?).await {
             Ok(()) => break,
@@ -169,12 +180,26 @@ async fn start_listener(
         store.clone(),
         blocks.clone(),
     ));
-    let tables = super::table_recovery::run(repository.clone(), store.clone(), blocks);
+    let tables = super::table_recovery::run(repository.clone(), store.clone(), blocks.clone());
+    let (gc_store, gc_blocks, gc_chunks) = if gc_config.enabled {
+        let (_, gc_store, gc_chunks) = connect(management_seeds).await?;
+        let gc_blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> = Arc::new(
+            crowdb_access_iceberg::file::NativeFileBlocks::new(gc_chunks.clone(), gc_store.clone()),
+        );
+        (gc_store, gc_blocks, Some(gc_chunks))
+    } else {
+        (store.clone(), blocks.clone(), None)
+    };
+    let gc = super::gc_runtime::run(repository.clone(), gc_store, gc_blocks, gc_config);
     tokio::select! {
         result = serving => result?,
         () = super::recovery::run(repository, crowdb_access_iceberg::namespace::NamespaceRecovery::new(store)) => {}
         () = multipart => {}
         () = tables => {}
+        () = gc => {}
+    }
+    if let Some(gc_chunks) = gc_chunks {
+        gc_chunks.shutdown_small_writes().await?;
     }
     tracing::info!("Iceberg listener drained");
     Ok(())
@@ -256,7 +281,7 @@ async fn manage(
     Err("management operation is still pending; retry with the same identity and input".into())
 }
 
-fn now_ms() -> Result<u64, BoxError> {
+pub(super) fn now_ms() -> Result<u64, BoxError> {
     Ok(u64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
     )?)

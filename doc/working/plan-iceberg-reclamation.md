@@ -51,12 +51,23 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   and retirement marker. Uncertain progress writes are read back; stale unfenced
   live proofs terminate without deleting files. Files: GC retirement/terminal
   worker and failure/restart tests. Focused tests, native restart E2E and gates pass.
-- [ ] **Operator and runtime integration**: authenticated pause/resume/inspect,
-  pin/unpin, rate and retry controls; separate budgets and background progress.
-  Files: Access Server Iceberg runtime/config/management.
-- [ ] **Acceptance and cleanup**: verify crash/resume, races, resource isolation,
-  capacity exhaustion/recovery, SDK foreground regressions and required gates;
-  update permanent architecture and close only demonstrated acceptance.
+- [x] **Operator controls**: authenticated task start/inspect/pause/resume/retry,
+  operator pin/unpin, validated rate limits and durable progress output. Files:
+  GC repository, Access Server management runtime and control tests. A
+  quarantined task resumes its exact prior phase; retired task admission
+  verifies the completed clear operation and selected epoch.
+- [~] **Background admission**: bounded task enumeration, separate GC
+  concurrency, CPU, memory, KV and chunk I/O budgets, scheduler fairness and
+  restart progress. The opt-in scheduler uses a dedicated client pool, bounded
+  one-step work and rate configuration; full resource accounting and live-table
+  fence occupancy limits remain before default activation. Files: Access Server
+  GC runtime and worker limits.
+- [ ] **Crash and race acceptance**: reader, credential, commit, clear and
+  pin interleavings across restart; preserve conservative deferred work.
+- [ ] **Capacity and SDK acceptance**: configured disk exhaustion and recovery,
+  foreground Iceberg SDK operations during GC, affected tests and gates.
+- [ ] **Architecture cleanup**: update permanent design, remove temporary plan
+  and requirement only after the acceptance matrix passes.
 
 ## Storage findings
 
@@ -87,6 +98,9 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   and workspace `pixi run rs-lint` pass.
 - GC runtime remains disabled. Resource-isolation, capacity exhaustion/recovery
   and full SDK foreground-during-GC acceptance remain in the final task.
+- Authenticated native-process control and opt-in scheduler restart E2E pass;
+  the scheduler advances a durable task while foreground configuration remains
+  available. This does not yet demonstrate full foreground resource isolation.
 
 ## Remaining integration
 

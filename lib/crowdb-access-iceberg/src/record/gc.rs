@@ -69,6 +69,7 @@ pub(super) fn encode_task<'buffer>(
             marked: task.marked,
             deleted: task.deleted,
             reclaimed_bytes: task.reclaimed_bytes,
+            quarantined_from: task.quarantined_from.map_or(255, |phase| phase as u8),
         },
     ))
 }
@@ -100,25 +101,10 @@ pub(super) fn decode_task(value: FBGcTask<'_>) -> Result<GcTask, ValidationError
             2 => GcTaskKind::LiveTable,
             _ => return Err(ValidationError::Record),
         },
-        phase: match value.phase() {
-            0 => GcPhase::Discover,
-            1 => GcPhase::Roots,
-            2 => GcPhase::Mark,
-            3 => GcPhase::Fence,
-            4 => GcPhase::Sweep,
-            5 => GcPhase::Waiting,
-            6 => GcPhase::Complete,
-            7 => GcPhase::Quarantined,
-            8 => GcPhase::Rescan,
-            9 => GcPhase::CleanupSystem,
-            10 => GcPhase::CleanupCatalog,
-            11 => GcPhase::RootsSystem,
-            12 => GcPhase::PreSweepSystem,
-            13 => GcPhase::SweepWrites,
-            14 => GcPhase::VerifyCleanup,
-            15 => GcPhase::CleanupGc,
-            _ => return Err(ValidationError::Record),
-        },
+        phase: decode_phase(value.phase())?,
+        quarantined_from: (value.quarantined_from() != 255)
+            .then(|| decode_phase(value.quarantined_from()))
+            .transpose()?,
         revision: value.revision(),
         created_ms: value.created_ms(),
         not_before_ms: value.not_before_ms(),
@@ -147,6 +133,28 @@ pub(super) fn decode_task(value: FBGcTask<'_>) -> Result<GcTask, ValidationError
     };
     task.validate()?;
     Ok(task)
+}
+
+fn decode_phase(value: u8) -> Result<GcPhase, ValidationError> {
+    Ok(match value {
+        0 => GcPhase::Discover,
+        1 => GcPhase::Roots,
+        2 => GcPhase::Mark,
+        3 => GcPhase::Fence,
+        4 => GcPhase::Sweep,
+        5 => GcPhase::Waiting,
+        6 => GcPhase::Complete,
+        7 => GcPhase::Quarantined,
+        8 => GcPhase::Rescan,
+        9 => GcPhase::CleanupSystem,
+        10 => GcPhase::CleanupCatalog,
+        11 => GcPhase::RootsSystem,
+        12 => GcPhase::PreSweepSystem,
+        13 => GcPhase::SweepWrites,
+        14 => GcPhase::VerifyCleanup,
+        15 => GcPhase::CleanupGc,
+        _ => return Err(ValidationError::Record),
+    })
 }
 
 pub(super) fn encode_candidate<'buffer>(

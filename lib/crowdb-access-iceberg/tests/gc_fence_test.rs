@@ -57,6 +57,7 @@ async fn fixture() -> (common::file::TestFile, GcTask) {
         paused: false,
         fenced: false,
         stalled: GcStalledReason::None,
+        quarantined_from: None,
         head: Some(head),
         scan_after: Vec::new(),
         queue_read: 0,
@@ -129,6 +130,40 @@ async fn new_reader_pin_cannot_be_acknowledged_during_sweep() {
     pins.release(&pin).await.unwrap();
     pins.release(&pin).await.unwrap();
     repository.release_table_fence(&task).await.unwrap();
+}
+
+#[tokio::test]
+async fn operator_pin_can_be_inspected_and_released_after_restart() {
+    let (fixture, task) = fixture().await;
+    let pins = ReaderPins::new(fixture.store.clone());
+    let pin = GcPin {
+        context: fixture.context,
+        identity: OperationId::random(),
+        head: task.head.unwrap(),
+        principal: "manager".into(),
+        expires_ms: 0,
+        released: false,
+        operator: true,
+        protects_uploads: true,
+    };
+    pins.acquire(&pin).await.unwrap();
+    let restarted = ReaderPins::new(fixture.store);
+    assert_eq!(
+        restarted
+            .get(pin.context.catalog, pin.head.table, pin.identity)
+            .await
+            .unwrap(),
+        Some(pin.clone())
+    );
+    restarted.release(&pin).await.unwrap();
+    assert!(
+        restarted
+            .get(pin.context.catalog, pin.head.table, pin.identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .released
+    );
 }
 
 #[tokio::test]

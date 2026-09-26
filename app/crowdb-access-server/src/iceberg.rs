@@ -13,6 +13,8 @@ mod file_request;
 mod file_response;
 mod file_selection;
 mod file_upload;
+mod gc_control;
+mod gc_runtime;
 mod http;
 mod metrics;
 mod namespace_read;

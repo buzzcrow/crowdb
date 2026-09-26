@@ -115,6 +115,11 @@ path = "tests/iceberg_file_storage_test.rs"
 required-features = ["iceberg-e2e"]
 
 [[test]]
+name = "iceberg_gc_control_test"
+path = "tests/iceberg_gc_control_test.rs"
+required-features = ["iceberg-e2e"]
+
+[[test]]
 name = "iceberg_file_http_test"
 path = "tests/iceberg_file_http_test.rs"
 required-features = ["iceberg-e2e"]

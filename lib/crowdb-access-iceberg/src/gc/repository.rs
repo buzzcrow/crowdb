@@ -79,6 +79,25 @@ impl GcRepository {
         Ok(next)
     }
 
+    /// Clears a stalled task's backoff after an operator has resolved its cause.
+    /// # Errors
+    /// Rejects stale progress and completed or actively running tasks.
+    pub async fn retry(&self, task: &GcTask) -> Result<GcTask, CatalogError> {
+        if task.paused || task.phase == super::GcPhase::Complete || task.stalled == GcStalledReason::None {
+            return Err(CatalogError::Busy);
+        }
+        let mut next = task.advance()?;
+        next.retry_at_ms = 0;
+        next.attempts = 0;
+        next.stalled = GcStalledReason::None;
+        if let Some(phase) = task.quarantined_from {
+            next.phase = phase;
+            next.quarantined_from = None;
+        }
+        self.update(task, &next).await?;
+        Ok(next)
+    }
+
     /// # Errors
     /// Rejects stale progress and invalid retry deadlines.
     pub async fn defer(
@@ -103,6 +122,7 @@ impl GcRepository {
             .ok_or(ValidationError::Deadline)?;
         if reason == GcStalledReason::Corruption && next.attempts >= u32::from(limits.corruption_attempts) {
             next.phase = super::GcPhase::Quarantined;
+            next.quarantined_from = Some(task.phase);
         }
         self.update(task, &next).await?;
         Ok(next)

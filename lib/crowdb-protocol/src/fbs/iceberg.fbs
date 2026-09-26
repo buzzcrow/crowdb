@@ -403,6 +403,7 @@ table FBGcTask {
     marked:ulong;
     deleted:ulong;
     reclaimed_bytes:ulong;
+    quarantined_from:ubyte = 255;
 }
 
 table FBGcFrame {

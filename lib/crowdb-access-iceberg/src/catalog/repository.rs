@@ -135,7 +135,9 @@ impl CatalogRepository {
         decode_authority(catalog, &value.bytes)
     }
 
-    pub(super) async fn operation(
+    /// # Errors
+    /// Returns malformed or unavailable management operation storage.
+    pub async fn operation(
         &self,
         identity: OperationId,
     ) -> Result<Option<ManagementOperation>, CatalogError> {

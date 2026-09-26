@@ -753,10 +753,24 @@ async fn repeated_corruption_quarantines_without_deleting_any_block() {
         }
     }
     assert_eq!(task.phase, GcPhase::Quarantined);
+    assert_eq!(task.quarantined_from, Some(GcPhase::Sweep));
     assert_eq!(task.stalled, GcStalledReason::Corruption);
     assert_eq!(task.attempts, u32::from(limits.corruption_attempts));
     assert_eq!(blocks.deletes.load(Ordering::Relaxed), 0);
     assert_eq!(worker.run(&task, now).await.unwrap(), task);
+    let repository = GcRepository::new(fixture.store.clone());
+    let retried = repository.retry(&task).await.unwrap();
+    assert_eq!(retried.phase, GcPhase::Sweep);
+    assert_eq!(retried.quarantined_from, None);
+    assert_eq!(retried.attempts, 0);
+    assert_eq!(retried.retry_at_ms, 0);
+    blocks.blocks.corrupt_reads.store(false, Ordering::Relaxed);
+    let next = GcWorker::new(repository, blocks, limits)
+        .unwrap()
+        .run(&retried, now)
+        .await
+        .unwrap();
+    assert_ne!(next.phase, GcPhase::Quarantined);
 }
 
 #[tokio::test]
