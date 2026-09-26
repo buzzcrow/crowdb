@@ -193,6 +193,7 @@ fence_listeners = ["127.0.0.1:80"]
 [services.probe]
 kind = "http"
 target = "http://127.0.0.1:80/v1/config"
+bearer_env = "CROWDB_ICEBERG_READ_TOKEN"
 timeout_ms = 1000
 failure_threshold = 5
 [services.restart]

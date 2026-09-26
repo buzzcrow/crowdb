@@ -220,6 +220,19 @@ fn validate_probe(service: &ServiceProfile) -> Result<(), ProfileError> {
     if probe.timeout_ms == 0 || probe.failure_threshold == 0 {
         return invalid(format!("service {} has invalid probe bounds", service.id));
     }
+    if let Some(name) = &probe.bearer_env {
+        if probe.kind != ProbeKind::Http
+            || !name.starts_with("CROWDB_")
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return invalid(format!(
+                "service {} has an invalid probe credential reference",
+                service.id
+            ));
+        }
+    }
     match probe.kind {
         ProbeKind::Http if !(probe.target.starts_with("http://") || probe.target.starts_with("https://")) => {
             invalid(format!("service {} has invalid HTTP probe", service.id))

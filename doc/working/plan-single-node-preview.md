@@ -149,8 +149,11 @@ and verifiable release assets.
   before management calls, pins the catalog identity in the manifest, proves
   lost responses through read-only inspection, and rejects foreign or changed
   catalog state on restart. Mock-process replay and conflict tests pass.
-  Remaining: real-process catalog test, authenticated listener probes, and
-  monitor `run` staging after storage and S3 bootstrap.
+  The profile now references the Iceberg read token for authenticated
+  `/v1/config` probes; the supervisor passes it from runtime-only environment
+  during start, periodic health, and restart. Focused probe and restart tests
+  pass. Remaining: real-process catalog test and monitor `run` staging after
+  storage and S3 bootstrap.
 
 ## Phase 4 — Web authority cleanup
 

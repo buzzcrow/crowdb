@@ -49,6 +49,7 @@ fn service(script: &str) -> ServiceProfile {
         probe: ProbeProfile {
             kind: ProbeKind::Tcp,
             target: "127.0.0.1:1".into(),
+            bearer_env: None,
             timeout_ms: 100,
             failure_threshold: 1,
         },

@@ -19,6 +19,7 @@ fn service(kind: ProbeKind, target: String) -> ServiceProfile {
         probe: ProbeProfile {
             kind,
             target,
+            bearer_env: None,
             timeout_ms: 1000,
             failure_threshold: 1,
         },
@@ -37,12 +38,12 @@ async fn tcp_probe_requires_a_listener() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target = listener.local_addr().unwrap().to_string();
     assert!(probes
-        .probe_service(&service(ProbeKind::Tcp, target.clone()))
+        .probe_service(&service(ProbeKind::Tcp, target.clone()), &BTreeMap::new())
         .await
         .is_ok());
     drop(listener);
     assert!(probes
-        .probe_service(&service(ProbeKind::Tcp, target))
+        .probe_service(&service(ProbeKind::Tcp, target), &BTreeMap::new())
         .await
         .is_err());
 }
@@ -65,12 +66,42 @@ async fn http_probe_requires_success_status() {
         }
     });
     assert!(probes
-        .probe_service(&service(ProbeKind::Http, target.clone()))
+        .probe_service(&service(ProbeKind::Http, target.clone()), &BTreeMap::new())
         .await
         .is_err());
     assert!(probes
-        .probe_service(&service(ProbeKind::Http, target))
+        .probe_service(&service(ProbeKind::Http, target), &BTreeMap::new())
         .await
         .is_ok());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn authenticated_probe_uses_runtime_token_without_storing_it_in_profile() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let probes = ProbeExecutor::new().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut service = service(
+        ProbeKind::Http,
+        format!("http://{}/v1/config", listener.local_addr().unwrap()),
+    );
+    service.probe.bearer_env = Some("CROWDB_ICEBERG_READ_TOKEN".into());
+    assert!(probes.probe_service(&service, &BTreeMap::new()).await.is_err());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = vec![0_u8; 4096];
+        let size = stream.read(&mut request).await.unwrap();
+        let body = std::str::from_utf8(&request[..size]).unwrap();
+        assert!(body
+            .to_ascii_lowercase()
+            .contains("authorization: bearer private-token\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    let environment = BTreeMap::from([("CROWDB_ICEBERG_READ_TOKEN".into(), "private-token".into())]);
+    probes.probe_service(&service, &environment).await.unwrap();
     server.await.unwrap();
 }

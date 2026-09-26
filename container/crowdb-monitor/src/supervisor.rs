@@ -113,7 +113,7 @@ impl Supervisor {
             return Err(SupervisorError::Invalid("service dependencies are not healthy"));
         }
         let pid = self.processes.start(&service, &environment).await?;
-        if let Err(error) = self.wait_for_probe(&service).await {
+        if let Err(error) = self.wait_for_probe(&service, &environment).await {
             self.processes
                 .record_event(&MonitorEvent {
                     kind: MonitorEventKind::ProbeFailed,
@@ -174,7 +174,14 @@ impl Supervisor {
             }
             let service = self.service(&id)?.clone();
             let alive = self.processes.alive(&id)?;
-            let healthy = alive && self.probes.probe_service(&service).await.is_ok();
+            let healthy = if alive {
+                match self.environment.get(&id) {
+                    Some(environment) => self.probes.probe_service(&service, environment).await.is_ok(),
+                    None => false,
+                }
+            } else {
+                false
+            };
             if healthy {
                 self.probe_failures.insert(id.clone(), 0);
                 if self.healthy_since.get(&id).is_some_and(|since| {
@@ -304,14 +311,18 @@ impl Supervisor {
             .ok_or(SupervisorError::Invalid("unknown service"))
     }
 
-    async fn wait_for_probe(&mut self, service: &ServiceProfile) -> Result<(), SupervisorError> {
+    async fn wait_for_probe(
+        &mut self,
+        service: &ServiceProfile,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), SupervisorError> {
         let deadline = Instant::now() + STARTUP_DEADLINE;
         let mut last_heartbeat = Instant::now();
         loop {
             if !self.processes.alive(&service.id)? {
                 return Err(SupervisorError::Invalid("service exited before readiness"));
             }
-            if self.probes.probe_service(service).await.is_ok() {
+            if self.probes.probe_service(service, environment).await.is_ok() {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -455,7 +466,7 @@ impl Supervisor {
                     .await?;
                 return Ok(false);
             };
-            let readiness = self.wait_for_probe(&restart_service).await;
+            let readiness = self.wait_for_probe(&restart_service, &environment).await;
             if let Err(SupervisorError::Status(error)) = readiness {
                 self.processes.stop(id, STOP_GRACE).await?;
                 return Err(SupervisorError::Status(error));

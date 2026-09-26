@@ -117,6 +117,8 @@ pub enum ProbeKind {
 pub struct ProbeProfile {
     pub kind: ProbeKind,
     pub target: String,
+    #[serde(default)]
+    pub bearer_env: Option<String>,
     pub timeout_ms: u64,
     pub failure_threshold: u32,
 }

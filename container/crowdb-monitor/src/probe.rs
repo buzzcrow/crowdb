@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -15,6 +16,8 @@ pub enum ProbeError {
     Timeout,
     #[error("probe endpoint is unavailable")]
     Unavailable,
+    #[error("probe credential is absent")]
+    MissingCredential,
 }
 
 pub struct ProbeExecutor {
@@ -35,7 +38,11 @@ impl ProbeExecutor {
 
     /// # Errors
     /// Rejects malformed, timed-out, non-success, and unreachable endpoints.
-    pub async fn probe_service(&self, service: &ServiceProfile) -> Result<(), ProbeError> {
+    pub async fn probe_service(
+        &self,
+        service: &ServiceProfile,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), ProbeError> {
         let duration = Duration::from_millis(service.probe.timeout_ms);
         match service.probe.kind {
             ProbeKind::Tcp => {
@@ -51,19 +58,21 @@ impl ProbeExecutor {
                 Ok(())
             }
             ProbeKind::Http => {
-                let response = self
-                    .client
-                    .get(&service.probe.target)
-                    .timeout(duration)
-                    .send()
-                    .await
-                    .map_err(|error| {
-                        if error.is_timeout() {
-                            ProbeError::Timeout
-                        } else {
-                            ProbeError::Unavailable
-                        }
-                    })?;
+                let mut request = self.client.get(&service.probe.target).timeout(duration);
+                if let Some(name) = &service.probe.bearer_env {
+                    let token = environment
+                        .get(name)
+                        .filter(|token| !token.is_empty())
+                        .ok_or(ProbeError::MissingCredential)?;
+                    request = request.bearer_auth(token);
+                }
+                let response = request.send().await.map_err(|error| {
+                    if error.is_timeout() {
+                        ProbeError::Timeout
+                    } else {
+                        ProbeError::Unavailable
+                    }
+                })?;
                 if response.status().is_success() {
                     Ok(())
                 } else {
