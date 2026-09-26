@@ -34,7 +34,7 @@ and verifiable release assets.
   conflicting state. Files:
   `container/crowdb-monitor/src/{manifest,bootstrap}.rs`,
   `container/crowdb-monitor/tests/manifest_test.rs`.
-- [~] **Secrets and credentials command**: generate and atomically persist the
+- [x] **Secrets and credentials command**: generate and atomically persist the
   S3 master key/access pair and four distinct Iceberg bearer tokens, split
   server/client env files, redact diagnostics, and implement `credentials show
   --format env` without exposing server-only material. Files:
@@ -42,8 +42,7 @@ and verifiable release assets.
   `container/crowdb-monitor/tests/credentials_test.rs`. Server master key and
   four bearer tokens, private file persistence, and explicit client-file retrieval
   are done. Group 0-backed S3 issuance and `client.env` persistence are
-  implemented and tested as an isolated Phase 3 bootstrap step; invoking that
-  step from monitor `run` remains.
+  invoked from monitor `run` and covered by focused and real-stack tests.
 
 ## Phase 2 — Process supervision and health
 
@@ -94,7 +93,7 @@ and verifiable release assets.
 
 ## Phase 3 — Single-node runtime bootstrap
 
-- [~] **KV bootstrap**: start one `crowdb-kv-server` at the fixed root/ports,
+- [x] **KV bootstrap**: start one `crowdb-kv-server` at the fixed root/ports,
   create Group 0 through `/system/init`, create Group 1 through management APIs,
   wait for exact leadership/readiness, and on restart prove both groups' durable
   identities without issuing creation calls. Files:
@@ -105,8 +104,8 @@ and verifiable release assets.
   response-loss proof before replay, and validation-only Ready restart. Mock
   HTTP tests pass and monitor events are verified. A real-process test now
   starts KV through `Supervisor`, creates Group 0/1 through the management API,
-  shuts down, and validates both after restart. `run` command staging remains.
-- [~] **Four-disk storage bootstrap**: create sparse files without truncating
+  shuts down, and validates both after restart. Monitor `run` stages this step.
+- [x] **Four-disk storage bootstrap**: create sparse files without truncating
   existing bytes; write rack/node/disk-group/four-disk authority to Group 0;
   render and start DiskDB and DiskIO; validate all stable disk IDs, one-zone 16
   GiB capacities, registration, and direct per-disk readiness. Files:
@@ -120,7 +119,7 @@ and verifiable release assets.
   real-KV tests in `bootstrap/hardware.rs`. Real DiskDB/DiskIO processes now
   register their owner in Group 0; the monitor waits for the matching registry
   record and fsyncs all four disk IDs through DiskIO. The same authority and
-  disk probe pass after a persisted restart. `run` command staging remains.
+  disk probe pass after a persisted restart. Monitor `run` stages these services.
 - [~] **Chunk services bootstrap**: render/start ChunkDB in explicit
   `unsafe_colocated` mode and Chunk-KV with metadata Group 1; establish service
   registry/catalog authority and readiness without enabling split or claiming
@@ -133,7 +132,7 @@ and verifiable release assets.
   grant. The file-backed O_DIRECT read path now uses an aligned bounce buffer
   for byte-range requests; a 238-byte RPC regression test and the full
   KV/DiskDB/DiskIO/ChunkDB/Chunk-KV persisted-restart test pass. Monitor `run`
-  staging and separate ChunkDB/Chunk-KV authority checks remain.
+  stages both services; separate ChunkDB/Chunk-KV authority checks remain.
 - [x] **S3 credential bootstrap**: after Group 0 readiness, issue one preview
   user through the existing authority, recover a lost issuance response via
   `ensure-user`, and use read-only `lookup-user` on Ready restart. Persist
