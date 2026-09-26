@@ -207,6 +207,15 @@ async fn lifecycle_rejects_malformed_or_unsupported_requests_without_mutation() 
 }
 
 #[tokio::test]
+async fn drop_accepts_boolean_query_spelling_from_official_client() {
+    let test = TestTableHttp::writable().await;
+    value(test.post(TABLES, "w", None, &create()).await, 200).await;
+    empty(delete(&test, &format!("{TABLE}?purgeRequested=False"), "w", &key()).await).await;
+    value(test.request(Method::GET, TABLE, "r", None).await, 404).await;
+    test.finish().await;
+}
+
+#[tokio::test]
 async fn credential_refresh_follows_exact_renamed_identity_and_stops_after_drop() {
     let test = TestTableHttp::vending().await;
     let created = value(test.post(TABLES, "w", None, &create()).await, 200).await;

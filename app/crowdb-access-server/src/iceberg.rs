@@ -44,3 +44,5 @@ pub use runtime::{run, IcebergRuntimeConfig};
 
 #[cfg(feature = "test-util")]
 pub use connection::active_io_for_tests;
+#[cfg(feature = "test-util")]
+pub use gc_runtime::budget::{BudgetedGcBlocks, BudgetedGcStore, GcIoBudget};

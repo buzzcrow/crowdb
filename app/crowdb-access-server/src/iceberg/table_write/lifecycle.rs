@@ -125,9 +125,12 @@ fn purge(uri: &Uri) -> Result<bool, IcebergErrorResponse> {
     if decode_query(name)? != "purgeRequested" {
         return Err(bad_request());
     }
-    match decode_query(value)?.as_str() {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(bad_request()),
+    let value = decode_query(value)?;
+    if value.eq_ignore_ascii_case("true") {
+        Ok(true)
+    } else if value.eq_ignore_ascii_case("false") {
+        Ok(false)
+    } else {
+        Err(bad_request())
     }
 }

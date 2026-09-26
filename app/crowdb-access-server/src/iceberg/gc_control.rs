@@ -48,6 +48,10 @@ pub(super) async fn manage(
                 "retry_base_ms": limits.retry_base_ms,
                 "retry_max_ms": limits.retry_max_ms,
                 "corruption_attempts": limits.corruption_attempts,
+                "kv_bytes": config.kv_bytes,
+                "kv_requests": config.kv_requests,
+                "chunk_bytes": config.chunk_bytes,
+                "chunk_requests": config.chunk_requests,
             }));
         }
         ["start-table", identity, table] => {

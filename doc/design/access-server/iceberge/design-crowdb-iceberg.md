@@ -547,7 +547,12 @@ use content-addressed payload pages. A task CAS publishes the pending stack and
 mark root together; a missing page is an error, including during a nonmembership
 query. The worker fences the selected head and repeats root admission checks
 before sweeping. Retained operations and table-wide credentials conservatively
-defer reclamation. Automatic runtime scheduling remains disabled.
+defer reclamation. Background task advancement requires explicit activation;
+it uses a separate storage client pool, one-step concurrency admission, bounded
+KV and chunk request/byte budgets, and durable retry state. Task creation remains
+an authenticated management operation rather than an automatic scan. The
+background scheduler is disabled by default until long-running table fences and
+foreground saturation have acceptance evidence.
 
 Metadata readers, direct FileIO, file publication and both published and staged
 credentials persist pins before rechecking their authority. Pin expiry includes

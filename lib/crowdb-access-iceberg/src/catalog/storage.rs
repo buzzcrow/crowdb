@@ -21,6 +21,8 @@ pub enum StoreError {
     Rejected(RpcFailure),
     #[error("invalid Chunk-KV response")]
     Response,
+    #[error("background Chunk-KV admission budget exhausted")]
+    Budget,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

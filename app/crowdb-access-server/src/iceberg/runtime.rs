@@ -181,16 +181,14 @@ async fn start_listener(
         blocks.clone(),
     ));
     let tables = super::table_recovery::run(repository.clone(), store.clone(), blocks.clone());
-    let (gc_store, gc_blocks, gc_chunks) = if gc_config.enabled {
+    let (gc_store, gc_chunks) = if gc_config.enabled {
         let (_, gc_store, gc_chunks) = connect(management_seeds).await?;
-        let gc_blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> = Arc::new(
-            crowdb_access_iceberg::file::NativeFileBlocks::new(gc_chunks.clone(), gc_store.clone()),
-        );
-        (gc_store, gc_blocks, Some(gc_chunks))
+        (gc_store, Some(gc_chunks))
     } else {
-        (store.clone(), blocks.clone(), None)
+        (store.clone(), None)
     };
-    let gc = super::gc_runtime::run(repository.clone(), gc_store, gc_blocks, gc_config);
+    let gc_client = gc_chunks.clone().unwrap_or_else(|| chunks.clone());
+    let gc = super::gc_runtime::run(repository.clone(), gc_store, gc_client, gc_config);
     tokio::select! {
         result = serving => result?,
         () = super::recovery::run(repository, crowdb_access_iceberg::namespace::NamespaceRecovery::new(store)) => {}

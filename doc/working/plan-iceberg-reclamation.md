@@ -58,14 +58,19 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   verifies the completed clear operation and selected epoch.
 - [~] **Background admission**: bounded task enumeration, separate GC
   concurrency, CPU, memory, KV and chunk I/O budgets, scheduler fairness and
-  restart progress. The opt-in scheduler uses a dedicated client pool, bounded
-  one-step work and rate configuration; full resource accounting and live-table
-  fence occupancy limits remain before default activation. Files: Access Server
+  restart progress. The opt-in scheduler uses dedicated clients, one-step work,
+  validated rate configuration and atomic per-step KV/chunk request and byte
+  budgets. Its task scan consumes the same budget, while a bounded reserve can
+  persist a task's resource failure. Long live-table fence occupancy and
+  automatic task creation remain before default activation. Files: Access Server
   GC runtime and worker limits.
 - [ ] **Crash and race acceptance**: reader, credential, commit, clear and
   pin interleavings across restart; preserve conservative deferred work.
 - [ ] **Capacity and SDK acceptance**: configured disk exhaustion and recovery,
-  foreground Iceberg SDK operations during GC, affected tests and gates.
+  foreground Iceberg SDK operations during GC, affected tests and gates. Native
+  full-disk FileIO failure/recovery and committed-file readability pass; the
+  full-disk GC-workspace case remains. A fault-injected workspace denial proves
+  the mark continuation survives a resource stall and resumes after admission.
 - [ ] **Architecture cleanup**: update permanent design, remove temporary plan
   and requirement only after the acceptance matrix passes.
 
@@ -96,11 +101,19 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   callback failure and readable-cursor/terminal-state reconciliation.
 - Targeted clippy with Iceberg E2E targets and warnings denied, Rust fmt check,
   and workspace `pixi run rs-lint` pass.
-- GC runtime remains disabled. Resource-isolation, capacity exhaustion/recovery
-  and full SDK foreground-during-GC acceptance remain in the final task.
+- GC runtime remains disabled by default. Foreground saturation, GC workspace
+  failure under full storage and full SDK foreground-during-GC acceptance remain.
 - Authenticated native-process control and opt-in scheduler restart E2E pass;
   the scheduler advances a durable task while foreground configuration remains
-  available. This does not yet demonstrate full foreground resource isolation.
+  available. KV/chunk admission tests deny dispatch after independent budgets
+  and verify step reset. This does not yet demonstrate saturated foreground
+  isolation. Official PyIceberg namespace and table create, commit, load and
+  drop succeed against the same native listener while GC advances a task.
+- Native capacity E2E fills the configured simulated disk through DiskDB, then
+  forces a new FileIO chunk allocation to fail while an already committed file
+  remains loadable and readable. Releasing blocks and compacting a zone allows
+  the same file write, publication and read to succeed. Command:
+  `CROWDB_RUNTIME_ROOT=/nv/cpp/crowdb/.crowdb-runtime/artifacts/gc-capacity-validation3 pixi run cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_gc_capacity_test`.
 
 ## Remaining integration
 

@@ -686,6 +686,7 @@ dependencies = [
  "crowdb-chunk-kv-client",
  "crowdb-chunkdb-client",
  "crowdb-common",
+ "crowdb-diskdb-client",
  "crowdb-diskio-client",
  "crowdb-kv-client",
  "crowdb-protocol",

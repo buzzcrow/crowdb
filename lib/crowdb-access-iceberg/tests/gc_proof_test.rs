@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::{
     catalog::{ActiveCatalogRecord, CatalogAuthority, CatalogContext, CatalogStore, RootState},
@@ -264,6 +264,48 @@ async fn missing_pending_frame_does_not_complete_the_proof() {
             .proof
             .complete
     );
+}
+
+#[tokio::test]
+async fn exhausted_gc_workspace_retains_proof_and_resumes_after_capacity_returns() {
+    let (store, mut task, files) = fixture(3, 4).await;
+    let repository = GcRepository::new(store.clone());
+    let worker = GcWorker::new(
+        repository.clone(),
+        Arc::new(blocks::TestBlocks::default()),
+        GcLimits {
+            minimum_retention_ms: 1,
+            ..GcLimits::default()
+        },
+    )
+    .unwrap();
+    while task.phase != GcPhase::Mark {
+        task = worker.step(&task, 1_000_000).await.unwrap();
+    }
+    let before = task.proof.clone();
+    store.gc_workspace_denied.store(true, Ordering::SeqCst);
+    task = worker.run(&task, 1_000_000).await.unwrap();
+    assert_eq!(task.proof, before);
+    assert_eq!(task.phase, GcPhase::Mark);
+    assert_eq!(task.stalled, crowdb_access_iceberg::gc::GcStalledReason::Resource);
+    assert_eq!(
+        repository
+            .task(task.context.catalog, task.identity)
+            .await
+            .unwrap(),
+        Some(task.clone())
+    );
+    store.gc_workspace_denied.store(false, Ordering::SeqCst);
+    for _ in 0..100 {
+        task = worker.run(&task, task.retry_at_ms.max(1_000_000)).await.unwrap();
+        if task.proof.complete {
+            break;
+        }
+    }
+    assert!(task.proof.complete);
+    for file in files {
+        assert!(repository.proof_contains(&task, file).await.unwrap());
+    }
 }
 
 #[tokio::test]

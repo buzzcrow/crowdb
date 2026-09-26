@@ -14,6 +14,7 @@ workspace = true
 default = ["s3"]
 test-util = []
 iceberg = [
+    "dep:async-trait",
     "dep:chrono",
     "dep:thiserror",
     "dep:crowdb-access-s3",
@@ -21,6 +22,7 @@ iceberg = [
     "dep:crowdb-chunk-client",
     "dep:crowdb-chunk-kv-client",
     "dep:crowdb-kv-client",
+    "dep:crowdb-protocol",
     "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
@@ -61,6 +63,7 @@ crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client", optional = true 
 crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client", optional = true }
 crowdb-common = { path = "../../lib/crowdb-common/rust", optional = true }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client", optional = true }
+crowdb-protocol = { path = "../../lib/crowdb-protocol", optional = true }
 futures = { version = "0.3", optional = true }
 http-body-util = { version = "0.1", optional = true }
 hyper = { workspace = true, features = ["http1", "server"], optional = true }
@@ -85,8 +88,8 @@ hmac = "0.12"
 arc-swap = "1.9"
 async-trait = "0.1"
 crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
+crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
 crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client", features = ["test-util"] }
-crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["chunk-kv", "chunkdb", "diskdb", "diskio"] }
 serde_json = "1"
@@ -117,6 +120,16 @@ required-features = ["iceberg-e2e"]
 [[test]]
 name = "iceberg_gc_control_test"
 path = "tests/iceberg_gc_control_test.rs"
+required-features = ["iceberg-e2e"]
+
+[[test]]
+name = "iceberg_gc_budget_test"
+path = "tests/iceberg_gc_budget_test.rs"
+required-features = ["iceberg"]
+
+[[test]]
+name = "iceberg_gc_capacity_test"
+path = "tests/iceberg_gc_capacity_test.rs"
 required-features = ["iceberg-e2e"]
 
 [[test]]

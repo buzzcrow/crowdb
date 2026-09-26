@@ -3,7 +3,10 @@ use std::{
     time::Duration,
 };
 
-use crate::{catalog::CatalogError, file::FileIoError};
+use crate::{
+    catalog::{CatalogError, StoreError},
+    file::FileIoError,
+};
 
 use super::{GcStalledReason, GcTask, GcWorkError, GcWorker};
 
@@ -110,7 +113,8 @@ fn stalled_reason(error: &GcWorkError) -> GcStalledReason {
         GcWorkError::Invalid(_)
         | GcWorkError::Catalog(CatalogError::Invalid(_))
         | GcWorkError::Io(FileIoError::Invalid(_)) => GcStalledReason::Corruption,
-        GcWorkError::Io(FileIoError::Bounds) => GcStalledReason::Resource,
+        GcWorkError::Io(FileIoError::Bounds)
+        | GcWorkError::Catalog(CatalogError::Store(StoreError::Budget)) => GcStalledReason::Resource,
         GcWorkError::Catalog(CatalogError::Conflict | CatalogError::Uninitialized) => {
             GcStalledReason::ChangedAuthority
         }
@@ -126,6 +130,7 @@ fn mark_stalled_reason(error: &crate::gc::GcMarkError) -> GcStalledReason {
             CatalogError::Invalid(_) => GcStalledReason::Corruption,
             CatalogError::Conflict | CatalogError::Uninitialized => GcStalledReason::ChangedAuthority,
             CatalogError::Busy | CatalogError::Forbidden => GcStalledReason::Protected,
+            CatalogError::Store(StoreError::Budget) => GcStalledReason::Resource,
             CatalogError::Store(_) => GcStalledReason::Storage,
         },
         GcMarkError::Io(FileIoError::Bounds)

@@ -7,12 +7,19 @@ use crowdb_access_iceberg::{
     key::{CatalogId, CatalogScope, IcebergKey},
     record::StorageRecord,
 };
+use crowdb_chunk_client::ChunkIoClient;
+
+pub(super) mod budget;
 
 pub(super) struct GcRuntimeConfig {
     pub limits: GcLimits,
     pub interval_ms: u64,
     pub catalogs: Vec<CatalogId>,
     pub enabled: bool,
+    pub kv_bytes: u64,
+    pub kv_requests: u32,
+    pub chunk_bytes: u64,
+    pub chunk_requests: u32,
 }
 
 impl GcRuntimeConfig {
@@ -65,11 +72,26 @@ impl GcRuntimeConfig {
             Ok("0") | Err(std::env::VarError::NotPresent) => false,
             _ => return Err("CROWDB_ICEBERG_GC_ENABLED must be 0 or 1".into()),
         };
+        let kv_bytes = setting("CROWDB_ICEBERG_GC_KV_BYTES", 64 * 1024 * 1024_u64)?;
+        let kv_requests = setting("CROWDB_ICEBERG_GC_KV_REQUESTS", 128_u32)?;
+        let chunk_bytes = setting("CROWDB_ICEBERG_GC_CHUNK_BYTES", 8 * 1024 * 1024_u64)?;
+        let chunk_requests = setting("CROWDB_ICEBERG_GC_CHUNK_REQUESTS", 128_u32)?;
+        if !(4 * 1024 * 1024..=256 * 1024 * 1024).contains(&kv_bytes)
+            || !(8..=4096).contains(&kv_requests)
+            || !(256 * 1024..=64 * 1024 * 1024).contains(&chunk_bytes)
+            || !(1..=4096).contains(&chunk_requests)
+        {
+            return Err("GC KV or chunk I/O budget is outside supported bounds".into());
+        }
         Ok(Self {
             limits,
             interval_ms,
             catalogs,
             enabled,
+            kv_bytes,
+            kv_requests,
+            chunk_bytes,
+            chunk_requests,
         })
     }
 }
@@ -89,13 +111,20 @@ where
 pub(super) async fn run(
     catalog: Arc<CatalogRepository>,
     store: Arc<RoutedCatalogStore>,
-    blocks: Arc<dyn FileBlockStore>,
+    chunks: ChunkIoClient,
     config: GcRuntimeConfig,
 ) {
     if !config.enabled {
         return std::future::pending().await;
     }
-    let repository = GcRepository::new(store.clone());
+    let budget = Arc::new(budget::GcIoBudget::new(&config));
+    let metered_store = Arc::new(budget::BudgetedGcStore::new(store.clone(), budget.clone()));
+    let native = Arc::new(crowdb_access_iceberg::file::NativeFileBlocks::new(
+        chunks,
+        metered_store.clone(),
+    ));
+    let blocks: Arc<dyn FileBlockStore> = Arc::new(budget::BudgetedGcBlocks::new(native, budget.clone()));
+    let repository = GcRepository::new(metered_store.clone());
     let worker = match GcWorker::new(repository, blocks, config.limits) {
         Ok(worker) => worker,
         Err(error) => {
@@ -131,7 +160,14 @@ pub(super) async fn run(
         let after = cursor.as_ref().map_or_else(Vec::new, |(_, after)| after.clone());
         let result = tokio::time::timeout(
             Duration::from_millis(u64::from(config.limits.step_ms) * 2 + 1000),
-            scan_and_advance(store.as_ref(), &worker, selected, after, config.limits),
+            scan_and_advance(
+                metered_store.as_ref(),
+                &worker,
+                budget.as_ref(),
+                selected,
+                after,
+                config.limits,
+            ),
         )
         .await;
         match result {
@@ -153,12 +189,14 @@ pub(super) async fn run(
 }
 
 async fn scan_and_advance(
-    store: &RoutedCatalogStore,
+    store: &budget::BudgetedGcStore,
     worker: &GcWorker,
+    budget: &budget::GcIoBudget,
     catalog: CatalogId,
     after: Vec<u8>,
     limits: GcLimits,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    budget.reset();
     let scan = GcScan {
         catalog,
         scope: Some(CatalogScope::GcTask),

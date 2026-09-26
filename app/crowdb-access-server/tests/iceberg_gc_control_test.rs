@@ -43,7 +43,15 @@ fn response(output: std::process::Output) -> serde_json::Value {
 
 async fn seed_table(stack: &common::TestIcebergStack) -> (Arc<RoutedCatalogStore>, CatalogContext, TableId) {
     let store = stack.store().await;
-    let catalog = CatalogRepository::new(store.clone(), ClearBounds::default()).unwrap();
+    let catalog = CatalogRepository::new(
+        store.clone(),
+        ClearBounds {
+            request_ms: 300_000,
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+    )
+    .unwrap();
     let now = common::now_ms();
     catalog
         .execute(
@@ -156,6 +164,7 @@ async fn authenticated_gc_controls_survive_separate_processes() {
         .protects(common::now_ms()));
 
     let server = process::TestIcebergProcess::start_with_gc(&stack.cluster.mgmt_endpoints, true).await;
+    check_foreground_namespace(&server);
     let client = reqwest::Client::new();
     for _ in 0..3 {
         let response = client
@@ -193,4 +202,32 @@ async fn authenticated_gc_controls_survive_separate_processes() {
         .unwrap();
     assert!(persisted.revision >= progress.revision);
     drop(restarted);
+}
+
+fn check_foreground_namespace(server: &process::TestIcebergProcess) {
+    if let Ok(python) = std::env::var("CROWDB_ICEBERG_E2E_PYTHON") {
+        let script = r#"import sys
+from pyiceberg.catalog import load_catalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import LongType, NestedField
+catalog = load_catalog("crowdb", type="rest", uri=sys.argv[1], token="w" * 32)
+namespace = ("gc_foreground",)
+catalog.create_namespace(namespace)
+assert catalog.namespace_exists(namespace)
+identifier = namespace + ("events",)
+table = catalog.create_table(identifier, Schema(NestedField(field_id=1, name="id", field_type=LongType(), required=True)))
+table.transaction().set_properties({"gc-probe": "committed"}).commit_transaction()
+assert catalog.load_table(identifier).properties["gc-probe"] == "committed"
+catalog.drop_table(identifier)
+catalog.drop_namespace(namespace)
+assert not catalog.namespace_exists(namespace)
+"#;
+        let status = std::process::Command::new(python)
+            .arg("-c")
+            .arg(script)
+            .arg(format!("http://{}", server.address))
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
 }

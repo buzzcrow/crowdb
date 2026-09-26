@@ -14,6 +14,7 @@ pub struct TestStore {
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub fail_after: AtomicUsize,
     pub file_record_reply_loss: AtomicBool,
+    pub gc_workspace_denied: AtomicBool,
     #[allow(dead_code)]
     pub gc_delete_reply_loss: AtomicBool,
     pub writes: AtomicUsize,
@@ -40,6 +41,17 @@ pub struct TestStore {
 }
 
 impl TestStore {
+    fn deny_gc_workspace(&self, key: &[u8]) -> bool {
+        self.gc_workspace_denied.load(Ordering::SeqCst)
+            && matches!(
+                crowdb_access_iceberg::key::IcebergKey::decode(key),
+                Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
+                    scope: crowdb_access_iceberg::key::CatalogScope::OperationPayload,
+                    ..
+                })
+            )
+    }
+
     async fn pause_file_mapping(&self) {
         if self.file_mapping_pause.swap(false, Ordering::SeqCst) {
             self.file_mapping_entered.notify_one();
@@ -108,6 +120,9 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
+        if self.deny_gc_workspace(key) {
+            return Err(StoreError::Budget);
+        }
         self.pause_table_head(key, expected, value, false).await;
         self.pause_stage_transition(key, expected).await;
         if matches!(
