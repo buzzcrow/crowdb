@@ -26,6 +26,7 @@ impl ProbeExecutor {
     /// Rejects invalid HTTP client configuration.
     pub fn new() -> Result<Self, ProbeError> {
         let client = reqwest::Client::builder()
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| ProbeError::InvalidTarget)?;

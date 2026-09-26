@@ -15,10 +15,11 @@ workspace = true
 clap = { version = "4", features = ["derive"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rustix = { version = "1", features = ["process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }

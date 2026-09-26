@@ -61,7 +61,10 @@ fault-tolerant deployment.
   bootstrap state, credentials, and bounded rotating logs live below the single
   `/opt/crowdb/data` mounted data root. Executables and packaged UI/config
   templates are immutable image content; generated runtime configs, sockets,
-  status, and process IDs live below `/opt/crowdb/run` and are disposable.
+  status, and process IDs live below `/opt/crowdb/run` and are disposable. The
+  monitor records important bootstrap, readiness, child lifecycle, probe
+  failure, restart, drain, and exhaustion changes in its own bounded
+  `log/monitor/` files; ordinary logs contain no secrets.
 - **DOCKER-I4 — Dependency-gated readiness:** container readiness becomes true
   only after durable bootstrap is complete and KV, disk, chunk, S3, Iceberg, and
   web probes all confirm the same instance is usable. A live PID is not proof of
@@ -535,6 +538,11 @@ passes explicit data and log paths to every child.
   instance was started, the container never returns ready, diagnostics identify
   the crash loop without secrets, and `crowdb-monitor` exits nonzero so the
   container restart policy can act. Invariant: DOCKER-I5. E2E test.
+- Given a mounted data root and monitor-managed child lifecycle changes, when
+  startup, a probe failure, restart, and drain occur, assert ordered monitor
+  events are retained under `log/monitor/`, per-child output remains separate,
+  configured file-count/byte rotation bounds hold, and no credential value is
+  emitted. Invariants: DOCKER-I3 and DOCKER-I6. Integration test.
 - Given `crowdb-monitor` itself stops or its event loop ceases advancing, when the
   container liveness contract is evaluated, assert PID 1 termination stops the
   container or the liveness probe fails without reporting the child processes as

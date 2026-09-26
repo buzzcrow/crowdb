@@ -58,9 +58,16 @@ and verifiable release assets.
   readiness aggregation, affected-dependent restart, finite exponential backoff,
   crash-loop exit, non-overlap fencing, and atomic status/PID output. Files:
   `container/crowdb-monitor/src/{main,process,probe,supervisor,status}.rs`,
-  `container/crowdb-monitor/tests/supervisor_test.rs`. Reusable bounded HTTP/TCP
-  probes and atomic status snapshots are implemented; process ownership and
-  restart/drain remain.
+  `container/crowdb-monitor/tests/supervisor_test.rs`. Bounded probes, atomic
+  status snapshots, child ownership/reaping, TERM/KILL escalation, and bounded
+  per-child logs are implemented. The dependency/restart/drain event loop remains.
+- [~] **Monitor lifecycle log**: persist important bootstrap, readiness, child
+  lifecycle, probe failure, restart, drain, and exhaustion events under durable
+  `log/monitor/`; retain bounded rotation, redact by using fixed event fields,
+  and mirror warning-class transitions to stderr. Event storage and child
+  start/stop logging are implemented; connect remaining events in the supervisor
+  and bootstrap orchestration. Files: `container/crowdb-monitor/src/monitor_log.rs`,
+  `container/crowdb-monitor/tests/monitor_log_test.rs`.
 - [~] **Monitor commands**: expose `run`, `liveness`, `readiness`, and credentials
   subcommands with bounded local operation and stable exit codes for Docker
   health checks. Files: `container/crowdb-monitor/src/{main,command}.rs`,
