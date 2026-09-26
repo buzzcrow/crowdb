@@ -115,7 +115,7 @@ impl CandidateFileSource {
         }
         let record = self
             .files
-            .load(self.context, location)
+            .load_for_commit(self.context, location)
             .await
             .map_err(file_error)?
             .ok_or(SnapshotValidationError::Unavailable)?;

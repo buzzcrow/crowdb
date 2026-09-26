@@ -61,9 +61,10 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   restart progress. The opt-in scheduler uses dedicated clients, one-step work,
   validated rate configuration and atomic per-step KV/chunk request and byte
   budgets. Its task scan consumes the same budget, while a bounded reserve can
-  persist a task's resource failure. Long live-table fence occupancy and
-  automatic task creation remain before default activation. Files: Access Server
-  GC runtime and worker limits.
+  persist a task's resource failure. Replace live-table head fencing with the
+  candidate-scoped seal/reproof/delete protocol selected in R177 OI-8, then add
+  automatic task creation before default activation. Files: GC worker, file and
+  commit admission, Access Server GC runtime and worker limits.
 - [ ] **Crash and race acceptance**: reader, credential, commit, clear and
   pin interleavings across restart; preserve conservative deferred work.
 - [ ] **Capacity and SDK acceptance**: configured disk exhaustion and recovery,
@@ -193,17 +194,31 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
 - Preserve unrelated work; commit verified requirement tasks coherently.
 - Engine interoperability and ORC remain in their previously deferred tracks.
 
-## Blocked
+## Next Integration
 
-- Automatic live-table GC has two materially different safe designs. A bounded
-  table-wide fence can abort when a large pass exceeds its foreground window,
-  but may never reclaim that table. A candidate-scoped optimistic fence can
-  avoid a long commit blackout, but needs a new proof across commit, reader,
-  credential and publication races and native restart acceptance. The current
-  `Reclaiming` fence has no total-duration bound. Keep GC disabled by default
-  and retain R183 until the foreground contract in R177 OI-8 is selected.
-- After that decision, implement event-driven purge and retired task creation,
-  bounded live-task discovery, saturated foreground namespace/commit/FileIO
-  acceptance, and full-storage GC-workspace recovery. Existing tests establish
-  fail-closed workspace denial and independent file-write capacity recovery,
-  not those combined conditions.
+- Candidate `Sealing` now round-trips durably and rejects fresh FileIO reads,
+  publication, and commit validation; this is only the admission foundation,
+  not an active GC transition. An already admitted read has its pin before
+  loading the file, so a read racing the seal either finishes under that pin or
+  observes the seal and fails without starting I/O. Keep live GC on its existing
+  table fence until the complete replacement protocol is tested.
+- Replace the live table fence with bounded candidate sealing, then establish a
+  short optimistic table-head version barrier after the final seal. A head CAS
+  after all seals invalidates any commit that validated against the pre-seal
+  head; it does not put the table in `Reclaiming`. Persist the barrier's before
+  head before attempting CAS, so crash recovery can recognize a concurrent
+  head advance as an equally valid barrier. A generation change during sealing
+  is not itself a barrier. Concurrent commits may encounter an ordinary CAS
+  conflict, but no commit waits for the traversal.
+- Reprove the head selected at the barrier and scan pre-barrier pins and commit
+  operations. Ignore post-barrier table-wide admission only after proving it
+  cannot access sealed files. Unseal any protected/reachable candidate before
+  retry; never reclaim bytes on ambiguous proof, unknown CAS outcome, or
+  changed catalog authority. Resume sealing/unsealing and proof after restart.
+- Add adversarial races for GET pin versus seal, credential issuance during
+  sealing, commit validation versus seal and barrier, lost CAS responses,
+  continuous post-barrier commits, and restart in every phase.
+- Add event-driven purge and retired task creation, bounded live-task discovery,
+  saturated foreground namespace/commit/FileIO acceptance, and full-storage
+  GC-workspace recovery. Existing tests establish fail-closed workspace denial
+  and independent file-write capacity recovery, not those combined conditions.

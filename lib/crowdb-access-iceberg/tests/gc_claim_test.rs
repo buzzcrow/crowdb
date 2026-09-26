@@ -1,5 +1,6 @@
 use crowdb_access_iceberg::{
     catalog::CatalogStore,
+    file::FileRepository,
     gc::{CandidatePhase, GcCandidate, GcRepository, TreeReclaimCursor},
     key::OperationId,
     record::StorageRecord,
@@ -103,4 +104,48 @@ async fn claims_reject_changed_file_authority_and_mutable_progress_as_a_claim() 
     advanced.revision += 1;
     let bytes = StorageRecord::GcCandidate(Box::new(advanced)).encode().unwrap();
     assert!(StorageRecord::decode(&first.claim_key(), &bytes).is_err());
+}
+
+#[tokio::test]
+async fn sealed_candidate_rejects_new_file_access_and_publication() {
+    let (fixture, candidate) = candidate().await;
+    let files = FileRepository::new(fixture.store.clone());
+    files.publish(fixture.context, &candidate.file).await.unwrap();
+    let repository = GcRepository::new(fixture.store.clone());
+    repository.claim_candidate(&candidate).await.unwrap();
+    let mut sealed = candidate.clone();
+    sealed.phase = CandidatePhase::Sealing;
+    sealed.revision += 1;
+    repository.candidate(Some(&candidate), &sealed).await.unwrap();
+    assert_eq!(
+        StorageRecord::decode(
+            &sealed.key(),
+            &fixture
+                .store
+                .get(&sealed.key().encode().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .bytes
+        )
+        .unwrap(),
+        StorageRecord::GcCandidate(Box::new(sealed.clone()))
+    );
+    assert!(files.load(fixture.context, &sealed.file.location).await.is_err());
+    assert!(files
+        .load_for_commit(fixture.context, &sealed.file.location)
+        .await
+        .is_err());
+    assert!(files.publish(fixture.context, &sealed.file).await.is_err());
+    let mut released = sealed.clone();
+    released.phase = CandidatePhase::Retained;
+    released.revision += 1;
+    repository.candidate(Some(&sealed), &released).await.unwrap();
+    assert_eq!(
+        files
+            .load(fixture.context, &released.file.location)
+            .await
+            .unwrap(),
+        Some(released.file)
+    );
 }

@@ -13,6 +13,7 @@ pub enum CandidatePhase {
     Deleting,
     Deferred,
     Complete,
+    Sealing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -164,6 +165,8 @@ impl GcCandidate {
             || ((self.phase == CandidatePhase::Complete) != (self.completed_round != 0))
             || self.cursor.owner.table != self.file.location.table()
             || (self.phase == CandidatePhase::Retained
+                && (self.cursor != self.initial_cursor()? || self.next_root != 0))
+            || (self.phase == CandidatePhase::Sealing
                 && (self.cursor != self.initial_cursor()? || self.next_root != 0))
             || (self.phase == CandidatePhase::Complete
                 && (!self.cursor.frames.is_empty() || self.cursor.pending.is_some()))

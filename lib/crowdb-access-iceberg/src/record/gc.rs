@@ -153,6 +153,7 @@ fn decode_phase(value: u8) -> Result<GcPhase, ValidationError> {
         13 => GcPhase::SweepWrites,
         14 => GcPhase::VerifyCleanup,
         15 => GcPhase::CleanupGc,
+        16 => GcPhase::Unseal,
         _ => return Err(ValidationError::Record),
     })
 }
@@ -256,6 +257,7 @@ pub(super) fn decode_candidate(value: FBGcCandidate<'_>) -> Result<GcCandidate, 
             1 => CandidatePhase::Deleting,
             2 => CandidatePhase::Deferred,
             3 => CandidatePhase::Complete,
+            4 => CandidatePhase::Sealing,
             _ => return Err(ValidationError::Record),
         },
         file,

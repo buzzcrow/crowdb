@@ -31,6 +31,20 @@ impl FileRepository {
         Ok(result)
     }
 
+    /// Resolves candidate files without allowing a sealed reclamation claim.
+    /// # Errors
+    /// Rejects files fenced against new metadata publication.
+    pub async fn load_for_commit(
+        &self,
+        context: CatalogContext,
+        location: &FileLocation,
+    ) -> Result<Option<FileRecord>, CatalogError> {
+        self.check_context(context, location).await?;
+        let result = self.resolve(location).await?;
+        self.check_context(context, location).await?;
+        Ok(result)
+    }
+
     /// Publishes a sealed candidate; callers must verify chunk bytes and format before calling.
     /// # Errors
     /// Rejects invalid records, changed content, retired contexts and uncertain writes.

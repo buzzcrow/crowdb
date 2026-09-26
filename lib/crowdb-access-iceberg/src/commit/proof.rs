@@ -76,7 +76,7 @@ pub async fn prepare_table_commit(
     let selected = SelectedTable {
         head: operation.before.clone(),
         metadata: FileRepository::new(store.clone())
-            .load(operation.context, &operation.before.metadata_location)
+            .load_for_commit(operation.context, &operation.before.metadata_location)
             .await?
             .ok_or(TableMetadataError::Binding)?,
     };
