@@ -56,6 +56,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | File                 | When to read                                |
 | -------------------- | ------------------------------------------- |
 | `AGENTS.md`          | Always-on project rules and skill dispatch. |
+| `VERSION`            | Canonical project development version.      |
 | `CONTRIBUTING.md`    | PR setup, conventions, and process.         |
 | `CHANGELOG.md`       | Release history.                            |
 | `SECURITY.md`        | Vulnerability handling.                     |

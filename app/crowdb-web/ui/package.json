@@ -1,7 +1,7 @@
 {
   "name": "crowdb-console-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0-dev",
   "type": "module",
   "description": "CrowDB Console SPA. Built with Vite + React + TypeScript + Tailwind. Compiled output in dist/ is served by crowdb-web (Axum) at runtime.",
   "scripts": {

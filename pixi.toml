@@ -1,6 +1,6 @@
 [workspace]
 name = "crowdb-kv"
-version = "0.1.0"
+version = "0.0.0-dev"
 description = "CROWDB — distributed key-value store with multi-paxos groups"
 channels = ["conda-forge"]
 # Keep glibc requirement low (2.17 = CentOS 7 / Ubuntu 16.04 era) so that
@@ -152,7 +152,8 @@ test-tree-link-isolation = "bash tools/test-tree-chunk-link-isolation.sh"
 rs-fmt = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspace_members as $members | .packages[] | select(.id as $package_id | $members | index($package_id)) | .name' | xargs sh -c 'cargo fmt --package "$@"' _'''
 rs-fmt-check = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspace_members as $members | .packages[] | select(.id as $package_id | $members | index($package_id)) | .name' | xargs sh -c 'cargo fmt --package "$@" -- --check' _'''
 check-production-dashmap = "python3 tools/check-production-dashmap.py"
-rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap"] }
+check-version = "python3 tools/check-version.py"
+rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap", "check-version"] }
 ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e2e.json", depends-on = ["install-ui-deps"] }
 # Full build: C++ libs + release Rust binaries + frontend. Used by
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
