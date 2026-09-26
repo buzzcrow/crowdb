@@ -43,6 +43,7 @@ pub(super) fn encode_task<'buffer>(
     Ok(FBGcTask::create(
         builder,
         &FBGcTaskArgs {
+            discovery_scope: task.discovery_scope,
             mark_root,
             mark_pending,
             proof_complete: task.proof.complete,
@@ -74,6 +75,7 @@ pub(super) fn encode_task<'buffer>(
 
 pub(super) fn decode_task(value: FBGcTask<'_>) -> Result<GcTask, ValidationError> {
     let task = GcTask {
+        discovery_scope: value.discovery_scope(),
         proof: crate::gc::GcProofState {
             root: value
                 .mark_root()

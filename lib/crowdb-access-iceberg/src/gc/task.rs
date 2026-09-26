@@ -47,6 +47,7 @@ pub enum GcStalledReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GcTask {
     pub proof: super::GcProofState,
+    pub discovery_scope: u8,
     pub sweep_round: u64,
     pub deferred_ranges: bool,
     pub context: CatalogContext,
@@ -87,6 +88,8 @@ impl GcTask {
         self.context.validate()?;
         self.proof.validate(self)?;
         if self.revision == 0
+            || self.discovery_scope > 1
+            || (self.discovery_scope != 0 && !matches!(self.phase, GcPhase::Discover | GcPhase::Rescan))
             || self.created_ms == 0
             || self.not_before_ms < self.created_ms
             || self.scan_after.len() > crate::key::MAX_KEY_BYTES

@@ -7,6 +7,7 @@ use crowdb_access_iceberg::{
 
 fn task() -> GcTask {
     GcTask {
+        discovery_scope: 0,
         proof: crowdb_access_iceberg::gc::GcProofState::default(),
         sweep_round: 0,
         deferred_ranges: false,
@@ -48,6 +49,13 @@ fn task_codec_rejects_foreign_keys_and_invalid_progress() {
     assert!(task.validate().is_err());
     task.queue_read = 0;
     task.scan_after = foreign.key().encode().unwrap();
+    assert!(task.validate().is_err());
+    task.scan_after.clear();
+    task.discovery_scope = 2;
+    assert!(task.validate().is_err());
+    task.discovery_scope = 1;
+    task.validate().unwrap();
+    task.phase = GcPhase::Roots;
     assert!(task.validate().is_err());
 }
 

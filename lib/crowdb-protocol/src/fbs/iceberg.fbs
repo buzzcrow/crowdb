@@ -377,6 +377,7 @@ table FBTablePurgeTask {
 }
 
 table FBGcTask {
+    discovery_scope:ubyte;
     mark_root:FBPayloadReference;
     mark_pending:FBPayloadReference;
     proof_complete:bool;

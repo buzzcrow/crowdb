@@ -41,6 +41,7 @@ async fn fixture() -> (common::file::TestFile, GcTask) {
         .await
         .unwrap();
     let task = GcTask {
+        discovery_scope: 0,
         proof: crowdb_access_iceberg::gc::GcProofState::default(),
         sweep_round: 0,
         deferred_ranges: false,

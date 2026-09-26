@@ -31,6 +31,7 @@ impl GcTask {
         };
         let task = Self {
             proof: super::GcProofState::default(),
+            discovery_scope: 0,
             sweep_round: 0,
             deferred_ranges: false,
             context,
@@ -77,7 +78,11 @@ impl GcRepository {
         }
         let scan = GcScan {
             catalog: task.context.catalog,
-            scope: None,
+            scope: Some(if task.discovery_scope == 0 {
+                CatalogScope::File
+            } else {
+                CatalogScope::MultipartPart
+            }),
             prefix: Vec::new(),
             after: task.scan_after.clone(),
             items: usize::from(limits.page_items),
@@ -88,60 +93,22 @@ impl GcRepository {
         scan.validate_page(&page)?;
         for item in &page.items {
             let key = IcebergKey::decode(&item.key)?;
-            let (file, part) = match key {
-                IcebergKey::Catalog {
-                    scope: CatalogScope::File,
-                    ..
-                } => {
-                    let StorageRecord::File(file) = StorageRecord::decode(&key, &item.value)? else {
-                        return Err(ValidationError::Record.into());
-                    };
-                    (*file, None)
-                }
-                IcebergKey::Catalog {
-                    scope: CatalogScope::MultipartPart,
-                    ..
-                } => {
-                    let StorageRecord::MultipartPart(part) = StorageRecord::decode(&key, &item.value)? else {
-                        return Err(ValidationError::Record.into());
-                    };
-                    if !self.part_is_abandoned(task, &part, now_ms).await? {
-                        continue;
-                    }
-                    (GcCandidate::part_file(&part)?, Some(*part))
-                }
-                _ => continue,
-            };
-            if task
-                .head
-                .as_ref()
-                .is_some_and(|head| head.table != file.location.table().table)
+            if let Some(candidate) = self
+                .discovery_candidate(task, &key, &item.value, limits, now_ms)
+                .await?
             {
-                continue;
+                self.claim_candidate(&candidate).await?;
             }
-            let candidate = GcCandidate {
-                completed_round: 0,
-                task: task.identity,
-                generation: task.head.as_ref().map_or(0, |head| head.generation),
-                first_seen_ms: now_ms.max(task.created_ms),
-                not_before_ms: now_ms
-                    .max(task.created_ms)
-                    .checked_add(limits.minimum_retention_ms)
-                    .ok_or(ValidationError::Deadline)?,
-                revision: 1,
-                phase: CandidatePhase::Retained,
-                cursor: TreeReclaimCursor::new(&file)?,
-                file,
-                part,
-            };
-            self.claim_candidate(&candidate).await?;
         }
         let mut next = task.progress()?;
         if let Some(last) = page.items.last() {
             next.scan_after.clone_from(&last.key);
         } else {
             next.scan_after.clear();
-            if task.phase == GcPhase::Rescan {
+            if task.discovery_scope == 0 {
+                next.discovery_scope = 1;
+            } else if task.phase == GcPhase::Rescan {
+                next.discovery_scope = 0;
                 next.phase = if task.kind == GcTaskKind::RetiredCatalog {
                     GcPhase::PreSweepSystem
                 } else {
@@ -153,6 +120,7 @@ impl GcRepository {
                     .checked_add(1)
                     .ok_or(ValidationError::GenerationExhausted)?;
             } else {
+                next.discovery_scope = 0;
                 next.phase = if task.kind == GcTaskKind::RetiredCatalog {
                     GcPhase::RootsSystem
                 } else {
@@ -162,6 +130,63 @@ impl GcRepository {
         }
         self.update(task, &next).await?;
         Ok(next)
+    }
+
+    async fn discovery_candidate(
+        &self,
+        task: &GcTask,
+        key: &IcebergKey,
+        bytes: &[u8],
+        limits: GcLimits,
+        now_ms: u64,
+    ) -> Result<Option<GcCandidate>, CatalogError> {
+        let (file, part) = match key {
+            IcebergKey::Catalog {
+                scope: CatalogScope::File,
+                ..
+            } => {
+                let StorageRecord::File(file) = StorageRecord::decode(key, bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                (*file, None)
+            }
+            IcebergKey::Catalog {
+                scope: CatalogScope::MultipartPart,
+                ..
+            } => {
+                let StorageRecord::MultipartPart(part) = StorageRecord::decode(key, bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                if !self.part_is_abandoned(task, &part, now_ms).await? {
+                    return Ok(None);
+                }
+                (GcCandidate::part_file(&part)?, Some(*part))
+            }
+            _ => return Err(ValidationError::Record.into()),
+        };
+        if task
+            .head
+            .as_ref()
+            .is_some_and(|head| head.table != file.location.table().table)
+        {
+            return Ok(None);
+        }
+        let candidate = GcCandidate {
+            completed_round: 0,
+            task: task.identity,
+            generation: task.head.as_ref().map_or(0, |head| head.generation),
+            first_seen_ms: now_ms.max(task.created_ms),
+            not_before_ms: now_ms
+                .max(task.created_ms)
+                .checked_add(limits.minimum_retention_ms)
+                .ok_or(ValidationError::Deadline)?,
+            revision: 1,
+            phase: CandidatePhase::Retained,
+            cursor: TreeReclaimCursor::new(&file)?,
+            file,
+            part,
+        };
+        Ok(Some(candidate))
     }
 
     pub(super) async fn part_is_abandoned(

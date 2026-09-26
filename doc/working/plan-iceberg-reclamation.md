@@ -26,7 +26,8 @@ exclusive-chunk deletion and shared-chunk range deletion dispatch.
   active-root and retry-result dependencies. File records and expired terminal
   multipart parts have durable candidates. Abandoned assembly checkpoints and
   writes without a published authority still need their own bounded source.
-  Files: GC repository and discovery.
+  File and multipart-part scopes have separate durable scan cursors, so discovery
+  does not walk unrelated catalog records. Files: GC repository and discovery.
 - [x] **Canonical reachability**: current and pinned historical metadata are parsed
   against captured heads. An immutable traversal stack and compressed binary
   mark index are content-addressed; one task CAS publishes both continuations.
