@@ -284,3 +284,10 @@ and verifiable release assets.
   `pixi run -e iceberg-e2e test-pyiceberg-e2e`, `pixi run test-console`,
   `pixi run test-console-ui`, `pixi run rs-fmt-check`, `pixi run rs-lint`, and
   changed C++ gates when applicable.
+
+## Open Questions
+
+- The container exposes unauthenticated Web port 14000, while the current
+  acceptance text requires Web topology mutations. Confirm whether the managed
+  preview UI should remain read-only or expose Group 0 topology writes; the
+  latter would need an explicit authentication boundary before implementation.
