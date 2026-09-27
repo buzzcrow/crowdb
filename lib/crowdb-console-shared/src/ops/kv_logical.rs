@@ -19,6 +19,9 @@ use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
 mod group_wiring;
+mod replica_rollback;
+
+use replica_rollback::ReplicaRollback;
 
 /// Retry a sysdata write with backoff. Group-0 leader election may not
 /// have settled when `cluster_init` returns, causing "not leader" or
@@ -407,71 +410,7 @@ pub async fn list_groups(ctx: &OpContext, store_id: u64) -> Result<Vec<crowdb_pr
 
 // ── replica ─────────────────────────────────────────────────────
 
-/// Roll back a partially-wired replica: deregister from `wired_peers`,
-/// then delete the local group on `target_node`. If `remove_store` is
-/// true, also remove the store from the target node (we created it
-/// atomically in step 1).
-async fn rollback_replica(
-    ctx: &OpContext,
-    store_id: u64,
-    group_id: u64,
-    new_rid: u64,
-    wired_peers: &[u64],
-    target_node: u64,
-    remove_store: bool,
-) {
-    for wp in wired_peers {
-        if let Ok(c) = server_client(ctx, *wp).await {
-            let _ = c.remove_remote_replica(store_id, group_id, new_rid).await;
-        }
-    }
-    if let Ok(c) = server_client(ctx, target_node).await {
-        if remove_store {
-            // `remove_store` cascades the group on that node.
-            let _ = c.remove_store(store_id).await;
-        } else {
-            let _ = c.remove_group(store_id, group_id).await;
-        }
-    }
-}
-
-/// Add a replica to an existing group on a target node. Creates a local
-/// `PxGroup` on the target, registers the new replica as a remote on
-/// every existing peer, and registers every peer as a remote on the new
-/// replica. Rolls back on partial failure.
-///
-/// # Errors
-/// Returns an error if the group or node is not found, or any RPC fails.
-#[allow(clippy::too_many_lines)]
-pub async fn add_replica(
-    ctx: &OpContext,
-    store_id: u64,
-    group_id: u64,
-    node_id: u64,
-    replica_id: Option<u64>,
-) -> Result<u64> {
-    // Resolve existing replicas from group-0 sysdata.
-    let existing = ctx.sysmd().list_replicas_in_group(store_id, group_id).await?;
-    if existing.is_empty() {
-        return Err(Error::NotFound {
-            kind: "group".into(),
-            id: format!("{store_id}/{group_id}"),
-        });
-    }
-    let new_rid = replica_id.unwrap_or_else(|| existing.iter().map(|r| r.replica_id).max().unwrap_or(0) + 1);
-    if existing.iter().any(|r| r.replica_id == new_rid) {
-        return Err(Error::Conflict {
-            kind: "replica".into(),
-            id: new_rid.to_string(),
-        });
-    }
-
-    // Resolve every existing peer before changing the target's local state.
-    let members: Vec<_> = existing.iter().map(|r| (r.node_id, r.replica_id)).collect();
-    let peers = group_wiring::resolve(ctx, store_id, &members).await?;
-
-    // Step 1: ensure the target node hosts the store, then create the
-    // local PxGroup for the new replica.
+async fn ensure_replica_store(ctx: &OpContext, store_id: u64, node_id: u64) -> Result<(ServerClient, bool)> {
     let client = server_client(ctx, node_id).await?;
 
     // Check if the target node already hosts this store via sysdata.
@@ -504,65 +443,120 @@ pub async fn add_replica(
             }
         }
     };
+    Ok((client, created_store_on_target))
+}
 
+/// Add a replica to an existing group on a target node. Creates a local
+/// `PxGroup` on the target, registers the new replica as a remote on
+/// every existing peer, and registers every peer as a remote on the new
+/// replica. Rolls back on partial failure.
+///
+/// # Errors
+/// Returns an error if the group or node is not found, or any RPC fails.
+#[allow(clippy::too_many_lines)]
+pub async fn add_replica(
+    ctx: &OpContext,
+    store_id: u64,
+    group_id: u64,
+    node_id: u64,
+    replica_id: Option<u64>,
+) -> Result<u64> {
+    // Resolve existing replicas from group-0 sysdata.
+    let existing = ctx.sysmd().list_replicas_in_group(store_id, group_id).await?;
+    if existing.is_empty() {
+        return Err(Error::NotFound {
+            kind: "group".into(),
+            id: format!("{store_id}/{group_id}"),
+        });
+    }
+    if existing.iter().any(|replica| replica.node_id == node_id) {
+        return Err(Error::Conflict {
+            kind: "replica on node".into(),
+            id: node_id.to_string(),
+        });
+    }
+    let new_rid = match replica_id {
+        Some(id) => id,
+        None => existing
+            .iter()
+            .map(|r| r.replica_id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| Error::Validation {
+                field: "replica_id".into(),
+                message: "replica identity space is exhausted".into(),
+            })?,
+    };
+    if existing.iter().any(|r| r.replica_id == new_rid) {
+        return Err(Error::Conflict {
+            kind: "replica".into(),
+            id: new_rid.to_string(),
+        });
+    }
+
+    // Resolve every existing peer before changing the target's local state.
+    let members: Vec<_> = existing.iter().map(|r| (r.node_id, r.replica_id)).collect();
+    let peers = group_wiring::resolve(ctx, store_id, &members).await?;
+
+    let (client, created_store_on_target) = ensure_replica_store(ctx, store_id, node_id).await?;
+
+    let mut rollback = ReplicaRollback {
+        ctx,
+        store_id,
+        group_id,
+        replica_id: new_rid,
+        target_node: node_id,
+        remove_store: created_store_on_target,
+        wired_peers: Vec::new(),
+    };
     let req = AddGroupRequest {
         group_id,
         replica_id: new_rid,
         initial_role: Some(AddGroupInitialRole::Follower),
         start_election: Some(false),
     };
-    client
-        .add_group(store_id, &req)
-        .await
-        .map_err(|e| Error::UpstreamRpc {
+    if let Err(error) = client.add_group(store_id, &req).await {
+        let original = Error::UpstreamRpc {
             node_id: node_id.to_string(),
-            status: format!("create local group: {e}"),
-        })?;
+            status: format!("create local group: {error}"),
+        };
+        // Only remove a store created by this operation. A failed request on
+        // a pre-existing store may refer to a group we do not own.
+        return Err(if created_store_on_target {
+            rollback.fail(original).await
+        } else {
+            original
+        });
+    }
 
     // Step 2: Register the new replica as a remote on every existing peer.
     let Some(new_endpoint) = rpc_endpoint_for_store(ctx, node_id, store_id).await else {
-        rollback_replica(
-            ctx,
-            store_id,
-            group_id,
-            new_rid,
-            &[],
-            node_id,
-            created_store_on_target,
-        )
-        .await;
-        return Err(Error::NodeUnreachable {
-            node_id: node_id.to_string(),
-            reason: "could not determine crowdb-rpc endpoint".into(),
-        });
+        return Err(rollback
+            .fail(Error::NodeUnreachable {
+                node_id: node_id.to_string(),
+                reason: "could not determine crowdb-rpc endpoint".into(),
+            })
+            .await);
     };
     let new_remote = RemoteReplicaInfo {
         replica_id: new_rid,
         endpoint: new_endpoint,
         voting: true,
     };
-    let mut wired_peers: Vec<u64> = Vec::new();
     for (existing_replica, (peer_client, _)) in existing.iter().zip(&peers) {
         // A lost response may still have applied the remote on this peer.
-        wired_peers.push(existing_replica.node_id);
+        rollback.wired_peers.push(existing_replica.node_id);
         if let Err(e) = peer_client
             .add_remote_replicas(store_id, group_id, std::slice::from_ref(&new_remote))
             .await
         {
-            rollback_replica(
-                ctx,
-                store_id,
-                group_id,
-                new_rid,
-                &wired_peers,
-                node_id,
-                created_store_on_target,
-            )
-            .await;
-            return Err(Error::UpstreamRpc {
-                node_id: existing_replica.node_id.to_string(),
-                status: format!("wire new replica on peer: {e}"),
-            });
+            return Err(rollback
+                .fail(Error::UpstreamRpc {
+                    node_id: existing_replica.node_id.to_string(),
+                    status: format!("wire new replica on peer: {e}"),
+                })
+                .await);
         }
     }
 
@@ -581,20 +575,12 @@ pub async fn add_replica(
             .add_remote_replicas(store_id, group_id, &existing_remotes)
             .await
         {
-            rollback_replica(
-                ctx,
-                store_id,
-                group_id,
-                new_rid,
-                &wired_peers,
-                node_id,
-                created_store_on_target,
-            )
-            .await;
-            return Err(Error::UpstreamRpc {
-                node_id: node_id.to_string(),
-                status: format!("wire existing peers on new replica: {e}"),
-            });
+            return Err(rollback
+                .fail(Error::UpstreamRpc {
+                    node_id: node_id.to_string(),
+                    status: format!("wire existing peers on new replica: {e}"),
+                })
+                .await);
         }
     }
 

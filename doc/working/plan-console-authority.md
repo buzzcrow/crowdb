@@ -44,10 +44,10 @@ and launch inputs locally.
   and remove descendant records before parents. Test success, sibling
   preservation, later replica hosts and node-side failure. Files: shared
   `ops/kv_logical.rs`, `tests/ops_logical_delete_test.rs`.
-- [~] **Replica creation cleanup**: clean a newly created target store when
+- [x] **Replica creation cleanup**: clean a newly created target store when
   local group creation fails, preserve pre-existing target groups, and report
   incomplete rollback. Test injected creation and cleanup failures.
-- [ ] **Confirmed logical mutations**: reconcile lost responses through
+- [~] **Confirmed logical mutations**: reconcile lost responses through
   confirmed authority, complete replica fan-out/rollback and delete cleanup;
   preserve Group 0 membership when node-side deletion fails. Reuse the common
   flow in CLI and both Web modes, with no local topology commit.
@@ -85,6 +85,13 @@ and launch inputs locally.
   then remove the requirement, backlog entry and this plan when complete.
 
 ## Evidence
+
+- Replica cleanup passes four regressions: failed group creation cleans its
+  newly created store, cleanup failure is explicit, existing replica hosts
+  are rejected before mutation, and automatic identity exhaustion returns
+  validation rather than panicking. Complete Console shared tests, Web replica
+  tests, fmt and clippy pass; helper extraction also passes all nine focused
+  creation/fan-out regressions. Logs: `/tmp/crowdb-replica-cleanup-*.log`.
 
 - Deletion baseline fails three of four cases: later replica hosts are skipped,
   node-side failure reports success, and group deletion leaves replica records.
