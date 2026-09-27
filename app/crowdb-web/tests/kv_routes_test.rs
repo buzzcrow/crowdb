@@ -160,6 +160,18 @@ async fn kv_put_get_delete_through_web_routes() {
         .expect("add_group");
     assert_eq!(group_resp.status(), 201, "add_group failed");
 
+    let endpoint = http
+        .get(format!("{base}/api/stores/1/groups/1/endpoint"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        endpoint.status(),
+        200,
+        "endpoint: {:?}",
+        endpoint.text().await.ok()
+    );
+
     let url = format!("{base}/api/stores/1/groups/1/kv");
 
     // PUT
@@ -316,4 +328,10 @@ async fn kv_get_returns_502_when_leader_unreachable() {
         "expected 502 when leader crowdb-rpc port is dead, got {}",
         resp.status()
     );
+    let endpoint = http
+        .get(format!("http://{web}/api/stores/7/groups/70/endpoint"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(endpoint.status(), 502);
 }

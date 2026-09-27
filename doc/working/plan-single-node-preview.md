@@ -239,8 +239,9 @@ and verifiable release assets.
   KV-server registrations before discovery; they no longer use locally persisted
   server/group entries as authority; a cache leader hint is accepted only for
   a Group 0 member with one live registration and a reported store port. The
-  separate endpoint route, logical read views, and monitor-cache refresh still
-  need the same authority conversion.
+  endpoint route now shares that discovery and rejects an unconfirmed leader
+  instead of using a local or first-healthy fallback. Logical read views and
+  monitor-cache refresh still need the same authority conversion.
 - [~] **Bootstrap and teardown authority boundary**: keep initial Group 0
   bootstrap intent separate because Group 0 does not exist yet. After creating
   Group 0, transfer and verify every hardware/store/group/replica record, then

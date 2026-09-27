@@ -84,132 +84,21 @@ fn decode_hex(s: &str) -> Result<Vec<u8>, (axum::http::StatusCode, Json<ErrorBod
     hex::decode(s.trim()).map_err(|e| err_400(format!("invalid hex: {e}")))
 }
 
-/// Resolve the crowdb-rpc endpoint for a group's leader via the monitor cache.
-/// Polls until a self-reported leader is observed among Up nodes (no
-/// first-healthy fallback) so KV writes are not routed to a follower —
-/// a follower rejects with "not leader" and triggers a slow retry cycle
-/// in the KV client (~2s per round). After all polling attempts, falls
-/// back to [`leader_for`](MonitorCache::leader_for) (which includes the
-/// first-healthy fallback) as a last resort so the caller can still
-/// attempt the op.
-///
-/// Before returning, the monitor cache is refreshed for every node hosting
-/// the group until a leader is observed, so KV reads are not forwarded
-/// based on stale topology immediately after a restart.
-///
-/// # Panics
-/// Panics if the `RwLock` is poisoned.
+/// Resolve a group's current leader from Group 0 membership, live service
+/// registration, and a self-reported leader with a per-store listen port.
 ///
 /// # Errors
-/// Returns `404` if the group is unknown, or `502` if the leader's
-/// node has no crowdb-rpc URL configured.
+/// Returns `404` if the group has no replicas, or `502` if discovery or
+/// leader confirmation is unavailable.
 pub async fn resolve_kv_endpoint(
     state: &AppState,
     sid: u64,
     gid: u64,
 ) -> Result<String, (StatusCode, Json<ErrorBody>)> {
-    for attempt in 0..5 {
-        if let Some(view) = state.monitor_cache.resolve_group(sid, gid).await {
-            // A degraded group (one node down in a 3-node cluster) can still
-            // make progress as long as a quorum and a leader exist. Route to
-            // the leader whenever we know one; only refuse if the group is
-            // unavailable (lost quorum) or has no leader at all.
-            if view.state != GroupHealth::Unavailable && view.state != GroupHealth::Unknown {
-                // Use strict_leader_for so we only return when a node
-                // self-reports as Leader and is Up — routing to a follower
-                // triggers "not leader" + slow retry in the KV client.
-                if let Some((_rid, node_id)) = state.monitor_cache.strict_leader_for(sid, gid).await {
-                    let endpoint = kv_endpoint_for_node(state, sid, node_id).await?;
-                    // For non-group-0 stores, verify the endpoint uses the
-                    // per-store listen port (not the node's default rpc_url).
-                    // If the monitor cache doesn't have listen_addr yet, keep
-                    // polling — sending to the wrong port triggers a 4-5s
-                    // retry cycle in the KV client.
-                    if sid == 0 || endpoint_has_store_port(state, sid, node_id, &endpoint).await {
-                        return Ok(endpoint);
-                    }
-                }
-            }
-        }
-        if attempt == 4 {
-            break;
-        }
-        refresh_group_nodes(state, sid, gid).await;
-        sleep(Duration::from_millis(50 * (1 + attempt))).await;
-    }
-
-    // Last-resort fallback: use leader_for (first-healthy fallback) so the
-    // caller can attempt the op rather than failing immediately. The KV
-    // client's retry loop will handle "not leader" if this is a follower.
-    if let Some((_rid, node_id)) = state.monitor_cache.leader_for(sid, gid).await {
-        let endpoint = kv_endpoint_for_node(state, sid, node_id).await?;
-        if sid == 0 || endpoint_has_store_port(state, sid, node_id, &endpoint).await {
-            return Ok(endpoint);
-        }
-    }
-
-    Err((
-        StatusCode::NOT_FOUND,
-        Json(ErrorBody {
-            error: format!("group {gid} in store {sid} not found or has no healthy leader"),
-        }),
-    ))
-}
-
-/// Check whether `endpoint`'s port matches the store's `listen_addr`
-/// port from the monitor cache. Returns `false` if the cache has no
-/// `listen_addr` for this store (meaning the endpoint fell back to
-/// the node's default `rpc_url`, which is wrong for non-group-0 stores).
-async fn endpoint_has_store_port(state: &AppState, sid: u64, node_id: NodeId, endpoint: &str) -> bool {
-    let snap = state.monitor_cache.snapshot().await;
-    let Some(listen_addr) = snap
-        .get(&node_id)
-        .and_then(|rec| rec.stores.get(&sid))
-        .and_then(|ns| ns.listen_addr.as_ref())
-    else {
-        return false;
-    };
-    let Some(listen_port) = port_of(listen_addr) else {
-        return false;
-    };
-    port_of(endpoint) == Some(listen_port)
-}
-
-async fn kv_endpoint_for_node(
-    state: &AppState,
-    sid: u64,
-    node_id: NodeId,
-) -> Result<String, (StatusCode, Json<ErrorBody>)> {
-    // Each `PxKvStore` listens on its own crowdb-rpc port (ephemeral when created
-    // via the management API with `port: None`), reported as the store's
-    // `listen_addr`. KV requests must target that per-store endpoint — the
-    // node's configured `rpc_url` is a different listener and does not host
-    // this store's groups. Combine the node host (from `rpc_url`) with the
-    // store's listen port; fall back to `rpc_url` if the cache has no
-    // `listen_addr` yet.
-    let store_port = {
-        let snap = state.monitor_cache.snapshot().await;
-        snap.get(&node_id)
-            .and_then(|rec| rec.stores.get(&sid))
-            .and_then(|ns| ns.listen_addr.as_ref())
-            .and_then(|addr| port_of(addr))
-            .filter(|p| *p != 0)
-    };
-
-    let cfg = state.config.read().unwrap();
-    let rpc_url = cfg
-        .server_for_node(node_id)
-        .and_then(|s| s.rpc_url.clone())
-        .ok_or_else(|| {
-            err_502(format!(
-                "leader node {node_id} has no crowdb-rpc endpoint configured"
-            ))
-        })?;
-
-    match store_port {
-        Some(port) => Ok(format!("http://{}:{port}", host_of(&rpc_url))),
-        None => Ok(rpc_url),
-    }
+    let (_, nodes, registered) = group_discovery(state, sid, gid).await?;
+    authoritative_leader_hint(state, sid, gid, &nodes, &registered)
+        .await
+        .ok_or_else(|| err_502(format!("group {gid} in store {sid} has no confirmed live leader")))
 }
 
 #[derive(Debug, Serialize)]
@@ -220,18 +109,17 @@ pub struct EndpointResponse {
 }
 
 /// `GET /api/stores/:sid/groups/:gid/endpoint`. Resolve the crowdb-rpc
-/// endpoint of the group's leader via the monitor cache, so a direct
+/// endpoint of the group's leader via Group 0, so a direct
 /// crowdb-rpc client (the CLI bench engine) can dial it without touching any
 /// registry. Same resolution as the KV data plane uses internally.
 ///
 /// # Errors
-/// `404` if the group is unknown / has no replicas; `502` if the
-/// leader's node has no crowdb-rpc endpoint configured.
+/// `404` if the group has no replicas; `502` if discovery or leader
+/// confirmation is unavailable.
 pub async fn http_kv_endpoint(
     State(state): State<AppState>,
     Path((sid, gid)): Path<(u64, u64)>,
 ) -> Result<Json<EndpointResponse>, (StatusCode, Json<ErrorBody>)> {
-    refresh_group_nodes(&state, sid, gid).await;
     let rpc_url = resolve_kv_endpoint(&state, sid, gid).await?;
     Ok(Json(EndpointResponse { rpc_url }))
 }
@@ -253,30 +141,6 @@ fn host_of(rpc_url: &str) -> String {
     }
 }
 
-/// Node ids hosting a replica of `(sid, gid)`, per the monitor cache, or (if
-/// the cache has no record for the group yet) the persisted config replica
-/// list -- so a restarted web console can still find the nodes to query.
-async fn group_node_ids(state: &AppState, sid: u64, gid: u64) -> Vec<NodeId> {
-    if let Some(view) = state.monitor_cache.resolve_group(sid, gid).await {
-        view.replicas.into_iter().map(|r| r.node_id).collect()
-    } else {
-        let cfg = state.config.read().unwrap();
-        cfg.groups
-            .iter()
-            .find(|g| g.store_id == sid && g.group_id == gid)
-            .map(|g| g.replicas.iter().map(|r| r.node_id).collect())
-            .unwrap_or_default()
-    }
-}
-
-/// Refresh the monitor cache for every node hosting a replica of
-/// `(sid, gid)`. Called on initial endpoint resolution so the next
-/// `leader_for` call observes a post-election view.
-async fn refresh_group_nodes(state: &AppState, sid: u64, gid: u64) {
-    let node_ids = group_node_ids(state, sid, gid).await;
-    futures::future::join_all(node_ids.iter().map(|&nid| refresh_node_cache(state, nid))).await;
-}
-
 /// Build an `OpContext` for a KV data-plane request on `(sid, gid)`.
 ///
 /// Uses Group 0 membership and live service registrations for discovery.
@@ -285,6 +149,30 @@ async fn kv_op_context(
     sid: u64,
     gid: u64,
 ) -> Result<crowdb_console_shared::ops::OpContext, (StatusCode, Json<ErrorBody>)> {
+    let (ctx, nodes, registered) = group_discovery(state, sid, gid).await?;
+    if let Some(endpoint) = authoritative_leader_hint(state, sid, gid, &nodes, &registered).await {
+        ctx.kv().seed_leader(sid, gid, endpoint);
+    }
+    let seeds = registered
+        .into_values()
+        .filter(|endpoints| endpoints.len() == 1)
+        .flatten()
+        .collect();
+    ctx.kv().set_mgmt_seeds(seeds);
+    Ok(ctx)
+}
+
+type GroupDiscovery = (
+    crowdb_console_shared::ops::OpContext,
+    HashSet<NodeId>,
+    HashMap<NodeId, Vec<String>>,
+);
+
+async fn group_discovery(
+    state: &AppState,
+    sid: u64,
+    gid: u64,
+) -> Result<GroupDiscovery, (StatusCode, Json<ErrorBody>)> {
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
     let replicas = ctx
         .sysmd()
@@ -325,16 +213,7 @@ async fn kv_op_context(
             "group {gid} in store {sid} has no live KV registration in Group 0"
         )));
     }
-    if let Some(endpoint) = authoritative_leader_hint(state, sid, gid, &nodes, &registered).await {
-        ctx.kv().seed_leader(sid, gid, endpoint);
-    }
-    let seeds = registered
-        .into_values()
-        .filter(|endpoints| endpoints.len() == 1)
-        .flatten()
-        .collect();
-    ctx.kv().set_mgmt_seeds(seeds);
-    Ok(ctx)
+    Ok((ctx, nodes, registered))
 }
 
 async fn authoritative_leader_hint(
@@ -345,7 +224,17 @@ async fn authoritative_leader_hint(
     registered: &HashMap<NodeId, Vec<String>>,
 ) -> Option<String> {
     for attempt in 0..5 {
-        if let Some((_, node_id)) = state.monitor_cache.strict_leader_for(sid, gid).await {
+        let group_healthy = state
+            .monitor_cache
+            .resolve_group(sid, gid)
+            .await
+            .is_some_and(|view| !matches!(view.state, GroupHealth::Unavailable | GroupHealth::Unknown));
+        if let Some((_, node_id)) = state
+            .monitor_cache
+            .strict_leader_for(sid, gid)
+            .await
+            .filter(|_| group_healthy)
+        {
             if nodes.contains(&node_id) {
                 if let Some(endpoints) = registered.get(&node_id).filter(|endpoints| endpoints.len() == 1) {
                     let snapshot = state.monitor_cache.snapshot().await;
