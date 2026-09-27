@@ -166,9 +166,9 @@ and verifiable release assets.
 ## Phase 4 — Web authority cleanup
 
 - [~] **Split configuration models**: replace mixed `ConsoleConfig` persistence
-  with versioned `crowdb-web.toml` process configuration and optional standalone
+  with versioned `crowdb-web.toml` process configuration and optional bare-metal
   launch-only `registry.toml`; use distinct `--config`/`--registry` inputs,
-  reject registry in monitor-managed mode, reject inline secrets/topology/runtime
+  reject registry in Docker mode, reject inline secrets/topology/runtime
   fields, and remove the unreleased old parser/writer/fixtures without migration
   or aliases. Files: `lib/crowdb-console-shared/src/config.rs` and focused child
   modules, `app/crowdb-web/src/main.rs`, affected config tests. Strict versioned
@@ -176,11 +176,11 @@ and verifiable release assets.
   packaged template, reject unknown topology/secrets and malformed paths, and
   have focused tests. `crowdb-web --config` now loads the strict process schema
   before logging or listener bind, uses its bind/log/UI paths, and never loads
-  the legacy mixed file in monitor-managed mode. The unreleased mixed file is
+  the legacy mixed file in Docker mode. The unreleased mixed file is
   rejected as a `--config` input. `--registry` is now a distinct, validated
-  standalone-only input; managed mode rejects it before listener bind. Both
+  bare-metal-only input; Docker mode rejects it before listener bind. Both
   process-config modes remain fail-closed on topology APIs while the Group 0
-  projection is unfinished. Standalone launch-policy use and removal of the old
+  projection is unfinished. Bare-metal launch-policy use and removal of the old
   default parser/writer remain.
 - [ ] **Group 0 authority reads/writes**: make web topology reads and mutations
   use Group 0 as the sole authority, remove local-first/best-effort sync and local
@@ -193,7 +193,7 @@ and verifiable release assets.
   remaining unavailable until the managed API projection is complete. Remaining:
   build the Group 0 read model, replace local-first mutations with confirmed
   Group 0 writes, and delete the obsolete mixed persistence paths.
-- [ ] **Monitor-managed Web UI**: start `crowdb-web` from rendered config, overlay
+- [ ] **Docker-mode Web UI**: start `crowdb-web` from rendered config, overlay
   monitor PID/restart/crash state on Group 0 service records, disable conflicting
   lifecycle controls, and show source/unavailable state in the UI. Add focused
   Rust, component, and real-backend Playwright assertions. Files:
@@ -203,8 +203,10 @@ and verifiable release assets.
   publishing readiness, so the existing web health-only behavior cannot
   falsely mark the preview ready. A managed Web process now reports unavailable
   authority and rejects all `/api/*` topology reads/writes rather than serving
-  empty local state or accepting local-only mutations. Group 0 projection,
-  writes, and UI overlay remain; this deliberately keeps preview unready.
+  empty local state or accepting local-only mutations. The Group 0 projection
+  and UI overlay are in progress. Docker-mode hardware-topology and process
+  mutations remain forbidden; logical store/group/replica operations must not
+  be rejected by mode once the Group 0 write path is implemented.
 
 ## Phase 5 — Image and local acceptance
 
@@ -289,6 +291,12 @@ and verifiable release assets.
 
 ## Resolved Decisions
 
-- The managed preview UI is read-only on unauthenticated port 8080; standalone
-  writes must use Group 0 and remain unavailable until the authority flow is
-  implemented. This decision is recorded in the requirement contract.
+- Docker mode does not manage hardware topology or monitor-owned processes.
+  Logical store/group/replica operations remain in scope and require Group 0
+  authority. Bare-metal mode may manage deployment and hardware topology.
+
+## Open Questions
+
+- The Docker Web port 8080 currently has no authentication. Before exposing
+  logical writes, choose whether to reuse an existing management credential,
+  use a separate controlled management endpoint, or keep those writes disabled.

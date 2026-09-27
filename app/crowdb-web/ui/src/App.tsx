@@ -65,6 +65,7 @@ import { toUiHealth, HW_STATUS_NAMES } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
 import { KvView } from './views/KvView';
 import { ChunkView } from './views/ChunkView';
+import { ManagedPreview } from './managed/ManagedPreview';
 
 const Inspector = lazy(() => import('./shell/Inspector').then((m) => ({ default: m.Inspector })));
 
@@ -1250,6 +1251,27 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
 }
 
 export default function App(props: CrowdbConsoleProps = {}) {
+  const apiPrefix = props.apiPrefix ?? '/api';
+  const [mode, setMode] = useState<'loading' | 'legacy' | 'docker' | 'bare-metal-pending' | 'unavailable'>('loading');
+  useEffect(() => {
+    let active = true;
+    fetch(`${apiPrefix}/mode`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Console mode unavailable');
+        return response.json();
+      })
+      .then((body) => {
+        if (active) setMode(body?.mode === 'docker' || body?.mode === 'bare-metal-pending' || body?.mode === 'legacy' ? body.mode : 'unavailable');
+      })
+      .catch(() => {
+        if (active) setMode('unavailable');
+      });
+    return () => { active = false; };
+  }, [apiPrefix]);
+  if (mode === 'loading') return <div className="tw-p-6 tw-text-muted">Loading console…</div>;
+  if (mode === 'unavailable') return <div role="alert" className="tw-p-6 tw-text-muted">Console mode unavailable.</div>;
+  if (mode === 'bare-metal-pending') return <div role="alert" className="tw-p-6 tw-text-muted">Bare-metal deployment management is not available yet.</div>;
+  if (mode === 'docker') return <ManagedPreview apiPrefix={apiPrefix} />;
   return (
     <DomainProvider initialDomain={props.initialDomain}>
       <SelectionProvider>

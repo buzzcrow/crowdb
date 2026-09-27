@@ -74,6 +74,18 @@ pub struct StatusStore {
 
 impl StatusStore {
     /// # Errors
+    /// Rejects a missing, symlinked, or non-directory parent.
+    pub fn open_file(path: &Path) -> Result<Self, StatusError> {
+        let parent = path.parent().ok_or(StatusError::Invalid)?;
+        if !fs::symlink_metadata(parent)?.file_type().is_dir() {
+            return Err(StatusError::Invalid);
+        }
+        Ok(Self {
+            path: path.to_owned(),
+        })
+    }
+
+    /// # Errors
     /// Rejects missing, symlinked, or non-directory runtime roots.
     pub fn new(run_root: &Path) -> Result<Self, StatusError> {
         if !fs::symlink_metadata(run_root)?.file_type().is_dir() {

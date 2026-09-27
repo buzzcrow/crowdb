@@ -10,8 +10,8 @@ const VERSION: u32 = 1;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WebMode {
-    MonitorManaged,
-    Standalone,
+    Docker,
+    BareMetal,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -67,8 +67,8 @@ impl WebProcessConfig {
             return invalid("web UI and log paths must be clean absolute paths");
         }
         match (self.mode, &self.monitor_status) {
-            (WebMode::MonitorManaged, Some(path)) if clean_absolute(path) => {}
-            (WebMode::Standalone, None) => {}
+            (WebMode::Docker, Some(path)) if clean_absolute(path) => {}
+            (WebMode::BareMetal, None) => {}
             _ => return invalid("monitor status path does not match web mode"),
         }
         if !(1..=1024).contains(&self.log_max_file_mb)

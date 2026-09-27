@@ -30,7 +30,7 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     config: Option<std::path::PathBuf>,
 
-    /// Optional launch-only registry for standalone deployments.
+    /// Optional launch-only registry for bare-metal deployments.
     #[arg(long, value_name = "PATH", requires = "config")]
     registry: Option<std::path::PathBuf>,
 
@@ -72,9 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if args.registry.is_some()
         && process_config
             .as_ref()
-            .is_some_and(|config| config.mode == WebMode::MonitorManaged)
+            .is_some_and(|config| config.mode == WebMode::Docker)
     {
-        return Err("monitor-managed web does not accept --registry".into());
+        return Err("docker web does not accept --registry".into());
     }
     let launch_registry = args.registry.as_deref().map(LaunchRegistry::load).transpose()?;
     let _log_guards = init_logging(&args, process_config.as_ref())?;

@@ -1198,6 +1198,7 @@ dependencies = [
  "crowdb-diskdb-client",
  "crowdb-kv",
  "crowdb-kv-client",
+ "crowdb-monitor",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -1211,6 +1212,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

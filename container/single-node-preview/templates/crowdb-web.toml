@@ -1,5 +1,5 @@
 version = 1
-mode = "monitor-managed"
+mode = "docker"
 bind = "0.0.0.0"
 port = 8080
 group0_management_seeds = ["http://127.0.0.1:10000"]

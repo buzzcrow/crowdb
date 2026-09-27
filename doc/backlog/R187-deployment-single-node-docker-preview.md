@@ -154,26 +154,27 @@ without moving or duplicating its runtime code.
 
 - **Group 0:** owns racks, nodes, disk groups, disks, stores, groups, replicas,
   bindings, and the service registry. Web topology reads use Group 0 directly.
-  Standalone topology mutations use Group 0; a successful local file write
-  cannot substitute for a failed Group 0 mutation. The unauthenticated
-  monitor-managed preview Web is read-only and rejects every topology or
-  process mutation. When Group 0 is unavailable after initialization, topology
-  APIs fail unavailable rather than serving or restoring a local copy.
+  Docker mode does not manage hardware topology (racks, nodes, disk groups, or
+  disks) or monitor-owned processes, but permits logical store, group, and
+  replica operations through Group 0. Bare-metal mode may manage deployment
+  and hardware topology as well. A successful local file write cannot
+  substitute for a failed Group 0 mutation. When Group 0 is unavailable,
+  topology APIs fail unavailable rather than serving or restoring a local copy.
 - **`crowdb-web.toml`:** is a versioned, non-secret process configuration. It
   contains the web bind address and port, Group 0 management seeds, packaged UI
   root, monitor status endpoint, log policy, request bounds, and a mode selecting
-  monitor-managed or standalone operation. It contains no racks, nodes, stores,
+  Docker or bare-metal operation. It contains no racks, nodes, stores,
   groups, replicas, service inventory, PIDs, binary paths, credentials, or SSH
   material. In this image `crowdb-monitor` renders it at
   `/opt/crowdb/run/config/crowdb-web.toml` on every start and invokes
   `crowdb-web --config` with that path.
-- **`registry.toml`:** is an optional, versioned standalone deployment registry,
+- **`registry.toml`:** is an optional, versioned bare-metal deployment registry,
   selected only by a separate `crowdb-web --registry` option. It may map stable
   Group 0 node/service identities to machine-local connection and launch policy:
   host, SSH credential reference, binary and service-config path, workspace, and
   auto-start choice. It stores no topology relationships, stores, groups,
   replicas, authoritative service endpoint, health, PID, monitor state, UI
-  preference, or inline secret. Container monitor-managed mode rejects a
+  preference, or inline secret. Docker mode rejects a
   registry path because `crowdb-monitor` owns every process.
 - **Runtime/UI state:** live endpoints come from Group 0 service discovery;
   process PID, restart generation, and crash-loop state come from
@@ -335,11 +336,12 @@ passes explicit data and log paths to every child.
    old parser, writer, restore path, fixtures, and docs without compatibility
    handling. Topology handlers commit Group 0 first and refresh their read model
    only after success; they never persist topology
-   locally or ignore a Group 0 failure. The monitor-managed preview rejects
-   topology and process mutations; standalone operations follow the Group 0
-   write contract. Startup uses configured seeds to load
+   locally or ignore a Group 0 failure. Docker mode rejects hardware-topology
+   and process mutations but permits logical store, group, and replica
+   operations through Group 0; bare-metal deployment operations follow the
+   same Group 0 authority contract. Startup uses configured seeds to load
    Group 0 and service discovery rather than calling local
-   `restore_persisted_topology` once Group 0 exists. In monitor-managed mode the
+   `restore_persisted_topology` once Group 0 exists. In Docker mode the
    console has no registry engine, overlays `crowdb-monitor` process/restart state
    onto Group 0 service records, and rejects process-lifecycle mutations because
    the monitor is the sole process owner. The web UI displays source and stale/
@@ -463,21 +465,22 @@ passes explicit data and log paths to every child.
   Invariant: DOCKER-I3. Integration test.
 - Given valid and invalid versioned `crowdb-web.toml` and `registry.toml` fixtures,
   when each is decoded in its permitted mode, assert web configuration accepts
-  only process settings, standalone registry accepts only secret references and
+  only process settings, bare-metal registry accepts only secret references and
   launch policy, forbidden topology/runtime/inline-secret fields fail closed,
-  and monitor-managed mode rejects every registry path. Invariant: DOCKER-I11.
+  and Docker mode rejects every registry path. Invariant: DOCKER-I11.
   Unit test.
-- Given two standalone consoles connected to one ready Group 0, when topology mutations
+- Given two bare-metal consoles connected to one ready Group 0, when topology mutations
   succeed, conflict, lose their response, or encounter unavailable Group 0,
   assert both consoles converge on Group 0 after success, preserve conflict and
   retry semantics, commit no local topology before authority, and return an
   explicit unavailable result without serving a local fallback. Invariant:
   DOCKER-I11. Integration test.
-- Given ready Group 0 and any supplied registry path, when monitor-managed
+- Given ready Group 0 and any supplied registry path, when Docker-mode
   `crowdb-web` starts, assert it rejects the registry path; with no registry it
   uses configured seeds, Group 0 topology, service discovery, and monitor runtime
-  state, never invokes local topology restore, rejects every topology/process
-  mutation, and marks unavailable/stale sources accurately. Invariant:
+  state, never invokes local topology restore, rejects hardware-topology and
+  process mutations, permits Group 0-backed logical store/group/replica
+  operations, and marks unavailable/stale sources accurately. Invariant:
   DOCKER-I11. E2E test.
 - Given the repository's former mixed `ConsoleConfig` files, fixtures, restore
   calls, and documentation, when the configuration split lands, assert none
@@ -544,7 +547,7 @@ passes explicit data and log paths to every child.
   instance was started, the container never returns ready, diagnostics identify
   the crash loop without secrets, and `crowdb-monitor` exits nonzero so the
   container restart policy can act. Invariant: DOCKER-I5. E2E test.
-- Given a mounted data root and monitor-managed child lifecycle changes, when
+- Given a mounted data root and Docker-mode child lifecycle changes, when
   startup, a probe failure, restart, and drain occur, assert ordered monitor
   events are retained under `log/monitor/`, per-child output remains separate,
   configured file-count/byte rotation bounds hold, and no credential value is
@@ -580,3 +583,12 @@ Required gates:
 - `pixi run test-console-ui`
 - `pixi run rs-fmt-check`
 - `pixi run rs-lint`
+
+## Open Questions
+
+- The Docker Web endpoint on port 8080 is currently unauthenticated. Logical
+  store/group/replica writes must not be exposed until their access-control
+  boundary is selected. Reusing an existing management credential gives one
+  authenticated console; a separate controlled management endpoint isolates
+  writes from the public dashboard; disabling writes preserves the current
+  safety boundary but does not satisfy Docker logical management.

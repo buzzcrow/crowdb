@@ -18,6 +18,7 @@ crowdb-common = { path = "../../lib/crowdb-common/rust" }
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
+crowdb-monitor = { path = "../../container/crowdb-monitor" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 clap = { version = "4", features = ["derive"] }
@@ -41,3 +42,4 @@ tower = { version = "0.5", features = ["util"] }
 crowdb-kv = { path = "../../lib/crowdb-kv" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["diskdb"] }
+uuid = { version = "1", features = ["v4"] }

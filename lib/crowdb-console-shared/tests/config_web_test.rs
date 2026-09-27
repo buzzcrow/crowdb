@@ -5,7 +5,7 @@ use crowdb_console_shared::config::web::{LaunchRegistry, WebMode, WebProcessConf
 
 const WEB: &str = r#"
 version = 1
-mode = "monitor-managed"
+mode = "docker"
 bind = "0.0.0.0"
 port = 14000
 group0_management_seeds = ["http://127.0.0.1:10000"]
@@ -21,7 +21,7 @@ request_timeout_ms = 3000
 fn monitor_web_process_config_accepts_only_process_fields() {
     let config: WebProcessConfig = toml::from_str(WEB).unwrap();
     config.validate().unwrap();
-    assert_eq!(config.mode, WebMode::MonitorManaged);
+    assert_eq!(config.mode, WebMode::Docker);
     for injected in [
         "rack = []",
         "token = 'secret'",
@@ -39,6 +39,14 @@ fn monitor_web_process_config_accepts_only_process_fields() {
         .replace("{{log_root}}", "/opt/crowdb/data/log");
     let parsed: WebProcessConfig = toml::from_str(&rendered).unwrap();
     parsed.validate().unwrap();
+
+    let bare_metal = WEB
+        .replace("mode = \"docker\"", "mode = \"bare-metal\"")
+        .replace("monitor_status = \"/opt/crowdb/run/status/monitor.json\"\n", "");
+    let config: WebProcessConfig = toml::from_str(&bare_metal).unwrap();
+    config.validate().unwrap();
+    assert_eq!(config.mode, WebMode::BareMetal);
+    assert!(toml::from_str::<WebProcessConfig>(&WEB.replace("docker", "monitor-managed")).is_err());
 }
 
 #[test]

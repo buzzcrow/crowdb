@@ -16,6 +16,7 @@ pub mod expand;
 pub mod health;
 pub mod kv;
 pub mod lifecycle;
+mod managed;
 pub mod mgmt;
 pub mod owner_assignment;
 pub mod physical;
@@ -32,7 +33,9 @@ pub fn router(state: AppState) -> axum::Router {
     if state.managed_mode {
         return axum::Router::new()
             .route("/healthz", get(health::healthz))
-            .route("/api/authority", get(health::managed_authority))
+            .route("/api/mode", get(health::mode))
+            .route("/api/authority", get(managed::authority))
+            .route("/api/preview", get(managed::snapshot))
             .route("/api/*path", any(health::managed_api_unavailable))
             .fallback(spa::spa_fallback)
             .with_state(state)
@@ -41,6 +44,7 @@ pub fn router(state: AppState) -> axum::Router {
 
     axum::Router::new()
         .route("/healthz", get(health::healthz))
+        .route("/api/mode", get(health::mode))
         // ── Physical tree (A3): rack + node lifecycle ────────────────
         .route(
             "/api/racks",

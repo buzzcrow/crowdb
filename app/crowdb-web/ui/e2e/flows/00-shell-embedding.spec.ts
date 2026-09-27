@@ -27,9 +27,30 @@ test.describe('shell · embedding', () => {
 
     await step('shell: goto', () => page.goto('/'));
 
-    // Scope to the banner alert — a toast (also role=alert) may appear
-    // concurrently with "Failed to load server list:" text.
-    await expect(page.getByRole('alert').filter({ hasText: 'Backend unreachable' })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByRole('alert').filter({ hasText: 'Console mode unavailable.' })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
+  });
+
+  test('Docker mode shows Group 0 and monitor state without hardware controls', async ({ page }) => {
+    await page.route('**/api/mode', route => route.fulfill({ json: { mode: 'docker' } }));
+    await page.route('**/api/preview', route => route.fulfill({ json: {
+      source: 'group0',
+      racks: [{ id: 1, status: 1, node_ids: [1] }],
+      nodes: [{ id: 1, rack_id: 1, status: 1 }],
+      disk_groups: [],
+      disks: [],
+      stores: [{ store_id: 0, node_ids: [1] }],
+      groups: [{ store_id: 0, group_id: 0 }],
+      replicas: [],
+      services: [],
+      monitor: { phase: 'Ready', revision: 1, updated_at_ms: 1, services: {} },
+    } }));
+    await page.goto('/');
+    await expect(page.getByTestId('managed-preview')).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0');
+    await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only');
+    await expect(page.getByTestId('managed-monitor-phase')).toContainText('Ready');
+    await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
   });
 
   test('embedding honors apiPrefix, readonly, and module opt-out', async ({ page, baseURL }) => {

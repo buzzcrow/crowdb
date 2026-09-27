@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crowdb_console_shared::config::web::WebProcessConfig;
+use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
 use crowdb_console_shared::error::{Error, Result};
 use crowdb_console_shared::monitor::MonitorCache;
 use crowdb_console_shared::ops::OpContext;
@@ -50,6 +50,7 @@ pub struct AppState {
     /// Enables faster spawned-process intervals for E2E runs.
     pub test_mode: bool,
     pub managed_mode: bool,
+    pub web_mode: Option<WebMode>,
     pub ui_root: Arc<PathBuf>,
     pub authority_seeds: Arc<Vec<String>>,
     pub monitor_status_path: Option<Arc<PathBuf>>,
@@ -111,6 +112,7 @@ impl AppState {
             warn_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
             test_mode: false,
             managed_mode: false,
+            web_mode: None,
             ui_root: Arc::new(PathBuf::from(FRONTEND_DIST)),
             authority_seeds: Arc::new(Vec::new()),
             monitor_status_path: None,
@@ -121,6 +123,7 @@ impl AppState {
     #[must_use]
     pub fn with_managed_ui(mut self, ui_root: PathBuf) -> Self {
         self.managed_mode = true;
+        self.web_mode = Some(WebMode::Docker);
         self.ui_root = Arc::new(ui_root);
         self
     }
@@ -128,6 +131,7 @@ impl AppState {
     #[must_use]
     pub fn with_process_config(mut self, config: &WebProcessConfig) -> Self {
         self.managed_mode = true;
+        self.web_mode = Some(config.mode);
         self.ui_root = Arc::new(config.ui_root.clone());
         self.authority_seeds = Arc::new(config.group0_management_seeds.clone());
         self.monitor_status_path = config.monitor_status.clone().map(Arc::new);
