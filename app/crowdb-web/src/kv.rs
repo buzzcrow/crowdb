@@ -14,7 +14,7 @@ use crowdb_console_shared::ops;
 use crowdb_kv_client::{GetOutcome, ScanOutcome};
 use hex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Deserialize)]
@@ -277,25 +277,21 @@ async fn refresh_group_nodes(state: &AppState, sid: u64, gid: u64) {
     futures::future::join_all(node_ids.iter().map(|&nid| refresh_node_cache(state, nid))).await;
 }
 
-/// `crowdb-kv-server` management-API base URLs (`ServerEntry::url`, e.g.
-/// `http://host:rest_port`) for every node hosting a replica of `(sid,
-/// gid)`. This is [`CrowdbKvClient`]'s discovery input (`GET /topology` on
-/// each seed): any one reachable replica's own `/topology` response
-/// carries the real leader's endpoint via its `remotes` list, so seeding
-/// with every known replica's mgmt URL is enough for `CrowdbKvClient` to
-/// self-heal a stale/dead leader without this module doing any endpoint
-/// bookkeeping itself (C1-C2).
+/// Build an `OpContext` for a KV data-plane request on `(sid, gid)`.
 ///
-/// # Errors
-/// `404` if the group is unknown / has no replicas; `502` if none of its
-/// replica nodes have a configured management URL.
-async fn mgmt_seeds_for_group(
+/// Uses Group 0 membership and live service registrations for discovery.
+async fn kv_op_context(
     state: &AppState,
     sid: u64,
     gid: u64,
-) -> Result<Vec<String>, (StatusCode, Json<ErrorBody>)> {
-    let node_ids = group_node_ids(state, sid, gid).await;
-    if node_ids.is_empty() {
+) -> Result<crowdb_console_shared::ops::OpContext, (StatusCode, Json<ErrorBody>)> {
+    let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
+    let replicas = ctx
+        .sysmd()
+        .list_replicas_in_group(sid, gid)
+        .await
+        .map_err(|error| err_502(format!("Group 0 replica lookup failed: {error}")))?;
+    if replicas.is_empty() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorBody {
@@ -303,84 +299,73 @@ async fn mgmt_seeds_for_group(
             }),
         ));
     }
-
-    let cfg = state.config.read().unwrap();
-    let mut seen = HashSet::new();
-    let mut seeds = Vec::new();
-    for node_id in &node_ids {
-        // Skip stopped servers — no runtime pid means the server process
-        // is not running. Including its URL as a seed only wastes time
-        // (connection-refused) during topology refresh.
-        if state.runtime_pid(*node_id).is_none() {
-            continue;
-        }
-        if let Some(server) = cfg.server_for_node(*node_id) {
-            if seen.insert(server.url.clone()) {
-                seeds.push(server.url.clone());
-            }
+    let nodes: HashSet<_> = replicas.into_iter().map(|replica| replica.node_id).collect();
+    let instances = ctx
+        .sysmd()
+        .read_all_kv_server_instances()
+        .await
+        .map_err(|error| err_502(format!("Group 0 service lookup failed: {error}")))?;
+    let mut registered = HashMap::<NodeId, Vec<String>>::new();
+    for (_, instance) in instances {
+        if let Some(node_id) = instance
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.kv_server.as_ref())
+            .and_then(|extra| extra.node_id)
+        {
+            registered.entry(node_id).or_default().push(instance.rpc_endpoint);
         }
     }
-    drop(cfg);
-
-    if seeds.is_empty() {
+    if !nodes.iter().any(|node_id| {
+        registered
+            .get(node_id)
+            .is_some_and(|endpoints| endpoints.len() == 1)
+    }) {
         return Err(err_502(format!(
-            "group {gid} in store {sid} has no configured server management URL"
+            "group {gid} in store {sid} has no live KV registration in Group 0"
         )));
     }
-    Ok(seeds)
+    if let Some(endpoint) = authoritative_leader_hint(state, sid, gid, &nodes, &registered).await {
+        ctx.kv().seed_leader(sid, gid, endpoint);
+    }
+    let seeds = registered
+        .into_values()
+        .filter(|endpoints| endpoints.len() == 1)
+        .flatten()
+        .collect();
+    ctx.kv().set_mgmt_seeds(seeds);
+    Ok(ctx)
 }
 
-/// Build an `OpContext` for a KV data-plane request on `(sid, gid)`.
-///
-/// Fails fast with `502` if no KV servers are deployed — the shared
-/// `CrowdbKvClient` would have no seeds for topology discovery and
-/// every op would retry for ~5s before failing. Returning a clear
-/// error immediately is better than a silent timeout.
-///
-/// Seeds + leader hint are synced from the current config + monitor
-/// cache so the shared client's topology cache is fresh for this call.
-async fn kv_op_context(
+async fn authoritative_leader_hint(
     state: &AppState,
     sid: u64,
     gid: u64,
-) -> Result<crowdb_console_shared::ops::OpContext, (StatusCode, Json<ErrorBody>)> {
-    let t0 = std::time::Instant::now();
-    // Fail fast: if no KV servers are deployed, the client cannot
-    // discover any leader. Don't let it retry for seconds.
-    let all_seeds: Vec<String> = {
-        let cfg = state.config.read().unwrap();
-        cfg.servers
-            .iter()
-            .filter(|s| s.service_type == crowdb_console_shared::config::ServiceType::Kv)
-            .map(|s| s.url.clone())
-            .collect()
-    };
-    if all_seeds.is_empty() {
-        tracing::warn!("kv_op_context: no KV servers deployed — fail-fast 502 (store={sid}, group={gid})");
-        return Err(err_502(
-            "no KV servers deployed — cluster not initialized; run cluster init first",
-        ));
+    nodes: &HashSet<NodeId>,
+    registered: &HashMap<NodeId, Vec<String>>,
+) -> Option<String> {
+    for attempt in 0..5 {
+        if let Some((_, node_id)) = state.monitor_cache.strict_leader_for(sid, gid).await {
+            if nodes.contains(&node_id) {
+                if let Some(endpoints) = registered.get(&node_id).filter(|endpoints| endpoints.len() == 1) {
+                    let snapshot = state.monitor_cache.snapshot().await;
+                    let store_port = snapshot
+                        .get(&node_id)
+                        .and_then(|record| record.stores.get(&sid))
+                        .and_then(|store| store.listen_addr.as_deref())
+                        .and_then(port_of);
+                    if let Some(port) = store_port {
+                        return Some(format!("http://{}:{port}", host_of(&endpoints[0])));
+                    }
+                }
+            }
+        }
+        if attempt < 4 {
+            futures::future::join_all(nodes.iter().map(|node_id| refresh_node_cache(state, *node_id))).await;
+            sleep(Duration::from_millis(50 * (1 + attempt))).await;
+        }
     }
-    // Validate the target group exists + has replicas.
-    let _ = mgmt_seeds_for_group(state, sid, gid).await?;
-    let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    ctx.kv().set_mgmt_seeds(all_seeds);
-    let t_resolve = std::time::Instant::now();
-    if let Ok(endpoint) = resolve_kv_endpoint(state, sid, gid).await {
-        tracing::debug!(
-            "kv_op_context: resolve_kv_endpoint store={sid} group={gid} endpoint={endpoint} in {}ms (total {}ms)",
-            t_resolve.elapsed().as_millis(),
-            t0.elapsed().as_millis()
-        );
-        ctx.kv().seed_leader(sid, gid, endpoint);
-    } else {
-        tracing::warn!(
-            "kv_op_context: resolve_kv_endpoint failed for store={sid} group={gid} in {}ms (total {}ms)",
-            t_resolve.elapsed().as_millis(),
-            t0.elapsed().as_millis()
-        );
-    }
-    Ok(ctx)
+    None
 }
 
 /// Get a value from the KV store.

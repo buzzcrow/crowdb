@@ -235,6 +235,12 @@ and verifiable release assets.
   rather than returning stale local topology. Files: `app/crowdb-web/src/{kv,mgmt,physical}.rs`,
   `lib/crowdb-console-shared/src/ops/context.rs`, `lib/crowdb-kv-client/src/service/**`,
   and read/leader-change tests.
+  Web KV data-plane requests now check Group 0 replica membership and live
+  KV-server registrations before discovery; they no longer use locally persisted
+  server/group entries as authority; a cache leader hint is accepted only for
+  a Group 0 member with one live registration and a reported store port. The
+  separate endpoint route, logical read views, and monitor-cache refresh still
+  need the same authority conversion.
 - [~] **Bootstrap and teardown authority boundary**: keep initial Group 0
   bootstrap intent separate because Group 0 does not exist yet. After creating
   Group 0, transfer and verify every hardware/store/group/replica record, then
