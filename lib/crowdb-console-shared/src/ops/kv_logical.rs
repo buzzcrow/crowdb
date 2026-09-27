@@ -19,49 +19,12 @@ use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
 mod group_wiring;
+mod publication;
 mod replica_rollback;
 
 use replica_rollback::ReplicaRollback;
 
-/// Retry a sysdata write with backoff. Group-0 leader election may not
-/// have settled when `cluster_init` returns, causing "not leader" or
-/// "no known leader" errors on the first attempt. Up to 5 attempts with
-/// 50ms backoff.
-async fn retry_sysmd<F, Fut, T, E>(label: &str, f: F) -> Result<T>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = std::result::Result<T, E>>,
-    E: std::fmt::Display + Into<Error>,
-{
-    let mut last_err = None;
-    for attempt in 0..5u32 {
-        match f().await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                let msg = format!("{e}");
-                if !msg.contains("not leader")
-                    && !msg.contains("retries exhausted")
-                    && !msg.contains("no known leader")
-                {
-                    return Err(e.into());
-                }
-                last_err = Some(e);
-                if attempt < 4 {
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
-            }
-        }
-    }
-    Err(last_err.map_or_else(
-        || Error::UpstreamRpc {
-            node_id: label.into(),
-            status: "sysmd write exhausted retries".into(),
-        },
-        Into::into,
-    ))
-}
-
-/// Build a [`ServerClient`] for a node's deployed kv-server.
+/// Build a client from a node's live management registration.
 async fn server_client(ctx: &OpContext, node_id: u64) -> Result<ServerClient> {
     let url = if ctx.is_test_scenario() {
         ctx.node_mgmt_url(node_id)?
@@ -110,7 +73,7 @@ fn remap_zero_host(addr: &str) -> String {
 
 /// Create an empty store across the listed nodes. Fans out `add_store`
 /// to each node, rolls back on partial failure, and records the store
-/// in group-0 sysdata + the local config.
+/// in group-0 sysdata.
 ///
 /// If `nodes` is empty, picks the first node with a deployed server.
 ///
@@ -195,10 +158,7 @@ pub async fn add_store(ctx: &OpContext, store_id: u64, nodes: &[u64]) -> Result<
     // Record in group-0 sysdata. The sysdata write must
     // succeed — add_group reads sysdata to find the store, and a missing
     // store record causes a spurious 404.
-    retry_sysmd("add_store", || async {
-        ctx.sysmd().add_store(store_id, &succeeded).await
-    })
-    .await?;
+    publication::store(ctx, store_id, &succeeded).await?;
     Ok(succeeded)
 }
 
@@ -342,10 +302,7 @@ pub async fn add_group(
     // Record in group-0 sysdata. The sysdata write must
     // succeed — add_replica reads sysdata to find existing replicas, and
     // a missing group record causes a spurious 404.
-    retry_sysmd("add_group", || async {
-        ctx.sysmd().add_group(store_id, group_id).await
-    })
-    .await?;
+    publication::group(ctx, store_id, group_id).await?;
     // Record replicas concurrently — sysmd writes are independent.
     let replica_results: Vec<Result<()>> =
         futures::future::join_all(succeeded.iter().map(|(node_id, replica_id)| {
@@ -606,7 +563,7 @@ async fn record_replica(
         voting: true,
         endpoint: String::new(),
     };
-    retry_sysmd("add_replica", || async { ctx.sysmd().add_replica(&value).await }).await?;
+    publication::replica(ctx, &value).await?;
     Ok(())
 }
 

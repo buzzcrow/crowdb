@@ -488,12 +488,21 @@ For each multi-node operation in the logical tree, the backend obeys
 these rules:
 
 - **Plan first, act second.** Resolve every required node + replica id
-  from the monitor cache before issuing any upstream RPC.
+  from Group 0 membership and live service registrations before issuing
+  mutation RPCs. Missing or ambiguous registrations fail the operation.
 - **Built on physical primitives.** The orchestrator only calls the
   per-node physical mutators; it never invents a side channel.
 - **All-or-nothing where feasible.** On partial failure, attempt to
   undo successful sub-steps and surface the resulting state in the
   error body.
+- **Confirmed membership publication.** Complete peer wiring before publishing
+  group or replica membership. Create records conditionally; a concurrent
+  conflicting record is preserved. A lost write response is resolved only by
+  a linearizable read that confirms the intended record.
+- **Deletion preserves authority on node failure.** Confirm deletion on every
+  hosting node before removing membership. Store hosts include nodes from
+  replica records as well as the store record. Remove descendants before
+  parents; an already absent node-side object permits retry.
 - **Idempotent retries.** A repeat of the same logical request must
   converge to the same state.
 - **Cache refresh on success.** Every successful mutation triggers an

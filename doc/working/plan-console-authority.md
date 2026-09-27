@@ -51,6 +51,10 @@ and launch inputs locally.
   confirmed authority, complete replica fan-out/rollback and delete cleanup;
   preserve Group 0 membership when node-side deletion fails. Reuse the common
   flow in CLI and both Web modes, with no local topology commit.
+  Conditional publication replaces overwrite writes for stores, groups and
+  replicas; test concurrent matching/conflicting records and a real RPC reply
+  dropped after commit. Follow with interrupted multi-record publication and
+  deletion reconciliation before closing this task.
 
 ## Configuration and hardware operations
 
@@ -85,6 +89,25 @@ and launch inputs locally.
   then remove the requirement, backlog entry and this plan when complete.
 
 ## Evidence
+
+- Conditional publication baseline overwrites a competing store record and
+  reports success. Both matching and conflicting race tests pass after the
+  CAS change. A real RPC proxy discards the committed write reply; linearizable
+  confirmation succeeds and exactly one reply is dropped. Full Console shared
+  and CLI pass. Full Web passes after the restart-fixture correction below,
+  including all five concurrent restart cases. Rust fmt and clippy pass.
+  Logs: `/tmp/crowdb-publication-*.log`.
+- The complete Console gate reaches a three-node restart failure: no complete
+  store view within 3s. Its persisted identities are stable; node logs show
+  repeated Group 0 elections and late registration, including election churn
+  before restart. This real-process case uses the paused-clock `test` profile
+  (5ms heartbeat, 30–60ms election) while all larger clusters use `e2e`.
+  Exact isolation passes in 4.43s; default-concurrency rerun passes in 13.33s,
+  and serial execution passes. Use the existing `e2e` fixture for the three-node
+  process case and retain its 3s acceptance assertion. Add the last HTTP
+  observation to store-wait failures, as already done for group waits.
+  Original logs remain in `restart-3n-1g-20260927-234030.467` under the ephemeral
+  Web E2E root; do not clean them during diagnosis.
 
 - Replica cleanup passes four regressions: failed group creation cleans its
   newly created store, cleanup failure is explicit, existing replica hosts
