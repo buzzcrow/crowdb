@@ -37,7 +37,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         endpoints,
-        BTreeMap::from([("iceberg", 80), ("s3", 16000), ("web", 14000)])
+        BTreeMap::from([("iceberg", 80), ("s3", 8010), ("web", 8080)])
     );
     let iceberg = profile
         .services
@@ -53,6 +53,25 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         Some(&"0.0.0.0:80".to_owned())
     );
     assert_eq!(iceberg.probe.target, "http://127.0.0.1:80/v1/config");
+    let s3 = profile
+        .services
+        .iter()
+        .find(|service| service.id == "s3")
+        .unwrap();
+    assert_eq!(s3.env.get("CROWDB_S3_LISTEN"), Some(&"0.0.0.0:8010".to_owned()));
+    assert_eq!(s3.probe.target, "http://127.0.0.1:8010/_crowdb/health/ready");
+    let web = profile
+        .services
+        .iter()
+        .find(|service| service.id == "web")
+        .unwrap();
+    assert_eq!(web.probe.target, "http://127.0.0.1:8080/healthz");
+    let template = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/templates/crowdb-web.toml"),
+    )
+    .unwrap();
+    let config: toml::Value = toml::from_str(&template).unwrap();
+    assert_eq!(config["port"].as_integer(), Some(8080));
 }
 
 #[test]

@@ -144,7 +144,7 @@ and verifiable release assets.
   focused monitor tests and the 17-case real S3 full-stack suite.
 - [x] **Iceberg catalog and access listeners**: initialize/activate the
   catalog with durable UUIDv7 request identities, start authenticated S3 and
-  Iceberg listeners on container ports 16000/80, default client-visible
+  Iceberg listeners on container ports 8010/80, default client-visible
   Iceberg URI to host port 80, and validate discovery/health without
   trusted-network bypass. Wire both bootstrap steps into monitor `run` after
   the storage services. Files:
@@ -208,7 +208,7 @@ and verifiable release assets.
 
 ## Phase 5 — Image and local acceptance
 
-- [x] **Image assets**: add the digest-pinned Ubuntu 24.04 amd64 multi-stage
+- [~] **Image assets**: add the digest-pinned Ubuntu 24.04 amd64 multi-stage
   Dockerfile, `.dockerignore`, non-root user, `/opt/crowdb` install layout,
   immutable UI/templates/profile, entrypoint, OCI labels from `VERSION`, exposed
   public ports only, and monitor health checks. Files:
@@ -218,8 +218,10 @@ and verifiable release assets.
   Built `crowdb-single-node-preview:dev` with digest-pinned Ubuntu 24.04,
   release binaries and packaged UI, UID 10001, and file-scoped port-80
   capability. The image smoke verifies the profile, binary loading, labels,
-  capability, and fail-closed missing-volume path. Full boot remains in the
-  separate Container E2E task.
+  capability, and fail-closed missing-volume path. Source ports changed to
+  S3 8010 and Web 8080; preserve the previously built `:dev` image, then
+  rebuild and rerun image smoke once the Web authority path is ready. Full boot
+  remains in the separate Container E2E task.
 - [x] **Pixi tasks**: add `build-docker-preview` and `test-docker-preview`, include
   the monitor in workspace build/test coverage, and keep Docker prerequisite
   failures explicit. Files: `pixi.toml`, task-coverage configuration/tests.
@@ -285,9 +287,8 @@ and verifiable release assets.
   `pixi run test-console-ui`, `pixi run rs-fmt-check`, `pixi run rs-lint`, and
   changed C++ gates when applicable.
 
-## Open Questions
+## Resolved Decisions
 
-- The container exposes unauthenticated Web port 14000, while the current
-  acceptance text requires Web topology mutations. Confirm whether the managed
-  preview UI should remain read-only or expose Group 0 topology writes; the
-  latter would need an explicit authentication boundary before implementation.
+- The managed preview UI is read-only on unauthenticated port 8080; standalone
+  writes must use Group 0 and remain unavailable until the authority flow is
+  implemented. This decision is recorded in the requirement contract.

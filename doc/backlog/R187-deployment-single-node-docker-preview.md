@@ -50,9 +50,9 @@ integration data. It is not a production, high-availability, upgrade-stable, or
 fault-tolerant deployment.
 
 - **DOCKER-I1 — One-command service:** one documented container invocation
-  starts one usable CROWDB instance and exposes only S3 on port 16000, Iceberg
+  starts one usable CROWDB instance and exposes only S3 on port 8010, Iceberg
   REST/FileIO on container port 80 (mapped to host port 80 by default), and
-  the web console on port 14000.
+  the web console on port 8080.
 - **DOCKER-I2 — Product-path fidelity:** the image runs the normal
   `crowdb-kv-server`, `crowdb-diskdb`, `crowdb-diskio`, `crowdb-chunkdb`,
   `crowdb-chunk-kv-server`, `crowdb-access-server`, `crowdb-iceberg`, and
@@ -153,10 +153,12 @@ without moving or duplicating its runtime code.
 ### Web configuration authority
 
 - **Group 0:** owns racks, nodes, disk groups, disks, stores, groups, replicas,
-  bindings, and the service registry. Web topology reads and mutations use Group
-  0 directly; a successful local file write cannot substitute for a failed Group
-  0 mutation. When Group 0 is unavailable after initialization, topology APIs
-  fail unavailable rather than serving or restoring a local topology copy.
+  bindings, and the service registry. Web topology reads use Group 0 directly.
+  Standalone topology mutations use Group 0; a successful local file write
+  cannot substitute for a failed Group 0 mutation. The unauthenticated
+  monitor-managed preview Web is read-only and rejects every topology or
+  process mutation. When Group 0 is unavailable after initialization, topology
+  APIs fail unavailable rather than serving or restoring a local copy.
 - **`crowdb-web.toml`:** is a versioned, non-secret process configuration. It
   contains the web bind address and port, Group 0 management seeds, packaged UI
   root, monitor status endpoint, log policy, request bounds, and a mode selecting
@@ -302,11 +304,11 @@ passes explicit data and log paths to every child.
    health listeners bind only to the container network namespace and are not
    declared as public image ports.
 5. Configure `crowdb-access-server` with normal S3 authentication on
-   `0.0.0.0:16000`, `crowdb-iceberg` with its independent authenticated catalog
+   `0.0.0.0:8010`, `crowdb-iceberg` with its independent authenticated catalog
    and native FileIO listener on `0.0.0.0:80`, and `crowdb-web` on
-   `0.0.0.0:14000`. The quick start maps all three ports one-to-one and uses
-   `http://localhost:16000`, `http://localhost`, and
-   `http://localhost:14000`. `CROWDB_ICEBERG_PUBLIC_URI` defaults to the local
+   `0.0.0.0:8080`. The quick start maps all three ports one-to-one and uses
+   `http://localhost:8010`, `http://localhost`, and
+   `http://localhost:8080`. `CROWDB_ICEBERG_PUBLIC_URI` defaults to the local
    Iceberg URI and is the one documented override when a remote hostname,
    reverse proxy, or different host-port mapping changes the client-visible
    address. S3 buckets and credentials do not select or authorize Iceberg
@@ -333,7 +335,9 @@ passes explicit data and log paths to every child.
    old parser, writer, restore path, fixtures, and docs without compatibility
    handling. Topology handlers commit Group 0 first and refresh their read model
    only after success; they never persist topology
-   locally or ignore a Group 0 failure. Startup uses configured seeds to load
+   locally or ignore a Group 0 failure. The monitor-managed preview rejects
+   topology and process mutations; standalone operations follow the Group 0
+   write contract. Startup uses configured seeds to load
    Group 0 and service discovery rather than calling local
    `restore_persisted_topology` once Group 0 exists. In monitor-managed mode the
    console has no registry engine, overlays `crowdb-monitor` process/restart state
@@ -370,8 +374,8 @@ passes explicit data and log paths to every child.
     crash-loop budget exhaustion, monitor failure, `SIGTERM`, wrong secrets,
     read-only/unwritable volume, and missing, corrupt, incompatible, or conflicting
     bootstrap manifest outcomes.
-11. Publish a minimal quick start that pins an image tag, maps ports 16000:16000,
-    80:80, and 14000:14000, mounts one host data path at `/opt/crowdb/data`, configures the
+11. Publish a minimal quick start that pins an image tag, maps ports 8010:8010,
+    80:80, and 8080:8080, mounts one host data path at `/opt/crowdb/data`, configures the
     container runtime restart policy for monitor-budget exhaustion, retrieves
     generated preview credentials with the explicit monitor command, and includes
     independent S3 and Iceberg examples. The compatibility list names exact
@@ -463,7 +467,7 @@ passes explicit data and log paths to every child.
   launch policy, forbidden topology/runtime/inline-secret fields fail closed,
   and monitor-managed mode rejects every registry path. Invariant: DOCKER-I11.
   Unit test.
-- Given two consoles connected to one ready Group 0, when topology mutations
+- Given two standalone consoles connected to one ready Group 0, when topology mutations
   succeed, conflict, lose their response, or encounter unavailable Group 0,
   assert both consoles converge on Group 0 after success, preserve conflict and
   retry semantics, commit no local topology before authority, and return an
@@ -472,8 +476,9 @@ passes explicit data and log paths to every child.
 - Given ready Group 0 and any supplied registry path, when monitor-managed
   `crowdb-web` starts, assert it rejects the registry path; with no registry it
   uses configured seeds, Group 0 topology, service discovery, and monitor runtime
-  state, never invokes local topology restore, and marks unavailable/stale
-  sources accurately. Invariant: DOCKER-I11. E2E test.
+  state, never invokes local topology restore, rejects every topology/process
+  mutation, and marks unavailable/stale sources accurately. Invariant:
+  DOCKER-I11. E2E test.
 - Given the repository's former mixed `ConsoleConfig` files, fixtures, restore
   calls, and documentation, when the configuration split lands, assert none
   remain in production or test paths and no migration, dual-read, fallback, or
@@ -493,7 +498,7 @@ passes explicit data and log paths to every child.
   contain none of those values. Invariants: DOCKER-I6 and DOCKER-I9. E2E test.
 - Given the default host-port mappings and then an overridden external Iceberg URI,
   when clients discover and call all public services, assert S3 is available at
-  port 16000, Iceberg REST/FileIO at host port 80, web at 14000, no internal listener is
+  port 8010, Iceberg REST/FileIO at host port 80, web at 8080, no internal listener is
   host-reachable, and Iceberg advertises the configured client-visible URI.
   Invariants: DOCKER-I1 and DOCKER-I7. E2E test.
 - Given first-time initialization is interrupted after each durable step, when

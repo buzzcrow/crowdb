@@ -6,6 +6,13 @@ docker image inspect "$image" >/dev/null
 test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
 test "$(docker image inspect --format '{{.Config.User}}' "$image")" = crowdb:crowdb
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")" = "$(cat VERSION)"
+exposed=$(docker image inspect --format '{{json .Config.ExposedPorts}}' "$image")
+for port in 80 8010 8080; do
+    jq -e --arg port "$port/tcp" 'has($port)' <<<"$exposed" >/dev/null
+done
+for port in 14000 16000; do
+    jq -e --arg port "$port/tcp" 'has($port) | not' <<<"$exposed" >/dev/null
+done
 
 docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-monitor "$image" validate /opt/crowdb/etc/profile.toml
 capability=$(docker run --rm --network none --entrypoint /sbin/getcap "$image" /opt/crowdb/bin/crowdb-iceberg)

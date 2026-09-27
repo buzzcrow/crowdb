@@ -69,7 +69,7 @@ async fn s3_bootstrap_reuses_user_and_validates_ready_without_creation() {
         .unwrap();
     assert_eq!(session.manifest().step_complete("s3-user"), Some(true));
     let client = show_client_credentials(&data_root).unwrap();
-    assert!(client.contains("AWS_ENDPOINT_URL=http://localhost:16000\n"));
+    assert!(client.contains("AWS_ENDPOINT_URL=http://localhost:8010\n"));
     assert!(client.contains("ICEBERG_URI=http://localhost\n"));
     session.mark_ready().unwrap();
 

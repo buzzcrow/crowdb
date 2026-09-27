@@ -47,7 +47,7 @@ ENV PATH="/opt/crowdb/bin:${PATH}" \
     LD_LIBRARY_PATH="/opt/crowdb/lib" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"
 USER crowdb:crowdb
-EXPOSE 80 14000 16000
+EXPOSE 80 8010 8080
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 CMD crowdb-monitor liveness && crowdb-monitor readiness
 ENTRYPOINT ["/opt/crowdb/bin/entrypoint"]
