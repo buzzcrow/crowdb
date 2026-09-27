@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! A6: Logical group plane — writes delegate to `ops::kv_logical`,
-//! reads from the monitor cache (live role/leader info).
+//! reads Group 0 topology with live role/leader overlays.
 
 use crate::error::{err_502, map_config_err, ErrorBody};
 use crate::expand::Recursive;
@@ -15,23 +15,16 @@ use crowdb_console_shared::cluster::{GroupSummary, GroupView, NodeId};
 use crowdb_console_shared::ops;
 use serde::Deserialize;
 
-/// `GET /api/stores/:store_id/groups`. List groups from cache.
+/// `GET /api/stores/:store_id/groups`. List Group 0 groups.
 ///
 /// # Errors
-/// Returns `404` if the store is not found.
+/// Returns `404` if the store is not found, or `502` if Group 0 is unavailable.
 pub(crate) async fn http_list_groups(
     State(state): State<AppState>,
     Path(sid): Path<u64>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<Vec<GroupSummary>>, (StatusCode, Json<ErrorBody>)> {
-    let view = state.monitor_cache.resolve_store(sid).await.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                error: format!("store {sid} not found"),
-            }),
-        )
-    })?;
+    let view = super::store_ops::store_view(&state, sid).await?;
     Ok(Json(view.groups))
 }
 

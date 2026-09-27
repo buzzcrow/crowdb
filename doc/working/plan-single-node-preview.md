@@ -243,8 +243,9 @@ and verifiable release assets.
   instead of using a local or first-healthy fallback. Bare-metal Web store
   list/detail now project Group 0 records using bulk group/replica scans and
   verified cache leader overlays; cached-only stores fail closed when Group 0
-  is unavailable. Group/replica read views and monitor-cache refresh still
-  need the same authority conversion.
+  is unavailable. The bare-metal Web group list now reuses that Group 0
+  projection. Group detail, replica read views, and monitor-cache refresh
+  still need the same authority conversion.
 - [~] **Bootstrap and teardown authority boundary**: keep initial Group 0
   bootstrap intent separate because Group 0 does not exist yet. After creating
   Group 0, transfer and verify every hardware/store/group/replica record, then

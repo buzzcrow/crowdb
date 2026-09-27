@@ -155,6 +155,13 @@ pub(crate) async fn http_get_store(
     Path(sid): Path<u64>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<StoreView>, (StatusCode, Json<ErrorBody>)> {
+    store_view(&state, sid).await.map(Json)
+}
+
+pub(super) async fn store_view(
+    state: &AppState,
+    sid: u64,
+) -> Result<StoreView, (StatusCode, Json<ErrorBody>)> {
     let ctx = state
         .op_context()
         .await
@@ -177,7 +184,7 @@ pub(crate) async fn http_get_store(
         ctx.sysmd().list_replicas_in_store(sid)
     )
     .map_err(|error| err_502(format!("Group 0 store topology lookup failed: {error}")))?;
-    Ok(Json(project_store(&state, store, groups, replicas).await))
+    Ok(project_store(state, store, groups, replicas).await)
 }
 
 /// `DELETE /api/stores/:store_id`. Delete the store across every hosting
