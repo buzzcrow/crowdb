@@ -242,6 +242,33 @@ impl OpContext {
         Ok(self.server_for_node(node_id)?.url)
     }
 
+    /// Resolve a live node's management endpoint from Group 0 service registration.
+    ///
+    /// # Errors
+    /// Rejects missing, ambiguous, or unregistered node identities.
+    pub async fn live_node_mgmt_url(&self, node_id: u64) -> Result<String> {
+        let instances = self.sysmd.read_all_kv_server_instances().await?;
+        let mut endpoints = instances.into_iter().filter_map(|(_, instance)| {
+            instance
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.kv_server.as_ref())
+                .filter(|extra| extra.node_id == Some(node_id))
+                .map(|_| instance.rpc_endpoint)
+        });
+        let endpoint = endpoints.next().ok_or_else(|| Error::NotFound {
+            kind: "live kv-server for node".into(),
+            id: node_id.to_string(),
+        })?;
+        if endpoints.next().is_some() {
+            return Err(Error::Conflict {
+                kind: "live kv-server for node".into(),
+                id: node_id.to_string(),
+            });
+        }
+        Ok(endpoint)
+    }
+
     /// Access the [`ServiceDiscoveryClient`] for discovering living
     /// service instances via the group-0 service registry. Returns
     /// `None` when the context was built without discovery (e.g. unit

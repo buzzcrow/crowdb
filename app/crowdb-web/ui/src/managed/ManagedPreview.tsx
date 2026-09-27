@@ -40,6 +40,19 @@ const reasonLabel: Record<string, string> = {
 export function ManagedPreview({ apiPrefix }: { apiPrefix: string }) {
   const [snapshot, setSnapshot] = useState<ManagedSnapshot | null>(null);
   const [reason, setReason] = useState<string | null>(null);
+  const [managementToken, setManagementToken] = useState('');
+  const [storeId, setStoreId] = useState('');
+  const [groupStoreId, setGroupStoreId] = useState('');
+  const [groupId, setGroupId] = useState('');
+  const [replicaId, setReplicaId] = useState('1');
+  const [nodeId, setNodeId] = useState('');
+  const [groupNodeId, setGroupNodeId] = useState('');
+  const [replicaGroup, setReplicaGroup] = useState('');
+  const [replicaNodeId, setReplicaNodeId] = useState('');
+  const [newReplicaId, setNewReplicaId] = useState('');
+  const [writeError, setWriteError] = useState<string | null>(null);
+  const [writeBusy, setWriteBusy] = useState(false);
+  const [refreshRevision, setRefreshRevision] = useState(0);
 
   useEffect(() => {
     let disposed = false;
@@ -75,7 +88,31 @@ export function ManagedPreview({ apiPrefix }: { apiPrefix: string }) {
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, [apiPrefix]);
+  }, [apiPrefix, refreshRevision]);
+
+  const write = async (path: string, method: 'POST' | 'DELETE', body?: object) => {
+    setWriteBusy(true);
+    setWriteError(null);
+    try {
+      const response = await fetch(`${apiPrefix}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${managementToken}`,
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || `Request failed (${response.status})`);
+      }
+      setRefreshRevision((revision) => revision + 1);
+    } catch (error) {
+      setWriteError(error instanceof Error ? error.message : 'Request failed');
+    } finally {
+      setWriteBusy(false);
+    }
+  };
 
   return (
     <main className="tw-min-h-full tw-bg-bg tw-p-6 tw-text-text" data-testid="managed-preview">
@@ -145,6 +182,88 @@ export function ManagedPreview({ apiPrefix }: { apiPrefix: string }) {
                   </ul>
                 </div>
               </div>
+            </section>
+
+            <section className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-5" aria-label="Logical topology management">
+              <h2 className="tw-text-lg tw-font-semibold">Logical topology management</h2>
+              <p className="tw-mt-2 tw-text-sm tw-text-muted">Store, group, and replica changes use Group 0. Hardware and process controls remain disabled.</p>
+              <label className="tw-mt-4 tw-block tw-text-sm">
+                Management token
+                <input
+                  className="tw-ml-2 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1"
+                  type="password"
+                  autoComplete="off"
+                  value={managementToken}
+                  onChange={(event) => setManagementToken(event.target.value)}
+                />
+              </label>
+              {writeError && <p role="alert" className="tw-mt-2 tw-text-sm">{writeError}</p>}
+              <form
+                className="tw-mt-4 tw-flex tw-flex-wrap tw-items-end tw-gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void write('/stores', 'POST', { store_id: Number(storeId), nodes: [Number(nodeId)] });
+                }}
+              >
+                <label className="tw-text-sm">Store ID <input className="tw-ml-1 tw-w-20 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" type="number" min="1" required value={storeId} onChange={(event) => setStoreId(event.target.value)} /></label>
+                <label className="tw-text-sm">Node <select aria-label="Store node" className="tw-ml-1 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" required value={nodeId} onChange={(event) => setNodeId(event.target.value)}><option value="">Select node</option>{snapshot.nodes.map((node) => <option key={node.id} value={node.id}>{node.id}</option>)}</select></label>
+                <button className="tw-rounded tw-border tw-border-border tw-px-3 tw-py-1 tw-text-sm" type="submit" disabled={!managementToken || writeBusy}>Create store</button>
+              </form>
+              <form
+                className="tw-mt-3 tw-flex tw-flex-wrap tw-items-end tw-gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void write(`/stores/${groupStoreId}/groups`, 'POST', { group_id: Number(groupId), replica_id: Number(replicaId), nodes: [Number(groupNodeId)] });
+                }}
+              >
+                <label className="tw-text-sm">Store <select aria-label="Group store" className="tw-ml-1 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" required value={groupStoreId} onChange={(event) => setGroupStoreId(event.target.value)}><option value="">Select store</option>{snapshot.stores.map((store) => <option key={store.store_id} value={store.store_id}>{store.store_id}</option>)}</select></label>
+                <label className="tw-text-sm">Group ID <input className="tw-ml-1 tw-w-20 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" type="number" min="0" required value={groupId} onChange={(event) => setGroupId(event.target.value)} /></label>
+                <label className="tw-text-sm">Replica ID <input className="tw-ml-1 tw-w-20 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" type="number" min="1" required value={replicaId} onChange={(event) => setReplicaId(event.target.value)} /></label>
+                <label className="tw-text-sm">Group node <select aria-label="Group node" className="tw-ml-1 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" required value={groupNodeId} onChange={(event) => setGroupNodeId(event.target.value)}><option value="">Select node</option>{snapshot.nodes.map((node) => <option key={node.id} value={node.id}>{node.id}</option>)}</select></label>
+                <button className="tw-rounded tw-border tw-border-border tw-px-3 tw-py-1 tw-text-sm" type="submit" disabled={!managementToken || writeBusy}>Create group</button>
+              </form>
+              <form
+                className="tw-mt-3 tw-flex tw-flex-wrap tw-items-end tw-gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const [selectedStore, selectedGroup] = replicaGroup.split('/');
+                  void write(`/stores/${selectedStore}/groups/${selectedGroup}/replicas`, 'POST', {
+                    node_id: Number(replicaNodeId),
+                    ...(newReplicaId ? { replica_id: Number(newReplicaId) } : {}),
+                  });
+                }}
+              >
+                <label className="tw-text-sm">Group <select aria-label="Replica group" className="tw-ml-1 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" required value={replicaGroup} onChange={(event) => setReplicaGroup(event.target.value)}><option value="">Select group</option>{snapshot.groups.filter((group) => group.store_id !== 0 || group.group_id !== 0).map((group) => <option key={`${group.store_id}/${group.group_id}`} value={`${group.store_id}/${group.group_id}`}>{group.store_id}/{group.group_id}</option>)}</select></label>
+                <label className="tw-text-sm">Replica node <select aria-label="Replica node" className="tw-ml-1 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" required value={replicaNodeId} onChange={(event) => setReplicaNodeId(event.target.value)}><option value="">Select node</option>{snapshot.nodes.map((node) => <option key={node.id} value={node.id}>{node.id}</option>)}</select></label>
+                <label className="tw-text-sm">New replica ID <input className="tw-ml-1 tw-w-20 tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1" type="number" min="1" value={newReplicaId} onChange={(event) => setNewReplicaId(event.target.value)} /></label>
+                <button className="tw-rounded tw-border tw-border-border tw-px-3 tw-py-1 tw-text-sm" type="submit" disabled={!managementToken || writeBusy}>Add replica</button>
+              </form>
+              <ul className="tw-mt-4 tw-space-y-2 tw-text-sm" aria-label="Logical stores">
+                {snapshot.stores.filter((store) => store.store_id !== 0).map((store) => (
+                  <li key={store.store_id} className="tw-flex tw-flex-wrap tw-items-center tw-gap-2">
+                    <span>Store {store.store_id} · nodes {store.node_ids.join(', ')}</span>
+                    <button className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1" type="button" disabled={!managementToken || writeBusy} onClick={() => { if (window.confirm(`Delete store ${store.store_id}?`)) void write(`/stores/${store.store_id}`, 'DELETE'); }}>Delete store</button>
+                  </li>
+                ))}
+              </ul>
+              <ul className="tw-mt-4 tw-space-y-2 tw-text-sm" aria-label="Logical groups">
+                {snapshot.groups.map((group) => (
+                  <li key={`${group.store_id}-${group.group_id}`} className="tw-flex tw-flex-wrap tw-items-center tw-gap-2">
+                    <span>Store {group.store_id} · group {group.group_id}</span>
+                    {!(group.store_id === 0 && group.group_id === 0) && (
+                      <button className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1" type="button" disabled={!managementToken || writeBusy} onClick={() => { if (window.confirm(`Delete group ${group.store_id}/${group.group_id}?`)) void write(`/stores/${group.store_id}/groups/${group.group_id}`, 'DELETE'); }}>Delete group</button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <ul className="tw-mt-4 tw-space-y-2 tw-text-sm" aria-label="Logical replicas">
+                {snapshot.replicas.filter((replica) => replica.store_id !== 0 || replica.group_id !== 0).map((replica) => (
+                  <li key={`${replica.store_id}-${replica.group_id}-${replica.replica_id}`} className="tw-flex tw-flex-wrap tw-items-center tw-gap-2">
+                    <span>Store {replica.store_id} · group {replica.group_id} · replica {replica.replica_id}</span>
+                    <button className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1" type="button" disabled={!managementToken || writeBusy} onClick={() => { if (window.confirm(`Delete replica ${replica.replica_id}?`)) void write(`/stores/${replica.store_id}/groups/${replica.group_id}/replicas/${replica.replica_id}`, 'DELETE'); }}>Delete replica</button>
+                  </li>
+                ))}
+              </ul>
             </section>
 
             <section className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-5" aria-label="Group 0 services">

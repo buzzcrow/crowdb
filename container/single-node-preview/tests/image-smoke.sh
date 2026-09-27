@@ -6,6 +6,7 @@ docker image inspect "$image" >/dev/null
 test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
 test "$(docker image inspect --format '{{.Config.User}}' "$image")" = crowdb:crowdb
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")" = "$(cat VERSION)"
+test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$(git rev-parse HEAD)"
 volumes=$(docker image inspect --format '{{json .Config.Volumes}}' "$image")
 jq -e 'has("/opt/crowdb/data")' <<<"$volumes" >/dev/null
 exposed=$(docker image inspect --format '{{json .Config.ExposedPorts}}' "$image")

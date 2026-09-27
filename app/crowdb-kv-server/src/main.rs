@@ -282,7 +282,10 @@ async fn main() {
             .unwrap_or_else(|| format!("http://{display_addr}"));
         Some(crowdb_kv_server::background::keepalive::KeepAliveLoop::spawn(
             registry.clone(),
-            instance_id,
+            crowdb_protocol::common::KvServerIdentity {
+                instance_id,
+                node_id: args.node_id,
+            },
             mgmt_endpoint,
             &group0_ep,
             registry

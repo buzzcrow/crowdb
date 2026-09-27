@@ -281,6 +281,12 @@ fn apply_benchmark_flags(cmd: &mut Command, req: &DeployRequest) {
     }
 }
 
+fn apply_node_identity(cmd: &mut Command, req: &DeployRequest) {
+    if let Ok(node_id) = req.server_id.parse::<std::num::NonZeroU64>() {
+        cmd.arg("--node-id").arg(node_id.to_string());
+    }
+}
+
 /// Resolve the `--config` path for a deploy. When `req.config` is set,
 /// it is used verbatim. When unset, returns `None` — the server boots
 /// with `CrowDBConfig::default()` tunables (no toml needed). The
@@ -335,8 +341,6 @@ async fn deploy_local_in_workspace(
     };
     let launch_binary = resolve_launch_binary(&binary, workspace_dir)?;
 
-    let config_path = resolve_config_path(req);
-
     let mgmt_url = format!("http://{}:{}", node.host, req.rest_port);
     let rpc_url = format!("http://{}:{}", node.host, req.rpc_port);
 
@@ -356,7 +360,8 @@ async fn deploy_local_in_workspace(
                 .unwrap_or_else(|| "default".into()),
         )
         .kill_on_drop(false);
-    if let Some(config) = &config_path {
+    apply_node_identity(&mut cmd, req);
+    if let Some(config) = resolve_config_path(req) {
         cmd.arg("--config").arg(config);
     }
     apply_benchmark_flags(&mut cmd, req);
@@ -552,9 +557,13 @@ pub(crate) fn remote_start_command(req: &DeployRequest, server_bin: &str) -> Str
         .config
         .as_ref()
         .map_or_else(String::new, |c| format!(" --config {}", c.display()));
+    let node_arg = req
+        .server_id
+        .parse::<std::num::NonZeroU64>()
+        .map_or_else(|_| String::new(), |node_id| format!(" --node-id {node_id}"));
     format!(
         "root=\"$HOME/.crowdb-runtime/persistent/remote/kv-{mp}\"; mkdir -p \"$root/log\"; \
-         nohup {bin}{config_arg} --root \"$root\" --management-addr 127.0.0.1 --management-port {mp} --ports {gp} \
+         nohup {bin}{config_arg}{node_arg} --root \"$root\" --management-addr 127.0.0.1 --management-port {mp} --ports {gp} \
          >\"$root/log/stdout.log\" 2>\"$root/log/stderr.log\" </dev/null & echo $!",
         bin = server_bin,
         mp = req.rest_port,

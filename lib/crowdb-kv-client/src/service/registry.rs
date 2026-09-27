@@ -341,7 +341,7 @@ impl ServiceRegistryClient {
     /// `hosted_groups`, aggregate `health`, and the node `data_root`.
     pub async fn register_kv_server(
         &self,
-        instance_id: InstanceId,
+        identity: crowdb_protocol::common::KvServerIdentity,
         rpc_endpoint: &str,
         hosted_stores: &[u64],
         hosted_groups: &[crowdb_protocol::common::HostedGroup],
@@ -351,6 +351,7 @@ impl ServiceRegistryClient {
         let extra = ServiceExtra {
             diskdb: None,
             kv_server: Some(crowdb_protocol::common::KvServerExtra {
+                node_id: identity.node_id,
                 hosted_stores: hosted_stores.to_vec(),
                 hosted_groups: hosted_groups.to_vec(),
                 health: health.to_string(),
@@ -358,14 +359,14 @@ impl ServiceRegistryClient {
             }),
             chunk_kv: None,
         };
-        self.register("kv-server", instance_id, rpc_endpoint, &extra)
+        self.register("kv-server", identity.instance_id, rpc_endpoint, &extra)
             .await
     }
 
     /// Heartbeat a kv-server instance.
     pub async fn heartbeat_kv_server(
         &self,
-        instance_id: InstanceId,
+        identity: crowdb_protocol::common::KvServerIdentity,
         rpc_endpoint: &str,
         hosted_stores: &[u64],
         hosted_groups: &[crowdb_protocol::common::HostedGroup],
@@ -373,7 +374,7 @@ impl ServiceRegistryClient {
         data_root: &str,
     ) -> Result<()> {
         self.register_kv_server(
-            instance_id,
+            identity,
             rpc_endpoint,
             hosted_stores,
             hosted_groups,

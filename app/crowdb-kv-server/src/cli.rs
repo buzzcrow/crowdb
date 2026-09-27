@@ -153,6 +153,10 @@ pub struct Cli {
     #[arg(long)]
     pub instance_id: Option<u64>,
 
+    /// Stable node identity published with the service-registry record.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub node_id: Option<u64>,
+
     /// Keep-alive heartbeat interval in seconds. 0 disables the
     /// keep-alive loop. Default: 10.
     #[arg(long, default_value_t = 10)]

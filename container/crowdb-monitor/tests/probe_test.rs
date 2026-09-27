@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crowdb_monitor::{ProbeExecutor, ProbeKind, ProbeProfile, RestartProfile, ServiceProfile};
+use crowdb_rpc_ffi::RpcServer;
 use tokio::net::TcpListener;
 
 fn service(kind: ProbeKind, target: String) -> ServiceProfile {
@@ -34,7 +35,7 @@ fn service(kind: ProbeKind, target: String) -> ServiceProfile {
 
 #[tokio::test]
 async fn tcp_probe_requires_a_listener() {
-    let probes = ProbeExecutor::new().unwrap();
+    let probes = ProbeExecutor::new(false).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target = listener.local_addr().unwrap().to_string();
     assert!(probes
@@ -50,7 +51,7 @@ async fn tcp_probe_requires_a_listener() {
 
 #[tokio::test]
 async fn http_probe_requires_success_status() {
-    let probes = ProbeExecutor::new().unwrap();
+    let probes = ProbeExecutor::new(false).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target = format!("http://{}/ready", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -80,7 +81,7 @@ async fn http_probe_requires_success_status() {
 async fn authenticated_probe_uses_runtime_token_without_storing_it_in_profile() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let probes = ProbeExecutor::new().unwrap();
+    let probes = ProbeExecutor::new(false).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut service = service(
         ProbeKind::Http,
@@ -104,4 +105,23 @@ async fn authenticated_probe_uses_runtime_token_without_storing_it_in_profile() 
     let environment = BTreeMap::from([("CROWDB_ICEBERG_READ_TOKEN".into(), "private-token".into())]);
     probes.probe_service(&service, &environment).await.unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn rpc_ping_requires_an_application_response() {
+    let probes = ProbeExecutor::new(true).unwrap();
+    let server = RpcServer::new(None);
+    server.listen("127.0.0.1", 0).unwrap();
+    server.start();
+    let target = format!("127.0.0.1:{}", server.port());
+    probes
+        .probe_service(&service(ProbeKind::RpcPing, target), &BTreeMap::new())
+        .await
+        .unwrap();
+    server.stop();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut stalled = service(ProbeKind::RpcPing, listener.local_addr().unwrap().to_string());
+    stalled.probe.timeout_ms = 100;
+    assert!(probes.probe_service(&stalled, &BTreeMap::new()).await.is_err());
 }

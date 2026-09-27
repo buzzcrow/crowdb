@@ -339,6 +339,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    env:
+      CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
     steps:
     - uses: actions/checkout@v4
       with:
@@ -360,3 +362,11 @@ jobs:
         docker images
         docker info
         df -h
+    - name: Upload preview failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: docker-preview-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/crowdb-preview-artifacts
+        if-no-files-found: ignore
+        retention-days: 7

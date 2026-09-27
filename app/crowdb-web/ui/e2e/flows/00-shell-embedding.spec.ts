@@ -39,8 +39,8 @@ test.describe('shell · embedding', () => {
       nodes: [{ id: 1, rack_id: 1, status: 1 }],
       disk_groups: [],
       disks: [],
-      stores: [{ store_id: 0, node_ids: [1] }],
-      groups: [{ store_id: 0, group_id: 0 }],
+      stores: [{ store_id: 0, node_ids: [1] }, { store_id: 7, node_ids: [1] }],
+      groups: [{ store_id: 0, group_id: 0 }, { store_id: 7, group_id: 70 }],
       replicas: [],
       services: [],
       monitor: { phase: 'Ready', revision: 1, updated_at_ms: 1, services: {} },
@@ -51,6 +51,34 @@ test.describe('shell · embedding', () => {
     await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only');
     await expect(page.getByTestId('managed-monitor-phase')).toContainText('Ready');
     await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Create store' })).toBeDisabled();
+    const writes: Array<{ path: string; token: string | undefined; body: unknown }> = [];
+    await page.route('**/api/stores**', async (route) => {
+      const request = route.request();
+      writes.push({
+        path: new URL(request.url()).pathname,
+        token: request.headers().authorization,
+        body: request.postDataJSON(),
+      });
+      await route.fulfill({ status: 201, json: {} });
+    });
+    await page.getByLabel('Management token').fill('m'.repeat(64));
+    await page.getByLabel('Store ID').fill('8');
+    await page.getByRole('combobox', { name: 'Store node' }).selectOption('1');
+    await page.getByRole('button', { name: 'Create store' }).click();
+    await expect.poll(() => writes.length, { intervals: [100] }).toBe(1);
+    expect(writes[0]).toEqual({ path: '/api/stores', token: `Bearer ${'m'.repeat(64)}`, body: { store_id: 8, nodes: [1] } });
+    await page.getByRole('combobox', { name: 'Group store' }).selectOption('7');
+    await page.getByLabel('Group ID').fill('71');
+    await page.getByRole('combobox', { name: 'Group node' }).selectOption('1');
+    await page.getByRole('button', { name: 'Create group' }).click();
+    await expect.poll(() => writes.length, { intervals: [100] }).toBe(2);
+    expect(writes[1].path).toBe('/api/stores/7/groups');
+    await page.getByRole('combobox', { name: 'Replica group' }).selectOption('7/70');
+    await page.getByRole('combobox', { name: 'Replica node' }).selectOption('1');
+    await page.getByRole('button', { name: 'Add replica' }).click();
+    await expect.poll(() => writes.length, { intervals: [100] }).toBe(3);
+    expect(writes[2].path).toBe('/api/stores/7/groups/70/replicas');
   });
 
   test('embedding honors apiPrefix, readonly, and module opt-out', async ({ page, baseURL }) => {

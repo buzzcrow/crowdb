@@ -5,7 +5,7 @@ use axum::http::{Method, Request, StatusCode};
 use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
 use crowdb_monitor::{MonitorPhase, MonitorStatus, ServiceStatus, StatusStore};
-use crowdb_protocol::common::{HwStatus, NodeValue, RackValue, ServiceExtra};
+use crowdb_protocol::common::{HwStatus, KvServerIdentity, NodeValue, RackValue, ServiceExtra};
 use crowdb_web::{router, AppState};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -20,6 +20,102 @@ async fn get_json(app: axum::Router, path: &str) -> (StatusCode, serde_json::Val
         .await
         .unwrap();
     (status, serde_json::from_slice(&body).unwrap())
+}
+
+async fn register_kv_node(sysmd: &CrowdbSysmdClient, endpoint: &str, hosted_stores: &[u64]) {
+    sysmd
+        .register_kv_server(
+            KvServerIdentity {
+                instance_id: 9,
+                node_id: Some(1),
+            },
+            endpoint,
+            hosted_stores,
+            &[],
+            "ok",
+            "/tmp/managed-test-kv",
+        )
+        .await
+        .unwrap();
+}
+
+async fn verify_managed_store_lifecycle(
+    app: &axum::Router,
+    sysmd: &CrowdbSysmdClient,
+    endpoint: &str,
+    token: &str,
+) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/stores")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"store_id":7,"nodes":[1]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let (code, stores) = get_json(app.clone(), "/api/stores").await;
+    assert_eq!(code, StatusCode::OK);
+    assert!(stores
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|store| store["store_id"] == 7));
+
+    register_kv_node(sysmd, "http://127.0.0.1:1", &[0, 7]).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/stores/7")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(sysmd.get_store(7).await.unwrap().is_some());
+
+    register_kv_node(sysmd, endpoint, &[0, 7]).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/stores/7")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let (code, stores) = get_json(app.clone(), "/api/stores").await;
+    assert_eq!(code, StatusCode::OK);
+    assert!(!stores
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|store| store["store_id"] == 7));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/stores")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -50,6 +146,7 @@ async fn docker_management_uses_existing_bearer_without_unlocking_hardware() {
         assert_eq!(response.status(), expected);
     }
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -61,6 +158,28 @@ async fn docker_management_uses_existing_bearer_without_unlocking_hardware() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    for (authorization, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("Bearer wrong".to_owned()), StatusCode::UNAUTHORIZED),
+        (Some(format!("Bearer {token}")), StatusCode::CONFLICT),
+    ] {
+        let mut request = Request::builder().method(Method::POST).uri("/api/stores");
+        if let Some(value) = authorization {
+            request = request.header("authorization", value);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                request
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"store_id":0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
 }
 
 #[tokio::test]
@@ -140,6 +259,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
         .register_service("diskio", 7, &cluster.mgmt_endpoints[0], &ServiceExtra::default())
         .await
         .unwrap();
+    register_kv_node(&sysmd, &cluster.mgmt_endpoints[0], &[0]).await;
 
     let run_root =
         crowdb_test_harness::test_dirs::test_data_dir().join(format!("managed-web-{}", Uuid::new_v4()));
@@ -169,7 +289,18 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
         log_max_files: 5,
         request_timeout_ms: Some(5_000),
     };
-    let app = router(AppState::default().with_process_config(&config));
+    let token = "m".repeat(64);
+    let app = router(
+        AppState::default()
+            .with_process_config(&config)
+            .with_management_token(token.clone())
+            .unwrap(),
+    );
+    sysmd.unregister_service("kv-server", 9).await.unwrap();
+    let (code, unavailable) = get_json(app.clone(), "/api/authority").await;
+    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{unavailable}");
+    assert_eq!(unavailable["reason"], "group0_unavailable");
+    register_kv_node(&sysmd, &cluster.mgmt_endpoints[0], &[0]).await;
     let (code, authority) = get_json(app.clone(), "/api/authority").await;
     assert_eq!(code, StatusCode::OK, "{authority}");
     assert_eq!(authority["source"], "group0");
@@ -187,18 +318,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
         .unwrap();
     assert_eq!(diskio["monitor"]["pid"], 123, "{snapshot}");
     assert_eq!(diskio["monitor"]["generation"], 2);
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/stores")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    verify_managed_store_lifecycle(&app, &sysmd, &cluster.mgmt_endpoints[0], &token).await;
 
     drop(cluster);
     let (code, unavailable) = get_json(app, "/api/preview").await;

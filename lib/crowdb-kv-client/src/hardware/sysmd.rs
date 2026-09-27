@@ -410,7 +410,7 @@ impl CrowdbSysmdClient {
 
     pub async fn register_kv_server(
         &self,
-        instance_id: InstanceId,
+        identity: crowdb_protocol::common::KvServerIdentity,
         rpc_endpoint: &str,
         hosted_stores: &[u64],
         hosted_groups: &[HostedGroup],
@@ -419,7 +419,7 @@ impl CrowdbSysmdClient {
     ) -> Result<()> {
         self.svc
             .register_kv_server(
-                instance_id,
+                identity,
                 rpc_endpoint,
                 hosted_stores,
                 hosted_groups,

@@ -278,11 +278,42 @@ pub async fn init(ctx: &OpContext, nodes: &[u64]) -> Result<InitSummary> {
     // Phase 5: write hardware + KV-cluster topology into group-0 sysdata.
     write_topology_to_sysdata(ctx, &store_nodes, &succeeded).await;
 
+    wait_for_live_registration(ctx, &store_nodes).await?;
+
     Ok(InitSummary {
         store_id: 0,
         group_id: 0,
         nodes: succeeded,
     })
+}
+
+async fn wait_for_live_registration(ctx: &OpContext, nodes: &[u64]) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(instances) = ctx.sysmd().read_all_kv_server_instances().await {
+            let mut counts = HashMap::new();
+            for (_, instance) in instances {
+                let node_id = instance
+                    .extra
+                    .as_ref()
+                    .and_then(|extra| extra.kv_server.as_ref())
+                    .and_then(|identity| identity.node_id);
+                if let Some(node_id) = node_id.filter(|_| !instance.rpc_endpoint.is_empty()) {
+                    *counts.entry(node_id).or_insert(0usize) += 1;
+                }
+            }
+            if nodes.iter().all(|node| counts.get(node) == Some(&1)) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::NodeUnreachable {
+                node_id: format!("{nodes:?}"),
+                reason: "Group 0 does not show exactly one live KV registration per node".into(),
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// Write the hardware hierarchy + KV-cluster topology from the local

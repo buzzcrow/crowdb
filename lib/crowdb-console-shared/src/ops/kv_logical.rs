@@ -15,7 +15,6 @@ use crowdb_protocol::mgmt::{
 };
 
 use crate::clients::http::ServerClient;
-use crate::config::ReplicaEntry;
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
@@ -58,19 +57,27 @@ where
 }
 
 /// Build a [`ServerClient`] for a node's deployed kv-server.
-fn server_client(ctx: &OpContext, node_id: u64) -> Result<ServerClient> {
-    let url = ctx.node_mgmt_url(node_id)?;
+async fn server_client(ctx: &OpContext, node_id: u64) -> Result<ServerClient> {
+    let url = if ctx.is_test_scenario() {
+        ctx.node_mgmt_url(node_id)?
+    } else {
+        ctx.live_node_mgmt_url(node_id).await?
+    };
     ServerClient::new(&url).map_err(|e| Error::UpstreamRpc {
         node_id: url,
         status: format!("client build: {e}"),
     })
 }
 
+fn already_absent(error: &Error) -> bool {
+    matches!(error, Error::UpstreamRpc { status, .. } if status.contains("HTTP 404"))
+}
+
 /// Resolve the crowdb-rpc endpoint for a store on a node by calling
 /// the node's `/topology` endpoint. Returns `None` if the store is not
 /// hosted on the node or has no `listen_addr`.
 async fn rpc_endpoint_for_store(ctx: &OpContext, node_id: u64, store_id: u64) -> Option<String> {
-    let client = server_client(ctx, node_id).ok()?;
+    let client = server_client(ctx, node_id).await.ok()?;
     let stores = client.topology().await.ok()?;
     for s in &stores {
         if s.store_id == store_id {
@@ -105,16 +112,27 @@ fn remap_zero_host(addr: &str) -> String {
 /// # Errors
 /// Returns an error if no nodes are available or any upstream RPC fails.
 pub async fn add_store(ctx: &OpContext, store_id: u64, nodes: &[u64]) -> Result<Vec<u64>> {
+    if !ctx.is_test_scenario() && ctx.sysmd().get_store(store_id).await?.is_some() {
+        return Err(Error::Conflict {
+            kind: "store".into(),
+            id: store_id.to_string(),
+        });
+    }
     let mut target_nodes = if nodes.is_empty() {
-        let cfg = ctx.config();
-        let first = cfg
-            .servers
-            .iter()
-            .find_map(|s| s.node_id)
-            .ok_or_else(|| Error::Validation {
-                field: "nodes".into(),
-                message: "no nodes with deployed servers".into(),
-            })?;
+        let first = if ctx.is_test_scenario() {
+            ctx.config().servers.iter().find_map(|server| server.node_id)
+        } else {
+            ctx.sysmd()
+                .read_all_kv_server_instances()
+                .await?
+                .into_iter()
+                .filter_map(|(_, instance)| instance.extra?.kv_server?.node_id)
+                .min()
+        }
+        .ok_or_else(|| Error::Validation {
+            field: "nodes".into(),
+            message: "no live nodes with deployed servers".into(),
+        })?;
         vec![first]
     } else {
         nodes.to_vec()
@@ -128,7 +146,7 @@ pub async fn add_store(ctx: &OpContext, store_id: u64, nodes: &[u64]) -> Result<
     let results: Vec<Result<u64>> = futures::future::join_all(target_nodes.iter().map(|nid| {
         let nid = *nid;
         async move {
-            let client = server_client(ctx, nid)?;
+            let client = server_client(ctx, nid).await?;
             client.health().await.map_err(|e| Error::NodeUnreachable {
                 node_id: nid.to_string(),
                 reason: e.to_string(),
@@ -160,26 +178,22 @@ pub async fn add_store(ctx: &OpContext, store_id: u64, nodes: &[u64]) -> Result<
     }
     if let Some(e) = first_err {
         // Roll back successful creations (concurrently).
-        futures::future::join_all(succeeded.iter().filter_map(|ok_nid| {
-            server_client(ctx, *ok_nid).ok().map(|c| async move {
-                let _ = c.remove_store(store_id).await;
-            })
+        futures::future::join_all(succeeded.iter().map(|ok_nid| async move {
+            if let Ok(client) = server_client(ctx, *ok_nid).await {
+                let _ = client.remove_store(store_id).await;
+            }
         }))
         .await;
         return Err(e);
     }
 
-    // Record in group-0 sysdata + local config. The sysdata write must
+    // Record in group-0 sysdata. The sysdata write must
     // succeed — add_group reads sysdata to find the store, and a missing
     // store record causes a spurious 404.
     retry_sysmd("add_store", || async {
         ctx.sysmd().add_store(store_id, &succeeded).await
     })
     .await?;
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.record_store(store_id, succeeded.clone());
-    }
     Ok(succeeded)
 }
 
@@ -195,18 +209,24 @@ pub async fn remove_store(ctx: &OpContext, store_id: u64) -> Result<()> {
         });
     }
     // Find hosting nodes from group-0 sysdata.
-    let store = ctx.sysmd().get_store(store_id).await?;
-    let node_ids = store.map(|s| s.node_ids).unwrap_or_default();
+    let store = ctx
+        .sysmd()
+        .get_store(store_id)
+        .await?
+        .ok_or_else(|| Error::NotFound {
+            kind: "store".into(),
+            id: store_id.to_string(),
+        })?;
+    let node_ids = store.node_ids;
     for nid in &node_ids {
-        if let Ok(client) = server_client(ctx, *nid) {
-            let _ = client.remove_store(store_id).await;
+        let client = server_client(ctx, *nid).await?;
+        if let Err(error) = client.remove_store(store_id).await {
+            if !already_absent(&error) {
+                return Err(error);
+            }
         }
     }
-    let _ = ctx.sysmd().remove_store(store_id).await;
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.remove_store_record(store_id);
-    }
+    ctx.sysmd().remove_store(store_id).await?;
     Ok(())
 }
 
@@ -241,6 +261,12 @@ pub async fn add_group(
             message: "nodes list must not be empty".into(),
         });
     }
+    if !ctx.is_test_scenario() && ctx.sysmd().get_group(store_id, group_id).await?.is_some() {
+        return Err(Error::Conflict {
+            kind: "group".into(),
+            id: format!("{store_id}/{group_id}"),
+        });
+    }
 
     // Phase 1: create the group on each node concurrently.
     let results: Vec<Result<(u64, u64)>> =
@@ -249,7 +275,7 @@ pub async fn add_group(
             let rid = replica_id + i as u64;
             let single = nodes.len() <= 1;
             async move {
-                let client = server_client(ctx, nid)?;
+                let client = server_client(ctx, nid).await?;
                 let req = AddGroupRequest {
                     group_id,
                     replica_id: rid,
@@ -286,10 +312,10 @@ pub async fn add_group(
     }
     if let Some(e) = first_err {
         // Roll back successful creations (concurrently).
-        futures::future::join_all(succeeded.iter().filter_map(|(ok_nid, _)| {
-            server_client(ctx, *ok_nid).ok().map(|c| async move {
-                let _ = c.remove_group(store_id, group_id).await;
-            })
+        futures::future::join_all(succeeded.iter().map(|(ok_nid, _)| async move {
+            if let Ok(client) = server_client(ctx, *ok_nid).await {
+                let _ = client.remove_group(store_id, group_id).await;
+            }
         }))
         .await;
         return Err(e);
@@ -325,7 +351,7 @@ pub async fn add_group(
                 if remotes.is_empty() {
                     return;
                 }
-                if let Ok(client) = server_client(ctx, nid) {
+                if let Ok(client) = server_client(ctx, nid).await {
                     let _ = client.add_remote_replicas(store_id, group_id, &remotes).await;
                 }
             }
@@ -333,15 +359,14 @@ pub async fn add_group(
         .await;
     }
 
-    // Record in group-0 sysdata + local config. The sysdata write must
+    // Record in group-0 sysdata. The sysdata write must
     // succeed — add_replica reads sysdata to find existing replicas, and
     // a missing group record causes a spurious 404.
     retry_sysmd("add_group", || async {
         ctx.sysmd().add_group(store_id, group_id).await
     })
     .await?;
-    // Record replicas concurrently — sysmd writes are independent;
-    // config updates serialize on the RwLock.
+    // Record replicas concurrently — sysmd writes are independent.
     let replica_results: Vec<Result<()>> =
         futures::future::join_all(succeeded.iter().map(|(node_id, replica_id)| {
             let node_id = *node_id;
@@ -351,20 +376,6 @@ pub async fn add_group(
         .await;
     for res in replica_results {
         res?;
-    }
-    let replicas: Vec<ReplicaEntry> = succeeded
-        .iter()
-        .map(|(node_id, replica_id)| ReplicaEntry {
-            replica_id: *replica_id,
-            node_id: *node_id,
-        })
-        .collect();
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.record_group(store_id, group_id, replicas);
-        for (node_id, _) in &succeeded {
-            cfg.ensure_store_node(store_id, *node_id);
-        }
     }
     Ok(())
 }
@@ -381,18 +392,23 @@ pub async fn remove_group(ctx: &OpContext, store_id: u64, group_id: u64) -> Resu
         });
     }
     // Find hosting nodes from group-0 sysdata.
+    if ctx.sysmd().get_group(store_id, group_id).await?.is_none() {
+        return Err(Error::NotFound {
+            kind: "group".into(),
+            id: format!("{store_id}/{group_id}"),
+        });
+    }
     let replicas = ctx.sysmd().list_replicas_in_group(store_id, group_id).await?;
     let node_ids: Vec<u64> = replicas.iter().map(|r| r.node_id).collect();
     for nid in &node_ids {
-        if let Ok(client) = server_client(ctx, *nid) {
-            let _ = client.remove_group(store_id, group_id).await;
+        let client = server_client(ctx, *nid).await?;
+        if let Err(error) = client.remove_group(store_id, group_id).await {
+            if !already_absent(&error) {
+                return Err(error);
+            }
         }
     }
-    let _ = ctx.sysmd().remove_group(store_id, group_id).await;
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.remove_group_record(store_id, group_id);
-    }
+    ctx.sysmd().remove_group(store_id, group_id).await?;
     Ok(())
 }
 
@@ -423,11 +439,11 @@ async fn rollback_replica(
     remove_store: bool,
 ) {
     for wp in wired_peers {
-        if let Ok(c) = server_client(ctx, *wp) {
+        if let Ok(c) = server_client(ctx, *wp).await {
             let _ = c.remove_remote_replica(store_id, group_id, new_rid).await;
         }
     }
-    if let Ok(c) = server_client(ctx, target_node) {
+    if let Ok(c) = server_client(ctx, target_node).await {
         if remove_store {
             // `remove_store` cascades the group on that node.
             let _ = c.remove_store(store_id).await;
@@ -470,7 +486,7 @@ pub async fn add_replica(
 
     // Step 1: ensure the target node hosts the store, then create the
     // local PxGroup for the new replica.
-    let client = server_client(ctx, node_id)?;
+    let client = server_client(ctx, node_id).await?;
 
     // Check if the target node already hosts this store via sysdata.
     let target_has_store = ctx
@@ -526,7 +542,7 @@ pub async fn add_replica(
     };
     let mut wired_peers: Vec<u64> = Vec::new();
     for existing_replica in &existing {
-        if let Ok(peer_client) = server_client(ctx, existing_replica.node_id) {
+        if let Ok(peer_client) = server_client(ctx, existing_replica.node_id).await {
             if let Err(e) = peer_client
                 .add_remote_replicas(store_id, group_id, std::slice::from_ref(&new_remote))
                 .await
@@ -588,7 +604,7 @@ pub async fn add_replica(
     Ok(new_rid)
 }
 
-/// Record a new replica in group-0 sysdata + the local config.
+/// Record a new replica in group-0 sysdata.
 async fn record_replica(
     ctx: &OpContext,
     store_id: u64,
@@ -606,11 +622,6 @@ async fn record_replica(
         endpoint: String::new(),
     };
     retry_sysmd("add_replica", || async { ctx.sysmd().add_replica(&value).await }).await?;
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.ensure_store_node(store_id, node_id);
-        cfg.add_group_replica(store_id, group_id, ReplicaEntry { replica_id, node_id });
-    }
     Ok(())
 }
 
@@ -631,7 +642,7 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
     let target_node = target.node_id;
 
     // Step 0: step down if this replica is the leader (best-effort).
-    if let Ok(client) = server_client(ctx, target_node) {
+    if let Ok(client) = server_client(ctx, target_node).await {
         let _ = client
             .step_down(
                 store_id,
@@ -648,22 +659,23 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
         if peer.replica_id == replica_id {
             continue;
         }
-        if let Ok(client) = server_client(ctx, peer.node_id) {
-            let _ = client.remove_remote_replica(store_id, group_id, replica_id).await;
+        let client = server_client(ctx, peer.node_id).await?;
+        if let Err(error) = client.remove_remote_replica(store_id, group_id, replica_id).await {
+            if !already_absent(&error) {
+                return Err(error);
+            }
         }
     }
 
     // Step 2: Delete the local group on the target node.
-    if let Ok(client) = server_client(ctx, target_node) {
-        let _ = client.remove_group(store_id, group_id).await;
+    let client = server_client(ctx, target_node).await?;
+    if let Err(error) = client.remove_group(store_id, group_id).await {
+        if !already_absent(&error) {
+            return Err(error);
+        }
     }
 
-    // Record in group-0 sysdata + local config.
-    let _ = ctx.sysmd().remove_replica(store_id, group_id, replica_id).await;
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.remove_group_replica(store_id, group_id, replica_id);
-    }
+    ctx.sysmd().remove_replica(store_id, group_id, replica_id).await?;
     Ok(())
 }
 

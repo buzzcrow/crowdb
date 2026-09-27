@@ -139,6 +139,15 @@ impl KvStoreRegistry {
         }
     }
 
+    /// Remove a restored store's persisted port from the allocation pool.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned.
+    pub fn claim_port(&self, port: u16) {
+        let mut pool = self.port_pool.lock().unwrap();
+        pool.retain(|candidate| *candidate != port);
+    }
+
     /// Peek at the first port in the pool without removing it. Used to
     /// derive the RPC endpoint for store 0 in first-boot mode (before the
     /// store is created via `/system/init`).

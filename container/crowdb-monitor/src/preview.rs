@@ -93,6 +93,17 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
     ensure_directory(&profile.paths.run_root)?;
     let _liveness = LivenessServer::start(&profile.paths.run_root)?;
     ensure_directory(&profile.paths.log_root)?;
+    let monitor_log_root = profile.paths.log_root.join("monitor");
+    ensure_directory(&monitor_log_root)?;
+    crowdb_rpc_ffi::logging::init_logging(
+        &monitor_log_root.to_string_lossy(),
+        "warn",
+        usize::try_from(profile.logs.max_file_bytes.div_ceil(1024 * 1024))
+            .map_err(|_| PreviewError::Invalid("RPC log limit is invalid"))?,
+        usize::from(profile.logs.max_files),
+        "rpc",
+    );
+    crowdb_rpc_ffi::logging::add_log_stderr("error");
     let kv_root = kv_root(&profile)?;
     if session.manifest().state() == ManifestState::Ready {
         require_directory(&profile.paths.data_root.join("kv"))?;

@@ -216,6 +216,18 @@ and verifiable release assets.
   `lib/crowdb-console-shared/src/ops/{context,kv_logical}.rs`,
   `lib/crowdb-kv-client/src/service/**`, `app/crowdb-cli/src/commands/kv/logical.rs`,
   `app/crowdb-web/src/mgmt/{store_ops,group_ops,replica_ops}.rs`, and tests.
+  KV registration now carries a distinct optional node identity; the preview,
+  local deploy, and SSH deploy set it explicitly. Shared logical operations
+  resolve live Group 0 registration instead of local server records, and the
+  CLI/Web no longer commit local store/group/replica copies. Node-side delete
+  failures now retain Group 0 records. Remaining: ambiguous-response
+  reconciliation, multi-node fan-out/rollback tests, and removal of legacy
+  bootstrap/deployment-state dependencies. Group 0 initialization now waits
+  for exactly one live management registration per node before reporting
+  success; KV registration retries promptly until its first success.
+  Bare-metal and CLI test fixtures verify that readiness boundary. An
+  unreachable replica target now fails deletion while retaining Group 0
+  membership, and the leader-removal test verifies this fail-closed behavior.
 - [ ] **Unified topology reads and routing**: remove Web KV endpoint and
   group-node fallback to `ConsoleConfig.servers/groups`, and remove monitor-cache
   views that present a local copy as authority. Resolve membership from Group 0
@@ -253,7 +265,7 @@ and verifiable release assets.
   Group 0 exists, route normal hardware/logical queries and operations through
   the same shared Group 0 path without local fallback. Files:
   `lib/crowdb-console-shared/src/ops/s3.rs` and mini-cluster restart tests.
-- [ ] **Web logical authorization**: pass the existing Iceberg management
+- [x] **Web logical authorization**: pass the existing Iceberg management
   token to Docker Web through its environment and require an exact bearer
   token before any logical write RPC in either Web mode. Keep public status
   reads available and hardware/process writes unavailable in Docker even with
@@ -272,11 +284,17 @@ and verifiable release assets.
   empty local state or accepting local-only mutations. The Group 0 projection
   and UI overlay are in progress. Docker-mode hardware-topology and process
   mutations remain forbidden; logical store/group/replica operations must not
-  be rejected by mode once the Group 0 write path is implemented.
+  be rejected by mode once the Group 0 write path is implemented. Managed
+  logical reads and writes now use Group 0 directly; writes require the exact
+  management bearer. The preview UI has in-memory token entry and logical
+  controls, with a focused browser assertion. Bare-metal hardware/process
+  management and full real-backend UI acceptance remain. Managed authority
+  now waits for live KV management registration for each hosted store node,
+  preventing a ready response before logical writes can resolve endpoints.
 
 ## Phase 5 — Image and local acceptance
 
-- [~] **Image assets**: add the digest-pinned Ubuntu 24.04 amd64 multi-stage
+- [x] **Image assets**: add the digest-pinned Ubuntu 24.04 amd64 multi-stage
   Dockerfile, `.dockerignore`, non-root user, `/opt/crowdb` install layout,
   immutable UI/templates/profile, entrypoint, OCI labels from `VERSION`, exposed
   public ports only, and monitor health checks. Files:
@@ -288,14 +306,13 @@ and verifiable release assets.
   capability. The image smoke verifies the profile, binary loading, labels,
   capability, and default anonymous-volume declaration. Source ports changed to
   S3 8010 and Web 8080. The previous image is retained under its backup tag;
-  the rebuilt image passes smoke and the current container E2E subset. Full
-  client and fault-matrix acceptance remains in the separate Container E2E task.
+  the rebuilt image passes smoke and the complete container E2E suite.
 - [x] **Pixi tasks**: add `build-docker-preview` and `test-docker-preview`, include
   the monitor in workspace build/test coverage, and keep Docker prerequisite
   failures explicit. Files: `pixi.toml`, task-coverage configuration/tests.
   Both tasks run through Pixi; the monitor is assigned to `test-monitor` and
   `test-server`. Test-task coverage and monitor tests pass.
-- [~] **Container E2E**: test empty boot, directory/permission contract,
+- [x] **Container E2E**: test empty boot, directory/permission contract,
   credentials retrieval, AWS CLI/boto3 Parquet PUT/LIST/HEAD/range-GET/GET,
   pinned PyIceberg operations, web health/status, SIGTERM/recreate persistence,
   interrupted bootstrap, every child crash/hang, crash-loop exhaustion, monitor
@@ -317,8 +334,19 @@ and verifiable release assets.
   transfer when no balance policy exists. The focused domain-monitor tests and
   E2E check that regression. `pixi run test-docker-preview` now passes all
   implemented boot, restart, and anonymous-volume cases without publishing.
-  S3/PyIceberg
-  operations and the fault matrix remain.
+  Boto3 Parquet PUT/LIST/HEAD/range-GET/GET and PyIceberg namespace and table
+  create/list/property operations now pass through the container and after a
+  persisted restart. Web logical store create/read/delete with bearer auth
+  also passes through the image. All eight children passed SIGKILL and SIGSTOP
+  recovery checks after DiskIO switched from a TCP-only probe to an RPC Ping.
+  Crash-loop exhaustion, corrupt manifest/profile rejection, and PID 1 death
+  also passed. A real PID 1 kill after a persisted bootstrap step now proves
+  replay on the same volume retains deployment identity, completes all steps,
+  and serves S3, Iceberg, and Web. That test exposed restore-mode reuse of
+  Store 0's persisted RPC port from the allocation pool; restored ports are
+  now claimed before new stores are allocated, with a focused restart test.
+  The rebuilt amd64 image passes release policy, image smoke, and full
+  container E2E without publishing.
 - [ ] **Quick start and operations docs**: document the image name
   `crowdb-single-node-preview`, ports, one mount, credential command, restart
   policy, exact limitations, tested clients, backup boundary, and no production/
@@ -331,7 +359,9 @@ and verifiable release assets.
   credentials and failure artifacts. Files: `.github/workflows/ci.yml`. An
   isolated `ubuntu-24.04` job now runs Pixi image smoke and container E2E with
   read-only repository permission and prints Docker diagnostics on failure;
-  upload structured failure artifacts before closing.
+  upload structured failure artifacts before closing. The container E2E now
+  copies monitor and service logs, excluding secrets, into a failure-artifact
+  directory; CI and release verify jobs upload that directory.
 - [~] **Release workflow**: add manual-only, release-tag-targeted publication to
   `crowdb/crowdb-iceberg`, gated by a protected GitHub environment, with
   immutable version and `git-<commit>` tags, moving `preview`, no `latest`,
@@ -347,6 +377,11 @@ and verifiable release assets.
   attached evidence, tag immutability, failed-gate/absent-approval behavior, and
   exact source revision without using real publication credentials in PR tests.
   Files: workflow policy tests under `container/single-node-preview/tests/`.
+  Local policy checks now require the full verification suite, no publication
+  credentials in its job, a protected publish environment, and the release
+  enable gate. Image smoke checks amd64, source-revision and version labels.
+  GitHub environment protection and Docker Hub tag immutability still require
+  administrator configuration before manual publication can be accepted.
 
 ## Phase 7 — Verification and cleanup
 

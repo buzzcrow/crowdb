@@ -107,9 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut state = crowdb_web::AppState::with_config(cfg, path).with_test_mode(args.test_mode);
     if let Some(config) = process_config {
         state = state.with_process_config(&config);
-        if config.mode == WebMode::Docker {
-            state = state.with_management_token(std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN")?)?;
-        }
+        state = state.with_management_token(std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN")?)?;
     }
     tracing::info!(
         servers = server_count,

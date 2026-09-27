@@ -1,6 +1,9 @@
+use axum::extract::Request;
 use axum::extract::State;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::Response;
 use subtle::ConstantTimeEq;
 
 use crate::state::AppState;
@@ -29,4 +32,18 @@ pub(crate) async fn management_check(State(state): State<AppState>, headers: Hea
     } else {
         StatusCode::UNAUTHORIZED
     }
+}
+
+pub(crate) async fn require_management_bearer(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if state.management_token.is_none() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    if !valid_management_bearer(request.headers(), &state) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(request).await)
 }

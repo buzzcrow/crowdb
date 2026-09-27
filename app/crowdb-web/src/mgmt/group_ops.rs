@@ -4,7 +4,7 @@
 //! A6: Logical group plane — writes delegate to `ops::kv_logical`,
 //! reads from the monitor cache (live role/leader info).
 
-use crate::error::{err_502, map_config_err, map_persist_err, ErrorBody};
+use crate::error::{err_502, map_config_err, ErrorBody};
 use crate::expand::Recursive;
 use crate::mgmt::{cluster_initialized, refresh_node_cache};
 use crate::state::AppState;
@@ -73,7 +73,6 @@ pub(crate) async fn http_add_group(
     ops::kv_logical::add_group(&ctx, sid, body.group_id, body.replica_id, &body.nodes)
         .await
         .map_err(map_config_err)?;
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
 
     // Refresh the monitor cache for all target nodes so health badges
     // and RPC endpoint resolution reflect the new group.
@@ -163,7 +162,6 @@ pub(crate) async fn http_remove_group(
     ops::kv_logical::remove_group(&ctx, sid, gid)
         .await
         .map_err(map_config_err)?;
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
 
     futures::future::join_all(hosting_nodes.iter().map(|&nid| refresh_node_cache(&state, nid))).await;
     Ok(StatusCode::NO_CONTENT)

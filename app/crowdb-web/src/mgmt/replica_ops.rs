@@ -4,7 +4,7 @@
 //! A7: Logical replica plane — writes delegate to `ops::kv_logical`,
 //! reads from the monitor cache (live role/leader info).
 
-use crate::error::{err_502, map_config_err, map_persist_err, ErrorBody};
+use crate::error::{err_502, map_config_err, ErrorBody};
 use crate::expand::Recursive;
 use crate::mgmt::refresh_node_cache;
 use crate::state::AppState;
@@ -105,7 +105,6 @@ pub(crate) async fn http_add_replica(
     let new_rid = ops::kv_logical::add_replica(&ctx, sid, gid, body.node_id, body.replica_id)
         .await
         .map_err(map_config_err)?;
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
 
     // Refresh the monitor cache for the target node + all peers so
     // health badges and RPC endpoint resolution reflect the new replica.
@@ -159,7 +158,6 @@ pub(crate) async fn http_remove_replica(
     ops::kv_logical::remove_replica(&ctx, sid, gid, rid)
         .await
         .map_err(map_config_err)?;
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
 
     let mut refresh_targets: Vec<NodeId> = peers.clone();
     if let Some(target) = target_node {

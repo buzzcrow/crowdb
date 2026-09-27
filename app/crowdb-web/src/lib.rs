@@ -18,6 +18,7 @@ pub mod health;
 pub mod kv;
 pub mod lifecycle;
 mod managed;
+mod managed_logical;
 pub mod mgmt;
 pub mod owner_assignment;
 pub mod physical;
@@ -32,12 +33,44 @@ pub fn router(state: AppState) -> axum::Router {
     use axum::routing::{any, delete, get, post};
 
     if state.managed_mode {
+        let authorization =
+            axum::middleware::from_fn_with_state(state.clone(), auth::require_management_bearer);
         return axum::Router::new()
             .route("/healthz", get(health::healthz))
             .route("/api/mode", get(health::mode))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
             .route("/api/management/check", post(auth::management_check))
+            .route(
+                "/api/stores",
+                get(managed_logical::list_stores)
+                    .merge(post(managed_logical::add_store).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid",
+                get(managed_logical::get_store)
+                    .merge(delete(managed_logical::remove_store).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid/groups",
+                get(managed_logical::list_groups)
+                    .merge(post(managed_logical::add_group).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid/groups/:gid",
+                get(managed_logical::get_group)
+                    .merge(delete(managed_logical::remove_group).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid/groups/:gid/replicas",
+                get(managed_logical::list_replicas)
+                    .merge(post(managed_logical::add_replica).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid/groups/:gid/replicas/:rid",
+                get(managed_logical::get_replica)
+                    .merge(delete(managed_logical::remove_replica).route_layer(authorization)),
+            )
             .route("/api/*path", any(health::managed_api_unavailable))
             .fallback(spa::spa_fallback)
             .with_state(state)

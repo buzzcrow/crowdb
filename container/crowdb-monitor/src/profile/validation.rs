@@ -240,10 +240,10 @@ fn validate_probe(service: &ServiceProfile) -> Result<(), ProfileError> {
         ProbeKind::Http if !(probe.target.starts_with("http://") || probe.target.starts_with("https://")) => {
             invalid(format!("service {} has invalid HTTP probe", service.id))
         }
-        ProbeKind::Tcp if probe.target.parse::<SocketAddr>().is_err() => {
-            invalid(format!("service {} has invalid TCP probe", service.id))
+        ProbeKind::Tcp | ProbeKind::RpcPing if probe.target.parse::<SocketAddr>().is_err() => {
+            invalid(format!("service {} has invalid socket probe", service.id))
         }
-        ProbeKind::Http | ProbeKind::Tcp => Ok(()),
+        ProbeKind::Http | ProbeKind::Tcp | ProbeKind::RpcPing => Ok(()),
     }
 }
 

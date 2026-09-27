@@ -60,7 +60,12 @@ impl Supervisor {
             .map(|service| service.id.clone())
             .collect();
         let processes = ProcessManager::new(log_root.to_owned(), profile.logs.clone()).await?;
-        let probes = ProbeExecutor::new()?;
+        let probes = ProbeExecutor::new(
+            profile
+                .services
+                .iter()
+                .any(|service| service.probe.kind == crate::ProbeKind::RpcPing),
+        )?;
         let status_store = StatusStore::new(run_root)?;
         let mut status = MonitorStatus::new(deployment_id, MonitorPhase::Initializing);
         status_store.publish(&mut status)?;

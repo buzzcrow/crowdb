@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -6,6 +7,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use crowdb_kv_client::CrowdbSysmdClient;
 use crowdb_monitor::{MonitorStatus, ServiceStatus, StatusStore};
+use crowdb_protocol::common::StoreValue;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -73,6 +75,38 @@ async fn monitor_status(path: PathBuf) -> Result<MonitorStatus, SnapshotFailure>
     })?
 }
 
+async fn validate_live_store_nodes(
+    sysmd: &CrowdbSysmdClient,
+    stores: &[StoreValue],
+) -> Result<(), crowdb_kv_client::Error> {
+    let mut live_nodes = BTreeSet::new();
+    for (_, instance) in sysmd.read_all_kv_server_instances().await? {
+        let Some(node_id) = instance
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.kv_server.as_ref())
+            .and_then(|extra| extra.node_id)
+        else {
+            continue;
+        };
+        if instance.rpc_endpoint.is_empty() || !live_nodes.insert(node_id) {
+            return Err(crowdb_kv_client::Error::Topology(
+                "live KV management registration is ambiguous".into(),
+            ));
+        }
+    }
+    if stores
+        .iter()
+        .flat_map(|store| &store.node_ids)
+        .any(|node_id| !live_nodes.contains(node_id))
+    {
+        return Err(crowdb_kv_client::Error::Topology(
+            "store node has no live KV management registration".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFailure> {
     let Some(path) = state.monitor_status_path.as_ref() else {
         return Err(SnapshotFailure::Monitor);
@@ -94,6 +128,7 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
         if racks.is_empty() || nodes.is_empty() || !stores.iter().any(|store| store.store_id == 0) {
             return Err(crowdb_kv_client::Error::Topology("managed topology is incomplete".into()));
         }
+        validate_live_store_nodes(&sysmd, &stores).await?;
 
         let mut groups = Vec::new();
         let mut replicas = Vec::new();

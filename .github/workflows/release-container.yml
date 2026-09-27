@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    env:
+      CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
     outputs:
       version: ${{ steps.source.outputs.version }}
       revision: ${{ steps.source.outputs.revision }}
@@ -72,6 +74,14 @@ jobs:
       run: pixi run clean-env && pixi run test-console-ui
     - name: Check Rust formatting and lint
       run: pixi run rs-fmt-check && pixi run rs-lint
+    - name: Upload preview failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-preview-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/crowdb-preview-artifacts
+        if-no-files-found: ignore
+        retention-days: 7
 
   publish:
     needs: verify

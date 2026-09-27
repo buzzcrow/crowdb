@@ -112,6 +112,7 @@ pub struct PublicEndpoint {
 pub enum ProbeKind {
     Http,
     Tcp,
+    RpcPing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

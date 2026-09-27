@@ -445,9 +445,9 @@ async fn remove_leader_from_five_node_group_elects_new_leader() {
 
 #[tokio::test]
 #[allow(clippy::unused_async)]
-async fn remove_unreachable_leader_from_five_node_group_uses_lease_fallback() {
+async fn remove_unreachable_leader_retains_group0_membership() {
     let Some(mut cluster) =
-        spawn_five_node_cluster("remove_unreachable_leader_from_five_node_group_uses_lease_fallback").await
+        spawn_five_node_cluster("remove_unreachable_leader_retains_group0_membership").await
     else {
         return;
     };
@@ -488,23 +488,27 @@ async fn remove_unreachable_leader_from_five_node_group_uses_lease_fallback() {
         .unwrap();
     assert_eq!(
         resp.status(),
-        204,
-        "delete unreachable leader replica should succeed: {:?}",
-        resp.text().await.ok()
+        500,
+        "delete must fail closed when the target is unreachable"
+    );
+    let error = resp.text().await.unwrap();
+    assert!(
+        error.contains("error sending request"),
+        "unexpected error: {error}"
     );
 
-    let (new_leader_rid, new_leader_node) =
-        wait_for_leader_after_removal(&cluster, leader_rid, Duration::from_secs(15))
-            .await
-            .expect("a new leader should be elected among survivors after lease expiry");
-    assert_ne!(new_leader_rid, leader_rid);
-    assert!(cluster.nodes.contains_key(&new_leader_node));
-
-    // The console's monitor cache may still report the dead node as a
-    // replica because the node is unreachable and cannot be refreshed.
-    // The real safety check is that every survivor has removed the dead
-    // leader from its remote list and elected a new leader.
-    assert_removed_absent_from_all(&cluster, leader_rid).await;
+    let survivor = cluster
+        .nodes
+        .values()
+        .find(|node| node.node_id != leader_node)
+        .unwrap();
+    let context = crowdb_console_shared::ops::OpContext::new(
+        survivor.rpc_url.trim_start_matches("http://").to_string(),
+        vec![survivor.mgmt_url.clone()],
+        ConsoleConfig::default(),
+    );
+    let replicas = context.sysmd().list_replicas_in_group(sid, gid).await.unwrap();
+    assert!(replicas.iter().any(|replica| replica.replica_id == leader_rid));
 
     cluster.stop();
 }
