@@ -232,6 +232,33 @@ fn old_mixed_config_is_rejected_before_startup() {
 }
 
 #[test]
+fn malformed_bare_metal_registry_fails_before_listener_bind() {
+    let root = std::env::temp_dir().join(format!(
+        "crowdb-web-malformed-registry-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let registry_dir = root.join("persistent/console");
+    std::fs::create_dir_all(&registry_dir).unwrap();
+    std::fs::write(registry_dir.join("crowdb-kv.db.toml"), "[[rack]\n").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_crowdb-web"))
+        .args(["--bind", "127.0.0.1", "--port", "14000"])
+        .env("CROWDB_RUNTIME_ROOT", &root)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error: Config(") && stderr.contains("invalid table header"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn managed_process_rejects_standalone_registry() {
     let directory = std::env::temp_dir().join(format!(
         "crowdb-web-registry-{}-{}",

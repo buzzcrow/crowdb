@@ -89,8 +89,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     info!(%addr, "crowdb-web starting");
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-
     // Load the persisted registry; absence yields an empty default.
     // Mutating handlers (rack/node/server CRUD) write back to this path.
     let path = if args.test_mode || process_config.is_some() {
@@ -101,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = match path.as_ref() {
         Some(p) => {
             let engine = crowdb_console_shared::TomlFileEngine::new(p.clone());
-            crowdb_console_shared::ConsoleConfig::load_with_engine(&engine).unwrap_or_default()
+            crowdb_console_shared::ConsoleConfig::load_with_engine(&engine)?
         }
         None => crowdb_console_shared::ConsoleConfig::default(),
     };
@@ -124,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         crowdb_web::mgmt::startup_topology_check(&state).await;
     }
 
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, crowdb_web::router(state)).await?;
     Ok(())
 }

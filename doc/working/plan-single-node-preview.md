@@ -187,7 +187,8 @@ and verifiable release assets.
   bare-metal-only input; Docker mode rejects it before listener bind. Both
   process-config modes remain fail-closed on topology APIs while the Group 0
   projection is unfinished. Bare-metal launch-policy use and removal of the old
-  default parser/writer remain.
+  default parser/writer remain. Legacy bare-metal registry parse errors now
+  abort before listener bind instead of silently falling back to empty state.
 - [ ] **Unified hardware-topology authority**: make CLI and bare-metal Web
   rack/node/disk-group/disk reads and mutations use the same Group 0 operation
   path instead of local-first changes followed by ignored sysdata errors.
