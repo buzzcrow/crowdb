@@ -37,6 +37,11 @@
       <version>${iceberg.version}</version>
     </dependency>
     <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-orc</artifactId>
+      <version>${iceberg.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.apache.parquet</groupId>
       <artifactId>parquet-column</artifactId>
       <version>1.17.1</version>

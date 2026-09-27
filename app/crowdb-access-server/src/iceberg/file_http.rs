@@ -122,16 +122,29 @@ impl FileHttp {
             .request_expiry(root.context, now_ms)
             .await
             .map_err(catalog_error)?;
-        self.pins
-            .protect_files(
-                root.context,
-                file_request.location.table().table,
-                "file-request",
-                expires_ms,
-                now_ms,
-            )
-            .await
-            .map_err(catalog_error)?;
+        if matches!(file_request.operation, FileOperation::Head | FileOperation::Get) {
+            self.pins
+                .protect_file_reads(
+                    root.context,
+                    file_request.location.table().table,
+                    "file-request",
+                    expires_ms,
+                    now_ms,
+                )
+                .await
+                .map_err(catalog_error)?;
+        } else {
+            self.pins
+                .protect_files(
+                    root.context,
+                    file_request.location.table().table,
+                    "file-request",
+                    expires_ms,
+                    now_ms,
+                )
+                .await
+                .map_err(catalog_error)?;
+        }
         let session = self.load_session(root.context, &file_request).await?;
         let admission =
             FileTransferAdmission::authorize(&grant, &file_request, self.limits, session.as_ref(), now_ms)

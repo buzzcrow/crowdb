@@ -572,6 +572,12 @@ if physical range reclamation is deferred. Legacy live tasks are retired without
 further deletion, releasing an owned table fence. Retained and deferred
 candidates remain durable work for later inactive passes.
 
+An already authorized FileIO GET or HEAD can pin a tombstoned table while its
+credential remains valid. The pin is persisted before the exact head is
+rechecked; a concurrent transition to `Reclaiming` rejects admission. Uploads
+and new table credentials still require a Ready table. Logical drop therefore
+does not invalidate retained file reads or bypass the physical deletion fence.
+
 Retired catalog recovery scans system retry and management ledgers before file
 deletion and after the final file rescan. Pending or retained bindings stop the
 pass; exact-identity overflow entries remain independent of occupied primary
@@ -607,6 +613,48 @@ only when their complete semantics are enabled.
 REST wire types, Iceberg domain state, and CROWDB storage records remain
 separate. Unknown or disabled requirements and updates fail before mutation.
 The backed-up specifications decide behavior when implementations differ.
+
+### Executable conformance profile
+
+The official Java oracle is Apache Iceberg 1.11.0; the official Rust REST
+client is 0.10.0. The declared selected-file profile uses Parquet data/deletes,
+Avro manifests and Puffin deletion vectors/statistics. ORC bytes can be stored,
+but selected ORC validation and compute-engine certification are separate work.
+
+- **v1/v2/v3 metadata and upgrades:** `official_java_metadata_roundtrips_without_rewriting`,
+  `official_catalog_creates_commits_upgrades_stages_and_refreshes_native_credentials`,
+  and the official create/update/snapshot fixtures compare canonical metadata.
+  `TestIcebergVersionRows` reads actual rows before and after adjacent upgrades,
+  reads historical snapshots, expires them logically, and reloads after restart.
+- **Selected data and deletes:** `TestIcebergSelectedFiles` rejects mismatched
+  selected uses of identical uploaded bytes, reads the original row, verifies
+  equality-delete visibility and reads the historical snapshot. Canonical file
+  validators separately cover position deletes, v3 lineage, deletion vectors,
+  defaults, nested/variant types, integer encodings and nullable values.
+- **Statistics:** `TestIcebergCatalogWrites` and the official partition-statistics
+  fixtures cover publication, replay, evolution and staged creation. Historical
+  omissions follow the explicit compatibility rules described above.
+- **Discovery and authorization:**
+  `discovery_uses_installed_routes_and_unsupported_paths_leave_no_record` and
+  `explicit_partial_activation_limits_discovery_and_table_admission` exercise
+  installed/disabled route and version combinations. HTTP namespace, table,
+  lifecycle, credentials and body tests cover roles, malformed requests, limits,
+  cancellation, unchanged authority on rejection and bounded metrics.
+- **Faults and retirement:** `official_rust_client_observes_lost_create_reply_on_another_listener`,
+  `official_rust_client_lost_reply_survives_native_storage_restart`, and the
+  Java response-loss/retired-catalog fixtures exercise listener changes and
+  restart. The SDKs do not automatically replay a lost mutation POST with the
+  same key; direct HTTP fault tests prove the server's same-key replay contract.
+- **Apache REST Compatibility Kit:** the unmodified 1.11.0 runner verifies six
+  supported cases: namespace create, basic table create, rename, drop,
+  missing-table drop and table list. This is not a full-kit pass. Other cases
+  assume register/views or local filesystem locations that the native authority
+  deliberately rejects. Custom SDK fixtures are not described as kit results.
+- **Large logical files:** `tib_address_space_range_reads_keep_fixed_windows_and_small_authority`
+  and `tib_reclamation_progress_serializes_a_bounded_resumable_cursor` use a
+  1 TiB logical tree with repeated immutable blocks. They prove bounded windows
+  and resumable state, not physical TiB capacity. Oversized declared metadata
+  is rejected before I/O at the configured metadata budget.
 
 ## 6. Relationship to other access models
 

@@ -46,6 +46,25 @@ separate container client/engine workflows.
   evidence in permanent architecture, then remove the completed requirement and
   this plan. Keep engine certification in the separate container project.
   Files: Iceberg architecture, requirement/index, this plan.
+  - Added official Java generic-row reads for v1/v2/v3, both upgrade edges,
+    historical snapshots, logical expiry/reload, and equality-delete visibility.
+    Native acceptance is running; these new rows are not yet certified.
+  - First native attempt stopped before the SDK in two cases: shared setup
+    now creates `analytics`, but callers repeated that POST and got 409.
+    Removed the duplicate caller setup; shared setup still asserts HTTP 200.
+    The standalone FileIO case passed. Actual generic-row reads required the
+    pinned SDK's ORC runtime module even for Parquet; this adds no selected ORC
+    capability.
+  - The expanded catalog run exposed a production read regression after logical
+    drop: `ReaderPins::acquire` rejected Tombstone as Invalid(Record), returning
+    S3 500 for an already authorized HEAD. File reads can now persist a bounded
+    Tombstone pin and recheck the head; Reclaiming still rejects reads and
+    non-Ready tables still reject writes. GC proof/fence/worker suites pass.
+    The native catalog fixture now passes actual v1/v2/v3 rows, upgrade/expiry
+    and restart, with unchanged deadlines and no extra client retry.
+  - One selected-file upload returned an untraced storage 500 in an earlier
+    diagnostic. The isolated selected-file case and subsequent full-suite case
+    both passed. This observation is not claimed fixed by the drop-read change.
 
 - [x] **1. Unified route discovery — medium**: introduce a bounded endpoint
   descriptor/classifier used by both config discovery and dispatch admission.

@@ -34,6 +34,8 @@ public final class TestIcebergSelectedFiles {
       require(table.io().newInputFile(data.location()).exists(), "ordinary data upload");
       require(table.io().newInputFile(equality.location()).exists(), "ordinary equality-delete upload");
       table.newAppend().appendFile(data).commit();
+      long beforeDelete = table.currentSnapshot().snapshotId();
+      TestIcebergVersionRows.rows(org.apache.iceberg.data.IcebergGenerics.read(table), java.util.List.of(1L));
       DataFile wrongData = DataFiles.builder(table.spec()).withPath(equality.location())
           .withFormat("PARQUET").withFileSizeInBytes(equality.fileSizeInBytes())
           .withRecordCount(equality.recordCount()).build();
@@ -59,6 +61,9 @@ public final class TestIcebergSelectedFiles {
         }
       }
       require(files == 1, "wrong uses never add files");
+      TestIcebergVersionRows.rows(org.apache.iceberg.data.IcebergGenerics.read(table), java.util.List.of());
+      TestIcebergVersionRows.rows(org.apache.iceberg.data.IcebergGenerics.read(table).useSnapshot(beforeDelete),
+          java.util.List.of(1L));
       System.out.println("Official identical S3 uploads and selected data/delete validation passed");
     }
   }

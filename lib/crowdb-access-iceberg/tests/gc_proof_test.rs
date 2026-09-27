@@ -514,6 +514,51 @@ async fn late_credentials_cancel_sweep_and_release_the_table() {
 }
 
 #[tokio::test]
+async fn dropped_table_file_reads_remain_protected_until_reclamation_fences_them() {
+    let (store, task, _) = fixture(3, 0).await;
+    let pins = crowdb_access_iceberg::gc::ReaderPins::new(store.clone());
+    let mut head = task.head.unwrap();
+    let key = head_key(head.catalog, head.table).encode().unwrap();
+    for lifecycle in [TableLifecycle::Tombstone, TableLifecycle::Reclaiming] {
+        let before = store.get(&key).await.unwrap().unwrap();
+        head.lifecycle = lifecycle;
+        head.pending_operation = Some(OperationId::random());
+        let after = StorageRecord::TableHead(Box::new(head.clone())).encode().unwrap();
+        store
+            .compare_exchange(
+                &key,
+                Some(&before.bytes),
+                &after,
+                mutation_identity(&key, Some(&before.bytes), &after),
+            )
+            .await
+            .unwrap();
+        let read = pins
+            .protect_file_reads(task.context, head.table, "file-reader", 2000, 100)
+            .await;
+        if lifecycle == TableLifecycle::Tombstone {
+            let pin = read.unwrap();
+            assert!(pin.protects(1999));
+            assert!(!pin.protects(2000));
+            assert!(pin.protects_uploads);
+            assert_eq!(
+                pins.get(head.catalog, head.table, pin.identity).await.unwrap(),
+                Some(pin)
+            );
+        } else {
+            assert!(matches!(
+                read,
+                Err(crowdb_access_iceberg::catalog::CatalogError::Busy)
+            ));
+        }
+        assert!(pins
+            .protect_files(task.context, head.table, "file-writer", 2000, 100)
+            .await
+            .is_err());
+    }
+}
+
+#[tokio::test]
 async fn proof_and_fence_resume_after_lost_durable_write_responses() {
     use std::sync::atomic::Ordering;
     for boundary in 1..=10 {

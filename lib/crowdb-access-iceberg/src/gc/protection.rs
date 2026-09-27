@@ -47,6 +47,34 @@ impl ReaderPins {
         expires_ms: u64,
         now_ms: u64,
     ) -> Result<GcPin, CatalogError> {
+        self.protect_selected_files(context, table, principal, expires_ms, now_ms, false)
+            .await
+    }
+
+    /// Protects an authenticated file read, including a logically dropped table.
+    /// # Errors
+    /// Rejects reclamation fences and changed authority after persisting the pin.
+    pub async fn protect_file_reads(
+        &self,
+        context: CatalogContext,
+        table: TableId,
+        principal: &str,
+        expires_ms: u64,
+        now_ms: u64,
+    ) -> Result<GcPin, CatalogError> {
+        self.protect_selected_files(context, table, principal, expires_ms, now_ms, true)
+            .await
+    }
+
+    async fn protect_selected_files(
+        &self,
+        context: CatalogContext,
+        table: TableId,
+        principal: &str,
+        expires_ms: u64,
+        now_ms: u64,
+        allow_tombstone: bool,
+    ) -> Result<GcPin, CatalogError> {
         if expires_ms <= now_ms {
             return Err(ValidationError::Deadline.into());
         }
@@ -115,7 +143,7 @@ impl ReaderPins {
             }
             check_context(self.store.as_ref(), context).await?;
         } else {
-            self.acquire(&pin).await?;
+            self.acquire_selected(&pin, allow_tombstone).await?;
         }
         Ok(pin)
     }

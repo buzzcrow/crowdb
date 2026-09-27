@@ -313,15 +313,6 @@ async fn official_java_catalog_commits_native_parquet_snapshots_and_staged_table
     })
     .await;
     let endpoint = format!("http://{}", process.address);
-    let response = Client::new()
-        .post(format!("{endpoint}/v1/namespaces"))
-        .bearer_auth("w".repeat(32))
-        .header("content-type", "application/json")
-        .body(r#"{"namespace":["analytics"]}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     run_catalog_sdk(endpoint, "data").await;
     drop(process);
     let restarted = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
@@ -342,15 +333,6 @@ async fn official_java_identical_s3_uploads_validate_selected_data_and_delete_us
     })
     .await;
     let endpoint = format!("http://{}", process.address);
-    let response = Client::new()
-        .post(format!("{endpoint}/v1/namespaces"))
-        .bearer_auth("w".repeat(32))
-        .header("content-type", "application/json")
-        .body(r#"{"namespace":["analytics"]}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     run_sdk(endpoint, "TestIcebergSelectedFiles", "").await;
 }
 

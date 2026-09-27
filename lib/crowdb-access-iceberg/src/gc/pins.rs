@@ -63,12 +63,20 @@ impl ReaderPins {
     /// # Errors
     /// Rejects retired catalogs, changed heads and reused identities.
     pub async fn acquire(&self, pin: &GcPin) -> Result<(), CatalogError> {
+        self.acquire_selected(pin, false).await
+    }
+
+    pub(super) async fn acquire_selected(
+        &self,
+        pin: &GcPin,
+        allow_tombstone: bool,
+    ) -> Result<(), CatalogError> {
         pin.validate()?;
         if pin.released
             || pin.head.lifecycle == TableLifecycle::Reclaiming
-            || (!pin.operator && pin.head.lifecycle != TableLifecycle::Ready)
+            || (!pin.operator && !allow_tombstone && pin.head.lifecycle != TableLifecycle::Ready)
         {
-            return Err(ValidationError::Record.into());
+            return Err(CatalogError::Busy);
         }
         check_context(self.store.as_ref(), pin.context).await?;
         let key = pin.key().encode()?;
