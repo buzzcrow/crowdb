@@ -182,26 +182,67 @@ and verifiable release assets.
   process-config modes remain fail-closed on topology APIs while the Group 0
   projection is unfinished. Bare-metal launch-policy use and removal of the old
   default parser/writer remain.
-- [ ] **Group 0 authority reads/writes**: make web topology reads and mutations
-  use Group 0 as the sole authority, remove local-first/best-effort sync and local
-  topology restore, preserve response-loss/conflict semantics, and fail visibly
-  when Group 0 is unavailable. Files: `app/crowdb-web/src/{state,lifecycle}.rs`,
-  `app/crowdb-web/src/mgmt/{topology,*.rs}`, shared operation code and tests.
+- [ ] **Unified hardware-topology authority**: make CLI and bare-metal Web
+  rack/node/disk-group/disk reads and mutations use the same Group 0 operation
+  path instead of local-first changes followed by ignored sysdata errors.
+  Docker Web keeps these mutations disabled. Preserve conflicts and uncertain
+  results, and use explicit pre-Group-0 bootstrap inputs only during initial
+  cluster creation. Files: `lib/crowdb-console-shared/src/ops/hardware.rs`,
+  `app/crowdb-cli/src/commands/cluster/hardware.rs`,
+  `app/crowdb-web/src/{state,lifecycle,physical}.rs`, and tests.
   Startup no longer replays local topology when Group 0 is ready or cannot be
   confirmed. Configured Group 0 seeds now initialize the shared KV client, and
   `/api/authority` probes Group 0 with the configured request timeout while
   remaining unavailable until the managed API projection is complete. Remaining:
-  build the Group 0 read model, replace local-first mutations with confirmed
-  Group 0 writes, and delete the obsolete mixed persistence paths.
-- [ ] **Authenticated Docker logical writes**: pass only the existing Iceberg
-  management token to the Web child through its environment; require an exact
-  bearer token on logical store/group/replica mutations before any RPC; keep
-  status reads public and hardware/process writes unavailable even with the
-  token. Build a Group 0-derived node-to-management-endpoint read model and
-  replace the old `OpContext` local-config mutation path, including fan-out,
-  conflict, response-loss, and retry behavior. Add auth, single-node creation,
-  missing-Group-0, and forbidden-hardware integration tests. Do not expose a
-  write route until its full authoritative flow passes.
+  replace local-first hardware mutations and delete obsolete persistence.
+- [ ] **Unified Group 0 logical operations**: make CLI and Web in Docker and
+  bare-metal modes call the same store/group/replica orchestration in
+  `lib/crowdb-console-shared/src/ops/kv_logical.rs`. Resolve node management
+  endpoints from Group 0 service registration with an explicit node identity;
+  do not use `ConsoleConfig.servers`, a Docker profile, or a mode-specific
+  fallback for normal operations. Keep initial Group 0 bootstrap separate
+  because its authority does not yet exist. Remove local store/group/replica
+  record updates and commits from both callers. Preserve fan-out, confirmed
+  metadata writes, conflict and response-loss reconciliation, and fail-closed
+  behavior when Group 0 is unavailable. Tests exercise the same operation from
+  CLI and both Web modes against one Group 0. Files:
+  `lib/crowdb-console-shared/src/ops/{context,kv_logical}.rs`,
+  `lib/crowdb-kv-client/src/service/**`, `app/crowdb-cli/src/commands/kv/logical.rs`,
+  `app/crowdb-web/src/mgmt/{store_ops,group_ops,replica_ops}.rs`, and tests.
+- [ ] **Unified topology reads and routing**: remove Web KV endpoint and
+  group-node fallback to `ConsoleConfig.servers/groups`, and remove monitor-cache
+  views that present a local copy as authority. Resolve membership from Group 0
+  and live endpoints from the service registry in CLI and Web; fail unavailable
+  rather than returning stale local topology. Files: `app/crowdb-web/src/{kv,mgmt,physical}.rs`,
+  `lib/crowdb-console-shared/src/ops/context.rs`, `lib/crowdb-kv-client/src/service/**`,
+  and read/leader-change tests.
+- [ ] **Bootstrap and teardown authority boundary**: keep initial Group 0
+  bootstrap intent separate because Group 0 does not exist yet, but after
+  creation verify every hardware/store/group/replica record before reporting
+  success. Make restart/reconcile and destroy/clean read live Group 0 state,
+  not an old `ConsoleConfig` snapshot; never replay a local topology into an
+  already initialized cluster. Files: `lib/crowdb-console-shared/src/ops/cluster.rs`,
+  `app/crowdb-web/src/mgmt/{cluster_init,topology}.rs`, CLI cluster commands,
+  and failure/restart tests.
+- [ ] **Deployment records are not topology**: use `registry.toml` only for
+  bare-metal launch policy and monitor state only for Docker process lifecycle.
+  CLI/Web service deploy, restart, stop, and DiskDB proxy status must discover
+  live endpoints from Group 0 service registration, not persisted `ServerEntry`
+  or PID fields. Keep deployment control mode-specific, not a second logical or
+  hardware authority. Files: `lib/crowdb-console-shared/src/ops/kv_server.rs`,
+  `app/crowdb-cli/src/commands/kv/server.rs`,
+  `app/crowdb-web/src/{lifecycle,diskdb,mgmt}.rs`, and tests.
+- [ ] **S3 mini-cluster authority audit**: keep its local data-dir record for
+  process restart and bootstrap seeds only. Once Group 0 exists, route normal
+  hardware/logical queries and operations through the same shared Group 0 path;
+  remove any local topology copy used as authoritative fallback. Files:
+  `lib/crowdb-console-shared/src/ops/s3.rs` and mini-cluster restart tests.
+- [ ] **Web logical authorization**: pass the existing Iceberg management
+  token to Docker Web through its environment and require an exact bearer
+  token before any logical write RPC in either Web mode. Keep public status
+  reads available and hardware/process writes unavailable in Docker even with
+  the token. Add malformed/missing/wrong-token and forbidden-hardware tests;
+  do not expose logical write routes until the shared operation passes.
 - [ ] **Docker-mode Web UI**: start `crowdb-web` from rendered config, overlay
   monitor PID/restart/crash state on Group 0 service records, disable conflicting
   lifecycle controls, and show source/unavailable state in the UI. Add focused
@@ -301,8 +342,8 @@ and verifiable release assets.
 ## Resolved Decisions
 
 - Docker mode does not manage hardware topology or monitor-owned processes.
-  Logical store/group/replica operations remain in scope and require Group 0
-  authority. Bare-metal mode may manage deployment and hardware topology.
-- Docker logical writes reuse the existing Iceberg management bearer token.
-  The public status view stays unauthenticated, while writes require the token;
-  no new credential is generated.
+  CLI and Web in both modes use one Group 0-backed logical store/group/replica
+  flow. Bare-metal mode may manage deployment and hardware topology.
+- Web logical writes reuse the existing Iceberg management bearer token in
+  both modes. Public status remains unauthenticated; no new credential is
+  generated.

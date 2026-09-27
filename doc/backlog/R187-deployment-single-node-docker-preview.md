@@ -153,11 +153,18 @@ without moving or duplicating its runtime code.
 ### Web configuration authority
 
 - **Group 0:** owns racks, nodes, disk groups, disks, stores, groups, replicas,
-  bindings, and the service registry. Web topology reads use Group 0 directly.
+  bindings, and the service registry. CLI and Web in every deployment mode use
+  the same Group 0-backed logical store/group/replica read and write flow;
+  deployment mode does not select a different logical operation implementation.
+  CLI and bare-metal Web also share Group 0-backed hardware operations; Web KV
+  routing and status never revive a local topology fallback. Initial Group 0
+  bootstrap alone uses explicit pre-authority intent, then verifies committed
+  Group 0 records before declaring success. Local deployment records describe
+  launch policy or process state only, including the S3 mini-cluster.
   Docker mode does not manage hardware topology (racks, nodes, disk groups, or
   disks) or monitor-owned processes, but permits logical store, group, and
-  replica operations through Group 0 after authenticating with the existing
-  Iceberg management bearer token. Bare-metal mode may manage deployment
+  replica operations through that shared flow after Web authenticates with the
+  existing Iceberg management bearer token. Bare-metal mode may manage deployment
   and hardware topology as well. A successful local file write cannot
   substitute for a failed Group 0 mutation. When Group 0 is unavailable,
   topology APIs fail unavailable rather than serving or restoring a local copy.
@@ -339,8 +346,9 @@ passes explicit data and log paths to every child.
    only after success; they never persist topology
    locally or ignore a Group 0 failure. Docker mode rejects hardware-topology
    and process mutations but permits logical store, group, and replica
-   operations through Group 0; bare-metal deployment operations follow the
-   same Group 0 authority contract. Startup uses configured seeds to load
+   operations through the same logical flow used by CLI and bare-metal Web;
+   bare-metal deployment operations follow the Group 0 authority contract.
+   Startup uses configured seeds to load
    Group 0 and service discovery rather than calling local
    `restore_persisted_topology` once Group 0 exists. In Docker mode the
    console has no registry engine, overlays `crowdb-monitor` process/restart state
@@ -476,6 +484,21 @@ passes explicit data and log paths to every child.
   retry semantics, commit no local topology before authority, and return an
   explicit unavailable result without serving a local fallback. Invariant:
   DOCKER-I11. Integration test.
+- Given CLI, Docker-mode Web, and bare-metal Web connected to the same ready
+  Group 0, when each creates or removes logical stores, groups, and replicas,
+  assert they use one shared orchestration and endpoint-resolution path, observe
+  the same Group 0 result, and never persist a second logical-topology copy.
+  Invariant: DOCKER-I11. Integration test.
+- Given CLI and bare-metal Web connected to one initialized cluster, when
+  hardware records, live KV endpoints, and process state change, assert both
+  use Group 0 for hardware authority and service registration for routing,
+  while Docker Web rejects hardware mutations and none serves stale local
+  topology after Group 0 is lost. Invariant: DOCKER-I11. Integration test.
+- Given first bootstrap, restart, teardown, and S3 mini-cluster restart, when
+  Group 0 is initially absent or later unavailable, assert bootstrap uses only
+  explicit pre-authority intent, confirms all Group 0 records before success,
+  never replays a local topology over an initialized cluster, and retains only
+  local process-launch state. Invariant: DOCKER-I11. Integration test.
 - Given ready Group 0 and any supplied registry path, when Docker-mode
   `crowdb-web` starts, assert it rejects the registry path; with no registry it
   uses configured seeds, Group 0 topology, service discovery, and monitor runtime
@@ -483,7 +506,7 @@ passes explicit data and log paths to every child.
   process mutations, permits Group 0-backed logical store/group/replica
   operations, and marks unavailable/stale sources accurately. Invariant:
   DOCKER-I11. E2E test.
-- Given the existing Iceberg management bearer token, when a Docker-mode Web
+- Given the existing Iceberg management bearer token, when a Web
   caller creates or removes a logical store, group, or replica, assert a
   missing, malformed, or wrong token is rejected before any Group 0 write;
   the valid token permits the operation but never unlocks hardware-topology or
