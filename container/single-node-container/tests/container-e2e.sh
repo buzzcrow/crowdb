@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-image=crowdb-iceberg-single-node:dev
+image=${CROWDB_CONTAINER_IMAGE:-crowdb-iceberg-single-node:dev}
 root=$(mktemp -d /tmp/crowdb-preview-e2e.XXXXXX)
 name="crowdb-preview-e2e-$$"
 chmod 0777 "$root"
@@ -38,7 +38,7 @@ start_container() {
     fi
     docker run -d --name "$name" \
         "${mount_args[@]}" \
-        -p 127.0.0.1::80 -p 127.0.0.1::8010 -p 127.0.0.1::8080 \
+        -p 127.0.0.1::80 -p 127.0.0.1::81 -p 127.0.0.1::8080 \
         "$image" >/dev/null
     for attempt in $(seq 1 240); do
         state=$(docker inspect --format '{{.State.Status}}' "$name")
@@ -65,7 +65,7 @@ port() {
 verify_public_services() {
     local iceberg_port s3_port web_port token
     iceberg_port=$(port 80)
-    s3_port=$(port 8010)
+    s3_port=$(port 81)
     web_port=$(port 8080)
     curl --fail --silent --show-error --max-time 5 \
         "http://127.0.0.1:$s3_port/_crowdb/health/ready" >/dev/null
@@ -92,7 +92,7 @@ verify_clients() {
     AWS_ACCESS_KEY_ID=$(printf '%s\n' "$client_env" | sed -n 's/^AWS_ACCESS_KEY_ID=//p')
     AWS_SECRET_ACCESS_KEY=$(printf '%s\n' "$client_env" | sed -n 's/^AWS_SECRET_ACCESS_KEY=//p')
     ICEBERG_TOKEN=$(printf '%s\n' "$client_env" | sed -n 's/^ICEBERG_TOKEN=//p')
-    export CROWDB_PREVIEW_S3_ENDPOINT="http://127.0.0.1:$(port 8010)"
+    export CROWDB_PREVIEW_S3_ENDPOINT="http://127.0.0.1:$(port 81)"
     export CROWDB_PREVIEW_ICEBERG_URI="http://127.0.0.1:$(port 80)"
     pixi run -e s3-e2e python container/single-node-container/tests/s3-client.py "$operation"
     pixi run -e iceberg-e2e python container/single-node-container/tests/iceberg-client.py "$operation"
@@ -285,6 +285,7 @@ client_env=$(docker exec "$name" crowdb-monitor credentials show --format env)
 [[ $(docker exec "$name" stat -c %a /opt/crowdb/data/secrets/client.env) == 600 ]]
 docker exec "$name" cat /opt/crowdb/data/bootstrap/manifest.json | jq -e '.state == "ready"' >/dev/null
 verify_public_services
+node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 8080)" "$name"
 echo "checking S3 and Iceberg client writes"
 verify_clients write
 echo "checking Web logical writes"
@@ -298,6 +299,7 @@ for service in kv diskdb diskio chunkdb chunk-kv s3 iceberg web; do
     verify_child_recovery "$service" STOP probe_failed
 done
 verify_public_services
+node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 8080)"
 verify_clients read
 sleep 12
 docker exec "$name" crowdb-monitor readiness
@@ -317,6 +319,7 @@ verify_public_services
 verify_clients read
 echo "checking restart budget exhaustion"
 verify_restart_exhaustion
+python container/single-node-container/tests/logs.py "$root" "$name"
 docker rm "$name" >/dev/null
 start_container
 verify_public_services

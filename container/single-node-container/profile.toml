@@ -73,7 +73,7 @@ zone_size_bytes = 17179869184
 [[public_endpoints]]
 id = "s3"
 bind = "0.0.0.0"
-port = 8010
+port = 81
 
 [[public_endpoints]]
 id = "iceberg"
@@ -174,12 +174,12 @@ backoff_max_ms = 5000
 id = "s3"
 program = "/opt/crowdb/bin/crowdb-access-server"
 args = []
-env = { CROWDB_S3_LISTEN = "0.0.0.0:8010", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_S3_TENANT = "preview", CROWDB_S3_REGION = "us-east-1", CROWDB_S3_EC_DATA = "2", CROWDB_S3_EC_CODE = "1" }
+env = { CROWDB_S3_LISTEN = "0.0.0.0:81", CROWDB_S3_PUBLIC_URI = "http://localhost:81", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_S3_TENANT = "preview", CROWDB_S3_REGION = "us-east-1", CROWDB_S3_EC_DATA = "2", CROWDB_S3_EC_CODE = "1" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
-fence_listeners = ["127.0.0.1:8010"]
+fence_listeners = ["127.0.0.1:81"]
 [services.probe]
 kind = "http"
-target = "http://127.0.0.1:8010/_crowdb/health/ready"
+target = "http://127.0.0.1:81/_crowdb/health/ready"
 timeout_ms = 1000
 failure_threshold = 5
 [services.restart]

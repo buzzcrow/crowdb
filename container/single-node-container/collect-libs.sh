@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-build_root=/src
-output=/src/preview-runtime
+build_root=$(git rev-parse --show-toplevel)
+output=${1:?runtime staging directory is required}
 mkdir -p "$output/bin" "$output/lib"
 
 for binary in \
@@ -51,7 +51,9 @@ if [[ ! -f "$output/lib/libcrowdb_kv_client.so" ]]; then
     echo 'DiskIO FFI library was not collected' >&2
     exit 1
 fi
-patchelf --set-rpath '/opt/crowdb/lib' "$output/lib/libcrowdb_kv_client.so"
+for library in "$output"/lib/*; do
+    patchelf --set-rpath '/opt/crowdb/lib' "$library"
+done
 rm "$output/dependencies.txt"
 
 for artifact in "$output"/bin/* "$output"/lib/*; do

@@ -5,7 +5,7 @@
 
 ## Status
 
-Deferred until the R187 single-node Docker image is publish-ready. This work
+Deferred until the R187 single-node Docker image is locally verified. This work
 must not delay the preview image or turn Group 0 into a Docker deployment
 registry.
 
@@ -78,8 +78,8 @@ profile. The remaining boundary cleanup belongs in this separate requirement.
 ## Dependencies
 
 - R187 provides the working single-node Docker profile, monitor-owned process
-  state, managed Web baseline, and Group 0-backed system metadata. R187 release
-  readiness does not depend on this cross-mode cleanup.
+  state, managed Web baseline, and Group 0-backed system metadata. R187 image
+  verification does not depend on this cross-mode cleanup.
 - The existing Group 0 schema and `crowdb-kv-client` service APIs remain the
   authority. If a live registration is absent, operations fail unavailable or
   wait for registration; local launch policy never substitutes for it.

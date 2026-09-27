@@ -37,7 +37,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         endpoints,
-        BTreeMap::from([("iceberg", 80), ("s3", 8010), ("web", 8080)])
+        BTreeMap::from([("iceberg", 80), ("s3", 81), ("web", 8080)])
     );
     let iceberg = profile
         .services
@@ -58,8 +58,8 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .iter()
         .find(|service| service.id == "s3")
         .unwrap();
-    assert_eq!(s3.env.get("CROWDB_S3_LISTEN"), Some(&"0.0.0.0:8010".to_owned()));
-    assert_eq!(s3.probe.target, "http://127.0.0.1:8010/_crowdb/health/ready");
+    assert_eq!(s3.env.get("CROWDB_S3_LISTEN"), Some(&"0.0.0.0:81".to_owned()));
+    assert_eq!(s3.probe.target, "http://127.0.0.1:81/_crowdb/health/ready");
     let web = profile
         .services
         .iter()

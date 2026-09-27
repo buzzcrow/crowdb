@@ -28,7 +28,7 @@ configuration mixes cluster topology and launch policy. The Docker image must
 not copy or replay that file. Its monitor owns container processes, while
 Group 0 owns CROWDB system topology and service registration. The wider
 CLI/bare-metal configuration and authority cleanup is tracked separately by
-[R188](R188-console-group0-authority.md), not required to publish this image.
+[R188](R188-console-group0-authority.md), not required to verify this local image.
 
 Concrete scenarios are a developer uploading and range-reading Parquet through
 S3, a PyIceberg client using the enabled REST catalog and FileIO operations, an
@@ -42,9 +42,10 @@ integration data. It is not a production, high-availability, upgrade-stable, or
 fault-tolerant deployment.
 
 - **DOCKER-I1 — One-command service:** one documented container invocation
-  starts one usable CROWDB instance and exposes only S3 on port 8010, Iceberg
-  REST/FileIO on container port 80 (mapped to host port 80 by default), and
-  the web console on port 8080.
+  starts one usable CROWDB instance and publishes Iceberg REST/FileIO on host
+  port 80. The container also listens for independent S3 on 81 and Web on
+  8080; S3 publication is optional and the unfinished GUI is not published
+  by user-guide examples. These overrides do not change bare-metal defaults.
 - **DOCKER-I2 — Product-path fidelity:** the image runs the normal
   `crowdb-kv-server`, `crowdb-diskdb`, `crowdb-diskio`, `crowdb-chunkdb`,
   `crowdb-chunk-kv-server`, `crowdb-access-server`, `crowdb-iceberg`, and
@@ -113,8 +114,7 @@ fault-tolerant deployment.
   workflow targeting a Git release tag may publish the gated `linux/amd64`
   image to `crowdb/crowdb-iceberg-single-node`, after protected-environment approval.
   Creating or pushing a tag alone never publishes. Version and `git-<commit>`
-  tags are immutable; `preview` is the
-  sole moving convenience tag and `latest` is not published. Every public digest
+  tags are immutable; moving `preview` and `latest` tags are not published. Every public digest
   has a verifiable signature, SBOM, and build provenance. Pull-request workflows
   build and test but have no publication authority.
 - **DOCKER-I13 — Deployment-profile boundary:** container implementation lives
@@ -141,7 +141,7 @@ The source layout for this deployment is:
 container/
   crowdb-monitor/              reusable deployment runtime crate and binary
   single-node-container/         CROWDB Single-Node Container profile
-    Dockerfile                 amd64 multi-stage image
+    Dockerfile                 amd64 runtime-only image
     templates/                 profile-owned service configuration inputs
     tests/                     profile and container acceptance assets
 ```
@@ -247,19 +247,23 @@ container stderr. `/opt/crowdb/run` and all image paths are never
 part of a data backup. The monitor sets `CROWDB_RUNTIME_ROOT=/opt/crowdb/run` and
 passes explicit data and log paths to every child.
 
-1. Add a reproducible `linux/amd64`-only multi-stage image build. The first
-   preview publishes no arm64 image or multi-architecture manifest. The build
-   stage uses the repository's pinned Rust, C++, and UI dependency inputs to
-   produce release binaries and installs the `crowdb-web` static UI under
+1. Build release artifacts on the existing Linux amd64 host with the
+   repository's locked Rust, C++, and UI dependencies, reusing incremental
+   compilation. Docker only packages the prepared runtime files; it does not
+   install Pixi or compilers, run source compilation, or require a custom base
+   image. The first preview publishes no arm64 image or multi-architecture
+   manifest. Install the `crowdb-web` static UI under
    `/opt/crowdb/ui`; the web service must resolve that packaged runtime
    path rather than a build-workspace path. The build must not execute database
    initialization or copy any generated disk, topology, Group 0, Group 1, tenant,
    catalog, credential, or bootstrap-manifest state into an image layer. The
-   runtime stage is based on a digest-pinned `ubuntu:24.04`, contains only
+   runtime image is based on a digest-pinned `ubuntu:24.04`, contains only
    required runtime libraries and artifacts, runs as a dedicated non-root user,
    and records the source revision and preview version in OCI labels. Build
    context excludes local runtime data, credentials, test output, VCS data, and
-   unrelated build products.
+   unrelated build products. Reject incompatible host binaries during image
+   linkage checks and acceptance. The release job consumes the exact staged
+   runtime files from its successful verification job instead of recompiling.
 2. Add a dedicated `crowdb-monitor` deployment daemon as the image entrypoint
    and PID 1. It owns configuration validation, runtime initialization, child
    creation and reaping, process and functional-liveness monitoring, restart
@@ -297,11 +301,11 @@ passes explicit data and log paths to every child.
    health listeners bind only to the container network namespace and are not
    declared as public image ports.
 5. Configure `crowdb-access-server` with normal S3 authentication on
-   `0.0.0.0:8010`, `crowdb-iceberg` with its independent authenticated catalog
+   `0.0.0.0:81`, `crowdb-iceberg` with its independent authenticated catalog
    and native FileIO listener on `0.0.0.0:80`, and `crowdb-web` on
-   `0.0.0.0:8080`. The quick start maps all three ports one-to-one and uses
-   `http://localhost:8010`, `http://localhost`, and
-   `http://localhost:8080`. `CROWDB_ICEBERG_PUBLIC_URI` defaults to the local
+   `0.0.0.0:8080`. The quick start maps only Iceberg port 80 and uses
+   `http://localhost`. Optional S3 publication maps port 81; the unfinished
+   GUI is not published. `CROWDB_ICEBERG_PUBLIC_URI` defaults to the local
    Iceberg URI and is the one documented override when a remote hostname,
    reverse proxy, or different host-port mapping changes the client-visible
    address. S3 buckets and credentials do not select or authorize Iceberg
@@ -360,9 +364,10 @@ passes explicit data and log paths to every child.
     read-only/unwritable volume, and missing, corrupt, incompatible, or conflicting
     bootstrap manifest outcomes.
 11. Publish `doc/user-manual/docker-single-node-user-guide.md` as the Docker
-    quick start. It pins an image tag, maps ports 8010:8010,
-    80:80, and 8080:8080, mounts one host data path at `/opt/crowdb/data`, configures the
-    container runtime restart policy for monitor-budget exhaustion, retrieves
+    quick start. Its minimal Docker command pins a version tag, names the
+    container `crowdb-iceberg`, and maps only port 80. Common options and an
+    extended example explain a named volume at `/opt/crowdb/data`, optional S3,
+    runtime restart policy, shutdown allowance and log rotation. It retrieves
     generated preview credentials with the explicit monitor command, and includes
     independent S3 and Iceberg examples. The compatibility list names exact
     tested client versions and operations; pure Parquet-over-S3 results are not
@@ -372,8 +377,7 @@ passes explicit data and log paths to every child.
     operator manually triggers the release workflow against a Git release tag;
     it reruns the complete gates for the exact commit, waits for protected-
     environment approval, then publishes to `crowdb/crowdb-iceberg-single-node` under an
-    immutable release-version tag, immutable `git-<commit>` tag, and moving
-    `preview` tag. The workflow never emits `latest`, refuses to overwrite either
+    immutable release-version tag and immutable `git-<commit>` tag. The workflow never emits `latest`, refuses to overwrite either
     immutable tag, and attaches a signature, SBOM, and build provenance to the
     published digest. arm64 publication is deferred until a later requirement
     supplies a Linux arm64 toolchain and the complete Docker E2E matrix.
@@ -485,7 +489,7 @@ passes explicit data and log paths to every child.
   contain none of those values. Invariants: DOCKER-I6 and DOCKER-I9. E2E test.
 - Given the default host-port mappings and then an overridden external Iceberg URI,
   when clients discover and call all public services, assert S3 is available at
-  port 8010, Iceberg REST/FileIO at host port 80, web at 8080, no internal listener is
+  port 81, Iceberg REST/FileIO at host port 80, web at 8080, no internal listener is
   host-reachable, and Iceberg advertises the configured client-visible URI.
   Invariants: DOCKER-I1 and DOCKER-I7. E2E test.
 - Given first-time initialization is interrupted after each durable step, when
@@ -558,9 +562,14 @@ passes explicit data and log paths to every child.
   absent, or an immutable version/commit tag already names another digest, assert
   publication stops without moving a public tag. When all gates and approval
   succeed, assert the public Docker Hub digest is amd64-only, has immutable
-  release-version and `git-<commit>` tags plus the moving `preview` tag, has no
+  release-version and `git-<commit>` tags, has no moving `preview` or
   `latest` tag, and its signature, SBOM, and build provenance verify against the
   exact source commit. Invariant: DOCKER-I12. Integration test.
+
+Actual Docker Hub publication and public signature/SBOM/provenance verification
+are deferred at the user's request until administrator preparation is complete.
+Keep the release job and its local policy checks; do not trigger publication
+during this implementation.
 
 Required gates:
 

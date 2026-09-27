@@ -67,6 +67,7 @@ liburing = "*"
 # these stay Linux-only (mirrors the liburing per-platform pattern).
 # rdma-core provides both libibverbs and librdmacm.
 rdma-core = "*"
+patchelf = ">=0.19.1,<0.20"
 
 [feature.s3-e2e.dependencies]
 boto3 = "*"
@@ -159,29 +160,9 @@ ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
 build = { cmd = "cargo build --release --workspace --exclude crowdb-kv-client && cargo build --release -p crowdb-kv-client --features ffi && cd app/crowdb-web/ui && npm run build", depends-on = ["build-cpp", "install-ui-deps"] }
 default = { depends-on = ["build"] }
-build-single-node-container = '''
-bash -euc '
-command -v docker >/dev/null || { echo "Docker CLI is required for the preview image" >&2; exit 1; }
-docker info >/dev/null || { echo "Docker daemon is unavailable" >&2; exit 1; }
-proxy_args=()
-for name in http_proxy https_proxy all_proxy no_proxy; do
-  value="${!name:-}"
-  if [[ "$value" == *'@'* ]]; then
-    echo "Credential-bearing proxy settings are not accepted by the preview image build" >&2
-    exit 1
-  fi
-  if [[ "$name" != no_proxy && -n "$value" && "$value" != *://* ]]; then value="http://$value"; fi
-  if [[ -n "$value" ]]; then proxy_args+=(--build-arg "$name=$value"); fi
-done
-DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
-  --file container/single-node-container/Dockerfile \
-  "${proxy_args[@]}" \
-  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
-  --build-arg PREVIEW_VERSION="$(cat VERSION)" \
-  --tag crowdb-iceberg-single-node:dev .
-'
-'''
-test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["build-single-node-container"] }
+stage-single-node-container = "bash container/single-node-container/build.sh stage"
+build-single-node-container = "bash container/single-node-container/build.sh image"
+test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["build-single-node-container", "install-ui-deps"] }
 
 # ── Run ──────────────────────────────────────────────────────────
 web = { cmd = "echo 'CROWDB console starting at: http://127.0.0.1:14000/' && cargo run --release -p crowdb-web", depends-on = ["build"] }

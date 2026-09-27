@@ -2,7 +2,7 @@
 """Convert user-guide.md to a standalone HTML page with tabbed code sections.
 
 Usage:
-    python3 doc/user-manual/build_html.py
+    python3 doc/user-manual/build_html.py [source.md]
 
 Output:
     doc/user-manual/user-guide.html
@@ -25,7 +25,6 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SOURCE = SCRIPT_DIR / "user-guide.md"
-OUTPUT = SCRIPT_DIR / "user-guide.html"
 
 CSS = """
 :root {
@@ -340,6 +339,7 @@ def inline_format(text: str) -> str:
     text = escape(text)
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r'\[([^\]]+)\]\((https?://[^\s)"<>]+)\)', r'<a href="\2">\1</a>', text)
     return text
 
 
@@ -529,7 +529,7 @@ def convert_markdown(md: str) -> tuple[str, list[dict]]:
 
 
 def build_sidebar(toc: list[dict]) -> str:
-    lines = ['<div class="sidebar-brand"><span class="brand-mark"></span>CrowdbKV</div>', "<nav>"]
+    lines = ['<div class="sidebar-brand"><span class="brand-mark"></span>CROWDB</div>', "<nav>"]
     for entry in toc:
         cls = "sub" if entry["level"] == 2 else ""
         lines.append(
@@ -539,12 +539,15 @@ def build_sidebar(toc: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build() -> None:
-    if not SOURCE.exists():
-        print(f"error: {SOURCE} not found", file=sys.stderr)
+def build(source: Path = SOURCE) -> None:
+    if not source.exists():
+        print(f"error: {source} not found", file=sys.stderr)
         sys.exit(1)
 
-    md = SOURCE.read_text(encoding="utf-8")
+    md = source.read_text(encoding="utf-8")
+    output = source.with_suffix(".html")
+    title_match = re.search(r"^# (.+)$", md, re.MULTILINE)
+    title = escape(title_match.group(1) if title_match else "CROWDB User Guide")
     body, toc = convert_markdown(md)
     sidebar = build_sidebar(toc)
 
@@ -553,7 +556,7 @@ def build() -> None:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CrowdbKV User Guide</title>
+<title>{title}</title>
 <style>
 {CSS}
 </style>
@@ -574,9 +577,9 @@ def build() -> None:
 </html>
 """
 
-    OUTPUT.write_text(doc, encoding="utf-8")
-    print(f"wrote {OUTPUT} ({len(doc)} bytes)")
+    output.write_text(doc, encoding="utf-8")
+    print(f"wrote {output} ({len(doc)} bytes)")
 
 
 if __name__ == "__main__":
-    build()
+    build(Path(sys.argv[1]) if len(sys.argv) > 1 else SOURCE)

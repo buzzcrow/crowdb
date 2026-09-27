@@ -20,19 +20,21 @@ for required in \
     'needs: verify' \
     'docker.io/crowdb/crowdb-iceberg-single-node:${{ inputs.tag }}' \
     'docker.io/crowdb/crowdb-iceberg-single-node:git-${{ needs.verify.outputs.revision }}' \
-    'docker.io/crowdb/crowdb-iceberg-single-node:preview' \
     'provenance: mode=max' \
     'sbom: true' \
     'cosign sign --yes'; do
     grep -Fq "$required" "$release"
 done
-! grep -Eq 'crowdb-iceberg-single-node:latest' "$release"
+! grep -Eq 'crowdb-iceberg-single-node:(preview|latest)' "$release"
 [[ $(grep -c 'push: true' "$release") == 1 ]]
 [[ $(grep -c 'id-token: write' "$release") == 1 ]]
 [[ "$events" != *'schedule:'* ]]
 
 verify_job=$(sed -n '/^  verify:/,/^  publish:/p' "$release")
 publish_job=$(sed -n '/^  publish:/,$p' "$release")
+[[ "$verify_job" == *'name: verified-container-runtime'* ]]
+[[ "$publish_job" == *'name: verified-container-runtime'* ]]
+[[ "$publish_job" == *'context: target/container-runtime'* ]]
 for gate in 'pixi run test-single-node-container' 'test-boto3-e2e' 'test-pyiceberg-e2e' \
     'pixi run test-console' 'pixi run test-console-ui' 'pixi run rs-fmt-check && pixi run rs-lint'; do
     [[ "$verify_job" == *"$gate"* ]]

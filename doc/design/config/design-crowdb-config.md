@@ -112,6 +112,33 @@ vary, and restart reuses the same file path. Explicit deployment overrides are
 represented as explicit CLI options and therefore retain the standard
 precedence.
 
+The single-node container uses a named, validated `DeploymentProfile` and
+rendered service configurations. `crowdb-monitor` owns PID 1 supervision,
+dependency order, probes, restart budgets, bounded logs and shutdown. A durable
+bootstrap manifest binds the profile/configuration digest and generated
+credential identity to the mounted data volume. Restart replays completed steps;
+conflicting identity fails closed. Child recovery revalidates storage, catalog
+and Web authority before readiness returns.
+
+Release programs and UI are compiled incrementally on a Linux amd64 host with
+the locked repository toolchain. Docker receives a staged runtime directory
+containing only those artifacts, required shared libraries and the deployment
+profile. It performs no source compilation and contains no Pixi or compiler.
+Runtime linkage and source/version metadata are checked while packaging into
+the digest-pinned Ubuntu image. The publication job reuses the verified staged
+artifacts rather than compiling a second set.
+
+Group 0 owns hardware/topology and service registration. It does not store
+container mounts, process PIDs or restart policy. Docker Web reads live Group 0
+topology and fresh monitor process status independently; missing authority does
+not produce an empty or cached topology. Hardware/process mutation is disabled,
+while authenticated logical operations use the existing operation paths.
+
+Only the container profile overrides public listeners to Iceberg 80, S3 81 and
+Web 8080. Bare-metal defaults remain independent. See the
+[single-node container guide](../../user-manual/docker-single-node-user-guide.md)
+for publication, volume and endpoint usage.
+
 ## 7. Failure Handling
 
 Malformed TOML, an unreadable named file, a wrong known-field type, or failed

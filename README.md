@@ -144,6 +144,8 @@ Create a bucket and round-trip an object:
   subsystem design.
 - [User guide](doc/user-manual/user-guide.md) — setup, console, CLI, and
   supported operations.
+- [Single-node Docker guide](doc/user-manual/docker-single-node-user-guide.md)
+  — preview image, volume, credentials, clients, and recovery.
 - [Backlog](doc/backlog/backlog.md) — what is implemented, in progress, and
   planned.
 

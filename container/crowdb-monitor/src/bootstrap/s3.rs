@@ -84,7 +84,11 @@ impl S3Bootstrap {
             .env
             .get("CROWDB_MANAGEMENT_SEEDS")
             .ok_or(S3BootstrapError::Profile("S3 management seeds are missing"))?;
-        let s3_endpoint = endpoint(profile, "s3")?;
+        let s3_endpoint = service
+            .env
+            .get("CROWDB_S3_PUBLIC_URI")
+            .cloned()
+            .ok_or(S3BootstrapError::Profile("S3 public URI is missing"))?;
         let iceberg_endpoint = profile
             .services
             .iter()
@@ -130,16 +134,6 @@ impl S3Bootstrap {
         }
         Ok(())
     }
-}
-
-fn endpoint(profile: &DeploymentProfile, id: &str) -> Result<String, S3BootstrapError> {
-    let port = profile
-        .public_endpoints
-        .iter()
-        .find(|endpoint| endpoint.id == id)
-        .ok_or(S3BootstrapError::Profile("public endpoint is missing"))?
-        .port;
-    Ok(format!("http://localhost:{port}"))
 }
 
 fn parse_token(output: &[u8]) -> Result<(String, String), S3BootstrapError> {
