@@ -4,14 +4,13 @@
 //! Topology restore: startup three-way fallback + per-node restore.
 
 use crate::mgmt::{
-    build_server_client, mgmt_url_for_node, port_of, refresh_node_cache, rpc_endpoint_for_node,
-    rpc_is_conflict, rpc_is_not_found,
+    build_server_client, mgmt_url_for_node, refresh_node_cache, rpc_endpoint_for_node, rpc_is_conflict,
+    rpc_is_not_found,
 };
 use crate::state::AppState;
 use crowdb_console_shared::clients::http::ServerClient;
 use crowdb_console_shared::cluster::NodeId;
-use crowdb_console_shared::config::{GroupEntry, NodeEntry, ServerEntry, ServiceType, StoreEntry};
-use crowdb_console_shared::lifecycle::{self, DeployRequest, DiskdbDeployRequest};
+use crowdb_console_shared::config::GroupEntry;
 use crowdb_console_shared::mgmt::{AddGroupInitialRole, AddGroupRequest, AddStoreRequest};
 use tracing::{info, warn};
 
@@ -63,105 +62,12 @@ pub async fn startup_topology_check(state: &AppState) {
             info!("no nodes deployed; first-run scenario, skipping topology restore");
         }
         Group0State::Missing => {
-            info!("group 0 not found on any node; TOML mode (phase 1)");
-            restore_persisted_topology(state).await;
+            warn!("group 0 could not be confirmed; local topology restore is forbidden");
         }
         Group0State::Ready => {
-            info!("group 0 is ready; loading topology from group 0 KV");
-            restore_persisted_topology(state).await;
+            info!("group 0 is ready; local topology restore is skipped");
         }
     }
-}
-
-/// Restore persisted topology (servers, stores, groups, replicas) on startup.
-///
-/// # Panics
-/// Panics if the `RwLock` is poisoned.
-pub(crate) async fn restore_persisted_topology(state: &AppState) {
-    let (nodes, servers, stores, groups) = {
-        let cfg = state.config.read().unwrap();
-        (
-            cfg.nodes.clone(),
-            cfg.servers.clone(),
-            cfg.stores.clone(),
-            cfg.groups.clone(),
-        )
-    };
-    for server in &servers {
-        let Some(node_id) = server.node_id else {
-            continue;
-        };
-        let Some(node) = nodes.iter().find(|n| n.id == node_id) else {
-            warn!(
-                server_id = server.id,
-                node_id, "skipping restore for server with missing node"
-            );
-            continue;
-        };
-        let result = if server.service_type == ServiceType::Diskdb {
-            ensure_diskdb_running(state, node, server).await
-        } else {
-            ensure_server_running(state, node, server).await
-        };
-        if let Err(err) = result {
-            warn!(server_id = server.id, node_id, error = %err, "failed to restore server process");
-        }
-    }
-    for StoreEntry { store_id, nodes } in &stores {
-        for node_id in nodes {
-            if let Err(err) = ensure_store_on_node(state, *node_id, *store_id).await {
-                warn!(store_id, node_id, error = %err, "failed to restore store");
-            }
-        }
-    }
-    for group in &groups {
-        let mut replicas = group.replicas.clone();
-        replicas.sort_by_key(|r| r.replica_id);
-        // Defer the election driver for multi-replica groups until remotes are
-        // wired.
-        let start_election = Some(replicas.len() <= 1);
-        for (index, replica) in replicas.iter().enumerate() {
-            let initial_role = if index == 0 {
-                AddGroupInitialRole::Leader
-            } else {
-                AddGroupInitialRole::Follower
-            };
-            if let Err(err) = ensure_group_local(
-                state,
-                replica.node_id,
-                group.store_id,
-                group.group_id,
-                replica.replica_id,
-                initial_role,
-                start_election,
-            )
-            .await
-            {
-                warn!(
-                    store_id = group.store_id,
-                    group_id = group.group_id,
-                    replica_id = replica.replica_id,
-                    node_id = replica.node_id,
-                    error = %err,
-                    "failed to restore local group replica"
-                );
-            }
-        }
-        if let Err(err) = ensure_group_remotes(state, group).await {
-            warn!(store_id = group.store_id, group_id = group.group_id, error = %err, "failed to restore group remotes");
-        }
-    }
-    for server in &servers {
-        if let Some(node_id) = server.node_id {
-            refresh_node_cache(state, node_id).await;
-        }
-    }
-    info!(
-        servers = servers.len(),
-        stores = stores.len(),
-        groups = groups.len(),
-        "restore reconcile finished"
-    );
 }
 
 /// Restores persisted topology (stores and groups) for a specific node.
@@ -220,130 +126,6 @@ pub(crate) async fn restore_persisted_topology_for_node(
     }
 
     refresh_node_cache(state, node_id).await;
-    Ok(())
-}
-
-async fn ensure_server_running(
-    state: &AppState,
-    node: &NodeEntry,
-    server: &ServerEntry,
-) -> Result<(), String> {
-    let client = ServerClient::new(server.url.clone()).map_err(|e| e.to_string())?;
-    if client.health().await.is_ok() {
-        refresh_node_cache(state, node.id).await;
-        return Ok(());
-    }
-    if !server.auto_start {
-        return Ok(());
-    }
-    let rest_port = server
-        .rest_port
-        .ok_or_else(|| format!("server {} missing persisted rest_port", server.id))?;
-    let rpc_port = server
-        .rpc_port
-        .ok_or_else(|| format!("server {} missing persisted rpc_port", server.id))?;
-    let req = DeployRequest {
-        server_id: server.id.clone(),
-        rest_port,
-        rpc_port,
-        election_profile: server.election_profile.clone(),
-        binary: server.binary.clone().map(std::path::PathBuf::from),
-        ..Default::default()
-    };
-    let deployed = if node.ssh_enabled() {
-        let server_bin = server.binary.clone().unwrap_or_else(|| {
-            std::env::var("CROWDB_KV_SERVER_BIN").unwrap_or_else(|_| "crowdb-kv-server".to_string())
-        });
-        crowdb_console_shared::ssh::deploy_via_ssh(&req, node, &server_bin)
-            .await
-            .map_err(|e| e.to_string())?
-    } else {
-        let workspace_dir = state
-            .prepare_node_workspace(node.id.to_string())
-            .map_err(|e| e.to_string())?;
-        lifecycle::deploy_local_in_dir(&req, node, &workspace_dir)
-            .await
-            .map_err(|e| e.to_string())?
-    };
-    state.set_runtime_pid(node.id, deployed.pid);
-    refresh_node_cache(state, node.id).await;
-    Ok(())
-}
-
-/// Restore a persisted `DiskDB` instance on startup. Mirrors
-/// `ensure_server_running` but spawns `crowdb-diskdb` via
-/// `deploy_diskdb_local` instead of the KV-server deploy path.
-async fn ensure_diskdb_running(
-    state: &AppState,
-    node: &NodeEntry,
-    server: &ServerEntry,
-) -> Result<(), String> {
-    // If the process is already alive, just refresh the cache.
-    if let Some(pid) = state.diskdb_runtime_pid(node.id) {
-        if lifecycle::process_is_alive(pid) {
-            refresh_node_cache(state, node.id).await;
-            return Ok(());
-        }
-        state.clear_diskdb_runtime_pid(node.id);
-    }
-    if !server.auto_start {
-        return Ok(());
-    }
-    let rpc_port = server
-        .rpc_port
-        .or_else(|| server.rpc_url.as_deref().and_then(port_of))
-        .ok_or_else(|| format!("diskdb entry {} missing persisted rpc_port", server.id))?;
-    // Look up the kv-server management URL(s) on this node so the
-    // diskdb can discover group-0 after restart.
-    let kv_server_mgmt_seeds: Vec<String> = {
-        let cfg = state.config.read().unwrap();
-        cfg.servers
-            .iter()
-            .filter(|s| s.node_id == Some(node.id) && s.service_type == ServiceType::Kv)
-            .map(|s| s.url.clone())
-            .collect()
-    };
-    // Backward-compat: derive from the old paired-port scheme.
-    let listen_port = rpc_port;
-    let http_port = rpc_port.saturating_add(1);
-    let rpc_listen_port = rpc_port.saturating_add(2);
-    let req = DiskdbDeployRequest {
-        instance_id: None,
-        metrics_interval: None,
-        rpc_workers: None,
-        kv_connections: None,
-        kv_client_rpc_workers: None,
-        keepalive_interval_secs: state.test_mode.then_some(1),
-        free_batch_enabled: None,
-        free_flush_max_batch: None,
-        server_id: server.id.clone(),
-        listen_port,
-        http_port,
-        rpc_port: rpc_listen_port,
-        kv_server_mgmt_seeds,
-    };
-    let workspace_dir = state
-        .prepare_node_workspace(node.id.to_string())
-        .map_err(|e| e.to_string())?;
-    let deployed = lifecycle::deploy_diskdb_local(&req, node, &workspace_dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    state.set_diskdb_runtime_pid(node.id, deployed.pid);
-    // Update the persisted entry with the fresh RPC endpoint. The HTTP
-    // readiness URL is intentionally lifecycle-local and is not persisted.
-    {
-        let mut cfg = state.config.write().unwrap();
-        if let Some(entry) = cfg
-            .servers
-            .iter_mut()
-            .find(|s| s.node_id == Some(node.id) && s.service_type == ServiceType::Diskdb)
-        {
-            entry.url.clone_from(&deployed.endpoint);
-            entry.rpc_url = Some(deployed.endpoint.clone());
-        }
-    }
-    state.persist().map_err(|e| e.to_string())?;
-    refresh_node_cache(state, node.id).await;
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 
 use clap::Parser;
 use crowdb_common::logging::init_file_and_console_logging_split;
-use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
+use crowdb_console_shared::config::web::{LaunchRegistry, WebMode, WebProcessConfig};
 use crowdb_protocol::WEB_BASE;
 use tracing::info;
 
@@ -29,6 +29,10 @@ struct Args {
     /// Versioned web process configuration.
     #[arg(long, value_name = "PATH")]
     config: Option<std::path::PathBuf>,
+
+    /// Optional launch-only registry for standalone deployments.
+    #[arg(long, value_name = "PATH", requires = "config")]
+    registry: Option<std::path::PathBuf>,
 
     /// Load the registry without reconciling service processes at startup.
     #[arg(long, conflicts_with = "config")]
@@ -65,12 +69,14 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
     let process_config = args.config.as_deref().map(WebProcessConfig::load).transpose()?;
-    if process_config
-        .as_ref()
-        .is_some_and(|config| config.mode != WebMode::MonitorManaged)
+    if args.registry.is_some()
+        && process_config
+            .as_ref()
+            .is_some_and(|config| config.mode == WebMode::MonitorManaged)
     {
-        return Err("standalone web process configuration is not yet supported".into());
+        return Err("monitor-managed web does not accept --registry".into());
     }
+    let launch_registry = args.registry.as_deref().map(LaunchRegistry::load).transpose()?;
     let _log_guards = init_logging(&args, process_config.as_ref())?;
 
     let bind = process_config.as_ref().map_or_else(
@@ -102,9 +108,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server_count = cfg.servers.len();
     let mut state = crowdb_web::AppState::with_config(cfg, path).with_test_mode(args.test_mode);
     if let Some(config) = process_config {
-        state = state.with_managed_ui(config.ui_root);
+        state = state.with_process_config(&config);
     }
-    tracing::info!(servers = server_count, "loaded registry");
+    tracing::info!(
+        servers = server_count,
+        launches = launch_registry
+            .as_ref()
+            .map_or(0, |registry| registry.launches.len()),
+        "loaded web startup configuration"
+    );
     if !args.skip_startup_restore && !state.managed_mode {
         crowdb_web::mgmt::startup_topology_check(&state).await;
     }

@@ -177,13 +177,22 @@ and verifiable release assets.
   have focused tests. `crowdb-web --config` now loads the strict process schema
   before logging or listener bind, uses its bind/log/UI paths, and never loads
   the legacy mixed file in monitor-managed mode. The unreleased mixed file is
-  rejected as a `--config` input. Standalone launch-registry wiring and removal
-  of the old default parser/writer remain.
+  rejected as a `--config` input. `--registry` is now a distinct, validated
+  standalone-only input; managed mode rejects it before listener bind. Both
+  process-config modes remain fail-closed on topology APIs while the Group 0
+  projection is unfinished. Standalone launch-policy use and removal of the old
+  default parser/writer remain.
 - [ ] **Group 0 authority reads/writes**: make web topology reads and mutations
   use Group 0 as the sole authority, remove local-first/best-effort sync and local
   topology restore, preserve response-loss/conflict semantics, and fail visibly
   when Group 0 is unavailable. Files: `app/crowdb-web/src/{state,lifecycle}.rs`,
   `app/crowdb-web/src/mgmt/{topology,*.rs}`, shared operation code and tests.
+  Startup no longer replays local topology when Group 0 is ready or cannot be
+  confirmed. Configured Group 0 seeds now initialize the shared KV client, and
+  `/api/authority` probes Group 0 with the configured request timeout while
+  remaining unavailable until the managed API projection is complete. Remaining:
+  build the Group 0 read model, replace local-first mutations with confirmed
+  Group 0 writes, and delete the obsolete mixed persistence paths.
 - [ ] **Monitor-managed Web UI**: start `crowdb-web` from rendered config, overlay
   monitor PID/restart/crash state on Group 0 service records, disable conflicting
   lifecycle controls, and show source/unavailable state in the UI. Add focused

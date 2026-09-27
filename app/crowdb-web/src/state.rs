@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use crowdb_console_shared::config::web::WebProcessConfig;
 use crowdb_console_shared::error::{Error, Result};
 use crowdb_console_shared::monitor::MonitorCache;
 use crowdb_console_shared::ops::OpContext;
@@ -50,6 +51,9 @@ pub struct AppState {
     pub test_mode: bool,
     pub managed_mode: bool,
     pub ui_root: Arc<PathBuf>,
+    pub authority_seeds: Arc<Vec<String>>,
+    pub monitor_status_path: Option<Arc<PathBuf>>,
+    pub authority_timeout_ms: u64,
 }
 
 impl Default for AppState {
@@ -108,6 +112,9 @@ impl AppState {
             test_mode: false,
             managed_mode: false,
             ui_root: Arc::new(PathBuf::from(FRONTEND_DIST)),
+            authority_seeds: Arc::new(Vec::new()),
+            monitor_status_path: None,
+            authority_timeout_ms: 3_000,
         }
     }
 
@@ -115,6 +122,16 @@ impl AppState {
     pub fn with_managed_ui(mut self, ui_root: PathBuf) -> Self {
         self.managed_mode = true;
         self.ui_root = Arc::new(ui_root);
+        self
+    }
+
+    #[must_use]
+    pub fn with_process_config(mut self, config: &WebProcessConfig) -> Self {
+        self.managed_mode = true;
+        self.ui_root = Arc::new(config.ui_root.clone());
+        self.authority_seeds = Arc::new(config.group0_management_seeds.clone());
+        self.monitor_status_path = config.monitor_status.clone().map(Arc::new);
+        self.authority_timeout_ms = config.request_timeout_ms.unwrap_or(3_000);
         self
     }
 
@@ -330,7 +347,7 @@ impl AppState {
         }
         let transport = self.kv_rpc_transport().await;
         let c = Arc::new(crowdb_kv_client::CrowdbKvClient::new_with_rpc_transport(
-            crowdb_kv_client::ClientConfig::new(Vec::new()),
+            crowdb_kv_client::ClientConfig::new(self.authority_seeds.as_ref().clone()),
             transport,
         ));
         *guard = Some(Arc::clone(&c));
