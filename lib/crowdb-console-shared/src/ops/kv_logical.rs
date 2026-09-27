@@ -241,7 +241,14 @@ pub async fn add_group(
             message: "nodes list must not be empty".into(),
         });
     }
-    if !ctx.is_test_scenario() && ctx.sysmd().get_group(store_id, group_id).await?.is_some() {
+    if !ctx.is_test_scenario()
+        && (ctx.sysmd().get_group(store_id, group_id).await?.is_some()
+            || !ctx
+                .sysmd()
+                .list_replicas_in_group(store_id, group_id)
+                .await?
+                .is_empty())
+    {
         return Err(Error::Conflict {
             kind: "group".into(),
             id: format!("{store_id}/{group_id}"),
@@ -302,18 +309,7 @@ pub async fn add_group(
     // Record in group-0 sysdata. The sysdata write must
     // succeed — add_replica reads sysdata to find existing replicas, and
     // a missing group record causes a spurious 404.
-    publication::group(ctx, store_id, group_id).await?;
-    // Record replicas concurrently — sysmd writes are independent.
-    let replica_results: Vec<Result<()>> =
-        futures::future::join_all(succeeded.iter().map(|(node_id, replica_id)| {
-            let node_id = *node_id;
-            let replica_id = *replica_id;
-            async move { record_replica(ctx, store_id, group_id, replica_id, node_id).await }
-        }))
-        .await;
-    for res in replica_results {
-        res?;
-    }
+    publication::group(ctx, store_id, group_id, &succeeded).await?;
     Ok(())
 }
 
@@ -554,15 +550,7 @@ async fn record_replica(
     replica_id: u64,
     node_id: u64,
 ) -> Result<()> {
-    let value = crowdb_protocol::common::ReplicaValue {
-        store_id,
-        group_id,
-        replica_id,
-        node_id,
-        role: String::new(),
-        voting: true,
-        endpoint: String::new(),
-    };
+    let value = publication::replica_value(store_id, group_id, replica_id, node_id);
     publication::replica(ctx, &value).await?;
     Ok(())
 }

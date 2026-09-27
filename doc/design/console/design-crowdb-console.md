@@ -496,7 +496,8 @@ these rules:
   undo successful sub-steps and surface the resulting state in the
   error body.
 - **Confirmed membership publication.** Complete peer wiring before publishing
-  group or replica membership. Create records conditionally; a concurrent
+  group or replica membership. A new group and its initial replica records
+  commit in one conditional batch. Create records conditionally; a concurrent
   conflicting record is preserved. A lost write response is resolved only by
   a linearizable read that confirms the intended record.
 - **Deletion preserves authority on node failure.** Confirm deletion on every

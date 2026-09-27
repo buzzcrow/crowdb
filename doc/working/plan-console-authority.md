@@ -53,8 +53,9 @@ and launch inputs locally.
   flow in CLI and both Web modes, with no local topology commit.
   Conditional publication replaces overwrite writes for stores, groups and
   replicas; test concurrent matching/conflicting records and a real RPC reply
-  dropped after commit. Follow with interrupted multi-record publication and
-  deletion reconciliation before closing this task.
+  dropped after commit. New groups and their initial replicas now use one
+  conditional batch; confirm the complete member set after a lost reply.
+  Finish deletion reconciliation before closing this task.
 
 ## Configuration and hardware operations
 
@@ -89,6 +90,13 @@ and launch inputs locally.
   then remove the requirement, backlog entry and this plan when complete.
 
 ## Evidence
+
+- Group publication baseline gives the group and initial replica different
+  committed revisions (3 and 4), exposing partial publication on interruption.
+  Conditional batch publication passes the shared-revision and lost-batch-reply
+  tests, full Console shared tests, and Web restart/migration/replica tests.
+  Orphan membership is rejected before local mutation; all three focused
+  regressions, fmt and clippy pass. Logs: `/tmp/crowdb-group-publication-*.log`.
 
 - Conditional publication baseline overwrites a competing store record and
   reports success. Both matching and conflicting race tests pass after the
