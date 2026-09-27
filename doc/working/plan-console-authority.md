@@ -10,6 +10,12 @@ and launch inputs locally.
 
 ## Registration and acceptance failures
 
+- [x] **Stable registration across restart**: persist generated instance IDs
+  under the KV node's config root, reject changed explicit identities and
+  corruption, and prove restart replaces an unexpired old registration rather
+  than creating ambiguity. Diagnose the concurrent restart suite without
+  increasing election timeouts. Files: KV server startup/background identity,
+  discovery integration and Web incremental restart tests.
 - [x] **Pre-bootstrap nonmember registration**: reproduce the missing live
   registration for servers started before Group 0 but excluded from its member
   set. Propagate discovery seeds after confirmed initialization, retain them
@@ -72,6 +78,21 @@ and launch inputs locally.
 - Logical-tree hook regression passes confirmed reads, outage clearing, and
   recovery. Full KV Server and Console shared-library gates pass. Complete
   CLI/Web and browser gates remain pending for requirement completion.
+- Full CLI passes. Web gate reached a failure in
+  `cluster_restart_incremental_test::restart_6node_2group_overlap`: after all
+  nodes restarted, group 11/1 did not converge to one leader within 3s. The
+  unchanged exact test passes alone in 13.27s. Preserve the original timeout;
+  compare the complete restart suite at default concurrency and serially,
+  without concurrent release compilation, before attributing the failure.
+  Logs: `/tmp/crowdb-discovery-console.log`,
+  `/tmp/crowdb-overlap-restart-isolated.log`.
+- Generated registration identity changed across a normal restart in the
+  focused baseline (deterministic assertion failure). Persisting identity fixes
+  that case and the missed-unregister case; changed explicit IDs, changed node
+  IDs and malformed files fail closed. Full KV Server passes. The five restart
+  cases pass at default concurrency after the fix (13.55s); before the fix,
+  serial execution passed (44.73s) while default execution failed on different
+  groups. No election timeout or retry count changed. Full Web still remains.
 
 - Initial full Console UI baseline: 85 component tests pass; 51 browser tests
   pass and five fail. Missing live registration affects node 203 in shell

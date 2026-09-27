@@ -51,14 +51,7 @@ async fn prebootstrap_nonmember_discovers_group0_and_retains_hints_after_restart
     .await
     .unwrap();
     let root = TestDir::new("nonmember-discovery").unwrap();
-    let args = [
-        "--instance-id",
-        "9002",
-        "--node-id",
-        "2",
-        "--keepalive-interval",
-        "1",
-    ];
+    let args = ["--node-id", "2", "--keepalive-interval", "1"];
     let nonmember = start_test_server_at(root.path(), &args, &[0]).await.unwrap();
     let http = reqwest::Client::new();
     let init = http
@@ -91,6 +84,12 @@ async fn prebootstrap_nonmember_discovers_group0_and_retains_hints_after_restart
         assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     }
     wait_registered(&service, nonmember.base_url()).await;
+    let initial = service.read_all_kv_server_instances().await.unwrap();
+    let original_id = initial
+        .iter()
+        .find(|(_, value)| value.rpc_endpoint == nonmember.base_url())
+        .unwrap()
+        .0;
     let topology: serde_json::Value = http
         .get(format!("{}/topology", nonmember.base_url()))
         .send()
@@ -104,6 +103,47 @@ async fn prebootstrap_nonmember_discovers_group0_and_retains_hints_after_restart
         "discovery must not create membership"
     );
     drop(nonmember);
+    // Model a missed unregister while Group 0 was unavailable during shutdown.
+    service
+        .register_kv_server(
+            crowdb_protocol::common::KvServerIdentity {
+                instance_id: original_id,
+                node_id: Some(2),
+            },
+            "http://127.0.0.1:1",
+            &[],
+            &[],
+            "ok",
+            &root.path().to_string_lossy(),
+        )
+        .await
+        .unwrap();
     let restarted = start_test_server_at(root.path(), &args, &[0]).await.unwrap();
     wait_registered(&service, restarted.base_url()).await;
+    let instances = service.read_all_kv_server_instances().await.unwrap();
+    let restarted_id = instances
+        .iter()
+        .find(|(_, value)| value.rpc_endpoint == restarted.base_url())
+        .unwrap()
+        .0;
+    assert_eq!(
+        original_id, restarted_id,
+        "restart must preserve registration identity"
+    );
+}
+
+#[test]
+fn persisted_identity_rejects_conflicting_configuration_and_corruption() {
+    use crowdb_kv_server::background::identity::load_or_create;
+
+    let root = TestDir::new("service-identity").unwrap();
+    let first = load_or_create(root.path(), Some(42), Some(2)).unwrap();
+    assert_eq!(first.instance_id, 42);
+    assert_eq!(load_or_create(root.path(), None, Some(2)).unwrap(), first);
+    assert!(load_or_create(root.path(), Some(43), Some(2)).is_err());
+    assert!(load_or_create(root.path(), None, Some(3)).is_err());
+    let path = root.path().join("service-identity.json");
+    std::fs::write(&path, b"partial").unwrap();
+    assert!(load_or_create(root.path(), None, Some(2)).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), b"partial");
 }

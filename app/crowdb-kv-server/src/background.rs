@@ -5,4 +5,5 @@
 
 pub(crate) mod discovery;
 pub mod domain_monitor;
+pub mod identity;
 pub mod keepalive;
