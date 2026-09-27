@@ -967,13 +967,14 @@ export async function setupCluster(baseURL: string, topo: TopologyDescriptor): P
     }),
   );
 
-  await Promise.all(nodes.map((nodeId) => deployNodeServer(baseURL, nodeId, freePort('kv-mgmt'), freePort('kv-listen'))));
-
   const stores: number[] = [];
   const groups: { storeId: number; groupId: number }[] = [];
 
   // Create all stores in parallel — stores are independent.
   const storeNodes = nodes.slice(0, Math.min(topo.replicasPerGroup, nodes.length));
+  await Promise.all(storeNodes.map((nodeId) => deployNodeServer(baseURL, nodeId, freePort('kv-mgmt'), freePort('kv-listen'))));
+  await clusterInit(baseURL, storeNodes);
+  await Promise.all(nodes.slice(storeNodes.length).map((nodeId) => deployNodeServer(baseURL, nodeId, freePort('kv-mgmt'), freePort('kv-listen'))));
   for (let s = 0; s < topo.storeCount; s++) {
     stores.push(topo.storeBase + s);
   }

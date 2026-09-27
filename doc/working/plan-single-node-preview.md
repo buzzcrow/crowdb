@@ -258,6 +258,11 @@ and verifiable release assets.
   the old process; Web passes its current runtime PID into the shared restart
   path. This also supports an all-stopped Group 0 without pretending launch
   hints are authoritative topology.
+  Real-backend store/group and reconfiguration suites now use the same
+  Group 0-first deployment sequence and pass all six cases. An operator who
+  predeploys nonmember servers before Group 0 initialization still needs a
+  post-init seed refresh; do not count those nodes as registered until that
+  propagation exists.
 - [~] **Bootstrap and teardown authority boundary**: keep initial Group 0
   bootstrap intent separate because Group 0 does not exist yet. After creating
   Group 0, transfer and verify every hardware/store/group/replica record, then
