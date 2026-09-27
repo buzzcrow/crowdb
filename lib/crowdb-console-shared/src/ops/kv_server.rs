@@ -53,6 +53,34 @@ async fn group0_management_seeds(ctx: &OpContext, req: &DeployRequest) -> Result
     Ok(seeds)
 }
 
+fn restart_seed_hints(ctx: &OpContext, configured_seeds: &[String]) -> Result<Vec<String>> {
+    if !configured_seeds.is_empty() {
+        return Ok(configured_seeds.to_vec());
+    }
+    let config = ctx.config();
+    let Some(group) = config.group(0, 0) else {
+        return Ok(Vec::new());
+    };
+    let mut seeds: Vec<String> = group
+        .replicas
+        .iter()
+        .filter_map(|replica| {
+            config
+                .server_for_node(replica.node_id)
+                .map(|server| server.url.clone())
+        })
+        .collect();
+    seeds.sort_unstable();
+    seeds.dedup();
+    if seeds.is_empty() {
+        return Err(Error::NotFound {
+            kind: "configured Group 0 management seed".into(),
+            id: "store 0 group 0".into(),
+        });
+    }
+    Ok(seeds)
+}
+
 /// Deploy a `crowdb-kv-server` on a node.
 ///
 /// `workspace_dir` is used for local-fork deploys (the server's data
@@ -168,6 +196,10 @@ pub async fn stop(ctx: &OpContext, node_id: NodeId, pid_override: Option<u32>) -
 ///
 /// `workspace_dir` is used for local-fork redeploys; `None` uses the
 /// current directory. SSH redeploys ignore it.
+/// `pid_override` is the current process PID when the caller owns a
+/// fresher runtime record than the persisted launch registry.
+/// `configured_seeds` are connection hints retained outside Group 0 so
+/// recovery works when every Group 0 member is stopped.
 ///
 /// # Errors
 /// Returns [`Error::NotFound`] if no server is deployed on the node.
@@ -175,6 +207,8 @@ pub async fn restart(
     ctx: &OpContext,
     node_id: NodeId,
     workspace_dir: Option<&std::path::Path>,
+    pid_override: Option<u32>,
+    configured_seeds: &[String],
 ) -> Result<DeployedServer> {
     let node = ctx.node_entry(node_id)?;
     let entry = ctx.server_for_node(node_id)?;
@@ -186,15 +220,22 @@ pub async fn restart(
         .rpc_port
         .ok_or_else(|| Error::Config(format!("server entry for node {node_id} has no rpc_port")))?;
 
-    let seed_request = DeployRequest::default();
-    let group0_management_seeds = group0_management_seeds(ctx, &seed_request).await?;
+    let group0_management_seeds = restart_seed_hints(ctx, configured_seeds)?;
 
     // Stop the existing process if a PID is tracked.
-    if let Some(pid) = entry.pid {
+    if let Some(pid) = pid_override.or(entry.pid) {
         if node.ssh_enabled() {
-            let _ = crate::ssh::stop_via_ssh(&node, pid).await;
+            crate::ssh::stop_via_ssh(&node, pid).await?;
         } else {
-            let _ = tokio::task::spawn_blocking(move || lifecycle::stop_pid(pid)).await;
+            tokio::task::spawn_blocking(move || lifecycle::stop_pid(pid))
+                .await
+                .map_err(|error| Error::Io(std::io::Error::other(error)))??;
+            if lifecycle::process_is_alive(pid) {
+                return Err(Error::NodeUnreachable {
+                    node_id: node_id.to_string(),
+                    reason: format!("process {pid} is still alive after restart stop"),
+                });
+            }
         }
     }
 

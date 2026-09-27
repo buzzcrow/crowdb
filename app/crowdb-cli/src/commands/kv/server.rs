@@ -97,7 +97,7 @@ pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            match crowdb_console_shared::ops::kv_server::restart(&ctx, node_id, None).await {
+            match crowdb_console_shared::ops::kv_server::restart(&ctx, node_id, None, None, &[]).await {
                 Ok(d) => {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;

@@ -783,48 +783,19 @@ pub async fn http_restart_node_server(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<Json<DeployResult>, (StatusCode, Json<ErrorBody>)> {
-    use crowdb_console_shared::lifecycle;
-
-    // Stop the running process first (using the in-memory runtime PID).
-    // ops::kv_server::restart also tries to stop via entry.pid, but the
-    // runtime PID is authoritative for web-deployed servers.
-    if let Some(pid) = state.runtime_pid(node_id) {
-        let node = {
-            let cfg = state.config.read().unwrap();
-            cfg.node(node_id).cloned()
-        };
-        let _sent = match node {
-            Some(n) if n.ssh_enabled() => crowdb_console_shared::ssh::stop_via_ssh(&n, pid)
-                .await
-                .map_err(|e| err_502(format!("ssh stop (restart): {e}")))?,
-            _ => {
-                let timeout = if state.test_mode {
-                    std::time::Duration::from_secs(1)
-                } else {
-                    std::time::Duration::from_secs(15)
-                };
-                let sent =
-                    tokio::task::spawn_blocking(move || lifecycle::stop_pid_with_timeout(pid, timeout))
-                        .await
-                        .map_err(|e| err_500(format!("spawn_blocking (restart): {e}")))?
-                        .unwrap_or(false);
-                if lifecycle::process_is_alive(pid) {
-                    return Err(err_502(format!(
-                        "process {pid} is still alive after restart stop"
-                    )));
-                }
-                sent
-            }
-        };
-    }
-
     let workspace_dir = state
         .prepare_node_workspace(node_id)
         .map_err(|e| err_500(e.to_string()))?;
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let deployed = ops::kv_server::restart(&ctx, node_id, Some(&workspace_dir))
-        .await
-        .map_err(map_config_err)?;
+    let deployed = ops::kv_server::restart(
+        &ctx,
+        node_id,
+        Some(&workspace_dir),
+        state.runtime_pid(node_id),
+        &state.authority_seeds,
+    )
+    .await
+    .map_err(map_config_err)?;
     // Apply the updated server entry directly to state.config (avoid
     // commit_op_context snapshot-replace race).
     let new_entry = ctx

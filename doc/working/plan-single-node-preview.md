@@ -254,6 +254,10 @@ and verifiable release assets.
   member registrations when the cluster exists. Initial Group 0 hosts deploy
   before bootstrap, while other nodes deploy afterward. The real-backend
   `22-kv-topology` Playwright spec passes all five cases with this ordering.
+  KV restart now obtains retained Group 0 connection hints before stopping
+  the old process; Web passes its current runtime PID into the shared restart
+  path. This also supports an all-stopped Group 0 without pretending launch
+  hints are authoritative topology.
 - [~] **Bootstrap and teardown authority boundary**: keep initial Group 0
   bootstrap intent separate because Group 0 does not exist yet. After creating
   Group 0, transfer and verify every hardware/store/group/replica record, then

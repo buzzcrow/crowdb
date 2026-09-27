@@ -285,7 +285,7 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
             .join("rack1")
             .join(format!("node{node_id}"))
             .join(format!("kv-server-{node_id}"));
-        crate::ops::kv_server::restart(&ctx, node_id, Some(&server_dir)).await?;
+        crate::ops::kv_server::restart(&ctx, node_id, Some(&server_dir), None, &seeds).await?;
     }
     cluster::restart_storage_services(&ctx).await?;
     ctx.config().save(&config_path(data_dir))?;
