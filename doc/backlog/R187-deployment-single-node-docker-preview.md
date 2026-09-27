@@ -156,7 +156,8 @@ without moving or duplicating its runtime code.
   bindings, and the service registry. Web topology reads use Group 0 directly.
   Docker mode does not manage hardware topology (racks, nodes, disk groups, or
   disks) or monitor-owned processes, but permits logical store, group, and
-  replica operations through Group 0. Bare-metal mode may manage deployment
+  replica operations through Group 0 after authenticating with the existing
+  Iceberg management bearer token. Bare-metal mode may manage deployment
   and hardware topology as well. A successful local file write cannot
   substitute for a failed Group 0 mutation. When Group 0 is unavailable,
   topology APIs fail unavailable rather than serving or restoring a local copy.
@@ -482,6 +483,11 @@ passes explicit data and log paths to every child.
   process mutations, permits Group 0-backed logical store/group/replica
   operations, and marks unavailable/stale sources accurately. Invariant:
   DOCKER-I11. E2E test.
+- Given the existing Iceberg management bearer token, when a Docker-mode Web
+  caller creates or removes a logical store, group, or replica, assert a
+  missing, malformed, or wrong token is rejected before any Group 0 write;
+  the valid token permits the operation but never unlocks hardware-topology or
+  monitor-owned process mutation. Invariant: DOCKER-I11. Integration test.
 - Given the repository's former mixed `ConsoleConfig` files, fixtures, restore
   calls, and documentation, when the configuration split lands, assert none
   remain in production or test paths and no migration, dual-read, fallback, or
@@ -583,12 +589,3 @@ Required gates:
 - `pixi run test-console-ui`
 - `pixi run rs-fmt-check`
 - `pixi run rs-lint`
-
-## Open Questions
-
-- The Docker Web endpoint on port 8080 is currently unauthenticated. Logical
-  store/group/replica writes must not be exposed until their access-control
-  boundary is selected. Reusing an existing management credential gives one
-  authenticated console; a separate controlled management endpoint isolates
-  writes from the public dashboard; disabling writes preserves the current
-  safety boundary but does not satisfy Docker logical management.

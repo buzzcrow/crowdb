@@ -193,6 +193,15 @@ and verifiable release assets.
   remaining unavailable until the managed API projection is complete. Remaining:
   build the Group 0 read model, replace local-first mutations with confirmed
   Group 0 writes, and delete the obsolete mixed persistence paths.
+- [ ] **Authenticated Docker logical writes**: pass only the existing Iceberg
+  management token to the Web child through its environment; require an exact
+  bearer token on logical store/group/replica mutations before any RPC; keep
+  status reads public and hardware/process writes unavailable even with the
+  token. Build a Group 0-derived node-to-management-endpoint read model and
+  replace the old `OpContext` local-config mutation path, including fan-out,
+  conflict, response-loss, and retry behavior. Add auth, single-node creation,
+  missing-Group-0, and forbidden-hardware integration tests. Do not expose a
+  write route until its full authoritative flow passes.
 - [ ] **Docker-mode Web UI**: start `crowdb-web` from rendered config, overlay
   monitor PID/restart/crash state on Group 0 service records, disable conflicting
   lifecycle controls, and show source/unavailable state in the UI. Add focused
@@ -294,9 +303,6 @@ and verifiable release assets.
 - Docker mode does not manage hardware topology or monitor-owned processes.
   Logical store/group/replica operations remain in scope and require Group 0
   authority. Bare-metal mode may manage deployment and hardware topology.
-
-## Open Questions
-
-- The Docker Web port 8080 currently has no authentication. Before exposing
-  logical writes, choose whether to reuse an existing management credential,
-  use a separate controlled management endpoint, or keep those writes disabled.
+- Docker logical writes reuse the existing Iceberg management bearer token.
+  The public status view stays unauthenticated, while writes require the token;
+  no new credential is generated.
