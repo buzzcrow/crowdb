@@ -6,10 +6,12 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
 use crowdb_monitor::{
     disk_step_names, ensure_disk_files, hardware_step_names, iceberg_step_names, kv_step_names,
-    render_configs, verify_chunk_services, verify_diskio_disks, BootstrapSession, DeploymentProfile,
-    HardwareBootstrap, IcebergBootstrap, KvBootstrap, ServerCredentials, Supervisor,
+    logical_step_names, render_configs, verify_chunk_services, verify_diskio_disks, BootstrapSession,
+    DeploymentProfile, HardwareBootstrap, IcebergBootstrap, KvBootstrap, LogicalBootstrap, ServerCredentials,
+    Supervisor,
 };
 use uuid::Uuid;
 
@@ -39,6 +41,9 @@ impl TestRoot {
         profile.paths.log_root = self.0.join("data/log");
         for disk in &mut profile.disks {
             disk.path = self.0.join("data/disks").join(disk.path.file_name().unwrap());
+        }
+        for group in &mut profile.groups {
+            group.rpc_endpoint = format!("127.0.0.1:{}", ports.kv_rpc);
         }
         profile
             .services
@@ -155,6 +160,7 @@ impl TestRoot {
             .into_iter()
             .chain(disk_step_names(profile))
             .chain(hardware_step_names())
+            .chain(logical_step_names().map(str::to_owned))
             .chain(
                 profile
                     .services
@@ -293,6 +299,7 @@ async fn preview_chunk_services_start_and_recover() {
         .contains("Chunk-KV registration conflicts"));
     fs::write(&chunk_kv_config, original).unwrap();
     verify_chunk_services(&management_seed, &profile).await.unwrap();
+    assert_logical_topology_and_conflict(&management_seed, &profile, &mut session, &mut supervisor).await;
     session.mark_ready().unwrap();
     supervisor.mark_ready().await.unwrap();
     supervisor.shutdown().await.unwrap();
@@ -311,6 +318,29 @@ async fn preview_chunk_services_start_and_recover() {
     restarted.shutdown().await.unwrap();
 }
 
+async fn assert_logical_topology_and_conflict(
+    management_seed: &str,
+    profile: &DeploymentProfile,
+    session: &mut BootstrapSession,
+    supervisor: &mut Supervisor,
+) {
+    let sysmd = CrowdbSysmdClient::new(CrowdbKvClient::new(ClientConfig::new(vec![
+        management_seed.to_owned()
+    ])));
+    sysmd.kv().refresh_topology().await.unwrap();
+    assert_eq!(sysmd.list_stores().await.unwrap().len(), 1);
+    assert_eq!(sysmd.list_groups_in_store(0).await.unwrap().len(), 2);
+    assert_eq!(sysmd.list_replicas_in_group(0, 0).await.unwrap().len(), 1);
+    assert_eq!(sysmd.list_replicas_in_group(0, 1).await.unwrap().len(), 1);
+    sysmd.add_group(0, 99).await.unwrap();
+    assert!(LogicalBootstrap::new(management_seed.to_owned())
+        .reconcile(session, profile, supervisor.monitor_log_mut())
+        .await
+        .is_err());
+    assert_eq!(sysmd.list_groups_in_store(0).await.unwrap().len(), 3);
+    sysmd.remove_group(0, 99).await.unwrap();
+}
+
 async fn start_preview_storage(
     supervisor: &mut Supervisor,
     session: &mut BootstrapSession,
@@ -327,6 +357,10 @@ async fn start_preview_storage(
         .await
         .unwrap();
     HardwareBootstrap::new(management_seed.to_owned())
+        .reconcile(session, profile, supervisor.monitor_log_mut())
+        .await
+        .unwrap();
+    LogicalBootstrap::new(management_seed.to_owned())
         .reconcile(session, profile, supervisor.monitor_log_mut())
         .await
         .unwrap();

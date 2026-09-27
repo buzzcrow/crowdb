@@ -60,7 +60,10 @@ fault-tolerant deployment.
   not replace their protocol or persistence semantics.
 - **DOCKER-I3 — One durable boundary:** all durable database files, topology,
   bootstrap state, credentials, and bounded rotating logs live below the single
-  `/opt/crowdb/data` mounted data root. Executables and packaged UI/config
+  `/opt/crowdb/data` mounted data root. The image declares this path as a Docker
+  volume, so an omitted mount creates an anonymous volume for a disposable
+  trial; startup recommends an explicit named volume for data to retain across
+  container recreation. Executables and packaged UI/config
   templates are immutable image content; generated runtime configs, sockets,
   status, and process IDs live below `/opt/crowdb/run` and are disposable. The
   monitor records important bootstrap, readiness, child lifecycle, probe
@@ -114,9 +117,11 @@ fault-tolerant deployment.
   web-process startup policy. `registry.toml`, when used outside this image,
   contains only machine-local launch records and cannot override or restore
   Group 0 state. Container mode has no `registry.toml`.
-- **DOCKER-I12 — Verifiable preview publication:** release-tag workflows publish
-  the gated `linux/amd64` image to one public Docker Hub repository only after
-  manual approval. Version and `git-<commit>` tags are immutable; `preview` is the
+- **DOCKER-I12 — Verifiable preview publication:** only a manually triggered
+  workflow targeting a Git release tag may publish the gated `linux/amd64`
+  image to `crowdb/crowdb-iceberg`, after protected-environment approval.
+  Creating or pushing a tag alone never publishes. Version and `git-<commit>`
+  tags are immutable; `preview` is the
   sole moving convenience tag and `latest` is not published. Every public digest
   has a verifiable signature, SBOM, and build provenance. Pull-request workflows
   build and test but have no publication authority.
@@ -221,7 +226,7 @@ The container filesystem contract is:
 /opt/crowdb/ui/               immutable compiled web UI
 /opt/crowdb/etc/templates/    immutable service config templates
 
-/opt/crowdb/data/             one required host bind mount or named volume
+/opt/crowdb/data/             one Docker volume; bind, named, or default anonymous
   bootstrap/manifest.json        durable initialization state and identities
   secrets/server.env             internal master keys and privileged tokens, 0600
   secrets/client.env             retrievable S3/Iceberg client credentials, 0600
@@ -261,8 +266,12 @@ The image prepends `/opt/crowdb/bin` to `PATH` and uses
 `/opt/crowdb/bin/crowdb-monitor` as its entrypoint, so documented commands can
 use short executable names without searching the filesystem.
 
-A user supplies one host path, for example
-`-v /host/crowdb:/opt/crowdb/data`. Database recovery requires `bootstrap/`,
+A user can supply one named volume, for example
+`--mount type=volume,source=crowdb-data,target=/opt/crowdb/data`, or a host path
+with `-v /host/crowdb:/opt/crowdb/data`. Omitting the mount creates an anonymous
+Docker volume for a temporary trial; the startup log recommends the named
+volume because a recreated container does not automatically reattach an
+anonymous one. Database recovery requires `bootstrap/`,
 `secrets/`, `kv/`, and `disks/`; `log/` is persisted for post-crash diagnosis but
 can be excluded from backups. No web registry belongs in the backup. Group and
 service metadata use the KV and Chunk-KV authorities rooted in `kv/node-1`, while
@@ -367,8 +376,9 @@ passes explicit data and log paths to every child.
    the monitor is the sole process owner. The web UI displays source and stale/
    unavailable status instead of presenting a local fallback as authoritative.
 8. Enforce the mounted data-root contract and subtree ownership shown above.
-   Starting without `/opt/crowdb/data` requires an explicit disposable mode;
-   otherwise startup fails before writing data. Empty-root detection cannot treat
+   The image declares `/opt/crowdb/data` as a volume so a run without an
+   explicit mount uses Docker's anonymous volume; startup explains how to use
+   a named volume instead. Empty-root detection cannot treat
    a non-empty directory as fresh merely because its manifest is absent. Reject
    missing-on-non-empty, corrupt, unsupported, or state-conflicting bootstrap
    manifests and on-disk layout versions without mutation. The four disk
@@ -405,8 +415,9 @@ passes explicit data and log paths to every child.
     presented as Iceberg conformance.
 12. Add separate CI build/test and release workflows. Pull requests build the
     amd64 image and run all Docker gates without registry write credentials. A
-    Git release tag reruns the complete gates for the exact commit, waits for
-    manual approval, then publishes to the public Docker Hub repository under an
+    operator manually triggers the release workflow against a Git release tag;
+    it reruns the complete gates for the exact commit, waits for protected-
+    environment approval, then publishes to `crowdb/crowdb-iceberg` under an
     immutable release-version tag, immutable `git-<commit>` tag, and moving
     `preview` tag. The workflow never emits `latest`, refuses to overwrite either
     immutable tag, and attaches a signature, SBOM, and build provenance to the
@@ -577,8 +588,11 @@ passes explicit data and log paths to every child.
   group, tenant, or catalog creation call, validates and reuses every persisted
   identity, restores readiness, and loads prior objects and tables with identical
   bytes and metadata. Invariants: DOCKER-I3, DOCKER-I5, and DOCKER-I8. E2E test.
-- Given no mounted data root outside explicit disposable mode, an unwritable or
-  read-only root, a non-empty root with no manifest, a corrupt or incompatible
+- Given an image run without an explicit data mount, when startup begins, assert
+  Docker mounts an anonymous volume at `/opt/crowdb/data`, startup recommends an
+  explicit named volume, and bootstrap reaches readiness without writing durable
+  data to the container layer. Invariant: DOCKER-I3. E2E test.
+- Given an unwritable or read-only root, a non-empty root with no manifest, a corrupt or incompatible
   manifest, conflicting topology, or an invalid capacity/endpoint, when startup
   is attempted, assert it fails before mutation, creates no group or authority,
   and names the corrective input without exposing secrets. Invariants: DOCKER-I3,
@@ -612,7 +626,9 @@ passes explicit data and log paths to every child.
   assert the amd64 artifact is test-only, the job has no Docker Hub publication
   credentials, and no public tag or digest is created. Invariant: DOCKER-I12.
   Integration test.
-- Given a Git release tag for a commit, when any required gate fails, approval is
+- Given a Git release tag for a commit, when no operator triggers the workflow,
+  assert no publication occurs. When manually triggered, if any required gate
+  fails, approval is
   absent, or an immutable version/commit tag already names another digest, assert
   publication stops without moving a public tag. When all gates and approval
   succeed, assert the public Docker Hub digest is amd64-only, has immutable

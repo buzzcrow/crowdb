@@ -36,9 +36,6 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
     let Some(mut catalog) = catalog::load_current(control).await? else {
         return Ok(());
     };
-    let child_owner_balance_enabled = descriptor.chunk_kv_range_balance.is_some();
-    let policy = descriptor.chunk_kv_range_balance.clone().unwrap_or_default();
-    policy.validate().map_err(|error| error.to_string())?;
     let now_ms = wall_time_ms();
     let state = planning_state(control, descriptor, now_ms).await?;
     if state.healthy.is_empty() {
@@ -81,14 +78,14 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
         .iter()
         .flat_map(|page| page.entries.iter())
         .collect();
-    if plan_split(control, &entries, &state, &policy, now_ms).await? {
+    let Some(policy) = descriptor.chunk_kv_range_balance.as_ref() else {
+        return Ok(());
+    };
+    policy.validate().map_err(|error| error.to_string())?;
+    if plan_split(control, &entries, &state, policy, now_ms).await? {
         return Ok(());
     }
-    if child_owner_balance_enabled {
-        plan_transfer(control, &entries, &state, &policy, now_ms).await
-    } else {
-        Ok(())
-    }
+    plan_transfer(control, &entries, &state, policy, now_ms).await
 }
 
 async fn planning_state(

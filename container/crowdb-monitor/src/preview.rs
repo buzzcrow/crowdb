@@ -2,17 +2,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::future::Future;
 use std::path::Path;
+use std::time::Duration;
 
 use thiserror::Error;
+use tokio::time::{sleep, Instant};
 
 use crate::{
     disk_step_names, ensure_disk_files, hardware_step_names, iceberg_step_names, kv_step_names,
-    render_configs, s3_step_names, verify_chunk_services, verify_diskio_disks, BootstrapSession,
-    ChunkBootstrapError, CredentialError, DeploymentProfile, DiskBootstrapError, HardwareBootstrap,
-    HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError, KvBootstrap, KvBootstrapError,
-    LivenessError, LivenessServer, ManifestError, ManifestState, MonitorEvent, MonitorEventKind,
-    MonitorLogError, ProfileError, RenderError, S3Bootstrap, S3BootstrapError, ServerCredentials,
-    StorageProbeError, Supervisor, SupervisorError,
+    logical_step_names, render_configs, s3_step_names, verify_chunk_services, verify_diskio_disks,
+    BootstrapSession, ChunkBootstrapError, CredentialError, DeploymentProfile, DiskBootstrapError,
+    HardwareBootstrap, HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError, KvBootstrap,
+    KvBootstrapError, LivenessError, LivenessServer, LogicalBootstrap, LogicalBootstrapError, ManifestError,
+    ManifestState, MonitorEvent, MonitorEventKind, MonitorLogError, ProfileError, RenderError, S3Bootstrap,
+    S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
 };
 
 const PROFILE_NAME: &str = "crowdb-single-node-preview";
@@ -42,6 +44,8 @@ pub enum PreviewError {
     Disk(#[from] DiskBootstrapError),
     #[error("preview hardware bootstrap failed: {0}")]
     Hardware(#[from] HardwareBootstrapError),
+    #[error("preview logical bootstrap failed: {0}")]
+    Logical(#[from] LogicalBootstrapError),
     #[error("preview disk readiness failed: {0}")]
     Storage(#[from] StorageProbeError),
     #[error("preview chunk readiness failed: {0}")]
@@ -52,6 +56,8 @@ pub enum PreviewError {
     Iceberg(#[from] IcebergBootstrapError),
     #[error("preview Web authority probe failed: {0}")]
     WebAuthority(&'static str),
+    #[error("preview Web authority rejected bootstrap: {0}")]
+    WebAuthorityUnavailable(String),
     #[error("preview state is invalid: {0}")]
     Invalid(&'static str),
 }
@@ -142,6 +148,9 @@ async fn bootstrap_services(
     HardwareBootstrap::new(management_seed.to_owned())
         .reconcile(session, profile, supervisor.monitor_log_mut())
         .await?;
+    LogicalBootstrap::new(management_seed.to_owned())
+        .reconcile(session, profile, supervisor.monitor_log_mut())
+        .await?;
     supervisor.start_service("diskdb", BTreeMap::new()).await?;
     supervisor.start_service("diskio", BTreeMap::new()).await?;
     verify_bootstrap_probe(supervisor, "diskio-authority", async {
@@ -183,7 +192,24 @@ async fn bootstrap_services(
             )]),
         )
         .await?;
-    verify_bootstrap_probe(supervisor, "web-authority", verify_web_authority(profile)).await?;
+    record_bootstrap_probe(
+        supervisor,
+        "web-authority",
+        MonitorEventKind::BootstrapStepStarted,
+    )
+    .await?;
+    let web_result = verify_web_authority(supervisor, profile).await;
+    record_bootstrap_probe(
+        supervisor,
+        "web-authority",
+        if web_result.is_ok() {
+            MonitorEventKind::BootstrapStepCompleted
+        } else {
+            MonitorEventKind::BootstrapFailed
+        },
+    )
+    .await?;
+    web_result?;
     Ok(())
 }
 
@@ -220,7 +246,10 @@ async fn record_bootstrap_probe(
     Ok(())
 }
 
-async fn verify_web_authority(profile: &DeploymentProfile) -> Result<(), PreviewError> {
+async fn verify_web_authority(
+    supervisor: &mut Supervisor,
+    profile: &DeploymentProfile,
+) -> Result<(), PreviewError> {
     let web = profile
         .services
         .iter()
@@ -233,28 +262,46 @@ async fn verify_web_authority(profile: &DeploymentProfile) -> Result<(), Preview
         .ok_or(PreviewError::Invalid("Web health endpoint is incompatible"))?;
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(std::time::Duration::from_secs(2))
+        .timeout(Duration::from_secs(2))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| PreviewError::WebAuthority("cannot construct authority probe"))?;
-    let response = client
-        .get(format!("{origin}/api/authority"))
-        .send()
-        .await
-        .map_err(|_| PreviewError::WebAuthority("authority endpoint is unavailable"))?;
-    if !response.status().is_success() {
-        return Err(PreviewError::WebAuthority("Group 0 authority is not ready"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last_status_refresh = Instant::now();
+    loop {
+        if last_status_refresh.elapsed() >= Duration::from_secs(5) {
+            supervisor.refresh_status()?;
+            last_status_refresh = Instant::now();
+        }
+        let response = client
+            .get(format!("{origin}/api/authority"))
+            .send()
+            .await
+            .map_err(|_| PreviewError::WebAuthority("authority endpoint is unavailable"))?;
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|_| PreviewError::WebAuthority("authority response is invalid"))?;
+        if status.is_success() {
+            if body.get("source").and_then(serde_json::Value::as_str) == Some("group0")
+                && body.get("available").and_then(serde_json::Value::as_bool) == Some(true)
+            {
+                return Ok(());
+            }
+            return Err(PreviewError::WebAuthority("Web is not serving Group 0 authority"));
+        }
+        let reason = body
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unspecified");
+        if reason != "group0_unavailable" || Instant::now() >= deadline {
+            return Err(PreviewError::WebAuthorityUnavailable(format!(
+                "HTTP {status}: {reason}"
+            )));
+        }
+        sleep(Duration::from_millis(200)).await;
     }
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|_| PreviewError::WebAuthority("authority response is invalid"))?;
-    if body.get("source").and_then(serde_json::Value::as_str) != Some("group0")
-        || body.get("available").and_then(serde_json::Value::as_bool) != Some(true)
-    {
-        return Err(PreviewError::WebAuthority("Web is not serving Group 0 authority"));
-    }
-    Ok(())
 }
 
 fn step_names(profile: &DeploymentProfile) -> Result<Vec<String>, PreviewError> {
@@ -262,6 +309,7 @@ fn step_names(profile: &DeploymentProfile) -> Result<Vec<String>, PreviewError> 
         .into_iter()
         .chain(disk_step_names(profile))
         .chain(hardware_step_names())
+        .chain(logical_step_names().map(str::to_owned))
         .chain(s3_step_names().map(str::to_owned))
         .chain(iceberg_step_names().map(str::to_owned))
         .collect();

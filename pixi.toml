@@ -181,7 +181,7 @@ DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
   --tag crowdb-single-node-preview:dev .
 '
 '''
-test-docker-preview = { cmd = "bash container/single-node-preview/tests/image-smoke.sh", depends-on = ["build-docker-preview"] }
+test-docker-preview = { cmd = "bash container/single-node-preview/tests/release-policy.sh && bash container/single-node-preview/tests/image-smoke.sh && bash container/single-node-preview/tests/container-e2e.sh", depends-on = ["build-docker-preview"] }
 
 # ── Run ──────────────────────────────────────────────────────────
 web = { cmd = "echo 'CROWDB console starting at: http://127.0.0.1:14000/' && cargo run --release -p crowdb-web", depends-on = ["build"] }

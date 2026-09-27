@@ -30,7 +30,7 @@ COPY --from=builder /src/preview-runtime/lib/ /opt/crowdb/lib/
 COPY --from=builder /src/app/crowdb-web/ui/dist/ /opt/crowdb/ui/
 COPY --from=builder /src/container/single-node-preview/profile.toml /opt/crowdb/etc/profile.toml
 COPY --from=builder /src/container/single-node-preview/templates/ /opt/crowdb/etc/templates/
-COPY --from=builder /src/container/single-node-preview/entrypoint.sh /opt/crowdb/bin/entrypoint
+COPY container/single-node-preview/entrypoint.sh /opt/crowdb/bin/entrypoint
 RUN chmod 0755 /opt/crowdb/bin/entrypoint \
     && setcap cap_net_bind_service=+ep /opt/crowdb/bin/crowdb-iceberg \
     && mkdir -p /opt/crowdb/data /opt/crowdb/run \
@@ -47,6 +47,7 @@ ENV PATH="/opt/crowdb/bin:${PATH}" \
     LD_LIBRARY_PATH="/opt/crowdb/lib" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"
 USER crowdb:crowdb
+VOLUME ["/opt/crowdb/data"]
 EXPOSE 80 8010 8080
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 CMD crowdb-monitor liveness && crowdb-monitor readiness

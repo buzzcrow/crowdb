@@ -88,6 +88,13 @@ impl Supervisor {
     }
 
     /// # Errors
+    /// Refreshes the status timestamp during a bounded bootstrap probe.
+    pub fn refresh_status(&mut self) -> Result<(), SupervisorError> {
+        self.status_store.publish(&mut self.status)?;
+        Ok(())
+    }
+
+    /// # Errors
     /// Starts one service only after its dependencies are healthy and waits for its probe.
     pub async fn start_service(
         &mut self,

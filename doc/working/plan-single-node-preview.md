@@ -223,7 +223,7 @@ and verifiable release assets.
   rather than returning stale local topology. Files: `app/crowdb-web/src/{kv,mgmt,physical}.rs`,
   `lib/crowdb-console-shared/src/ops/context.rs`, `lib/crowdb-kv-client/src/service/**`,
   and read/leader-change tests.
-- [ ] **Bootstrap and teardown authority boundary**: keep initial Group 0
+- [~] **Bootstrap and teardown authority boundary**: keep initial Group 0
   bootstrap intent separate because Group 0 does not exist yet. After creating
   Group 0, transfer and verify every hardware/store/group/replica record, then
   remove local topology; only launch policy remains. Persist a bootstrap
@@ -235,7 +235,10 @@ and verifiable release assets.
   Test crash before/after each commit and before local deletion. Files:
   `lib/crowdb-console-shared/src/ops/cluster.rs`,
   `app/crowdb-web/src/mgmt/{cluster_init,topology}.rs`, CLI cluster commands,
-  bootstrap-state storage, and failure/restart tests.
+  bootstrap-state storage, and failure/restart tests. The preview bootstrap now
+  records its profile-owned store, groups, and replicas in Group 0 with full
+  preflight, read-after-write reconciliation, and restart validation. The
+  legacy bare-metal initial transfer and destroy/clean authority path remain.
 - [ ] **Deployment records are not topology**: use `registry.toml` only for
   bare-metal launch policy and monitor state only for Docker process lifecycle.
   CLI/Web service deploy, restart, stop, and DiskDB proxy status must discover
@@ -283,21 +286,39 @@ and verifiable release assets.
   Built `crowdb-single-node-preview:dev` with digest-pinned Ubuntu 24.04,
   release binaries and packaged UI, UID 10001, and file-scoped port-80
   capability. The image smoke verifies the profile, binary loading, labels,
-  capability, and fail-closed missing-volume path. Source ports changed to
-  S3 8010 and Web 8080; preserve the previously built `:dev` image, then
-  rebuild and rerun image smoke once the Web authority path is ready. Full boot
-  remains in the separate Container E2E task.
+  capability, and default anonymous-volume declaration. Source ports changed to
+  S3 8010 and Web 8080. The previous image is retained under its backup tag;
+  the rebuilt image passes smoke and the current container E2E subset. Full
+  client and fault-matrix acceptance remains in the separate Container E2E task.
 - [x] **Pixi tasks**: add `build-docker-preview` and `test-docker-preview`, include
   the monitor in workspace build/test coverage, and keep Docker prerequisite
   failures explicit. Files: `pixi.toml`, task-coverage configuration/tests.
   Both tasks run through Pixi; the monitor is assigned to `test-monitor` and
   `test-server`. Test-task coverage and monitor tests pass.
-- [ ] **Container E2E**: test empty boot, directory/permission contract,
+- [~] **Container E2E**: test empty boot, directory/permission contract,
   credentials retrieval, AWS CLI/boto3 Parquet PUT/LIST/HEAD/range-GET/GET,
   pinned PyIceberg operations, web health/status, SIGTERM/recreate persistence,
   interrupted bootstrap, every child crash/hang, crash-loop exhaustion, monitor
   failure, invalid manifests/config, and internal-port isolation. Files:
-  `container/single-node-preview/tests/**`.
+  `container/single-node-preview/tests/**`. The first full-image empty-volume
+  boot exposed DiskIO selecting an invalid io_uring engine when container
+  seccomp rejects ring initialization; `UringEngine` now rejects the invalid
+  ring so the existing blocking fallback can run. The next boot exposed a
+  stale DiskIO registration on interrupted-volume restart; the probe now
+  requires a post-start heartbeat before connecting. Storage and Iceberg/S3
+  initialization then passed, but the Web Group 0 snapshot found no store,
+  group, or replica records. The preview now reconciles these records before
+  starting storage dependents; a bounded Web startup check keeps monitor status
+  fresh while waiting.
+  A repeatable boot, public endpoint, credential, internal-port, default
+  anonymous-volume, and persisted-restart test is connected to
+  `test-docker-preview`. A fresh-volume run exposed the KV monitor planning a
+  split despite disabled balance; the planner now skips automatic split and
+  transfer when no balance policy exists. The focused domain-monitor tests and
+  E2E check that regression. `pixi run test-docker-preview` now passes all
+  implemented boot, restart, and anonymous-volume cases without publishing.
+  S3/PyIceberg
+  operations and the fault matrix remain.
 - [ ] **Quick start and operations docs**: document the image name
   `crowdb-single-node-preview`, ports, one mount, credential command, restart
   policy, exact limitations, tested clients, backup boundary, and no production/
@@ -306,12 +327,22 @@ and verifiable release assets.
 
 ## Phase 6 — CI and publication
 
-- [ ] **PR Docker CI**: add an amd64 build/test job with no registry write
-  credentials and failure artifacts. Files: `.github/workflows/ci.yml`.
-- [ ] **Release workflow**: add Git release-tag/manual-approval publication to
-  the public Docker Hub repository with immutable version and `git-<commit>`
-  tags, moving `preview`, no `latest`, collision rejection, signature, SBOM, and
-  provenance. Files: `.github/workflows/release-container.yml` and release config.
+- [~] **PR Docker CI**: add an amd64 build/test job with no registry write
+  credentials and failure artifacts. Files: `.github/workflows/ci.yml`. An
+  isolated `ubuntu-24.04` job now runs Pixi image smoke and container E2E with
+  read-only repository permission and prints Docker diagnostics on failure;
+  upload structured failure artifacts before closing.
+- [~] **Release workflow**: add manual-only, release-tag-targeted publication to
+  `crowdb/crowdb-iceberg`, gated by a protected GitHub environment, with
+  immutable version and `git-<commit>` tags, moving `preview`, no `latest`,
+  collision rejection, signature, SBOM, and provenance. The workflow now has
+  only `workflow_dispatch`, verifies the release tag and all required gates
+  without registry credentials, and publishes/signs only after the
+  `preview-release` environment. It fails closed until an administrator enables
+  that protected environment with required reviewers, sets
+  `PREVIEW_RELEASE_ENABLED=true`, `DOCKERHUB_USERNAME`, and `DOCKERHUB_TOKEN`,
+  and enables immutable Docker Hub release tags. No publish has been run.
+  Files: `.github/workflows/release-container.yml` and release config.
 - [ ] **Release acceptance**: test workflow policy, artifact architecture,
   attached evidence, tag immutability, failed-gate/absent-approval behavior, and
   exact source revision without using real publication credentials in PR tests.

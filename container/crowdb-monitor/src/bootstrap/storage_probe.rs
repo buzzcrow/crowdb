@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, DiskioError, OperationOptions};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
@@ -74,8 +74,22 @@ async fn wait_for_registration(
     ])));
     registry.kv().refresh_topology().await?;
     let deadline = Instant::now() + READY_DEADLINE;
+    let started_ms = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX);
     loop {
         if let Some(instance) = registry.read_instance("diskio", node.node_id).await? {
+            if instance.last_heartbeat_ms <= started_ms {
+                if Instant::now() >= deadline {
+                    return Err(StorageProbeError::Deadline);
+                }
+                sleep(PROBE_INTERVAL).await;
+                continue;
+            }
             let owner = instance.extra.and_then(|extra| extra.diskdb);
             if instance.rpc_endpoint == service.probe.target
                 && owner.as_ref().is_some_and(|owner| {

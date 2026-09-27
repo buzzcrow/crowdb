@@ -93,6 +93,9 @@ fn validate_topology(profile: &DeploymentProfile) -> Result<(), ProfileError> {
         if group.replica_id == 0 || !groups.insert((group.store_id, group.group_id)) {
             return invalid("group identities must be unique and replica IDs nonzero");
         }
+        if !node_ids.contains(&group.node_id) || group.rpc_endpoint.parse::<SocketAddr>().is_err() {
+            return invalid("group replica node or RPC endpoint is invalid");
+        }
         if group.role == GroupRole::System {
             system_groups += 1;
         }

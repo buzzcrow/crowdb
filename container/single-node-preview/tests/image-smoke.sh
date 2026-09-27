@@ -6,6 +6,8 @@ docker image inspect "$image" >/dev/null
 test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
 test "$(docker image inspect --format '{{.Config.User}}' "$image")" = crowdb:crowdb
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")" = "$(cat VERSION)"
+volumes=$(docker image inspect --format '{{json .Config.Volumes}}' "$image")
+jq -e 'has("/opt/crowdb/data")' <<<"$volumes" >/dev/null
 exposed=$(docker image inspect --format '{{json .Config.ExposedPorts}}' "$image")
 for port in 80 8010 8080; do
     jq -e --arg port "$port/tcp" 'has($port)' <<<"$exposed" >/dev/null
@@ -24,10 +26,3 @@ iceberg_output=$(docker run --rm --network none --entrypoint /opt/crowdb/bin/cro
 }
 printf '%s\n' "$iceberg_output"
 [[ "$iceberg_output" == *'Error: NotPresent'* ]]
-
-output=$(docker run --rm --network none "$image" 2>&1) && {
-    echo "preview accepted an unmounted data root" >&2
-    exit 1
-}
-printf '%s\n' "$output"
-[[ "$output" == *'requires one volume mounted at /opt/crowdb/data'* ]]

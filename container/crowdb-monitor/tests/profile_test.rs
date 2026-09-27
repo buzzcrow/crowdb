@@ -33,12 +33,16 @@ rack_id = 1
 store_id = 0
 group_id = 0
 replica_id = 1
+node_id = 1
+rpc_endpoint = "127.0.0.1:10100"
 role = "system"
 
 [[groups]]
 store_id = 0
 group_id = 1
 replica_id = 2
+node_id = 1
+rpc_endpoint = "127.0.0.1:10100"
 role = "data"
 
 [[disks]]

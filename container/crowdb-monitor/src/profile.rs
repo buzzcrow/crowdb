@@ -83,6 +83,8 @@ pub struct GroupProfile {
     pub store_id: u64,
     pub group_id: u64,
     pub replica_id: u64,
+    pub node_id: u64,
+    pub rpc_endpoint: String,
     pub role: GroupRole,
 }
 
