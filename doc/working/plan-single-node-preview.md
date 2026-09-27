@@ -71,7 +71,7 @@ the R187 requirement and git history; this plan tracks only work still needed.
   Files: container `build.sh`, `collect-libs.sh`, `Dockerfile`, `pixi.toml`,
   `pixi.lock`, `.github/workflows/release-container.yml`.
 
-- [ ] **Fresh image acceptance**: build a new amd64 image from the final
+- [x] **Fresh image acceptance**: build a new amd64 image from the final
   revision after the image-size task and run image smoke plus the full container
   E2E on an empty volume and a persisted restart. Recheck S3 Parquet
   PUT/LIST/HEAD/range-GET/GET,
@@ -179,6 +179,19 @@ closure and saves 39,406,717 bytes against the previous image.
   this temporary plan in one coherent final cleanup commit. R188 remains open.
 
 ## Current Evidence
+
+- Accepted local image from revision `481000f0`:
+  `crowdb-iceberg-single-node:v0.1.0-dev`,
+  `sha256:f93388a48fd85025330c71b35d5dc9020449c9e6de331d8391e970ea135fe573`,
+  259,759,890 bytes. Image smoke and complete container E2E pass, including
+  all eight crash/hang recovery paths, Web outage/recovery, persisted restart,
+  budget exhaustion, lifecycle and secret-free logs, invalid identity,
+  manifest/profile rejection, anonymous volume and PID 1 death. Previous `dev`
+  tag remains intact. No Docker Hub publication occurred.
+- Final Web integration passes. Console UI passes all 86 component and 56
+  browser tests (4.6m). Full KV Server and monitor pass; Rust fmt/clippy pass.
+  Full S3/PyIceberg acceptance passed on the host packaging revision; the final
+  container E2E rechecks those clients against this exact runtime image.
 
 - Revision `c6badf31` builds and passes image smoke as
   `crowdb-iceberg-single-node:verified-candidate`, image
