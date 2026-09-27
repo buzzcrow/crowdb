@@ -58,22 +58,15 @@ cuObject/RDMA acceleration after the TCP baseline is correct and measured.
 
 ### Planned — Native Iceberg storage
 
-R177 is the program blueprint and resolves the shared design questions. The
-catalog/service foundation, namespace, FileIO, table-lifecycle and atomic-commit
-acceptance and R183 reclamation are complete. R184 remains the correctness
-milestone gate; R185 is a later cache optimization.
+The native catalog correctness milestone is complete: catalog/service foundation,
+namespace, immutable FileIO, atomic table commits, reclamation and REST/official-SDK
+conformance. Its contract and executable profile are retained in
+[Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
+Caches, selected ORC and container engine workflows remain separate.
 
-- **[R177](R177-access-iceberg-catalog-foundation.md)** — native Iceberg storage
-  blueprint — Area: access server / Iceberg / Chunk-KV / chunk I/O — Fix the
-  authority model, v1/v2/v3 core profile, program invariants, requirement order,
-  and all cross-cutting design decisions.
-- **[R184](R184-access-iceberg-rest-conformance.md)** — REST integration and core
-  conformance — Area: access server / Iceberg — Compose the public REST service,
-  authentication, exact endpoint discovery and errors, compatibility kit, official
-  clients, and declared-format fixtures; R189 owns compute-engine scenarios.
 - **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded cache and
   invalidation — Area: access server / Iceberg / Group 0 / Chunk-KV — **Deferred
-  until R178–R184 stabilize and establish an uncached baseline.** Add one budgeted
+  pending focused cache measurements on the completed uncached baseline.** Add one budgeted
   cache manager, qualified entries, internal-RPC invalidation, and TTL safety nets.
 
 - **[R186](R186-access-iceberg-orc-validation.md)** — selected ORC validation —

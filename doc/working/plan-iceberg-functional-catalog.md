@@ -1,115 +1,51 @@
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
+
 # Iceberg Functional Catalog Plan
 
-Upstream: [R177](../backlog/R177-access-iceberg-catalog-foundation.md),
-[R184](../backlog/R184-access-iceberg-rest-conformance.md).
+Upstream: [Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
 
-Goal: finish the native functional catalog without confusing working vertical
-slices with complete specification and release acceptance.
+Goal: preserve follow-up ownership and performance observations after completion
+of native catalog correctness and REST/official-SDK conformance.
 
-Persistent-plan exception: this coordinates several requirements. Keep a short
-verified summary, remove completed execution tasks, and delete this plan only
-after the program finishes. Human decisions live only in R177. No user-guide work.
+Persistent-plan exception: this coordinates the remaining cache, ORC and engine
+work. Remove completed execution tasks; delete this plan after the program ends.
 
 ## Completed summary
 
-- R179 namespace and R181 table lifecycle acceptance are closed, with independent
-  writer credentials, bounded listing, rename/drop fencing, durable replay and
-  native/official-client recovery evidence. Implementations: `442f26c7`,
-  `4bbc2226`.
-- R182 atomic commits are closed: `af4ae819`, cleanup `0fef46c0`. Native process
-  kills cover 182 before/after durable-write cases across create, stage, publish
-  and update; independent listeners preserve exact replay and one visible head.
-  Head-CAS loser, bounded admission, statistics evolution and official SDK
-  publication/restart pass. Ordinary rewrite row-set equivalence stays engine-owned.
-- R180 FileIO is closed: `0a848834`. Immutable streaming/range files, durable
-  multipart, delegated credentials and validated generation-local REFS projections
-  pass acceptance. Corrupt/partial projections fall back to canonical JSON;
-  ALL and commit admission still parse canonical metadata.
-- Native PUT/Complete process kills pass all 44 cases twice. Background recovery
-  settles credits without extra Complete requests. Native credential lifecycle,
-  official Java FileIO/selected data-delete/catalog fixtures and Chunk-KV restart
-  pass; this is not an all-service DiskIO restart or physical-GC claim.
-- Evidence-backed FileIO fixes align bounded copy windows, avoid competing active
-  recovery, duplicate JSON scans and repeated directory reads, and overlap one
-  frame of copy I/O. The unchanged 5-MiB raw multipart fixture passes three runs;
-  no request timeout, caller retry, authority check or durability gate was relaxed.
-- Final gates: 616 library tests, 70 Iceberg-enabled server tests, default server
-  tests, 14 no-default transport tests, fmt, workspace lint and explicit
-  Iceberg-E2E clippy pass. Existing Maven warnings remain visible. Only the Pixi
-  toolchain was verified; locked LZ4 dependencies exceed the declared Rust 1.75
-  MSRV, so Rust 1.75 compatibility is not claimed.
-- ORC and broad engine/performance acceptance remain separately scoped below.
-  Physical GC has its own completed native acceptance and remains opt-in.
-  Unconfirmed diagnostic deadlines are retained as observations,
-  not claimed fixes or pending human design choices.
+The core milestone is complete. Native fault/restart acceptance, official Java
+1.11.0 and Rust 0.10.0 clients, the six supported Apache RCK cases, route/version
+admission, actual Parquet rows/deletes, upgrade/expiry/restart, and bounded logical
+TiB traversal have executable evidence. The permanent design records the matrix
+and exclusions. Full RCK, ORC and compute-engine certification are not claimed.
 
-## Remaining tasks in dependency order
-
-R179–R183 are complete. Continue foreground R184; R186 stays deferred.
-
-Execution detail and difficulty: [R184 REST conformance plan](plan-iceberg-rest-conformance.md).
-R184 route discovery, common admission and bounded metrics are implemented;
-explicit capability activation is selected and implemented. Foreground R184
-client/REST gates pass; engine and reclamation-dependent closure remains open.
-
-Pixi already pins OpenJDK 21 and Maven in the `iceberg-e2e` environment. The
-`test-java-iceberg-fileio-e2e` task now runs all three official Java native
-cases serially; two consecutive complete runs passed. A real HTTP UUIDv7
-collision test also confirms independent admission and replay. This resolves
-the fixed-slot collision policy, not every historical storage deadline.
-
-- [ ] **Release conformance — R184**: official Rust 0.10.0 namespace/table
-  lifecycle and lost-create-response recovery pass across two listeners; the
-  native variant also passes after Chunk-KV/listener restart. Apache RCK 1.11.0
-  isolated namespace, basic-create, rename, drop, missing-drop and list tests
-  pass; Java 1.11.0 RESTCatalog also reports a lost create response while a
-  second listener sees the committed table. The full
-  kit requires unsupported register/view cleanup and assumes external locations/
-  files outside native selected-file authority. An official Rust client also
-  rejects stale reads after clear/reactivation in the two-listener memory fixture.
-  The official Java SDK does not automatically retry mutation POST after a lost
-  response; direct HTTP fixtures cover same-key server replay. Native retirement
-  grace and two consecutive native Java FileIO suites pass. R189 owns engine
-  acceptance; physical GC has separate native acceptance under R183.
-  Files: conformance environments, SDK fixtures and capability tests.
-- [ ] **Requirement closure**: compare each requirement's acceptance cases with
-  executable evidence; update affected permanent architecture only as needed.
-  Remove each completed requirement/index entry and its plan together.
-  R189 separately owns container client/engine workflows; do not claim its
-  acceptance from this REST/official-SDK evidence.
-  - `file_scale_test` now verifies fixed range-read windows and serialized GC
-    cursors across a logical TiB address space using repeated immutable block
-    references; this is a traversal/bounds test, not a physical TiB benchmark.
-    Metadata selections of 256 MiB and 1 TiB fail the configured 64-MiB hard
-    limit before block I/O. Both focused test targets passed on 2026-09-27.
+Closure gates on 2026-09-27 passed: complete Iceberg library suite, default and
+Iceberg-E2E server all-targets (with the pinned Python environment), workspace
+fmt/lint and Iceberg-E2E clippy. The expanded native Java catalog case passed
+with v1/v2/v3 actual row reads and restart. A discovered post-drop FileIO pin
+regression is fixed, with GC proof/fence/worker coverage. No timeout or retry
+assertion was relaxed.
 
 ## Next — R189 container client/engine project
 
 - [ ] **Client and engine interoperability — R189**: after R187 is
   publish-ready, test Python dataframe, local SQL, Spark, Flink and Trino
   workflows in the separate container project. Pin versions and profiles there;
-  do not start broad engine tests during R184 closure.
+  do not infer engine certification from the completed SDK acceptance.
 - Preserve the acceptance scope: create/evolve/write/commit/load, time travel,
   row-level deletes, rename/expire/drop, cross-engine results and server restarts.
   Reuse existing SDK/native evidence, but do not treat it as engine certification.
 - Keep R189 client/engine acceptance pending until that project supplies
   executable results. Its environment and commands are specified when built.
 
-## Human decisions
+## Decisions and remaining ownership
 
-Only [R177 Open Questions](../backlog/R177-access-iceberg-catalog-foundation.md#open-questions)
-is authoritative. OI-6 is resolved as explicit management activation; no human
-decision remains for the currently executable REST work.
-
-OI-1 is resolved: functionality and performance are separate acceptance tracks.
-OI-2 is deferred by agreement to the user's later testing project, listed in Next.
-OI-3 is resolved: provisioned disk capacity and chunk allocation failure provide
-the capacity boundary, including configured limits for file-backed simulated
-disks. R183 completed GC/full-capacity recovery acceptance;
-no separate Iceberg quota or pre-full stop threshold is required.
-Fix evidence-backed obvious performance bugs; record architectural optimization
-work below for a consolidated backlog after functional implementation. Never
-trade away durability, fencing, bounds or assertions for a passing timing result.
+The completed catalog contract and confirmed compatibility decisions live in
+[Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
+No human decision remains for REST/official-SDK correctness. R189 owns the
+separate engine project; R186 owns selected ORC, and R185 owns optional caches.
+Provisioned disk capacity remains the allocation boundary. Functional acceptance
+is separate from latency targets; preserve the observations below.
 
 ## Performance work to consolidate later
 

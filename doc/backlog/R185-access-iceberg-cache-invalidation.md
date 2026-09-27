@@ -17,7 +17,7 @@ multiply memory budgets and stale-data rules. Cross-server notification can redu
 staleness but cannot be authority because instances disconnect, register late, and
 receive duplicated or reordered messages.
 
-R177 resolves lease-plus-grace clear semantics and requires per-class limits chosen
+The native Iceberg design resolves lease-plus-grace clear semantics and requires per-class limits chosen
 by focused benchmarks. This requirement adds one Iceberg-owned cache manager while
 preserving correct behavior when notifications or the complete cache are disabled.
 
@@ -63,7 +63,7 @@ preserving correct behavior when notifications or the complete cache are disable
    idempotently. Older generations are ignored. Table rename converts an existing
    old-name entry to an authorization-neutral tombstone; only request-time current
    authorization may disclose the destination.
-8. Integrate clear with R177: notification prompts eviction, but completion waits
+8. Integrate clear with the native Iceberg contract: notification prompts eviction, but completion waits
    for R178's persisted maintenance deadline and admitted/delegated grace. Start
    lease age before the authoritative root read, never when a delayed reply arrives;
    maintenance prevents fresh leases, while an existing lease may admit old-context

@@ -39,8 +39,8 @@ capability rather than an implicit fallback to Parquet checks.
 
 - R180 supplies immutable files and canonical range reads.
 - R181/R182 supply trusted table metadata and selected snapshot validation.
-- R184 adds ORC to its tested capability profile after this requirement passes;
-  initial Parquet-only acceptance does not depend on this requirement.
+- Extend the completed REST/SDK conformance profile with ORC after this
+  requirement passes; initial Parquet-only acceptance is already complete.
 - R185 caches are optional; uncached canonical reads remain correct.
 
 ## Acceptance

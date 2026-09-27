@@ -7,11 +7,11 @@
 
 Deferred until R187 provides a publish-ready single-node image. This is a
 separate client-ecosystem project, not a gate for publishing the non-production
-Docker preview or closing R184's REST/official-SDK acceptance.
+Docker preview and is independent of the completed REST/official-SDK acceptance.
 
 ## Problem
 
-R184 proves the declared REST protocol with official SDKs and a supported
+The completed REST conformance work proves the declared REST protocol with official SDKs and a supported
 subset of the Apache compatibility kit. R187 proves a packaged container with
 PyIceberg and S3 client fixtures. Neither proves that a developer can connect a
 notebook, dataframe library, SQL engine, or distributed compute engine to the
