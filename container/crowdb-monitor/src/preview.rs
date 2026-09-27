@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::future::Future;
 use std::path::Path;
 
 use thiserror::Error;
@@ -9,8 +10,9 @@ use crate::{
     render_configs, s3_step_names, verify_chunk_services, verify_diskio_disks, BootstrapSession,
     ChunkBootstrapError, CredentialError, DeploymentProfile, DiskBootstrapError, HardwareBootstrap,
     HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError, KvBootstrap, KvBootstrapError,
-    LivenessError, LivenessServer, ManifestError, ManifestState, ProfileError, RenderError, S3Bootstrap,
-    S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
+    LivenessError, LivenessServer, ManifestError, ManifestState, MonitorEvent, MonitorEventKind,
+    MonitorLogError, ProfileError, RenderError, S3Bootstrap, S3BootstrapError, ServerCredentials,
+    StorageProbeError, Supervisor, SupervisorError,
 };
 
 const PROFILE_NAME: &str = "crowdb-single-node-preview";
@@ -30,6 +32,8 @@ pub enum PreviewError {
     Credentials(#[from] CredentialError),
     #[error("preview liveness service failed: {0}")]
     Liveness(#[from] LivenessError),
+    #[error("preview lifecycle log failed: {0}")]
+    MonitorLog(#[from] MonitorLogError),
     #[error("preview supervision failed: {0}")]
     Supervisor(#[from] SupervisorError),
     #[error("preview KV bootstrap failed: {0}")]
@@ -140,10 +144,20 @@ async fn bootstrap_services(
         .await?;
     supervisor.start_service("diskdb", BTreeMap::new()).await?;
     supervisor.start_service("diskio", BTreeMap::new()).await?;
-    verify_diskio_disks(management_seed, profile).await?;
+    verify_bootstrap_probe(supervisor, "diskio-authority", async {
+        verify_diskio_disks(management_seed, profile)
+            .await
+            .map_err(Into::into)
+    })
+    .await?;
     supervisor.start_service("chunkdb", BTreeMap::new()).await?;
     supervisor.start_service("chunk-kv", BTreeMap::new()).await?;
-    verify_chunk_services(management_seed, profile).await?;
+    verify_bootstrap_probe(supervisor, "chunk-authority", async {
+        verify_chunk_services(management_seed, profile)
+            .await
+            .map_err(Into::into)
+    })
+    .await?;
     S3Bootstrap::reconcile(session, profile, credentials, supervisor.monitor_log_mut()).await?;
     IcebergBootstrap::reconcile(session, profile, credentials, supervisor.monitor_log_mut()).await?;
     supervisor
@@ -169,7 +183,40 @@ async fn bootstrap_services(
             )]),
         )
         .await?;
-    verify_web_authority(profile).await?;
+    verify_bootstrap_probe(supervisor, "web-authority", verify_web_authority(profile)).await?;
+    Ok(())
+}
+
+async fn verify_bootstrap_probe(
+    supervisor: &mut Supervisor,
+    name: &'static str,
+    probe: impl Future<Output = Result<(), PreviewError>>,
+) -> Result<(), PreviewError> {
+    record_bootstrap_probe(supervisor, name, MonitorEventKind::BootstrapStepStarted).await?;
+    let result = probe.await;
+    let kind = if result.is_ok() {
+        MonitorEventKind::BootstrapStepCompleted
+    } else {
+        MonitorEventKind::BootstrapFailed
+    };
+    record_bootstrap_probe(supervisor, name, kind).await?;
+    result
+}
+
+async fn record_bootstrap_probe(
+    supervisor: &mut Supervisor,
+    name: &'static str,
+    kind: MonitorEventKind,
+) -> Result<(), PreviewError> {
+    supervisor
+        .monitor_log_mut()
+        .record(&MonitorEvent {
+            kind,
+            service: Some(name),
+            pid: None,
+            attempt: None,
+        })
+        .await?;
     Ok(())
 }
 

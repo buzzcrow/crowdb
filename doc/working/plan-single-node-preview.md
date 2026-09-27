@@ -75,7 +75,9 @@ and verifiable release assets.
   and mirror warning-class transitions to stderr. Event storage and child
   start/stop plus supervisor readiness, probe failure, restart, drain, and
   exhaustion logging are implemented. KV bootstrap step start/completion/failure
-  events are connected; remaining bootstrap domains need the same wiring. Files:
+  events are connected; disk files, hardware, S3, and Iceberg also log their
+  durable steps. DiskIO, chunk, and Web authority probes now log start,
+  completion, or failure. Full-process log acceptance remains. Files:
   `container/crowdb-monitor/src/monitor_log.rs`,
   `container/crowdb-monitor/tests/monitor_log_test.rs`.
 - [~] **Monitor commands**: expose `run`, `liveness`, `readiness`, and credentials
