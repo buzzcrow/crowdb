@@ -157,7 +157,15 @@ async fn bootstrap_services(
         .map(|(name, value)| (name.to_owned(), value.to_owned()))
         .collect();
     supervisor.start_service("iceberg", iceberg_environment).await?;
-    supervisor.start_service("web", BTreeMap::new()).await?;
+    supervisor
+        .start_service(
+            "web",
+            BTreeMap::from([(
+                "CROWDB_ICEBERG_MANAGE_TOKEN".into(),
+                credentials.iceberg_manage_token().into(),
+            )]),
+        )
+        .await?;
     verify_web_authority(profile).await?;
     Ok(())
 }

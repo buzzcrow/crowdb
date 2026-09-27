@@ -55,6 +55,7 @@ pub struct AppState {
     pub authority_seeds: Arc<Vec<String>>,
     pub monitor_status_path: Option<Arc<PathBuf>>,
     pub authority_timeout_ms: u64,
+    pub(crate) management_token: Option<Arc<str>>,
 }
 
 impl Default for AppState {
@@ -117,6 +118,7 @@ impl AppState {
             authority_seeds: Arc::new(Vec::new()),
             monitor_status_path: None,
             authority_timeout_ms: 3_000,
+            management_token: None,
         }
     }
 
@@ -137,6 +139,20 @@ impl AppState {
         self.monitor_status_path = config.monitor_status.clone().map(Arc::new);
         self.authority_timeout_ms = config.request_timeout_ms.unwrap_or(3_000);
         self
+    }
+
+    /// # Errors
+    /// Rejects a weak or malformed management credential.
+    pub fn with_management_token(mut self, token: String) -> std::result::Result<Self, &'static str> {
+        if !(32..=256).contains(&token.len())
+            || !token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/=".contains(&byte))
+        {
+            return Err("management token is invalid");
+        }
+        self.management_token = Some(Arc::from(token));
+        Ok(self)
     }
 
     /// Enable or disable E2E test-mode behavior.

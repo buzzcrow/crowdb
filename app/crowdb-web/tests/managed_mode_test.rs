@@ -23,6 +23,47 @@ async fn get_json(app: axum::Router, path: &str) -> (StatusCode, serde_json::Val
 }
 
 #[tokio::test]
+async fn docker_management_uses_existing_bearer_without_unlocking_hardware() {
+    let token = "m".repeat(64);
+    let app = router(
+        AppState::default()
+            .with_managed_ui(PathBuf::from("/tmp/crowdb-ui"))
+            .with_management_token(token.clone())
+            .unwrap(),
+    );
+    for (authorization, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some("Bearer wrong".to_owned()), StatusCode::UNAUTHORIZED),
+        (Some(format!("Bearer {token}")), StatusCode::NO_CONTENT),
+    ] {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/management/check");
+        if let Some(value) = authorization {
+            request = request.header("authorization", value);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/racks")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn managed_mode_does_not_expose_local_topology_or_mutations() {
     let app = router(AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui")));
     for (method, path) in [

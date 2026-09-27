@@ -9,6 +9,7 @@
 //! KV data plane with leader resolution via the monitor cache and
 //! `NotLeader` retry (A8), Swagger UI (A9), React SPA shell.
 
+mod auth;
 pub mod corr_id;
 pub mod diskdb;
 pub mod error;
@@ -36,6 +37,7 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/mode", get(health::mode))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
+            .route("/api/management/check", post(auth::management_check))
             .route("/api/*path", any(health::managed_api_unavailable))
             .fallback(spa::spa_fallback)
             .with_state(state)
