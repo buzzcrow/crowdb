@@ -3,19 +3,13 @@
 
 ### R184: access server / Iceberg — REST integration and core conformance
 
-Status: engine acceptance (Spark/Flink/Trino) is deferred by the user's
-2026-09-24 decision to a separate testing project they will establish later.
-Track it in the functional catalog plan's Next section; do not run it during the
-current implementation phase or claim it has passed. The acceptance contract
-below remains outstanding rather than being removed.
-
 ## Problem
 
 Component repositories can be locally correct while the public catalog remains
 incompatible: `/v1/config` may advertise unimplemented routes, identifiers may be
 decoded differently between handlers, error types may not match the OpenAPI,
-authentication may disclose renamed resources, and a real Spark, Flink, Trino, or
-Iceberg client may exercise a different sequence from unit tests.
+authentication may disclose renamed resources, and an official Iceberg client
+may exercise a different sequence from unit tests.
 
 R178 through R183 define the native authority and operations. This requirement
 owns the single public REST composition, capability discovery, common protocol
@@ -56,10 +50,10 @@ behavior, and conformance evidence for the first usable milestone.
 5. Map domain outcomes to the exact standard status and Iceberg error type. Preserve
    conflict categories needed for client retry; never turn unknown updates,
    unsupported operations, corruption, or expired authority into success.
-6. Add a conformance harness that runs the Apache REST Compatibility Kit, official
-   Java and Rust clients, and supported Spark, Flink, and Trino smoke profiles
-   against one and multiple Access Servers with fault injection. Treat the backed-up
-   specs as authority when test oracles disagree.
+6. Add a conformance harness that runs the Apache REST Compatibility Kit and
+   official Java and Rust clients against one and multiple Access Servers with
+   fault injection. Treat the backed-up specs as authority when test oracles
+   disagree. R189 owns compute-engine and dataframe workflows.
 7. Publish an executable v1/v2/v3 capability matrix. Cover create/read/write and
    v1-to-v2/v2-to-v3 upgrades with version-specific fixtures, including row-level
    deletes, row lineage, deletion vectors, defaults, types, statistics, and format
@@ -81,6 +75,9 @@ behavior, and conformance evidence for the first usable milestone.
 - R185 is deliberately not a dependency. Conformance must pass with caches disabled.
 - Client/version combinations selected for release must be pinned in the test
   environment; oracle updates do not silently change the specification contract.
+- R189 owns Spark, Flink, Trino, Python dataframe, local SQL and ingest
+  interoperability against the R187 container. Its later results are not a
+  prerequisite for closing this REST/official-SDK requirement.
 
 ## Acceptance
 
@@ -104,10 +101,6 @@ behavior, and conformance evidence for the first usable milestone.
   declared endpoint matrix runs against multiple servers with response loss, assert
   standard successes, conflicts, retries, pagination, and errors pass. Invariants:
   REST-I3 and REST-I5. E2E test.
-- Given supported Spark, Flink, and Trino profiles, when each creates, evolves,
-  writes, commits, loads, time-travels, reads row-level deletes, renames, expires,
-  and drops tables, assert results agree across engines and remain valid after an
-  Access Server restart. Invariant: REST-I5. E2E test.
 - Given v1, v2, and v3 fixture matrices and valid upgrades, when differential tests
   run against reference implementations, assert metadata and visible rows agree;
   any oracle disagreement is resolved against the backed-up spec and recorded in

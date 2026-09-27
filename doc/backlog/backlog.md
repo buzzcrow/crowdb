@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R188** — Bump this line in the same commit when adding a new item.
+**Next R number: R190** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -70,7 +70,7 @@ milestone gate; R185 is a later cache optimization.
 - **[R184](R184-access-iceberg-rest-conformance.md)** — REST integration and core
   conformance — Area: access server / Iceberg — Compose the public REST service,
   authentication, exact endpoint discovery and errors, compatibility kit, official
-  clients, and compute-engine smoke tests.
+  clients, and declared-format fixtures; R189 owns compute-engine scenarios.
 - **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded cache and
   invalidation — Area: access server / Iceberg / Group 0 / Chunk-KV — **Deferred
   until R178–R184 stabilize and establish an uncached baseline.** Add one budgeted
@@ -80,6 +80,11 @@ milestone gate; R185 is a later cache optimization.
   Area: access server / Iceberg — **Deferred until the Parquet catalog path is
   functional.** Add bounded canonical ORC schema, row-count and delete validation
   with official-client fixtures; not a prerequisite for the initial catalog.
+- **[R189](R189-access-iceberg-container-ecosystem.md)** — container client and
+  engine workflows — Area: Iceberg / clients / deployment — **Deferred until
+  R187 is publish-ready.** Verify Python dataframe, local SQL, distributed
+  engine and optional ingest scenarios against the single-node image; publish
+  only tested compatibility recipes.
 
 ### Planned — Single-container preview
 
@@ -88,6 +93,12 @@ milestone gate; R185 is a later cache optimization.
   non-production image that idempotently bootstraps and supervises the normal
   CROWDB process graph, exposes S3, Iceberg, and web endpoints, persists through
   one mounted data root, and proves client workflows and restart behavior.
+- **[R188](R188-console-group0-authority.md)** — Group 0 authority and
+  deployment configuration cleanup — Area: console / CLI / KV — **Deferred
+  until R187 is publish-ready.** Separate bare-metal launch policy from
+  cluster sysdata, remove the mixed local topology fallback, and finish
+  cross-mode console consistency without moving Docker process state into
+  Group 0.
 
 ### High Priority
 

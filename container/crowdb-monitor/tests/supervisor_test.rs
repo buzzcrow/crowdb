@@ -27,7 +27,7 @@ impl TestRoots {
 
     fn profile(&self, script: String, port: u16, max_attempts: u32) -> DeploymentProfile {
         let mut profile = DeploymentProfile::load(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/profile.toml"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
         )
         .unwrap();
         profile.paths.install_root.clone_from(&self.0);
@@ -99,6 +99,41 @@ async fn exited_service_restarts_with_same_identity_and_event_log() {
     ] {
         assert!(body.contains(&format!("\"kind\":\"{event}\"")), "missing {event}");
     }
+}
+
+#[tokio::test]
+async fn restarted_service_waits_for_authority_validation() {
+    let roots = TestRoots::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let marker = roots.0.join("validation-exit");
+    let script = format!(
+        "if [ ! -e '{}' ]; then : > '{}'; sleep 0.2; exit 0; fi; exec sleep 30",
+        marker.display(),
+        marker.display()
+    );
+    let profile = roots.profile(script, listener.local_addr().unwrap().port(), 2);
+    let mut supervisor = Supervisor::new(
+        profile,
+        Uuid::new_v4(),
+        &roots.0.join("data/log"),
+        &roots.0.join("run"),
+    )
+    .await
+    .unwrap();
+    supervisor.require_recovery_validation();
+    supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
+    supervisor.mark_ready().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().phase, MonitorPhase::Restarting);
+    assert!(supervisor.recovery_pending());
+    assert_eq!(supervisor.recovery_epoch(), 1);
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().phase, MonitorPhase::Restarting);
+    supervisor.finish_recovery().await.unwrap();
+    assert_eq!(supervisor.status().phase, MonitorPhase::Ready);
+    assert!(!supervisor.recovery_pending());
+    supervisor.shutdown().await.unwrap();
 }
 
 #[tokio::test]

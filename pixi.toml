@@ -1,6 +1,6 @@
 [workspace]
 name = "crowdb-kv"
-version = "0.0.0-dev"
+version = "0.1.0-dev"
 description = "CROWDB — distributed key-value store with multi-paxos groups"
 channels = ["conda-forge"]
 # Keep glibc requirement low (2.17 = CentOS 7 / Ubuntu 16.04 era) so that
@@ -159,7 +159,7 @@ ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
 build = { cmd = "cargo build --release --workspace --exclude crowdb-kv-client && cargo build --release -p crowdb-kv-client --features ffi && cd app/crowdb-web/ui && npm run build", depends-on = ["build-cpp", "install-ui-deps"] }
 default = { depends-on = ["build"] }
-build-docker-preview = '''
+build-single-node-container = '''
 bash -euc '
 command -v docker >/dev/null || { echo "Docker CLI is required for the preview image" >&2; exit 1; }
 docker info >/dev/null || { echo "Docker daemon is unavailable" >&2; exit 1; }
@@ -174,14 +174,14 @@ for name in http_proxy https_proxy all_proxy no_proxy; do
   if [[ -n "$value" ]]; then proxy_args+=(--build-arg "$name=$value"); fi
 done
 DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
-  --file container/single-node-preview/Dockerfile \
+  --file container/single-node-container/Dockerfile \
   "${proxy_args[@]}" \
   --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
   --build-arg PREVIEW_VERSION="$(cat VERSION)" \
-  --tag crowdb-single-node-preview:dev .
+  --tag crowdb-iceberg-single-node:dev .
 '
 '''
-test-docker-preview = { cmd = "bash container/single-node-preview/tests/release-policy.sh && bash container/single-node-preview/tests/image-smoke.sh && bash container/single-node-preview/tests/container-e2e.sh", depends-on = ["build-docker-preview"] }
+test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["build-single-node-container"] }
 
 # ── Run ──────────────────────────────────────────────────────────
 web = { cmd = "echo 'CROWDB console starting at: http://127.0.0.1:14000/' && cargo run --release -p crowdb-web", depends-on = ["build"] }

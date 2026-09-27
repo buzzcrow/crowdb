@@ -2,7 +2,7 @@
 .github
 .agents
 doc
-container/single-node-preview/tests
+container/single-node-container/tests
 .pixi
 .crowdb-runtime
 target

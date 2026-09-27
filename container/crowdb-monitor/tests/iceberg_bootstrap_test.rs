@@ -30,7 +30,7 @@ impl Drop for TestRoot {
 
 fn profile(root: &TestRoot) -> DeploymentProfile {
     let mut profile = DeploymentProfile::load(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/profile.toml"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
     )
     .unwrap();
     let program = root.0.join("iceberg-management");

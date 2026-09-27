@@ -18,22 +18,22 @@ for required in \
     'gh release view "$RELEASE_TAG"' \
     '[[ "$status" == 404 ]]' \
     'needs: verify' \
-    'docker.io/crowdb/crowdb-iceberg:${{ inputs.tag }}' \
-    'docker.io/crowdb/crowdb-iceberg:git-${{ needs.verify.outputs.revision }}' \
-    'docker.io/crowdb/crowdb-iceberg:preview' \
+    'docker.io/crowdb/crowdb-iceberg-single-node:${{ inputs.tag }}' \
+    'docker.io/crowdb/crowdb-iceberg-single-node:git-${{ needs.verify.outputs.revision }}' \
+    'docker.io/crowdb/crowdb-iceberg-single-node:preview' \
     'provenance: mode=max' \
     'sbom: true' \
     'cosign sign --yes'; do
     grep -Fq "$required" "$release"
 done
-! grep -Eq 'crowdb-iceberg:latest' "$release"
+! grep -Eq 'crowdb-iceberg-single-node:latest' "$release"
 [[ $(grep -c 'push: true' "$release") == 1 ]]
 [[ $(grep -c 'id-token: write' "$release") == 1 ]]
 [[ "$events" != *'schedule:'* ]]
 
 verify_job=$(sed -n '/^  verify:/,/^  publish:/p' "$release")
 publish_job=$(sed -n '/^  publish:/,$p' "$release")
-for gate in 'pixi run test-docker-preview' 'test-boto3-e2e' 'test-pyiceberg-e2e' \
+for gate in 'pixi run test-single-node-container' 'test-boto3-e2e' 'test-pyiceberg-e2e' \
     'pixi run test-console' 'pixi run test-console-ui' 'pixi run rs-fmt-check && pixi run rs-lint'; do
     [[ "$verify_job" == *"$gate"* ]]
 done
@@ -43,6 +43,6 @@ done
 [[ "$publish_job" == *'[[ "$(git rev-parse HEAD)" == "$REVISION" ]]'* ]]
 
 ci_job=$(sed -n '/^  DockerPreview:/,$p' "$ci")
-[[ "$ci_job" == *'contents: read'* && "$ci_job" == *'pixi run test-docker-preview'* ]]
+[[ "$ci_job" == *'contents: read'* && "$ci_job" == *'pixi run test-single-node-container'* ]]
 [[ "$ci_job" == *'Upload preview failure logs'* && "$ci_job" == *'CROWDB_PREVIEW_TEST_ARTIFACTS'* ]]
 ! grep -Eq 'secrets\.|docker/login-action|docker/build-push-action' <<<"$ci_job"

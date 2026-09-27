@@ -69,25 +69,26 @@ the fixed-slot collision policy, not every historical storage deadline.
   rejects stale reads after clear/reactivation in the two-listener memory fixture.
   The official Java SDK does not automatically retry mutation POST after a lost
   response; direct HTTP fixtures cover same-key server replay. Native retirement
-  grace and two consecutive native Java FileIO suites pass. Keep engine
-  acceptance in Next; physical GC has separate native acceptance under R183.
+  grace and two consecutive native Java FileIO suites pass. R189 owns engine
+  acceptance; physical GC has separate native acceptance under R183.
   Files: conformance environments, SDK fixtures and capability tests.
 - [ ] **Requirement closure**: compare each requirement's acceptance cases with
   executable evidence; update affected permanent architecture only as needed.
   Remove each completed requirement/index entry and its plan together.
-  The full R177/R184 milestone remains open while engine acceptance is deferred.
+  R189 separately owns container client/engine workflows; do not claim its
+  acceptance from this REST/official-SDK evidence.
 
-## Next — Separate engine testing project
+## Next — R189 container client/engine project
 
-- [ ] **Engine interoperability — deferred by user**: the user will create a
-  separate testing project later. Do not start Spark, Flink or Trino tests now.
-  Select and pin engine versions/deployment profiles when that project starts;
-  no immediate first-engine decision is needed.
+- [ ] **Client and engine interoperability — R189**: after R187 is
+  publish-ready, test Python dataframe, local SQL, Spark, Flink and Trino
+  workflows in the separate container project. Pin versions and profiles there;
+  do not start broad engine tests during R184 closure.
 - Preserve the acceptance scope: create/evolve/write/commit/load, time travel,
   row-level deletes, rename/expire/drop, cross-engine results and server restarts.
   Reuse existing SDK/native evidence, but do not treat it as engine certification.
-- Keep R184 engine acceptance pending until that project supplies executable
-  results. Its project location and test commands are intentionally not invented.
+- Keep R189 client/engine acceptance pending until that project supplies
+  executable results. Its environment and commands are specified when built.
 
 ## Human decisions
 

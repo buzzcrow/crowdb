@@ -23,20 +23,12 @@ second storage semantic, hide partial startup, expose internal ports, or lose
 state on restart. The preview instead needs a bounded, reproducible composition
 of the normal binaries with an honest non-production boundary.
 
-`crowdb-web` also has an unresolved authority split that a container must not
-preserve. Its current `--config` path loads one `ConsoleConfig`/`registry.toml`
-containing racks, nodes, servers, stores, groups, process launch settings, and
-management endpoints. Lifecycle handlers commit that local file first and then
-attempt Group 0 sysdata updates best-effort, so a failed Group 0 write can leave
-the UI and cluster divergent. Startup logs that Group 0 is authoritative when it
-is ready, but `startup_topology_check` still calls the local
-`restore_persisted_topology` path. The same file therefore mixes cluster
-authority, bootstrap discovery, machine-local launch policy, runtime endpoint
-hints, and UI state; two consoles can independently overwrite different local
-truths. Group 0 already owns cluster topology and service registration, while
-binary paths, SSH/local launch settings, PIDs, and monitor state are deployment
-concerns. The Docker composition needs that boundary corrected rather than
-backing up another `registry.toml` beside Group 0.
+`crowdb-web` also has an unresolved authority split: its older bare-metal
+configuration mixes cluster topology and launch policy. The Docker image must
+not copy or replay that file. Its monitor owns container processes, while
+Group 0 owns CROWDB system topology and service registration. The wider
+CLI/bare-metal configuration and authority cleanup is tracked separately by
+[R188](R188-console-group0-authority.md), not required to publish this image.
 
 Concrete scenarios are a developer uploading and range-reading Parquet through
 S3, a PyIceberg client using the enabled REST catalog and FileIO operations, an
@@ -108,18 +100,18 @@ fault-tolerant deployment.
   DiskIO exercise a normal multi-disk topology. All files remain on one host
   filesystem and are not presented as replica or independent failure-domain
   durability.
-- **DOCKER-I11 — One configuration authority:** Group 0 is the sole durable
-  authority for cluster topology and service registration once it exists.
-  Before its creation, local topology is bootstrap intent only; creation writes
-  and verifies that intent in Group 0, then removes the local topology. A
-  partial transfer resumes only against confirmed matching bootstrap identity
-  and never serves local topology as a fallback. `crowdb-web.toml` contains only
-  web-process startup policy. `registry.toml`, when used outside this image,
-  contains only machine-local launch records and cannot override or restore
-  Group 0 state. Container mode has no `registry.toml`.
+- **DOCKER-I11 — Container authority boundary:** Group 0 is the sole durable
+  authority for CROWDB cluster topology and service registration after the
+  monitor creates it. The monitor's durable manifest contains bootstrap
+  identity and progress, not an independent topology authority; an interrupted
+  bootstrap resumes only after proving the same Group 0 state. Docker Web uses
+  configured Group 0 seeds and service registration for cluster information,
+  and monitor status for PID, restart, and health information. It never loads,
+  writes, or restores a local console topology or `registry.toml`; Group 0
+  does not manage Docker image, volume, process, or launch information.
 - **DOCKER-I12 — Verifiable preview publication:** only a manually triggered
   workflow targeting a Git release tag may publish the gated `linux/amd64`
-  image to `crowdb/crowdb-iceberg`, after protected-environment approval.
+  image to `crowdb/crowdb-iceberg-single-node`, after protected-environment approval.
   Creating or pushing a tag alone never publishes. Version and `git-<commit>`
   tags are immutable; `preview` is the
   sole moving convenience tag and `latest` is not published. Every public digest
@@ -128,7 +120,7 @@ fault-tolerant deployment.
 - **DOCKER-I13 — Deployment-profile boundary:** container implementation lives
   under the repository-root `container/` directory. `crowdb-monitor` provides a
   topology-neutral process graph, supervision, probe, rendering, and bootstrap
-  runtime; the named **CROWDB Single-Node Preview** profile supplies this
+  runtime; the named **CROWDB Single-Node Container** profile supplies this
   requirement's two groups, four file disks, services, ports, and paths. A future
   multi-node image or bare-metal launcher can reuse the monitor without adding
   single-node policy branches to its supervision core.
@@ -148,7 +140,7 @@ The source layout for this deployment is:
 ```text
 container/
   crowdb-monitor/              reusable deployment runtime crate and binary
-  single-node-preview/         CROWDB Single-Node Preview profile
+  single-node-container/         CROWDB Single-Node Container profile
     Dockerfile                 amd64 multi-stage image
     templates/                 profile-owned service configuration inputs
     tests/                     profile and container acceptance assets
@@ -160,55 +152,27 @@ without moving or duplicating its runtime code.
 
 ### Web configuration authority
 
-- **Group 0:** owns racks, nodes, disk groups, disks, stores, groups, replicas,
-  bindings, and the service registry. CLI and Web in every deployment mode use
-  the same Group 0-backed logical store/group/replica read and write flow;
-  deployment mode does not select a different logical operation implementation.
-  CLI and bare-metal Web also share Group 0-backed hardware operations; Web KV
-  routing and status never revive a local topology fallback. Initial Group 0
-  bootstrap alone uses explicit pre-authority intent. On Group 0 creation it
-  transfers and verifies every topology record, then deletes local topology.
-  If transfer is interrupted, only confirmed matching bootstrap intent may be
-  resumed; a mismatch fails visibly without overwriting Group 0. Once Group 0
-  exists, no read or write falls back to local topology, even if Group 0 is
-  temporarily unavailable; inability to determine whether Group 0 exists also
-  fails unavailable rather than assuming a fresh bootstrap. Local deployment
-  records then describe launch policy or process state only, including the S3
-  mini-cluster.
-  Docker mode does not manage hardware topology (racks, nodes, disk groups, or
-  disks) or monitor-owned processes, but permits logical store, group, and
-  replica operations through that shared flow after Web authenticates with the
-  existing Iceberg management bearer token. Bare-metal mode may manage deployment
-  and hardware topology as well. A successful local file write cannot
-  substitute for a failed Group 0 mutation. When Group 0 is unavailable,
-  topology APIs fail unavailable rather than serving or restoring a local copy.
+- **Group 0:** owns the container's CROWDB rack/node/disk identities,
+  ownership and binding maps, stores, groups, replicas, and service registry.
+  The monitor initializes this fixed profile, verifies committed identity and
+  content on resume, and does not keep a second console topology copy. Docker
+  Web reads those records and live registrations through the existing Group 0
+  client path. An unavailable Group 0 fails cluster queries closed; no local
+  topology or process snapshot substitutes for system metadata. Wider
+  CLI/bare-metal convergence is R188.
 - **`crowdb-web.toml`:** is a versioned, non-secret process configuration. It
   contains the web bind address and port, Group 0 management seeds, packaged UI
-  root, monitor status endpoint, log policy, request bounds, and a mode selecting
-  Docker or bare-metal operation. It contains no racks, nodes, stores,
-  groups, replicas, service inventory, PIDs, binary paths, credentials, or SSH
-  material. In this image `crowdb-monitor` renders it at
+  root, monitor status endpoint, log policy, and request bounds. It contains
+  no topology, process PID, binary path, inline credential, or SSH material.
+  In this image `crowdb-monitor` renders it at
   `/opt/crowdb/run/config/crowdb-web.toml` on every start and invokes
   `crowdb-web --config` with that path.
-- **`registry.toml`:** is an optional, versioned bare-metal deployment registry,
-  selected only by a separate `crowdb-web --registry` option. It may map stable
-  Group 0 node/service identities to machine-local connection and launch policy:
-  host, SSH credential reference, binary and service-config path, workspace, and
-  auto-start choice. It stores no topology relationships, stores, groups,
-  replicas, authoritative service endpoint, health, PID, monitor state, UI
-  preference, or inline secret. Docker mode rejects a
-  registry path because `crowdb-monitor` owns every process.
-- **Runtime/UI state:** live endpoints come from Group 0 service discovery;
-  process PID, restart generation, and crash-loop state come from
-  `crowdb-monitor`; browser-only preferences remain in browser storage. None is
-  copied into either TOML file.
-- **Unreleased format replacement:** the current mixed `ConsoleConfig` format is
-  not a compatibility surface because CROWDB has not released it. Remove its
-  parser, writer, restore behavior, fixtures, and documentation in the same
-  change; do not add a legacy-format migration tool, dual reader, fallback, or
-  schema alias. The one-time transfer of current bootstrap intent into a newly
-  created Group 0 is runtime initialization, not support for old mixed files.
-  Existing development files are unsupported inputs and may be deleted.
+- **Runtime/UI state:** the monitor alone owns Docker child PIDs, restart
+  generation, probes, and crash-loop state. Docker Web overlays that state on
+  Group 0 service identities and clearly distinguishes unavailable cluster
+  data from a stopped process. It rejects hardware-topology and process
+  mutations, but authenticated logical store/group/replica operations remain
+  available through the Group 0-backed flow. A registry path is rejected.
 
 The container filesystem contract is:
 
@@ -357,24 +321,13 @@ passes explicit data and log paths to every child.
    requires SigV4 credentials and the Iceberg server requires distinct bearer
    roles; automatic generation removes that setup burden without disabling either
    protocol boundary.
-7. Refactor `crowdb-web` and `crowdb-console-shared` around the configuration
-   authority contract before shipping the compiled UI. Replace the current mixed
-   `ConsoleConfig` load with distinct versioned web-process and optional launch
-   registry models; make `--config` and `--registry` unambiguous; and remove the
-   old parser, writer, restore path, fixtures, and docs without compatibility
-   handling. Topology handlers commit Group 0 first and refresh their read model
-   only after success; they never persist topology
-   locally or ignore a Group 0 failure. Docker mode rejects hardware-topology
-   and process mutations but permits logical store, group, and replica
-   operations through the same logical flow used by CLI and bare-metal Web;
-   bare-metal deployment operations follow the Group 0 authority contract.
-   Startup uses configured seeds to load
-   Group 0 and service discovery rather than calling local
-   `restore_persisted_topology` once Group 0 exists. In Docker mode the
-   console has no registry engine, overlays `crowdb-monitor` process/restart state
-   onto Group 0 service records, and rejects process-lifecycle mutations because
-   the monitor is the sole process owner. The web UI displays source and stale/
-   unavailable status instead of presenting a local fallback as authoritative.
+7. Run Docker Web from the monitor-rendered `crowdb-web.toml` without a local
+   console registry or topology restore. Its cluster read model uses Group 0
+   and live registration; its process read model uses monitor status. It rejects
+   hardware and process mutations and requires the management bearer for
+   logical writes. The web UI identifies each source and shows unavailable
+   state rather than a fabricated local fallback. CLI/bare-metal configuration
+   migration and cross-mode tests belong to R188.
 8. Enforce the mounted data-root contract and subtree ownership shown above.
    The image declares `/opt/crowdb/data` as a volume so a run without an
    explicit mount uses Docker's anonymous volume; startup explains how to use
@@ -406,7 +359,8 @@ passes explicit data and log paths to every child.
     crash-loop budget exhaustion, monitor failure, `SIGTERM`, wrong secrets,
     read-only/unwritable volume, and missing, corrupt, incompatible, or conflicting
     bootstrap manifest outcomes.
-11. Publish a minimal quick start that pins an image tag, maps ports 8010:8010,
+11. Publish `doc/user-manual/docker-single-node-user-guide.md` as the Docker
+    quick start. It pins an image tag, maps ports 8010:8010,
     80:80, and 8080:8080, mounts one host data path at `/opt/crowdb/data`, configures the
     container runtime restart policy for monitor-budget exhaustion, retrieves
     generated preview credentials with the explicit monitor command, and includes
@@ -417,14 +371,14 @@ passes explicit data and log paths to every child.
     amd64 image and run all Docker gates without registry write credentials. A
     operator manually triggers the release workflow against a Git release tag;
     it reruns the complete gates for the exact commit, waits for protected-
-    environment approval, then publishes to `crowdb/crowdb-iceberg` under an
+    environment approval, then publishes to `crowdb/crowdb-iceberg-single-node` under an
     immutable release-version tag, immutable `git-<commit>` tag, and moving
     `preview` tag. The workflow never emits `latest`, refuses to overwrite either
     immutable tag, and attaches a signature, SBOM, and build provenance to the
     published digest. arm64 publication is deferred until a later requirement
     supplies a Linux arm64 toolchain and the complete Docker E2E matrix.
 13. Keep reusable deployment mechanics in the `container/crowdb-monitor` crate
-    and every single-node decision in `container/single-node-preview`. The
+    and every single-node decision in `container/single-node-container`. The
     monitor consumes a validated profile to construct its dependency graph,
     render configs, bootstrap authorities, and aggregate health; it does not
     infer topology from its executable name or Docker environment. Unit tests
@@ -445,11 +399,11 @@ passes explicit data and log paths to every child.
   R184. R185 caching and R186 ORC validation are not dependencies.
 - Reuses existing process binaries, management APIs, service registration,
   health endpoints, runtime-root conventions, and the compiled
-  `app/crowdb-web/ui` artifact. R187 owns the required `crowdb-web`/
-  `crowdb-console-shared` configuration split and Group 0 authority cleanup;
-  retaining the current mixed `ConsoleConfig` as a container fallback is not
-  permitted. Missing composition or probe APIs are added to their owning modules
-  rather than duplicated in shell parsing.
+  `app/crowdb-web/ui` artifact. R187 must not load the mixed `ConsoleConfig`
+  inside Docker. R188 owns removal of that format from CLI/bare-metal paths and
+  broader authority cleanup; it is not a prerequisite for image release.
+  Missing composition or probe APIs are added to their owning modules rather
+  than duplicated in shell parsing.
 - Reuses `unsafe_colocated` only as the explicit minimum-topology placement
   policy. Its loss-of-resource durability limitation must remain visible in the
   image metadata, quick start, and UI.
@@ -473,7 +427,7 @@ passes explicit data and log paths to every child.
   initialized disk, topology, group, tenant, catalog, or bootstrap state; record
   and gate any permitted nondeterministic metadata. Invariants: DOCKER-I2,
   DOCKER-I6, and DOCKER-I8. Integration test.
-- Given two synthetic deployment profiles and the CROWDB Single-Node Preview
+- Given two synthetic deployment profiles and the CROWDB Single-Node Container
   profile, when monitor graph construction, config rendering, probes, restart
   ordering, and bootstrap dispatch run, assert reusable behavior depends only on
   validated profile inputs, all two-group/four-disk/port/path choices live in the
@@ -494,40 +448,16 @@ passes explicit data and log paths to every child.
   status, and port claims use `/opt/crowdb/run`; executables, templates, and UI
   remain immutable; and process logs are bounded and rotated.
   Invariant: DOCKER-I3. Integration test.
-- Given valid and invalid versioned `crowdb-web.toml` and `registry.toml` fixtures,
-  when each is decoded in its permitted mode, assert web configuration accepts
-  only process settings, bare-metal registry accepts only secret references and
-  launch policy, forbidden topology/runtime/inline-secret fields fail closed,
-  and Docker mode rejects every registry path. Invariant: DOCKER-I11.
-  Unit test.
-- Given two bare-metal consoles connected to one ready Group 0, when topology mutations
-  succeed, conflict, lose their response, or encounter unavailable Group 0,
-  assert both consoles converge on Group 0 after success, preserve conflict and
-  retry semantics, commit no local topology before authority, and return an
-  explicit unavailable result without serving a local fallback. Invariant:
-  DOCKER-I11. Integration test.
-- Given CLI, Docker-mode Web, and bare-metal Web connected to the same ready
-  Group 0, when each creates or removes logical stores, groups, and replicas,
-  assert they use one shared orchestration and endpoint-resolution path, observe
-  the same Group 0 result, and never persist a second logical-topology copy.
-  Invariant: DOCKER-I11. Integration test.
-- Given CLI and bare-metal Web connected to one initialized cluster, when
-  hardware records, live KV endpoints, and process state change, assert both
-  use Group 0 for hardware authority and service registration for routing,
-  while Docker Web rejects hardware mutations and none serves stale local
-  topology after Group 0 is lost. Invariant: DOCKER-I11. Integration test.
-- Given first bootstrap, restart, teardown, and S3 mini-cluster restart, when
-  Group 0 is initially absent or later unavailable, assert bootstrap uses only
-  explicit pre-authority intent, transfers and confirms all topology records
-  before success, deletes local topology after confirmation, never replays it
-  over an initialized cluster, and retains only local process-launch state.
-  Invariant: DOCKER-I11. Integration test.
-- Given a crash or lost response after Group 0 creation but before local
-  bootstrap intent deletion, when startup resumes, assert it proves cluster
-  identity and already committed records, completes only safe missing writes,
-  removes local topology after full verification, and neither serves stale
-  local data nor overwrites a conflicting Group 0 record. Invariant: DOCKER-I11.
+- Given valid and invalid versioned Docker `crowdb-web.toml` inputs, when Web
+  starts, assert it accepts only process settings and configured Group 0 seeds,
+  rejects topology, runtime, and inline-secret fields or any registry path,
+  and does not load or restore a local console topology. Invariant: DOCKER-I11.
   Integration test.
+- Given a Docker bootstrap interrupted before and after each Group 0 metadata
+  commit, when the monitor resumes against the same volume, assert it proves
+  the same profile identity, verifies committed records, writes only safe
+  missing records, and never substitutes a local topology copy. Invariant:
+  DOCKER-I11. E2E test.
 - Given ready Group 0 and any supplied registry path, when Docker-mode
   `crowdb-web` starts, assert it rejects the registry path; with no registry it
   uses configured seeds, Group 0 topology, service discovery, and monitor runtime
@@ -540,10 +470,6 @@ passes explicit data and log paths to every child.
   missing, malformed, or wrong token is rejected before any Group 0 write;
   the valid token permits the operation but never unlocks hardware-topology or
   monitor-owned process mutation. Invariant: DOCKER-I11. Integration test.
-- Given the repository's former mixed `ConsoleConfig` files, fixtures, restore
-  calls, and documentation, when the configuration split lands, assert none
-  remain in production or test paths and no migration, dual-read, fallback, or
-  alias accepts that unreleased format. Invariant: DOCKER-I11. Integration test.
 - Given the fresh single-node topology, when storage registration, direct
   per-disk write/read, and filesystem allocation are inspected, assert exactly
   one disk group contains four stable disk identities backed one-to-one by
@@ -638,8 +564,8 @@ passes explicit data and log paths to every child.
 
 Required gates:
 
-- `pixi run build-docker-preview`
-- `pixi run test-docker-preview`
+- `pixi run build-single-node-container`
+- `pixi run test-single-node-container`
 - `pixi run -e s3-e2e test-boto3-e2e`
 - `pixi run -e iceberg-e2e test-pyiceberg-e2e`
 - `pixi run test-console`

@@ -42,6 +42,9 @@ pub struct Supervisor {
     probe_failures: BTreeMap<String, u32>,
     healthy_since: BTreeMap<String, Instant>,
     bootstrapped: bool,
+    requires_recovery_validation: bool,
+    recovery_pending: bool,
+    recovery_epoch: u64,
 }
 
 impl Supervisor {
@@ -80,7 +83,48 @@ impl Supervisor {
             probe_failures: BTreeMap::new(),
             healthy_since: BTreeMap::new(),
             bootstrapped: false,
+            requires_recovery_validation: false,
+            recovery_pending: false,
+            recovery_epoch: 0,
         })
+    }
+
+    pub fn require_recovery_validation(&mut self) {
+        self.requires_recovery_validation = true;
+    }
+
+    #[must_use]
+    pub fn recovery_pending(&self) -> bool {
+        self.recovery_pending
+    }
+
+    #[must_use]
+    pub fn recovery_epoch(&self) -> u64 {
+        self.recovery_epoch
+    }
+
+    /// # Errors
+    /// Refuses readiness until all restarted services and durable authority have been checked.
+    pub async fn finish_recovery(&mut self) -> Result<(), SupervisorError> {
+        if !self.recovery_pending
+            || self.status.phase != MonitorPhase::Restarting
+            || self.status.services.len() != self.order.len()
+            || self.status.services.values().any(|service| !service.healthy)
+        {
+            return Err(SupervisorError::Invalid("recovery is not ready for validation"));
+        }
+        self.recovery_pending = false;
+        self.status.phase = MonitorPhase::Ready;
+        self.status_store.publish(&mut self.status)?;
+        self.processes
+            .record_event(&MonitorEvent {
+                kind: MonitorEventKind::Ready,
+                service: None,
+                pid: None,
+                attempt: None,
+            })
+            .await?;
+        Ok(())
     }
 
     #[must_use]
@@ -218,7 +262,10 @@ impl Supervisor {
                 if let Some(state) = self.status.services.get_mut(&id) {
                     if !state.healthy {
                         state.healthy = true;
-                        if self.bootstrapped && self.status.services.values().all(|service| service.healthy) {
+                        if self.bootstrapped
+                            && !self.recovery_pending
+                            && self.status.services.values().all(|service| service.healthy)
+                        {
                             self.status.phase = MonitorPhase::Ready;
                             self.processes
                                 .record_event(&MonitorEvent {
@@ -404,16 +451,11 @@ impl Supervisor {
             if self.start_affected(&affected).await? {
                 self.probe_failures.insert(root.to_owned(), 0);
                 if self.bootstrapped {
-                    self.status.phase = MonitorPhase::Ready;
-                    self.status_store.publish(&mut self.status)?;
-                    self.processes
-                        .record_event(&MonitorEvent {
-                            kind: MonitorEventKind::Ready,
-                            service: None,
-                            pid: None,
-                            attempt: None,
-                        })
-                        .await?;
+                    self.recovery_epoch = self.recovery_epoch.saturating_add(1);
+                    self.recovery_pending = true;
+                    if !self.requires_recovery_validation {
+                        self.finish_recovery().await?;
+                    }
                 }
                 return Ok(());
             }

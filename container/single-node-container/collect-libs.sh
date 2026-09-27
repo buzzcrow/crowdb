@@ -54,6 +54,10 @@ fi
 patchelf --set-rpath '/opt/crowdb/lib' "$output/lib/libcrowdb_kv_client.so"
 rm "$output/dependencies.txt"
 
+for artifact in "$output"/bin/* "$output"/lib/*; do
+    strip --strip-debug "$artifact"
+done
+
 for binary in "$output"/bin/*; do
     LD_LIBRARY_PATH="$output/lib" ldd "$binary" > "$output/dependencies.txt"
     if grep -q 'not found' "$output/dependencies.txt"; then

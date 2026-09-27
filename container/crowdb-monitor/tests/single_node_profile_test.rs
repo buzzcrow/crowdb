@@ -7,14 +7,14 @@ use std::path::{Path, PathBuf};
 use crowdb_monitor::{DeploymentProfile, GroupRole};
 
 fn profile_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/profile.toml")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml")
 }
 
 #[test]
 fn single_node_preview_has_exact_topology_and_endpoints() {
     let profile = DeploymentProfile::load(profile_path()).unwrap();
-    assert_eq!(profile.name, "crowdb-single-node-preview");
-    assert_eq!(profile.display_name, "CROWDB Single-Node Preview");
+    assert_eq!(profile.name, "single-node-container");
+    assert_eq!(profile.display_name, "CROWDB Single-Node Container");
     assert_eq!(profile.logs.max_file_bytes, 30 * 1024 * 1024);
     assert_eq!(profile.logs.max_files, 5);
     assert!(profile.logs.mirror_warnings_to_stderr);
@@ -67,7 +67,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .unwrap();
     assert_eq!(web.probe.target, "http://127.0.0.1:8080/healthz");
     let template = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/templates/crowdb-web.toml"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates/crowdb-web.toml"),
     )
     .unwrap();
     let config: toml::Value = toml::from_str(&template).unwrap();
@@ -90,13 +90,13 @@ fn single_node_preview_declares_complete_dependency_order() {
     for service in &profile.services {
         if let Some(template) = &service.config_template {
             let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../single-node-preview/templates")
+                .join("../single-node-container/templates")
                 .join(template.file_name().unwrap());
             assert!(source.is_file(), "missing template for {}", service.id);
         }
     }
     let chunkdb = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/templates/chunkdb.toml"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates/chunkdb.toml"),
     )
     .unwrap();
     let config: toml::Value = toml::from_str(&chunkdb).unwrap();

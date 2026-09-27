@@ -36,8 +36,10 @@ impl Drop for TestDataRoot {
 }
 
 fn profile() -> DeploymentProfile {
-    DeploymentProfile::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/profile.toml"))
-        .unwrap()
+    DeploymentProfile::load(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
+    )
+    .unwrap()
 }
 
 fn session(root: &TestDataRoot, profile: &DeploymentProfile) -> BootstrapSession {

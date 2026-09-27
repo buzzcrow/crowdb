@@ -17,7 +17,7 @@ use crate::{
     S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
 };
 
-const PROFILE_NAME: &str = "crowdb-single-node-preview";
+const PROFILE_NAME: &str = "single-node-container";
 const MAX_TEMPLATE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Error)]
@@ -121,6 +121,7 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
         &profile.paths.run_root,
     )
     .await?;
+    supervisor.require_recovery_validation();
     let startup = async {
         bootstrap_services(
             &mut supervisor,
@@ -139,9 +140,112 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
         supervisor.shutdown().await?;
         return Err(error);
     }
-    eprintln!("CROWDB Single-Node Preview ready; retrieve credentials with crowdb-monitor credentials show --format env");
-    supervisor.run_until_signal().await?;
+    eprintln!("CROWDB Single-Node Container preview ready; retrieve credentials with crowdb-monitor credentials show --format env");
+    let runtime = run_ready_services(
+        &mut supervisor,
+        &profile,
+        &profile_bytes,
+        &config_bytes,
+        &step_refs,
+        &credentials,
+        &management_seed,
+    )
+    .await;
+    supervisor.shutdown().await?;
+    runtime
+}
+
+async fn run_ready_services(
+    supervisor: &mut Supervisor,
+    profile: &DeploymentProfile,
+    profile_bytes: &[u8],
+    config_bytes: &[u8],
+    steps: &[&str],
+    credentials: &ServerCredentials,
+    management_seed: &str,
+) -> Result<(), PreviewError> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    loop {
+        tokio::select! {
+            _ = terminate.recv() => break,
+            _ = tokio::signal::ctrl_c() => break,
+            result = supervisor.poll_once() => result?,
+        }
+        if supervisor.recovery_pending() {
+            let recovery_epoch = supervisor.recovery_epoch();
+            tokio::select! {
+                _ = terminate.recv() => break,
+                _ = tokio::signal::ctrl_c() => break,
+                result = validate_recovery(supervisor, profile, profile_bytes, config_bytes, steps, credentials, management_seed) => result?,
+            }
+            supervisor.poll_once().await?;
+            if supervisor.recovery_pending()
+                && supervisor.recovery_epoch() == recovery_epoch
+                && supervisor
+                    .status()
+                    .services
+                    .values()
+                    .all(|service| service.healthy)
+            {
+                supervisor.finish_recovery().await?;
+            }
+        }
+        tokio::select! {
+            _ = terminate.recv() => break,
+            _ = tokio::signal::ctrl_c() => break,
+            () = sleep(Duration::from_secs(1)) => {},
+        }
+    }
     Ok(())
+}
+
+async fn validate_recovery(
+    supervisor: &mut Supervisor,
+    profile: &DeploymentProfile,
+    profile_bytes: &[u8],
+    config_bytes: &[u8],
+    steps: &[&str],
+    credentials: &ServerCredentials,
+    management_seed: &str,
+) -> Result<(), PreviewError> {
+    let mut session = BootstrapSession::open(&profile.paths.data_root, profile_bytes, config_bytes, steps)?;
+    if session.manifest().state() != ManifestState::Ready
+        || session.manifest().deployment_id() != supervisor.status().deployment_id
+    {
+        return Err(PreviewError::Invalid("recovered deployment identity differs"));
+    }
+    let persisted_credentials = ServerCredentials::load_existing(&profile.paths.data_root)?;
+    if persisted_credentials.server_env() != credentials.server_env() {
+        return Err(PreviewError::Invalid("recovered server credentials differ"));
+    }
+    require_directory(&kv_root(profile)?)?;
+    KvBootstrap::new(management_seed)?
+        .reconcile(&mut session, profile, supervisor.monitor_log_mut())
+        .await?;
+    ensure_disk_files(&mut session, profile, supervisor.monitor_log_mut()).await?;
+    HardwareBootstrap::new(management_seed.to_owned())
+        .reconcile(&mut session, profile, supervisor.monitor_log_mut())
+        .await?;
+    LogicalBootstrap::new(management_seed.to_owned())
+        .reconcile(&mut session, profile, supervisor.monitor_log_mut())
+        .await?;
+    verify_diskio_disks(management_seed, profile).await?;
+    verify_chunk_services(management_seed, profile).await?;
+    S3Bootstrap::reconcile(&mut session, profile, credentials, supervisor.monitor_log_mut()).await?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match IcebergBootstrap::reconcile(&mut session, profile, credentials, supervisor.monitor_log_mut())
+            .await
+        {
+            Ok(()) => break,
+            Err(IcebergBootstrapError::Command(_)) if Instant::now() < deadline => {
+                supervisor.refresh_status()?;
+                sleep(Duration::from_millis(200)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    verify_web_authority(supervisor, profile).await
 }
 
 async fn bootstrap_services(

@@ -1,6 +1,6 @@
 version = 1
-name = "crowdb-single-node-preview"
-display_name = "CROWDB Single-Node Preview"
+name = "single-node-container"
+display_name = "CROWDB Single-Node Container"
 placement_mode = "unsafe-colocated"
 s3_tenant = "preview"
 iceberg_catalog = "preview"

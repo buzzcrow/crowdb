@@ -255,12 +255,12 @@ and must not carry independent open questions.
   policy, not an assertion that unimplemented GC or full-disk tests have passed.
 
 - **Engine testing deferred (OI-2, confirmed 2026-09-24):** do not run Spark,
-  Flink or Trino acceptance in the current implementation phase. Record this in
-  the execution plan's Next section; the user will establish a separate testing
-  project later and select its engine/version/deployment matrix there. This
-  removes the immediate selection decision, not the outstanding conformance
-  obligation. Do not advertise untested engine compatibility or close full R184
-  acceptance on existing SDK evidence alone.
+  Flink or Trino acceptance in the current implementation phase. R189 owns the
+  separate client/engine project against the single-node container and will pin
+  its engine/version/deployment matrix there. This removes the immediate
+  selection decision, not the outstanding interoperability obligation. Do not
+  advertise untested engine compatibility. R184 REST/official-SDK acceptance
+  can close independently after its own evidence audit.
 
 - **Functional/performance acceptance split (OI-1, confirmed 2026-09-24):**
   functional correctness uses a bounded runtime profile independently of a
@@ -398,7 +398,7 @@ GC and exhaustion-recovery requirements recorded in R183.
 
 Unfinished implementation and unexecuted acceptance remain in the working plans.
 R179–R182 are closed by their acceptance gates, not by these decisions.
-R183 is complete; R184 and engine conformance remain open.
+R183 is complete; R184 REST conformance and R189 client/engine workflows remain open.
 
 - **OI-6 — Legacy zero format capability bits (resolved):** existing catalog
   authorities persist zero even though installed table routes currently accept

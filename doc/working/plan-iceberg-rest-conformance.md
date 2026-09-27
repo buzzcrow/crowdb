@@ -3,15 +3,14 @@
 Upstream: [R184](../backlog/R184-access-iceberg-rest-conformance.md).
 Program: [functional catalog plan](plan-iceberg-functional-catalog.md).
 
-Goal: finish the foreground REST implementation and official-client evidence;
-leave engine acceptance explicitly pending.
+Goal: finish REST implementation and official-client evidence; R189 owns the
+separate container client/engine workflows.
 
 ## Scope and starting point
 
 - Tasks 1–5 are implemented and verified for the declared foreground profile.
   R179–R183 supply the storage, mutation and reclamation foundation; the R177
-  OI-6 activation decision is implemented. Engine acceptance remains pending
-  in separate work.
+  OI-6 activation decision is implemented. R189 tracks separate engine work.
 - Do not run Spark/Flink/Trino, physical GC or broad performance experiments.
   Do not update the user guide. Human decisions belong in R177, not this plan.
 - Use the backed-up OpenAPI and table spec under
@@ -41,6 +40,12 @@ leave engine acceptance explicitly pending.
   client to send the header or invent support for arbitrary nonempty prefixes.
 
 ## Tasks in execution order
+
+- [~] **Closure audit**: map every REST acceptance case to executable tests,
+  refresh the library and server gates, preserve the pinned capability and SDK
+  evidence in permanent architecture, then remove the completed requirement and
+  this plan. Keep engine certification in the separate container project.
+  Files: Iceberg architecture, requirement/index, this plan.
 
 - [x] **1. Unified route discovery — medium**: introduce a bounded endpoint
   descriptor/classifier used by both config discovery and dispatch admission.
@@ -140,8 +145,8 @@ leave engine acceptance explicitly pending.
     historical process-kill scenario after a documentation-only matrix change.
   - Report upstream-client feature gaps and exact kit omissions explicitly. Do
     not patch clients, waive errors, or count a custom fixture as the Apache kit.
-  - Exit: foreground rows have executable evidence; engine and GC-dependent rows
-    remain pending and full R184 closure is not claimed.
+  - Exit: REST and official-client rows have executable evidence; R189 owns
+    engine rows, and full R184 closure still requires its evidence audit.
 
 ## Verification
 
@@ -404,6 +409,7 @@ isolated runtime root.
 - Main implementation checkpoint: tasks 1–4 and their targeted acceptance.
 - Foreground interoperability checkpoint: task 5, excluding explicitly deferred
   engine and reclamation gates.
-- Full R184 closure: only after the user's separate engine project satisfies
-  the remaining acceptance. R183 evidence is complete. Keep the requirement and this
-  plan until then; keep completed summaries concise.
+- Full R184 closure: audit its REST/official-SDK acceptance against executable
+  evidence, update affected architecture, and remove the requirement and this
+  plan together. R183 evidence is complete. R189 client/engine acceptance is
+  independent and cannot be claimed from the R184 SDK results.

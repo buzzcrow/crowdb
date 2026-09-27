@@ -19,27 +19,28 @@ RUN pixi run cargo build --release \
     -p crowdb-chunkdb -p crowdb-chunk-kv-server \
     -p crowdb-access-server -p crowdb-web
 RUN pixi run bash -c 'cd app/crowdb-web/ui && npm ci && npm run build'
-RUN pixi run bash container/single-node-preview/collect-libs.sh
+RUN pixi run bash container/single-node-container/collect-libs.sh
 
 FROM ubuntu:24.04@sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libcap2-bin && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 crowdb \
     && useradd --system --uid 10001 --gid 10001 --home-dir /opt/crowdb --shell /usr/sbin/nologin crowdb
-COPY --from=builder /src/preview-runtime/bin/ /opt/crowdb/bin/
-COPY --from=builder /src/preview-runtime/lib/ /opt/crowdb/lib/
-COPY --from=builder /src/app/crowdb-web/ui/dist/ /opt/crowdb/ui/
-COPY --from=builder /src/container/single-node-preview/profile.toml /opt/crowdb/etc/profile.toml
-COPY --from=builder /src/container/single-node-preview/templates/ /opt/crowdb/etc/templates/
-COPY container/single-node-preview/entrypoint.sh /opt/crowdb/bin/entrypoint
-RUN chmod 0755 /opt/crowdb/bin/entrypoint \
+RUN --mount=type=bind,from=builder,source=/src/preview-runtime,target=/staged,ro \
+    mkdir -p /opt/crowdb \
+    && cp -a /staged/bin /staged/lib /opt/crowdb/ \
     && setcap cap_net_bind_service=+ep /opt/crowdb/bin/crowdb-iceberg \
     && mkdir -p /opt/crowdb/data /opt/crowdb/run \
     && chown -R crowdb:crowdb /opt/crowdb/data /opt/crowdb/run
+COPY --from=builder /src/app/crowdb-web/ui/dist/ /opt/crowdb/ui/
+COPY --from=builder /src/container/single-node-container/profile.toml /opt/crowdb/etc/profile.toml
+COPY --from=builder /src/container/single-node-container/templates/ /opt/crowdb/etc/templates/
+COPY container/single-node-container/entrypoint.sh /opt/crowdb/bin/entrypoint
+RUN chmod 0755 /opt/crowdb/bin/entrypoint
 
 ARG SOURCE_REVISION
 ARG PREVIEW_VERSION
 RUN test -n "$SOURCE_REVISION" && test -n "$PREVIEW_VERSION"
-LABEL org.opencontainers.image.title="CROWDB Single-Node Preview" \
+LABEL org.opencontainers.image.title="CROWDB Single-Node Container" \
       org.opencontainers.image.description="Non-production single-node storage preview" \
       org.opencontainers.image.revision="$SOURCE_REVISION" \
       org.opencontainers.image.version="$PREVIEW_VERSION"

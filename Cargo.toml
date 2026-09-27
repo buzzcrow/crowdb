@@ -39,7 +39,7 @@ exclude = ["third-party/hyper"]
 # `unsafe_code = "deny"`.
 
 [workspace.package]
-version = "0.0.0-dev"
+version = "0.1.0-dev"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"

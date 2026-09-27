@@ -16,7 +16,7 @@ impl TestDirs {
             .join(format!("monitor-render-{}", Uuid::new_v4()));
         fs::create_dir_all(root.join("templates")).unwrap();
         fs::create_dir(root.join("run")).unwrap();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/templates");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates");
         for entry in fs::read_dir(source).unwrap() {
             let entry = entry.unwrap();
             fs::copy(entry.path(), root.join("templates").join(entry.file_name())).unwrap();
@@ -42,8 +42,10 @@ impl Drop for TestDirs {
 }
 
 fn profile() -> DeploymentProfile {
-    DeploymentProfile::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/profile.toml"))
-        .unwrap()
+    DeploymentProfile::load(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
+    )
+    .unwrap()
 }
 
 #[test]

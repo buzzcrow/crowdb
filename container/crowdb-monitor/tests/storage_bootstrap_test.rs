@@ -30,7 +30,7 @@ impl TestRoot {
 
     fn profile(&self, ports: &Ports, binaries: &[(&str, &Path)]) -> DeploymentProfile {
         let mut profile = DeploymentProfile::load(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/profile.toml"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
         )
         .unwrap();
         profile.paths.install_root.clone_from(&self.0);
@@ -128,7 +128,7 @@ impl TestRoot {
     }
 
     fn templates(&self, ports: &Ports) {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/templates");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates");
         for name in [
             "kv.toml",
             "diskdb.toml",

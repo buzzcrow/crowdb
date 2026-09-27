@@ -31,7 +31,7 @@ fn monitor_web_process_config_accepts_only_process_fields() {
         assert!(toml::from_str::<WebProcessConfig>(&format!("{WEB}\n{injected}\n")).is_err());
     }
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../container/single-node-preview/templates/crowdb-web.toml");
+        .join("../../container/single-node-container/templates/crowdb-web.toml");
     let rendered = fs::read_to_string(path)
         .unwrap()
         .replace("{{install_root}}", "/opt/crowdb")

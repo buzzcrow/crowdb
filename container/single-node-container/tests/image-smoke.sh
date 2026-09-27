@@ -1,8 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-image=crowdb-single-node-preview:dev
+image=crowdb-iceberg-single-node:dev
 docker image inspect "$image" >/dev/null
+image_bytes=$(docker image inspect --format '{{.Size}}' "$image")
+if ((image_bytes > 325000000)); then
+    echo "single-node container image exceeds 325 MB: $image_bytes bytes" >&2
+    exit 1
+fi
 test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
 test "$(docker image inspect --format '{{.Config.User}}' "$image")" = crowdb:crowdb
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")" = "$(cat VERSION)"

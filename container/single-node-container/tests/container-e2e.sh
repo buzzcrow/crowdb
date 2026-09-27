@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-image=crowdb-single-node-preview:dev
+image=crowdb-iceberg-single-node:dev
 root=$(mktemp -d /tmp/crowdb-preview-e2e.XXXXXX)
 name="crowdb-preview-e2e-$$"
 chmod 0777 "$root"
@@ -94,8 +94,8 @@ verify_clients() {
     ICEBERG_TOKEN=$(printf '%s\n' "$client_env" | sed -n 's/^ICEBERG_TOKEN=//p')
     export CROWDB_PREVIEW_S3_ENDPOINT="http://127.0.0.1:$(port 8010)"
     export CROWDB_PREVIEW_ICEBERG_URI="http://127.0.0.1:$(port 80)"
-    pixi run -e s3-e2e python container/single-node-preview/tests/s3-client.py "$operation"
-    pixi run -e iceberg-e2e python container/single-node-preview/tests/iceberg-client.py "$operation"
+    pixi run -e s3-e2e python container/single-node-container/tests/s3-client.py "$operation"
+    pixi run -e iceberg-e2e python container/single-node-container/tests/iceberg-client.py "$operation"
 }
 
 verify_web_logical() {
@@ -174,6 +174,32 @@ verify_restart_exhaustion() {
         sleep 1
     done
     echo 'container stayed running after restart budget exhaustion' >&2
+    return 1
+}
+
+verify_recovery_identity_rejection() {
+    local old_pid ready_before ready_after exit_code
+    ready_before=$(docker exec "$name" cat /opt/crowdb/data/log/monitor/monitor.log |
+        jq -s '[.[] | select(.kind == "ready")] | length')
+    old_pid=$(docker exec "$name" cat /opt/crowdb/run/status/monitor.json | jq -er '.services.web.pid')
+    docker exec --user root "$name" /bin/sh -c 'printf "invalid credentials\n" > /opt/crowdb/data/secrets/server.env'
+    docker exec "$name" kill -KILL "$old_pid"
+    for attempt in $(seq 1 40); do
+        if [[ $(docker inspect --format '{{.State.Status}}' "$name") == exited ]]; then
+            exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$name")
+            [[ "$exit_code" != 0 ]]
+            ready_after=$(docker run --rm --network none --user root \
+                --mount "type=bind,source=$root,target=/data" \
+                --entrypoint /bin/sh "$image" -c \
+                'cat /data/log/monitor/monitor.log' |
+                jq -s '[.[] | select(.kind == "ready")] | length')
+            [[ "$ready_after" == "$ready_before" ]]
+            docker logs "$name" 2>&1 | grep -F 'server credentials are incomplete' >/dev/null
+            return 0
+        fi
+        sleep 1
+    done
+    echo 'container restored readiness with changed durable credentials' >&2
     return 1
 }
 
@@ -295,7 +321,8 @@ docker rm "$name" >/dev/null
 start_container
 verify_public_services
 verify_clients read
-docker stop --time 15 "$name" >/dev/null
+echo "checking recovery rejects changed durable identity"
+verify_recovery_identity_rejection
 docker rm -v "$name" >/dev/null
 echo "checking corrupt manifest rejection"
 verify_invalid_manifest_rejected

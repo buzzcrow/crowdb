@@ -18,7 +18,7 @@ impl TestRoot {
 
     fn profile_path(&self) -> PathBuf {
         let mut profile = DeploymentProfile::load(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/profile.toml"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
         )
         .unwrap();
         profile.paths.install_root.clone_from(&self.0);
@@ -30,7 +30,7 @@ impl TestRoot {
         for disk in &mut profile.disks {
             disk.path = self.0.join("data/disks").join(disk.path.file_name().unwrap());
         }
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-preview/templates");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates");
         for service in &mut profile.services {
             let name = service.program.file_name().unwrap();
             service.program = self.0.join("bin").join(name);

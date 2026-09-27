@@ -354,7 +354,7 @@ jobs:
       with:
         pixi-version: latest
     - name: Build and test single-node preview image
-      run: pixi run test-docker-preview
+      run: pixi run test-single-node-container
     - name: Capture Docker diagnostics on failure
       if: failure()
       run: |

@@ -9,7 +9,7 @@ on:
         type: string
 
 concurrency:
-  group: crowdb-iceberg-preview-release
+  group: crowdb-iceberg-single-node-preview-release
   cancel-in-progress: false
 
 jobs:
@@ -54,7 +54,7 @@ jobs:
         sudo apt-get clean
         df -h /
     - name: Build and test image without publication credentials
-      run: pixi run test-docker-preview
+      run: pixi run test-single-node-container
     - name: Run S3 client acceptance
       run: pixi run clean-env && pixi run -e s3-e2e test-boto3-e2e
     - name: Run Iceberg client acceptance
@@ -113,7 +113,7 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$REVISION" ]]
           for tag in "$RELEASE_TAG" "git-$REVISION"; do
             status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" \
-              "https://hub.docker.com/v2/namespaces/crowdb/repositories/crowdb-iceberg/tags/$tag")
+              "https://hub.docker.com/v2/namespaces/crowdb/repositories/crowdb-iceberg-single-node/tags/$tag")
             [[ "$status" == 404 ]] || { echo "Immutable tag $tag is present or registry unavailable (HTTP $status)" >&2; exit 1; }
           done
         '
@@ -127,7 +127,7 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         context: .
-        file: container/single-node-preview/Dockerfile
+        file: container/single-node-container/Dockerfile
         platforms: linux/amd64
         push: true
         provenance: mode=max
@@ -136,11 +136,11 @@ jobs:
           SOURCE_REVISION=${{ needs.verify.outputs.revision }}
           PREVIEW_VERSION=${{ needs.verify.outputs.version }}
         tags: |
-          docker.io/crowdb/crowdb-iceberg:${{ inputs.tag }}
-          docker.io/crowdb/crowdb-iceberg:git-${{ needs.verify.outputs.revision }}
-          docker.io/crowdb/crowdb-iceberg:preview
+          docker.io/crowdb/crowdb-iceberg-single-node:${{ inputs.tag }}
+          docker.io/crowdb/crowdb-iceberg-single-node:git-${{ needs.verify.outputs.revision }}
+          docker.io/crowdb/crowdb-iceberg-single-node:preview
     - uses: sigstore/cosign-installer@v4.1.2
     - name: Sign published digest
       env:
         DIGEST: ${{ steps.build.outputs.digest }}
-      run: pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"
+      run: pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg-single-node@$DIGEST"
