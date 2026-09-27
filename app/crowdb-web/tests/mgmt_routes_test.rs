@@ -305,7 +305,13 @@ async fn store_reads_reject_cached_topology_without_group0() {
     });
 
     let client = reqwest::Client::new();
-    for path in ["/api/stores", "/api/stores/7", "/api/stores/7/groups"] {
+    for path in [
+        "/api/stores",
+        "/api/stores/7",
+        "/api/stores/7/groups",
+        "/api/stores/7/groups/70",
+        "/api/stores/7/groups/70/replicas",
+    ] {
         let response = client
             .get(format!("http://{address}{path}"))
             .send()

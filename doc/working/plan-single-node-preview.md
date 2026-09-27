@@ -244,8 +244,17 @@ and verifiable release assets.
   list/detail now project Group 0 records using bulk group/replica scans and
   verified cache leader overlays; cached-only stores fail closed when Group 0
   is unavailable. The bare-metal Web group list now reuses that Group 0
-  projection. Group detail, replica read views, and monitor-cache refresh
-  still need the same authority conversion.
+  projection. Group and replica detail/list views now start from Group 0
+  membership, query only uniquely registered live management endpoints,
+  and surface unobserved replicas as `unknown` rather than inventing a
+  follower. Remaining: remove config-backed monitor refresh and convert
+  physical/deployment read projections.
+  The real-backend `22-kv-topology` Playwright spec fails in `beforeAll`
+  before any UI assertion: non-Group-0 node 381 has no live Group 0 KV
+  registration. Its keepalive currently seeds Group 0 from its own first
+  RPC port, which cannot host Group 0. This reproduced before and after
+  the role-display change; fix initial/non-member Group 0 seed propagation
+  before treating that spec as an acceptance result.
 - [~] **Bootstrap and teardown authority boundary**: keep initial Group 0
   bootstrap intent separate because Group 0 does not exist yet. After creating
   Group 0, transfer and verify every hardware/store/group/replica record, then

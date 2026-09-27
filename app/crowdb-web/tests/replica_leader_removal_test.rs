@@ -510,5 +510,21 @@ async fn remove_unreachable_leader_retains_group0_membership() {
     let replicas = context.sysmd().list_replicas_in_group(sid, gid).await.unwrap();
     assert!(replicas.iter().any(|replica| replica.replica_id == leader_rid));
 
+    let response = http
+        .get(format!("{base}/api/stores/{sid}/groups/{gid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let group: serde_json::Value = response.json().await.unwrap();
+    let dead_replica = group["replicas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|replica| replica["replica_id"] == leader_rid)
+        .expect("Group 0 member remains visible when unobserved");
+    assert_eq!(dead_replica["role"], "unknown");
+    assert_eq!(dead_replica["state"], "unknown");
+
     cluster.stop();
 }

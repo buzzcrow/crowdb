@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! A7: Logical replica plane — writes delegate to `ops::kv_logical`,
-//! reads from the monitor cache (live role/leader info).
+//! reads Group 0 membership with live role/leader overlays.
 
 use crate::error::{err_502, map_config_err, ErrorBody};
 use crate::expand::Recursive;
@@ -16,7 +16,7 @@ use crowdb_console_shared::ops;
 use serde::Deserialize;
 
 /// `GET /api/stores/:s/groups/:g/replicas`. Unified replica list from
-/// the monitor cache.
+/// Group 0 with runtime state from the monitor cache.
 ///
 /// # Errors
 /// Returns `404` if the group is not found.
@@ -25,19 +25,12 @@ pub(crate) async fn http_list_replicas(
     Path((sid, gid)): Path<(u64, u64)>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<Vec<ReplicaView>>, (StatusCode, Json<ErrorBody>)> {
-    let view = state.monitor_cache.resolve_group(sid, gid).await.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                error: format!("group {gid} in store {sid} not found"),
-            }),
-        )
-    })?;
+    let view = super::group_ops::group_view(&state, sid, gid).await?;
     Ok(Json(view.replicas))
 }
 
 /// `GET /api/stores/:s/groups/:g/replicas/:rid`. Single replica detail
-/// (logical view) from the monitor cache.
+/// (logical view) from Group 0 with runtime state overlay.
 ///
 /// # Errors
 /// Returns `404` if the group or replica is not found.
@@ -46,14 +39,7 @@ pub(crate) async fn http_get_replica(
     Path((sid, gid, rid)): Path<(u64, u64, u64)>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<ReplicaView>, (StatusCode, Json<ErrorBody>)> {
-    let view = state.monitor_cache.resolve_group(sid, gid).await.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                error: format!("group {gid} in store {sid} not found"),
-            }),
-        )
-    })?;
+    let view = super::group_ops::group_view(&state, sid, gid).await?;
     let replica = view
         .replicas
         .iter()

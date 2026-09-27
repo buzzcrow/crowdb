@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 export type UiHealth = 'Healthy' | 'Degraded' | 'Failed' | 'Unknown';
-export type UiRole = 'Leader' | 'Follower' | 'Remote';
+export type UiRole = 'Leader' | 'Follower' | 'Remote' | 'Unknown';
 
 function normalize(value?: string | null): string {
   return String(value || '').trim().toLowerCase();
@@ -70,7 +70,8 @@ export function toUiRole(value?: string | null): UiRole {
   const raw = normalize(value);
   if (raw === 'leader') return 'Leader';
   if (raw === 'follower') return 'Follower';
-  return 'Remote';
+  if (raw === 'remote') return 'Remote';
+  return 'Unknown';
 }
 
 export function toUiReplicaRole(value?: string | null, state?: string | null): UiRole | undefined {
