@@ -3,7 +3,6 @@
 
 //! Independent listener lifecycle for external access protocols.
 
-#[cfg(feature = "iceberg")]
 pub mod iceberg;
 
 #[cfg(feature = "s3")]

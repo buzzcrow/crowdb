@@ -1,5 +1,3 @@
-#![cfg(feature = "iceberg")]
-
 #[path = "common/iceberg_signed_chunks.rs"]
 mod signed;
 

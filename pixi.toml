@@ -78,7 +78,7 @@ set -e
 pixi run -e default build-cpp
 pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
 pixi run -e default test-access-s3
-pixi run -e default test-access-server-s3
+pixi run -e default test-access-server
 CROWDB_S3_E2E_PYTHON="$PIXI_PROJECT_ROOT/.pixi/envs/s3-e2e/bin/python" pixi run -e default -- cargo test -p crowdb-access-server --features s3-e2e --test s3_full_stack_test -- --nocapture
 '
 '''
@@ -100,7 +100,7 @@ bash -c '
 set -e
 pixi run -e default -- cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release
 pixi run -e default -- cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
-pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server --features crowdb-access-server/iceberg
+pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
 CROWDB_RUNTIME_ROOT="$PIXI_PROJECT_ROOT/.crowdb-runtime/ephemeral/iceberg-java-e2e" pixi run -e default clean-env
 CROWDB_RUNTIME_ROOT="$PIXI_PROJECT_ROOT/.crowdb-runtime/ephemeral/iceberg-java-e2e" CROWDB_ICEBERG_E2E_MVN="$CONDA_PREFIX/bin/mvn" JAVA_HOME="$CONDA_PREFIX/lib/jvm" pixi run -e default -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test official_java_ -- --ignored --nocapture --test-threads=1
 '
@@ -110,9 +110,9 @@ bash -c '
 set -e
 pixi run -e default -- cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release
 pixi run -e default -- cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
-pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server --features crowdb-access-server/iceberg
+pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
 pixi run -e default clean-env
-pixi run -e default test-access-server-iceberg
+pixi run -e default test-access-server
 CROWDB_RUNTIME_ROOT="$PIXI_PROJECT_ROOT/.crowdb-runtime/ephemeral/iceberg-e2e" CROWDB_ICEBERG_E2E_PYTHON="$PIXI_PROJECT_ROOT/.pixi/envs/iceberg-e2e/bin/python" pixi run -e default -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_full_stack_test -- --nocapture
 '
 '''
@@ -159,6 +159,29 @@ ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
 build = { cmd = "cargo build --release --workspace --exclude crowdb-kv-client && cargo build --release -p crowdb-kv-client --features ffi && cd app/crowdb-web/ui && npm run build", depends-on = ["build-cpp", "install-ui-deps"] }
 default = { depends-on = ["build"] }
+build-docker-preview = '''
+bash -euc '
+command -v docker >/dev/null || { echo "Docker CLI is required for the preview image" >&2; exit 1; }
+docker info >/dev/null || { echo "Docker daemon is unavailable" >&2; exit 1; }
+proxy_args=()
+for name in http_proxy https_proxy all_proxy no_proxy; do
+  value="${!name:-}"
+  if [[ "$value" == *'@'* ]]; then
+    echo "Credential-bearing proxy settings are not accepted by the preview image build" >&2
+    exit 1
+  fi
+  if [[ "$name" != no_proxy && -n "$value" && "$value" != *://* ]]; then value="http://$value"; fi
+  if [[ -n "$value" ]]; then proxy_args+=(--build-arg "$name=$value"); fi
+done
+DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+  --file container/single-node-preview/Dockerfile \
+  "${proxy_args[@]}" \
+  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
+  --build-arg PREVIEW_VERSION="$(cat VERSION)" \
+  --tag crowdb-single-node-preview:dev .
+'
+'''
+test-docker-preview = { cmd = "bash container/single-node-preview/tests/image-smoke.sh", depends-on = ["build-docker-preview"] }
 
 # ── Run ──────────────────────────────────────────────────────────
 web = { cmd = "echo 'CROWDB console starting at: http://127.0.0.1:14000/' && cargo run --release -p crowdb-web", depends-on = ["build"] }
@@ -249,8 +272,8 @@ test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --all-targets" }
 test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --all-targets" }
 test-access-s3 = { cmd = "cargo test -p crowdb-access-s3 --all-targets" }
 test-access-iceberg = { cmd = "cargo test -p crowdb-access-iceberg --all-targets" }
-test-access-server-iceberg = { cmd = "cargo test -p crowdb-access-server --features iceberg --all-targets" }
-test-access-server-s3 = { cmd = "cargo test -p crowdb-access-server --all-targets" }
+test-access-server = { cmd = "cargo test -p crowdb-access-server --all-targets" }
+test-monitor = { cmd = "cargo test -p crowdb-monitor --all-targets" }
 test-server = { cmd = '''
 bash -c '
 set -e
@@ -261,7 +284,8 @@ pixi run test-diskdb-client
 pixi run test-chunkdb
 pixi run test-chunk-client
 pixi run test-diskio-client
-pixi run test-access-server-iceberg
+pixi run test-access-server
+pixi run test-monitor
 '
 ''', depends-on = ["build-tests"] }
 

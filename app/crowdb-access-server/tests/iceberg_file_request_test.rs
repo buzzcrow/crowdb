@@ -1,5 +1,3 @@
-#![cfg(feature = "iceberg")]
-
 use crowdb_access_iceberg::file::{FileOperation, TableLocation};
 use crowdb_access_iceberg::key::{CatalogId, TableId};
 use crowdb_access_server::iceberg::{FileRequest, FileRequestError, MultipartRequest};

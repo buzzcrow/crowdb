@@ -1,5 +1,3 @@
-#![cfg(feature = "iceberg")]
-
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::file::{
     FileCredentials, FileGrant, FileGrantIssuer, FileOperation, FileOperations,

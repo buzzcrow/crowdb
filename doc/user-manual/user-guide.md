@@ -952,7 +952,7 @@ healthy Group 0, Chunk-KV and chunk-storage deployment; S3 credentials and bucke
 do not select or authorize an Iceberg catalog.
 
 ```bash
-pixi run -- cargo build -p crowdb-access-server --no-default-features --features iceberg --bin crowdb-iceberg
+pixi run -- cargo build -p crowdb-access-server --bin crowdb-iceberg
 export CROWDB_MANAGEMENT_SEEDS=127.0.0.1:10000
 export CROWDB_ICEBERG_LISTEN=127.0.0.1:8181
 ```

@@ -169,7 +169,7 @@ trade away durability, fencing, bounds or assertions for a passing timing result
 ## Verification and execution notes
 
 - Library: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`.
-- HTTP: `pixi run clean-env && pixi run -- cargo test -p crowdb-access-server --features iceberg --all-targets`.
+- HTTP: `pixi run clean-env && pixi run -- cargo test -p crowdb-access-server --all-targets`.
   Default server tests alone skip the Iceberg suites.
 - SDK: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_table_sdk_test -- --ignored --nocapture --test-threads=1`.
 - Namespace SDK: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_namespace_sdk_test -- --ignored --nocapture`.

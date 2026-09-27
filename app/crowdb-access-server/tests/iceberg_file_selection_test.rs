@@ -1,5 +1,3 @@
-#![cfg(feature = "iceberg")]
-
 use crowdb_access_server::iceberg::CompleteSelection;
 
 #[test]

@@ -1,0 +1,13 @@
+.git
+.pixi
+.crowdb-runtime
+target
+**/target
+**/build
+**/build-*
+**/node_modules
+**/dist
+**/.cache
+**/.env
+**/*.log
+**/secrets

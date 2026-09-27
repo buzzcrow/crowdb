@@ -199,16 +199,23 @@ and verifiable release assets.
 
 ## Phase 5 — Image and local acceptance
 
-- [ ] **Image assets**: add the digest-pinned Ubuntu 24.04 amd64 multi-stage
+- [x] **Image assets**: add the digest-pinned Ubuntu 24.04 amd64 multi-stage
   Dockerfile, `.dockerignore`, non-root user, `/opt/crowdb` install layout,
   immutable UI/templates/profile, entrypoint, OCI labels from `VERSION`, exposed
   public ports only, and monitor health checks. Files:
   `container/single-node-preview/{Dockerfile,.dockerignore}` and build support.
   Default invocation maps host `80:80` for Iceberg. Enable binding container
   port 80 for the non-root Iceberg process without running the whole image as root.
-- [ ] **Pixi tasks**: add `build-docker-preview` and `test-docker-preview`, include
+  Built `crowdb-single-node-preview:dev` with digest-pinned Ubuntu 24.04,
+  release binaries and packaged UI, UID 10001, and file-scoped port-80
+  capability. The image smoke verifies the profile, binary loading, labels,
+  capability, and fail-closed missing-volume path. Full boot remains in the
+  separate Container E2E task.
+- [x] **Pixi tasks**: add `build-docker-preview` and `test-docker-preview`, include
   the monitor in workspace build/test coverage, and keep Docker prerequisite
   failures explicit. Files: `pixi.toml`, task-coverage configuration/tests.
+  Both tasks run through Pixi; the monitor is assigned to `test-monitor` and
+  `test-server`. Test-task coverage and monitor tests pass.
 - [ ] **Container E2E**: test empty boot, directory/permission contract,
   credentials retrieval, AWS CLI/boto3 Parquet PUT/LIST/HEAD/range-GET/GET,
   pinned PyIceberg operations, web health/status, SIGTERM/recreate persistence,

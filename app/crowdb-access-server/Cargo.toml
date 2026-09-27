@@ -13,74 +13,40 @@ workspace = true
 [features]
 default = ["s3"]
 test-util = []
-iceberg = [
-    "dep:async-trait",
-    "dep:chrono",
-    "dep:thiserror",
-    "dep:crowdb-access-s3",
-    "dep:crowdb-access-iceberg",
-    "dep:crowdb-chunk-client",
-    "dep:crowdb-chunk-kv-client",
-    "dep:crowdb-kv-client",
-    "dep:crowdb-protocol",
-    "dep:http-body-util",
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:percent-encoding",
-    "dep:quick-xml",
-    "dep:base64",
-    "dep:md-5",
-    "dep:serde_json",
-    "dep:serde",
-    "dep:sha2",
-    "dep:sha1",
-    "dep:crc",
-]
-s3-e2e = ["s3", "dep:crowdb-protocol"]
-iceberg-e2e = ["iceberg"]
+s3-e2e = ["s3"]
+iceberg-e2e = []
 s3 = [
-    "dep:async-trait",
-    "dep:chrono",
-    "dep:crowdb-access-s3",
-    "dep:crowdb-chunk-client",
-    "dep:crowdb-chunk-kv-client",
     "dep:crowdb-common",
-    "dep:crowdb-kv-client",
     "dep:futures",
-    "dep:http-body-util",
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:percent-encoding",
-    "dep:thiserror",
 ]
 
 [dependencies]
-async-trait = { version = "0.1", optional = true }
-chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
-crowdb-access-iceberg = { path = "../../lib/crowdb-access-iceberg", optional = true }
-crowdb-access-s3 = { path = "../../lib/crowdb-access-s3", optional = true }
-crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client", optional = true }
-crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client", optional = true }
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+crowdb-access-iceberg = { path = "../../lib/crowdb-access-iceberg" }
+crowdb-access-s3 = { path = "../../lib/crowdb-access-s3" }
+crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
+crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
 crowdb-common = { path = "../../lib/crowdb-common/rust", optional = true }
-crowdb-kv-client = { path = "../../lib/crowdb-kv-client", optional = true }
-crowdb-protocol = { path = "../../lib/crowdb-protocol", optional = true }
+crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
+crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 futures = { version = "0.3", optional = true }
-http-body-util = { version = "0.1", optional = true }
-hyper = { workspace = true, features = ["http1", "server"], optional = true }
-hyper-util = { version = "0.1", features = ["tokio"], optional = true }
-percent-encoding = { version = "2", optional = true }
-quick-xml = { version = "0.38", optional = true }
-base64 = { version = "0.22", optional = true }
-md-5 = { version = "0.10", optional = true }
-serde_json = { version = "1", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-sha2 = { version = "0.10", optional = true }
-sha1 = { version = "0.10", optional = true }
-crc = { version = "3.3", optional = true }
+http-body-util = "0.1"
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+percent-encoding = "2"
+quick-xml = "0.38"
+base64 = "0.22"
+md-5 = "0.10"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+sha1 = "0.10"
+crc = "3.3"
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-thiserror = { workspace = true, optional = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 crowdb-access-server = { path = ".", default-features = false, features = ["test-util"] }
@@ -105,7 +71,6 @@ required-features = ["s3-e2e"]
 [[bin]]
 name = "crowdb-iceberg"
 path = "src/iceberg_main.rs"
-required-features = ["iceberg"]
 
 [[test]]
 name = "iceberg_full_stack_test"
@@ -125,7 +90,6 @@ required-features = ["iceberg-e2e"]
 [[test]]
 name = "iceberg_gc_budget_test"
 path = "tests/iceberg_gc_budget_test.rs"
-required-features = ["iceberg"]
 
 [[test]]
 name = "iceberg_gc_capacity_test"

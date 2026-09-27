@@ -1,5 +1,3 @@
-#![cfg(feature = "iceberg")]
-
 use std::future::pending;
 use std::sync::{
     atomic::{AtomicBool, Ordering},

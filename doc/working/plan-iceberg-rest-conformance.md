@@ -287,7 +287,7 @@ Executable foreground evidence matrix (not engine certification):
   `pixi run cargo test -p crowdb-access-iceberg --test table_metadata_sdk_snapshot_test`
   checks v1/v2/v3 refs and v3 row lineage. Java 1.11.0's table SDK fixture
   requests direct v1-to-v3 upgrade over REST, and
-  `pixi run cargo test -p crowdb-access-server --features iceberg --test iceberg_table_http_test`
+  `pixi run cargo test -p crowdb-access-server --test iceberg_table_http_test`
   verifies selected v3 load metrics. All pass. These are metadata and REST
   checks, not an end-to-end v3 row scan.
 - **Deletes and auxiliary files, selected formats:**

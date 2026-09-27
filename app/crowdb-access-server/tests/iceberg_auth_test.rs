@@ -1,5 +1,3 @@
-#![cfg(feature = "iceberg")]
-
 use std::process::Command;
 
 #[test]

@@ -1,5 +1,3 @@
-#![cfg(feature = "iceberg")]
-
 #[path = "common/iceberg_file_blocks.rs"]
 mod blocks;
 #[path = "common/iceberg_upload.rs"]
