@@ -39,6 +39,14 @@ and launch inputs locally.
   or replica records on these failures. Prove with real Group 0 and controlled
   management endpoints. Files: shared `ops/kv_logical.rs` and
   `tests/ops_logical_fanout_test.rs`.
+- [x] **Logical deletion cleanup**: derive store hosts from both store and
+  replica membership, confirm every node deletion before removing authority,
+  and remove descendant records before parents. Test success, sibling
+  preservation, later replica hosts and node-side failure. Files: shared
+  `ops/kv_logical.rs`, `tests/ops_logical_delete_test.rs`.
+- [~] **Replica creation cleanup**: clean a newly created target store when
+  local group creation fails, preserve pre-existing target groups, and report
+  incomplete rollback. Test injected creation and cleanup failures.
 - [ ] **Confirmed logical mutations**: reconcile lost responses through
   confirmed authority, complete replica fan-out/rollback and delete cleanup;
   preserve Group 0 membership when node-side deletion fails. Reuse the common
@@ -77,6 +85,12 @@ and launch inputs locally.
   then remove the requirement, backlog entry and this plan when complete.
 
 ## Evidence
+
+- Deletion baseline fails three of four cases: later replica hosts are skipped,
+  node-side failure reports success, and group deletion leaves replica records.
+  All four now pass, including idempotent node-side 404 and preservation of
+  sibling groups. Complete Console shared tests, affected Web migration/replica
+  tests, fmt and workspace clippy pass. Logs: `/tmp/crowdb-delete-*.log`.
 
 - Group fan-out baseline: both rejected remote wiring and missing peer endpoint
   returned success. Both failure-injection cases now pass, and the complete

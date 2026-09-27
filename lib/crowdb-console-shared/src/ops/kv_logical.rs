@@ -219,7 +219,12 @@ pub async fn remove_store(ctx: &OpContext, store_id: u64) -> Result<()> {
             kind: "store".into(),
             id: store_id.to_string(),
         })?;
-    let node_ids = store.node_ids;
+    let groups = ctx.sysmd().list_groups_in_store(store_id).await?;
+    let replicas = ctx.sysmd().list_replicas_in_store(store_id).await?;
+    let mut node_ids = store.node_ids;
+    node_ids.extend(replicas.iter().map(|replica| replica.node_id));
+    node_ids.sort_unstable();
+    node_ids.dedup();
     for nid in &node_ids {
         let client = server_client(ctx, *nid).await?;
         if let Err(error) = client.remove_store(store_id).await {
@@ -227,6 +232,16 @@ pub async fn remove_store(ctx: &OpContext, store_id: u64) -> Result<()> {
                 return Err(error);
             }
         }
+    }
+    // Keep parent records until all node deletions and child cleanup succeed,
+    // so a failed cleanup can be retried using the remaining authority.
+    for replica in replicas {
+        ctx.sysmd()
+            .remove_replica(store_id, replica.group_id, replica.replica_id)
+            .await?;
+    }
+    for group in groups {
+        ctx.sysmd().remove_group(store_id, group.group_id).await?;
     }
     ctx.sysmd().remove_store(store_id).await?;
     Ok(())
@@ -369,6 +384,11 @@ pub async fn remove_group(ctx: &OpContext, store_id: u64, group_id: u64) -> Resu
                 return Err(error);
             }
         }
+    }
+    for replica in replicas {
+        ctx.sysmd()
+            .remove_replica(store_id, group_id, replica.replica_id)
+            .await?;
     }
     ctx.sysmd().remove_group(store_id, group_id).await?;
     Ok(())
