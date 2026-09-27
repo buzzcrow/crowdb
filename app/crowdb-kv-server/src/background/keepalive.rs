@@ -55,10 +55,16 @@ impl KeepAliveLoop {
                 kv_client.seed_leader(0, 0, ep);
             }
             let svc = ServiceRegistryClient::new(kv_client);
+            let mut discovered_seeds = Vec::new();
+
+            let discovery_ready = !bootstrap_local
+                || refresh_discovery(&registry, &svc, &mut discovered_seeds).await;
 
             // Initial registration.
             let (stores, groups) = hosted_summary(&registry);
-            let mut registered = if let Err(e) = svc
+            let mut registered = if !discovery_ready {
+                false
+            } else if let Err(e) = svc
                 .register_kv_server(identity, &rpc_endpoint, &stores, &groups, "ok", &data_root)
                 .await
             {
@@ -81,6 +87,11 @@ impl KeepAliveLoop {
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
+                        if bootstrap_local
+                            && !refresh_discovery(&registry, &svc, &mut discovered_seeds).await
+                        {
+                            continue;
+                        }
                         let (stores, groups) = hosted_summary(&registry);
                         if let Err(e) = svc
                             .heartbeat_kv_server(identity, &rpc_endpoint, &stores, &groups, "ok", &data_root)
@@ -140,6 +151,32 @@ impl KeepAliveLoop {
         }
         if let Some(h) = self.handle.take() {
             let _ = h.await;
+        }
+    }
+}
+
+async fn refresh_discovery(
+    registry: &KvStoreRegistry,
+    service: &ServiceRegistryClient,
+    current: &mut Vec<String>,
+) -> bool {
+    match super::discovery::load(&registry.config.config_root).await {
+        Ok(Some(seeds)) if seeds != *current => {
+            service.kv().set_mgmt_seeds(seeds.clone());
+            if let Err(error) = service.kv().refresh_topology().await {
+                debug!(%error, "keep-alive: discovery unavailable; deferring registration");
+                return false;
+            }
+            *current = seeds;
+            true
+        }
+        Ok(Some(_)) => true,
+        Ok(None) => registry
+            .get_store(0)
+            .is_some_and(|store| store.get_group(0).is_some()),
+        Err(error) => {
+            warn!(%error, "keep-alive: discovery hints unreadable; deferring registration");
+            false
         }
     }
 }

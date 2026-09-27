@@ -1,0 +1,97 @@
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
+
+# Console Authority Plan
+
+Upstream: [R188](../backlog/R188-console-group0-authority.md).
+
+Goal: make Group 0 the shared CLI/Web authority while retaining only process
+and launch inputs locally.
+
+## Registration and acceptance failures
+
+- [x] **Pre-bootstrap nonmember registration**: reproduce the missing live
+  registration for servers started before Group 0 but excluded from its member
+  set. Propagate discovery seeds after confirmed initialization, retain them
+  across restart as launch inputs, and wait for exactly one live identity before
+  declaring the bootstrap complete. Do not create local topology fallback or
+  restart processes into a different workspace. Files: KV server keepalive and
+  management modules, console shared cluster initialization and HTTP client,
+  focused integration tests, UI node-inspection and replica flows.
+- [x] **Unavailable logical view**: preserve the explicit unavailable state
+  before Group 0 exists and during outages, clear stale logical rows, and avoid
+  treating an expected unavailable response as an unhandled browser exception.
+  Update the canvas navigation assertions to distinguish unavailable authority
+  from a confirmed empty cluster. Files: UI logical-tree data hook, KV panel,
+  shell/canvas/full-chain specs.
+
+## Configuration and common operations
+
+- [ ] **Launch registry lifecycle**: wire `WebProcessConfig` and `LaunchRegistry`
+  into CLI and bare-metal Web deploy/restart paths. Consume binary, service
+  config, workspace, host and auto-start policy; retain PIDs only in runtime
+  state and resolve SSH credentials through references. Files: console shared
+  config/lifecycle, CLI startup, Web startup/state/lifecycle and tests.
+- [ ] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
+  parser/writer, inline SSH secrets, topology restoration and fixtures after
+  the launch lifecycle and replay-safe bootstrap paths are wired. Preserve
+  bootstrap intent independently until verified cutover. Update CLI commands,
+  Web persistence and S3 mini-cluster callers together; no compatibility reader.
+- [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
+  shared Group 0 hardware operations; preserve conflicts and uncertain writes
+  without local-first commits. Docker keeps its hardware restrictions.
+- [ ] **Confirmed logical operations**: consolidate store/group/replica
+  operations, lost-response reconciliation, fan-out and rollback; keep Group 0
+  membership when a node-side deletion fails.
+- [ ] **Authority-only reads**: replace local monitor/config topology and
+  endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
+  expired registrations remain unavailable.
+- [ ] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
+  committed records, write only safely missing content, reject conflicts and
+  delete topology intent after verified transfer. Clean/destroy use confirmed
+  authority. Audit S3 mini-cluster persistence against the same contract.
+
+## Documentation and completion
+
+- [ ] **Bare-metal guide**: migrate verified KV, chunk and access setup from
+  the old combined guide, state the non-production boundary, then fix links and
+  remove the old guide. Keep the Docker end-user guide independent.
+- [ ] **Acceptance and cleanup**: run affected integration cases, full console
+  and UI suites, Rust fmt and lint; update the relevant permanent architecture,
+  then remove the requirement, backlog entry and this plan when complete.
+
+## Evidence
+
+- Discovery integration passes duplicate seed submission, invalid origins,
+  exactly one live nonmember identity, no accidental membership, and restart
+  with persisted hints. Rust fmt and workspace clippy pass.
+- Affected browser cases now pass: shell dialogs (11.9s), shell health (3.3s),
+  node inspection (8.3s), node cross-jump (2.7s), full-chain flow (4.8s), and
+  all three canvas cases (3.2s / 0.8s / 4.2s). The canvas assertion is scoped
+  to the main panel because the same unavailable text appears in a notification.
+- Logical-tree hook regression passes confirmed reads, outage clearing, and
+  recovery. Full KV Server and Console shared-library gates pass. Complete
+  CLI/Web and browser gates remain pending for requirement completion.
+
+- Initial full Console UI baseline: 85 component tests pass; 51 browser tests
+  pass and five fail. Missing live registration affects node 203 in shell
+  replica creation and node 262 in node inspection. Two canvas assertions
+  expect an empty-store view before Group 0 exists; the full-chain flow records
+  logical-tree fetch errors during that same uninitialized phase.
+- Isolated `12-cluster-node-inspect.spec.ts` reproduces HTTP 404 for node 262;
+  one test passes and one fails in 25.2 seconds. This is not solely an ordering
+  issue in the full browser suite. Keepalive uses its local bootstrap endpoint
+  when launched without seeds; cluster initialization currently waits only for
+  selected Group 0 members and does not propagate seeds to nonmembers.
+
+## Tests
+
+- Focused: KV server discovery/keepalive integration, console shared bootstrap
+  and operation tests, affected shell/node-inspection/canvas/full-chain specs.
+- Full: `pixi run clean-env && pixi run test-console` and
+  `pixi run clean-env && pixi run test-console-ui`, sequentially.
+- Style: `pixi run rs-fmt-check` and `pixi run rs-lint`.
+
+## Open Questions
+
+None identified yet.

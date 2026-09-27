@@ -655,6 +655,12 @@ group-0 sysdata. After `cluster init` completes, subsequent commands
 use `--system-ip` / `--system-port` to connect to any node in the newly
 created system group.
 
+Initialization also sends Group 0 management seeds to deployed KV processes
+outside the selected member set and waits for exactly one live registration
+per node. Those processes retain connection hints locally across restart;
+they do not become Group 0 members. Logical operations use the confirmed live
+registrations rather than treating launch configuration as a live endpoint.
+
 ### 7.4 `cluster clean` — data wipe boundary
 
 `cluster clean` wipes user-layer data across all storage services,

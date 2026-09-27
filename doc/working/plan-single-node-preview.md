@@ -158,8 +158,8 @@ dynamic Folly library is about 7.4 MB after
 stripping; Boost.Regex pulls in about 39 MB of ICU libraries. Removing the
 unused Regex export from the Folly link interface eliminated
 `libboost_regex.so` from the local `crowdb-diskio` ELF dependency list and
-passed the 128 DiskIO C++ tests, but the container image has not yet been
-rebuilt with that change.
+passed the 128 DiskIO C++ tests. The rebuilt host candidate excludes that
+closure and saves 39,406,717 bytes against the previous image.
 
 ## Final Gates and Cleanup
 
@@ -198,7 +198,7 @@ rebuilt with that change.
   measurement. An incorrect source-revision build argument is rejected.
 - Real-container browser acceptance passes: Group 0 outage clears topology
   while monitor process state remains visible, then topology recovers. Full
-  container crash/hang/restart acceptance is still running.
+  container crash/hang/restart acceptance also passed on the host candidate.
 - Workspace Rust fmt and lint pass after host packaging changes. Local release
   policy checks pass; actual Docker Hub publication remains deferred.
 
@@ -210,8 +210,9 @@ rebuilt with that change.
   and 5 failing tests. One failure reports missing live registration for a
   pre-Group-0 nonmember node. These failures remain under diagnosis.
 
-- Full `pixi run test-console` completed with exit 0. Complete Console UI
-  acceptance is running separately, without overlapping native service suites.
+- Full `pixi run test-console` completed with exit 0 before the nonmember
+  discovery fix. Its affected browser regressions now pass; updated complete
+  Console gates are tracked in the Console authority plan.
 - Candidate image build attempt 1 failed during dependency download, before
   compilation: compiler-rt package transfer ended with TLS unexpected EOF.
   Attempt 2 uses a BuildKit rattler cache so completed package downloads survive

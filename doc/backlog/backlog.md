@@ -87,8 +87,7 @@ Caches, selected ORC and container engine workflows remain separate.
   CROWDB process graph, exposes S3, Iceberg, and web endpoints, persists through
   one mounted data root, and proves client workflows and restart behavior.
 - **[R188](R188-console-group0-authority.md)** — Group 0 authority and
-  deployment configuration cleanup — Area: console / CLI / KV — **Deferred
-  until R187 is publish-ready.** Separate bare-metal launch policy from
+  deployment configuration cleanup — Area: console / CLI / KV — Separate bare-metal launch policy from
   cluster sysdata, remove the mixed local topology fallback, and finish
   cross-mode console consistency without moving Docker process state into
   Group 0.

@@ -3,12 +3,6 @@
 
 ### R188: console — Group 0 authority and deployment configuration cleanup
 
-## Status
-
-Deferred until the R187 single-node Docker image is locally verified. This work
-must not delay the preview image or turn Group 0 into a Docker deployment
-registry.
-
 ## Problem
 
 The unreleased `ConsoleConfig` in

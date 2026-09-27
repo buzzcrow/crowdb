@@ -279,12 +279,33 @@ pub async fn init(ctx: &OpContext, nodes: &[u64]) -> Result<InitSummary> {
     write_topology_to_sysdata(ctx, &store_nodes, &succeeded).await;
 
     wait_for_live_registration(ctx, &store_nodes).await?;
+    propagate_discovery(ctx, &store_nodes, &mgmt_seeds).await?;
 
     Ok(InitSummary {
         store_id: 0,
         group_id: 0,
         nodes: succeeded,
     })
+}
+
+async fn propagate_discovery(ctx: &OpContext, members: &[u64], seeds: &[String]) -> Result<()> {
+    let nonmembers: Vec<_> = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter_map(|server| server.node_id)
+        .filter(|node| !members.contains(node))
+        .collect();
+    for node in &nonmembers {
+        server_client(ctx, *node)?
+            .set_group0_discovery(seeds.to_vec())
+            .await?;
+    }
+    if !nonmembers.is_empty() {
+        wait_for_live_registration(ctx, &nonmembers).await?;
+    }
+    Ok(())
 }
 
 async fn wait_for_live_registration(ctx: &OpContext, nodes: &[u64]) -> Result<()> {
