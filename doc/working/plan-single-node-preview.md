@@ -383,13 +383,13 @@ and verifiable release assets.
 
 ## Phase 6 — CI and publication
 
-- [~] **PR Docker CI**: add an amd64 build/test job with no registry write
+- [x] **PR Docker CI**: add an amd64 build/test job with no registry write
   credentials and failure artifacts. Files: `.github/workflows/ci.yml`. An
   isolated `ubuntu-24.04` job now runs Pixi image smoke and container E2E with
   read-only repository permission and prints Docker diagnostics on failure;
-  upload structured failure artifacts before closing. The container E2E now
-  copies monitor and service logs, excluding secrets, into a failure-artifact
-  directory; CI and release verify jobs upload that directory.
+  upload structured failure artifacts. The container E2E copies monitor and
+  service logs, excluding secrets, into a failure-artifact directory; CI and
+  release verify jobs upload it. The local release-policy gate passes.
 - [~] **Release workflow**: add manual-only, release-tag-targeted publication to
   `crowdb/crowdb-iceberg`, gated by a protected GitHub environment, with
   immutable version and `git-<commit>` tags, moving `preview`, no `latest`,
