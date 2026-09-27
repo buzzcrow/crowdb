@@ -123,3 +123,22 @@ async fn create<T: serde::Serialize>(ctx: &OpContext, key: String, value: &T) ->
         Err(error) => Err(error.into()),
     }
 }
+
+pub(super) async fn remove(ctx: &OpContext, key: impl TextKey) -> Result<()> {
+    let path = key.to_path();
+    match ctx.kv().delete(0, 0, path.as_bytes(), None).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            // Deletion may have committed even when its response was lost.
+            // Absence must be confirmed by authority, never by a local cache.
+            match ctx
+                .kv()
+                .get(0, 0, path.as_bytes(), ReadMode::Linearizable, None)
+                .await?
+            {
+                GetOutcome::NotFound => Ok(()),
+                GetOutcome::Found { .. } => Err(error.into()),
+            }
+        }
+    }
+}

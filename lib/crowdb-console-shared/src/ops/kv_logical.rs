@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 
+use crowdb_protocol::key::{KvGroupKey, KvReplicaKey, KvStoreKey};
 use crowdb_protocol::mgmt::{
     AddGroupInitialRole, AddGroupRequest, AddStoreRequest, RemoteReplicaInfo, StepDownRequest,
 };
@@ -199,14 +200,27 @@ pub async fn remove_store(ctx: &OpContext, store_id: u64) -> Result<()> {
     // Keep parent records until all node deletions and child cleanup succeed,
     // so a failed cleanup can be retried using the remaining authority.
     for replica in replicas {
-        ctx.sysmd()
-            .remove_replica(store_id, replica.group_id, replica.replica_id)
-            .await?;
+        publication::remove(
+            ctx,
+            KvReplicaKey {
+                store_id,
+                group_id: replica.group_id,
+                replica_id: replica.replica_id,
+            },
+        )
+        .await?;
     }
     for group in groups {
-        ctx.sysmd().remove_group(store_id, group.group_id).await?;
+        publication::remove(
+            ctx,
+            KvGroupKey {
+                store_id,
+                group_id: group.group_id,
+            },
+        )
+        .await?;
     }
-    ctx.sysmd().remove_store(store_id).await?;
+    publication::remove(ctx, KvStoreKey { store_id }).await?;
     Ok(())
 }
 
@@ -342,11 +356,17 @@ pub async fn remove_group(ctx: &OpContext, store_id: u64, group_id: u64) -> Resu
         }
     }
     for replica in replicas {
-        ctx.sysmd()
-            .remove_replica(store_id, group_id, replica.replica_id)
-            .await?;
+        publication::remove(
+            ctx,
+            KvReplicaKey {
+                store_id,
+                group_id,
+                replica_id: replica.replica_id,
+            },
+        )
+        .await?;
     }
-    ctx.sysmd().remove_group(store_id, group_id).await?;
+    publication::remove(ctx, KvGroupKey { store_id, group_id }).await?;
     Ok(())
 }
 
@@ -605,7 +625,15 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
         }
     }
 
-    ctx.sysmd().remove_replica(store_id, group_id, replica_id).await?;
+    publication::remove(
+        ctx,
+        KvReplicaKey {
+            store_id,
+            group_id,
+            replica_id,
+        },
+    )
+    .await?;
     Ok(())
 }
 

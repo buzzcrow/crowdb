@@ -47,7 +47,7 @@ and launch inputs locally.
 - [x] **Replica creation cleanup**: clean a newly created target store when
   local group creation fails, preserve pre-existing target groups, and report
   incomplete rollback. Test injected creation and cleanup failures.
-- [~] **Confirmed logical mutations**: reconcile lost responses through
+- [x] **Confirmed logical mutations**: reconcile lost responses through
   confirmed authority, complete replica fan-out/rollback and delete cleanup;
   preserve Group 0 membership when node-side deletion fails. Reuse the common
   flow in CLI and both Web modes, with no local topology commit.
@@ -55,15 +55,18 @@ and launch inputs locally.
   replicas; test concurrent matching/conflicting records and a real RPC reply
   dropped after commit. New groups and their initial replicas now use one
   conditional batch; confirm the complete member set after a lost reply.
-  Finish deletion reconciliation before closing this task.
+  Reconcile failed delete responses with a confirmed absence read.
 
 ## Configuration and hardware operations
 
-- [ ] **Launch registry lifecycle**: wire `WebProcessConfig` and `LaunchRegistry`
+- [~] **Launch registry lifecycle**: wire `WebProcessConfig` and `LaunchRegistry`
   into CLI and bare-metal Web deploy/restart paths. Consume binary, service
   config, workspace, host and auto-start policy; retain PIDs only in runtime
   state and resolve SSH credentials through references. Files: console shared
   config/lifecycle, CLI startup, Web startup/state/lifecycle and tests.
+  First complete launch arguments/readiness inputs, shared local/SSH lifecycle
+  and runtime-only process identity. Then connect Web auto-start and CLI
+  deployment/restart callers before removing mixed persistence.
 - [ ] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
   parser/writer, inline SSH secrets, topology restoration and fixtures after
   the launch lifecycle and replay-safe bootstrap paths are wired. Preserve
@@ -90,6 +93,11 @@ and launch inputs locally.
   then remove the requirement, backlog entry and this plan when complete.
 
 ## Evidence
+
+- Deletion reconciliation passes all six cases, including a real dropped
+  metadata reply for both store and group deletion. Complete Console shared,
+  affected Web migration/replica tests, fmt and clippy pass.
+  Logs: `/tmp/crowdb-delete-reconcile-*.log`.
 
 - Group publication baseline gives the group and initial replica different
   committed revisions (3 and 4), exposing partial publication on interruption.
