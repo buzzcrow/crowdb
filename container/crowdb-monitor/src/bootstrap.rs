@@ -1,3 +1,4 @@
+mod chunk;
 mod disk_files;
 mod hardware;
 mod iceberg;
@@ -5,6 +6,7 @@ mod kv;
 mod s3;
 mod storage_probe;
 
+pub use chunk::{verify_chunk_services, ChunkBootstrapError};
 pub use disk_files::{disk_step_names, ensure_disk_files, DiskBootstrapError};
 pub use hardware::{hardware_step_names, HardwareBootstrap, HardwareBootstrapError};
 pub use iceberg::{iceberg_step_names, IcebergBootstrap, IcebergBootstrapError};

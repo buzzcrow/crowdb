@@ -6,11 +6,11 @@ use thiserror::Error;
 
 use crate::{
     disk_step_names, ensure_disk_files, hardware_step_names, iceberg_step_names, kv_step_names,
-    render_configs, s3_step_names, verify_diskio_disks, BootstrapSession, CredentialError, DeploymentProfile,
-    DiskBootstrapError, HardwareBootstrap, HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError,
-    KvBootstrap, KvBootstrapError, LivenessError, LivenessServer, ManifestError, ManifestState, ProfileError,
-    RenderError, S3Bootstrap, S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor,
-    SupervisorError,
+    render_configs, s3_step_names, verify_chunk_services, verify_diskio_disks, BootstrapSession,
+    ChunkBootstrapError, CredentialError, DeploymentProfile, DiskBootstrapError, HardwareBootstrap,
+    HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError, KvBootstrap, KvBootstrapError,
+    LivenessError, LivenessServer, ManifestError, ManifestState, ProfileError, RenderError, S3Bootstrap,
+    S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
 };
 
 const PROFILE_NAME: &str = "crowdb-single-node-preview";
@@ -40,6 +40,8 @@ pub enum PreviewError {
     Hardware(#[from] HardwareBootstrapError),
     #[error("preview disk readiness failed: {0}")]
     Storage(#[from] StorageProbeError),
+    #[error("preview chunk readiness failed: {0}")]
+    Chunk(#[from] ChunkBootstrapError),
     #[error("preview S3 bootstrap failed: {0}")]
     S3(#[from] S3BootstrapError),
     #[error("preview Iceberg bootstrap failed: {0}")]
@@ -141,6 +143,7 @@ async fn bootstrap_services(
     verify_diskio_disks(management_seed, profile).await?;
     supervisor.start_service("chunkdb", BTreeMap::new()).await?;
     supervisor.start_service("chunk-kv", BTreeMap::new()).await?;
+    verify_chunk_services(management_seed, profile).await?;
     S3Bootstrap::reconcile(session, profile, credentials, supervisor.monitor_log_mut()).await?;
     IcebergBootstrap::reconcile(session, profile, credentials, supervisor.monitor_log_mut()).await?;
     supervisor

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use crowdb_monitor::{
     disk_step_names, ensure_disk_files, hardware_step_names, iceberg_step_names, kv_step_names,
-    render_configs, verify_diskio_disks, BootstrapSession, DeploymentProfile, HardwareBootstrap,
-    IcebergBootstrap, KvBootstrap, ServerCredentials, Supervisor,
+    render_configs, verify_chunk_services, verify_diskio_disks, BootstrapSession, DeploymentProfile,
+    HardwareBootstrap, IcebergBootstrap, KvBootstrap, ServerCredentials, Supervisor,
 };
 use uuid::Uuid;
 
@@ -266,6 +266,33 @@ async fn preview_chunk_services_start_and_recover() {
     .await
     .unwrap();
     start_preview_storage(&mut supervisor, &mut session, &profile, &management_seed).await;
+    let chunkdb_config = root.0.join("run/config/chunkdb.toml");
+    let original = fs::read_to_string(&chunkdb_config).unwrap();
+    fs::write(
+        &chunkdb_config,
+        original.replace("instance_id = \"1\"", "instance_id = \"2\""),
+    )
+    .unwrap();
+    assert!(verify_chunk_services(&management_seed, &profile)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("ChunkDB registration conflicts"));
+    fs::write(&chunkdb_config, original).unwrap();
+    let chunk_kv_config = root.0.join("run/config/chunk-kv.toml");
+    let original = fs::read_to_string(&chunk_kv_config).unwrap();
+    fs::write(
+        &chunk_kv_config,
+        original.replace("instance_id = 1", "instance_id = 2"),
+    )
+    .unwrap();
+    assert!(verify_chunk_services(&management_seed, &profile)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("Chunk-KV registration conflicts"));
+    fs::write(&chunk_kv_config, original).unwrap();
+    verify_chunk_services(&management_seed, &profile).await.unwrap();
     session.mark_ready().unwrap();
     supervisor.mark_ready().await.unwrap();
     supervisor.shutdown().await.unwrap();
@@ -314,6 +341,7 @@ async fn start_preview_storage(
         .start_service("chunk-kv", BTreeMap::new())
         .await
         .unwrap();
+    verify_chunk_services(management_seed, profile).await.unwrap();
 }
 
 #[tokio::test]

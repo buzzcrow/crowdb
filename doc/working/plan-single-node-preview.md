@@ -120,7 +120,7 @@ and verifiable release assets.
   register their owner in Group 0; the monitor waits for the matching registry
   record and fsyncs all four disk IDs through DiskIO. The same authority and
   disk probe pass after a persisted restart. Monitor `run` stages these services.
-- [~] **Chunk services bootstrap**: render/start ChunkDB in explicit
+- [x] **Chunk services bootstrap**: render/start ChunkDB in explicit
   `unsafe_colocated` mode and Chunk-KV with metadata Group 1; establish service
   registry/catalog authority and readiness without enabling split or claiming
   a failure domain. Files:
@@ -132,7 +132,11 @@ and verifiable release assets.
   grant. The file-backed O_DIRECT read path now uses an aligned bounce buffer
   for byte-range requests; a 238-byte RPC regression test and the full
   KV/DiskDB/DiskIO/ChunkDB/Chunk-KV persisted-restart test pass. Monitor `run`
-  stages both services; separate ChunkDB/Chunk-KV authority checks remain.
+  stages both services. A bounded Group 0 registry probe now requires exactly
+  one live matching instance for each service and confirms the bootstrap
+  partition is hosted at its configured owner epoch. The real-process restart
+  test rejects mismatched ChunkDB and Chunk-KV identities before restoring
+  their rendered configs.
 - [x] **S3 credential bootstrap**: after Group 0 readiness, issue one preview
   user through the existing authority, recover a lost issuance response via
   `ensure-user`, and use read-only `lookup-user` on Ready restart. Persist
