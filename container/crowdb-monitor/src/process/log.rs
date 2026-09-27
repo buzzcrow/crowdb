@@ -14,6 +14,7 @@ pub(super) async fn pump(
     policy: LogProfile,
 ) -> io::Result<()> {
     let mut output = RotatingLog::open(directory, "service.log", policy).await?;
+    let mut mirrored_stderr = tokio::io::stderr();
     let mut stdout_open = true;
     let mut stderr_open = true;
     let mut stdout_buffer = [0_u8; 8192];
@@ -32,6 +33,9 @@ pub(super) async fn pump(
                 stderr_open = size != 0;
                 if size != 0 {
                     output.write(&stderr_buffer[..size]).await?;
+                    if output.policy.mirror_warnings_to_stderr {
+                        mirrored_stderr.write_all(&stderr_buffer[..size]).await?;
+                    }
                 }
             }
         }
@@ -78,6 +82,19 @@ impl RotatingLog {
 
     pub(crate) async fn sync(&self) -> io::Result<()> {
         self.file.sync_all().await
+    }
+
+    pub(crate) async fn write_record(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() as u64 > self.policy.max_file_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "log record exceeds file limit",
+            ));
+        }
+        if self.size > self.policy.max_file_bytes - bytes.len() as u64 {
+            self.rotate().await?;
+        }
+        self.write(bytes).await
     }
 
     async fn rotate(&mut self) -> io::Result<()> {

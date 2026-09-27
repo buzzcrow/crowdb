@@ -1,4 +1,5 @@
 pub(crate) mod log;
+mod retention;
 
 use std::collections::BTreeMap;
 use std::io;
@@ -71,6 +72,7 @@ impl ProcessManager {
         }
         let log_directory = self.log_root.join(&service.id);
         std::fs::create_dir_all(&log_directory)?;
+        retention::prune(&log_directory, None, self.log_policy.max_files.saturating_sub(1)).await?;
         let mut command = Command::new(&service.program);
         command
             .args(&service.args)
@@ -121,6 +123,18 @@ impl ProcessManager {
     #[must_use]
     pub fn owns(&self, id: &str) -> bool {
         self.processes.contains_key(id)
+    }
+
+    pub(crate) async fn maintain_logs(&self) -> Result<(), ProcessError> {
+        for (id, process) in &self.processes {
+            retention::prune(
+                &self.log_root.join(id),
+                process.child.id(),
+                self.log_policy.max_files,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// # Errors
@@ -176,6 +190,7 @@ impl ProcessManager {
                 attempt: None,
             })
             .await?;
+        retention::prune(&self.log_root.join(id), None, self.log_policy.max_files).await?;
         Ok(())
     }
 

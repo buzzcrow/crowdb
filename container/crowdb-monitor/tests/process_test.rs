@@ -117,3 +117,58 @@ async fn logs_rotate_with_total_file_and_byte_limits() {
         .iter()
         .all(|entry| entry.metadata().unwrap().len() <= 1024 * 1024));
 }
+
+#[tokio::test]
+async fn child_restarts_prune_old_pid_logs_without_crossing_log_channels() {
+    let logs = TestLogs::new();
+    let directory = logs.0.join("fake");
+    fs::create_dir_all(&directory).unwrap();
+    for prefix in ["crowdb-fake", "crowdb-fake-rpc"] {
+        for pid in 1..=6 {
+            fs::write(
+                directory.join(format!("{prefix}-20260101-010101.000-{pid}.log")),
+                "old",
+            )
+            .unwrap();
+        }
+    }
+    fs::write(directory.join("operator-notes.txt"), "keep").unwrap();
+    let mut manager = ProcessManager::new(logs.0.clone(), policy(2)).await.unwrap();
+    let child = service("printf 'new' > \"$LOG_DIR/crowdb-fake-20260102-010101.000-$$.log\"; exec sleep 30");
+    let pid = manager
+        .start(
+            &child,
+            &BTreeMap::from([("LOG_DIR".into(), directory.to_string_lossy().into_owned())]),
+        )
+        .await
+        .unwrap();
+    let active = directory.join(format!("crowdb-fake-20260102-010101.000-{pid}.log"));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !active.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    manager.stop("fake", Duration::from_secs(2)).await.unwrap();
+    let names = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        names
+            .iter()
+            .filter(|name| name.starts_with("crowdb-fake-2026"))
+            .count()
+            <= 2
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.starts_with("crowdb-fake-rpc-"))
+            .count(),
+        1
+    );
+    assert!(directory.join("operator-notes.txt").exists());
+    assert_eq!(fs::read_to_string(active).unwrap(), "new");
+}

@@ -224,6 +224,7 @@ impl Supervisor {
         if matches!(self.status.phase, MonitorPhase::Draining | MonitorPhase::Failed) {
             return Err(SupervisorError::Invalid("supervisor is not running"));
         }
+        self.processes.maintain_logs().await?;
         for id in self.order.clone() {
             if !self.processes.owns(&id) {
                 continue;

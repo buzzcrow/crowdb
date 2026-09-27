@@ -118,7 +118,7 @@ impl MonitorLog {
             event,
         })?;
         body.push(b'\n');
-        self.output.write(&body).await?;
+        self.output.write_record(&body).await?;
         self.output.sync().await?;
         if warning && self.mirror_warnings_to_stderr {
             eprint!("{}", String::from_utf8_lossy(&body));
