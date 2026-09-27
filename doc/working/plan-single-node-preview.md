@@ -217,13 +217,18 @@ and verifiable release assets.
   `lib/crowdb-console-shared/src/ops/context.rs`, `lib/crowdb-kv-client/src/service/**`,
   and read/leader-change tests.
 - [ ] **Bootstrap and teardown authority boundary**: keep initial Group 0
-  bootstrap intent separate because Group 0 does not exist yet, but after
-  creation verify every hardware/store/group/replica record before reporting
-  success. Make restart/reconcile and destroy/clean read live Group 0 state,
-  not an old `ConsoleConfig` snapshot; never replay a local topology into an
-  already initialized cluster. Files: `lib/crowdb-console-shared/src/ops/cluster.rs`,
+  bootstrap intent separate because Group 0 does not exist yet. After creating
+  Group 0, transfer and verify every hardware/store/group/replica record, then
+  remove local topology; only launch policy remains. Persist a bootstrap
+  identity/phase sufficient to resume an interrupted transfer without treating
+  arbitrary old local state as authority. On restart, prove identity and
+  committed content, write only safely missing records, and fail on conflict;
+  never serve local topology once Group 0 exists, including during an outage.
+  Make destroy/clean read live Group 0 state, not a `ConsoleConfig` snapshot.
+  Test crash before/after each commit and before local deletion. Files:
+  `lib/crowdb-console-shared/src/ops/cluster.rs`,
   `app/crowdb-web/src/mgmt/{cluster_init,topology}.rs`, CLI cluster commands,
-  and failure/restart tests.
+  bootstrap-state storage, and failure/restart tests.
 - [ ] **Deployment records are not topology**: use `registry.toml` only for
   bare-metal launch policy and monitor state only for Docker process lifecycle.
   CLI/Web service deploy, restart, stop, and DiskDB proxy status must discover
@@ -233,9 +238,10 @@ and verifiable release assets.
   `app/crowdb-cli/src/commands/kv/server.rs`,
   `app/crowdb-web/src/{lifecycle,diskdb,mgmt}.rs`, and tests.
 - [ ] **S3 mini-cluster authority audit**: keep its local data-dir record for
-  process restart and bootstrap seeds only. Once Group 0 exists, route normal
-  hardware/logical queries and operations through the same shared Group 0 path;
-  remove any local topology copy used as authoritative fallback. Files:
+  process restart and bootstrap seeds only. Transfer any pre-Group-0 topology
+  intent into Group 0 and delete that local topology after verification. Once
+  Group 0 exists, route normal hardware/logical queries and operations through
+  the same shared Group 0 path without local fallback. Files:
   `lib/crowdb-console-shared/src/ops/s3.rs` and mini-cluster restart tests.
 - [ ] **Web logical authorization**: pass the existing Iceberg management
   token to Docker Web through its environment and require an exact bearer

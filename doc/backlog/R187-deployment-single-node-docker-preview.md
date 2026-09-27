@@ -106,11 +106,14 @@ fault-tolerant deployment.
   filesystem and are not presented as replica or independent failure-domain
   durability.
 - **DOCKER-I11 — One configuration authority:** Group 0 is the sole durable
-  authority for cluster topology and service registration. `crowdb-web.toml`
-  contains only web-process startup policy. `registry.toml`, when used outside
-  this image, contains only machine-local launch records and cannot override or
-  restore Group 0 state. Container mode has no `registry.toml` and never falls
-  back to local topology after Group 0 exists.
+  authority for cluster topology and service registration once it exists.
+  Before its creation, local topology is bootstrap intent only; creation writes
+  and verifies that intent in Group 0, then removes the local topology. A
+  partial transfer resumes only against confirmed matching bootstrap identity
+  and never serves local topology as a fallback. `crowdb-web.toml` contains only
+  web-process startup policy. `registry.toml`, when used outside this image,
+  contains only machine-local launch records and cannot override or restore
+  Group 0 state. Container mode has no `registry.toml`.
 - **DOCKER-I12 — Verifiable preview publication:** release-tag workflows publish
   the gated `linux/amd64` image to one public Docker Hub repository only after
   manual approval. Version and `git-<commit>` tags are immutable; `preview` is the
@@ -158,9 +161,15 @@ without moving or duplicating its runtime code.
   deployment mode does not select a different logical operation implementation.
   CLI and bare-metal Web also share Group 0-backed hardware operations; Web KV
   routing and status never revive a local topology fallback. Initial Group 0
-  bootstrap alone uses explicit pre-authority intent, then verifies committed
-  Group 0 records before declaring success. Local deployment records describe
-  launch policy or process state only, including the S3 mini-cluster.
+  bootstrap alone uses explicit pre-authority intent. On Group 0 creation it
+  transfers and verifies every topology record, then deletes local topology.
+  If transfer is interrupted, only confirmed matching bootstrap intent may be
+  resumed; a mismatch fails visibly without overwriting Group 0. Once Group 0
+  exists, no read or write falls back to local topology, even if Group 0 is
+  temporarily unavailable; inability to determine whether Group 0 exists also
+  fails unavailable rather than assuming a fresh bootstrap. Local deployment
+  records then describe launch policy or process state only, including the S3
+  mini-cluster.
   Docker mode does not manage hardware topology (racks, nodes, disk groups, or
   disks) or monitor-owned processes, but permits logical store, group, and
   replica operations through that shared flow after Web authenticates with the
@@ -191,7 +200,9 @@ without moving or duplicating its runtime code.
 - **Unreleased format replacement:** the current mixed `ConsoleConfig` format is
   not a compatibility surface because CROWDB has not released it. Remove its
   parser, writer, restore behavior, fixtures, and documentation in the same
-  change; do not add a migration tool, dual reader, fallback, or schema alias.
+  change; do not add a legacy-format migration tool, dual reader, fallback, or
+  schema alias. The one-time transfer of current bootstrap intent into a newly
+  created Group 0 is runtime initialization, not support for old mixed files.
   Existing development files are unsupported inputs and may be deleted.
 
 The container filesystem contract is:
@@ -496,9 +507,16 @@ passes explicit data and log paths to every child.
   topology after Group 0 is lost. Invariant: DOCKER-I11. Integration test.
 - Given first bootstrap, restart, teardown, and S3 mini-cluster restart, when
   Group 0 is initially absent or later unavailable, assert bootstrap uses only
-  explicit pre-authority intent, confirms all Group 0 records before success,
-  never replays a local topology over an initialized cluster, and retains only
-  local process-launch state. Invariant: DOCKER-I11. Integration test.
+  explicit pre-authority intent, transfers and confirms all topology records
+  before success, deletes local topology after confirmation, never replays it
+  over an initialized cluster, and retains only local process-launch state.
+  Invariant: DOCKER-I11. Integration test.
+- Given a crash or lost response after Group 0 creation but before local
+  bootstrap intent deletion, when startup resumes, assert it proves cluster
+  identity and already committed records, completes only safe missing writes,
+  removes local topology after full verification, and neither serves stale
+  local data nor overwrites a conflicting Group 0 record. Invariant: DOCKER-I11.
+  Integration test.
 - Given ready Group 0 and any supplied registry path, when Docker-mode
   `crowdb-web` starts, assert it rejects the registry path; with no registry it
   uses configured seeds, Group 0 topology, service discovery, and monitor runtime
