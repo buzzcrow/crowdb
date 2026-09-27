@@ -213,6 +213,12 @@ impl KVClusterMetaClient {
         Ok(entries.into_iter().map(|(_, v)| v).collect())
     }
 
+    /// List all group records in one Group 0 scan.
+    pub async fn list_all_groups(&self) -> Result<Vec<GroupValue>> {
+        let entries = scan_prefix::<GroupValue>(&self.kv, &KvGroupKey::prefix_all()).await?;
+        Ok(entries.into_iter().map(|(_, value)| value).collect())
+    }
+
     // ── replica ─────────────────────────────────────────────────
 
     /// Add or replace a replica record.
@@ -269,6 +275,19 @@ impl KVClusterMetaClient {
             scan_prefix::<ReplicaValue>(&self.kv, &KvReplicaKey::text_prefix_for_group(store_id, group_id))
                 .await?;
         Ok(entries.into_iter().map(|(_, v)| v).collect())
+    }
+
+    /// List all replica records in a store in one Group 0 scan.
+    pub async fn list_replicas_in_store(&self, store_id: StoreId) -> Result<Vec<ReplicaValue>> {
+        let entries =
+            scan_prefix::<ReplicaValue>(&self.kv, &KvReplicaKey::text_prefix_for_store(store_id)).await?;
+        Ok(entries.into_iter().map(|(_, value)| value).collect())
+    }
+
+    /// List all replica records in one Group 0 scan.
+    pub async fn list_all_replicas(&self) -> Result<Vec<ReplicaValue>> {
+        let entries = scan_prefix::<ReplicaValue>(&self.kv, &KvReplicaKey::prefix_all()).await?;
+        Ok(entries.into_iter().map(|(_, value)| value).collect())
     }
 }
 

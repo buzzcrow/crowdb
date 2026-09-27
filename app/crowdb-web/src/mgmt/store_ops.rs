@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! A5: Logical store plane — writes delegate to `ops::kv_logical`,
-//! reads from the monitor cache (live role/leader info).
+//! reads Group 0 topology with live leader hints from the monitor cache.
 
 use crate::error::{err_502, map_config_err, ErrorBody};
 use crate::expand::Recursive;
@@ -13,47 +13,94 @@ use axum::http::StatusCode;
 use axum::Json;
 use crowdb_console_shared::cluster::{GroupSummary, NodeId, StoreView};
 use crowdb_console_shared::ops;
+use crowdb_protocol::common::{GroupValue, ReplicaValue, StoreValue};
 use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap};
 
-/// `GET /api/stores`. List stores aggregated from the monitor cache.
+/// `GET /api/stores`. List Group 0 stores with runtime leader hints.
 ///
-/// # Panics
-/// Panics if the `RwLock` is poisoned (inside `snapshot()`).
+/// # Errors
+/// Returns `502` when Group 0 is unavailable.
 pub(crate) async fn http_list_stores(
     State(state): State<AppState>,
     Recursive(_depth): Recursive,
-) -> Json<Vec<StoreView>> {
-    let snap = state.monitor_cache.snapshot().await;
-    let mut seen: std::collections::BTreeMap<u64, StoreView> = std::collections::BTreeMap::new();
-    for (node_id, rec) in &snap {
-        for (sid, ns) in &rec.stores {
-            let entry = seen.entry(*sid).or_insert_with(|| StoreView {
-                store_id: *sid,
-                name: None,
-                nodes: Vec::new(),
-                groups: Vec::new(),
+) -> Result<Json<Vec<StoreView>>, (StatusCode, Json<ErrorBody>)> {
+    let ctx = state
+        .op_context()
+        .await
+        .map_err(|error| err_502(error.to_string()))?;
+    let (stores, groups, replicas) = tokio::try_join!(
+        ctx.sysmd().list_stores(),
+        ctx.sysmd().list_all_groups(),
+        ctx.sysmd().list_all_replicas()
+    )
+    .map_err(|error| err_502(format!("Group 0 topology lookup failed: {error}")))?;
+    let mut groups_by_store = BTreeMap::<u64, Vec<GroupValue>>::new();
+    let mut replicas_by_store = BTreeMap::<u64, Vec<ReplicaValue>>::new();
+    for group in groups {
+        groups_by_store.entry(group.store_id).or_default().push(group);
+    }
+    for replica in replicas {
+        replicas_by_store
+            .entry(replica.store_id)
+            .or_default()
+            .push(replica);
+    }
+    let mut views = Vec::with_capacity(stores.len());
+    for store in stores {
+        let groups = groups_by_store.remove(&store.store_id).unwrap_or_default();
+        let replicas = replicas_by_store.remove(&store.store_id).unwrap_or_default();
+        views.push(project_store(&state, store, groups, replicas).await);
+    }
+    views.sort_by_key(|store| store.store_id);
+    Ok(Json(views))
+}
+
+async fn project_store(
+    state: &AppState,
+    store: StoreValue,
+    groups: Vec<GroupValue>,
+    replicas: Vec<ReplicaValue>,
+) -> StoreView {
+    let mut replicas_by_group = HashMap::<u64, Vec<ReplicaValue>>::new();
+    for replica in replicas {
+        replicas_by_group
+            .entry(replica.group_id)
+            .or_default()
+            .push(replica);
+    }
+    let mut summaries = Vec::with_capacity(groups.len());
+    for group in groups {
+        let members = replicas_by_group.remove(&group.group_id).unwrap_or_default();
+        let leader = state
+            .monitor_cache
+            .resolve_group(store.store_id, group.group_id)
+            .await
+            .and_then(|view| {
+                view.leader().and_then(|leader| {
+                    members
+                        .iter()
+                        .any(|member| {
+                            member.replica_id == leader.replica_id && member.node_id == leader.node_id
+                        })
+                        .then_some(leader.replica_id)
+                })
             });
-            entry.nodes.push(*node_id);
-            for g in &ns.groups {
-                if !entry.groups.iter().any(|gs| gs.group_id == g.group_id) {
-                    entry.groups.push(GroupSummary {
-                        group_id: g.group_id,
-                        replica_count: 1,
-                        leader: g.leader_hint,
-                    });
-                } else if let Some(gs) = entry.groups.iter_mut().find(|gs| gs.group_id == g.group_id) {
-                    gs.replica_count += 1;
-                    if gs.leader.is_none() {
-                        gs.leader = g.leader_hint;
-                    }
-                }
-            }
-        }
+        summaries.push(GroupSummary {
+            group_id: group.group_id,
+            replica_count: members.len(),
+            leader,
+        });
     }
-    for entry in seen.values_mut() {
-        entry.groups.sort_by_key(|g| g.group_id);
+    summaries.sort_by_key(|group| group.group_id);
+    let mut nodes = store.node_ids;
+    nodes.sort_unstable();
+    StoreView {
+        store_id: store.store_id,
+        name: None,
+        nodes,
+        groups: summaries,
     }
-    Json(seen.into_values().collect())
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,20 +146,24 @@ pub(crate) async fn http_add_store(
     ))
 }
 
-/// `GET /api/stores/:store_id`. Aggregated store view from cache.
+/// `GET /api/stores/:store_id`. Store view from Group 0, with runtime hints.
 ///
 /// # Errors
-/// Returns `404` if the store is not found.
+/// Returns `404` if the store is not found, or `502` if Group 0 is unavailable.
 pub(crate) async fn http_get_store(
     State(state): State<AppState>,
     Path(sid): Path<u64>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<StoreView>, (StatusCode, Json<ErrorBody>)> {
-    state
-        .monitor_cache
-        .resolve_store(sid)
+    let ctx = state
+        .op_context()
         .await
-        .map(Json)
+        .map_err(|error| err_502(error.to_string()))?;
+    let store = ctx
+        .sysmd()
+        .get_store(sid)
+        .await
+        .map_err(|error| err_502(format!("Group 0 store lookup failed: {error}")))?
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
@@ -120,7 +171,13 @@ pub(crate) async fn http_get_store(
                     error: format!("store {sid} not found"),
                 }),
             )
-        })
+        })?;
+    let (groups, replicas) = tokio::try_join!(
+        ctx.sysmd().list_groups_in_store(sid),
+        ctx.sysmd().list_replicas_in_store(sid)
+    )
+    .map_err(|error| err_502(format!("Group 0 store topology lookup failed: {error}")))?;
+    Ok(Json(project_store(&state, store, groups, replicas).await))
 }
 
 /// `DELETE /api/stores/:store_id`. Delete the store across every hosting
