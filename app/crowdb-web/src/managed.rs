@@ -196,10 +196,18 @@ pub async fn authority(State(state): State<AppState>) -> (StatusCode, Json<Value
 pub async fn snapshot(
     State(state): State<AppState>,
 ) -> Result<Json<ManagedSnapshot>, (StatusCode, Json<Value>)> {
-    load_snapshot(&state).await.map(Json).map_err(|error| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"source": "group0", "available": false, "reason": error.reason()})),
-        )
-    })
+    match load_snapshot(&state).await {
+        Ok(snapshot) => Ok(Json(snapshot)),
+        Err(error) => {
+            let monitor = match state.monitor_status_path.as_ref() {
+                Some(path) => monitor_status(path.as_ref().clone()).await.ok(),
+                None => None,
+            };
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"source": "group0", "available": false,
+                    "reason": error.reason(), "monitor": monitor})),
+            ))
+        }
+    }
 }

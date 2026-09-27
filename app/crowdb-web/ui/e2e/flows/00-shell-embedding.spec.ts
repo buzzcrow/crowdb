@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 1.5s (2026-08-16)
+// Baseline: four tests passed; embedding 2.4s, domain toggle 0.7s (2026-09-27)
 
 import { test, expect } from '../fixtures/realBackend';
 import {
@@ -79,6 +79,46 @@ test.describe('shell · embedding', () => {
     await page.getByRole('button', { name: 'Add replica' }).click();
     await expect.poll(() => writes.length, { intervals: [100] }).toBe(3);
     expect(writes[2].path).toBe('/api/stores/7/groups/70/replicas');
+  });
+
+  test('Docker mode separates unavailable topology from current monitor recovery', async ({ page }) => {
+    await page.clock.install();
+    await page.route('**/api/mode', route => route.fulfill({ json: { mode: 'docker' } }));
+    let available = true;
+    let monitor: object | null = {
+      phase: 'ready', revision: 1, updated_at_ms: 1,
+      services: { kv: { pid: 100, generation: 1, restart_attempts: 0, healthy: true } },
+    };
+    await page.route('**/api/preview', route => route.fulfill({
+      status: available ? 200 : 503,
+      json: available ? {
+        source: 'group0', racks: [], nodes: [], disks: [], disk_groups: [],
+        stores: [{ store_id: 7, node_ids: [1] }], groups: [], replicas: [], services: [], monitor,
+      } : { source: 'group0', available: false,
+        reason: monitor ? 'group0_unavailable' : 'monitor_unavailable', monitor },
+    }));
+    await page.goto('/');
+    await expect(page.getByTestId('managed-process-kv')).toContainText('PID 100');
+    await expect(page.getByRole('list', { name: 'Logical stores' })).toContainText('Store 7');
+    available = false;
+    monitor = { phase: 'restarting', revision: 2, updated_at_ms: 2,
+      services: { kv: { pid: null, generation: 1, restart_attempts: 1, healthy: false } } };
+    await page.clock.runFor(3001);
+    await expect(page.getByTestId('managed-unavailable')).toContainText('Group 0 is unavailable');
+    await expect(page.getByRole('list', { name: 'Logical stores' })).toHaveCount(0);
+    await expect(page.getByTestId('managed-process-kv')).toContainText('unhealthy');
+    await expect(page.getByTestId('managed-monitor-phase')).toContainText('restarting');
+    monitor = null;
+    await page.clock.runFor(3001);
+    await expect(page.getByTestId('managed-unavailable')).toContainText('missing or stale');
+    await expect(page.getByTestId('managed-process-kv')).toHaveCount(0);
+    available = true;
+    monitor = { phase: 'ready', revision: 3, updated_at_ms: 3,
+      services: { kv: { pid: 200, generation: 2, restart_attempts: 1, healthy: true } } };
+    await page.clock.runFor(3001);
+    await expect(page.getByTestId('managed-unavailable')).toHaveCount(0);
+    await expect(page.getByTestId('managed-process-kv')).toContainText('PID 200');
+    await expect(page.getByTestId('managed-process-kv')).toContainText('generation 2');
   });
 
   test('embedding honors apiPrefix, readonly, and module opt-out', async ({ page, baseURL }) => {

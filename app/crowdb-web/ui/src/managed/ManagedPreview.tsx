@@ -40,6 +40,7 @@ const reasonLabel: Record<string, string> = {
 export function ManagedPreview({ apiPrefix }: { apiPrefix: string }) {
   const [snapshot, setSnapshot] = useState<ManagedSnapshot | null>(null);
   const [reason, setReason] = useState<string | null>(null);
+  const [monitor, setMonitor] = useState<ManagedSnapshot['monitor'] | null>(null);
   const [managementToken, setManagementToken] = useState('');
   const [storeId, setStoreId] = useState('');
   const [groupStoreId, setGroupStoreId] = useState('');
@@ -66,16 +67,16 @@ export function ManagedPreview({ apiPrefix }: { apiPrefix: string }) {
           signal: controller.signal,
         });
         const body = await response.json();
-        if (!response.ok || body.source !== 'group0') {
-          throw new Error(body.reason || 'group0_unavailable');
-        }
         if (!disposed) {
-          setSnapshot(body as ManagedSnapshot);
-          setReason(null);
+          const available = response.ok && body.source === 'group0';
+          setSnapshot(available ? body as ManagedSnapshot : null);
+          setMonitor(body.source === 'group0' ? body.monitor ?? null : null);
+          setReason(available ? null : body.reason || 'group0_unavailable');
         }
       } catch (error) {
         if (!disposed) {
           setSnapshot(null);
+          setMonitor(null);
           setReason(error instanceof Error ? error.message : 'group0_unavailable');
         }
       } finally {
@@ -119,7 +120,8 @@ export function ManagedPreview({ apiPrefix }: { apiPrefix: string }) {
       <div className="tw-mx-auto tw-max-w-6xl tw-space-y-6">
         <header className="tw-flex tw-flex-wrap tw-items-start tw-justify-between tw-gap-4">
           <div>
-            <h1 className="tw-text-2xl tw-font-semibold">CROWDB Single-Node Preview</h1>
+            <h1 className="tw-text-2xl tw-font-semibold">CROWDB Single-Node Container</h1>
+            <p className="tw-mt-1 tw-text-sm tw-text-muted">Non-production preview · one host, no fault tolerance or upgrade guarantee. Space may remain unreclaimed.</p>
             <p className="tw-mt-1 tw-text-sm tw-text-muted">Live topology from Group 0 and process state from crowdb-monitor.</p>
           </div>
           <div className="tw-flex tw-gap-2 tw-text-xs">
@@ -134,6 +136,21 @@ export function ManagedPreview({ apiPrefix }: { apiPrefix: string }) {
             <p className="tw-mt-2 tw-text-sm tw-text-muted">{reason ? (reasonLabel[reason] || 'The live authority cannot be reached.') : 'Loading live status…'}</p>
             <p className="tw-mt-2 tw-text-xs tw-text-muted">No cached topology is displayed while the source is unavailable.</p>
           </div>
+        )}
+
+        {monitor && (
+            <section className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-5" aria-label="Monitor status">
+              <h2 className="tw-text-lg tw-font-semibold">Monitor status</h2>
+              <p className="tw-mt-2 tw-text-sm tw-text-muted" data-testid="managed-monitor-phase">Phase: {monitor.phase} · revision {monitor.revision}</p>
+              <div className="tw-mt-4 tw-grid tw-gap-2 md:tw-grid-cols-2">
+                {Object.entries(monitor.services).map(([name, service]) => (
+                  <div key={name} data-testid={`managed-process-${name}`} className="tw-rounded tw-border tw-border-border tw-p-3 tw-text-sm">
+                    <span className="tw-font-medium">{name}</span>
+                    <span className="tw-ml-2 tw-text-muted">PID {service.pid ?? '—'} · generation {service.generation} · restarts {service.restart_attempts} · {service.healthy ? 'healthy' : 'unhealthy'}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
         )}
 
         {snapshot && (
@@ -152,18 +169,7 @@ export function ManagedPreview({ apiPrefix }: { apiPrefix: string }) {
               ))}
             </section>
 
-            <section className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-5" aria-label="Monitor status">
-              <h2 className="tw-text-lg tw-font-semibold">Monitor status</h2>
-              <p className="tw-mt-2 tw-text-sm tw-text-muted" data-testid="managed-monitor-phase">Phase: {snapshot.monitor.phase} · revision {snapshot.monitor.revision}</p>
-              <div className="tw-mt-4 tw-grid tw-gap-2 md:tw-grid-cols-2">
-                {Object.entries(snapshot.monitor.services).map(([name, service]) => (
-                  <div key={name} className="tw-rounded tw-border tw-border-border tw-p-3 tw-text-sm">
-                    <span className="tw-font-medium">{name}</span>
-                    <span className="tw-ml-2 tw-text-muted">PID {service.pid ?? '—'} · generation {service.generation} · restarts {service.restart_attempts} · {service.healthy ? 'healthy' : 'unhealthy'}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
+
 
             <section className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-5" aria-label="Group 0 topology">
               <h2 className="tw-text-lg tw-font-semibold">Group 0 topology</h2>

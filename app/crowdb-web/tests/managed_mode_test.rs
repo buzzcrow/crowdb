@@ -321,10 +321,27 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     verify_managed_store_lifecycle(&app, &sysmd, &cluster.mgmt_endpoints[0], &token).await;
 
     drop(cluster);
-    let (code, unavailable) = get_json(app, "/api/preview").await;
+    verify_unavailable_snapshot(app, &store, &mut status, &run_root).await;
+    std::fs::remove_dir_all(run_root).unwrap();
+}
+
+async fn verify_unavailable_snapshot(
+    app: axum::Router,
+    store: &StatusStore,
+    status: &mut MonitorStatus,
+    run_root: &std::path::Path,
+) {
+    store.publish(status).unwrap();
+    let (code, unavailable) = get_json(app.clone(), "/api/preview").await;
     assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{unavailable}");
     assert_eq!(unavailable["reason"], "group0_unavailable");
-    std::fs::remove_dir_all(run_root).unwrap();
+    assert_eq!(unavailable["monitor"]["services"]["diskio"]["pid"], 123);
+    assert!(unavailable.get("stores").is_none());
+    std::fs::remove_file(run_root.join("status/monitor.json")).unwrap();
+    let (code, unavailable) = get_json(app, "/api/preview").await;
+    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(unavailable["reason"], "monitor_unavailable");
+    assert!(unavailable["monitor"].is_null());
 }
 
 #[test]
