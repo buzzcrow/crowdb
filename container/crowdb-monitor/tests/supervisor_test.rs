@@ -261,6 +261,52 @@ async fn transient_probe_failure_clears_readiness_without_restarting() {
 }
 
 #[tokio::test]
+#[cfg(target_os = "linux")]
+async fn child_exit_after_probe_failure_is_recorded() {
+    let roots = TestRoots::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut profile = roots.profile("exec sleep 30".into(), address.port(), 2);
+    profile.services[0].probe.failure_threshold = 5;
+    let mut supervisor = Supervisor::new(
+        profile,
+        Uuid::new_v4(),
+        &roots.0.join("data/log"),
+        &roots.0.join("run"),
+    )
+    .await
+    .unwrap();
+    supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
+    supervisor.mark_ready().await.unwrap();
+    let pid = supervisor.status().services["kv"].pid.unwrap();
+    drop(listener);
+    supervisor.poll_once().await.unwrap();
+    let pid = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
+    rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    // Wait for the killed process to enter zombie state, without reaping the
+    // supervisor's child or resetting its prior failed-probe observation.
+    loop {
+        let status = fs::read_to_string(format!("/proc/{}/status", pid.as_raw_pid())).unwrap();
+        if status
+            .lines()
+            .any(|line| line.starts_with("State:") && line.contains('Z'))
+        {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::task::yield_now().await;
+    }
+    let _listener = TcpListener::bind(address).await.unwrap();
+    supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().services["kv"].generation, 2);
+    supervisor.shutdown().await.unwrap();
+    let body = fs::read_to_string(roots.0.join("data/log/monitor/monitor.log")).unwrap();
+    assert!(body.contains("\"kind\":\"probe_failed\""));
+    assert!(body.contains("\"kind\":\"child_exited\""));
+}
+
+#[tokio::test]
 async fn dependency_restart_stops_dependents_before_replacement() {
     let roots = TestRoots::new();
     let root_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

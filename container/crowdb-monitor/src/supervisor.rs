@@ -285,7 +285,7 @@ impl Supervisor {
             let failures = self.probe_failures.entry(id.clone()).or_default();
             self.healthy_since.remove(&id);
             *failures = failures.saturating_add(1);
-            if *failures == 1 {
+            if *failures == 1 || !alive {
                 self.processes
                     .record_event(&MonitorEvent {
                         kind: if alive {

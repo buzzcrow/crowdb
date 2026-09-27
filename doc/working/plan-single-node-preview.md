@@ -180,6 +180,20 @@ closure and saves 39,406,717 bytes against the previous image.
 
 ## Current Evidence
 
+- Revision `c6badf31` builds and passes image smoke as
+  `crowdb-iceberg-single-node:verified-candidate`, image
+  `sha256:e8fb20a5c07b17f6bcb7dd57c84d1bae97d9c0b231f73a251b8ab00c2d162559`,
+  259,713,194 bytes. Its full E2E stopped at the DiskIO crash event assertion:
+  recovery reached Ready, but an earlier `probe_failed` suppressed the later
+  `child_exited` event. Add the failure-order regression and fix event emission
+  before accepting this revision. Logs: `/tmp/crowdb-final-container-e2e.log`;
+  retained service logs: `/tmp/crowdb-final-container-artifacts`.
+- The focused monitor regression reproduced the missing `child_exited` after
+  a prior failed probe. Emit the exit independently of the probe-failure count;
+  recovery still happens once. All eight supervisor tests and the full monitor
+  suite pass, along with Rust fmt/clippy. Rebuild and rerun container E2E with
+  this correction before marking fresh-image acceptance complete.
+
 - Host candidate complete container E2E passed: interrupted initialization,
   first boot, authenticated clients/logical writes, all eight children under
   KILL and STOP, recovered browser view, persisted-volume restart, restart
