@@ -223,4 +223,15 @@ async fn selected_canonical_reads_bind_head_and_verify_complete_digest() {
         Err(TableMetadataError::Binding)
     ));
     assert_eq!(store.reads.load(Ordering::SeqCst), reads);
+    selected.head.metadata_digest = selected.metadata.digest;
+    for length in [256_u64 * 1024 * 1024, 1_u64 << 40] {
+        selected.metadata.length = length;
+        let mut limits = fixture::limits();
+        limits.bytes = 64 * 1024 * 1024;
+        assert!(matches!(
+            read_table_metadata_document(store.clone(), &selected, limits).await,
+            Err(TableMetadataError::Bounds)
+        ));
+        assert_eq!(store.reads.load(Ordering::SeqCst), reads);
+    }
 }

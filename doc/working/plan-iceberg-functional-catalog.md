@@ -77,6 +77,11 @@ the fixed-slot collision policy, not every historical storage deadline.
   Remove each completed requirement/index entry and its plan together.
   R189 separately owns container client/engine workflows; do not claim its
   acceptance from this REST/official-SDK evidence.
+  - `file_scale_test` now verifies fixed range-read windows and serialized GC
+    cursors across a logical TiB address space using repeated immutable block
+    references; this is a traversal/bounds test, not a physical TiB benchmark.
+    Metadata selections of 256 MiB and 1 TiB fail the configured 64-MiB hard
+    limit before block I/O. Both focused test targets passed on 2026-09-27.
 
 ## Next — R189 container client/engine project
 
