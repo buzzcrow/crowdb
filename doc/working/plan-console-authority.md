@@ -31,7 +31,20 @@ and launch inputs locally.
   from a confirmed empty cluster. Files: UI logical-tree data hook, KV panel,
   shell/canvas/full-chain specs.
 
-## Configuration and common operations
+## Common logical operations
+
+- [x] **Group and replica creation fan-out**: reject missing peer registrations,
+  missing peer endpoints and failed
+  remote wiring, roll back created local groups, and publish no Group 0 group
+  or replica records on these failures. Prove with real Group 0 and controlled
+  management endpoints. Files: shared `ops/kv_logical.rs` and
+  `tests/ops_logical_fanout_test.rs`.
+- [ ] **Confirmed logical mutations**: reconcile lost responses through
+  confirmed authority, complete replica fan-out/rollback and delete cleanup;
+  preserve Group 0 membership when node-side deletion fails. Reuse the common
+  flow in CLI and both Web modes, with no local topology commit.
+
+## Configuration and hardware operations
 
 - [ ] **Launch registry lifecycle**: wire `WebProcessConfig` and `LaunchRegistry`
   into CLI and bare-metal Web deploy/restart paths. Consume binary, service
@@ -46,9 +59,6 @@ and launch inputs locally.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions.
-- [ ] **Confirmed logical operations**: consolidate store/group/replica
-  operations, lost-response reconciliation, fan-out and rollback; keep Group 0
-  membership when a node-side deletion fails.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
@@ -67,6 +77,21 @@ and launch inputs locally.
   then remove the requirement, backlog entry and this plan when complete.
 
 ## Evidence
+
+- Group fan-out baseline: both rejected remote wiring and missing peer endpoint
+  returned success. Both failure-injection cases now pass, and the complete
+  Console shared/Web gates passed for the group fix. Replica baseline adds
+  three failures: missing peer registration/address reports success, and a
+  missing new endpoint leaves its local group behind. Resolve all existing
+  peers before mutation and roll back the target when its endpoint is missing.
+  All five regressions pass, along with complete Console shared tests, affected
+  Web replica/migration tests, six browser store/reconfiguration flows, Rust
+  fmt and workspace clippy. Logs: `/tmp/crowdb-all-fanout-{shared,web,ui}.log`.
+
+- Complete Web integration gate passes after stable identity persistence.
+  Full Console UI passes all 86 component tests and 56 browser tests (4.6m),
+  including all five original failures. Logs:
+  `/tmp/crowdb-final-console-server.log`, `/tmp/crowdb-final-console-ui.log`.
 
 - Discovery integration passes duplicate seed submission, invalid origins,
   exactly one live nonmember identity, no accidental membership, and restart

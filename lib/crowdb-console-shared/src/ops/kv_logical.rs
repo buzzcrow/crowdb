@@ -18,6 +18,8 @@ use crate::clients::http::ServerClient;
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
+mod group_wiring;
+
 /// Retry a sysdata write with backoff. Group-0 leader election may not
 /// have settled when `cluster_init` returns, causing "not leader" or
 /// "no known leader" errors on the first attempt. Up to 5 attempts with
@@ -242,7 +244,7 @@ pub async fn list_stores(ctx: &OpContext) -> Result<Vec<crowdb_protocol::common:
 
 /// Create a Paxos group across the listed nodes. Creates a local
 /// `PxGroup` on each node, wires remote-replica entries, and records
-/// the group in group-0 sysdata + the local config. Rolls back on
+/// the group in group-0 sysdata. Rolls back on
 /// partial failure.
 ///
 /// # Errors
@@ -311,52 +313,12 @@ pub async fn add_group(
         }
     }
     if let Some(e) = first_err {
-        // Roll back successful creations (concurrently).
-        futures::future::join_all(succeeded.iter().map(|(ok_nid, _)| async move {
-            if let Ok(client) = server_client(ctx, *ok_nid).await {
-                let _ = client.remove_group(store_id, group_id).await;
-            }
-        }))
-        .await;
-        return Err(e);
+        return Err(group_wiring::rollback(ctx, store_id, group_id, &succeeded, e).await);
     }
 
-    // Phase 2: wire remote replicas for multi-node. Fetch all peer
-    // endpoints concurrently, then wire each node's remotes.
-    if succeeded.len() > 1 {
-        let endpoints: Vec<Option<String>> =
-            futures::future::join_all(succeeded.iter().map(|(peer_nid, _)| {
-                let peer_nid = *peer_nid;
-                async move { rpc_endpoint_for_store(ctx, peer_nid, store_id).await }
-            }))
-            .await;
-
-        futures::future::join_all(succeeded.iter().enumerate().map(|(i, (nid, _))| {
-            let nid = *nid;
-            let remotes: Vec<RemoteReplicaInfo> = succeeded
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .filter_map(|(j, (_, peer_rid))| {
-                    endpoints.get(j).and_then(|ep| {
-                        ep.as_ref().map(|ep| RemoteReplicaInfo {
-                            replica_id: *peer_rid,
-                            endpoint: ep.clone(),
-                            voting: true,
-                        })
-                    })
-                })
-                .collect();
-            async move {
-                if remotes.is_empty() {
-                    return;
-                }
-                if let Ok(client) = server_client(ctx, nid).await {
-                    let _ = client.add_remote_replicas(store_id, group_id, &remotes).await;
-                }
-            }
-        }))
-        .await;
+    // Every peer must be wired before membership becomes authoritative.
+    if let Err(error) = group_wiring::wire(ctx, store_id, group_id, &succeeded).await {
+        return Err(group_wiring::rollback(ctx, store_id, group_id, &succeeded, error).await);
     }
 
     // Record in group-0 sysdata. The sysdata write must
@@ -484,6 +446,10 @@ pub async fn add_replica(
         });
     }
 
+    // Resolve every existing peer before changing the target's local state.
+    let members: Vec<_> = existing.iter().map(|r| (r.node_id, r.replica_id)).collect();
+    let peers = group_wiring::resolve(ctx, store_id, &members).await?;
+
     // Step 1: ensure the target node hosts the store, then create the
     // local PxGroup for the new replica.
     let client = server_client(ctx, node_id).await?;
@@ -492,8 +458,13 @@ pub async fn add_replica(
     let target_has_store = ctx
         .sysmd()
         .get_store(store_id)
-        .await
-        .is_ok_and(|s| s.is_some_and(|s| s.node_ids.contains(&node_id)));
+        .await?
+        .ok_or_else(|| Error::NotFound {
+            kind: "store".into(),
+            id: store_id.to_string(),
+        })?
+        .node_ids
+        .contains(&node_id);
 
     let created_store_on_target = if target_has_store {
         false
@@ -530,6 +501,16 @@ pub async fn add_replica(
 
     // Step 2: Register the new replica as a remote on every existing peer.
     let Some(new_endpoint) = rpc_endpoint_for_store(ctx, node_id, store_id).await else {
+        rollback_replica(
+            ctx,
+            store_id,
+            group_id,
+            new_rid,
+            &[],
+            node_id,
+            created_store_on_target,
+        )
+        .await;
         return Err(Error::NodeUnreachable {
             node_id: node_id.to_string(),
             reason: "could not determine crowdb-rpc endpoint".into(),
@@ -541,42 +522,40 @@ pub async fn add_replica(
         voting: true,
     };
     let mut wired_peers: Vec<u64> = Vec::new();
-    for existing_replica in &existing {
-        if let Ok(peer_client) = server_client(ctx, existing_replica.node_id).await {
-            if let Err(e) = peer_client
-                .add_remote_replicas(store_id, group_id, std::slice::from_ref(&new_remote))
-                .await
-            {
-                rollback_replica(
-                    ctx,
-                    store_id,
-                    group_id,
-                    new_rid,
-                    &wired_peers,
-                    node_id,
-                    created_store_on_target,
-                )
-                .await;
-                return Err(Error::UpstreamRpc {
-                    node_id: existing_replica.node_id.to_string(),
-                    status: format!("wire new replica on peer: {e}"),
-                });
-            }
-            wired_peers.push(existing_replica.node_id);
+    for (existing_replica, (peer_client, _)) in existing.iter().zip(&peers) {
+        // A lost response may still have applied the remote on this peer.
+        wired_peers.push(existing_replica.node_id);
+        if let Err(e) = peer_client
+            .add_remote_replicas(store_id, group_id, std::slice::from_ref(&new_remote))
+            .await
+        {
+            rollback_replica(
+                ctx,
+                store_id,
+                group_id,
+                new_rid,
+                &wired_peers,
+                node_id,
+                created_store_on_target,
+            )
+            .await;
+            return Err(Error::UpstreamRpc {
+                node_id: existing_replica.node_id.to_string(),
+                status: format!("wire new replica on peer: {e}"),
+            });
         }
     }
 
     // Step 3: Register every existing peer as a remote on the new replica.
-    let mut existing_remotes: Vec<RemoteReplicaInfo> = Vec::new();
-    for r in &existing {
-        if let Some(ep) = rpc_endpoint_for_store(ctx, r.node_id, store_id).await {
-            existing_remotes.push(RemoteReplicaInfo {
-                replica_id: r.replica_id,
-                endpoint: ep,
-                voting: true,
-            });
-        }
-    }
+    let existing_remotes: Vec<RemoteReplicaInfo> = existing
+        .iter()
+        .zip(&peers)
+        .map(|(replica, (_, endpoint))| RemoteReplicaInfo {
+            replica_id: replica.replica_id,
+            endpoint: endpoint.clone(),
+            voting: true,
+        })
+        .collect();
     if !existing_remotes.is_empty() {
         if let Err(e) = client
             .add_remote_replicas(store_id, group_id, &existing_remotes)
@@ -599,7 +578,7 @@ pub async fn add_replica(
         }
     }
 
-    // Record in group-0 sysdata + local config.
+    // Record only after every existing peer and the new replica are wired.
     record_replica(ctx, store_id, group_id, new_rid, node_id).await?;
     Ok(new_rid)
 }
