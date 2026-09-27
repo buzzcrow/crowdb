@@ -288,6 +288,7 @@ async fn main() {
             },
             mgmt_endpoint,
             &group0_ep,
+            args.group0_management_seeds.clone(),
             registry
                 .config
                 .node_root

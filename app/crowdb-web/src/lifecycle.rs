@@ -708,6 +708,7 @@ pub async fn http_deploy_node_server(
         server_id: node_id.to_string(),
         rest_port: body.rest_port,
         rpc_port: body.rpc_port,
+        group0_management_seeds: (*state.authority_seeds).clone(),
         election_profile: body
             .election_profile
             .clone()

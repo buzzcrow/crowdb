@@ -249,12 +249,11 @@ and verifiable release assets.
   and surface unobserved replicas as `unknown` rather than inventing a
   follower. Remaining: remove config-backed monitor refresh and convert
   physical/deployment read projections.
-  The real-backend `22-kv-topology` Playwright spec fails in `beforeAll`
-  before any UI assertion: non-Group-0 node 381 has no live Group 0 KV
-  registration. Its keepalive currently seeds Group 0 from its own first
-  RPC port, which cannot host Group 0. This reproduced before and after
-  the role-display change; fix initial/non-member Group 0 seed propagation
-  before treating that spec as an acceptance result.
+  Non-member KV keepalive now accepts Group 0 management seeds instead of
+  seeding its own RPC port; local and SSH deploys pass the verified Group 0
+  member registrations when the cluster exists. Initial Group 0 hosts deploy
+  before bootstrap, while other nodes deploy afterward. The real-backend
+  `22-kv-topology` Playwright spec passes all five cases with this ordering.
 - [~] **Bootstrap and teardown authority boundary**: keep initial Group 0
   bootstrap intent separate because Group 0 does not exist yet. After creating
   Group 0, transfer and verify every hardware/store/group/replica record, then

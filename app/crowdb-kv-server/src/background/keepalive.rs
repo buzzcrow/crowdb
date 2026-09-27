@@ -34,19 +34,26 @@ impl KeepAliveLoop {
         identity: crowdb_protocol::common::KvServerIdentity,
         rpc_endpoint: String,
         group0_endpoint: &str,
+        group0_management_seeds: Vec<String>,
         data_root: String,
         interval_secs: u64,
     ) -> Self {
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let instance_id = identity.instance_id;
         let ep = group0_endpoint.to_string();
-        // The management endpoint (rpc_endpoint) is an HTTP URL suitable
-        // for /topology discovery seeds. The group0_endpoint is the
-        // crowdb-rpc endpoint for direct KV ops via seed_leader.
-        let mgmt_seeds = vec![rpc_endpoint.clone()];
+        // Before Group 0 exists, this node can seed its own RPC endpoint.
+        // Once Group 0 exists, use its management seeds for discovery.
+        let bootstrap_local = group0_management_seeds.is_empty();
+        let mgmt_seeds = if bootstrap_local {
+            vec![rpc_endpoint.clone()]
+        } else {
+            group0_management_seeds
+        };
         let handle = tokio::spawn(async move {
             let kv_client = CrowdbKvClient::new(ClientConfig::new(mgmt_seeds));
-            kv_client.seed_leader(0, 0, ep);
+            if bootstrap_local {
+                kv_client.seed_leader(0, 0, ep);
+            }
             let svc = ServiceRegistryClient::new(kv_client);
 
             // Initial registration.

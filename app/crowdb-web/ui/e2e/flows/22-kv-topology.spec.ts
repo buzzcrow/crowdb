@@ -150,10 +150,11 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
       ...[200, 201, 202, 203, 204, 205, 206, 207],
     ];
     await step('topology: seedRackAndNode', () => Promise.all(allNodes.map((r) => seedRackAndNode(apiBase, r, r))));
-    await step('topology: deployNodeServer', () => Promise.all(allNodes.map((n) => deployNodeServer(apiBase, n, freePort(), freePort()))));
+    await step('topology: deploy Group 0 nodes', () => Promise.all([191, 192, 193].map((n) => deployNodeServer(apiBase, n, freePort(), freePort()))));
 
     // Bootstrap group-0 on the first 3 nodes (191, 192, 193).
     await step('topology: clusterInit', () => clusterInit(apiBase, [191, 192, 193]));
+    await step('topology: deploy remaining nodes', () => Promise.all(allNodes.slice(3).map((n) => deployNodeServer(apiBase, n, freePort(), freePort()))));
 
     // Create all stores in parallel — stores are independent. This
     // replaces the per-test serial setup phases with a single fan-out,

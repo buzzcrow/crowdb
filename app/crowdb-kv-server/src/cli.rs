@@ -162,6 +162,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 10)]
     pub keepalive_interval: u64,
 
+    /// HTTP management seeds for discovering Group 0 when this node does not host it.
+    #[arg(long = "group0-management-seed")]
+    pub group0_management_seeds: Vec<String>,
+
     /// chunkdb range binding monitor tick interval in seconds. 0
     /// disables the monitor (the binding table is then operator-manual).
     /// Only the group-0 leader writes the table; followers run the tick
