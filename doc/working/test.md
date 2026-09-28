@@ -17,7 +17,8 @@ For test strategy, layer scope, and coverage details, see [`design/kv/design-cro
 ## Current CI Test Design
 
 CI uses ten parallel jobs, grouped by runtime requirements. Component tasks in
-`pixi.toml` select packages with `--all-targets`; group scripts under
+`pixi.toml` select library, binary, and integration test targets with
+`--tests`; benchmark targets are excluded. Group scripts under
 `tools/pixi-tasks/` define execution order. GitHub Actions calls those group
 tasks. See [tools/README.md](../../tools/README.md) for the tooling map.
 

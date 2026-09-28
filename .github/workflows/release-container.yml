@@ -15,6 +15,10 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     permissions:
       contents: read
     outputs:
@@ -55,6 +59,12 @@ jobs:
       env:
         CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
       run: pixi run test-single-node-container
+    - name: Free preview build artifacts before acceptance tests
+      run: |
+        pixi run docker image rm crowdb-iceberg-single-node:dev
+        pixi run docker builder prune --all --force
+        pixi run cargo clean --release
+        pixi run df -h /
     - name: Run S3 client acceptance
       run: pixi run clean-env && pixi run -e s3-e2e test-boto3-e2e
     - name: Run Iceberg client acceptance
@@ -129,7 +139,9 @@ jobs:
         name: verified-container-runtime
         path: target
     - name: Extract verified runtime files
-      run: pixi run bash -euc 'mkdir -p target/container-runtime && tar -C target/container-runtime -xzf target/container-runtime.tar.gz'
+      run: |
+        pixi run bash -euc 'mkdir -p target/container-runtime && tar -C target/container-runtime -xzf target/container-runtime.tar.gz'
+        pixi run rm target/container-runtime.tar.gz
     - uses: docker/login-action@v4
       with:
         username: ${{ vars.DOCKERHUB_USERNAME }}
