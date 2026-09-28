@@ -18,8 +18,6 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tracing::warn;
-
 use crowdb_protocol::common::{HwStatus, NodeValue, RackValue};
 use crowdb_protocol::common_type::{DiskGroupId, NodeId, RackId};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskValue};
@@ -951,22 +949,14 @@ impl HardwareClient {
         // Remove child disks.
         let disks = self.list_disks_in_group(rack_id, node_id, dg_id).await?;
         for (disk_id, _) in &disks {
-            if let Err(e) = self.remove_disk(rack_id, node_id, dg_id, disk_id).await {
-                warn!(error = %e, dg_id, "cascade: remove_disk failed; continuing");
-            }
+            self.remove_disk(rack_id, node_id, dg_id, disk_id).await?;
         }
         // Remove owner map entry.
-        if let Err(e) = self.remove_owner(rack_id, node_id, dg_id).await {
-            warn!(error = %e, dg_id, "cascade: remove_owner failed; continuing");
-        }
+        self.remove_owner(rack_id, node_id, dg_id).await?;
         // Remove bind map entry.
-        if let Err(e) = self.remove_bind(rack_id, node_id, dg_id).await {
-            warn!(error = %e, dg_id, "cascade: remove_bind failed; continuing");
-        }
+        self.remove_bind(rack_id, node_id, dg_id).await?;
         // Remove usage summary.
-        if let Err(e) = self.remove_disk_group_usage(dg_id).await {
-            warn!(error = %e, dg_id, "cascade: remove_disk_group_usage failed; continuing");
-        }
+        self.remove_disk_group_usage(dg_id).await?;
         // Remove the disk-group record itself.
         self.remove_disk_group(rack_id, node_id, dg_id).await
     }
@@ -976,9 +966,7 @@ impl HardwareClient {
     pub async fn remove_node_cascade(&self, rack_id: RackId, node_id: NodeId) -> Result<()> {
         let dgs = self.list_disk_groups_on_node(rack_id, node_id).await?;
         for dg in &dgs {
-            if let Err(e) = self.remove_disk_group_cascade(rack_id, node_id, dg.dg_id).await {
-                warn!(error = %e, node_id, dg_id = dg.dg_id, "cascade: remove_disk_group_cascade failed; continuing");
-            }
+            self.remove_disk_group_cascade(rack_id, node_id, dg.dg_id).await?;
         }
         self.remove_node(rack_id, node_id).await
     }
@@ -988,9 +976,7 @@ impl HardwareClient {
     pub async fn remove_rack_cascade(&self, rack_id: RackId) -> Result<()> {
         let nodes = self.list_nodes_in_rack(rack_id).await?;
         for (node_id, _) in &nodes {
-            if let Err(e) = self.remove_node_cascade(rack_id, *node_id).await {
-                warn!(error = %e, rack_id, node_id, "cascade: remove_node_cascade failed; continuing");
-            }
+            self.remove_node_cascade(rack_id, *node_id).await?;
         }
         self.remove_rack(rack_id).await
     }

@@ -97,7 +97,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   Web persistence and S3 mini-cluster callers together; no compatibility reader.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
-  without local-first commits. Docker keeps its hardware restrictions.
+  without local-first commits. Docker keeps its hardware restrictions. Hardware
+  client cascades now stop at a failed child deletion instead of deleting its
+  parent while a descendant may survive; exact-value confirmation and the
+  CLI/Web cutover remain.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
