@@ -290,10 +290,10 @@ tr:hover td { background: var(--code-bg); }
 <h2 id="quick-start">Quick start</h2>
 <pre><code class="sh">docker run -d --name crowdb-iceberg \
   -p 127.0.0.1:80:80 \
-  crowdb-iceberg-single-node:v0.1.0-dev</code></pre>
-<p>This example uses the local <code>v0.1.0-dev</code> image. If you received an image archive,</p>
-<p>load it first with <code>docker load -i IMAGE.tar</code>. Docker Hub publication has not yet been verified; the manual release job is</p>
-<p>retained for later validation. Docker creates an anonymous volume for the data.</p>
+  crowdb/crowdb-iceberg:v0.1.0-dev</code></pre>
+<p>The image repository is <code>crowdb/crowdb-iceberg</code>; examples use the version tag</p>
+<p><code>v0.1.0-dev</code>. Docker pulls the image if it is not present locally. Docker creates</p>
+<p>an anonymous volume for the data.</p>
 <p>Check startup, then retrieve your client credentials:</p>
 <pre><code class="sh">docker inspect --format '{{.State.Health.Status}}' crowdb-iceberg
 docker exec crowdb-iceberg crowdb-monitor credentials show --format env</code></pre>
@@ -333,7 +333,7 @@ docker start crowdb-iceberg</code></pre>
   -v crowdb-data:/opt/crowdb/data \
   --restart unless-stopped --stop-timeout 120 \
   --log-driver json-file --log-opt max-size=30m --log-opt max-file=5 \
-  crowdb-iceberg-single-node:v0.1.0-dev</code></pre>
+  crowdb/crowdb-iceberg:v0.1.0-dev</code></pre>
 <p>Do not attach the same data volume to two running containers. A bind mount can</p>
 <p>replace the named volume, but its directory must be writable by UID/GID 10001.</p>
 <h2 id="connect-clients">Connect clients</h2>

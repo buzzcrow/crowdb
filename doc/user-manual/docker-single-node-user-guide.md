@@ -11,12 +11,12 @@ For evaluation only; no production or upgrade guarantee.
 ```sh
 docker run -d --name crowdb-iceberg \
   -p 127.0.0.1:80:80 \
-  crowdb-iceberg-single-node:v0.1.0-dev
+  crowdb/crowdb-iceberg:v0.1.0-dev
 ```
 
-This example uses the local `v0.1.0-dev` image. If you received an image archive,
-load it first with `docker load -i IMAGE.tar`. Docker Hub publication has not yet been verified; the manual release job is
-retained for later validation. Docker creates an anonymous volume for the data.
+The image repository is `crowdb/crowdb-iceberg`; examples use the version tag
+`v0.1.0-dev`. Docker pulls the image if it is not present locally. Docker creates
+an anonymous volume for the data.
 
 Check startup, then retrieve your client credentials:
 
@@ -64,7 +64,7 @@ docker run -d --name crowdb-iceberg \
   -v crowdb-data:/opt/crowdb/data \
   --restart unless-stopped --stop-timeout 120 \
   --log-driver json-file --log-opt max-size=30m --log-opt max-file=5 \
-  crowdb-iceberg-single-node:v0.1.0-dev
+  crowdb/crowdb-iceberg:v0.1.0-dev
 ```
 
 Do not attach the same data volume to two running containers. A bind mount can
