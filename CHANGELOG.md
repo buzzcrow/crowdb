@@ -3,9 +3,8 @@
 
 # Changelog
 
-CROWDB has not published a release. The current source version is
-`0.0.0-dev`, which identifies active development before alpha. It is not a
-production release or a compatibility promise.
+CROWDB is preparing its first development release, `0.1.0-dev`. Publication
+is pending; this is not a production release or a compatibility promise.
 
 CROWDB does not yet maintain compatibility for persisted data, WAL, metadata,
 or other on-disk formats. A newer checkout may be unable to read data created by
@@ -22,6 +21,19 @@ policy.
 
 ## [Unreleased]
 
-No public baseline exists yet. Release preparation for the first Docker preview
-will replace this note with the preview's tested capabilities, limitations,
-upgrade policy, and exact image identifiers.
+### 0.1.0-dev preparation
+
+- Single-node Linux amd64 container with native Iceberg REST catalog and FileIO,
+  backed by CROWDB metadata, chunk storage and disk services.
+- Persistent bootstrap, generated client credentials, health checks, bounded
+  service recovery and restart validation.
+- S3 object access through an optional published endpoint.
+- Host builds and runtime-only container packaging, with a manual Docker Hub
+  publication workflow for version and commit tags, signatures, SBOM and provenance.
+
+The intended image is `crowdb/crowdb-iceberg:v0.1.0-dev`; no published digest is
+recorded yet. The GUI is not ready for this container. Multi-node deployment,
+production hardening and data-format upgrades are outside this release.
+
+See the [container guide](doc/user-manual/docker-single-node-user-guide.md) for
+supported startup, persistence, credentials and recovery behavior.

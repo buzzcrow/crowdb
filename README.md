@@ -10,12 +10,13 @@ CROWDB is a distributed storage platform for objects, tables, and AI datasets.
 It owns the data path from S3, Iceberg, and native Dataset access through
 distributed metadata and chunk storage to disk—and eventually GPU memory.
 
-S3, Iceberg, and Dataset are first-class access models, not wrappers stacked on
-top of one another.
+Version `0.1.0-dev` is the first development release being prepared for public
+evaluation. Use disposable data; production use and on-disk upgrade compatibility
+are not supported. Dataset and direct GPU delivery remain planned work.
 
 - Use **S3** for familiar object access.
 - Use **Iceberg** for native catalogs, tables, snapshots, and immutable files.
-- Use **Dataset** for samples, shards, tensors, batches, and direct data access.
+- **Dataset** is planned for samples, shards, tensors, batches, and direct data access.
 
 ## Three Layers, One Data Path
 
@@ -29,7 +30,7 @@ top of one another.
 | LAYER 3 — ACCESS                                                         |
 |                                                                          |
 |   S3                     Iceberg                 Dataset                 |
-|   [implemented]          [in progress]           [design]                |
+|   [implemented]          [implemented]           [design]                |
 |   HTTP objects           HTTP tables             HTTP + native client    |
 |                                                                          |
 |   Access Server serves HTTP. Dataset native access can bypass it.        |
@@ -40,9 +41,9 @@ top of one another.
 | LAYER 2 — CHUNK                                                          |
 |                                                                          |
 |   Distributed structures:     Chunk Stream          Chunk-KV             |
-|                                      |                  |                |
+|  |  |  |
 |   Data path: chunk client -> Chunk I/O -> ChunkDB -> DiskIO -> DiskDB    |
-|                                                        |                 |
+|  |  |
 |   Accelerated path: DiskIO buffer -- RDMA / GDS -------> GPU memory      |
 +------------------------------------+-------------------------------------+
                                      |
@@ -65,7 +66,7 @@ another namespace, lifecycle, RPC, copy, and recovery model. When that boundary
 becomes the bottleneck, the layers above it can only work around it.
 
 CROWDB exists to own the complete data path. S3 objects, Iceberg tables, and AI
-datasets are native access models over the same distributed storage core. They
+datasets are intended as native access models over the same distributed storage core. They
 share durability, placement, protection, and reclamation without pretending
 that one model is merely a convention inside another.
 
@@ -91,16 +92,16 @@ layers that remain useful independently.
   append. Chunk-KV uses range partitions that split and rebalance online while
   reads and writes continue.
 - **Native access models:** S3, Iceberg, and Dataset share the core without
-  being wrappers around one another. Dataset can also route directly to the
-  data topology and is designed toward RDMA and direct GPU delivery.
+  being wrappers around one another. The planned Dataset model targets direct
+  topology access, RDMA and GPU delivery.
 
 ## Where It Stands
 
-| Access model | Status      | What it means                                         |
-| ------------ | ----------- | ----------------------------------------------------- |
-| S3           | Implemented | Core HTTP object operations and bounded streaming     |
-| Iceberg      | In progress | Native core format v1, v2, and v3 storage semantics   |
-| Dataset      | Design      | HTTP, topology-aware native client, and GPU delivery  |
+| Access model | Status      | What it means                                        |
+| ------------ | ----------- | ---------------------------------------------------- |
+| S3           | Implemented | Core HTTP object operations and bounded streaming    |
+| Iceberg      | Implemented | Native catalog, FileIO and core v1/v2/v3 semantics   |
+| Dataset      | Design      | HTTP, topology-aware native client, and GPU delivery |
 
 The KV, tree, DiskDB, ChunkDB, chunk I/O, Chunk Stream, Chunk-KV, RPC,
 operations console, and core S3 foundation have working implementations. See
@@ -108,33 +109,19 @@ the [backlog](doc/backlog/backlog.md) for current delivery scope.
 
 ## Quick Start
 
-CROWDB uses [Pixi](https://pixi.sh) to pin its Rust and C++ toolchains and
-native dependencies.
+The first Linux amd64 image is being prepared for manual publication. Once
+`v0.1.0-dev` is published, start the Iceberg catalog and storage with Docker:
 
-### S3 cluster example
-
-Build the binaries, then start a local S3 cluster with the CLI:
-
-```bash
-curl -fsSL https://pixi.sh/install.sh | sh
-pixi run build
-
-./target/release/crowdb-cli s3 cluster start --root /tmp/s3-cluster
-./target/release/crowdb-cli s3 cluster status --root /tmp/s3-cluster
+```sh
+docker run -d --name crowdb-iceberg \
+  -p 127.0.0.1:80:80 \
+  crowdb/crowdb-iceberg:v0.1.0-dev
 ```
 
-The command starts the storage services, S3 endpoint, and Web management
-server. Open the printed Web URL, normally
-[http://127.0.0.1:14000/](http://127.0.0.1:14000/).
-
-Create a bucket and round-trip an object:
-
-```bash
-./target/release/crowdb-cli s3 bucket put --root /tmp/s3-cluster bucket1
-./target/release/crowdb-cli s3 object put --root /tmp/s3-cluster bucket1 hello.txt \
-  --text "hello from CROWDB"
-./target/release/crowdb-cli s3 object get --root /tmp/s3-cluster bucket1 hello.txt
-```
+Follow the [single-node Docker guide](doc/user-manual/docker-single-node-user-guide.md)
+for startup checks, client credentials, persistent volumes and recovery.
+For source builds and development with Pixi, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Explore
 

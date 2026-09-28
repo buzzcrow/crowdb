@@ -7,7 +7,7 @@ Thank you for contributing to CROWDB.
 
 ## Development status
 
-CROWDB is under active development at version `0.0.0-dev`. It has not reached
+CROWDB is under active development at version `0.1.0-dev`. It has not reached
 alpha, is not recommended for production, and must be tested with disposable
 data. Compatibility is not yet maintained for persisted data, WAL, metadata, or
 other on-disk formats. A change may deliberately replace an unreleased format
@@ -31,7 +31,7 @@ dependencies. Run builds, tests, linters, and project executables through Pixi.
 # Build C++, the Rust workspace, and the web UI.
 pixi run build
 
-# Run the complete local test suite.
+# Run host component, UI and Iceberg SDK suites.
 pixi run test-suite
 
 # Check version metadata.
@@ -51,7 +51,16 @@ pixi run test-console-ui
 ```
 
 Playwright uses an installed system browser; do not install a repository-local
-browser. See `pixi.toml` for focused component tasks.
+browser. See [pixi.toml](pixi.toml) for focused component tasks and
+[tools/README.md](tools/README.md) for their scripts. Native Iceberg and official
+SDK suites use the `iceberg-e2e` environment; see
+[the test inventory](doc/working/test.md) for CI coverage and timing.
+
+Container acceptance is a separate Linux amd64 gate requiring Docker:
+
+```sh
+pixi run test-single-node-container
+```
 
 ## Before writing code
 
