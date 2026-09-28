@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::future::Future;
 use std::path::Path;
@@ -478,20 +478,23 @@ fn kv_root(profile: &DeploymentProfile) -> Result<std::path::PathBuf, PreviewErr
 }
 
 fn config_digest_input(profile: &DeploymentProfile) -> Result<Vec<u8>, PreviewError> {
-    let mut files = BTreeSet::new();
+    let mut files = BTreeMap::new();
     for service in &profile.services {
         if let Some(path) = &service.config_template {
             let name = path
                 .file_name()
                 .ok_or(PreviewError::Invalid("template has no name"))?;
-            if !files.insert(name.to_os_string()) {
+            if files
+                .insert(name.to_os_string(), path)
+                .is_some_and(|existing| existing != path)
+            {
                 return Err(PreviewError::Invalid("template name is duplicated"));
             }
         }
     }
     let mut input = Vec::new();
-    for name in files {
-        let path = profile.paths.template_root.join(&name);
+    for name in files.keys() {
+        let path = profile.paths.template_root.join(name);
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.file_type().is_file() || metadata.len() > MAX_TEMPLATE_BYTES {
             return Err(PreviewError::Invalid("template is not a bounded regular file"));

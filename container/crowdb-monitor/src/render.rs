@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -45,7 +45,7 @@ pub fn render_configs(
         Err(error) => return Err(error.into()),
     }
     let mut outputs = Vec::new();
-    let mut file_names = BTreeSet::new();
+    let mut file_names = BTreeMap::new();
     for service in &profile.services {
         let Some(template) = &service.config_template else {
             continue;
@@ -53,8 +53,19 @@ pub fn render_configs(
         let name = template
             .file_name()
             .ok_or_else(|| RenderError::Invalid("template path has no file name".into()))?;
-        if !file_names.insert(name.to_os_string()) {
+        if file_names
+            .insert(name.to_os_string(), template)
+            .is_some_and(|existing| existing != template)
+        {
             return invalid("multiple services render to the same file name");
+        }
+        let path = destination.join(name);
+        if outputs.iter().any(|output: &RenderedConfig| output.path == path) {
+            outputs.push(RenderedConfig {
+                service_id: service.id.clone(),
+                path,
+            });
+            continue;
         }
         let source = template_root.join(name);
         let metadata = fs::symlink_metadata(&source)?;
@@ -69,7 +80,6 @@ pub fn render_configs(
         toml::from_str::<toml::Value>(&rendered).map_err(|error| {
             RenderError::Invalid(format!("template for {} is not TOML: {error}", service.id))
         })?;
-        let path = destination.join(name);
         atomic_write(&path, rendered.as_bytes())?;
         outputs.push(RenderedConfig {
             service_id: service.id.clone(),

@@ -84,7 +84,11 @@ impl TestRoot {
                         .to_string_lossy()
                         .into_owned(),
                 ],
-                "iceberg" => vec!["serve".into()],
+                "iceberg" => vec![
+                    "serve".into(),
+                    "--config".into(),
+                    format!("{}/run/config/access.toml", self.0.display()),
+                ],
                 _ => unreachable!(),
             };
             if service.id == "iceberg" {
@@ -135,6 +139,7 @@ impl TestRoot {
             "diskio.toml",
             "chunkdb.toml",
             "chunk-kv.toml",
+            "access.toml",
         ] {
             let body = fs::read_to_string(source.join(name)).unwrap();
             let body = body
@@ -149,7 +154,8 @@ impl TestRoot {
                 .replace("127.0.0.1:12100", &format!("127.0.0.1:{}", ports.chunkdb_http))
                 .replace("127.0.0.1:12200", &format!("127.0.0.1:{}", ports.chunkdb_rpc))
                 .replace("127.0.0.1:15100", &format!("127.0.0.1:{}", ports.chunk_kv_http))
-                .replace("127.0.0.1:15200", &format!("127.0.0.1:{}", ports.chunk_kv_rpc));
+                .replace("127.0.0.1:15200", &format!("127.0.0.1:{}", ports.chunk_kv_rpc))
+                .replace("0.0.0.0:80", &format!("127.0.0.1:{}", ports.iceberg));
             fs::write(self.0.join("templates").join(name), body).unwrap();
         }
     }
