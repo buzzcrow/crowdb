@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogError};
 use crowdb_access_iceberg::file::{
-    FileBlockStore, FileIdentity, FileOperation, FileReader, FileSealError, FileSealer, FileTree,
-    MultipartAdmissionLimits, MultipartPart, MultipartPhase, MultipartSession, MultipartWorkError,
+    FileIdentity, FileOperation, FileSealError, FileSealer, MultipartAdmissionLimits, MultipartPart,
+    MultipartPhase, MultipartSession, MultipartWorkError,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
 use crowdb_access_s3::auth::StreamingPayloadVerifier;
@@ -13,7 +11,6 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::http::header::HeaderValue;
 use hyper::{Request, Response};
-use md5::Md5;
 use sha2::{Digest, Sha256};
 
 use super::{admission_error, catalog_error, FileHttp, FileS3ErrorCode, FileTransferAdmission};
@@ -176,7 +173,6 @@ impl FileHttp {
         } else {
             signed_digest(request.headers().get("x-amz-content-sha256"))?
         };
-        let content_md5 = request.headers().get("content-md5").cloned();
         let (parts, body) = request.into_parts();
         let mut body = FileUploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
             .map_err(encoding_error)?;
@@ -199,7 +195,6 @@ impl FileHttp {
                 body.failure()
                     .map_or_else(|| admission_error(error), encoding_error)
             })?;
-        verify_md5(self.blocks.clone(), owner, tree.clone(), content_md5.as_ref()).await?;
         let before = self
             .multipart
             .part(&session, part_number)
@@ -514,29 +509,4 @@ pub(super) fn signed_digest(value: Option<&HeaderValue>) -> Result<Option<[u8; 3
             | hex(pair[1]).ok_or(FileS3ErrorCode::InvalidRequest)?;
     }
     Ok(Some(digest))
-}
-
-pub(super) async fn verify_md5(
-    blocks: Arc<dyn FileBlockStore>,
-    owner: FileIdentity,
-    tree: FileTree,
-    header: Option<&HeaderValue>,
-) -> Result<(), FileS3ErrorCode> {
-    let Some(header) = header else {
-        return Ok(());
-    };
-    let decoded = STANDARD
-        .decode(header.as_bytes())
-        .map_err(|_| FileS3ErrorCode::InvalidRequest)?;
-    let expected: [u8; 16] = decoded.try_into().map_err(|_| FileS3ErrorCode::InvalidRequest)?;
-    let mut reader = FileReader::from_tree(blocks, owner, tree, None, 64 * 1024)
-        .map_err(|_| FileS3ErrorCode::InternalError)?;
-    let mut digest = Md5::new();
-    while let Some(bytes) = reader.next().await.map_err(|_| FileS3ErrorCode::InternalError)? {
-        digest.update(&bytes);
-    }
-    if <[u8; 16]>::from(digest.finalize()) != expected {
-        return Err(FileS3ErrorCode::BadDigest);
-    }
-    Ok(())
 }

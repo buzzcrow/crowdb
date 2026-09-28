@@ -14,6 +14,56 @@ use hyper::{header::HeaderValue, HeaderMap};
 
 struct TestFrames(VecDeque<Bytes>);
 
+#[tokio::test]
+async fn content_md5_checks_decoded_bytes_before_successful_eof() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use md5::{Digest, Md5};
+
+    for streaming in [false, true] {
+        for valid in [false, true] {
+            let (mut headers, verifier, wire) = signed::fixture();
+            let decoded = vec![b'a'; 66560];
+            let digest = if valid {
+                Md5::digest(&decoded)
+            } else {
+                Md5::digest(b"wrong")
+            };
+            if !streaming {
+                headers = HeaderMap::new();
+            }
+            headers.insert("content-md5", STANDARD.encode(digest).parse().unwrap());
+            let bytes = if streaming { wire } else { decoded };
+            let input = TestFrames(bytes.chunks(997).map(Bytes::copy_from_slice).collect());
+            let body = FileUploadBody::new(input, &headers, streaming.then_some(verifier), 100_000).unwrap();
+            let result = body.collect().await;
+            if valid {
+                assert_eq!(result.unwrap().to_bytes(), vec![b'a'; 66560]);
+            } else {
+                assert!(matches!(result, Err(FileEncodingError::Checksum)));
+            }
+        }
+    }
+}
+
+#[test]
+fn content_md5_rejects_malformed_and_duplicate_headers() {
+    for value in ["invalid", "YQ=="] {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-md5", value.parse().unwrap());
+        assert!(FileUploadBody::new(Full::new(Bytes::new()), &headers, None, 100).is_err());
+    }
+    let mut headers = HeaderMap::new();
+    headers.append(
+        "content-md5",
+        HeaderValue::from_static("1B2M2Y8AsgTpgAmY7PhCfg=="),
+    );
+    headers.append(
+        "content-md5",
+        HeaderValue::from_static("1B2M2Y8AsgTpgAmY7PhCfg=="),
+    );
+    assert!(FileUploadBody::new(Full::new(Bytes::new()), &headers, None, 100).is_err());
+}
+
 impl Body for TestFrames {
     type Data = Bytes;
     type Error = Infallible;

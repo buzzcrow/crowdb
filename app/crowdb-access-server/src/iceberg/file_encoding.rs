@@ -7,6 +7,7 @@ use hyper::HeaderMap;
 
 mod checksum;
 mod chunks;
+mod content_md5;
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum FileEncodingError {
@@ -27,6 +28,7 @@ pub struct FileUploadBody<Input> {
     buffered: Bytes,
     chunks: Option<chunks::Chunks>,
     checksum: Option<checksum::Checksum>,
+    content_md5: Option<content_md5::ContentMd5>,
     length: Option<u64>,
     wire_length: Option<u64>,
     wire_bytes: u64,
@@ -87,6 +89,7 @@ impl<Input> FileUploadBody<Input> {
             buffered: Bytes::new(),
             chunks,
             checksum,
+            content_md5: content_md5::ContentMd5::from_headers(headers)?,
             length,
             wire_length,
             wire_bytes: 0,
@@ -113,6 +116,9 @@ impl<Input> FileUploadBody<Input> {
             chunks.finish()?;
         }
         if let Some(checksum) = &self.checksum {
+            checksum.verify()?;
+        }
+        if let Some(checksum) = &self.content_md5 {
             checksum.verify()?;
         }
         Ok(())
@@ -172,7 +178,12 @@ impl<Input: Body<Data = Bytes> + Unpin> Body for FileUploadBody<Input> {
             return Poll::Ready(None);
         }
         match std::task::ready!(body.poll_data(context)) {
-            Ok(Some(bytes)) => Poll::Ready(Some(Ok(Frame::data(bytes)))),
+            Ok(Some(bytes)) => {
+                if let Some(checksum) = &mut body.content_md5 {
+                    checksum.update(&bytes);
+                }
+                Poll::Ready(Some(Ok(Frame::data(bytes))))
+            }
             Ok(None) => {
                 body.done = true;
                 Poll::Ready(None)

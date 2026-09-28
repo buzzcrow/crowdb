@@ -184,7 +184,6 @@ impl FileHttp {
         } else {
             multipart::signed_digest(request.headers().get("x-amz-content-sha256"))?
         };
-        let content_md5 = request.headers().get("content-md5").cloned();
         let (parts, body) = request.into_parts();
         let mut body = FileUploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
             .map_err(multipart::encoding_error)?;
@@ -207,7 +206,6 @@ impl FileHttp {
                 body.failure()
                     .map_or_else(|| admission_error(error), multipart::encoding_error)
             })?;
-        multipart::verify_md5(self.blocks.clone(), owner, tree.clone(), content_md5.as_ref()).await?;
         let sealed = FileSealer::new(self.blocks.clone(), self.limits.max_file_bytes)
             .map_err(|_| FileS3ErrorCode::InternalError)?
             .seal_uploaded(owner, file_request.location.clone(), tree)
