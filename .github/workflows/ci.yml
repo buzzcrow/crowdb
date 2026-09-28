@@ -339,8 +339,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    env:
-      CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
     steps:
     - uses: actions/checkout@v4
       with:
@@ -354,6 +352,8 @@ jobs:
       with:
         pixi-version: latest
     - name: Build and test single-node preview image
+      env:
+        CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
       run: pixi run test-single-node-container
     - name: Capture Docker diagnostics on failure
       if: failure()
