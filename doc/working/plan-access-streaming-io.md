@@ -192,6 +192,14 @@ while keeping secrets in the environment.
   originally selected locations and composite ETag; the 100 MiB replay test
   passes with the new selection format. The old selection format remains
   readable for legacy multipart recovery.
+- Streamed UploadPart now performs one CAS on its own part key and no session
+  reservation/settlement CAS. Distinct part numbers commit independently; a
+  lost CAS reply is resolved by reading only that part record. Create caps
+  `max_parts` by the staged-byte reservation divided by the per-part limit,
+  so concurrent parts cannot exceed reserved capacity without a shared
+  counter. Complete validates its snapshot against the per-session maxima
+  rather than mutable staged counters. The focused concurrency, lost-reply,
+  limits, ordinary HTTP MPU and 100 MiB restart/replay tests pass.
 
 ## Files
 

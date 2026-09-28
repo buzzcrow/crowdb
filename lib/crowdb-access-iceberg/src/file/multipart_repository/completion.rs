@@ -57,7 +57,7 @@ impl MultipartRepository {
         if session.pending.is_some() {
             return Err(CatalogError::Busy);
         }
-        if selection.parts().len() > usize::from(session.part_count)
+        if (selection.snapshots().is_none() && selection.parts().len() > usize::from(session.part_count))
             || selection
                 .parts()
                 .iter()

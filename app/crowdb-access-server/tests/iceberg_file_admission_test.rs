@@ -226,6 +226,10 @@ fn multipart_session_and_global_credit_intersections_fail_closed() {
     ]);
     let create = request(&grant, &Method::POST, "?uploads");
     let admitted = FileTransferAdmission::authorize(&grant, &create, service(), None, 101).unwrap();
+    let limits = admitted.multipart_limits().unwrap();
+    assert_eq!(limits.max_part_bytes, 4);
+    assert_eq!(limits.max_parts, 7);
+    assert!(u64::from(limits.max_parts) * limits.max_part_bytes <= limits.max_staged_bytes);
     let mut session = session(&grant);
     let mut policy = policy(&grant);
     assert!(admitted.check_create(&session, &policy).is_ok());

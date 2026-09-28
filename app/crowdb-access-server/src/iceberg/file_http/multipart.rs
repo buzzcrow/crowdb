@@ -228,33 +228,43 @@ impl FileHttp {
                 })?;
             (Some(tree), None)
         };
-        let before = self
-            .multipart
-            .part_for_upload(&session, part_number)
-            .await
-            .map_err(catalog_error)?;
-        let part = MultipartPart {
+        let mut part = MultipartPart {
             upload: session.upload,
             number: part_number,
-            revision: before.map_or(1, |part| part.revision.checked_add(1).unwrap_or(0)),
+            revision: 1,
             modified_ms: now_ms,
             owner,
             tree,
             stream,
         };
-        let pending = self
-            .multipart
-            .reserve_part_state(&session, &part, now_ms)
-            .await
-            .map_err(catalog_error)?
-            .ok_or(FileS3ErrorCode::SlowDown)?;
-        if !self
-            .multipart
-            .settle_part(&pending)
-            .await
-            .map_err(catalog_error)?
-        {
-            return Err(FileS3ErrorCode::SlowDown);
+        if part.stream.is_some() {
+            part = self
+                .multipart
+                .put_stream_part(&session, &part, now_ms)
+                .await
+                .map_err(catalog_error)?
+                .ok_or(FileS3ErrorCode::SlowDown)?;
+        } else {
+            let before = self
+                .multipart
+                .part_for_upload(&session, part_number)
+                .await
+                .map_err(catalog_error)?;
+            part.revision = before.map_or(1, |part| part.revision.checked_add(1).unwrap_or(0));
+            let pending = self
+                .multipart
+                .reserve_part_state(&session, &part, now_ms)
+                .await
+                .map_err(catalog_error)?
+                .ok_or(FileS3ErrorCode::SlowDown)?;
+            if !self
+                .multipart
+                .settle_part(&pending)
+                .await
+                .map_err(catalog_error)?
+            {
+                return Err(FileS3ErrorCode::SlowDown);
+            }
         }
         MultipartResponses::upload_part(&part)
             .map(|response| response.map(IcebergBody::new))

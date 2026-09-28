@@ -149,10 +149,10 @@ impl MultipartCompletion {
             || self.selection.length == 0
             || self.selection.digest != progress.selection
             || self.selected_parts == 0
-            || self.selected_parts > session.part_count
+            || self.selected_parts > session.limits.max_parts
             || progress.next_part > self.selected_parts
             || progress.completed_bytes > session.limits.max_file_bytes
-            || progress.completed_bytes > session.staged_bytes
+            || (session.staged_bytes != 0 && progress.completed_bytes > session.staged_bytes)
             || progress.part_offset > progress.completed_bytes
             || progress.active.is_some() != progress.part_digest.is_some()
             || progress.active.is_some() != (progress.part_offset > 0)
