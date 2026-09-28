@@ -248,3 +248,37 @@ must be deleted — see the workflow's Post-merge cleanup section.
 ---
 
 <!-- Reference implementation details: see ~/.codeium/windsurf/memories/global_rules.md -->
+
+## Open Issues
+
+- **R188 crash diagnostics acceptance:** This host routes `core_pattern` to
+  Apport, so a container-local directory and core ulimit cannot guarantee a
+  dump in `/opt/crowdb/data`. End-to-end acceptance needs a disposable host
+  with file-based collection or a verified host-collector export workflow.
+  Exact-build source-line symbols also need a distribution choice: compressed
+  line tables in the image with a measured size increase, or separate
+  exact-build debug symbols. Retention and symbolization remain unverified.
+- **Server Tests intermittent strip lookup:** The CI log for
+  `small_object_writer_e2e::eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread`
+  failed at `location strip`, while the exact test and its 16-test suite pass
+  locally. Preserve the failing run's runtime-server logs and artifact to
+  identify the first divergent state before changing the assertion or retry
+  policy.
+- **R188 hardware display data:** Group 0 rack and node values hold IDs and
+  status but not the console's rack name, node host or SSH settings. The
+  authority cutover must define where shared display names live and keep
+  machine-local launch inputs in the launch registry. Until that split is
+  implemented, two consoles cannot reconstruct identical physical views from
+  Group 0 alone.
+- **R167 shared multipart core:** The referenced R190 requirement is no
+  longer present in the backlog. Both adapters now use shared phase names,
+  selected-part validation, accounting and metadata-only location composition.
+  Iceberg's remaining session/part recovery is bound to its catalog identity
+  and store. Extract the remaining protocol-neutral transition decisions before
+  wiring S3; keep keys, authorization and responses in the protocol adapters.
+- **R167 unreachable part cleanup:** S3 now preserves immutable part
+  generations so completion can publish a selected generation across a
+  concurrent part-number replacement. Losing replacement candidates and old
+  generations can remain unreachable. Abort, expiry, and replacement cleanup
+  need durable bounded records and reader-pin protection before the HTTP path
+  is enabled.
