@@ -158,10 +158,10 @@ async fn official_catalog_continues_through_empty_namespace_pages() {
     })
     .await
     .unwrap();
-    assert_eq!(test.store.scans.load(Ordering::SeqCst), 7);
-    test.finish().await;
     assert!(
         status.success(),
         "official namespace pagination acceptance failed"
     );
+    assert_eq!(test.store.scans.load(Ordering::SeqCst), 7);
+    test.finish().await;
 }

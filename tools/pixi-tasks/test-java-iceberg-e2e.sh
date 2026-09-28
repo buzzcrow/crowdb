@@ -5,6 +5,8 @@ set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
 source tools/pixi-tasks/prepare-iceberg.sh
+pixi run -e iceberg-e2e -- mvn --batch-mode --no-transfer-progress \
+    -f app/crowdb-access-server/tests/common/iceberg_java/pom.xml compile exec:help
 pixi run -e default -- cargo test --release -p crowdb-access-server --features iceberg-e2e \
     --test iceberg_namespace_sdk_test official_catalog_continues_through_empty_namespace_pages -- --ignored --exact
 pixi run -e default -- cargo test --release -p crowdb-access-server --features iceberg-e2e \
