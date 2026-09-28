@@ -4,6 +4,7 @@ use crate::file::{MultipartPart, MultipartPartMutation, MultipartPhase, Multipar
 use crate::key::{CatalogScope, IcebergKey};
 use crate::operation::mutation_identity;
 use crate::record::StorageRecord;
+use crowdb_access_multipart::{reserve_part_accounting, PartAccounting};
 
 use super::{check_live, increment, MultipartRepository};
 
@@ -180,15 +181,19 @@ impl MultipartRepository {
             before.validate_for(session)?;
         }
         let mut next = increment(session)?;
-        next.part_count = session
-            .part_count
-            .checked_add(u16::from(before.is_none()))
-            .ok_or(ValidationError::Record)?;
-        next.staged_bytes = session
-            .staged_bytes
-            .checked_sub(before.as_ref().map_or(0, MultipartPart::length))
-            .and_then(|bytes| bytes.checked_add(part.length()))
-            .ok_or(ValidationError::Record)?;
+        let accounting = reserve_part_accounting(
+            PartAccounting {
+                count: session.part_count,
+                staged_bytes: session.staged_bytes,
+            },
+            before.as_ref().map(MultipartPart::length),
+            part.length(),
+            session.limits.max_parts,
+            session.limits.max_staged_bytes,
+        )
+        .map_err(|_| ValidationError::Record)?;
+        next.part_count = accounting.count;
+        next.staged_bytes = accounting.staged_bytes;
         next.pending = Some(MultipartPartMutation { before, after });
         Ok(self.exchange(session, &next).await?.then_some(next))
     }

@@ -1,6 +1,8 @@
 use crate::error::ValidationError;
 use crate::operation::MAX_PAYLOAD_BYTES;
 use bincode::Options;
+use crowdb_access_multipart::validate_selected_parts;
+pub use crowdb_access_multipart::SelectedPart;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -9,13 +11,6 @@ use super::{FileContent, MultipartPart};
 const MAGIC_V1: &[u8; 5] = b"ICMS\x01";
 const MAGIC_V2: &[u8; 5] = b"ICMS\x02";
 const ENTRY_BYTES: usize = 42;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SelectedPart {
-    pub number: u16,
-    pub revision: u64,
-    pub digest: [u8; 32],
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultipartSelection {
@@ -35,16 +30,7 @@ impl MultipartSelection {
     /// # Errors
     /// Rejects empty, oversized, unordered or duplicate part selections.
     pub fn new(parts: Vec<SelectedPart>) -> Result<Self, ValidationError> {
-        if parts.is_empty() || parts.len() > 10_000 {
-            return Err(ValidationError::Record);
-        }
-        let mut previous = 0;
-        for part in &parts {
-            if part.number <= previous || part.number > 10_000 || part.revision == 0 {
-                return Err(ValidationError::Record);
-            }
-            previous = part.number;
-        }
+        validate_selected_parts(&parts, 10_000).map_err(|_| ValidationError::Record)?;
         let count = u16::try_from(parts.len()).map_err(|_| ValidationError::Record)?;
         Ok(Self {
             parts,

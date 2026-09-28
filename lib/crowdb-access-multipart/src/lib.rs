@@ -12,6 +12,10 @@ use std::fmt::Write as _;
 use crowdb_protocol::chunkdb::rpc::Location;
 use md5::{Digest, Md5};
 
+mod state;
+
+pub use state::{reserve_part_accounting, validate_selected_parts, PartAccounting, SelectedPart, StateError};
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ComposeError {
     #[error("multipart part count exceeds 10000")]
