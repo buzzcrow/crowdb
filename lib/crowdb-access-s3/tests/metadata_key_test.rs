@@ -61,3 +61,23 @@ fn maximum_binary_object_key_stays_within_its_bucket_interval() {
     assert!(MetadataKey::object_prefix(&tenant, bucket) < encoded);
     assert!(encoded < MetadataKey::object_end(&tenant, bucket));
 }
+
+#[test]
+fn multipart_keys_keep_uploads_and_parts_in_separate_bounded_intervals() {
+    let tenant = TenantId::new(b"tenant".to_vec()).unwrap();
+    let bucket = BucketId::new([5; 16]);
+    let upload = [9; 16];
+    let session = MetadataKey::multipart_session(&tenant, bucket, b"a\0", &upload).unwrap();
+    let start = MetadataKey::multipart_session_prefix(&tenant, bucket);
+    let end = MetadataKey::multipart_session_end(&tenant, bucket);
+    assert!(start < session && session < end);
+    let part_start = MetadataKey::multipart_part_prefix(&tenant, bucket, &upload);
+    let part_end = MetadataKey::multipart_part_end(&tenant, bucket, &upload);
+    let first = MetadataKey::multipart_part(&tenant, bucket, &upload, 1).unwrap();
+    let last = MetadataKey::multipart_part(&tenant, bucket, &upload, 10_000).unwrap();
+    assert!(part_start < first && first < last && last < part_end);
+    assert!(MetadataKey::multipart_part(&tenant, bucket, &upload, 0).is_err());
+    assert!(MetadataKey::multipart_part(&tenant, bucket, &upload, 10_001).is_err());
+    assert!(MetadataKey::object_end(&tenant, bucket) <= start);
+    assert!(end <= part_start);
+}

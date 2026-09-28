@@ -13,4 +13,5 @@ workspace = true
 [dependencies]
 crowdb-protocol = { path = "../crowdb-protocol" }
 md-5 = "0.10"
+serde = { version = "1", features = ["derive"] }
 thiserror = { workspace = true }

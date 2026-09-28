@@ -5,6 +5,8 @@ use std::fmt;
 
 const BUCKET_NAME_KIND: u8 = 1;
 const OBJECT_KIND: u8 = 2;
+const MULTIPART_SESSION_KIND: u8 = 3;
+const MULTIPART_PART_KIND: u8 = 4;
 const MAX_KEY_BYTES: usize = 1024;
 
 /// A tenant namespace identity.
@@ -30,7 +32,7 @@ impl TenantId {
 }
 
 /// An immutable bucket identity.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub struct BucketId([u8; 16]);
 
 impl BucketId {
@@ -150,12 +152,84 @@ impl MetadataKey {
         end.push(OBJECT_KIND + 1);
         end
     }
+
+    /// Starts the ordered multipart upload interval for one bucket.
+    #[must_use]
+    pub fn multipart_session_prefix(tenant: &TenantId, bucket: BucketId) -> Vec<u8> {
+        let mut key = namespace_prefix(tenant);
+        key.extend_from_slice(bucket.as_bytes());
+        key.push(MULTIPART_SESSION_KIND);
+        key
+    }
+
+    /// Ends the multipart upload interval for one bucket.
+    #[must_use]
+    pub fn multipart_session_end(tenant: &TenantId, bucket: BucketId) -> Vec<u8> {
+        let mut key = namespace_prefix(tenant);
+        key.extend_from_slice(bucket.as_bytes());
+        key.push(MULTIPART_SESSION_KIND + 1);
+        key
+    }
+
+    /// Identifies one upload by object key and stable upload ID.
+    ///
+    /// # Errors
+    /// Rejects an empty or oversized object key.
+    pub fn multipart_session(
+        tenant: &TenantId,
+        bucket: BucketId,
+        object: &[u8],
+        upload_id: &[u8; 16],
+    ) -> Result<Vec<u8>, MetadataKeyError> {
+        validate_component("object key", object)?;
+        let mut key = Self::multipart_session_prefix(tenant, bucket);
+        append_ordered_bytes(&mut key, object);
+        key.extend_from_slice(upload_id);
+        Ok(key)
+    }
+
+    /// Starts the part interval of one upload.
+    #[must_use]
+    pub fn multipart_part_prefix(tenant: &TenantId, bucket: BucketId, upload_id: &[u8; 16]) -> Vec<u8> {
+        let mut key = namespace_prefix(tenant);
+        key.extend_from_slice(bucket.as_bytes());
+        key.push(MULTIPART_PART_KIND);
+        key.extend_from_slice(upload_id);
+        key
+    }
+
+    /// Ends the part interval of one upload.
+    #[must_use]
+    pub fn multipart_part_end(tenant: &TenantId, bucket: BucketId, upload_id: &[u8; 16]) -> Vec<u8> {
+        let mut key = Self::multipart_part_prefix(tenant, bucket, upload_id);
+        increment_lexicographic(&mut key);
+        key
+    }
+
+    /// Identifies one part number independently of its replacement revision.
+    ///
+    /// # Errors
+    /// Rejects part numbers outside the S3 multipart range.
+    pub fn multipart_part(
+        tenant: &TenantId,
+        bucket: BucketId,
+        upload_id: &[u8; 16],
+        number: u16,
+    ) -> Result<Vec<u8>, MetadataKeyError> {
+        if number == 0 || number > 10_000 {
+            return Err(MetadataKeyError::InvalidPartNumber);
+        }
+        let mut key = Self::multipart_part_prefix(tenant, bucket, upload_id);
+        key.extend_from_slice(&number.to_be_bytes());
+        Ok(key)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetadataKeyError {
     Empty(&'static str),
     TooLong(&'static str),
+    InvalidPartNumber,
 }
 
 impl fmt::Display for MetadataKeyError {
@@ -163,6 +237,7 @@ impl fmt::Display for MetadataKeyError {
         match self {
             Self::Empty(component) => write!(formatter, "{component} cannot be empty"),
             Self::TooLong(component) => write!(formatter, "{component} exceeds {MAX_KEY_BYTES} bytes"),
+            Self::InvalidPartNumber => write!(formatter, "multipart part number must be in 1..=10000"),
         }
     }
 }

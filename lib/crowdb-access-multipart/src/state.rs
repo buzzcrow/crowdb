@@ -3,7 +3,7 @@
 
 //! Protocol-neutral part selection and reservation invariants.
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SelectedPart {
     pub number: u16,
     pub revision: u64,

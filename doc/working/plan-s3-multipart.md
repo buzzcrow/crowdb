@@ -30,6 +30,8 @@ Iceberg multipart path.
 - [ ] **Durable S3 records**: add upload and part keys/records with raw 16-byte
   MD5, selected revision and cleanup state. Use bucket identity and object key
   as namespace scope; preserve immutable part data after replacement.
+  Versioned session/part records and ordered, binary-safe keys are in place;
+  persistence operations, replacement generations and cleanup state remain.
 - [ ] **S3 routes and wire**: classify create/upload/list/complete/abort/list
   uploads, parse bounded completion XML, emit compatible responses and errors.
   Preserve SigV4 authentication and existing basic routes.
