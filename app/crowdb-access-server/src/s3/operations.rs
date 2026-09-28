@@ -143,6 +143,12 @@ impl ProductionS3Operations {
             S3Operation::GetObject => self.get_object(route, &request, &request_id).await,
             S3Operation::ListObjectsV2 => self.list_objects(route, &request).await,
             S3Operation::DeleteObject => self.delete_object(route).await,
+            S3Operation::CreateMultipartUpload
+            | S3Operation::UploadPart
+            | S3Operation::ListParts
+            | S3Operation::CompleteMultipartUpload
+            | S3Operation::AbortMultipartUpload
+            | S3Operation::ListMultipartUploads => Err(S3ErrorCode::NotImplemented),
         };
         self.record_dependency_outcome(operation, &result);
         result.unwrap_or_else(|code| {

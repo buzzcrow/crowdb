@@ -86,11 +86,14 @@ fn multipart_queries_have_unambiguous_paths_and_identities() {
         ),
     ];
     for (method, uri, expected) in cases {
-        let route = classify_multipart(&method, &uri.parse().unwrap())
-            .unwrap()
-            .unwrap();
+        let uri = uri.parse().unwrap();
+        let route = classify_multipart(&method, &uri).unwrap().unwrap();
         assert_eq!(route.operation, expected);
         assert_eq!(route.bucket, b"bucket");
+        let authenticated = classify_request(&method, &uri, &HeaderMap::new()).unwrap();
+        assert_eq!(authenticated.bucket.as_deref(), Some(b"bucket".as_slice()));
+        assert_eq!(authenticated.upload_id, route.upload_id);
+        assert_eq!(authenticated.part_number, route.part_number);
     }
     assert_eq!(
         classify_multipart(&Method::GET, &"/bucket/key".parse().unwrap()),

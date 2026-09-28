@@ -13,7 +13,7 @@ use crowdb_chunk_client::{
 
 use crate::native_buffer::{NativeBodyAllocator, NativeBufferMetricsSnapshot};
 
-const OPERATION_COUNT: usize = 9;
+const OPERATION_COUNT: usize = 15;
 const OUTCOME_COUNT: usize = 6;
 const OPERATION_NAMES: [&str; OPERATION_COUNT] = [
     "create_bucket",
@@ -25,6 +25,12 @@ const OPERATION_NAMES: [&str; OPERATION_COUNT] = [
     "get_object",
     "list_objects_v2",
     "delete_object",
+    "create_multipart_upload",
+    "upload_part",
+    "list_parts",
+    "complete_multipart_upload",
+    "abort_multipart_upload",
+    "list_multipart_uploads",
 ];
 const OUTCOME_NAMES: [&str; OUTCOME_COUNT] = [
     "success",

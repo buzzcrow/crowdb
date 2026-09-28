@@ -296,7 +296,10 @@ fn defer_body_provider(
     factory: Option<Arc<dyn Fn() -> DeferredBodyReceiveProvider + Send + Sync>>,
     request: &mut Request<Incoming>,
 ) {
-    if operation == crowdb_access_s3::route::S3Operation::PutObject {
+    if matches!(
+        operation,
+        crowdb_access_s3::route::S3Operation::PutObject | crowdb_access_s3::route::S3Operation::UploadPart
+    ) {
         if let Some(factory) = factory {
             request.extensions_mut().insert(factory());
         }

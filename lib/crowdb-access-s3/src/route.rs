@@ -22,6 +22,12 @@ pub enum S3Operation {
     GetObject,
     ListObjectsV2,
     DeleteObject,
+    CreateMultipartUpload,
+    UploadPart,
+    ListParts,
+    CompleteMultipartUpload,
+    AbortMultipartUpload,
+    ListMultipartUploads,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,6 +35,8 @@ pub struct S3Route {
     pub operation: S3Operation,
     pub bucket: Option<Vec<u8>>,
     pub key: Option<Vec<u8>>,
+    pub upload_id: Option<[u8; 16]>,
+    pub part_number: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,6 +62,8 @@ pub fn classify(method: &Method, uri: &Uri) -> Result<S3Route, RouteError> {
                 operation: S3Operation::ListBuckets,
                 bucket: None,
                 key: None,
+                upload_id: None,
+                part_number: None,
             })
             .ok_or(RouteError::Invalid);
     }
@@ -80,6 +90,8 @@ pub fn classify(method: &Method, uri: &Uri) -> Result<S3Route, RouteError> {
         operation,
         bucket: Some(bucket),
         key,
+        upload_id: None,
+        part_number: None,
     })
 }
 
@@ -110,6 +122,23 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
         )
     }) {
         return Err(RouteError::NotImplemented);
+    }
+    if let Some(multipart) = classify_multipart(method, uri)? {
+        let operation = match multipart.operation {
+            MultipartOperation::Create => S3Operation::CreateMultipartUpload,
+            MultipartOperation::UploadPart => S3Operation::UploadPart,
+            MultipartOperation::ListParts => S3Operation::ListParts,
+            MultipartOperation::Complete => S3Operation::CompleteMultipartUpload,
+            MultipartOperation::Abort => S3Operation::AbortMultipartUpload,
+            MultipartOperation::ListUploads => S3Operation::ListMultipartUploads,
+        };
+        return Ok(S3Route {
+            operation,
+            bucket: Some(multipart.bucket),
+            key: multipart.key,
+            upload_id: multipart.upload_id,
+            part_number: multipart.part_number,
+        });
     }
     classify(method, uri)
 }
