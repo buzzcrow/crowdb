@@ -126,6 +126,7 @@ fn selects_extension(query: Option<&str>) -> bool {
                 name,
                 "uploads"
                     | "uploadId"
+                    | "partNumber"
                     | "versionId"
                     | "tagging"
                     | "lifecycle"

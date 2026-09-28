@@ -51,6 +51,9 @@ pub fn classify_multipart(method: &Method, uri: &Uri) -> Result<Option<Multipart
             _ => {}
         }
     }
+    if !uploads && upload_id.is_none() && part_number.is_some() {
+        return Err(RouteError::Invalid);
+    }
     if !uploads && upload_id.is_none() {
         return Ok(None);
     }

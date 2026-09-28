@@ -34,6 +34,10 @@ fn rejects_extensions_before_dispatch() {
         classify(&Method::POST, &"/bucket/key?uploads".parse().unwrap()),
         Err(RouteError::NotImplemented)
     );
+    assert_eq!(
+        classify(&Method::PUT, &"/bucket/key?partNumber=7".parse().unwrap()),
+        Err(RouteError::NotImplemented)
+    );
 }
 
 #[test]
@@ -105,6 +109,10 @@ fn multipart_queries_have_unambiguous_paths_and_identities() {
     );
     assert_eq!(
         classify_multipart(&Method::GET, &"/bucket?uploads&uploads".parse().unwrap()),
+        Err(RouteError::Invalid)
+    );
+    assert_eq!(
+        classify_multipart(&Method::PUT, &"/bucket/key?partNumber=7".parse().unwrap()),
         Err(RouteError::Invalid)
     );
 }
