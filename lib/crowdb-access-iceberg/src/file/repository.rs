@@ -31,7 +31,7 @@ impl FileRepository {
         Ok(result)
     }
 
-    /// Publishes a candidate; callers must verify chunk bytes and format before calling.
+    /// Publishes a candidate after callers verify transfer integrity and durable storage.
     /// # Errors
     /// Rejects invalid records, changed content, retired contexts and uncertain writes.
     pub async fn publish(

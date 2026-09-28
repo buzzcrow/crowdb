@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crowdb_access_server::config::{load_args, AccessConfig};
+use crowdb_access_server::config::{load_args, AccessConfig, SmallWriteConfig};
 use crowdb_common::config::{load_from_file, BaseConfig};
 
 #[test]
@@ -51,4 +51,16 @@ fn invalid_read_budget_is_rejected() {
     config.read.stream_slots = 3;
     config.small_write.memory_budget_bytes = 1;
     assert!(config.validate().is_err());
+}
+
+#[test]
+fn small_threshold_uses_strip_data_capacity_for_ec_and_mirror() {
+    let mut config = SmallWriteConfig {
+        ec_data: 8,
+        ec_code: 2,
+        ..SmallWriteConfig::default()
+    };
+    assert_eq!(config.threshold_exclusive(), 7_549_748);
+    config.conversion_enabled = false;
+    assert_eq!(config.threshold_exclusive(), 943_719);
 }

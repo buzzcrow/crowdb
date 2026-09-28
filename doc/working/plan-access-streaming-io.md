@@ -260,6 +260,24 @@ while keeping secrets in the environment.
   threshold; it now uses just over 8 MiB to exercise native large ingress.
   Deterministic native backpressure remains covered by its focused allocator
   tests instead of timing-dependent null-DiskIO overlap.
+- The threshold contract is verified for 8+2 EC and mirror geometry:
+  with ratio 0.9 the exclusive upper bounds are 7,549,748 and 943,719 bytes.
+  A native Iceberg PUT test checks 7,549,747, 7,549,748 and 7,549,749 bytes;
+  only the first increments the small-write completion counter, and all three
+  return exact tail ranges.
+- The final code-flow review found no new read or write catalog records on the
+  frame hot path. Streamed PUT stages one immutable file record and CASes its
+  location mapping (two CAS total in the 5 MiB fixture); UploadPart CASes only
+  its part key; Complete stores the selected snapshot and final descriptor
+  without reading part bytes. GET checks authority, then holds at most three
+  ordered Chunk read slots plus the configured global budget, verifies full
+  frame CRCs, and hands owner-backed buffers to HTTP. Response cancellation
+  drops the stream and its retained credits. GC observes retired catalog
+  authority and the grace deadline before reclaiming location ranges; the
+  existing 18 GC worker tests cover streamed-file reclamation after restart.
+  The two publication CAS operations and request-level catalog context checks
+  remain fixed per object rather than per frame; the 5 MiB counters quantify
+  their cost. Legacy tree records retain their old intent path for readability.
 
 ## Files
 

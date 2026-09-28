@@ -22,6 +22,7 @@ use crowdb_access_iceberg::file::{
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
+use crowdb_access_server::config::SmallWriteConfig;
 use md5::{Digest, Md5};
 use reqwest::{Client, Method};
 use std::fmt::Write as _;
@@ -500,6 +501,40 @@ async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
             assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[start..=end]);
         }
         println!("iceberg ordinary size={size} PUT={put_elapsed:?} GET={get_elapsed:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn small_routing_is_strict_at_the_strip_threshold() {
+    let (_stack, _process, client, table) = setup().await;
+    let threshold = SmallWriteConfig::default().threshold_exclusive();
+    let completed = async || {
+        let metrics: serde_json::Value = Client::new()
+            .get(format!("http://{}/_crowdb/metrics", client.address))
+            .bearer_auth("m".repeat(32))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        metrics["chunk_small_write"]["completed"].as_u64().unwrap()
+    };
+    let mut previous = completed().await;
+    for size in [threshold - 1, threshold, threshold + 1] {
+        let object = path(table, &format!("data/threshold-{size}.parquet"));
+        let bytes = vec![u8::try_from(size % 251).unwrap(); size];
+        let response = client.send(Method::PUT, &object, "", &bytes, true).await;
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let current = completed().await;
+        assert_eq!(current - previous, u64::from(size < threshold), "size={size}");
+        previous = current;
+        let last = format!("bytes={}-{}", size - 2, size - 1);
+        let response = client
+            .send_range(Method::GET, &object, "", b"", false, Some(&last))
+            .await;
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[size - 2..]);
     }
 }
 
