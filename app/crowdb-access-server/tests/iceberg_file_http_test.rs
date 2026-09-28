@@ -443,6 +443,67 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
+    let (stack, _process, client, table) = setup_with_bounds_and_file_limit(
+        ClearBounds {
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+        128 * 1024 * 1024,
+        128 * 1024 * 1024,
+    )
+    .await;
+    let repository = FileRepository::new(stack.store().await);
+    for size in [10 * 1024, 1024 * 1024, 12 * 1024 * 1024, 100 * 1024 * 1024] {
+        let key = format!("data/size-{size}.parquet");
+        let object = path(table, &key);
+        let bytes = (0..size).map(|offset| (offset % 256) as u8).collect::<Vec<_>>();
+        let expected = Md5::digest(&bytes);
+        let started = Instant::now();
+        let put = client.send(Method::PUT, &object, "", &bytes, true).await;
+        assert_eq!(put.status(), 200, "{}", put.text().await.unwrap());
+        let put_elapsed = started.elapsed();
+        let head = client.send(Method::HEAD, &object, "", b"", false).await;
+        assert_eq!(head.status(), 200);
+        assert_eq!(head.headers()["content-length"], size.to_string());
+        let record = repository
+            .load(client.credentials.grant().context, &table.file(&key).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.length, size as u64);
+        assert!(!record
+            .content
+            .locations(record.length)
+            .unwrap()
+            .unwrap()
+            .is_empty());
+        let get_started = Instant::now();
+        let mut response = client.send(Method::GET, &object, "", b"", false).await;
+        assert_eq!(response.status(), 200);
+        let mut received = Md5::new();
+        let mut received_size = 0;
+        while let Some(chunk) = response.chunk().await.unwrap() {
+            received.update(&chunk);
+            received_size += chunk.len();
+        }
+        assert_eq!(received_size, size);
+        assert_eq!(received.finalize().as_slice(), expected.as_slice());
+        let get_elapsed = get_started.elapsed();
+        for start in [0, usize::min(size - 1, 65500), size - 1] {
+            let end = usize::min(size - 1, start + 127);
+            let range = format!("bytes={start}-{end}");
+            let response = client
+                .send_range(Method::GET, &object, "", b"", false, Some(&range))
+                .await;
+            assert_eq!(response.status(), 206);
+            assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[start..=end]);
+        }
+        println!("iceberg ordinary size={size} PUT={put_elapsed:?} GET={get_elapsed:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multipart_100_mib_survives_restart_and_complete_replay() {
     const PART_BYTES: usize = 5 * 1024 * 1024;
     const PART_COUNT: usize = 20;

@@ -229,6 +229,37 @@ while keeping secrets in the environment.
   also pass. The table-commit crash matrix exited once while starting a recovery
   listener at publish-stage 5/31, then passed every boundary on a complete
   rerun. Listener startup now reports its exit status if this recurs.
+- The Boto3 S3 full-stack suite passes all 17 cases, including fragmented
+  signed uploads, backpressured reads, lost PUT replies, object reads after
+  each service restart, and direct Chunk/S3 request-path benchmarks. Its
+  existing fixture disables the shared small-object route, so separate native
+  small-writer acceptance remains necessary.
+- Java SDK namespace pagination and offline Maven dependency setup pass. The
+  FileIO acceptance then exposed an obsolete test that expected server-side
+  JSON parsing during multipart Complete. New streamed files intentionally
+  preserve user bytes, so that case now checks opaque Complete and GET. The
+  focused Java S3FileIO rerun passes, including small PUT/GET, multipart,
+  range seeks, immutable replay and exact table scope. Ordinary PUT size-matrix
+  cases for both APIs now report separate PUT and GET times.
+- The ordinary Iceberg PUT matrix passed full GET digest, HEAD length and
+  beginning/frame-boundary/tail ranges at every size. In the release/null-DiskIO
+  fixture, PUT/GET timings were 10 KiB: 58/8 ms, 1 MiB: 107/16 ms,
+  12 MiB: 396/62 ms and 100 MiB: 2716/201 ms. These include the signed
+  request helper's payload hash and body copy on PUT; no equivalent old-path
+  size matrix exists, so only the 5 MiB same-fixture comparison is a direct
+  before/after speedup.
+- The S3 full-stack suite now runs with the default small-object threshold
+  instead of disabling small writes. All 18 cases pass, including the 10 KiB,
+  1 MiB, 12 MiB and 100 MiB ordinary PUT/GET/range matrix. The metrics endpoint
+  exports small write submitted/completed/failure, buffer and wait counters;
+  the suite asserts actual small pipeline completions. In its debug/null-DiskIO
+  fixture, PUT/GET timings were 10 KiB: 36/47 ms, 1 MiB: 186/51 ms,
+  12 MiB: 1501/322 ms and 100 MiB: 10835/2713 ms. These are not comparable
+  with the release Iceberg timings. The old slow-upload fixture had only 1 MiB
+  of payload, which became a small write under the default 8-data-shard
+  threshold; it now uses just over 8 MiB to exercise native large ingress.
+  Deterministic native backpressure remains covered by its focused allocator
+  tests instead of timing-dependent null-DiskIO overlap.
 
 ## Files
 

@@ -272,6 +272,7 @@ impl S3Metrics {
         }
         if let Some(chunks) = chunks {
             append_chunk_metrics(&mut output, chunks.large_write_buffer_metrics());
+            append_small_write_metrics(&mut output, &chunks.small_write_metrics());
             append_read_flow_metrics(&mut output, chunks.read_flow_metrics());
         }
         output
@@ -341,6 +342,35 @@ fn append_chunk_metrics(output: &mut String, buffers: LargeWriteBufferMetricsSna
     ] {
         append_metric(output, name, "", value);
     }
+}
+
+fn append_small_write_metrics(output: &mut String, small: &SmallWriteMetricsSnapshot) {
+    for (name, value) in [
+        ("crowdb_s3_small_write_submitted_total", small.submitted),
+        ("crowdb_s3_small_write_completed_total", small.completed),
+        ("crowdb_s3_small_write_failed_total", small.failed),
+        (
+            "crowdb_s3_small_write_aggregate_buffers_total",
+            small.aggregate_write_buffers,
+        ),
+        (
+            "crowdb_s3_small_write_aggregate_payload_bytes_total",
+            small.aggregate_write_payload_bytes,
+        ),
+        ("crowdb_s3_small_write_queue_delay_ns_total", small.queue_delay_ns),
+        (
+            "crowdb_s3_small_write_reservation_wait_ns_total",
+            small.reservation_wait_ns,
+        ),
+    ] {
+        append_metric(output, name, "", value);
+    }
+    append_metric(
+        output,
+        "crowdb_s3_small_write_active_pipelines",
+        "",
+        small.active_pipelines,
+    );
 }
 
 fn append_read_flow_metrics(output: &mut String, flow: ReadFlowMetricsSnapshot) {
