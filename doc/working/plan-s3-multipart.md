@@ -42,7 +42,8 @@ Iceberg multipart path.
   uploads, parse bounded completion XML, emit compatible responses and errors.
   Preserve SigV4 authentication and existing basic routes. The repository now
   provides bounded, ordered ListParts pagination over current generations;
-  upload listing and HTTP dispatch remain.
+  multipart query shapes are parsed separately. Upload listing and HTTP dispatch
+  remain pending.
 - [ ] **Part ingestion**: reuse the bounded streaming writer and admission
   budget, persist part location/integrity before success, reconcile lost replies.
 - [ ] **Atomic completion**: fence selected part generations, validate order,

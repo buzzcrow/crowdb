@@ -6,6 +6,10 @@
 use hyper::{HeaderMap, Method, Uri};
 use percent_encoding::percent_decode_str;
 
+mod multipart;
+
+pub use multipart::{classify_multipart, MultipartOperation, MultipartRoute};
+
 #[repr(usize)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S3Operation {
