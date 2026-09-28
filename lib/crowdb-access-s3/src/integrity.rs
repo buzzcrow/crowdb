@@ -112,3 +112,32 @@ impl SinglePartIntegrity {
         Ok(result)
     }
 }
+
+/// Encodes a composite multipart `ETag` as a distinct 18-byte metadata
+/// checksum marker: 16 digest bytes followed by the part count.
+#[must_use]
+pub fn multipart_checksum_marker(etag: &str) -> Option<[u8; 18]> {
+    let (digest, count) = etag.split_once('-')?;
+    if digest.len() != 32 || count.starts_with('0') {
+        return None;
+    }
+    let count: u16 = count.parse().ok()?;
+    if count == 0 || count > 10_000 {
+        return None;
+    }
+    let mut marker = [0_u8; 18];
+    for (byte, pair) in marker[..16].iter_mut().zip(digest.as_bytes().chunks_exact(2)) {
+        let pair = std::str::from_utf8(pair).ok()?;
+        if pair.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return None;
+        }
+        *byte = u8::from_str_radix(pair, 16).ok()?;
+    }
+    marker[16..].copy_from_slice(&count.to_be_bytes());
+    Some(marker)
+}
+
+#[must_use]
+pub fn is_multipart_checksum(checksum: &[u8], etag: &str) -> bool {
+    checksum.len() == 18 && multipart_checksum_marker(etag).is_some_and(|marker| checksum == marker)
+}

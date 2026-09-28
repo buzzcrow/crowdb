@@ -7,6 +7,7 @@ use bincode::Options as _;
 use crowdb_access_multipart::{validate_selected_parts, MultipartComposer, SelectedPart};
 use crowdb_protocol::chunkdb::rpc::Location;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use super::BucketId;
 
@@ -42,6 +43,9 @@ pub struct MultipartSessionRecord {
     pub part_count: u16,
     pub staged_bytes: u64,
     pub selection: Option<Vec<SelectedPart>>,
+    pub completion_request_digest: Option<[u8; 32]>,
+    pub publication_ms: Option<u64>,
+    pub object_predecessor: Option<Option<[u8; 32]>>,
     pub etag: Option<String>,
 }
 
@@ -120,10 +124,31 @@ impl MultipartSessionRecord {
         }
         let selected_count = self.selection.as_ref().map_or(0, Vec::len);
         match self.phase {
-            MultipartPhase::Open if self.selection.is_none() && self.etag.is_none() => Ok(()),
-            MultipartPhase::Completing if self.selection.is_some() && self.etag.is_none() => Ok(()),
+            MultipartPhase::Open
+                if self.selection.is_none()
+                    && self.completion_request_digest.is_none()
+                    && self.publication_ms.is_none()
+                    && self.object_predecessor.is_none()
+                    && self.etag.is_none() =>
+            {
+                Ok(())
+            }
+            MultipartPhase::Completing
+                if self.selection.is_some()
+                    && self.completion_request_digest.is_some()
+                    && self.publication_ms.is_none()
+                    && self.object_predecessor.is_none()
+                    && self.etag.is_none() =>
+            {
+                Ok(())
+            }
             MultipartPhase::Publishing | MultipartPhase::Published
                 if self.selection.is_some()
+                    && self.completion_request_digest.is_some()
+                    && self
+                        .publication_ms
+                        .is_some_and(|time| time >= self.created_ms && time < self.expires_ms)
+                    && self.object_predecessor.is_some()
                     && self
                         .etag
                         .as_ref()
@@ -138,6 +163,14 @@ impl MultipartSessionRecord {
 }
 
 impl MultipartPartRecord {
+    /// Binds a completion selection to this exact persisted part generation.
+    ///
+    /// # Errors
+    /// Rejects an invalid part record before calculating its identity.
+    pub fn selection_digest(&self) -> Result<[u8; 32], MultipartRecordError> {
+        Ok(Sha256::digest(self.encode()?).into())
+    }
+
     /// Encodes one immutable selected part generation.
     ///
     /// # Errors

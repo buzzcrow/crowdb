@@ -9,8 +9,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use crowdb_access_multipart::SelectedPart;
 use crowdb_access_s3::metadata::{
-    BucketId, ChunkKvMetadataStore, MultipartPartRecord, MultipartPhase, MultipartRepository,
-    MultipartRepositoryError, MultipartSessionRecord, TenantId,
+    BucketId, ChunkKvMetadataStore, CompletionPart, MetadataKey, MultipartPartRecord, MultipartPhase,
+    MultipartRepository, MultipartRepositoryError, MultipartSessionRecord, ObjectRecord, TenantId,
 };
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRangeCatalogSource, ChunkKvTransport, ClientConfig, ClientError, Result,
@@ -105,7 +105,7 @@ fn reply(operation: PointOperation, values: &mut HashMap<Vec<u8>, RpcValue>) -> 
     }
 }
 
-async fn repository() -> (MultipartRepository, Arc<AtomicBool>) {
+async fn repository() -> (MultipartRepository, Arc<AtomicBool>, Arc<ChunkKvMetadataStore>) {
     let (sender, mut receiver) =
         mpsc::unbounded_channel::<(PointOperation, oneshot::Sender<Result<ChunkKvResponse>>)>();
     let lose_reply = Arc::new(AtomicBool::new(false));
@@ -172,12 +172,11 @@ async fn repository() -> (MultipartRepository, Arc<AtomicBool>) {
         .unwrap(),
     );
     client.refresh_catalog().await.unwrap();
+    let store = Arc::new(ChunkKvMetadataStore::new(client));
     (
-        MultipartRepository::new(
-            Arc::new(ChunkKvMetadataStore::new(client)),
-            TenantId::new(b"tenant".to_vec()).unwrap(),
-        ),
+        MultipartRepository::new(Arc::clone(&store), TenantId::new(b"tenant".to_vec()).unwrap()),
         lose_reply,
+        store,
     )
 }
 
@@ -198,6 +197,9 @@ fn session() -> MultipartSessionRecord {
         part_count: 0,
         staged_bytes: 0,
         selection: None,
+        completion_request_digest: None,
+        publication_ms: None,
+        object_predecessor: None,
         etag: None,
     }
 }
@@ -223,7 +225,7 @@ fn part() -> MultipartPartRecord {
 
 #[tokio::test]
 async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
-    let (repository, lose_reply) = repository().await;
+    let (repository, lose_reply, _) = repository().await;
     let session = session();
     assert_eq!(repository.begin(&session).await.unwrap(), session);
     assert_eq!(repository.begin(&session).await.unwrap(), session);
@@ -247,6 +249,10 @@ async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
         .unwrap();
     assert_eq!(second.revision, 2);
     assert_eq!(repository.part(&session, 1).await.unwrap(), Some(second));
+    assert_eq!(
+        repository.part_generation(&session, 1, 1).await.unwrap(),
+        Some(first)
+    );
 
     let mut frozen = session.clone();
     frozen.revision = 2;
@@ -258,6 +264,8 @@ async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
         revision: 2,
         digest: [4; 32],
     }]);
+    frozen.completion_request_digest = Some([5; 32]);
+    frozen.publication_ms = None;
     lose_reply.store(true, Ordering::SeqCst);
     assert!(repository.exchange(&session, &frozen).await.unwrap());
     assert!(repository.exchange(&session, &frozen).await.unwrap());
@@ -265,4 +273,184 @@ async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
         repository.put_stream_part(&session, &part(), 112).await,
         Err(MultipartRepositoryError::Conflict)
     ));
+}
+
+#[tokio::test]
+async fn completion_freezes_exact_part_revision_and_replays_the_same_request() {
+    let (repository, _, store) = repository().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    let first = repository
+        .put_stream_part(&session, &part(), 110)
+        .await
+        .unwrap()
+        .unwrap();
+    let requested = [CompletionPart {
+        number: 1,
+        etag: format!("\"{}\"", "09".repeat(16)),
+    }];
+    let frozen = repository
+        .freeze_completion(&session, &requested, 120)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(frozen.phase, MultipartPhase::Publishing);
+    assert_eq!(frozen.selection.as_ref().unwrap()[0].revision, first.revision);
+    assert!(frozen.etag.as_ref().unwrap().ends_with("-1"));
+    assert_eq!(
+        repository
+            .freeze_completion(&session, &requested, 121)
+            .await
+            .unwrap(),
+        Some(frozen.clone())
+    );
+    assert!(matches!(
+        repository.put_stream_part(&session, &part(), 122).await,
+        Err(MultipartRepositoryError::Conflict)
+    ));
+    let published = repository.publish_completion(&frozen).await.unwrap();
+    assert_eq!(published.phase, MultipartPhase::Published);
+    assert_eq!(repository.publish_completion(&session).await.unwrap(), published);
+    let key = MetadataKey::object(
+        &TenantId::new(b"tenant".to_vec()).unwrap(),
+        session.bucket_id,
+        &session.object_key,
+    )
+    .unwrap();
+    let object = ObjectRecord::decode(&store.get(key).await.unwrap().unwrap().value).unwrap();
+    assert_eq!(object.logical_length, 5);
+    assert_eq!(object.etag, frozen.etag.unwrap());
+    assert_eq!(object.checksum.len(), 18);
+    let locations: Vec<Location> = bincode::deserialize(&object.data_reference).unwrap();
+    assert_eq!(locations, part().locations);
+}
+
+#[tokio::test]
+async fn completion_rejects_undersized_nonfinal_and_wrong_etag() {
+    let (repository, _, _) = repository().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    repository.put_stream_part(&session, &part(), 110).await.unwrap();
+    let mut second = part();
+    second.number = 2;
+    repository.put_stream_part(&session, &second, 111).await.unwrap();
+    let etag = "09".repeat(16);
+    let request = [
+        CompletionPart {
+            number: 1,
+            etag: etag.clone(),
+        },
+        CompletionPart { number: 2, etag },
+    ];
+    assert!(matches!(
+        repository.freeze_completion(&session, &request, 120).await,
+        Err(MultipartRepositoryError::EntityTooSmall)
+    ));
+    let wrong = [CompletionPart {
+        number: 1,
+        etag: "00".repeat(16),
+    }];
+    assert!(matches!(
+        repository.freeze_completion(&session, &wrong, 120).await,
+        Err(MultipartRepositoryError::InvalidPart)
+    ));
+    assert_eq!(repository.load(&session).await.unwrap(), Some(session));
+}
+
+#[tokio::test]
+async fn publication_recovers_a_lost_reply_without_replacing_a_competing_object() {
+    let (repository, lose_reply, store) = repository().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    repository.put_stream_part(&session, &part(), 110).await.unwrap();
+    let request = [CompletionPart {
+        number: 1,
+        etag: "09".repeat(16),
+    }];
+    let frozen = repository
+        .freeze_completion(&session, &request, 120)
+        .await
+        .unwrap()
+        .unwrap();
+    lose_reply.store(true, Ordering::SeqCst);
+    let published = repository.publish_completion(&frozen).await.unwrap();
+    assert_eq!(published.phase, MultipartPhase::Published);
+    assert_eq!(repository.publish_completion(&frozen).await.unwrap(), published);
+
+    let mut second = session.clone();
+    second.upload_id = [8; 16];
+    repository.begin(&second).await.unwrap();
+    repository
+        .put_stream_part(&second, &part_for(&second), 130)
+        .await
+        .unwrap();
+    let frozen_second = repository
+        .freeze_completion(&second, &request, 140)
+        .await
+        .unwrap()
+        .unwrap();
+    let key = MetadataKey::object(
+        &TenantId::new(b"tenant".to_vec()).unwrap(),
+        second.bucket_id,
+        &second.object_key,
+    )
+    .unwrap();
+    let previous = store.get(key.clone()).await.unwrap().unwrap();
+    assert!(store
+        .compare_exchange(key.clone(), previous.value, b"competing generation".to_vec())
+        .await
+        .unwrap());
+    assert!(matches!(
+        repository.publish_completion(&frozen_second).await,
+        Err(MultipartRepositoryError::Conflict)
+    ));
+    assert_eq!(
+        store.get(key).await.unwrap().unwrap().value,
+        b"competing generation"
+    );
+}
+
+#[tokio::test]
+async fn frozen_part_generation_survives_a_late_pointer_change() {
+    let (repository, _, store) = repository().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    repository.put_stream_part(&session, &part(), 110).await.unwrap();
+    let selected = repository
+        .put_stream_part(&session, &part(), 111)
+        .await
+        .unwrap()
+        .unwrap();
+    let request = [CompletionPart {
+        number: 1,
+        etag: "09".repeat(16),
+    }];
+    let frozen = repository
+        .freeze_completion(&session, &request, 120)
+        .await
+        .unwrap()
+        .unwrap();
+    let pointer_key = MetadataKey::multipart_part(
+        &TenantId::new(b"tenant".to_vec()).unwrap(),
+        session.bucket_id,
+        &session.upload_id,
+        1,
+    )
+    .unwrap();
+    let mut late = selected.clone();
+    late.revision = 3;
+    late.locations[0].offset = 77;
+    let previous = store.get(pointer_key.clone()).await.unwrap().unwrap();
+    assert!(store
+        .compare_exchange(pointer_key, previous.value, late.encode().unwrap())
+        .await
+        .unwrap());
+    let published = repository.publish_completion(&frozen).await.unwrap();
+    assert_eq!(published.phase, MultipartPhase::Published);
+}
+
+fn part_for(session: &MultipartSessionRecord) -> MultipartPartRecord {
+    let mut value = part();
+    value.upload_id = session.upload_id;
+    value
 }

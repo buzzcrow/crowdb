@@ -126,7 +126,9 @@ pub fn prepare_get(
             inner: client
                 .read_range_stream(&locations, interval.start, interval.end)
                 .map_err(|_| RetrievalError::ChunkRead)?,
-            integrity: requested.is_none().then(SinglePartIntegrity::default),
+            integrity: (requested.is_none()
+                && !crate::integrity::is_multipart_checksum(&record.checksum, &record.etag))
+            .then(SinglePartIntegrity::default),
             expected_checksum: record.checksum.clone(),
             terminal: false,
         })

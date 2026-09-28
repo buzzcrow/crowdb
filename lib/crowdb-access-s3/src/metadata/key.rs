@@ -7,6 +7,7 @@ const BUCKET_NAME_KIND: u8 = 1;
 const OBJECT_KIND: u8 = 2;
 const MULTIPART_SESSION_KIND: u8 = 3;
 const MULTIPART_PART_KIND: u8 = 4;
+const MULTIPART_PART_GENERATION_KIND: u8 = 5;
 const MAX_KEY_BYTES: usize = 1024;
 
 /// A tenant namespace identity.
@@ -221,6 +222,29 @@ impl MetadataKey {
         }
         let mut key = Self::multipart_part_prefix(tenant, bucket, upload_id);
         key.extend_from_slice(&number.to_be_bytes());
+        Ok(key)
+    }
+
+    /// Identifies an immutable generation retained after part-number replacement.
+    ///
+    /// # Errors
+    /// Rejects invalid part numbers or a zero revision.
+    pub fn multipart_part_generation(
+        tenant: &TenantId,
+        bucket: BucketId,
+        upload_id: &[u8; 16],
+        number: u16,
+        revision: u64,
+    ) -> Result<Vec<u8>, MetadataKeyError> {
+        if number == 0 || number > 10_000 || revision == 0 {
+            return Err(MetadataKeyError::InvalidPartNumber);
+        }
+        let mut key = namespace_prefix(tenant);
+        key.extend_from_slice(bucket.as_bytes());
+        key.push(MULTIPART_PART_GENERATION_KIND);
+        key.extend_from_slice(upload_id);
+        key.extend_from_slice(&number.to_be_bytes());
+        key.extend_from_slice(&revision.to_be_bytes());
         Ok(key)
     }
 }

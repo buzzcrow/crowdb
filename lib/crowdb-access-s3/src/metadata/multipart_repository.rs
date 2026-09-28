@@ -10,6 +10,11 @@ use super::{
     MultipartPhase, MultipartRecordError, MultipartSessionRecord, PutIfAbsentOutcome, TenantId,
 };
 
+mod completion;
+mod publication;
+
+pub use completion::CompletionPart;
+
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartRepositoryError {
     #[error(transparent)]
@@ -20,6 +25,10 @@ pub enum MultipartRepositoryError {
     Store(#[from] MetadataStoreError),
     #[error("multipart operation conflicts with durable state")]
     Conflict,
+    #[error("multipart completion references a missing or changed part")]
+    InvalidPart,
+    #[error("a nonfinal multipart part is smaller than 5 MiB")]
+    EntityTooSmall,
 }
 
 pub struct MultipartRepository {
@@ -138,6 +147,37 @@ impl MultipartRepository {
             .transpose()
     }
 
+    /// Reads one immutable part generation, including replaced generations.
+    ///
+    /// # Errors
+    /// Rejects corrupt or foreign generation bytes and unavailable storage.
+    pub async fn part_generation(
+        &self,
+        session: &MultipartSessionRecord,
+        number: u16,
+        revision: u64,
+    ) -> Result<Option<MultipartPartRecord>, MultipartRepositoryError> {
+        let key = MetadataKey::multipart_part_generation(
+            &self.tenant,
+            session.bucket_id,
+            &session.upload_id,
+            number,
+            revision,
+        )?;
+        self.store
+            .get(key)
+            .await?
+            .map(|value| {
+                let part =
+                    MultipartPartRecord::decode(&value.value, session.bucket_id, &session.upload_id, number)?;
+                if part.revision != revision {
+                    return Err(MultipartRepositoryError::InvalidPart);
+                }
+                Ok(part)
+            })
+            .transpose()
+    }
+
     /// Conditionally publishes an independently streamed part generation.
     ///
     /// Distinct part numbers write independent keys. The conservative
@@ -178,6 +218,29 @@ impl MultipartRepository {
             .ok_or(MultipartRepositoryError::Conflict)?;
         after.modified_ms = now_ms;
         let value = after.encode()?;
+        let generation_key = MetadataKey::multipart_part_generation(
+            &self.tenant,
+            current.bucket_id,
+            &current.upload_id,
+            part.number,
+            after.revision,
+        )?;
+        let generation_write = self.store.put_if_absent(generation_key, value.clone()).await;
+        match generation_write {
+            Ok(PutIfAbsentOutcome::Inserted { .. }) => {}
+            Ok(PutIfAbsentOutcome::Existing(existing)) if existing.value == value => {}
+            Ok(PutIfAbsentOutcome::Existing(_)) => return Ok(None),
+            Err(error) => {
+                if self
+                    .part_generation(&current, part.number, after.revision)
+                    .await?
+                    .as_ref()
+                    != Some(&after)
+                {
+                    return Err(error.into());
+                }
+            }
+        }
         let key =
             MetadataKey::multipart_part(&self.tenant, current.bucket_id, &current.upload_id, part.number)?;
         let outcome = if let Some(before) = &before {

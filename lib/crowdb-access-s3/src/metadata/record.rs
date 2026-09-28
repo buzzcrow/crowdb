@@ -172,6 +172,10 @@ fn validate_object(record: &ObjectRecord) -> Result<(), MetadataRecordError> {
     required("etag", record.etag.as_bytes())?;
     required("content_type", record.content_type.as_bytes())?;
     required("data_reference", &record.data_reference)?;
+    if record.checksum.len() == 18 && !crate::integrity::is_multipart_checksum(&record.checksum, &record.etag)
+    {
+        return Err(MetadataRecordError::Invalid);
+    }
     if record.logical_length != record.data_length {
         return Err(MetadataRecordError::DataLength);
     }

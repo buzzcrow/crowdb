@@ -25,6 +25,9 @@ fn session() -> MultipartSessionRecord {
         part_count: 0,
         staged_bytes: 0,
         selection: None,
+        completion_request_digest: None,
+        publication_ms: None,
+        object_predecessor: None,
         etag: None,
     }
 }
@@ -85,6 +88,9 @@ fn completed_session_requires_a_matching_selected_count_and_etag() {
         revision: 2,
         digest: [4; 32],
     }]);
+    session.completion_request_digest = Some([5; 32]);
+    session.publication_ms = Some(150);
+    session.object_predecessor = Some(None);
     session.etag = Some("11111111111111111111111111111111-2".into());
     assert_eq!(session.encode(), Err(MultipartRecordError::Invalid));
     session.etag = Some("11111111111111111111111111111111-1".into());

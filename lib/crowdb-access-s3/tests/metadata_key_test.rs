@@ -80,4 +80,6 @@ fn multipart_keys_keep_uploads_and_parts_in_separate_bounded_intervals() {
     assert!(MetadataKey::multipart_part(&tenant, bucket, &upload, 10_001).is_err());
     assert!(MetadataKey::object_end(&tenant, bucket) <= start);
     assert!(end <= part_start);
+    let generation = MetadataKey::multipart_part_generation(&tenant, bucket, &upload, 1, 2).unwrap();
+    assert!(part_end < generation);
 }

@@ -32,8 +32,9 @@ Iceberg multipart path.
   as namespace scope; preserve immutable part data after replacement.
   Versioned session/part records and ordered, binary-safe keys are in place;
   CAS-backed begin, phase transition and part replacement now use exact-value
-  confirmation after lost replies. Completion snapshots, HTTP wiring and
-  cleanup state remain.
+  confirmation after lost replies. Completion snapshots and a predecessor-fenced
+  metadata-only object publication path are in place. HTTP wiring and cleanup
+  state remain.
 - [ ] **S3 routes and wire**: classify create/upload/list/complete/abort/list
   uploads, parse bounded completion XML, emit compatible responses and errors.
   Preserve SigV4 authentication and existing basic routes.
@@ -41,7 +42,11 @@ Iceberg multipart path.
   budget, persist part location/integrity before success, reconcile lost replies.
 - [ ] **Atomic completion**: fence selected part generations, validate order,
   count, size and checksum, compose locations through the shared core, and
-  publish one immutable object generation without reading part bytes.
+  publish one immutable object generation without reading part bytes. The S3
+  adapter now freezes selection under session CAS, validates it again before
+  object-key CAS, and confirms exact publication after response loss. An
+  immutable generation records preserve selected bytes across a concurrent
+  part-number replacement. The HTTP path and end-to-end publication test remain.
 - [ ] **Abort and expiry**: make terminal states idempotent, queue unreachable
   private part data for bounded cleanup, and protect active/read-pinned data.
 
