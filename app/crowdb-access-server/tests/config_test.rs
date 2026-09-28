@@ -88,4 +88,8 @@ fn unsupported_disk_block_size_is_rejected_before_routing() {
     assert!(config.validate().is_err());
     config.small_write.disk_block_bytes = 2 * 1024 * 1024;
     assert!(config.validate().is_err());
+    config.small_write.disk_block_bytes = 3 * 1024;
+    assert!(config.validate().is_err());
+    config.small_write.disk_block_bytes = 768 * 1024;
+    assert!(config.validate().is_err());
 }

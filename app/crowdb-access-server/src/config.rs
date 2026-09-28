@@ -205,8 +205,9 @@ impl BaseConfig for AccessConfig {
         if !self.small_write.threshold_ratio.is_finite()
             || self.small_write.threshold_ratio <= 0.0
             || self.small_write.threshold_ratio > 1.0
-            || self.small_write.disk_block_bytes == 0
+            || self.small_write.disk_block_bytes < 128 * 1024
             || self.small_write.disk_block_bytes > 1024 * 1024
+            || !self.small_write.disk_block_bytes.is_power_of_two()
             || self.small_write.ec_data == 0
             || self.small_write.ec_data > 32
             || self.small_write.threshold_exclusive() > self.small_write.policy().object_limit
