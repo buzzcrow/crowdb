@@ -10,7 +10,6 @@ events=$(sed -n '/^on:/,/^concurrency:/p' "$release")
 
 for required in \
     'environment: DockerHub' \
-    'PREVIEW_RELEASE_ENABLED' \
     'DOCKERHUB_TOKEN' \
     'ref: ${{ inputs.tag }}' \
     'git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}"' \
@@ -41,7 +40,7 @@ for gate in 'pixi run test-single-node-container' 'test-boto3-e2e' 'test-pyicebe
 done
 ! grep -Eq 'DOCKERHUB_|push: true|id-token: write' <<<"$verify_job"
 [[ "$publish_job" == *'needs: verify'* && "$publish_job" == *'environment: DockerHub'* ]]
-[[ "$publish_job" == *'[[ "$RELEASE_ENABLED" == true ]]'* ]]
+[[ "$publish_job" != *'RELEASE_ENABLED'* ]]
 [[ "$publish_job" == *'[[ "$(git rev-parse HEAD)" == "$REVISION" ]]'* ]]
 
 ci_job=$(sed -n '/^  DockerPreview:/,$p' "$ci")

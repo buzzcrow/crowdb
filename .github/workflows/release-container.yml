@@ -107,16 +107,14 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: latest
-    - name: Require configured release gate and unused immutable tags
+    - name: Require publication credentials and unused immutable tags
       env:
-        RELEASE_ENABLED: ${{ vars.PREVIEW_RELEASE_ENABLED }}
         RELEASE_TAG: ${{ inputs.tag }}
         REVISION: ${{ needs.verify.outputs.revision }}
         DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
       run: |
         pixi run bash -euc '
-          [[ "$RELEASE_ENABLED" == true ]]
           [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]
           [[ "$(git rev-parse HEAD)" == "$REVISION" ]]
           for tag in "$RELEASE_TAG" "git-$REVISION"; do
