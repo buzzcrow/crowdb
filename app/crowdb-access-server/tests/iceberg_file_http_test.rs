@@ -368,18 +368,29 @@ async fn multipart_100_mib_survives_restart_and_complete_replay() {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
     );
     let mut composite = Md5::new();
-    for number in 1..=PART_COUNT {
-        let bytes = vec![u8::try_from(number).unwrap(); PART_BYTES];
-        let query = format!("partNumber={number}&uploadId={upload}");
-        let response = client.send(Method::PUT, &object, &query, &bytes, true).await;
-        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-        let etag = response.headers()["etag"].to_str().unwrap();
-        composite.update(Md5::digest(&bytes));
-        write!(
-            manifest,
-            "<Part><ETag>{etag}</ETag><PartNumber>{number}</PartNumber></Part>"
-        )
-        .unwrap();
+    for first_number in (1..=PART_COUNT).step_by(2) {
+        let second_number = first_number + 1;
+        let first_bytes = vec![u8::try_from(first_number).unwrap(); PART_BYTES];
+        let second_bytes = vec![u8::try_from(second_number).unwrap(); PART_BYTES];
+        let first_query = format!("partNumber={first_number}&uploadId={upload}");
+        let second_query = format!("partNumber={second_number}&uploadId={upload}");
+        let (first_response, second_response) = tokio::join!(
+            client.send(Method::PUT, &object, &first_query, &first_bytes, true),
+            client.send(Method::PUT, &object, &second_query, &second_bytes, true),
+        );
+        for (number, bytes, response) in [
+            (first_number, first_bytes, first_response),
+            (second_number, second_bytes, second_response),
+        ] {
+            assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+            let etag = response.headers()["etag"].to_str().unwrap();
+            composite.update(Md5::digest(&bytes));
+            write!(
+                manifest,
+                "<Part><ETag>{etag}</ETag><PartNumber>{number}</PartNumber></Part>"
+            )
+            .unwrap();
+        }
     }
     manifest.push_str("</CompleteMultipartUpload>");
     let mut expected_etag = String::new();

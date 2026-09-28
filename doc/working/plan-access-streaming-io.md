@@ -200,6 +200,9 @@ while keeping secrets in the environment.
   counter. Complete validates its snapshot against the per-session maxima
   rather than mutable staged counters. The focused concurrency, lost-reply,
   limits, ordinary HTTP MPU and 100 MiB restart/replay tests pass.
+  The 100 MiB E2E now sends each pair of 5 MiB parts concurrently; its
+  Complete, listener restart, replay and full GET still pass. The native
+  publication crash matrix also passes after the direct-CAS change.
 
 ## Files
 
