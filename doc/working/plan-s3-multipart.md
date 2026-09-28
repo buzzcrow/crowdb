@@ -31,15 +31,15 @@ Iceberg multipart path.
 ## S3 adapter and HTTP
 
 - [ ] **Durable S3 records**: add upload and part keys/records with raw 16-byte
-  MD5, selected revision and cleanup state. Use bucket identity and object key
-  as namespace scope; preserve immutable part data after replacement.
+  MD5 and selected revision under one upload prefix. Use bucket identity and
+  object key as namespace scope; preserve immutable part data after replacement.
   Versioned session/part records and ordered, binary-safe keys are in place;
   CAS-backed begin, phase transition and part replacement now use exact-value
   confirmation after lost replies. An identical part record retry returns the
   existing revision; a new location remains a replacement. Completion
   snapshots and a predecessor-fenced metadata-only object publication path are
-  in place. HTTP wiring and cleanup
-  state remain.
+  in place. The current session, part and generation key families still need
+  grouping under one upload prefix for R95. HTTP wiring remains.
 - [ ] **S3 routes and wire**: classify create/upload/list/complete/abort/list
   uploads, parse bounded completion XML, emit compatible responses and errors.
   Preserve SigV4 authentication and existing basic routes. The repository now
@@ -63,15 +63,15 @@ Iceberg multipart path.
   object-key CAS, and confirms exact publication after response loss. An
   immutable generation records preserve selected bytes across a concurrent
   part-number replacement. The HTTP path and end-to-end publication test remain.
-- [ ] **Abort and expiry**: make terminal states idempotent, queue unreachable
-  private part data for bounded cleanup, and protect active/read-pinned data.
+- [ ] **Abort and expiry**: make terminal states idempotent and preserve the
+  part generations that R95's chunk-centered scanner needs for reference checks.
   The S3 adapter now has an idempotent, response-loss-safe logical abort; the
-  durable cleanup queue, expiry scan and read-pin protection remain.
+  expiry scan and common-prefix key layout remain. R95 owns physical cleanup.
 
 ## Acceptance and cleanup
 
 - [ ] **Focused and E2E tests**: known MD5 vectors, out-of-order/replaced parts,
-  invalid completion, response loss and restart, abort/expiry cleanup, and
+  invalid completion, response loss and restart, abort/expiry metadata, and
   ordinary single-part compatibility.
 - [ ] **Gates and docs**: run both access crate suites, access-server E2E,
   Rust fmt and clippy separately; update S3 design and remove R167 plus this

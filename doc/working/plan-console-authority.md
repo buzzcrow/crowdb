@@ -99,8 +99,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware
   client cascades now stop at a failed child deletion instead of deleting its
-  parent while a descendant may survive; exact-value confirmation and the
-  CLI/Web cutover remain.
+  parent while a descendant may survive. Extend Group 0 hardware values with
+  rack names, node management hosts, nonsecret SSH connection settings and
+  credential reference IDs; resolve secret material locally. Exact-value
+  confirmation and the CLI/Web cutover remain.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
@@ -152,6 +154,14 @@ is paused; it does not block the single-node image requirement.
   Apport, systemd-coredump and Docker Desktop lookup paths without promising a
   volume dump. This host reports an Apport pipe pattern and core ulimit 0.
   Volume retention, exact-build symbols and disposable-host acceptance remain.
+- [ ] **Manual release and symbols**: add a `tools/` release script with a
+  read-only dry run, consistent version updates, tag and GitHub Release
+  creation, and dispatch of the existing publication workflow. Extract debug
+  symbols from the same staged ELF files as the image, keep them out of the
+  image, and upload the version/revision-named archive to that release.
+  Verify symbol identity and source-line lookup. Files:
+  `tools/release.py`, `container/single-node-container/{build.sh,collect-libs.sh}`,
+  `.github/workflows/release-container.yml`.
 ## Documentation and completion
 
 - [ ] **Bare-metal documentation**: migrate verified KV, chunk and access

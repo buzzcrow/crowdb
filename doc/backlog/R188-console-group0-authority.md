@@ -28,9 +28,11 @@ not block R187 completion.
 ## Solution
 
 1. Keep Group 0 as the durable authority for CROWDB hardware hierarchy,
-   ownership and binding maps, KV store/group/replica metadata, and service
-   registration. Do not add Docker or bare-metal process deployment records to
-   Group 0. Docker process state comes from `crowdb-monitor`; bare-metal launch
+   including rack names, node management hosts, nonsecret SSH connection
+   settings and credential reference IDs, ownership and binding maps, KV
+   store/group/replica metadata, and service registration. Do not store SSH
+   private keys or passwords in Group 0. Do not add process deployment records
+   to Group 0. Docker process state comes from `crowdb-monitor`; bare-metal launch
    policy remains local. Deployment mode changes which lifecycle and hardware
    controls are allowed, not the meaning of Group 0 records.
 2. Replace the mixed `ConsoleConfig` persistence in
@@ -39,9 +41,10 @@ not block R187 completion.
    registry. Finish wiring the existing `LaunchRegistry` parser to actual
    bare-metal deploy/restart operations; remove the unreleased mixed
    parser/writer, topology fields, restore path, fixtures, and fallback rather
-   than adding a compatibility reader. Retain SSH credential references,
-   binary/config paths, workspace, and auto-start policy locally; never persist
-   inline secrets or runtime PID as topology. Docker Web rejects a launch
+   than adding a compatibility reader. Resolve Group 0 credential reference IDs
+   through each console's local secret store. Retain binary/config paths,
+   workspace, and auto-start policy locally; never persist inline secrets or
+   runtime PID as topology. Docker Web rejects a launch
    registry and keeps its monitor-owned process path.
 3. Unify CLI and bare-metal Web hardware mutations through Group 0-backed
    operations in `crowdb-console-shared::ops::hardware`. Confirm writes before
@@ -79,8 +82,12 @@ not block R187 completion.
    private data-volume location. Provide an exact-build source-line
    symbolization workflow for child and monitor crashes. Dumps can contain
    secrets and user data; diagnostics must not expose them in ordinary logs.
-   Host acceptance and symbol-distribution choices remain open in the execution
-   plan; no image-size increase or host configuration change is assumed.
+   Ship exact-build debug symbols as a separate GitHub Release asset generated
+   from the same staged runtime as the image, indexed by version and source
+   revision. The release preparation script in `tools/` runs manually, shows a
+   dry-run plan, updates versions, creates the tag and GitHub Release, then
+   dispatches the existing verified DockerHub publication workflow. Host
+   acceptance remains open; no host configuration change is assumed.
 
 ## Dependencies
 
@@ -109,6 +116,12 @@ not block R187 completion.
   nodes, disk groups, or disks and a write conflicts or loses its response,
   assert both read one confirmed result and neither commits a local-first
   topology change. Invariant: hardware authority. Integration test.
+- Given two consoles with different local launch registries, when both read the
+  same rack and node, assert Group 0 supplies identical names, management hosts,
+  SSH connection settings and credential reference IDs while each console
+  resolves secret material only from its local secret store. Invariant: shared
+  hardware display and connection identity never depend on local topology.
+  Integration test.
 - Given CLI, Docker Web, and bare-metal Web with the same Group 0, when each
   performs authenticated logical store/group/replica operations, assert one
   shared result, correct fan-out/rollback, and no local logical copy.
@@ -144,6 +157,13 @@ not block R187 completion.
   locates the dump or explicitly reports unsupported collection, without
   claiming an absent data-volume core. Invariant: truthful collector boundary.
   Integration test.
+- Given a clean main checkout and a version bump, when the release tool runs in
+  dry-run mode, assert it shows every version change and no file or remote is
+  modified. When run for a release, assert the tag and GitHub Release identify
+  the same verified revision, the symbol asset contains source-line information,
+  GNU debuglink CRCs and SHA-256 hashes match the image's stripped binaries.
+  Invariant: released symbols come from the image build and
+  remain available after a build host changes. E2E test.
 
 Required gates:
 
@@ -159,14 +179,5 @@ Required gates:
 - This host routes `core_pattern` to Apport, so a container-local directory and
   core ulimit cannot guarantee a dump in `/opt/crowdb/data`. End-to-end
   acceptance needs a disposable host with file-based collection or a verified
-  host-collector export workflow. Exact-build source-line symbols also need a
-  distribution choice: compressed line tables in the image with a measured
-  size increase, or separate exact-build debug symbols. The all-dependency
-  symbol experiment enlarged the monitor substantially; a complete-image
-  measurement remains pending. Bounded volume retention and source-line
+  host-collector export workflow. Bounded volume retention and source-line
   symbolization remain unverified.
-- Group 0 rack and node values hold IDs and status but not the console's rack
-  name, node host or SSH settings. The authority cutover must define where
-  shared display names live and keep machine-local launch inputs in the launch
-  registry. Until that split is implemented, two consoles cannot reconstruct
-  identical physical views from Group 0 alone.
