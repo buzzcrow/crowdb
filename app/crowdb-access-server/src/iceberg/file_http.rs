@@ -11,6 +11,8 @@ use crowdb_access_iceberg::file::{
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
 use crowdb_access_s3::native_buffer::{NativeBodyAllocator, NativeBodyReceiver};
+use crowdb_chunk_client::{ChunkClientConfig, LargeWritePolicy};
+use crowdb_common::ec::EcScheme;
 use hyper::body::Incoming;
 use hyper::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
 use hyper::{Method, Request, Response, StatusCode};
@@ -37,6 +39,7 @@ pub(super) struct FileHttp {
     responses: FileResponseBudget,
     uploads: FileUploadBudget,
     small_threshold_exclusive: usize,
+    large_write: LargeWritePolicy,
     native_allocator: Option<Arc<NativeBodyAllocator>>,
     region: String,
     limits: FileServiceLimits,
@@ -79,6 +82,10 @@ impl FileHttp {
             responses: FileResponseBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             uploads: FileUploadBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             small_threshold_exclusive: crate::config::SmallWriteConfig::default().threshold_exclusive(),
+            large_write: LargeWritePolicy {
+                ec_scheme: EcScheme::new(8, 4),
+                client: Arc::new(ChunkClientConfig::default()),
+            },
             native_allocator,
             region,
             limits: FileServiceLimits {
@@ -95,6 +102,17 @@ impl FileHttp {
             return Err(FileGrantError::Invalid);
         }
         self.small_threshold_exclusive = threshold_exclusive;
+        Ok(())
+    }
+
+    pub(super) fn set_large_write(&mut self, policy: LargeWritePolicy) -> Result<(), FileGrantError> {
+        if policy.ec_scheme.data_num == 0
+            || policy.ec_scheme.code_num == 0
+            || policy.client.read_buffer_size == 0
+        {
+            return Err(FileGrantError::Invalid);
+        }
+        self.large_write = policy;
         Ok(())
     }
 
@@ -229,6 +247,7 @@ impl FileHttp {
                 digest,
                 native_receiver,
                 self.small_threshold_exclusive,
+                &self.large_write,
             )
             .await?;
             let published = self

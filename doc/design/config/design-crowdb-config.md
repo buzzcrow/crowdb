@@ -97,6 +97,12 @@ and bearer tokens remain in the environment. For access settings that predate th
 file, an explicitly populated TOML value takes precedence over the legacy
 environment variable; an omitted TOML value keeps the legacy behavior.
 
+The small-object routing bound is `threshold_ratio × disk_block_bytes × EC data
+shards`; mirrored strips use one data shard. `[small_write]` supplies the default
+EC layout for both access writers, and S3's EC override changes its small and
+large writers together. The default is 8+4 with 1 MiB data blocks and ratio
+0.9. The single-node container profile uses 2+1.
+
 All schemas tolerate unknown keys so a newer file can be staged before a
 binary upgrade. A known key with the wrong type or invalid value rejects the
 candidate. Omitted fields take their typed defaults.

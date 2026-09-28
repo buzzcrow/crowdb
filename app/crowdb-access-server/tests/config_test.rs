@@ -13,7 +13,9 @@ fn tracked_access_configs_load_and_set_bounded_read_resources() {
         load_from_file(&root.join("conf/crowdb_access_server_config.toml")).unwrap();
     let container: AccessConfig =
         load_from_file(&root.join("../../container/single-node-container/templates/access.toml")).unwrap();
-    for config in [canonical, container] {
+    for (config, expected_ec, expected_threshold) in
+        [(canonical, (8, 4), 7_549_748), (container, (2, 1), 1_887_437)]
+    {
         assert_eq!(config.read.stream_slots, 3);
         assert_eq!(config.read.stream_window_bytes, 1024 * 1024);
         assert_eq!(config.read.global_stream_bytes, 256 * 1024 * 1024);
@@ -21,8 +23,15 @@ fn tracked_access_configs_load_and_set_bounded_read_resources() {
         assert_eq!(config.read.policy().stream_slots, 3);
         assert_eq!(config.small_write.memory_budget_bytes, 1280 * 1024 * 1024);
         assert_eq!(config.small_write.disk_block_bytes, 1024 * 1024);
-        assert_eq!((config.small_write.ec_data, config.small_write.ec_code), (8, 4));
-        assert_eq!(config.small_write.threshold_exclusive(), 7_549_748);
+        assert_eq!(
+            (config.small_write.ec_data, config.small_write.ec_code),
+            expected_ec
+        );
+        assert_eq!(
+            (config.s3.ec_data, config.s3.ec_code),
+            (Some(expected_ec.0), Some(expected_ec.1))
+        );
+        assert_eq!(config.small_write.threshold_exclusive(), expected_threshold);
         assert_eq!(config.small_write.policy().max_pipelines, 32);
         assert!(config.s3.listen.is_some());
         assert!(config.iceberg.listen.is_some());

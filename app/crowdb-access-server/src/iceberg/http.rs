@@ -14,6 +14,7 @@ use crowdb_access_iceberg::catalog::{
 };
 use crowdb_access_iceberg::wire::{BearerAuthenticator, CatalogConfig, IcebergErrorResponse};
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
+use crowdb_chunk_client::LargeWritePolicy;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -111,6 +112,23 @@ impl IcebergHttpService {
         )
         .ok_or(crowdb_access_iceberg::file::FileGrantError::Invalid)?
         .set_small_threshold(threshold_exclusive)?;
+        Ok(self)
+    }
+
+    /// Applies the configured EC layout and data-block size to native large writes.
+    /// # Errors
+    /// Rejects an unavailable file service or invalid write policy.
+    pub fn with_large_write_policy(
+        mut self,
+        policy: LargeWritePolicy,
+    ) -> Result<Self, crowdb_access_iceberg::file::FileGrantError> {
+        Arc::get_mut(
+            self.files
+                .as_mut()
+                .ok_or(crowdb_access_iceberg::file::FileGrantError::Invalid)?,
+        )
+        .ok_or(crowdb_access_iceberg::file::FileGrantError::Invalid)?
+        .set_large_write(policy)?;
         Ok(self)
     }
 

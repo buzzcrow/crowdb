@@ -23,6 +23,8 @@ use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_server::config::SmallWriteConfig;
+use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, Strip};
+use crowdb_test_harness::chunkdb::make_client as make_chunkdb_client;
 use md5::{Digest, Md5};
 use reqwest::{Client, Method};
 use std::fmt::Write as _;
@@ -473,12 +475,25 @@ async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
             .unwrap()
             .unwrap();
         assert_eq!(record.length, size as u64);
-        assert!(!record
-            .content
-            .locations(record.length)
-            .unwrap()
-            .unwrap()
-            .is_empty());
+        let locations = record.content.locations(record.length).unwrap().unwrap();
+        assert!(!locations.is_empty());
+        if size == 12 * 1024 * 1024 {
+            let chunkdb = make_chunkdb_client(stack.cluster.make_service_registry_client());
+            let chunk = chunkdb
+                .query_chunk(QueryChunkRequest {
+                    chunk_id: locations[0].chunk_id,
+                })
+                .await
+                .unwrap()
+                .chunk
+                .unwrap();
+            let ec = chunk.strips.iter().find_map(|strip| match strip.strip.as_ref() {
+                Some(Strip::EcStrip(ec)) => Some(ec),
+                _ => None,
+            });
+            let ec = ec.expect("large Iceberg write has an EC strip");
+            assert_eq!((ec.data_num, ec.code_num), (8, 4));
+        }
         let get_started = Instant::now();
         let mut response = client.send(Method::GET, &object, "", b"", false).await;
         assert_eq!(response.status(), 200);

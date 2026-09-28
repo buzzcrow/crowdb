@@ -8,10 +8,14 @@ use crowdb_access_iceberg::catalog::{
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
-use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
+use crowdb_chunk_client::{
+    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, LargeWritePolicy,
+    SmallWritePolicy,
+};
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
+use crowdb_common::ec::EcScheme;
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
 use tokio::net::TcpListener;
 
@@ -194,6 +198,16 @@ async fn start_listener(
         .native_budget_bytes
         .unwrap_or(256 * 1024 * 1024);
     let native_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
+    let large_write = LargeWritePolicy {
+        ec_scheme: EcScheme::new(
+            access_config.small_write.ec_data,
+            access_config.small_write.ec_code,
+        ),
+        client: Arc::new(ChunkClientConfig {
+            read_buffer_size: access_config.small_write.disk_block_bytes,
+            ..ChunkClientConfig::default()
+        }),
+    };
     let mut service = IcebergHttpService::new(repository.clone(), authentication, timeout)
         .with_namespaces(store.clone())?
         .with_fileio_native(
@@ -202,7 +216,8 @@ async fn start_listener(
             "us-east-1".into(),
             Some(native_allocator),
         )?
-        .with_small_object_threshold(access_config.small_write.threshold_exclusive())?;
+        .with_small_object_threshold(access_config.small_write.threshold_exclusive())?
+        .with_large_write_policy(large_write)?;
     if authority.admission_bounds.delegated_access_ms >= 900_000 {
         let endpoint =
             std::env::var("CROWDB_ICEBERG_PUBLIC_URI").unwrap_or_else(|_| format!("http://{address}"));

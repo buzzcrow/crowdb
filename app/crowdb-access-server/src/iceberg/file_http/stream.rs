@@ -1,12 +1,10 @@
 use std::fmt::Write;
-use std::sync::Arc;
 
 use crowdb_access_iceberg::file::{
     ContentFormat, FileContent, FileIdentity, FileKind, FileLocation, FileRecord,
 };
 use crowdb_access_s3::native_buffer::NativeBodyReceiver;
-use crowdb_chunk_client::{ChunkClientConfig, ChunkIoClient, ChunkIoWriter, LargeWritePolicy};
-use crowdb_common::ec::EcScheme;
+use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter, LargeWritePolicy};
 use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
@@ -29,6 +27,7 @@ pub(super) async fn upload(
     expected_sha256: Option<[u8; 32]>,
     native_receiver: Option<&NativeBodyReceiver>,
     small_threshold_exclusive: usize,
+    large_write: &LargeWritePolicy,
 ) -> Result<FileRecord, FileS3ErrorCode> {
     let _permit = budget.acquire().map_err(|_| FileS3ErrorCode::SlowDown)?;
     let small = declared_length
@@ -53,13 +52,7 @@ pub(super) async fn upload(
             )
         }
     } else {
-        let mut large = client.prepare_large_write(
-            declared_length,
-            LargeWritePolicy {
-                ec_scheme: EcScheme::new(8, 4),
-                client: Arc::new(ChunkClientConfig::default()),
-            },
-        );
+        let mut large = client.prepare_large_write(declared_length, large_write.clone());
         large
             .wait_until_prepared()
             .await

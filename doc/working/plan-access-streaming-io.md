@@ -107,7 +107,19 @@ while keeping secrets in the environment.
   8+4; deployments may choose 4+2 or 2+1. The access configuration records the
   current 1 MiB disk block size, default EC data and code counts, and the 0.9
   small-object ratio. The small routing bound is the ratio multiplied by one
-  strip's data capacity; mirrored strips use one data block.
+  strip's data capacity; mirrored strips use one data block. The single-node
+  container selects 2+1 for both access protocols and their small-write pool.
+- Official Rust Iceberg SDK integration passed all five cases across its two
+  test binaries. Apache REST Compatibility Kit passed against the native
+  listener. A release/null-DiskIO ordinary PUT/GET matrix with default 8+4
+  passed, including stored EC layout verification: 10 KiB 36/3 ms, 1 MiB
+  76/13 ms, 12 MiB 334/60 ms, 100 MiB 2787/215 ms. These are API times,
+  not physical NVMe throughput.
+- The Boto3 full-stack suite passed 18/18 with 2+1 EC overrides, including
+  small routing, lost replies, every service restart and benchmarks. Its
+  debug/null-DiskIO ordinary PUT/GET matrix was 10 KiB 37/48 ms, 1 MiB
+  183/48 ms, 12 MiB 1303/296 ms, 100 MiB 10669/2612 ms. Different build
+  profiles make this matrix unsuitable for direct S3/Iceberg comparison.
 - Chunk read stream normalizes locations once per stream, schedules up to three
   concurrent physical reads of at most 1 MiB each, and caches valid Chunk layouts
   across windows. Credits remain reserved while HTTP holds payload views.

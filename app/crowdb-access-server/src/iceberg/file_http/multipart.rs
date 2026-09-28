@@ -202,6 +202,7 @@ impl FileHttp {
                 digest,
                 native_receiver,
                 self.small_threshold_exclusive,
+                &self.large_write,
             )
             .await?;
             (
