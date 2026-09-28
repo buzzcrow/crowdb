@@ -140,3 +140,14 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-chunk-kv --all-targets`
 - `pixi run -- cargo test -p crowdb-chunkdb --all-targets`
 - `pixi run clean-env && pixi run test-server`
+
+## Open Issues
+
+- The CI log for
+  `small_object_writer_e2e::eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread`
+  failed at `location strip`, while the exact test, its 16-test suite and the
+  full `test-server` task pass locally at default test concurrency. CI run
+  `36449749925` completed its "Upload test logs on failure" step, but the run
+  artifact list contains only `docker-preview-1`; the `runtime-server` artifact
+  is absent. Preserve runtime logs on the next failure to identify the first
+  divergent state before changing the assertion or retry policy.

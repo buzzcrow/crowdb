@@ -153,3 +153,20 @@ Required gates:
 - `pixi run test-single-node-container`
 - `pixi run rs-fmt-check`
 - `pixi run rs-lint`
+
+## Open Issues
+
+- This host routes `core_pattern` to Apport, so a container-local directory and
+  core ulimit cannot guarantee a dump in `/opt/crowdb/data`. End-to-end
+  acceptance needs a disposable host with file-based collection or a verified
+  host-collector export workflow. Exact-build source-line symbols also need a
+  distribution choice: compressed line tables in the image with a measured
+  size increase, or separate exact-build debug symbols. The all-dependency
+  symbol experiment enlarged the monitor substantially; a complete-image
+  measurement remains pending. Bounded volume retention and source-line
+  symbolization remain unverified.
+- Group 0 rack and node values hold IDs and status but not the console's rack
+  name, node host or SSH settings. The authority cutover must define where
+  shared display names live and keep machine-local launch inputs in the launch
+  registry. Until that split is implemented, two consoles cannot reconstruct
+  identical physical views from Group 0 alone.

@@ -78,3 +78,19 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-access-server --all-targets`
 - `pixi run -- cargo fmt --all -- --check`
 - `pixi run rs-lint`
+
+## Open Issues
+
+- The referenced R190 requirement is no longer present in the backlog. Both
+  adapters now use shared phase names, selected-part validation, accounting and
+  metadata-only location composition. Iceberg's remaining session and part
+  recovery is bound to its catalog identity and store. Extract the remaining
+  protocol-neutral transition decisions while keeping keys, authorization and
+  responses in the protocol adapters.
+- S3 preserves immutable part generations so completion can publish a selected
+  generation across concurrent part-number replacement. An identical durable
+  part record retry keeps its revision, but an HTTP retry may stream the same
+  bytes to a new location. Losing replacement candidates, replayed stream
+  locations and old generations can remain unreachable. Abort, expiry and
+  replacement cleanup need durable bounded records and reader-pin protection
+  before the HTTP path is enabled.
