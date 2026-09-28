@@ -1,5 +1,6 @@
 use crate::error::ValidationError;
 use crate::operation::MAX_PAYLOAD_BYTES;
+use bincode::Options;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -171,8 +172,23 @@ impl MultipartSelection {
             .collect::<Result<_, ValidationError>>()?;
         let mut selection = Self::new(parts)?;
         if version == MAGIC_V2 {
-            let snapshots: Vec<SelectedStreamPart> =
-                bincode::deserialize(&bytes[entries_end..]).map_err(|_| ValidationError::Record)?;
+            let encoded = &bytes[entries_end..];
+            let snapshot_count = u64::from_le_bytes(
+                encoded
+                    .get(..8)
+                    .ok_or(ValidationError::Record)?
+                    .try_into()
+                    .map_err(|_| ValidationError::Record)?,
+            );
+            if snapshot_count != count as u64 {
+                return Err(ValidationError::Record);
+            }
+            let snapshots: Vec<SelectedStreamPart> = bincode::DefaultOptions::new()
+                .with_fixint_encoding()
+                .with_limit(MAX_PAYLOAD_BYTES as u64)
+                .reject_trailing_bytes()
+                .deserialize(encoded)
+                .map_err(|_| ValidationError::Record)?;
             validate_snapshots(&selection.parts, &snapshots)?;
             selection.snapshots = Some(snapshots);
         }

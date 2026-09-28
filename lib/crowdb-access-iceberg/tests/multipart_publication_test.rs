@@ -189,6 +189,15 @@ async fn streamed_parts_complete_by_composing_locations_and_saved_md5_only() {
         parts.push(part);
     }
     let selection = MultipartSelection::with_stream_parts(&parts).unwrap();
+    let encoded = selection.encode();
+    assert_eq!(MultipartSelection::decode(&encoded).unwrap(), selection);
+    let mut oversized_count = encoded.clone();
+    let count_offset = 7 + 42 * parts.len();
+    oversized_count[count_offset..count_offset + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(MultipartSelection::decode(&oversized_count).is_err());
+    let mut trailing = encoded;
+    trailing.push(0);
+    assert!(MultipartSelection::decode(&trailing).is_err());
     repository
         .freeze_completion(&session, &selection, 102)
         .await

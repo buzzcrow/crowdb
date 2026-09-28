@@ -41,10 +41,9 @@ impl TestIcebergProcess {
         let mut process = Self { child, address };
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                assert!(
-                    process.child.try_wait().unwrap().is_none(),
-                    "Iceberg listener exited"
-                );
+                if let Some(status) = process.child.try_wait().unwrap() {
+                    panic!("Iceberg listener exited before readiness: {status}");
+                }
                 if tokio::net::TcpStream::connect(address).await.is_ok() {
                     break;
                 }

@@ -217,6 +217,18 @@ while keeping secrets in the environment.
   part location arrays. The focused test rejects an oversized snapshot and an
   oversized decoded payload. Retired-catalog GC reclaims a streamed file's
   physical location after worker restarts; all 18 GC worker tests pass.
+- Frozen streamed selections reject a mismatched encoded part count, out-of-bound
+  deserialization and trailing bytes. The focused publication suite passes all
+  seven tests. The full access-Iceberg, access-S3 and access-server library
+  suites pass.
+- The native Iceberg release suite exposed two legacy test fixtures whose 8 MiB
+  small-write budget inherited an 8 MiB object limit plus 1 MiB pipeline shadow.
+  Both fixtures now set a 1 MiB object limit; their storage-restart and GC
+  capacity tests pass individually and within the rerun native suite. The
+  native file publication fault matrix, 100 MiB MPU replay, and 5 MiB profile
+  also pass. The table-commit crash matrix exited once while starting a recovery
+  listener at publish-stage 5/31, then passed every boundary on a complete
+  rerun. Listener startup now reports its exit status if this recurs.
 
 ## Files
 
