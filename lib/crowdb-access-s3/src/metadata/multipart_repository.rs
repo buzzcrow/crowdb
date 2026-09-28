@@ -11,10 +11,12 @@ use super::{
 };
 
 mod completion;
+mod listing;
 mod publication;
 mod terminal;
 
 pub use completion::CompletionPart;
+pub use listing::MultipartPartPage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartRepositoryError {

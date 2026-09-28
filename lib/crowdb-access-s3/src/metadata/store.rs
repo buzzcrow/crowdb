@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use crowdb_chunk_kv_client::{ChunkKvClient, ClientError, MultiScanPage, MultiScanRequest};
+use crowdb_chunk_kv_client::{
+    ChunkKvClient, ClientError, MultiScanContinuation, MultiScanPage, MultiScanRequest,
+};
 use crowdb_protocol::chunk_kv::{
     ChunkKvResponse, OperationResult, RpcCompareCondition, RpcFailure, RpcValue, ScanDirection,
 };
@@ -182,6 +184,24 @@ impl ChunkKvMetadataStore {
         max_items: usize,
         max_bytes: usize,
     ) -> Result<Vec<RpcValue>, MetadataStoreError> {
+        Ok(self
+            .scan_page(start, end, max_items, max_bytes, None)
+            .await?
+            .items)
+    }
+
+    /// Scans a bounded page while preserving its exact continuation fence.
+    ///
+    /// # Errors
+    /// Returns routing, storage or terminal scan failures.
+    pub async fn scan_page(
+        &self,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        max_items: usize,
+        max_bytes: usize,
+        continuation: Option<MultiScanContinuation>,
+    ) -> Result<MultiScanPage, MetadataStoreError> {
         let page = self
             .client
             .scan(MultiScanRequest {
@@ -190,13 +210,13 @@ impl ChunkKvMetadataStore {
                 direction: ScanDirection::Forward,
                 max_items,
                 max_bytes,
-                continuation: None,
+                continuation,
             })
             .await?;
-        if let Some(terminal_failure) = page.terminal_failure {
-            return Err(failure(&terminal_failure));
+        if let Some(terminal_failure) = &page.terminal_failure {
+            return Err(failure(terminal_failure));
         }
-        Ok(page.items)
+        Ok(page)
     }
 }
 

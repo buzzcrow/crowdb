@@ -18,7 +18,8 @@ use crowdb_chunk_kv_client::{
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, ChunkKvResponse, Id128, KeyRange, OperationResult, OwnerDescriptor,
-    PartitionArtifact, PointOperation, PointRequest, RpcCompareCondition, RpcValue,
+    PartitionArtifact, PointOperation, PointRequest, RpcCompareCondition, RpcValue, ScanContinuation,
+    ScanRequest,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::chunkdb::rpc::Location;
@@ -34,14 +35,19 @@ impl ChunkKvRangeCatalogSource for Catalog {
     }
 }
 
-struct ActorTransport(mpsc::UnboundedSender<(PointOperation, oneshot::Sender<Result<ChunkKvResponse>>)>);
+enum ActorRequest {
+    Point(PointOperation, oneshot::Sender<Result<ChunkKvResponse>>),
+    Scan(ScanRequest, oneshot::Sender<Result<ChunkKvResponse>>),
+}
+
+struct ActorTransport(mpsc::UnboundedSender<ActorRequest>);
 
 #[async_trait]
 impl ChunkKvTransport for ActorTransport {
     async fn point(&self, _: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
         let (response, receiver) = oneshot::channel();
         self.0
-            .send((request.operation.clone(), response))
+            .send(ActorRequest::Point(request.operation.clone(), response))
             .expect("actor is running");
         receiver.await.expect("actor replies")
     }
@@ -50,8 +56,12 @@ impl ChunkKvTransport for ActorTransport {
         unreachable!()
     }
 
-    async fn scan(&self, _: &str, _: &crowdb_protocol::chunk_kv::ScanRequest) -> Result<ChunkKvResponse> {
-        unreachable!()
+    async fn scan(&self, _: &str, request: &ScanRequest) -> Result<ChunkKvResponse> {
+        let (response, receiver) = oneshot::channel();
+        self.0
+            .send(ActorRequest::Scan(request.clone(), response))
+            .expect("actor is running");
+        receiver.await.expect("actor replies")
     }
 }
 
@@ -105,20 +115,64 @@ fn reply(operation: PointOperation, values: &mut HashMap<Vec<u8>, RpcValue>) -> 
     }
 }
 
+fn scan_reply(request: &ScanRequest, values: &HashMap<Vec<u8>, RpcValue>) -> ChunkKvResponse {
+    let mut ordered: Vec<RpcValue> = values
+        .values()
+        .filter(|entry| {
+            request.start.as_ref().map_or(true, |start| entry.key >= *start)
+                && request.end.as_ref().map_or(true, |end| entry.key < *end)
+                && request
+                    .continuation
+                    .as_ref()
+                    .map_or(true, |token| entry.key > token.last_key)
+        })
+        .cloned()
+        .collect();
+    ordered.sort_by(|left, right| left.key.cmp(&right.key));
+    let limit = usize::try_from(request.limit).unwrap();
+    let truncated = ordered.len() > limit;
+    ordered.truncate(limit);
+    let continuation = if truncated {
+        Some(ScanContinuation {
+            direction: request.direction,
+            last_key: ordered.last().unwrap().key.clone(),
+            partition_id: request.routing.partition_id,
+            owner_epoch: request.routing.owner_epoch,
+            map_revision: request.routing.map_revision,
+        })
+    } else {
+        None
+    };
+    ChunkKvResponse {
+        map_revision: 1,
+        journal_position: None,
+        result: Ok(OperationResult::Scan {
+            items: ordered,
+            continuation,
+        }),
+    }
+}
+
 async fn repository() -> (MultipartRepository, Arc<AtomicBool>, Arc<ChunkKvMetadataStore>) {
-    let (sender, mut receiver) =
-        mpsc::unbounded_channel::<(PointOperation, oneshot::Sender<Result<ChunkKvResponse>>)>();
+    let (sender, mut receiver) = mpsc::unbounded_channel::<ActorRequest>();
     let lose_reply = Arc::new(AtomicBool::new(false));
     let actor_lose_reply = Arc::clone(&lose_reply);
     tokio::spawn(async move {
         let mut values = HashMap::new();
-        while let Some((operation, response)) = receiver.recv().await {
-            let is_mutation = !matches!(operation, PointOperation::Get { .. });
-            let result = reply(operation, &mut values);
-            if is_mutation && actor_lose_reply.swap(false, Ordering::SeqCst) {
-                let _ = response.send(Err(ClientError::Transport("committed reply lost".into())));
-            } else {
-                let _ = response.send(Ok(result));
+        while let Some(request) = receiver.recv().await {
+            match request {
+                ActorRequest::Point(operation, response) => {
+                    let is_mutation = !matches!(operation, PointOperation::Get { .. });
+                    let result = reply(operation, &mut values);
+                    if is_mutation && actor_lose_reply.swap(false, Ordering::SeqCst) {
+                        let _ = response.send(Err(ClientError::Transport("committed reply lost".into())));
+                    } else {
+                        let _ = response.send(Ok(result));
+                    }
+                }
+                ActorRequest::Scan(request, response) => {
+                    let _ = response.send(Ok(scan_reply(&request, &values)));
+                }
             }
         }
     });
@@ -478,4 +532,35 @@ async fn abort_confirms_lost_reply_and_rejects_part_publication() {
             .length,
         5
     );
+}
+
+#[tokio::test]
+async fn part_listing_paginates_current_generations_in_number_order() {
+    let (repository, _, _) = repository().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    for number in [3, 1, 2] {
+        let mut value = part();
+        value.number = number;
+        repository.put_stream_part(&session, &value, 110).await.unwrap();
+    }
+    let mut replacement = part();
+    replacement.number = 2;
+    repository
+        .put_stream_part(&session, &replacement, 111)
+        .await
+        .unwrap();
+    let first = repository.list_parts(&session, 0, 2).await.unwrap();
+    assert_eq!(
+        first.parts.iter().map(|part| part.number).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(first.parts[1].revision, 2);
+    assert_eq!(first.next_part_number_marker, Some(2));
+    let second = repository.list_parts(&session, 2, 2).await.unwrap();
+    assert_eq!(
+        second.parts.iter().map(|part| part.number).collect::<Vec<_>>(),
+        [3]
+    );
+    assert_eq!(second.next_part_number_marker, None);
 }
