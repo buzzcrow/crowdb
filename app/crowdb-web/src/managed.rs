@@ -5,9 +5,10 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
+use crowdb_console_shared::config::web::WebMode;
 use crowdb_kv_client::CrowdbSysmdClient;
 use crowdb_monitor::{MonitorStatus, ServiceStatus, StatusStore};
-use crowdb_protocol::common::StoreValue;
+use crowdb_protocol::common::{ReplicaValue, StoreValue};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -32,7 +33,7 @@ pub struct ManagedSnapshot {
     groups: Vec<Value>,
     replicas: Vec<Value>,
     services: Vec<ServiceView>,
-    monitor: MonitorStatus,
+    monitor: Option<MonitorStatus>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +79,7 @@ async fn monitor_status(path: PathBuf) -> Result<MonitorStatus, SnapshotFailure>
 async fn validate_live_store_nodes(
     sysmd: &CrowdbSysmdClient,
     stores: &[StoreValue],
+    replicas: &[ReplicaValue],
 ) -> Result<(), crowdb_kv_client::Error> {
     let mut live_nodes = BTreeSet::new();
     for (_, instance) in sysmd.read_all_kv_server_instances().await? {
@@ -98,6 +100,7 @@ async fn validate_live_store_nodes(
     if stores
         .iter()
         .flat_map(|store| &store.node_ids)
+        .chain(replicas.iter().map(|replica| &replica.node_id))
         .any(|node_id| !live_nodes.contains(node_id))
     {
         return Err(crowdb_kv_client::Error::Topology(
@@ -108,13 +111,18 @@ async fn validate_live_store_nodes(
 }
 
 async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFailure> {
-    let Some(path) = state.monitor_status_path.as_ref() else {
-        return Err(SnapshotFailure::Monitor);
+    let monitor = if state.web_mode == Some(WebMode::BareMetal) {
+        None
+    } else {
+        let path = state
+            .monitor_status_path
+            .as_ref()
+            .ok_or(SnapshotFailure::Monitor)?;
+        Some(monitor_status(path.as_ref().clone()).await?)
     };
     if state.authority_seeds.is_empty() {
         return Err(SnapshotFailure::Group0);
     }
-    let monitor = monitor_status(path.as_ref().clone()).await?;
     let client = state.kv_client().await;
     let timeout = Duration::from_millis(state.authority_timeout_ms);
     tokio::time::timeout(timeout, async {
@@ -128,7 +136,6 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
         if racks.is_empty() || nodes.is_empty() || !stores.iter().any(|store| store.store_id == 0) {
             return Err(crowdb_kv_client::Error::Topology("managed topology is incomplete".into()));
         }
-        validate_live_store_nodes(&sysmd, &stores).await?;
 
         let mut groups = Vec::new();
         let mut replicas = Vec::new();
@@ -138,11 +145,12 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
                 groups.push(group);
             }
         }
+        validate_live_store_nodes(&sysmd, &stores, &replicas).await?;
         let mut services = Vec::new();
         for (kind, monitor_id) in SERVICE_TYPES {
             let instances = sysmd.read_service_instances(kind).await?;
             let overlay = if instances.len() == 1 {
-                monitor.services.get(monitor_id).cloned()
+                monitor.as_ref().and_then(|status| status.services.get(monitor_id)).cloned()
             } else {
                 None
             };
@@ -183,7 +191,7 @@ pub async fn authority(State(state): State<AppState>) -> (StatusCode, Json<Value
         Ok(snapshot) => (
             StatusCode::OK,
             Json(
-                json!({"source": "group0", "available": true, "monitor_revision": snapshot.monitor.revision}),
+                json!({"source": "group0", "available": true, "monitor_revision": snapshot.monitor.map(|monitor| monitor.revision)}),
             ),
         ),
         Err(error) => (

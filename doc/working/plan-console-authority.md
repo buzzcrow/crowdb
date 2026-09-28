@@ -93,6 +93,13 @@ and launch inputs locally.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
+  Versioned bare-metal snapshots now read Group 0 without requiring a Docker
+  monitor; Docker keeps its monitor requirement and overlay. Validate every
+  replica host as well as the store's original hosts. Real Group 0 regressions
+  cover missing, duplicate and expired registrations, recovery, and outage
+  without stale topology. Docker and launch-route regressions, fmt and clippy
+  pass. Logs: `/tmp/crowdb-bare-authority-*.log`. Legacy physical routes and
+  monitor refresh still remain for the mixed-config removal.
 - [ ] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
   committed records, write only safely missing content, reject conflicts and
   delete topology intent after verified transfer. Clean/destroy use confirmed
