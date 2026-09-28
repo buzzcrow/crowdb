@@ -1,4 +1,4 @@
-name: Release Single-Node Preview
+name: Publish crowdb-iceberge docker container
 
 on:
   workflow_dispatch:
