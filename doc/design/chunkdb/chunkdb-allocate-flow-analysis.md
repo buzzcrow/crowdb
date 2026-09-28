@@ -52,7 +52,7 @@ then committing or freeing the block.
 - Duration: 20 seconds per row.
 - Capacity: four 4-TiB logical disks per DiskDB; 256-GiB zones.
 - KV inflight/coalescing: 32/32.
-- Command: `pixi run -- bash tools/bench-chunkdb-regression.sh`.
+- Command: `pixi run -- bash tools/benchmark/bench-chunkdb-regression.sh`.
 
 | Workload | Groups | Threads | Strips | EC | Client conn | ChunkDB conn | DiskDB conn | KV conn | Workers | Chunk/s | Block/s | p50 us | p99 us | Errors | Space |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|

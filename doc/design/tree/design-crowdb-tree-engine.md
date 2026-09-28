@@ -460,7 +460,7 @@ the point of L0 is that it is no longer on the scan or get path.
 Scan is part of the read flow but a separate perf track from random
 point reads (different cost shapes: per-entry overhead vs leaf-chain
 traversal vs per-byte copy). The regression sentinel is
-`tools/bench-kv-scan-regression.sh` driving `crowdb-cli bench run --workload
+`tools/benchmark/bench-kv-scan-regression.sh` driving `crowdb-cli bench run --workload
 list` with `--scan-limit`, `--scan-prefix`, `--scan-start-after` flags
 against a 3-node mem-mode cluster, mirroring the write/read regression
 sentinels. The sync `scan` `start_after` pushdown correctness is
@@ -567,7 +567,7 @@ guard). Design rules:
 - **Allocator seam.** `alloc()` routes owned allocations larger than
   `kInlineCap` through a single internal allocator hook (today: glibc
   `malloc`); a size-classed pool or RDMA-pinned allocator could slot in here
-  later with no call-site changes. See [`todo_code.md`](../todo_code.md) for
+  later with no call-site changes. See [`todo_code.md`](../../todo_code.md) for
   why that hasn't been done speculatively.
 - **MemTable = `absl::btree_map<std::string, cell_entry>`.** The KEY stays
   `std::string`, the VALUE is a `cell_entry{slot, flags, cell}`. The

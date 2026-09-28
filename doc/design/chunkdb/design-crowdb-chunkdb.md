@@ -1278,7 +1278,7 @@ total to equal the DiskDB busy-space delta after compaction. Capacity
 exhaustion is a successful stop reason; any correctness error invalidates the
 sample.
 
-`tools/bench-chunkdb-regression.sh` builds all four release binaries and uses
+`tools/benchmark/bench-chunkdb-regression.sh` builds all four release binaries and uses
 a fresh timestamped combined cluster for mirror, EC 4+2, EC 8+4, lifecycle
 mix, concurrency, and capacity-exhaustion cases. It retains each case's logs,
 destroys each cluster, runs all later cases after a failure, and returns a

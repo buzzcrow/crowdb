@@ -51,6 +51,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | ---------------------------- | ---------------------------------------------------------------------- |
 | `doc/dev/env_setup.md`       | Benchmark commands, sentinels, prerequisites, and perf-counter setup.  |
 | `doc/dev/hyper_fork.md`      | Hyper fork branches, submodule, build, sync, validation, and recovery. |
+| `tools/README.md`           | Tool directories, Pixi task entry points, CI checks, and suite timing. |
 
 ## Project Files (repo root)
 

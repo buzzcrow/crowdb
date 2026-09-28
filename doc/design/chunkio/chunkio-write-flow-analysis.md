@@ -5,7 +5,7 @@
 
 Large-object write flow from the benchmark workload through chunk
 preparation, fetch, EC encode, DiskIO RPC, and chunk seal. The benchmark
-sentinel is `tools/bench-chunkio-write-regression.sh`. The write pipeline
+sentinel is `tools/benchmark/bench-chunkio-write-regression.sh`. The write pipeline
 architecture is in
 [`design-crowdb-chunkio.md`](design-crowdb-chunkio.md); this doc traces the
 measured hot path and records benchmark results.

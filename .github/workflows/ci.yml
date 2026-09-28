@@ -11,7 +11,7 @@ env:
   RUST_BACKTRACE: 1
   RUST_LIB_BACKTRACE: 1
 
-# 7 parallel jobs. See doc/working/plan-test.md § "CI Job Grouping Guide"
+# 10 parallel jobs. See doc/working/test.md § "Current CI Test Design"
 # for the assignment rule and how to add new test tasks.
 jobs:
   Lint:
@@ -217,6 +217,70 @@ jobs:
         name: runtime-s3-e2e-${{ github.run_attempt }}
         path: |
           .crowdb-runtime/
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Clean subprocesses
+      if: always()
+      run: pixi run clean-env
+
+  IcebergE2E:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+        sudo apt-get clean
+        df -h /
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: latest
+    - uses: Swatinem/rust-cache@v2
+    - name: Run Iceberg acceptance
+      run: pixi run -e iceberg-e2e test-iceberg-e2e
+    - name: Upload Iceberg failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: runtime-iceberge2e-${{ github.run_attempt }}
+        path: |
+          .crowdb-runtime/
+          target/iceberg-rck/open-api/build/reports/tests/
+          target/iceberg-rck/open-api/build/test-results/
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Clean subprocesses
+      if: always()
+      run: pixi run clean-env
+
+  IcebergSDK:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+        sudo apt-get clean
+        df -h /
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: latest
+    - uses: Swatinem/rust-cache@v2
+    - name: Run Iceberg acceptance
+      run: pixi run -e iceberg-e2e test-iceberg-sdk
+    - name: Upload Iceberg failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: runtime-icebergsdk-${{ github.run_attempt }}
+        path: |
+          .crowdb-runtime/
+          target/iceberg-rck/open-api/build/reports/tests/
+          target/iceberg-rck/open-api/build/test-results/
         if-no-files-found: ignore
         retention-days: 7
     - name: Clean subprocesses

@@ -114,11 +114,8 @@ async fn run_client_across_clear(
         std::process::Command::new("timeout")
             .arg(timeout_seconds.to_string())
             .arg("pixi")
-            .args(["run", "cargo", "run", "--locked", "--manifest-path"])
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/common/iceberg_rust/Cargo.toml"
-            ))
+            .args(["run", "--"])
+            .arg(std::env::var_os("CROWDB_ICEBERG_RUST_CLIENT_BIN").expect("build Rust SDK fixture first"))
             .env("CROWDB_ICEBERG_RUST_ORIGIN", origin)
             .env("CROWDB_ICEBERG_RUST_SECOND_ORIGIN", second_origin)
             .env("CROWDB_ICEBERG_RUST_TOKEN", "w".repeat(32))

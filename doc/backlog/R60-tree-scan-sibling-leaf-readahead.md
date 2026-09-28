@@ -121,7 +121,7 @@ bench config is a prerequisite for validation).
 - Readahead memory is bounded (per-scan in-flight cap, default window
   = 1); a full-keyspace cold scan does not grow unbounded RSS — Integration
   test.
-- No regression on `tools/bench-kv-scan-regression.sh` (mem-mode configs
+- No regression on `tools/benchmark/bench-kv-scan-regression.sh` (mem-mode configs
   unchanged — readahead is a no-op when leaves are resident) — Integration
   test.
 
