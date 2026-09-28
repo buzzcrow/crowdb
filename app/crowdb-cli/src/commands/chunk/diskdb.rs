@@ -9,6 +9,7 @@ use clap::Subcommand;
 
 use crowdb_console_shared::ops::chunk;
 
+use crate::commands::launch::{self, LaunchVerb};
 use crate::commands::op_context;
 use crate::Cli;
 
@@ -16,19 +17,23 @@ use crate::Cli;
 pub enum ChunkDiskdbVerb {
     Deploy {
         #[arg(short = 'n', long)]
-        node: String,
+        node: u64,
+    },
+    Start {
+        #[arg(short = 'n', long)]
+        node: u64,
     },
     Restart {
         #[arg(short = 'n', long)]
-        node: String,
+        node: u64,
     },
     Stop {
         #[arg(short = 'n', long)]
-        node: String,
+        node: u64,
     },
     Delete {
         #[arg(short = 'n', long)]
-        node: String,
+        node: u64,
     },
     /// List living diskdb instances discovered from the group-0
     /// service registry. Pass `--endpoint` to bypass discovery and
@@ -50,6 +55,36 @@ pub enum ChunkDiskdbVerb {
 pub async fn run_chunk_diskdb_verb(cli: &Cli, verb: ChunkDiskdbVerb) -> ExitCode {
     match verb {
         ChunkDiskdbVerb::List { endpoint } => run_list(cli, endpoint.as_deref()).await,
+        ChunkDiskdbVerb::Deploy { node } | ChunkDiskdbVerb::Start { node } => {
+            launch::run(
+                cli,
+                LaunchVerb::Start {
+                    node,
+                    service: "diskdb".into(),
+                },
+            )
+            .await
+        }
+        ChunkDiskdbVerb::Restart { node } => {
+            launch::run(
+                cli,
+                LaunchVerb::Restart {
+                    node,
+                    service: "diskdb".into(),
+                },
+            )
+            .await
+        }
+        ChunkDiskdbVerb::Stop { node } => {
+            launch::run(
+                cli,
+                LaunchVerb::Stop {
+                    node,
+                    service: "diskdb".into(),
+                },
+            )
+            .await
+        }
         other => {
             eprintln!("chunk diskdb {other:?} — not yet implemented (Phase 3)");
             ExitCode::from(1)

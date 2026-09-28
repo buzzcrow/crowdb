@@ -11,6 +11,7 @@ pub(crate) mod bench;
 pub(crate) mod chunk;
 pub(crate) mod cluster;
 pub(crate) mod kv;
+pub(crate) mod launch;
 pub(crate) mod port_alloc;
 pub(crate) mod s3;
 

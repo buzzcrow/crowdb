@@ -91,6 +91,9 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 enum Domain {
+    /// Start, restart, stop, or inspect services from the launch registry.
+    #[command(subcommand)]
+    Launch(commands::launch::LaunchVerb),
     /// Hardware topology + cluster-level ops.
     #[command(alias = "cls")]
     Cluster {
@@ -257,6 +260,7 @@ async fn dispatch(mut cli: Cli) -> ExitCode {
         },
     );
     match command {
+        Domain::Launch(verb) => commands::launch::run(&cli, verb).await,
         Domain::Cluster { verb } => run_cluster_verb(&cli, verb).await,
         Domain::Kv { verb } => match verb {
             KvVerb::Server(sv) => run_kv_server_verb(&cli, sv).await,

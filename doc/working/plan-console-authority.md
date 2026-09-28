@@ -79,9 +79,14 @@ and launch inputs locally.
   deletion checks confirmed replica membership before removing launch policy.
   Native Web and CLI integration tests pass, including ignored legacy state,
   idempotent start, changed restart identity, and policy edits without a Web
-  restart. Chunk/access lifecycle callers and removal of legacy entry paths
-  still remain. Complete shared/CLI/Web regressions, fmt and clippy pass.
+  restart. Complete shared/CLI/Web regressions, fmt and clippy pass.
   Logs: `/tmp/crowdb-launch-consumers-{full,lint-3,fmt}.log`.
+  Generic CLI `launch list/start/restart/stop` and chunk diskdb/chunkdb/diskio
+  deployment controls now share the same launch runtime. Process controls
+  work before Group 0; chunk service lists still read live registration.
+  Three-service lifecycle regressions and the complete CLI suite, fmt and
+  clippy pass. Logs: `/tmp/crowdb-chunk-launch-*.log`. Removal of legacy
+  startup/restore paths remains coupled to bootstrap cutover below.
 - [ ] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
   parser/writer, inline SSH secrets, topology restoration and fixtures after
   the launch lifecycle and replay-safe bootstrap paths are wired. Preserve
