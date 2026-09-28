@@ -13,19 +13,24 @@ use crowdb_protocol::NodeId;
 use crate::commands::{commit_config, op_context};
 use crate::Cli;
 
+mod registry;
+
 #[derive(Subcommand, Debug)]
 pub enum KvServerVerb {
     Deploy {
         #[arg(short = 'n', long)]
         node: String,
         #[arg(short = 'r', long)]
-        rest_port: u16,
+        rest_port: Option<u16>,
         #[arg(short = 'R', long)]
-        rpc_port: u16,
+        rpc_port: Option<u16>,
         #[arg(short = 'b', long)]
         binary: Option<String>,
     },
-    #[command(alias = "start")]
+    Start {
+        #[arg(short = 'n', long)]
+        node: String,
+    },
     Restart {
         #[arg(short = 'n', long)]
         node: String,
@@ -43,6 +48,9 @@ pub enum KvServerVerb {
 
 #[allow(clippy::too_many_lines)]
 pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
+    if let Some(path) = &cli.registry {
+        return registry::run(cli, path, verb).await;
+    }
     match verb {
         KvServerVerb::Deploy {
             node,
@@ -50,6 +58,10 @@ pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
             rpc_port,
             binary,
         } => {
+            let (Some(rest_port), Some(rpc_port)) = (rest_port, rpc_port) else {
+                eprintln!("error: deploy requires management and RPC ports without --registry");
+                return ExitCode::from(2);
+            };
             let node_id: NodeId = match node.parse() {
                 Ok(n) => n,
                 Err(e) => {
@@ -85,7 +97,7 @@ pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
                 }
             }
         }
-        KvServerVerb::Restart { node } => {
+        KvServerVerb::Restart { node } | KvServerVerb::Start { node } => {
             let node_id: NodeId = match node.parse() {
                 Ok(n) => n,
                 Err(e) => {

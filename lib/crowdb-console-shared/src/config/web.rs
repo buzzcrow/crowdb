@@ -115,6 +115,41 @@ const fn ssh_port() -> u16 {
 }
 
 impl LaunchRegistry {
+    /// Persist launch inputs atomically, without runtime identity or topology.
+    /// # Errors
+    /// Reports invalid registry content or a failed durable write.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
+        use std::sync::atomic::Ordering;
+        self.validate()?;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let temp = path.with_extension(format!(
+            "{}.{}.tmp",
+            std::process::id(),
+            super::TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let result = (|| -> Result<()> {
+            let body = toml::to_string_pretty(self).map_err(|error| Error::Config(error.to_string()))?;
+            let mut file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temp)?;
+            file.write_all(body.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&temp, path)?;
+            std::fs::File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(temp);
+        }
+        result
+    }
+
     /// # Errors
     /// Rejects unknown fields, cluster topology, invalid launch records, or duplicate identities.
     pub fn load(path: &Path) -> Result<Self> {

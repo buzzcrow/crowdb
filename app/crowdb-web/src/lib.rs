@@ -16,6 +16,7 @@ pub mod error;
 pub mod expand;
 pub mod health;
 pub mod kv;
+mod launch;
 pub mod lifecycle;
 mod managed;
 mod managed_logical;
@@ -35,7 +36,7 @@ pub fn router(state: AppState) -> axum::Router {
     if state.managed_mode {
         let authorization =
             axum::middleware::from_fn_with_state(state.clone(), auth::require_management_bearer);
-        return axum::Router::new()
+        let managed = axum::Router::new()
             .route("/healthz", get(health::healthz))
             .route("/api/mode", get(health::mode))
             .route("/api/authority", get(managed::authority))
@@ -69,10 +70,16 @@ pub fn router(state: AppState) -> axum::Router {
             .route(
                 "/api/stores/:sid/groups/:gid/replicas/:rid",
                 get(managed_logical::get_replica)
-                    .merge(delete(managed_logical::remove_replica).route_layer(authorization)),
+                    .merge(delete(managed_logical::remove_replica).route_layer(authorization.clone())),
             )
             .route("/api/*path", any(health::managed_api_unavailable))
-            .fallback(spa::spa_fallback)
+            .fallback(spa::spa_fallback);
+        let managed = if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
+            managed.merge(launch::routes().route_layer(authorization))
+        } else {
+            managed
+        };
+        return managed
             .with_state(state)
             .layer(axum::middleware::from_fn(corr_id::corr_id_layer));
     }

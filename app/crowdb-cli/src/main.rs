@@ -45,6 +45,10 @@ use commands::{
 #[derive(Parser, Debug)]
 #[command(name = "crowdb-cli", version, about = "CrowDB cluster console (CLI)")]
 struct Cli {
+    /// Versioned bare-metal launch registry; process identity is stored separately.
+    #[arg(long, global = true, value_name = "PATH")]
+    registry: Option<PathBuf>,
+
     /// IP address of any system-group node; leader discovery is automatic.
     #[arg(
         long,

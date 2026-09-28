@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
+use crowdb_console_shared::config::web::{LaunchRegistry, WebMode, WebProcessConfig};
 use crowdb_console_shared::error::{Error, Result};
+use crowdb_console_shared::launch::LaunchRuntime;
 use crowdb_console_shared::monitor::MonitorCache;
 use crowdb_console_shared::ops::OpContext;
 use crowdb_console_shared::{
@@ -56,6 +57,7 @@ pub struct AppState {
     pub monitor_status_path: Option<Arc<PathBuf>>,
     pub authority_timeout_ms: u64,
     pub(crate) management_token: Option<Arc<str>>,
+    pub(crate) launch_registry_path: Option<Arc<PathBuf>>,
 }
 
 impl Default for AppState {
@@ -119,6 +121,7 @@ impl AppState {
             monitor_status_path: None,
             authority_timeout_ms: 3_000,
             management_token: None,
+            launch_registry_path: None,
         }
     }
 
@@ -139,6 +142,30 @@ impl AppState {
         self.monitor_status_path = config.monitor_status.clone().map(Arc::new);
         self.authority_timeout_ms = config.request_timeout_ms.unwrap_or(3_000);
         self
+    }
+
+    /// # Errors
+    /// Rejects launch policy outside bare-metal mode or invalid registry content.
+    pub fn with_launch_registry(mut self, path: PathBuf) -> Result<Self> {
+        if self.web_mode != Some(WebMode::BareMetal) {
+            return Err(Error::Config(
+                "only bare-metal Web accepts a launch registry".into(),
+            ));
+        }
+        LaunchRegistry::load(&path)?;
+        self.launch_registry_path = Some(Arc::new(std::fs::canonicalize(path)?));
+        Ok(self)
+    }
+
+    /// # Errors
+    /// Reports invalid policy or a failed configured service launch.
+    pub async fn start_configured_services(&self) -> Result<usize> {
+        let Some(path) = &self.launch_registry_path else {
+            return Ok(0);
+        };
+        let registry = LaunchRegistry::load(path)?;
+        let runtime = LaunchRuntime::for_registry(path)?;
+        Ok(runtime.start_enabled(&registry).await?.len())
     }
 
     /// # Errors

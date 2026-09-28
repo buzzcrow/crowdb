@@ -72,7 +72,14 @@ pub(crate) fn op_context(cli: &Cli) -> Result<OpContext, ExitCode> {
 }
 
 /// Load the CLI's internal persisted state from its fixed runtime location.
-pub(crate) fn load_config(_cli: &Cli) -> Result<crowdb_console_shared::ConsoleConfig, ExitCode> {
+pub(crate) fn load_config(cli: &Cli) -> Result<crowdb_console_shared::ConsoleConfig, ExitCode> {
+    if let Some(path) = &cli.registry {
+        crowdb_console_shared::config::web::LaunchRegistry::load(path).map_err(|error| {
+            eprintln!("error: load launch registry: {error}");
+            ExitCode::from(2)
+        })?;
+        return Ok(crowdb_console_shared::ConsoleConfig::default());
+    }
     let path = config_path();
     if !path.exists() {
         return Ok(crowdb_console_shared::ConsoleConfig::default());
@@ -100,7 +107,11 @@ fn config_path() -> std::path::PathBuf {
 }
 
 /// Persist the config from an [`OpContext`] back to the config file.
-pub(crate) fn commit_config(_cli: &Cli, ctx: &OpContext) -> Result<(), ExitCode> {
+pub(crate) fn commit_config(cli: &Cli, ctx: &OpContext) -> Result<(), ExitCode> {
+    if cli.registry.is_some() {
+        eprintln!("error: launch registry mode cannot persist local cluster topology");
+        return Err(ExitCode::from(2));
+    }
     let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {

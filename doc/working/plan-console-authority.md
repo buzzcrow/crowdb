@@ -73,6 +73,15 @@ and launch inputs locally.
   SSH transport regressions pass, including a native KV launch and refusal to
   adopt an unrelated healthy endpoint. Complete Console shared tests, fmt and
   clippy pass. Logs: `/tmp/crowdb-launch-{shared,lint,fmt}.log`.
+  Web now loads and reconciles auto-start policy, exposes authenticated
+  start/restart/stop and runtime views, and reloads policy on each request.
+  CLI `--registry` deploy/start/restart/stop/delete uses the same runtime;
+  deletion checks confirmed replica membership before removing launch policy.
+  Native Web and CLI integration tests pass, including ignored legacy state,
+  idempotent start, changed restart identity, and policy edits without a Web
+  restart. Chunk/access lifecycle callers and removal of legacy entry paths
+  still remain. Complete shared/CLI/Web regressions, fmt and clippy pass.
+  Logs: `/tmp/crowdb-launch-consumers-{full,lint-3,fmt}.log`.
 - [ ] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
   parser/writer, inline SSH secrets, topology restoration and fixtures after
   the launch lifecycle and replay-safe bootstrap paths are wired. Preserve
