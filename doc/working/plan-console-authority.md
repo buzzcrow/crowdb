@@ -59,7 +59,7 @@ and launch inputs locally.
 
 ## Configuration and hardware operations
 
-- [~] **Launch registry lifecycle**: wire `WebProcessConfig` and `LaunchRegistry`
+- [x] **Launch registry lifecycle**: wire `WebProcessConfig` and `LaunchRegistry`
   into CLI and bare-metal Web deploy/restart paths. Consume binary, service
   config, workspace, host and auto-start policy; retain PIDs only in runtime
   state and resolve SSH credentials through references. Files: console shared
@@ -105,10 +105,17 @@ and launch inputs locally.
   without stale topology. Docker and launch-route regressions, fmt and clippy
   pass. Logs: `/tmp/crowdb-bare-authority-*.log`. Legacy physical routes and
   monitor refresh still remain for the mixed-config removal.
-- [ ] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
+- [~] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
   committed records, write only safely missing content, reject conflicts and
   delete topology intent after verified transfer. Clean/destroy use confirmed
   authority. Audit S3 mini-cluster persistence against the same contract.
+  System initialization now confirms an existing replica's identity after a
+  conflict or lost response, preserves groups for retry after peer failures,
+  and requires every peer endpoint and remote-wiring request to succeed before
+  recording membership. Four focused failure cases, complete shared tests,
+  Web deploy/restart/migration suites, fmt and clippy pass. Logs:
+  `/tmp/crowdb-bootstrap-replay-*.log`. Metadata publication still needs
+  conditional writes and confirmation; durable intent/cutover remain pending.
 
 ## Documentation and completion
 
