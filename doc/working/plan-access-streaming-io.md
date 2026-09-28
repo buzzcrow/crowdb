@@ -203,6 +203,16 @@ while keeping secrets in the environment.
   The 100 MiB E2E now sends each pair of 5 MiB parts concurrently; its
   Complete, listener restart, replay and full GET still pass. The native
   publication crash matrix also passes after the direct-CAS change.
+- Iceberg `/metrics` now exposes lock-free cumulative catalog get/CAS/scan/delete
+  counts beside the existing request and Chunk I/O metrics. On three separate
+  release/null-DiskIO 5 MiB fixtures, PUT took 228/235/233 ms and used 16
+  catalog gets plus two CAS; UploadPart took 179/201/176 ms and used ten gets
+  plus one CAS; full GET took 27/25/16 ms and used eight gets, no CAS. The
+  earlier release/null-DiskIO baseline was 2682-2791 ms PUT and 2091-2184 ms
+  UploadPart with the legacy per-leaf path. This shows an order-of-magnitude
+  improvement in this fixture; the request helper signs and copies the body,
+  and null-DiskIO is not a production storage latency profile. Remaining
+  catalog gets are request/session/context checks rather than frame writes.
 
 ## Files
 

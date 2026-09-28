@@ -50,7 +50,6 @@ impl MultipartRepository {
         let key = after.key().encode()?;
         let expected = before.as_ref().map(encode_part).transpose()?;
         let value = encode_part(&after)?;
-        check_context(self.store.as_ref(), current.context).await?;
         let outcome = self
             .store
             .compare_exchange(
@@ -60,18 +59,22 @@ impl MultipartRepository {
                 mutation_identity(&key, expected.as_deref(), &value),
             )
             .await;
-        match outcome {
-            Ok(CasOutcome::Applied(_)) => Ok(Some(after)),
-            Ok(CasOutcome::Conflict(Some(existing))) if existing.bytes == value => Ok(Some(after)),
-            Ok(CasOutcome::Conflict(_)) => Ok(None),
+        let written = match outcome {
+            Ok(CasOutcome::Applied(_)) => Some(after),
+            Ok(CasOutcome::Conflict(Some(existing))) if existing.bytes == value => Some(after),
+            Ok(CasOutcome::Conflict(_)) => None,
             Err(error) => {
                 if self.read_part(&after.key()).await?.as_ref() == Some(&after) {
-                    Ok(Some(after))
+                    Some(after)
                 } else {
-                    Err(error.into())
+                    return Err(error.into());
                 }
             }
+        };
+        if written.is_some() {
+            check_context(self.store.as_ref(), current.context).await?;
         }
+        Ok(written)
     }
 
     /// Reads the current part for an `UploadPart` replacement. The later session

@@ -57,6 +57,7 @@ impl IcebergHttpService {
     #[must_use]
     pub fn metrics_snapshot(&self) -> IcebergMetricsSnapshot {
         let mut snapshot = self.metrics.snapshot();
+        snapshot.catalog = self.repository.store_operation_counts();
         if let Some((read, write)) = self.files.as_ref().and_then(|files| files.chunk_metrics()) {
             snapshot.chunk_read = Some(read);
             snapshot.chunk_small_write = Some(write);

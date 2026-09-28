@@ -25,6 +25,7 @@ use crowdb_access_iceberg::wire::BearerAuthenticator;
 use md5::{Digest, Md5};
 use reqwest::{Client, Method};
 use std::fmt::Write as _;
+use std::time::Instant;
 
 #[path = "common/iceberg_signed_file.rs"]
 mod signed;
@@ -166,6 +167,107 @@ async fn setup_with_bounds_and_file_limit(
 
 fn path(table: TableLocation, key: &str) -> String {
     format!("/{}/{}", table.bucket(), table.file(key).unwrap().object_key())
+}
+
+async fn catalog_counts(client: &TestFileClient) -> (u64, u64, u64, u64) {
+    let response: serde_json::Value = client
+        .client
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let catalog = &response["catalog"];
+    (
+        catalog["get"].as_u64().unwrap(),
+        catalog["compare_exchange"].as_u64().unwrap(),
+        catalog["scan"].as_u64().unwrap(),
+        catalog["conditional_delete"].as_u64().unwrap(),
+    )
+}
+
+fn catalog_delta(before: (u64, u64, u64, u64), after: (u64, u64, u64, u64)) -> String {
+    format!(
+        "get={} cas={} scan={} delete={}",
+        after.0 - before.0,
+        after.1 - before.1,
+        after.2 - before.2,
+        after.3 - before.3
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "native null-DiskIO release performance fixture"]
+async fn native_file_5_mib_profile() {
+    let (_stack, _process, client, table) = setup().await;
+    let bytes = vec![0x5a; 5 * 1024 * 1024];
+    let object = path(table, "data/profile-put.bin");
+    let before = catalog_counts(&client).await;
+    let started = Instant::now();
+    let put = client.send(Method::PUT, &object, "", &bytes, true).await;
+    let put_ms = started.elapsed().as_millis();
+    assert_eq!(put.status(), 200, "{}", put.text().await.unwrap());
+    println!(
+        "iceberg 5MiB PUT: {put_ms}ms {}",
+        catalog_delta(before, catalog_counts(&client).await)
+    );
+
+    let multipart = path(table, "data/profile-mpu.bin");
+    let created = client
+        .send(Method::POST, &multipart, "uploads=", b"", false)
+        .await;
+    assert_eq!(created.status(), 200);
+    let created = created.text().await.unwrap();
+    let upload = created
+        .split_once("<UploadId>")
+        .unwrap()
+        .1
+        .split_once("</UploadId>")
+        .unwrap()
+        .0;
+    let query = format!("partNumber=1&uploadId={upload}");
+    let before = catalog_counts(&client).await;
+    let started = Instant::now();
+    let part = client.send(Method::PUT, &multipart, &query, &bytes, true).await;
+    let part_ms = started.elapsed().as_millis();
+    assert_eq!(part.status(), 200, "{}", part.text().await.unwrap());
+    let etag = part.headers()["etag"].to_str().unwrap();
+    println!(
+        "iceberg 5MiB UploadPart: {part_ms}ms {}",
+        catalog_delta(before, catalog_counts(&client).await)
+    );
+    let manifest = format!(
+        "<CompleteMultipartUpload><Part><ETag>{etag}</ETag><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>"
+    );
+    let complete = client
+        .send(
+            Method::POST,
+            &multipart,
+            &format!("uploadId={upload}"),
+            manifest.as_bytes(),
+            false,
+        )
+        .await;
+    assert_eq!(complete.status(), 200);
+    assert!(complete
+        .text()
+        .await
+        .unwrap()
+        .contains("</CompleteMultipartUploadResult>"));
+
+    let before = catalog_counts(&client).await;
+    let started = Instant::now();
+    let get = client.send(Method::GET, &object, "", b"", false).await;
+    assert_eq!(get.status(), 200);
+    assert_eq!(get.bytes().await.unwrap().as_ref(), bytes);
+    let get_ms = started.elapsed().as_millis();
+    println!(
+        "iceberg 5MiB GET: {get_ms}ms {}",
+        catalog_delta(before, catalog_counts(&client).await)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

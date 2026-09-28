@@ -10,7 +10,8 @@ use crate::operation::{
 use crate::record::StorageRecord;
 
 use super::{
-    ActiveCatalogRecord, CasOutcome, CatalogAuthority, CatalogStore, ClearBounds, RootState, StoreError,
+    ActiveCatalogRecord, CasOutcome, CatalogAuthority, CatalogStore, CatalogStoreOperationCounts,
+    ClearBounds, RootState, StoreError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +43,11 @@ pub struct CatalogRepository {
 }
 
 impl CatalogRepository {
+    #[must_use]
+    pub fn store_operation_counts(&self) -> Option<CatalogStoreOperationCounts> {
+        self.store.operation_counts()
+    }
+
     /// # Errors
     /// Rejects invalid timing limits before any storage access.
     pub fn new(store: Arc<dyn CatalogStore>, bounds: ClearBounds) -> Result<Self, CatalogError> {
