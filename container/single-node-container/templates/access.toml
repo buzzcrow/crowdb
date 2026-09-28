@@ -14,6 +14,7 @@ recovery_memory_bytes = 268435456
 
 [small_write]
 threshold_ratio = 0.9
+disk_block_bytes = 1048576
 conversion_enabled = true
 ec_data = 8
 ec_code = 4

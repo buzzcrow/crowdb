@@ -74,6 +74,8 @@ impl ReadConfig {
 #[serde(default)]
 pub struct SmallWriteConfig {
     pub threshold_ratio: f64,
+    /// Data bytes per strip block used for the small-object routing boundary.
+    pub disk_block_bytes: usize,
     pub conversion_enabled: bool,
     pub ec_data: usize,
     pub ec_code: usize,
@@ -89,6 +91,7 @@ impl Default for SmallWriteConfig {
         let policy = SmallWritePolicy::default();
         Self {
             threshold_ratio: 0.9,
+            disk_block_bytes: 1024 * 1024,
             conversion_enabled: policy.conversion_enabled,
             ec_data: policy.conversion_data_num,
             ec_code: policy.conversion_code_num,
@@ -110,7 +113,7 @@ impl SmallWriteConfig {
     )]
     pub fn threshold_exclusive(&self) -> usize {
         let data_shards = if self.conversion_enabled { self.ec_data } else { 1 };
-        (self.threshold_ratio * (data_shards * 1024 * 1024) as f64).ceil() as usize
+        (self.threshold_ratio * data_shards.saturating_mul(self.disk_block_bytes) as f64).ceil() as usize
     }
 
     #[must_use]
@@ -202,10 +205,13 @@ impl BaseConfig for AccessConfig {
         if !self.small_write.threshold_ratio.is_finite()
             || self.small_write.threshold_ratio <= 0.0
             || self.small_write.threshold_ratio > 1.0
+            || self.small_write.disk_block_bytes == 0
+            || self.small_write.disk_block_bytes > 1024 * 1024
             || self.small_write.ec_data == 0
             || self.small_write.ec_data > 32
+            || self.small_write.threshold_exclusive() > self.small_write.policy().object_limit
         {
-            return Err("small_write threshold ratio and EC data count are invalid".into());
+            return Err("small_write strip capacity or threshold is invalid".into());
         }
         if self.s3.ec_data == Some(0) || self.s3.ec_code == Some(0) {
             return Err("S3 EC data and code counts must be nonzero".into());

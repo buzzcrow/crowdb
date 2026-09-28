@@ -103,6 +103,11 @@ while keeping secrets in the environment.
 - Confirmed 8+2 partial EC with two 1 MiB data shards: incremental parity matches
   the zero-filled reference and recovers two data failures or mixed data/code
   failures. The focused EC test is in `lib/crowdb-common/rust/tests/ec_test.rs`.
+- The 8+2 layout is only a partial-EC test example. Production defaults remain
+  8+4; deployments may choose 4+2 or 2+1. The access configuration records the
+  current 1 MiB disk block size, default EC data and code counts, and the 0.9
+  small-object ratio. The small routing bound is the ratio multiplied by one
+  strip's data capacity; mirrored strips use one data block.
 - Chunk read stream normalizes locations once per stream, schedules up to three
   concurrent physical reads of at most 1 MiB each, and caches valid Chunk layouts
   across windows. Credits remain reserved while HTTP holds payload views.

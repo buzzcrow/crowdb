@@ -78,7 +78,7 @@ impl FileHttp {
             issuer: FileGrantIssuer::new(secret, 15 * 60 * 1000)?,
             responses: FileResponseBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             uploads: FileUploadBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
-            small_threshold_exclusive: (9_usize * 8 * 1024 * 1024).div_ceil(10),
+            small_threshold_exclusive: crate::config::SmallWriteConfig::default().threshold_exclusive(),
             native_allocator,
             region,
             limits: FileServiceLimits {
