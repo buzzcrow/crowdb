@@ -29,7 +29,7 @@ async fn verify_group_publication(drop_reply: bool) {
     let proxy = rpc_response_proxy::TestResponseProxy::start(cluster.group0_leader_endpoint.clone()).await;
     let ctx = OpContext::new(
         proxy.endpoint.clone(),
-        cluster.mgmt_endpoints.clone(),
+        vec![proxy.management_endpoint.clone()],
         ConsoleConfig::default(),
     );
     let armed = proxy.armed.clone();

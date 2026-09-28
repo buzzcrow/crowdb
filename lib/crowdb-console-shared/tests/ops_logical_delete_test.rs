@@ -98,7 +98,10 @@ async fn verify_deletion(store: bool, failure: bool, drop_reply: bool) {
             || cluster.group0_leader_endpoint.clone(),
             |proxy| proxy.endpoint.clone(),
         ),
-        cluster.mgmt_endpoints.clone(),
+        proxy.as_ref().map_or_else(
+            || cluster.mgmt_endpoints.clone(),
+            |proxy| vec![proxy.management_endpoint.clone()],
+        ),
         ConsoleConfig::default(),
     );
     // A retried deletion may find the first node already absent.
@@ -115,6 +118,9 @@ async fn verify_deletion(store: bool, failure: bool, drop_reply: bool) {
     )
     .await;
     seed(&ctx).await;
+    if drop_reply {
+        ctx.kv().refresh_topology().await.unwrap();
+    }
     let result = if store {
         kv_logical::remove_store(&ctx, 77).await
     } else {
