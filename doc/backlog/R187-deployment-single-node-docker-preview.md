@@ -112,7 +112,7 @@ fault-tolerant deployment.
   does not manage Docker image, volume, process, or launch information.
 - **DOCKER-I12 — Verifiable preview publication:** only a manually triggered
   workflow targeting a Git release tag may publish the gated `linux/amd64`
-  image to `crowdb/crowdb-iceberg-single-node`, after protected-environment approval.
+  image to `crowdb/crowdb-iceberg`, after protected-environment approval.
   Creating or pushing a tag alone never publishes. Version and `git-<commit>`
   tags are immutable; moving `preview` and `latest` tags are not published. Every public digest
   has a verifiable signature, SBOM, and build provenance. Pull-request workflows
@@ -376,7 +376,7 @@ passes explicit data and log paths to every child.
     amd64 image and run all Docker gates without registry write credentials. A
     operator manually triggers the release workflow against a Git release tag;
     it reruns the complete gates for the exact commit, waits for protected-
-    environment approval, then publishes to `crowdb/crowdb-iceberg-single-node` under an
+    environment approval, then publishes to `crowdb/crowdb-iceberg` under an
     immutable release-version tag and immutable `git-<commit>` tag. The workflow never emits `latest`, refuses to overwrite either
     immutable tag, and attaches a signature, SBOM, and build provenance to the
     published digest. arm64 publication is deferred until a later requirement

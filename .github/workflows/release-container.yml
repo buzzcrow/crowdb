@@ -121,7 +121,7 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$REVISION" ]]
           for tag in "$RELEASE_TAG" "git-$REVISION"; do
             status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" \
-              "https://hub.docker.com/v2/namespaces/crowdb/repositories/crowdb-iceberg-single-node/tags/$tag")
+              "https://hub.docker.com/v2/namespaces/crowdb/repositories/crowdb-iceberg/tags/$tag")
             [[ "$status" == 404 ]] || { echo "Immutable tag $tag is present or registry unavailable (HTTP $status)" >&2; exit 1; }
           done
         '
@@ -150,10 +150,10 @@ jobs:
           SOURCE_REVISION=${{ needs.verify.outputs.revision }}
           PREVIEW_VERSION=${{ needs.verify.outputs.version }}
         tags: |
-          docker.io/crowdb/crowdb-iceberg-single-node:${{ inputs.tag }}
-          docker.io/crowdb/crowdb-iceberg-single-node:git-${{ needs.verify.outputs.revision }}
+          docker.io/crowdb/crowdb-iceberg:${{ inputs.tag }}
+          docker.io/crowdb/crowdb-iceberg:git-${{ needs.verify.outputs.revision }}
     - uses: sigstore/cosign-installer@v4.1.2
     - name: Sign published digest
       env:
         DIGEST: ${{ steps.build.outputs.digest }}
-      run: pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg-single-node@$DIGEST"
+      run: pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"

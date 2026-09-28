@@ -18,14 +18,14 @@ for required in \
     'gh release view "$RELEASE_TAG"' \
     '[[ "$status" == 404 ]]' \
     'needs: verify' \
-    'docker.io/crowdb/crowdb-iceberg-single-node:${{ inputs.tag }}' \
-    'docker.io/crowdb/crowdb-iceberg-single-node:git-${{ needs.verify.outputs.revision }}' \
+    'docker.io/crowdb/crowdb-iceberg:${{ inputs.tag }}' \
+    'docker.io/crowdb/crowdb-iceberg:git-${{ needs.verify.outputs.revision }}' \
     'provenance: mode=max' \
     'sbom: true' \
     'cosign sign --yes'; do
     grep -Fq "$required" "$release"
 done
-! grep -Eq 'crowdb-iceberg-single-node:(preview|latest)' "$release"
+! grep -Eq 'crowdb-iceberg:(preview|latest)' "$release"
 [[ $(grep -c 'push: true' "$release") == 1 ]]
 [[ $(grep -c 'id-token: write' "$release") == 1 ]]
 [[ "$events" != *'schedule:'* ]]
