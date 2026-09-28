@@ -22,6 +22,7 @@ listed document or section needed by the task.
 | `doc/design/config/design-crowdb-config.md`               | Configuration ownership, precedence, validation, reload.   |
 | `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, native Dataset access, and GPU delivery.      |
 | `doc/user-manual/user-guide.md`                           | Web UI, CLI, REST API, setup, operations, upgrade.         |
+| `doc/user-manual/docker-single-node-user-guide.md`        | Single-node Docker preview, credentials, clients, recovery. |
 
 ## Backlog (`doc/backlog/`)
 
@@ -50,12 +51,14 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | ---------------------------- | ---------------------------------------------------------------------- |
 | `doc/dev/env_setup.md`       | Benchmark commands, sentinels, prerequisites, and perf-counter setup.  |
 | `doc/dev/hyper_fork.md`      | Hyper fork branches, submodule, build, sync, validation, and recovery. |
+| `tools/README.md`           | Tool directories, Pixi task entry points, CI checks, and suite timing. |
 
 ## Project Files (repo root)
 
 | File                 | When to read                                |
 | -------------------- | ------------------------------------------- |
 | `AGENTS.md`          | Always-on project rules and skill dispatch. |
+| `VERSION`            | Canonical project development version.      |
 | `CONTRIBUTING.md`    | PR setup, conventions, and process.         |
 | `CHANGELOG.md`       | Release history.                            |
 | `SECURITY.md`        | Vulnerability handling.                     |

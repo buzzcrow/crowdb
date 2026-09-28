@@ -1,39 +1,78 @@
-# Contributor Covenant Code of Conduct
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
 
-## Our Pledge
+# CROWDB Code of Conduct
 
-We pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, religion, or sexual identity and orientation.
+## Our pledge
 
-## Our Standards
+We pledge to make participation in CROWDB a harassment-free experience for
+everyone, regardless of age, body size, visible or invisible disability,
+ethnicity, sex characteristics, gender identity and expression, level of
+experience, education, socioeconomic status, nationality, personal appearance,
+race, caste, color, religion, or sexual identity and orientation.
 
-Examples of behavior that contributes to a positive environment:
+We will act and interact in ways that contribute to an open, welcoming,
+diverse, inclusive, and healthy community.
 
-- Demonstrating empathy and kindness toward other people
-- Being respectful of differing opinions, viewpoints, and experiences
-- Giving and gracefully accepting constructive feedback
-- Accepting responsibility and apologizing to those affected by our mistakes
-- Focusing on what is best for the overall community
+## Expected behavior
 
-Examples of unacceptable behavior:
+- Be respectful of different backgrounds, viewpoints, and levels of experience.
+- Give technical feedback about the work, supported by evidence where possible.
+- Ask questions and correct mistakes without belittling people.
+- Accept responsibility, apologize when appropriate, and repair harm.
+- Respect privacy, security reports, embargoes, and requests for confidentiality.
+- Prioritize the health of the project and community over winning an argument.
 
-- The use of sexualized language or imagery, and sexual attention or advances
-- Trolling, insulting or derogatory comments, and personal or political attacks
-- Public or private harassment
-- Publishing others' private information without explicit permission
-- Other conduct which could reasonably be considered inappropriate in a professional setting
+## Unacceptable behavior
 
-## Enforcement Responsibilities
-
-Community leaders are responsible for clarifying and enforcing our standards and will take appropriate and fair corrective action in response to any behavior they deem inappropriate, threatening, offensive, or harmful.
+- Harassment, intimidation, stalking, threats, or sustained disruption.
+- Sexualized language, imagery, attention, or advances.
+- Insults, derogatory comments, trolling, or personal and political attacks.
+- Publishing private information without explicit permission.
+- Pressuring anyone to disclose identity, credentials, employer, or private
+  communications.
+- Retaliation against a person who raises a concern or participates in an
+  investigation.
+- Conduct that would reasonably be considered inappropriate in a professional
+  community.
 
 ## Scope
 
-This Code of Conduct applies within all community spaces, and also applies when an individual is officially representing the community in public spaces.
+This code applies in project repositories, issue trackers, reviews, discussions,
+chat, events, and other CROWDB community spaces. It also applies when someone is
+officially representing the project in public.
+
+## Reporting
+
+Report abusive, harassing, or otherwise unacceptable behavior privately to
+**crow.db@outlook.com**. Do not include sensitive personal information in a
+public issue.
+
+Reports will be reviewed promptly, impartially, and as confidentially as
+possible. People handling a report must disclose conflicts of interest and
+recuse themselves when necessary. The project will protect the privacy and
+safety of reporters and affected community members to the extent possible.
+
+Security vulnerabilities follow [SECURITY.md](SECURITY.md), not the conduct
+reporting process.
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to **crow.db@outlook.com**. All complaints will be reviewed and investigated promptly and fairly.
+Project maintainers may remove, edit, or reject comments, commits, code, issues,
+and other contributions that violate this code. Responses will be proportionate
+to the behavior, its impact, and any pattern of prior conduct. Actions may
+include:
+
+1. A private correction and explanation of the impact.
+2. A formal warning with conditions for continued participation.
+3. A temporary restriction from project interaction or representation.
+4. A permanent ban from project spaces and representation.
+
+Maintainers will not publicly identify a reporter or disclose private report
+details without permission, except when required to protect people or comply
+with law.
 
 ## Attribution
 
-This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org/), version 2.1.
+This code is adapted from the [Contributor Covenant](https://www.contributor-covenant.org/),
+version 2.1.

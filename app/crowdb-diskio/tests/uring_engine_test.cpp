@@ -22,6 +22,7 @@
 #    include <cstdio>
 #    include <filesystem>
 #    include <memory>
+#    include <stdexcept>
 #    include <string>
 #    include <thread>
 #    include <vector>
@@ -118,6 +119,11 @@ class TestDisk : public crowdb::diskio::Disk
     crowdb::diskio::IoEngine *engine_;
 };
 } // namespace
+
+TEST(UringEngine, RejectsUninitializedRing)
+{
+    EXPECT_THROW(crowdb::diskio::UringEngine(0), std::runtime_error);
+}
 
 TEST(UringEngine, WriteReadRoundTrip)
 {

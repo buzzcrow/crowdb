@@ -338,6 +338,9 @@ impl CrowdbSysmdClient {
     pub async fn list_groups_in_store(&self, store_id: StoreId) -> Result<Vec<GroupValue>> {
         self.meta.list_groups_in_store(store_id).await
     }
+    pub async fn list_all_groups(&self) -> Result<Vec<GroupValue>> {
+        self.meta.list_all_groups().await
+    }
     pub async fn remove_group(&self, store_id: StoreId, group_id: GroupId) -> Result<()> {
         self.meta.remove_group(store_id, group_id).await
     }
@@ -361,6 +364,12 @@ impl CrowdbSysmdClient {
         group_id: GroupId,
     ) -> Result<Vec<ReplicaValue>> {
         self.meta.list_replicas_in_group(store_id, group_id).await
+    }
+    pub async fn list_replicas_in_store(&self, store_id: StoreId) -> Result<Vec<ReplicaValue>> {
+        self.meta.list_replicas_in_store(store_id).await
+    }
+    pub async fn list_all_replicas(&self) -> Result<Vec<ReplicaValue>> {
+        self.meta.list_all_replicas().await
     }
     pub async fn remove_replica(
         &self,
@@ -410,7 +419,7 @@ impl CrowdbSysmdClient {
 
     pub async fn register_kv_server(
         &self,
-        instance_id: InstanceId,
+        identity: crowdb_protocol::common::KvServerIdentity,
         rpc_endpoint: &str,
         hosted_stores: &[u64],
         hosted_groups: &[HostedGroup],
@@ -419,7 +428,7 @@ impl CrowdbSysmdClient {
     ) -> Result<()> {
         self.svc
             .register_kv_server(
-                instance_id,
+                identity,
                 rpc_endpoint,
                 hosted_stores,
                 hosted_groups,

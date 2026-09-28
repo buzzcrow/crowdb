@@ -5,7 +5,7 @@
 
 Range reads from the client through crowdb-rpc, the read policy, and the
 crowdb-tree cursors. The benchmark sentinel is
-`tools/bench-kv-scan-regression.sh`.
+`tools/benchmark/bench-kv-scan-regression.sh`.
 
 ## 1. Flow
 

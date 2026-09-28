@@ -8,6 +8,7 @@
 #    include "disk/disk.h"
 
 #    include <cerrno>
+#    include <stdexcept>
 #    include <utility>
 
 namespace crowdb::diskio
@@ -21,6 +22,9 @@ UringEngine::UringEngine(unsigned ring_entries)
     cfg.mode    = crowdb::common::PollingMode::Hybrid;
     topo.pipelines.push_back(cfg);
     uring_ = std::make_unique<crowdb::common::DiskIOUring>(std::move(topo));
+    if (!uring_->valid()) {
+        throw std::runtime_error("io_uring initialization failed");
+    }
 }
 
 UringEngine::UringEngine(unsigned ring_entries, crowdb::common::PollingMode mode, crowdb::common::HybridConfig hybrid,
@@ -34,6 +38,9 @@ UringEngine::UringEngine(unsigned ring_entries, crowdb::common::PollingMode mode
     cfg.sqpoll  = sqpoll;
     topo.pipelines.push_back(cfg);
     uring_ = std::make_unique<crowdb::common::DiskIOUring>(std::move(topo));
+    if (!uring_->valid()) {
+        throw std::runtime_error("io_uring initialization failed");
+    }
 }
 
 void UringEngine::submit_write(Disk *disk, off_t phys_offset, const uint8_t *data, size_t size,

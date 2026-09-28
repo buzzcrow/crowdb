@@ -46,6 +46,7 @@ struct AllocateHandlerState
 {
     crowdb_rpc_server_t server = nullptr;
     std::atomic<bool>   request_valid{false};
+    std::atomic<bool>   read_error{false};
 };
 
 extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16_t /*unused*/, const uint8_t *control,
@@ -102,13 +103,15 @@ extern "C" void handle_disk_read(uint64_t request_id, uint64_t /*unused*/, uint1
     }
     const auto                    *request = flatbuffers::GetRoot<FBDiskReadRequest>(control);
     flatbuffers::FlatBufferBuilder builder;
-    const auto                     response =
-        CreateFBDiskReadResponse(builder, request_id, 0, crowdb::diskio::proto::FBDiskIoRetCode_Success);
+    const bool                     error = state->read_error.load(std::memory_order_acquire);
+    const auto response = CreateFBDiskReadResponse(builder, request_id, 0,
+                                                   error ? crowdb::diskio::proto::FBDiskIoRetCode_IoError
+                                                         : crowdb::diskio::proto::FBDiskIoRetCode_Success);
     builder.Finish(response);
     const std::array<uint8_t, 4> data{1, 2, 3, 4};
-    static_cast<void>(crowdb_rpc_server_submit_response(state->server, connection, builder.GetBufferPointer(),
-                                                        builder.GetSize(), data.data(), request->size(),
-                                                        FBMsgType_EDiskReadResponse, request_id));
+    static_cast<void>(crowdb_rpc_server_submit_response(
+        state->server, connection, builder.GetBufferPointer(), builder.GetSize(), error ? nullptr : data.data(),
+        error ? 0 : request->size(), FBMsgType_EDiskReadResponse, request_id));
     crowdb_rpc_frame_release(frame);
 }
 
@@ -200,6 +203,8 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     std::array<uint8_t, 4> read{};
     ASSERT_TRUE(transport.read_mirror(allocated, 0, 0, read.data(), read.size()).ok());
     EXPECT_EQ(read, (std::array<uint8_t, 4>{1, 2, 3, 4}));
+    handler.read_error.store(true, std::memory_order_release);
+    EXPECT_EQ(transport.read_mirror(allocated, 0, 0, read.data(), read.size()).code(), Code::kInternal);
     AsyncWriteResult             write_result;
     const std::array<uint8_t, 4> write{5, 6, 7, 8};
     transport.submit_write_mirror(allocated, 1, 0, write.data(), write.size(),

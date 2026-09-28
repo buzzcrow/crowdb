@@ -523,6 +523,18 @@ impl ChunkAllocator for MetricsChunkAllocator {
         result
     }
 
+    async fn delete_chunk_range(
+        &self,
+        req: crowdb_protocol::chunkdb::rpc::DeleteChunkRangeRequest,
+    ) -> Result<crowdb_protocol::chunkdb::rpc::DeleteChunkRangeResponse> {
+        let mut operation = self.metrics.chunk_delete.start();
+        let result = self.inner.delete_chunk_range(req).await;
+        if result.is_ok() {
+            operation.mark_success();
+        }
+        result
+    }
+
     async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
         self.inner.update_chunk_strip(req).await
     }

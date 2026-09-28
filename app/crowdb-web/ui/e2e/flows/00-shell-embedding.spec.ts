@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 1.5s (2026-08-16)
+// Baseline: four tests passed; embedding 2.4s, domain toggle 0.7s (2026-09-27)
 
 import { test, expect } from '../fixtures/realBackend';
 import {
@@ -27,9 +27,98 @@ test.describe('shell · embedding', () => {
 
     await step('shell: goto', () => page.goto('/'));
 
-    // Scope to the banner alert — a toast (also role=alert) may appear
-    // concurrently with "Failed to load server list:" text.
-    await expect(page.getByRole('alert').filter({ hasText: 'Backend unreachable' })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByRole('alert').filter({ hasText: 'Console mode unavailable.' })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
+  });
+
+  test('Docker mode shows Group 0 and monitor state without hardware controls', async ({ page }) => {
+    await page.route('**/api/mode', route => route.fulfill({ json: { mode: 'docker' } }));
+    await page.route('**/api/preview', route => route.fulfill({ json: {
+      source: 'group0',
+      racks: [{ id: 1, status: 1, node_ids: [1] }],
+      nodes: [{ id: 1, rack_id: 1, status: 1 }],
+      disk_groups: [],
+      disks: [],
+      stores: [{ store_id: 0, node_ids: [1] }, { store_id: 7, node_ids: [1] }],
+      groups: [{ store_id: 0, group_id: 0 }, { store_id: 7, group_id: 70 }],
+      replicas: [],
+      services: [],
+      monitor: { phase: 'Ready', revision: 1, updated_at_ms: 1, services: {} },
+    } }));
+    await page.goto('/');
+    await expect(page.getByTestId('managed-preview')).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0');
+    await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only');
+    await expect(page.getByTestId('managed-monitor-phase')).toContainText('Ready');
+    await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Create store' })).toBeDisabled();
+    const writes: Array<{ path: string; token: string | undefined; body: unknown }> = [];
+    await page.route('**/api/stores**', async (route) => {
+      const request = route.request();
+      writes.push({
+        path: new URL(request.url()).pathname,
+        token: request.headers().authorization,
+        body: request.postDataJSON(),
+      });
+      await route.fulfill({ status: 201, json: {} });
+    });
+    await page.getByLabel('Management token').fill('m'.repeat(64));
+    await page.getByLabel('Store ID').fill('8');
+    await page.getByRole('combobox', { name: 'Store node' }).selectOption('1');
+    await page.getByRole('button', { name: 'Create store' }).click();
+    await expect.poll(() => writes.length, { intervals: [100] }).toBe(1);
+    expect(writes[0]).toEqual({ path: '/api/stores', token: `Bearer ${'m'.repeat(64)}`, body: { store_id: 8, nodes: [1] } });
+    await page.getByRole('combobox', { name: 'Group store' }).selectOption('7');
+    await page.getByLabel('Group ID').fill('71');
+    await page.getByRole('combobox', { name: 'Group node' }).selectOption('1');
+    await page.getByRole('button', { name: 'Create group' }).click();
+    await expect.poll(() => writes.length, { intervals: [100] }).toBe(2);
+    expect(writes[1].path).toBe('/api/stores/7/groups');
+    await page.getByRole('combobox', { name: 'Replica group' }).selectOption('7/70');
+    await page.getByRole('combobox', { name: 'Replica node' }).selectOption('1');
+    await page.getByRole('button', { name: 'Add replica' }).click();
+    await expect.poll(() => writes.length, { intervals: [100] }).toBe(3);
+    expect(writes[2].path).toBe('/api/stores/7/groups/70/replicas');
+  });
+
+  test('Docker mode separates unavailable topology from current monitor recovery', async ({ page }) => {
+    await page.clock.install();
+    await page.route('**/api/mode', route => route.fulfill({ json: { mode: 'docker' } }));
+    let available = true;
+    let monitor: object | null = {
+      phase: 'ready', revision: 1, updated_at_ms: 1,
+      services: { kv: { pid: 100, generation: 1, restart_attempts: 0, healthy: true } },
+    };
+    await page.route('**/api/preview', route => route.fulfill({
+      status: available ? 200 : 503,
+      json: available ? {
+        source: 'group0', racks: [], nodes: [], disks: [], disk_groups: [],
+        stores: [{ store_id: 7, node_ids: [1] }], groups: [], replicas: [], services: [], monitor,
+      } : { source: 'group0', available: false,
+        reason: monitor ? 'group0_unavailable' : 'monitor_unavailable', monitor },
+    }));
+    await page.goto('/');
+    await expect(page.getByTestId('managed-process-kv')).toContainText('PID 100');
+    await expect(page.getByRole('list', { name: 'Logical stores' })).toContainText('Store 7');
+    available = false;
+    monitor = { phase: 'restarting', revision: 2, updated_at_ms: 2,
+      services: { kv: { pid: null, generation: 1, restart_attempts: 1, healthy: false } } };
+    await page.clock.runFor(3001);
+    await expect(page.getByTestId('managed-unavailable')).toContainText('Group 0 is unavailable');
+    await expect(page.getByRole('list', { name: 'Logical stores' })).toHaveCount(0);
+    await expect(page.getByTestId('managed-process-kv')).toContainText('unhealthy');
+    await expect(page.getByTestId('managed-monitor-phase')).toContainText('restarting');
+    monitor = null;
+    await page.clock.runFor(3001);
+    await expect(page.getByTestId('managed-unavailable')).toContainText('missing or stale');
+    await expect(page.getByTestId('managed-process-kv')).toHaveCount(0);
+    available = true;
+    monitor = { phase: 'ready', revision: 3, updated_at_ms: 3,
+      services: { kv: { pid: 200, generation: 2, restart_attempts: 1, healthy: true } } };
+    await page.clock.runFor(3001);
+    await expect(page.getByTestId('managed-unavailable')).toHaveCount(0);
+    await expect(page.getByTestId('managed-process-kv')).toContainText('PID 200');
+    await expect(page.getByTestId('managed-process-kv')).toContainText('generation 2');
   });
 
   test('embedding honors apiPrefix, readonly, and module opt-out', async ({ page, baseURL }) => {

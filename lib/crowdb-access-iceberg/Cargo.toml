@@ -1,0 +1,45 @@
+[package]
+name = "crowdb-access-iceberg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native Iceberg catalog authority and immutable storage access."
+
+[lints]
+workspace = true
+
+[features]
+test-util = []
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+crc32fast = "1"
+data-encoding = "2"
+hmac = "0.12"
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode", "safe-decode", "frame"] }
+crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
+crowdb-chunk-client = { path = "../crowdb-chunk-client" }
+crowdb-common = { workspace = true }
+crowdb-protocol = { path = "../crowdb-protocol" }
+flatbuffers = { workspace = true }
+flate2 = { workspace = true }
+sha2 = { version = "0.10", features = ["compress"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+subtle = "2"
+snap = "1.1"
+zstd = { version = "0.13", default-features = false }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+crowdb-access-iceberg = { path = ".", features = ["test-util"] }
+arc-swap = "1.9"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

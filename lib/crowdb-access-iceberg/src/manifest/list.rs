@@ -1,0 +1,293 @@
+use crate::file::{
+    AvroContainerError, AvroDatumLimits, AvroFieldPath, AvroProjectedRecords, AvroProjection,
+    AvroRecordArray, AvroScalar, AvroScalarType, AvroSchema, FileLocation, TableLocation,
+};
+
+use super::{ManifestContent, ManifestVersion, PartitionSummary};
+
+const FIELDS: [i32; 14] = [
+    500, 501, 502, 503, 517, 515, 516, 504, 505, 506, 512, 513, 514, 520,
+];
+
+#[derive(Clone, Copy)]
+enum ListReadMode {
+    Writer(ManifestVersion),
+    Compatible(ManifestVersion),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestListError {
+    #[error(transparent)]
+    Avro(#[from] AvroContainerError),
+    #[error("invalid manifest list field type, value or table location")]
+    Field,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ManifestListEntry {
+    pub location: FileLocation,
+    pub length: u64,
+    pub partition_spec_id: i32,
+    pub added_snapshot_id: i64,
+    pub content: ManifestContent,
+    pub sequence: i64,
+    pub min_sequence: i64,
+    pub file_counts: [Option<i32>; 3],
+    pub row_counts: [Option<i64>; 3],
+    pub first_row_id: Option<i64>,
+    pub partitions: Option<Vec<PartitionSummary>>,
+}
+
+pub struct ManifestListProjection<'schema> {
+    projection: AvroProjection<'schema>,
+    mode: ListReadMode,
+    table: TableLocation,
+    summaries: AvroRecordArray<'schema>,
+}
+
+pub struct ManifestListRecords<'projection, 'schema, 'data> {
+    records: AvroProjectedRecords<'projection, 'schema, 'data>,
+    mode: ListReadMode,
+    table: TableLocation,
+    failed: bool,
+    summaries: &'projection AvroRecordArray<'schema>,
+    limits: AvroDatumLimits,
+}
+
+impl<'schema> ManifestListProjection<'schema> {
+    /// The version describes this manifest list, not the current table or contained manifests.
+    /// # Errors
+    /// Rejects missing required fields, malformed IDs and unsupported selected writer layouts.
+    pub fn new(
+        schema: &'schema AvroSchema,
+        version: ManifestVersion,
+        table: TableLocation,
+    ) -> Result<Self, ManifestListError> {
+        Self::with_mode(schema, ListReadMode::Writer(version), table)
+    }
+
+    /// Applies the specification's permissive read rules to historical lists without
+    /// requiring a writer version that is not stored in snapshot JSON.
+    /// # Errors
+    /// Rejects missing common fields, invalid field IDs and incompatible scalar layouts.
+    pub fn for_read(
+        schema: &'schema AvroSchema,
+        table_version: ManifestVersion,
+        table: TableLocation,
+    ) -> Result<Self, ManifestListError> {
+        Self::with_mode(schema, ListReadMode::Compatible(table_version), table)
+    }
+
+    fn with_mode(
+        schema: &'schema AvroSchema,
+        mode: ListReadMode,
+        table: TableLocation,
+    ) -> Result<Self, ManifestListError> {
+        use AvroScalarType::{Int, Long, String};
+
+        let required = if matches!(
+            mode,
+            ListReadMode::Writer(ManifestVersion::V2 | ManifestVersion::V3)
+        ) {
+            13
+        } else {
+            4
+        };
+        let projection = AvroProjection::with_optional(schema, &FIELDS[..required], &FIELDS[required..])?;
+        let expected = [
+            String, Long, Int, Long, Int, Long, Long, Int, Int, Int, Long, Long, Long, Long,
+        ];
+        if projection
+            .field_types()
+            .iter()
+            .zip(expected)
+            .any(|(actual, expected)| actual.is_some_and(|actual| actual != expected))
+        {
+            return Err(ManifestListError::Field);
+        }
+        let paths = [509, 518, 510, 511];
+        let selections: Vec<_> = paths
+            .iter()
+            .map(|id| AvroFieldPath {
+                ids: std::slice::from_ref(id),
+                required: *id == 509,
+            })
+            .collect();
+        let summaries = AvroRecordArray::new(schema, 507, 508, &selections)?;
+        if summaries.field_types().is_some_and(|types| {
+            types
+                .iter()
+                .zip([
+                    AvroScalarType::Boolean,
+                    AvroScalarType::Boolean,
+                    AvroScalarType::Bytes,
+                    AvroScalarType::Bytes,
+                ])
+                .any(|(actual, expected)| actual.is_some_and(|actual| actual != expected))
+        }) {
+            return Err(ManifestListError::Field);
+        }
+        Ok(Self {
+            projection,
+            mode,
+            table,
+            summaries,
+        })
+    }
+
+    /// Opens one decoded Avro block without retaining a manifest entry vector.
+    /// # Errors
+    /// Rejects invalid block bounds or record counts.
+    pub fn records<'projection, 'data>(
+        &'projection self,
+        bytes: &'data [u8],
+        count: u64,
+        limits: AvroDatumLimits,
+    ) -> Result<ManifestListRecords<'projection, 'schema, 'data>, ManifestListError> {
+        Ok(ManifestListRecords {
+            records: self.projection.records(bytes, count, limits)?,
+            mode: self.mode,
+            table: self.table,
+            failed: false,
+            summaries: &self.summaries,
+            limits,
+        })
+    }
+}
+
+impl ManifestListRecords<'_, '_, '_> {
+    pub(super) fn last_record_length(&self) -> usize {
+        self.records.last_record_bytes().len()
+    }
+
+    /// Checks primitive semantics and binds each manifest location to the expected native table.
+    /// # Errors
+    /// Permanently stops on bad fields, negative counts, invalid sequences or foreign locations.
+    pub fn next_entry(&mut self) -> Result<Option<ManifestListEntry>, ManifestListError> {
+        if self.failed {
+            return Err(AvroContainerError::Failed.into());
+        }
+        self.failed = true;
+        let mut result = self
+            .records
+            .next_record()?
+            .map(|values| decode(&values, self.mode, self.table))
+            .transpose()?;
+        if let Some(entry) = &mut result {
+            entry.partitions = self
+                .summaries
+                .read(self.records.last_record_bytes(), self.limits, 256, 1024 * 1024)?
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|values| PartitionSummary::decode(values))
+                        .collect()
+                })
+                .transpose()?;
+        }
+        self.failed = false;
+        Ok(result)
+    }
+}
+
+fn decode(
+    values: &[AvroScalar<'_>],
+    mode: ListReadMode,
+    table: TableLocation,
+) -> Result<ManifestListEntry, ManifestListError> {
+    let AvroScalar::String(path) = values[0] else {
+        return Err(ManifestListError::Field);
+    };
+    let location = path
+        .parse::<FileLocation>()
+        .map_err(|_| ManifestListError::Field)?;
+    let length = long(values[1])?;
+    let partition_spec_id = integer(values[2])?;
+    if location.table() != table || length <= 0 || partition_spec_id < 0 {
+        return Err(ManifestListError::Field);
+    }
+    let version = match mode {
+        ListReadMode::Writer(version) | ListReadMode::Compatible(version) => version,
+    };
+    let compatible = matches!(mode, ListReadMode::Compatible(_));
+    let (content, sequence, min_sequence) = if version == ManifestVersion::V1 {
+        (ManifestContent::Data, 0, 0)
+    } else {
+        let content = match optional(values[4], !compatible, integer)?.unwrap_or(0) {
+            0 => ManifestContent::Data,
+            1 => ManifestContent::Deletes,
+            _ => return Err(ManifestListError::Field),
+        };
+        (
+            content,
+            optional(values[5], !compatible, long)?.unwrap_or(0),
+            optional(values[6], !compatible, long)?.unwrap_or(0),
+        )
+    };
+    if sequence < 0 || min_sequence < 0 || min_sequence > sequence {
+        return Err(ManifestListError::Field);
+    }
+    let required = !compatible && version != ManifestVersion::V1;
+    let mut file_counts = [None; 3];
+    let mut row_counts = [None; 3];
+    for index in 0..3 {
+        file_counts[index] = optional(values[7 + index], required, integer)?;
+        row_counts[index] = optional(values[10 + index], required, long)?;
+        if file_counts[index].is_some_and(|count| count < 0)
+            || row_counts[index].is_some_and(|count| count < 0)
+        {
+            return Err(ManifestListError::Field);
+        }
+    }
+    let first_row_id = if version == ManifestVersion::V3 {
+        optional(values[13], false, long)?
+    } else {
+        None
+    };
+    if first_row_id.is_some_and(|value| value < 0)
+        || (content == ManifestContent::Deletes && first_row_id.is_some())
+    {
+        return Err(ManifestListError::Field);
+    }
+    Ok(ManifestListEntry {
+        location,
+        length: u64::try_from(length).map_err(|_| ManifestListError::Field)?,
+        partition_spec_id,
+        added_snapshot_id: long(values[3])?,
+        content,
+        sequence,
+        min_sequence,
+        file_counts,
+        row_counts,
+        first_row_id,
+        partitions: None,
+    })
+}
+
+fn integer(value: AvroScalar<'_>) -> Result<i32, ManifestListError> {
+    if let AvroScalar::Int(value) = value {
+        Ok(value)
+    } else {
+        Err(ManifestListError::Field)
+    }
+}
+
+fn long(value: AvroScalar<'_>) -> Result<i64, ManifestListError> {
+    if let AvroScalar::Long(value) = value {
+        Ok(value)
+    } else {
+        Err(ManifestListError::Field)
+    }
+}
+
+fn optional<Value>(
+    value: AvroScalar<'_>,
+    required: bool,
+    read: impl FnOnce(AvroScalar<'_>) -> Result<Value, ManifestListError>,
+) -> Result<Option<Value>, ManifestListError> {
+    if value == AvroScalar::Null && !required {
+        Ok(None)
+    } else {
+        read(value).map(Some)
+    }
+}

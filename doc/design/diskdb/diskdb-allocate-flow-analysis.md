@@ -161,7 +161,7 @@ and exact rollback semantics.
 The immediate-drain free coalescer was compared with the direct path using:
 
 ```bash
-DISKDB_BENCH_DURATION=10 DISKDB_BENCH_CASES='free_batch_off_mem free_batch_on_mem' pixi run -- bash tools/bench-diskdb-regression.sh
+DISKDB_BENCH_DURATION=10 DISKDB_BENCH_CASES='free_batch_off_mem free_batch_on_mem' pixi run -- bash tools/benchmark/bench-diskdb-regression.sh
 ```
 
 Reference host: Intel Core i9-7960X (16 cores / 32 threads), x86_64,

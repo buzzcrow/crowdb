@@ -1,8 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crate::state::FRONTEND_DIST;
+use crate::state::AppState;
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
 use std::path::{Path as StdPath, PathBuf};
@@ -16,8 +17,8 @@ use std::path::{Path as StdPath, PathBuf};
 ///   3. Else, the build is missing — serve a static instructional page
 ///      explaining how to run `make ui-build`. This keeps
 ///      `cargo run` usable on machines without a Node toolchain.
-pub async fn spa_fallback(uri: Uri) -> Response {
-    let dist = StdPath::new(FRONTEND_DIST);
+pub async fn spa_fallback(State(state): State<AppState>, uri: Uri) -> Response {
+    let dist = StdPath::new(state.ui_root.as_ref());
 
     // Sanitize the request path: strip leading slash, refuse `..`.
     let req_path = uri.path().trim_start_matches('/');

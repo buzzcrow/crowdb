@@ -34,9 +34,12 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
     #[cfg(feature = "s3")]
-    if std::env::args().nth(1).as_deref() == Some("issue-user") {
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("issue-user" | "ensure-user" | "lookup-user")
+    ) {
         return issue_user().await;
     }
     #[cfg(feature = "s3")]
@@ -146,18 +149,26 @@ fn configure_large_write(config: &mut S3ServiceConfig) -> Result<(), Box<dyn std
 
 #[cfg(feature = "s3")]
 async fn issue_user() -> Result<(), Box<dyn std::error::Error>> {
+    let command = std::env::args().nth(1).ok_or("missing S3 user command")?;
     let user = std::env::args()
         .nth(2)
         .filter(|value| !value.is_empty())
-        .ok_or("usage: crowdb-access-server issue-user USER")?;
+        .ok_or("usage: crowdb-access-server issue-user|ensure-user|lookup-user USER")?;
     if std::env::args().nth(3).is_some() {
-        return Err("usage: crowdb-access-server issue-user USER".into());
+        return Err("usage: crowdb-access-server issue-user|ensure-user|lookup-user USER".into());
     }
     let master_key = MasterKey::from_hex(&required_env("CROWDB_S3_MASTER_KEY")?)?;
     let cipher = Arc::new(CredentialCipher::new(&master_key));
     let control = Arc::new(CrowdbKvClient::new(KvConfig::new(management_seeds()?)));
     let authority = CredentialAuthority::new(control, cipher);
-    let token = authority.issue_user(user.as_bytes()).await?;
+    let token = match command.as_str() {
+        "ensure-user" => authority.ensure_user(user.as_bytes()).await?,
+        "lookup-user" => authority
+            .lookup_user(user.as_bytes())
+            .await?
+            .ok_or("S3 user does not exist")?,
+        _ => authority.issue_user(user.as_bytes()).await?,
+    };
     println!("AWS_ACCESS_KEY_ID={}", token.access_key_id);
     println!("AWS_SECRET_ACCESS_KEY={}", token.secret_key);
     Ok(())

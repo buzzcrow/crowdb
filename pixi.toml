@@ -1,6 +1,6 @@
 [workspace]
 name = "crowdb-kv"
-version = "0.1.0"
+version = "0.1.0-dev"
 description = "CROWDB — distributed key-value store with multi-paxos groups"
 channels = ["conda-forge"]
 # Keep glibc requirement low (2.17 = CentOS 7 / Ubuntu 16.04 era) so that
@@ -67,24 +67,34 @@ liburing = "*"
 # these stay Linux-only (mirrors the liburing per-platform pattern).
 # rdma-core provides both libibverbs and librdmacm.
 rdma-core = "*"
+patchelf = ">=0.19.1,<0.20"
 
 [feature.s3-e2e.dependencies]
 boto3 = "*"
 
 [feature.s3-e2e.tasks]
-test-boto3-e2e = '''
-bash -c '
-set -e
-pixi run -e default build-cpp
-pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
-pixi run -e default test-access-s3
-pixi run -e default test-access-server-s3
-CROWDB_S3_E2E_PYTHON="$PIXI_PROJECT_ROOT/.pixi/envs/s3-e2e/bin/python" pixi run -e default -- cargo test -p crowdb-access-server --features s3-e2e --test s3_full_stack_test -- --nocapture
-'
-'''
+test-boto3-e2e = { cmd = "bash tools/pixi-tasks/test-s3-e2e.sh" }
 
 [environments]
 s3-e2e = { features = ["s3-e2e"], no-default-feature = true }
+iceberg-e2e = { features = ["iceberg-e2e"], no-default-feature = true }
+
+[feature.iceberg-e2e.dependencies]
+python = "3.12.*"
+pyiceberg = ">=0.10,<0.12"
+s3fs = "*"
+openjdk = "21.*"
+maven = "3.9.*"
+
+[feature.iceberg-e2e.tasks]
+test-iceberg-native = "bash tools/pixi-tasks/test-iceberg-native.sh"
+test-java-iceberg-e2e = "bash tools/pixi-tasks/test-java-iceberg-e2e.sh"
+test-rust-iceberg-e2e = "bash tools/pixi-tasks/test-rust-iceberg-e2e.sh"
+test-iceberg-rck = "bash tools/pixi-tasks/test-iceberg-rck.sh"
+test-iceberg-e2e = "bash tools/pixi-tasks/test-iceberg-e2e.sh"
+test-iceberg-sdk = "bash tools/pixi-tasks/test-iceberg-sdk.sh"
+test-java-iceberg-fileio-e2e = { cmd = "bash tools/pixi-tasks/test-java-iceberg-fileio-e2e.sh" }
+test-pyiceberg-e2e = { cmd = "bash tools/pixi-tasks/test-pyiceberg-e2e.sh" }
 
 [tasks]
 
@@ -92,20 +102,11 @@ s3-e2e = { features = ["s3-e2e"], no-default-feature = true }
 # C++ libraries only (crowdb-tree, crowdb-rpc, crowdb-diskio). Needed by C++
 # ctest tasks. Rust FFI crates compile their own C++ via cc::Build in
 # build.rs, so Rust tests do NOT depend on this.
-build-cpp = { cmd = "cmake -S lib/crowdb-tree -B lib/crowdb-tree/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-tree/build -j && cmake --build lib/crowdb-tree/build -j --target crowdb_rpc_tests && cmake -S lib/crowdb-rpc -B lib/crowdb-rpc/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-rpc/build -j && cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release && cmake --build app/crowdb-diskio/build -j" }
+build-cpp = { cmd = "bash tools/pixi-tasks/build-cpp.sh" }
 # npm deps only (for UI tests and ts-lint). Separated from install-deps
 # so test-console-ui doesn't trigger cargo installs of profiling tools.
 install-ui-deps = "test -d app/crowdb-web/ui/node_modules || (cd app/crowdb-web/ui && npm ci)"
-install-deps = '''
-bash -c '
-set -e
-git config core.hooksPath .githooks
-pixi run install-ui-deps
-cargo install cargo-tarpaulin || echo "Warning: cargo-tarpaulin install failed (expected on macOS)"
-cargo install --locked samply || echo "Warning: samply install failed"
-cargo install --locked inferno || echo "Warning: inferno install failed"
-'
-'''
+install-deps = { cmd = "bash tools/pixi-tasks/install-deps.sh" }
 tree-fmt = '''
 find lib/crowdb-tree/src lib/crowdb-tree/include lib/crowdb-tree/tests lib/crowdb-tree/bench lib/crowdb-common/cpp lib/crowdb-rpc/src lib/crowdb-rpc/include lib/crowdb-rpc/tests -type f \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i
 '''
@@ -116,17 +117,21 @@ find lib/crowdb-tree/src lib/crowdb-tree/include lib/crowdb-tree/tests lib/crowd
 # does not list it explicitly because gcc finds those headers automatically.
 # clang treats CPATH entries as system includes, so warnings from third-party
 # headers are suppressed.
-tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/ct_lint.py"
-test-tree-link-isolation = "bash tools/test-tree-chunk-link-isolation.sh"
+tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/cpp-checks/clang-tidy.py"
+test-tree-link-isolation = "bash tools/cpp-checks/tree-link-isolation.sh"
 rs-fmt = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspace_members as $members | .packages[] | select(.id as $package_id | $members | index($package_id)) | .name' | xargs sh -c 'cargo fmt --package "$@"' _'''
 rs-fmt-check = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspace_members as $members | .packages[] | select(.id as $package_id | $members | index($package_id)) | .name' | xargs sh -c 'cargo fmt --package "$@" -- --check' _'''
-check-production-dashmap = "python3 tools/check-production-dashmap.py"
-rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap"] }
+check-production-dashmap = "python3 tools/ci-checks/check-production-dashmap.py"
+check-version = "python3 tools/ci-checks/check-version.py"
+rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap", "check-version"] }
 ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e2e.json", depends-on = ["install-ui-deps"] }
 # Full build: C++ libs + release Rust binaries + frontend. Used by
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
-build = { cmd = "cargo build --release --workspace --exclude crowdb-kv-client && cargo build --release -p crowdb-kv-client --features ffi && cd app/crowdb-web/ui && npm run build", depends-on = ["build-cpp", "install-ui-deps"] }
+build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["build-cpp", "install-ui-deps"] }
 default = { depends-on = ["build"] }
+stage-single-node-container = "bash container/single-node-container/build.sh stage"
+build-single-node-container = "bash container/single-node-container/build.sh image"
+test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["build-single-node-container", "install-ui-deps"] }
 
 # ── Run ──────────────────────────────────────────────────────────
 web = { cmd = "echo 'CROWDB console starting at: http://127.0.0.1:14000/' && cargo run --release -p crowdb-web", depends-on = ["build"] }
@@ -142,14 +147,14 @@ bench-hotread = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode me
 bench-compare = { cmd = "cargo run --release -p crowdb-cli -- bench compare", depends-on = ["build"] }
 
 # ── Profile ───────────────────────────────────────────────────────
-profile-write = { cmd = "bash tools/profile-write.sh", depends-on = ["build"] }
+profile-write = { cmd = "bash tools/profiling/profile-write.sh", depends-on = ["build"] }
 
 # ── Test ─────────────────────────────────────────────────────────
-# Tasks are grouped by CI job (see doc/working/plan-test.md § "CI Job
-# Grouping Guide"). Each group maps 1:1 to a parallel CI job. Run
+# Tasks are grouped by CI job (see doc/working/test.md § "Current CI
+# Test Design"). Each group maps 1:1 to a parallel CI job. Run
 # `pixi run build-tests` once before any test task to pre-build all
 # Rust test binaries; C++ ctest tasks need `pixi run build-cpp`.
-clean-env = "bash tools/clean-runtime.sh env"
+clean-env = "bash tools/runtime/clean-runtime.sh env"
 # Pre-build ALL Rust test binaries + bin targets in one parallel cargo
 # invocation. Run this once at the start of a CI job so every subsequent
 # `cargo test -p <crate>` step just executes the pre-built binaries
@@ -158,7 +163,7 @@ clean-env = "bash tools/clean-runtime.sh env"
 # need at target/debug/.
 build-tests = "cargo test --workspace --all-targets --no-run"
 # Verify every workspace package with tests is assigned to a CI test task.
-test-task-coverage = "python tools/check-test-task-coverage.py"
+test-task-coverage = "python tools/ci-checks/check-test-task-coverage.py"
 
 # ── Lint job ──
 # (uses rs-fmt / rs-lint / tree-lint defined above, no separate test-* tasks)
@@ -170,20 +175,11 @@ test-rpc-ct = { cmd = "ctest --test-dir lib/crowdb-rpc/build --output-on-failure
 test-diskio-ct = { cmd = "ctest --test-dir app/crowdb-diskio/build --output-on-failure", depends-on = ["build-cpp"] }
 test-tree-ffi = { cmd = "cargo test -p crowdb-tree-ffi --all-targets" }
 test-rpc-ffi = { cmd = "cargo test -p crowdb-rpc-ffi --all-targets" }
-test-cpp = { cmd = '''
-bash -c '
-set -e
-pixi run test-tree-ct
-pixi run test-common-ct
-pixi run test-rpc-ct
-pixi run test-diskio-ct
-pixi run test-tree-ffi
-pixi run test-rpc-ffi
-'
-''', depends-on = ["build-cpp"] }
+test-cpp = { cmd = "bash tools/pixi-tasks/test-cpp.sh", depends-on = ["build-cpp"] }
 
 # ── UnitTests job: pure Rust, no subprocess spawning ──
 test-common = { cmd = "cargo test -p crowdb-common --all-targets" }
+test-harness = { cmd = "cargo test -p crowdb-test-harness --all-targets" }
 test-protocol = { cmd = "cargo test -p crowdb-protocol --all-targets" }
 test-kv-core = { cmd = "cargo test -p crowdb-kv --all-targets" }
 test-kv-client = { cmd = "cargo test -p crowdb-kv-client --all-targets" }
@@ -192,20 +188,7 @@ test-chunk-kv = { cmd = "cargo test -p crowdb-chunk-kv --all-targets" }
 test-chunk-stream = { cmd = "cargo test -p crowdb-chunk-stream --all-targets" }
 test-chunk-kv-client = { cmd = "cargo test -p crowdb-chunk-kv-client --all-targets" }
 test-chunk-kv-server = { cmd = "cargo test -p crowdb-chunk-kv-server --all-targets" }
-test-unit = { cmd = '''
-bash -c '
-set -e
-pixi run test-common
-pixi run test-protocol
-pixi run test-kv-core
-pixi run test-kv-client
-pixi run test-chunkdb-client
-pixi run test-chunk-kv
-pixi run test-chunk-stream
-pixi run test-chunk-kv-client
-pixi run test-chunk-kv-server
-'
-''', depends-on = ["build-tests"] }
+test-unit = { cmd = "bash tools/pixi-tasks/test-unit.sh", depends-on = ["build-tests"] }
 
 # ── ServerTests job: spawns crowdb-kv-server / crowdb-diskdb / crowdb-diskio ──
 test-kv-server = { cmd = "cargo test -p crowdb-kv-server --all-targets" }
@@ -215,53 +198,25 @@ test-chunkdb = { cmd = "cargo test -p crowdb-chunkdb --all-targets" }
 test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --all-targets" }
 test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --all-targets" }
 test-access-s3 = { cmd = "cargo test -p crowdb-access-s3 --all-targets" }
-test-access-server-s3 = { cmd = "cargo test -p crowdb-access-server --all-targets" }
-test-server = { cmd = '''
-bash -c '
-set -e
-pixi run clean-env
-pixi run test-kv-server
-pixi run test-diskdb
-pixi run test-diskdb-client
-pixi run test-chunkdb
-pixi run test-chunk-client
-pixi run test-diskio-client
-'
-''', depends-on = ["build-tests"] }
+test-access-iceberg = { cmd = "cargo test -p crowdb-access-iceberg --all-targets" }
+test-access-server = { cmd = "cargo test -p crowdb-access-server --all-targets" }
+test-monitor = { cmd = "cargo test -p crowdb-monitor --all-targets" }
+test-server = { cmd = "bash tools/pixi-tasks/test-server.sh", depends-on = ["build-tests"] }
 
 # ── ConsoleTests job: spawns crowdb-kv-server via lifecycle::deploy_local ──
 # Build the debug binary explicitly so tests find it at target/debug/.
 test-console-shared = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-console-shared --all-targets" }
 test-console-cli = { cmd = "cargo test -p crowdb-cli --all-targets" }
 test-console-server = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-web --all-targets" }
-test-console = { cmd = '''
-bash -c '
-set -e
-pixi run clean-env
-pixi run test-console-shared
-pixi run test-console-cli
-pixi run test-console-server
-'
-''', depends-on = ["build-tests"] }
+test-console = { cmd = "bash tools/pixi-tasks/test-console.sh", depends-on = ["build-tests"] }
 
 # ── UITests job: Playwright browser E2E + subprocess spawning ──
-test-console-ui = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-cli && export CROWDB_KV_SERVER_BINARY=$(pwd)/target/debug/crowdb-kv-server && cd app/crowdb-web/ui && npm test && npx playwright test --config=e2e/realBackend.config.ts", depends-on = ["install-ui-deps"] }
+test-console-ui = { cmd = "bash tools/pixi-tasks/test-console-ui.sh", depends-on = ["install-ui-deps"] }
 
 # ── Full local suite (not a CI job; runs everything in one process) ──
 # Grouped by CI job order. Each group task owns its component list;
 # subprocess groups clean the environment before starting.
-test-suite = { cmd = '''
-bash -c '
-set -e
-pixi run test-cpp
-pixi run test-unit
-pixi run test-server
-pixi run -e s3-e2e test-boto3-e2e
-pixi run test-console
-pixi run clean-env
-pixi run test-console-ui
-'
-''', depends-on = ["build-cpp", "install-ui-deps"] }
+test-suite = { cmd = "bash tools/pixi-tasks/test-suite.sh", depends-on = ["build-cpp", "install-ui-deps"] }
 
 # ── Coverage & LOC ───────────────────────────────────────────────
 coverage = { cmd = "cargo tarpaulin --workspace --out Html --output-dir target/coverage --exclude-files '*/tests/*'", depends-on = ["install-deps"] }
@@ -270,83 +225,16 @@ loc = "tokei . .github --exclude swagger-ui --exclude third-party --exclude 'lib
 # ── Clean ────────────────────────────────────────────────────────
 # Removes build products and disposable namespaced runtime artifacts. Durable
 # local clusters below `.crowdb-runtime/persistent/` are always preserved.
-clean = { cmd = '''
-bash -c '
-set -e
-# Stop only processes recorded by ephemeral runtime manifests.
-bash tools/clean-runtime.sh all-disposable
-
-# ── Rust build artifacts ──
-echo "[clean] cargo clean"
-cargo clean
-echo "[clean] tarpaulin report"
-rm -f tarpaulin-report.html
-
-# ── C++ build artifacts (crowdb-tree, crowdb-rpc, crowdb-diskio) ──
-echo "[clean] C++ build dirs"
-rm -rf lib/crowdb-tree/build lib/crowdb-tree/build-*
-rm -rf lib/crowdb-tree/Testing lib/crowdb-tree/.cache
-rm -rf lib/crowdb-rpc/build lib/crowdb-rpc/build-* lib/crowdb-rpc/.cache
-rm -rf app/crowdb-diskio/build app/crowdb-diskio/build-* app/crowdb-diskio/.cache
-
-# ── Frontend build artifacts (keep node_modules) ──
-echo "[clean] frontend build artifacts"
-rm -rf app/crowdb-web/ui/dist app/crowdb-web/ui/.vite app/crowdb-web/ui/test-results
-rm -f app/crowdb-web/ui/*.tsbuildinfo
-
-# ── find-based cleanup (run last, after rm steps shrink the tree) ──
-# Prune heavy non-source subtrees (.pixi, node_modules, target, .git) so find
-# only walks the source tree instead of 60k+ vendored/compiled entries.
-echo "[clean] mutants.out"
-find . \( -name .pixi -o -name node_modules -o -name target -o -name .git \) -prune \
-  -o -type d -name mutants.out -print -exec rm -rf {} \; 2>/dev/null || true
-
-# ── OS junk ──
-# Avoid -delete (implies -depth on BSD/macOS, breaks -prune → full traversal).
-echo "[clean] .DS_Store"
-find . \( -name .pixi -o -name node_modules -o -name target -o -name .git \) -prune \
-  -o -name .DS_Store -print0 2>/dev/null | xargs -0 rm -f 2>/dev/null || true
-
-echo "[clean] done"
-'
-''' }
+clean = { cmd = "bash tools/pixi-tasks/clean-build.sh" }
 
 # ── lib/crowdb-tree sanitizers ──────────────────────────────────────────
 
 # AddressSanitizer build + tests. setarch -R disables ASLR (Linux only);
 # on macOS we run ctest directly.
-tree-asan = '''
-set -e
-cmake -S lib/crowdb-tree -B lib/crowdb-tree/build-asan -DCMAKE_BUILD_TYPE=Debug -DCROWDB_TREE_SANITIZER=address
-cmake --build lib/crowdb-tree/build-asan -j
-if command -v setarch > /dev/null 2>&1; then
-  setarch -R ctest --test-dir lib/crowdb-tree/build-asan --output-on-failure
-else
-  ctest --test-dir lib/crowdb-tree/build-asan --output-on-failure
-fi
-'''
+tree-asan = { cmd = "bash tools/pixi-tasks/tree-asan.sh" }
 
 # ThreadSanitizer build + tests.
-tree-tsan = '''
-set -e
-cmake -S lib/crowdb-tree -B lib/crowdb-tree/build-tsan -DCMAKE_BUILD_TYPE=Debug -DCROWDB_TREE_SANITIZER=thread
-cmake --build lib/crowdb-tree/build-tsan -j
-if command -v setarch > /dev/null 2>&1; then
-  setarch -R ctest --test-dir lib/crowdb-tree/build-tsan --output-on-failure
-else
-  ctest --test-dir lib/crowdb-tree/build-tsan --output-on-failure
-fi
-'''
+tree-tsan = { cmd = "bash tools/pixi-tasks/tree-tsan.sh" }
 
 # UndefinedBehaviorSanitizer build + tests.
-tree-ubsan = '''
-set -e
-cmake -S lib/crowdb-tree -B lib/crowdb-tree/build-ubsan -DCMAKE_BUILD_TYPE=Debug -DCROWDB_TREE_SANITIZER=undefined
-cmake --build lib/crowdb-tree/build-ubsan -j
-export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-if command -v setarch > /dev/null 2>&1; then
-  setarch -R ctest --test-dir lib/crowdb-tree/build-ubsan --output-on-failure
-else
-  ctest --test-dir lib/crowdb-tree/build-ubsan --output-on-failure
-fi
-'''
+tree-ubsan = { cmd = "bash tools/pixi-tasks/tree-ubsan.sh" }

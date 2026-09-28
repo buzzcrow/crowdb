@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 2s (2026-08-16)
+// Baseline: 3.2s / 0.8s / 4.2s (2026-09-28)
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { createRack, createNode, deployNodeServer, stopNodeServer, freePort, resetAll } from '../fixtures/consoleSetup';
@@ -38,9 +38,9 @@ test.describe('canvas · fit + pan', () => {
     await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 5_000 });
     await expect(fitBtn).toBeVisible();
 
-    // --- KV domain shows the operator panel (no canvas, no Fit All) ---
+    // Group 0 is not initialized: the KV panel must report unavailable.
     await page.getByTestId('domain-kv').click();
-    await expect(page.getByText(/No stores available|Store/i)).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole('main').getByText('Backend unreachable — retrying', { exact: true })).toBeVisible({ timeout: 3_000 });
 
     // --- Capacity view shows the CapacityPanel (no canvas) ---
     await page.getByTestId('domain-chunk').click();
@@ -130,9 +130,9 @@ test.describe('canvas · fit + pan', () => {
     const pannedTransform = await viewport.evaluate((el) => (el as HTMLElement).style.transform);
     expect(pannedTransform).not.toEqual(fittedTransform);
 
-    // Switch to KV view — no canvas here, just the operator panel.
+    // Switch to KV view, whose authority has not been initialized.
     await page.getByTestId('domain-kv').click();
-    await expect(page.getByText(/No stores available|Store/i)).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole('main').getByText('Backend unreachable — retrying', { exact: true })).toBeVisible({ timeout: 3_000 });
 
     // Switch back to Cluster — should fit to window, NOT restore the
     // panned viewport. The transform should match the fitted state

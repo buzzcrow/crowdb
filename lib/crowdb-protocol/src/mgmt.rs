@@ -18,6 +18,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Local connection hints for a KV process; these do not grant group membership.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Group0DiscoveryRequest {
+    pub management_seeds: Vec<String>,
+}
+
 // ── Add group initial role ──────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

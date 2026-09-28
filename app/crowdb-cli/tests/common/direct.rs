@@ -162,6 +162,22 @@ pub async fn spawn_group0() -> Option<Group0> {
 
     // Wait for the leader to be elected.
     wait_for_group0_leader(&client, Duration::from_secs(5)).await;
+    let context = crowdb_console_shared::ops::OpContext::new(
+        deployed.rpc_url.trim_start_matches("http://").to_string(),
+        vec![deployed.mgmt_url.clone()],
+        cfg,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(context.live_node_mgmt_url(1).await, Ok(url) if url == deployed.mgmt_url) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node 1 did not register in Group 0"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     Some(Group0 {
         pid: deployed.pid,

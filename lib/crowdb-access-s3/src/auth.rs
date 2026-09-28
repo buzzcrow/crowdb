@@ -11,7 +11,7 @@ pub use secrets::{
     CredentialCipher, DurableCredentialRecord, EncryptedCredentialRecord, IssuedUserToken, MasterKey,
     SecretError,
 };
-pub use sigv4::{Credential, CredentialProvider, SigV4Verifier};
+pub use sigv4::{Credential, CredentialProvider, SigV4Verifier, StreamingPayloadVerifier};
 pub use snapshot::{CredentialCache, CredentialCacheError};
 
 use hyper::{HeaderMap, Method, Uri};

@@ -303,9 +303,11 @@ async fn wait_for_group_leader(
     timeout: Duration,
 ) -> Value {
     let deadline = Instant::now() + timeout;
+    let mut last_observation = String::new();
     while Instant::now() < deadline {
         let (status, body) =
             json_get(client, &format!("{base}/api/stores/{store_id}/groups/{group_id}")).await;
+        last_observation = format!("{status}: {body}");
         if status.is_success() {
             let replicas = body["replicas"].as_array().cloned().unwrap_or_default();
             let leaders: Vec<u64> = replicas
@@ -334,7 +336,7 @@ async fn wait_for_group_leader(
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("group {store_id}/{group_id} failed to converge to one leader within {timeout:?}");
+    panic!("group {store_id}/{group_id} failed to converge to one leader within {timeout:?}; last observation: {last_observation}");
 }
 
 async fn wait_for_store(
@@ -345,8 +347,10 @@ async fn wait_for_store(
     timeout: Duration,
 ) {
     let deadline = Instant::now() + timeout;
+    let mut last_observation = String::new();
     while Instant::now() < deadline {
         let (status, body) = json_get(client, &format!("{base}/api/stores/{store_id}")).await;
+        last_observation = format!("{status}: {body}");
         if status.is_success() {
             let groups = body["groups"].as_array().cloned().unwrap_or_default();
             if groups.len() == expected_groups {
@@ -355,7 +359,7 @@ async fn wait_for_store(
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("store {store_id} failed to report {expected_groups} groups within {timeout:?}");
+    panic!("store {store_id} failed to report {expected_groups} groups within {timeout:?}; last observation: {last_observation}");
 }
 
 // ── WAL inspection helpers ─────────────────────────────────────────────────
@@ -1000,7 +1004,8 @@ async fn restart_3node_1group() {
             n_puts: REPLAY_PUTS,
             deleted_keys: vec![1, 10, 20, 30, 40, 50],
         }],
-        "test",
+        // These are real processes; the paused-clock unit profile is not suitable.
+        "e2e",
     )
     .await;
 }

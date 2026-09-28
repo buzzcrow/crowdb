@@ -45,6 +45,10 @@ use commands::{
 #[derive(Parser, Debug)]
 #[command(name = "crowdb-cli", version, about = "CrowDB cluster console (CLI)")]
 struct Cli {
+    /// Versioned bare-metal launch registry; process identity is stored separately.
+    #[arg(long, global = true, value_name = "PATH")]
+    registry: Option<PathBuf>,
+
     /// IP address of any system-group node; leader discovery is automatic.
     #[arg(
         long,
@@ -87,6 +91,9 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 enum Domain {
+    /// Start, restart, stop, or inspect services from the launch registry.
+    #[command(subcommand)]
+    Launch(commands::launch::LaunchVerb),
     /// Hardware topology + cluster-level ops.
     #[command(alias = "cls")]
     Cluster {
@@ -253,6 +260,7 @@ async fn dispatch(mut cli: Cli) -> ExitCode {
         },
     );
     match command {
+        Domain::Launch(verb) => commands::launch::run(&cli, verb).await,
         Domain::Cluster { verb } => run_cluster_verb(&cli, verb).await,
         Domain::Kv { verb } => match verb {
             KvVerb::Server(sv) => run_kv_server_verb(&cli, sv).await,

@@ -106,17 +106,24 @@ async fn append_mutation_inner(
     };
     let frame = bytes::Bytes::from(super::encode_frame(&record)?);
     let positions = state.journal.append_frames(&[frame]).await.map_err(|error| {
-        state.lifecycle.store(
-            super::lifecycle_code(PartitionLifecycle::WriteStalled),
-            Ordering::Release,
+        let stream_name = state.journal.stream_name();
+        tracing::warn!(
+            partition_id_high = state.partition_id.high,
+            partition_id_low = state.partition_id.low,
+            ownership_epoch = state.ownership_epoch.load(Ordering::Acquire),
+            stream_high = stream_name.high,
+            stream_low = stream_name.low,
+            %error,
+            "chunk KV transfer journal append failed"
         );
-        state.metrics.write_stall();
+        super::journal_append_failed(state, &error);
         error
     })?;
     if positions.len() != 1 {
-        return Err(ChunkKvError::Internal(
-            "journal returned wrong position count for transfer mutation".into(),
-        ));
+        let error =
+            ChunkKvError::Internal("journal returned wrong position count for transfer mutation".into());
+        super::journal_append_failed(state, &error);
+        return Err(error);
     }
     let position = positions[0];
     let response = MutationResponse {

@@ -981,7 +981,7 @@ impl Partition {
         match self.lifecycle() {
             PartitionLifecycle::Serving
             | PartitionLifecycle::TransferFencing
-            | PartitionLifecycle::WriteStalled
+            | PartitionLifecycle::TransferQuiesced
             | PartitionLifecycle::SplitPreparing
             | PartitionLifecycle::SplitFinalizing => {}
             state => return Err(read_state_error(state)),
@@ -1357,7 +1357,7 @@ impl Partition {
     fn validate_read_lifecycle(&self) -> Result<()> {
         match self.lifecycle() {
             PartitionLifecycle::Serving
-            | PartitionLifecycle::WriteStalled
+            | PartitionLifecycle::TransferQuiesced
             | PartitionLifecycle::SplitPreparing
             | PartitionLifecycle::SplitFinalizing => Ok(()),
             state => Err(read_state_error(state)),
@@ -1471,18 +1471,18 @@ impl Partition {
         ) {
             Ok(_) => {}
             Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferFencing => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::WriteStalled => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {}
             Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
         }
         self.wait_for_admitted_mutations().await;
         match self.lifecycle.compare_exchange(
             lifecycle_code(PartitionLifecycle::TransferFencing),
-            lifecycle_code(PartitionLifecycle::WriteStalled),
+            lifecycle_code(PartitionLifecycle::TransferQuiesced),
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
             Ok(_) => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::WriteStalled => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {}
             Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
         }
         Ok(())
@@ -1918,7 +1918,7 @@ impl Partition {
     pub async fn checkpoint_quiesced(&self, ownership_epoch: u64) -> Result<Checkpoint> {
         self.validate_epoch(ownership_epoch)?;
         let _maintenance = self.split_transition.lock().await;
-        if self.lifecycle() != PartitionLifecycle::WriteStalled
+        if self.lifecycle() != PartitionLifecycle::TransferQuiesced
             || self.queued_requests.load(Ordering::Acquire) != 0
         {
             return Err(ChunkKvError::InvalidRequest(
@@ -1946,7 +1946,7 @@ impl Partition {
         }
         match self.lifecycle() {
             PartitionLifecycle::Serving
-            | PartitionLifecycle::WriteStalled
+            | PartitionLifecycle::TransferQuiesced
             | PartitionLifecycle::SplitFinalizing => self.create_checkpoint().await,
             state => Err(read_state_error(state)),
         }
@@ -2760,19 +2760,24 @@ async fn append_and_apply(state: &mut WorkerState, prepared: Vec<PreparedMutatio
     let positions = match state.journal.append_frames(&frames).await {
         Ok(positions) if positions.len() == prepared.len() => positions,
         Ok(_) => {
-            fail_prepared(
-                state,
-                prepared,
-                &ChunkKvError::Internal("journal returned wrong position count".into()),
-            );
+            let error = ChunkKvError::Internal("journal returned wrong position count".into());
+            journal_append_failed(state, &error);
+            fail_prepared(state, prepared, &error);
             return;
         }
         Err(error) => {
-            state.lifecycle.store(
-                lifecycle_code(PartitionLifecycle::WriteStalled),
-                Ordering::Release,
+            let stream_name = state.journal.stream_name();
+            tracing::warn!(
+                partition_id_high = state.partition_id.high,
+                partition_id_low = state.partition_id.low,
+                ownership_epoch = state.ownership_epoch.load(Ordering::Acquire),
+                stream_high = stream_name.high,
+                stream_low = stream_name.low,
+                frame_count = frames.len(),
+                %error,
+                "chunk KV partition journal append failed"
             );
-            state.metrics.write_stall();
+            journal_append_failed(state, &error);
             fail_prepared(state, prepared, &error);
             return;
         }
@@ -2827,6 +2832,19 @@ async fn append_and_apply(state: &mut WorkerState, prepared: Vec<PreparedMutatio
             finish_request(state, follower, Ok(entry.response.clone()));
         }
     }
+}
+
+fn journal_append_failed(state: &WorkerState, error: &ChunkKvError) {
+    tracing::warn!(
+        partition_id_high = state.partition_id.high,
+        partition_id_low = state.partition_id.low,
+        %error,
+        "chunk KV journal outcome requires partition recovery"
+    );
+    state
+        .lifecycle
+        .store(lifecycle_code(PartitionLifecycle::Recovering), Ordering::Release);
+    state.metrics.journal_failure();
 }
 
 fn operation_needs_current(operation: &MutationOperation) -> bool {
@@ -2982,7 +3000,7 @@ fn lifecycle_code(state: PartitionLifecycle) -> u8 {
     match state {
         PartitionLifecycle::Closed => 0,
         PartitionLifecycle::Recovering => 1,
-        PartitionLifecycle::WriteStalled => 2,
+        PartitionLifecycle::TransferQuiesced => 2,
         PartitionLifecycle::Prepared => 3,
         PartitionLifecycle::Serving => 4,
         PartitionLifecycle::SplitPreparing => 5,
@@ -3012,7 +3030,7 @@ fn lifecycle_from_code(code: u8) -> PartitionLifecycle {
     match code {
         0 => PartitionLifecycle::Closed,
         1 => PartitionLifecycle::Recovering,
-        2 => PartitionLifecycle::WriteStalled,
+        2 => PartitionLifecycle::TransferQuiesced,
         3 => PartitionLifecycle::Prepared,
         4 => PartitionLifecycle::Serving,
         5 => PartitionLifecycle::SplitPreparing,
@@ -3026,7 +3044,9 @@ fn lifecycle_from_code(code: u8) -> PartitionLifecycle {
 fn write_state_error(state: PartitionLifecycle) -> ChunkKvError {
     match state {
         PartitionLifecycle::Recovering => ChunkKvError::Recovering,
-        PartitionLifecycle::WriteStalled | PartitionLifecycle::TransferFencing => ChunkKvError::WriteStalled,
+        PartitionLifecycle::TransferQuiesced | PartitionLifecycle::TransferFencing => {
+            ChunkKvError::WriteStalled
+        }
         PartitionLifecycle::Faulted => ChunkKvError::Faulted("partition faulted".into()),
         _ => ChunkKvError::NotServing(format!("{state:?}")),
     }

@@ -3,8 +3,15 @@
 
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
-import { HwStatusBadge } from './Badge';
+import { HwStatusBadge, RoleBadge } from './Badge';
 import { hwStatusLabel, hwStatusValue, HW_STATUS_NAMES, hwStatusToUiHealth } from '../../utils/entityDisplay';
+
+describe('RoleBadge', () => {
+  it('shows an unobserved replica as unknown, not remote', () => {
+    const { getByTitle } = render(<RoleBadge role="Unknown" compact />);
+    expect(getByTitle('Unknown').textContent).toBe('?');
+  });
+});
 
 describe('HwStatusBadge', () => {
   it('renders the correct label for each status', () => {

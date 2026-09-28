@@ -44,3 +44,6 @@ lib/crowdb-rpc/.cache/
 app/crowdb-diskio/build/
 app/crowdb-diskio/build*/
 app/crowdb-diskio/.cache/
+
+# Python tooling bytecode
+__pycache__/

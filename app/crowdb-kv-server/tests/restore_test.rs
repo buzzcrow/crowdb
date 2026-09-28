@@ -168,6 +168,55 @@ async fn restart_restores_group0_from_disk() {
     );
 }
 
+#[tokio::test]
+async fn restored_store_port_is_not_reallocated() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("restore-port");
+    let root_path = root.path().to_path_buf();
+    let server = start_test_server_at(&root_path, &[], &[0])
+        .await
+        .expect("start first-boot server");
+    let response: serde_json::Value = client()
+        .post(format!("{}/system/init", server.base_url()))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let persisted_port: u16 = response["listen_addr"]
+        .as_str()
+        .unwrap()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    drop(server);
+
+    let next_port =
+        crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen);
+    let server = start_test_server_at(&root_path, &[], &[persisted_port, next_port])
+        .await
+        .expect("restart with restored port in pool");
+    server
+        .wait_for_ready(std::time::Duration::from_secs(10))
+        .await
+        .unwrap();
+    let response = client()
+        .post(format!("{}/stores", server.base_url()))
+        .json(&serde_json::json!({"store_id": 7}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        201,
+        "{}",
+        response.text().await.unwrap()
+    );
+}
+
 // ── E2E: first boot with --root only (no toml) still works ───────
 
 #[tokio::test]

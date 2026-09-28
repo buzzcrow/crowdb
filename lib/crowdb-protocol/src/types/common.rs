@@ -298,10 +298,17 @@ pub struct DiskGroupUsageSummary {
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct KvServerExtra {
+    pub node_id: Option<u64>,
     pub hosted_stores: Vec<u64>,
     pub hosted_groups: Vec<HostedGroup>,
     pub health: String,
     pub data_root: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KvServerIdentity {
+    pub instance_id: u64,
+    pub node_id: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]

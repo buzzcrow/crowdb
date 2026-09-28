@@ -38,6 +38,7 @@ pub struct DeployRequest {
     pub server_id: String,
     pub rest_port: u16,
     pub rpc_port: u16,
+    pub group0_management_seeds: Vec<String>,
     /// Optional override of the binary path. Defaults via
     /// `crowdb_kv_server_bin()` resolution: `$CROWDB_KV_SERVER_BIN` →
     /// `$PATH` → `target/{debug,release}/crowdb-kv-server` next to the
@@ -281,6 +282,15 @@ fn apply_benchmark_flags(cmd: &mut Command, req: &DeployRequest) {
     }
 }
 
+fn apply_node_identity_and_seeds(cmd: &mut Command, req: &DeployRequest) {
+    if let Ok(node_id) = req.server_id.parse::<std::num::NonZeroU64>() {
+        cmd.arg("--node-id").arg(node_id.to_string());
+    }
+    for seed in &req.group0_management_seeds {
+        cmd.arg("--group0-management-seed").arg(seed);
+    }
+}
+
 /// Resolve the `--config` path for a deploy. When `req.config` is set,
 /// it is used verbatim. When unset, returns `None` — the server boots
 /// with `CrowDBConfig::default()` tunables (no toml needed). The
@@ -335,8 +345,6 @@ async fn deploy_local_in_workspace(
     };
     let launch_binary = resolve_launch_binary(&binary, workspace_dir)?;
 
-    let config_path = resolve_config_path(req);
-
     let mgmt_url = format!("http://{}:{}", node.host, req.rest_port);
     let rpc_url = format!("http://{}:{}", node.host, req.rpc_port);
 
@@ -356,7 +364,8 @@ async fn deploy_local_in_workspace(
                 .unwrap_or_else(|| "default".into()),
         )
         .kill_on_drop(false);
-    if let Some(config) = &config_path {
+    apply_node_identity_and_seeds(&mut cmd, req);
+    if let Some(config) = resolve_config_path(req) {
         cmd.arg("--config").arg(config);
     }
     apply_benchmark_flags(&mut cmd, req);
@@ -552,9 +561,21 @@ pub(crate) fn remote_start_command(req: &DeployRequest, server_bin: &str) -> Str
         .config
         .as_ref()
         .map_or_else(String::new, |c| format!(" --config {}", c.display()));
+    let node_arg = req
+        .server_id
+        .parse::<std::num::NonZeroU64>()
+        .map_or_else(|_| String::new(), |node_id| format!(" --node-id {node_id}"));
+    let mut seed_args = String::new();
+    for seed in &req.group0_management_seeds {
+        let _ = write!(
+            seed_args,
+            " --group0-management-seed '{}'",
+            seed.replace('\'', "'\\''")
+        );
+    }
     format!(
         "root=\"$HOME/.crowdb-runtime/persistent/remote/kv-{mp}\"; mkdir -p \"$root/log\"; \
-         nohup {bin}{config_arg} --root \"$root\" --management-addr 127.0.0.1 --management-port {mp} --ports {gp} \
+         nohup {bin}{config_arg}{node_arg}{seed_args} --root \"$root\" --management-addr 127.0.0.1 --management-port {mp} --ports {gp} \
          >\"$root/log/stdout.log\" 2>\"$root/log/stderr.log\" </dev/null & echo $!",
         bin = server_bin,
         mp = req.rest_port,

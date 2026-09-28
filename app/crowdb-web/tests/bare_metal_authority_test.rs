@@ -1,0 +1,168 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
+use crowdb_protocol::common::{HwStatus, KvServerIdentity, NodeValue, RackValue, ReplicaValue};
+use crowdb_protocol::key::InstanceKey;
+use crowdb_test_harness::cluster::KvCluster;
+use crowdb_web::{router, AppState};
+use tower::ServiceExt;
+
+async fn snapshot(app: &axum::Router) -> (StatusCode, serde_json::Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/preview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+async fn register(sysmd: &CrowdbSysmdClient, node: u64, instance: u64, endpoint: &str) {
+    sysmd
+        .register_kv_server(
+            KvServerIdentity {
+                instance_id: instance,
+                node_id: Some(node),
+            },
+            endpoint,
+            &[0],
+            &[],
+            "ok",
+            "/tmp/bare-metal-kv",
+        )
+        .await
+        .unwrap();
+}
+
+async fn initialized_authority(cluster: &KvCluster) -> CrowdbSysmdClient {
+    let kv = CrowdbKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
+    kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
+    let sysmd = CrowdbSysmdClient::new(kv);
+    sysmd
+        .add_rack(
+            1,
+            &RackValue {
+                status: HwStatus::Up as i32,
+                node_ids: vec![1],
+            },
+        )
+        .await
+        .unwrap();
+    sysmd
+        .add_node(
+            1,
+            1,
+            &NodeValue {
+                status: HwStatus::Up as i32,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    sysmd.add_store(0, &[1]).await.unwrap();
+    register(&sysmd, 1, 7001, &cluster.mgmt_endpoints[0]).await;
+    sysmd
+}
+
+fn application(cluster: &KvCluster) -> axum::Router {
+    let config = WebProcessConfig {
+        version: 1,
+        mode: WebMode::BareMetal,
+        bind: "127.0.0.1".into(),
+        port: 14000,
+        group0_management_seeds: cluster.mgmt_endpoints.clone(),
+        ui_root: "/tmp".into(),
+        monitor_status: None,
+        log_dir: "/tmp".into(),
+        log_max_file_mb: 30,
+        log_max_files: 5,
+        request_timeout_ms: Some(500),
+    };
+    router(AppState::default().with_process_config(&config))
+}
+
+async fn unavailable(app: &axum::Router) {
+    let (code, body) = snapshot(app).await;
+    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["reason"], "group0_unavailable");
+    assert!(body.get("stores").is_none(), "stale topology: {body}");
+    assert!(body["monitor"].is_null());
+}
+
+#[tokio::test]
+async fn bare_metal_snapshot_requires_live_authority_without_a_docker_monitor() {
+    let cluster = KvCluster::start().await;
+    let sysmd = initialized_authority(&cluster).await;
+    let app = application(&cluster);
+    let (code, view) = snapshot(&app).await;
+    assert_eq!(code, StatusCode::OK, "{view}");
+    assert_eq!(view["source"], "group0");
+    assert_eq!(view["nodes"][0]["id"], 1);
+    assert!(view["monitor"].is_null());
+
+    register(&sysmd, 1, 7002, &cluster.mgmt_endpoints[0]).await;
+    unavailable(&app).await;
+    sysmd.unregister_service("kv-server", 7002).await.unwrap();
+    sysmd.unregister_service("kv-server", 7001).await.unwrap();
+    unavailable(&app).await;
+    register(&sysmd, 1, 7001, &cluster.mgmt_endpoints[0]).await;
+
+    let (_, mut expired) = sysmd
+        .read_all_kv_server_instances()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|(id, _)| *id == 7001)
+        .unwrap();
+    expired.last_heartbeat_ms = 1;
+    let key = InstanceKey {
+        service: "kv-server".into(),
+        instance_id: 7001,
+    }
+    .to_path();
+    sysmd
+        .kv()
+        .put(0, 0, key.as_bytes(), &serde_json::to_vec(&expired).unwrap(), None)
+        .await
+        .unwrap();
+    unavailable(&app).await;
+    register(&sysmd, 1, 7001, &cluster.mgmt_endpoints[0]).await;
+    assert_eq!(snapshot(&app).await.0, StatusCode::OK);
+
+    drop(cluster);
+    unavailable(&app).await;
+}
+
+#[tokio::test]
+async fn snapshot_validates_later_replica_hosts_as_well_as_original_store_hosts() {
+    let cluster = KvCluster::start().await;
+    let sysmd = initialized_authority(&cluster).await;
+    let app = application(&cluster);
+    sysmd.add_group(0, 7).await.unwrap();
+    sysmd
+        .add_replica(&ReplicaValue {
+            store_id: 0,
+            group_id: 7,
+            replica_id: 2,
+            node_id: 2,
+            voting: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    unavailable(&app).await;
+    register(&sysmd, 2, 7002, &cluster.mgmt_endpoints[0]).await;
+    assert_eq!(snapshot(&app).await.0, StatusCode::OK);
+}

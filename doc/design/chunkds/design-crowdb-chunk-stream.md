@@ -127,12 +127,15 @@ in queue order into one retained staging buffer and sent through one
 `write_mirrors` call. The worker then performs one fenced cursor advance.
 
 Completion occurs only after all mirror writes and the durable cursor update.
-Each request receives its exact non-overlapping logical subrange. A failed
-batch completes no member successfully and stalls subsequent writes until
-reopen. An ambiguous cursor response is inspected without resubmission: the
-worker accepts it only when the durable cursor equals the proposed end and the
-last-advance checksum matches the staging checksum; an unchanged cursor proves
-absence; every other state stalls.
+Each request receives its exact non-overlapping logical subrange. Mirror-write
+failures use the retained strip image to replace a failed block; a confirmed
+absent append can rotate to another chunk and retry. An ambiguous cursor
+response is inspected without blind resubmission: the worker accepts it only
+when the durable cursor equals the proposed end and the last-advance checksum
+matches the staging checksum; an unchanged cursor proves absence. If durable
+state cannot be read, the current append remains pending for resolution. A
+fencing violation or corrupt durable state requires reopening and recovery;
+it is not a transfer-quiescence state.
 
 For a chunk-bound request, the worker adds the selected `ChunkId` after the
 caller's bytes before assembling the aggregate write. Admission, remaining

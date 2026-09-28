@@ -669,6 +669,13 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
     let mut policy = descriptor();
     policy.domain = "chunk-kv".into();
     policy.service_registry_name = "chunk-kv".into();
+    let driver = ChunkKvRangeMonitorDriver::new();
+    driver.tick(&control, &policy).await.unwrap();
+    assert!(control
+        .scan_all_prefix(Bytes::from(ChunkKvSplitKey::text_prefix_all()), 16)
+        .await
+        .unwrap()
+        .is_empty());
     policy.chunk_kv_range_balance = Some(ChunkKvRangeBalancePolicy {
         target_partitions_per_owner,
         target_partition_bytes,
@@ -676,7 +683,6 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
         ..ChunkKvRangeBalancePolicy::default()
     });
 
-    let driver = ChunkKvRangeMonitorDriver::new();
     driver.tick(&control, &policy).await.unwrap();
     driver.tick(&control, &policy).await.unwrap();
 

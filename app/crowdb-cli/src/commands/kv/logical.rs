@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{commit_config, op_context};
+use crate::commands::op_context;
 use crate::Cli;
 
 // ── store ────────────────────────────────────────────────────────
@@ -51,9 +51,6 @@ pub async fn run_store_verb(cli: &Cli, verb: StoreVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::kv_logical::add_store(&ctx, store_id, &node_ids).await {
                 Ok(hosting) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!(
                         "added store {store_id} on nodes: {}",
                         hosting
@@ -84,9 +81,6 @@ pub async fn run_store_verb(cli: &Cli, verb: StoreVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::kv_logical::remove_store(&ctx, store_id).await {
                 Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("removed store {store_id}");
                     ExitCode::SUCCESS
                 }
@@ -203,9 +197,6 @@ pub async fn run_group_verb(cli: &Cli, verb: GroupVerb) -> ExitCode {
             .await
             {
                 Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("added group {group_id} in store {store_id}");
                     ExitCode::SUCCESS
                 }
@@ -236,9 +227,6 @@ pub async fn run_group_verb(cli: &Cli, verb: GroupVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::kv_logical::remove_group(&ctx, store_id, group_id).await {
                 Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("removed group {group_id} in store {store_id}");
                     ExitCode::SUCCESS
                 }
@@ -353,9 +341,6 @@ pub async fn run_replica_verb(cli: &Cli, verb: ReplicaVerb) -> ExitCode {
                 .await
             {
                 Ok(new_rid) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("added replica {new_rid} to group {group_id} in store {store_id}");
                     ExitCode::SUCCESS
                 }
@@ -398,9 +383,6 @@ pub async fn run_replica_verb(cli: &Cli, verb: ReplicaVerb) -> ExitCode {
             match crowdb_console_shared::ops::kv_logical::remove_replica(&ctx, store_id, group_id, rid).await
             {
                 Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("removed replica {rid} from group {group_id} in store {store_id}");
                     ExitCode::SUCCESS
                 }

@@ -174,6 +174,22 @@ mod chunk_task_generated {
     include!(concat!(env!("OUT_DIR"), "/chunk_task_generated.rs"));
 }
 
+mod iceberg_generated {
+    #![allow(
+        unsafe_code,
+        clippy::all,
+        clippy::pedantic,
+        dead_code,
+        non_camel_case_types,
+        non_snake_case
+    )]
+    include!(concat!(env!("OUT_DIR"), "/iceberg_generated.rs"));
+}
+
+pub mod iceberg_fb {
+    pub use crate::iceberg_generated::crowdb::access::iceberg::*;
+}
+
 /// Flatbuffer control-message types for the crowdb-rpc library (R104).
 ///
 /// Re-exports the generated `crowdb::rpc::proto` namespace: `FBMsgType`,

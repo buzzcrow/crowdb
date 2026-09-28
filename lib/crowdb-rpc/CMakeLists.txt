@@ -120,6 +120,9 @@ list(APPEND CMAKE_IGNORE_PATH /opt/boost)
 # Required: the pending map uses folly::ConcurrentHashMap (striped locks)
 # for the response hot path. No fallback to std::unordered_map.
 find_package(folly CONFIG REQUIRED)
+get_target_property(FOLLY_LINK_LIBRARIES Folly::folly INTERFACE_LINK_LIBRARIES)
+list(REMOVE_ITEM FOLLY_LINK_LIBRARIES Boost::regex)
+set_property(TARGET Folly::folly PROPERTY INTERFACE_LINK_LIBRARIES "${FOLLY_LINK_LIBRARIES}")
 target_link_libraries(crowdb-rpc PUBLIC Folly::folly)
 message(STATUS "crowdb-rpc folly: enabled (ConcurrentHashMap)")
 

@@ -9,13 +9,17 @@
 //! KV data plane with leader resolution via the monitor cache and
 //! `NotLeader` retry (A8), Swagger UI (A9), React SPA shell.
 
+mod auth;
 pub mod corr_id;
 pub mod diskdb;
 pub mod error;
 pub mod expand;
 pub mod health;
 pub mod kv;
+mod launch;
 pub mod lifecycle;
+mod managed;
+mod managed_logical;
 pub mod mgmt;
 pub mod owner_assignment;
 pub mod physical;
@@ -27,10 +31,62 @@ pub use state::AppState;
 /// Build the Axum router used by both the binary and integration tests.
 #[allow(clippy::too_many_lines)]
 pub fn router(state: AppState) -> axum::Router {
-    use axum::routing::{delete, get, post};
+    use axum::routing::{any, delete, get, post};
+
+    if state.managed_mode {
+        let authorization =
+            axum::middleware::from_fn_with_state(state.clone(), auth::require_management_bearer);
+        let managed = axum::Router::new()
+            .route("/healthz", get(health::healthz))
+            .route("/api/mode", get(health::mode))
+            .route("/api/authority", get(managed::authority))
+            .route("/api/preview", get(managed::snapshot))
+            .route("/api/management/check", post(auth::management_check))
+            .route(
+                "/api/stores",
+                get(managed_logical::list_stores)
+                    .merge(post(managed_logical::add_store).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid",
+                get(managed_logical::get_store)
+                    .merge(delete(managed_logical::remove_store).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid/groups",
+                get(managed_logical::list_groups)
+                    .merge(post(managed_logical::add_group).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid/groups/:gid",
+                get(managed_logical::get_group)
+                    .merge(delete(managed_logical::remove_group).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid/groups/:gid/replicas",
+                get(managed_logical::list_replicas)
+                    .merge(post(managed_logical::add_replica).route_layer(authorization.clone())),
+            )
+            .route(
+                "/api/stores/:sid/groups/:gid/replicas/:rid",
+                get(managed_logical::get_replica)
+                    .merge(delete(managed_logical::remove_replica).route_layer(authorization.clone())),
+            )
+            .route("/api/*path", any(health::managed_api_unavailable))
+            .fallback(spa::spa_fallback);
+        let managed = if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
+            managed.merge(launch::routes().route_layer(authorization))
+        } else {
+            managed
+        };
+        return managed
+            .with_state(state)
+            .layer(axum::middleware::from_fn(corr_id::corr_id_layer));
+    }
 
     axum::Router::new()
         .route("/healthz", get(health::healthz))
+        .route("/api/mode", get(health::mode))
         // ── Physical tree (A3): rack + node lifecycle ────────────────
         .route(
             "/api/racks",

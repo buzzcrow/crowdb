@@ -183,6 +183,7 @@ pub struct RemoteReplicaInfo {
 pub enum ReplicaRole {
     Leader,
     Follower,
+    Unknown,
 }
 
 /// Operational status of a replica (mirrors `crowdb-kv-server`'s reporting).

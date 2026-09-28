@@ -17,7 +17,7 @@ pub struct PartitionMetrics {
     range_rejects: AtomicU64,
     stale_epochs: AtomicU64,
     admission_backpressure: AtomicU64,
-    write_stalls: AtomicU64,
+    journal_failures: AtomicU64,
     apply_unknown: AtomicU64,
     recoveries: AtomicU64,
     checkpoints: AtomicU64,
@@ -61,7 +61,7 @@ pub struct PartitionMetricsSnapshot {
     pub range_rejects: u64,
     pub stale_epochs: u64,
     pub admission_backpressure: u64,
-    pub write_stalls: u64,
+    pub journal_failures: u64,
     pub apply_unknown: u64,
     pub recoveries: u64,
     pub checkpoints: u64,
@@ -107,7 +107,7 @@ impl PartitionMetrics {
             range_rejects: self.range_rejects.load(Ordering::Relaxed),
             stale_epochs: self.stale_epochs.load(Ordering::Relaxed),
             admission_backpressure: self.admission_backpressure.load(Ordering::Relaxed),
-            write_stalls: self.write_stalls.load(Ordering::Relaxed),
+            journal_failures: self.journal_failures.load(Ordering::Relaxed),
             apply_unknown: self.apply_unknown.load(Ordering::Relaxed),
             recoveries: self.recoveries.load(Ordering::Relaxed),
             checkpoints: self.checkpoints.load(Ordering::Relaxed),
@@ -187,8 +187,8 @@ impl PartitionMetrics {
         self.admission_backpressure.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn write_stall(&self) {
-        self.write_stalls.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn journal_failure(&self) {
+        self.journal_failures.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn apply_unknown(&self) {

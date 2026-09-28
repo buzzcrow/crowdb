@@ -952,7 +952,7 @@ async fn range_and_epoch_reject_before_journaling() {
 }
 
 #[tokio::test]
-async fn journal_uncertainty_stalls_only_writes_and_keeps_applied_reads() {
+async fn definitely_absent_journal_append_rotates_and_applies_once() {
     let store = Arc::new(MemoryStreamStore::new(1_024));
     let partition = partition(
         &store,
@@ -974,26 +974,24 @@ async fn journal_uncertainty_stalls_only_writes_and_keeps_applied_reads() {
         .await
         .unwrap();
     store.queue_cursor_outcome(CursorAdvance::Ambiguous, false).await;
-    assert_eq!(
-        partition
-            .mutate(
-                8,
-                request(41),
-                MutationOperation::Put {
-                    key: b"k".to_vec(),
-                    value: b"unsafe".to_vec(),
-                },
-            )
-            .await,
-        Err(ChunkKvError::WriteStalled)
-    );
+    partition
+        .mutate(
+            8,
+            request(41),
+            MutationOperation::Put {
+                key: b"k".to_vec(),
+                value: b"after".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(
         partition.snapshot().lifecycle,
-        crowdb_chunk_kv::PartitionLifecycle::WriteStalled
+        crowdb_chunk_kv::PartitionLifecycle::Serving
     );
     assert_eq!(
         partition.get(8, b"k", None).await.unwrap().unwrap().value,
-        b"safe"
+        b"after"
     );
 }
 
@@ -1265,7 +1263,7 @@ async fn transfer_quiesce_drains_admitted_work_and_rejects_later_writes() {
     fence.await.unwrap().unwrap();
     assert_eq!(
         partition.lifecycle(),
-        crowdb_chunk_kv::PartitionLifecycle::WriteStalled
+        crowdb_chunk_kv::PartitionLifecycle::TransferQuiesced
     );
 
     let checkpoint = partition.checkpoint_quiesced(10).await.unwrap();

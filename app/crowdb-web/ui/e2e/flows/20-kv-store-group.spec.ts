@@ -16,11 +16,12 @@ test.describe('kv cluster · store + group CRUD', () => {
   });
 
   test('creates stores, groups and replicas through the UI against a real deployed server', async ({ page, baseURL }) => {
-    await step('store-group: setup servers', () => Promise.all([5, 171, 172].map(async (id) => {
+    await step('store-group: seed nodes', () => Promise.all([5, 171, 172].map(async (id) => {
       await seedRackAndNode(baseURL!, id, id);
-      await deployNodeServer(baseURL!, id, freePort(), freePort());
     })));
+    await deployNodeServer(baseURL!, 5, freePort(), freePort());
     await clusterInit(baseURL!, [5]);
+    await step('store-group: deploy remaining servers', () => Promise.all([171, 172].map((id) => deployNodeServer(baseURL!, id, freePort(), freePort()))));
 
     // --- store + group creation chain (store 57, groups 570 / 580) ---
     const chainApi = await apiContext(baseURL!);
@@ -136,11 +137,12 @@ test.describe('kv cluster · store + group CRUD', () => {
 
   test('deletes a replica and a group through the UI and verifies the real backend', async ({ page, baseURL }) => {
     // Keep node 7, which bootstraps group 0, alive through both deletion scenarios.
-    await step('del-replica-group: setup servers', () => Promise.all([7, 8].map(async (id) => {
+    await step('del-replica-group: seed nodes', () => Promise.all([7, 8].map(async (id) => {
       await seedRackAndNode(baseURL!, id, id);
-      await deployNodeServer(baseURL!, id, freePort(), freePort());
     })));
+    await deployNodeServer(baseURL!, 7, freePort(), freePort());
     await clusterInit(baseURL!, [7]);
+    await deployNodeServer(baseURL!, 8, freePort(), freePort());
 
     // --- delete a replica (store 77, group 770, replica 7700) ---
     await step('del-replica-group: setup replica', async () => {

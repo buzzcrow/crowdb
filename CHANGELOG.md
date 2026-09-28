@@ -1,36 +1,39 @@
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
+
 # Changelog
 
-All notable changes to CROWDB will be documented in this file.
+CROWDB is preparing its first development release, `0.1.0-dev`. Publication
+is pending; this is not a production release or a compatibility promise.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+CROWDB does not yet maintain compatibility for persisted data, WAL, metadata,
+or other on-disk formats. A newer checkout may be unable to read data created by
+an older checkout. Use disposable data only.
+
+Changelog history begins with the first public Docker preview. Development work
+before that baseline remains available in Git history and project requirements
+but is intentionally not reconstructed as released change history.
+
+The changelog will follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+from that baseline. Version tags alone do not imply Semantic Versioning
+compatibility until the project explicitly adopts and documents a compatibility
+policy.
 
 ## [Unreleased]
 
-### Added
-- Copyright headers on all source files
-- AGENTS.md with project overview and dispatch table
-- CONTRIBUTING.md, PR/Issue templates
-- Demo recording plan (`doc/working/plan-demo.md`)
+### 0.1.0-dev preparation
 
-### Changed
-- Restructured agent workflows: conventions merged into `/coding` workflow
-- Slimmed coding.md, doc.md, review.md
-- README: added badges, folded Getting Started into `<details>`
+- Single-node Linux amd64 container with native Iceberg REST catalog and FileIO,
+  backed by CROWDB metadata, chunk storage and disk services.
+- Persistent bootstrap, generated client credentials, health checks, bounded
+  service recovery and restart validation.
+- S3 object access through an optional published endpoint.
+- Host builds and runtime-only container packaging, with a manual Docker Hub
+  publication workflow for version and commit tags, signatures, SBOM and provenance.
 
-## [0.1.0] - 2026-07-13
+The intended image is `crowdb/crowdb-iceberg:v0.1.0-dev`; no published digest is
+recorded yet. The GUI is not ready for this container. Multi-node deployment,
+production hardening and data-format upgrades are outside this release.
 
-### Added
-- Multi-Paxos consensus with per-key slot pipelining and out-of-order apply
-- WAL with multi-disk segments, batched durable flush, replay, and GC
-- crowdb-tree storage engine: B+tree with delta chains, io_uring async I/O, epoch-safe lock-free reads, buffer pool
-- `KVEngine` trait with in-memory and crowdb-tree backends
-- crowdb-rpc services: Paxos (Prepare/Promise/Accept/Accepted), KV, Snapshot
-- Leader election with term/ballot fencing and leader lease
-- Reconfiguration: member add/remove, leader transfer, membership epoch fence
-- `crowdb-kv-server` binary with HTTP management API
-- `crowdb-kv-client` library with topology cache, retry, idempotency
-- `crowdb-console`: web UI (Axum + React) and CLI for cluster lifecycle management
-- Comprehensive design documentation (`doc/`)
-- CI with GitHub Actions (fmt, clippy, test, Playwright E2E)
-- Pre-commit hooks (cargo fmt, clippy, clang-format, clang-tidy)
+See the [container guide](doc/user-manual/docker-single-node-user-guide.md) for
+supported startup, persistence, credentials and recovery behavior.

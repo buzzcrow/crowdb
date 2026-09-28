@@ -41,7 +41,10 @@ impl PartitionJournal for StreamPartitionJournal {
             .stream
             .append_chunk_bound_batch(frames)
             .await
-            .map_err(map_stream_error)?;
+            .map_err(|error| {
+                tracing::warn!(%error, "chunk KV journal stream append failed");
+                map_stream_error(error)
+            })?;
         if ranges.len() != frames.len() {
             return Err(ChunkKvError::Internal(
                 "stream returned wrong chunk-bound range count".into(),

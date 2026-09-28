@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use crowdb_console_shared::config::web::{LaunchRegistry, WebMode, WebProcessConfig};
 use crowdb_console_shared::error::{Error, Result};
+use crowdb_console_shared::launch::LaunchRuntime;
 use crowdb_console_shared::monitor::MonitorCache;
 use crowdb_console_shared::ops::OpContext;
 use crowdb_console_shared::{
@@ -48,6 +50,14 @@ pub struct AppState {
     pub warn_dedup: Arc<std::sync::Mutex<HashMap<String, std::time::Instant>>>,
     /// Enables faster spawned-process intervals for E2E runs.
     pub test_mode: bool,
+    pub managed_mode: bool,
+    pub web_mode: Option<WebMode>,
+    pub ui_root: Arc<PathBuf>,
+    pub authority_seeds: Arc<Vec<String>>,
+    pub monitor_status_path: Option<Arc<PathBuf>>,
+    pub authority_timeout_ms: u64,
+    pub(crate) management_token: Option<Arc<str>>,
+    pub(crate) launch_registry_path: Option<Arc<PathBuf>>,
 }
 
 impl Default for AppState {
@@ -104,7 +114,72 @@ impl AppState {
             discovery_client: Arc::new(tokio::sync::RwLock::new(None)),
             warn_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
             test_mode: false,
+            managed_mode: false,
+            web_mode: None,
+            ui_root: Arc::new(PathBuf::from(FRONTEND_DIST)),
+            authority_seeds: Arc::new(Vec::new()),
+            monitor_status_path: None,
+            authority_timeout_ms: 3_000,
+            management_token: None,
+            launch_registry_path: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_managed_ui(mut self, ui_root: PathBuf) -> Self {
+        self.managed_mode = true;
+        self.web_mode = Some(WebMode::Docker);
+        self.ui_root = Arc::new(ui_root);
+        self
+    }
+
+    #[must_use]
+    pub fn with_process_config(mut self, config: &WebProcessConfig) -> Self {
+        self.managed_mode = true;
+        self.web_mode = Some(config.mode);
+        self.ui_root = Arc::new(config.ui_root.clone());
+        self.authority_seeds = Arc::new(config.group0_management_seeds.clone());
+        self.monitor_status_path = config.monitor_status.clone().map(Arc::new);
+        self.authority_timeout_ms = config.request_timeout_ms.unwrap_or(3_000);
+        self
+    }
+
+    /// # Errors
+    /// Rejects launch policy outside bare-metal mode or invalid registry content.
+    pub fn with_launch_registry(mut self, path: PathBuf) -> Result<Self> {
+        if self.web_mode != Some(WebMode::BareMetal) {
+            return Err(Error::Config(
+                "only bare-metal Web accepts a launch registry".into(),
+            ));
+        }
+        LaunchRegistry::load(&path)?;
+        self.launch_registry_path = Some(Arc::new(std::fs::canonicalize(path)?));
+        Ok(self)
+    }
+
+    /// # Errors
+    /// Reports invalid policy or a failed configured service launch.
+    pub async fn start_configured_services(&self) -> Result<usize> {
+        let Some(path) = &self.launch_registry_path else {
+            return Ok(0);
+        };
+        let registry = LaunchRegistry::load(path)?;
+        let runtime = LaunchRuntime::for_registry(path)?;
+        Ok(runtime.start_enabled(&registry).await?.len())
+    }
+
+    /// # Errors
+    /// Rejects a weak or malformed management credential.
+    pub fn with_management_token(mut self, token: String) -> std::result::Result<Self, &'static str> {
+        if !(32..=256).contains(&token.len())
+            || !token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/=".contains(&byte))
+        {
+            return Err("management token is invalid");
+        }
+        self.management_token = Some(Arc::from(token));
+        Ok(self)
     }
 
     /// Enable or disable E2E test-mode behavior.
@@ -319,7 +394,7 @@ impl AppState {
         }
         let transport = self.kv_rpc_transport().await;
         let c = Arc::new(crowdb_kv_client::CrowdbKvClient::new_with_rpc_transport(
-            crowdb_kv_client::ClientConfig::new(Vec::new()),
+            crowdb_kv_client::ClientConfig::new(self.authority_seeds.as_ref().clone()),
             transport,
         ));
         *guard = Some(Arc::clone(&c));

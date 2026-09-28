@@ -18,7 +18,7 @@ export interface TreeNode {
   icon?: React.ReactNode;
   children?: TreeNode[];
   health?: 'Healthy' | 'Degraded' | 'Failed' | 'Unknown';
-  role?: 'Leader' | 'Follower' | 'Remote';
+  role?: 'Leader' | 'Follower' | 'Remote' | 'Unknown';
   parentIds?: Record<string, string | number>;
   /** Service flavor for `Server` nodes: KV vs DiskDB. */
   serviceType?: 'kv' | 'diskdb';

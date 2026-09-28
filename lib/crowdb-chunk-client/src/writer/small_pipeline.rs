@@ -11,11 +11,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bytes::{Bytes, BytesMut};
 use crowdb_common::ec::{EcScheme, IncrementalParity};
 use crowdb_protocol::chunkdb::rpc::{
-    AdvanceChunkWriteRequest, AllocateChunkRequest, AllocateReplacementSegmentRequest, AppendChunkRequest,
-    Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest, DiscardReplacementSegmentRequest, Location,
-    MutateStripReservationRequest, PrepareMirrorToEcConversionRequest, QueryChunkRequest,
-    ReplaceChunkStripRangeRequest, ReserveStripGroupRequest, SealChunkRequest, Strip, StripReservationAction,
-    StripType,
+    AdvanceChunkWriteRequest, AllocateChunkRequest, AppendChunkRequest, Chunk, ChunkState, ChunkStrip,
+    ChunkType, DeleteChunkRequest, Location, MutateStripReservationRequest,
+    PrepareMirrorToEcConversionRequest, QueryChunkRequest, ReserveStripGroupRequest, SealChunkRequest, Strip,
+    StripReservationAction, StripType,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -25,9 +24,9 @@ use crowdb_protocol::frame::{
 use crowdb_protocol::{generate_chunk_id, CHUNK_TYPE_REPO};
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit};
 
+use crate::chunk::mirror_flow::MirrorStripFlow;
 use crate::config::SmallWritePolicy;
 use crate::metrics::SmallWriteMetrics;
-use crate::negative_list::FailedDiskList;
 use crate::{ChunkAllocator, DiskWriter, IoError, Result};
 
 use super::small_pool::{PendingObject, PipelineRoute, SmallPoolRuntime};
@@ -77,6 +76,8 @@ impl ManagedPipeline {
         self.wake.notify_one();
     }
 }
+
+mod batch;
 
 struct PipelineWorker {
     runtime: Arc<SmallPoolRuntime>,
@@ -717,6 +718,8 @@ async fn close_and_prefetch(
     append_mirror_strips(&*allocator, chunk, strip_count, copy_count).await
 }
 
+mod publication;
+
 struct OwnedChunk {
     allocator: Arc<dyn ChunkAllocator>,
     disk_writer: Arc<dyn DiskWriter>,
@@ -724,8 +727,8 @@ struct OwnedChunk {
     chunk: Chunk,
     cursor: u64,
     writer_epoch: u64,
+    mirror_flow: MirrorStripFlow,
     shadow: Option<BytesMut>,
-    failed_disks: Arc<FailedDiskList>,
     metrics: Arc<SmallWriteMetrics>,
     budget: Arc<tokio::sync::Semaphore>,
     conversion_active: Arc<AtomicBool>,
@@ -781,6 +784,14 @@ impl OwnedChunk {
         let chunk = response
             .chunk
             .ok_or_else(|| IoError::AllocationFailed("shared chunk allocation returned no chunk".into()))?;
+        let mirror_flow = MirrorStripFlow::new(
+            Arc::clone(&runtime.allocator),
+            Arc::clone(&runtime.disk_writer),
+            writer_epoch,
+            runtime.policy.repair_attempts_per_replica,
+            false,
+        )?
+        .with_small_write_metrics(Arc::clone(&runtime.failed_disks), Arc::clone(&runtime.metrics));
         let mut owned = Self {
             allocator: Arc::clone(&runtime.allocator),
             disk_writer: Arc::clone(&runtime.disk_writer),
@@ -788,8 +799,8 @@ impl OwnedChunk {
             chunk,
             cursor: 0,
             writer_epoch,
+            mirror_flow,
             shadow: None,
-            failed_disks: Arc::clone(&runtime.failed_disks),
             metrics: Arc::clone(&runtime.metrics),
             budget: Arc::clone(&runtime.conversion_budget),
             conversion_active,
@@ -1099,118 +1110,6 @@ impl OwnedChunk {
         }
     }
 
-    async fn try_write_batch(
-        &mut self,
-        batch: &[PendingObject],
-        metrics: &SmallWriteMetrics,
-    ) -> Result<Vec<Location>> {
-        let (physical_bytes, logical_bytes, buffer_count) = batch_shape(batch)?;
-        let planned_cursor = self.cursor.saturating_add(physical_bytes as u64);
-        self.consume_staged_reservation(planned_cursor).await?;
-        let strip = self.current_strip()?.clone();
-        let unit_bytes = u64::from(strip.unit_kb) * 1024;
-        if physical_bytes as u64 > self.remaining_in_strip()
-            || physical_bytes as u64 > self.remaining_in_chunk()
-        {
-            return Err(IoError::Internal(
-                "assembled batch crosses mirror strip or chunk".into(),
-            ));
-        }
-        let start = self.cursor;
-        let strip_bytes = usize::try_from(strip.capacity)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(1024);
-        let strip_start = u64::from(strip.chunk_offset) * 1024;
-        let block_offset = start.saturating_sub(strip_start);
-        let block_offset_us = usize::try_from(block_offset).unwrap_or(usize::MAX);
-
-        // Single shadow buffer: allocated once with full strip capacity, no
-        // zeroing. Fragments are copied in sequentially; each batch sends a
-        // view (slice) of the written portion, not the whole buffer.
-        let mut shadow = self.take_shadow(strip_bytes, block_offset_us);
-
-        let chunk_id = self
-            .chunk
-            .id
-            .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
-        let mut copied = 0usize;
-        let mut locations = Vec::with_capacity(batch.len());
-        let write_time_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| {
-                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-            });
-        for object in batch {
-            let mut payload = Vec::with_capacity(object.len);
-            for fragment in &object.fragments {
-                payload.extend_from_slice(fragment);
-            }
-            let frame = encode_frame(FrameMagic::RepoSmallV1, chunk_id, &payload, write_time_ms)
-                .map_err(|error| IoError::WriteFailed(error.to_string()))?;
-            let frame_length = frame.len();
-            shadow.extend_from_slice(&frame);
-            locations.push(Location {
-                chunk_id: Some(chunk_id),
-                offset: start + copied as u64,
-                length: frame_length as u64,
-                logical_offset: 0,
-                logical_length: object.len as u64,
-            });
-            copied += frame_length;
-        }
-        debug_assert_eq!(copied, physical_bytes);
-        let written_end = block_offset_us + physical_bytes;
-        debug_assert_eq!(shadow.len(), written_end);
-
-        // Freeze the buffer, take a view of the written portion, and send
-        // views to mirrors. After all mirrors complete, reclaim the buffer.
-        let frozen = shadow.freeze();
-        let view = frozen.slice(block_offset_us..written_end);
-        let full_image = frozen.slice(0..written_end);
-        let (_, write_result) = self
-            .write_mirrors_with_repair(
-                &strip,
-                view,
-                full_image,
-                unit_bytes,
-                block_offset,
-                MirrorBatchStats {
-                    object_count: batch.len(),
-                    buffer_count,
-                    logical_bytes,
-                },
-            )
-            .await;
-        self.shadow = Some(
-            frozen
-                .try_into_mut()
-                .unwrap_or_else(|shared| BytesMut::from(shared.as_ref())),
-        );
-        write_result?;
-        let end = start + physical_bytes as u64;
-        let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
-        let closed = (end == strip_end).then_some(strip.strip_sequence);
-        self.cursor = end;
-        if let Some(sequence) = closed {
-            let closed_strip = self
-                .chunk
-                .strips
-                .iter()
-                .find(|current| current.strip_sequence == sequence)
-                .cloned()
-                .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
-            self.schedule_closed_advance(end, sequence);
-            if let Err(error) = self.retain_closed_strip(closed_strip).await {
-                tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
-            }
-        } else {
-            self.refresh_pending_advance().await?;
-            self.start_pending_advance(end)?;
-        }
-        metrics.record_batch(batch.len(), logical_bytes);
-        Ok(locations)
-    }
-
     fn take_shadow(&mut self, strip_bytes: usize, block_offset: usize) -> BytesMut {
         let mut shadow = if let Some(shadow) = self.shadow.take() {
             shadow
@@ -1378,7 +1277,7 @@ impl OwnedChunk {
         strip: &crowdb_protocol::chunkdb::rpc::ChunkStrip,
         data: Bytes,
         full_image: Bytes,
-        unit_bytes: u64,
+        _unit_bytes: u64,
         block_offset: u64,
         stats: MirrorBatchStats,
     ) -> (Bytes, Result<()>) {
@@ -1388,271 +1287,27 @@ impl OwnedChunk {
                 Err(IoError::Internal("shared chunk strip is not mirrored".into())),
             );
         };
-        let request_count = mirror.segments.len() as u64;
         self.metrics.record_aggregate_write(
-            request_count,
+            mirror.segments.len() as u64,
             stats.object_count,
             stats.buffer_count,
             stats.logical_bytes,
             data.len(),
         );
-        let mut write_tasks = tokio::task::JoinSet::new();
-        for segment in &mirror.segments {
-            let segment = *segment;
-            let disk_writer = Arc::clone(&self.disk_writer);
-            let data = data.clone();
-            write_tasks.spawn(async move {
-                (
-                    segment,
-                    disk_writer
-                        .write_at_byte_offset(&segment, unit_bytes, block_offset, data)
-                        .await,
-                )
-            });
-        }
-        let mut failed = Vec::new();
-        while let Some(result) = write_tasks.join_next().await {
-            let (segment, result) = match result {
-                Ok(result) => result,
-                Err(error) => {
-                    return (
-                        data,
-                        Err(IoError::WriteFailed(format!(
-                            "mirror writer task failed: {error}"
-                        ))),
-                    );
-                }
-            };
-            if result.is_err() {
-                failed.push(segment);
-            }
-        }
-        for segment in failed {
-            // Repair writes the full shadow image (offset 0 to written_end)
-            // to the replacement segment, starting at offset 0.
-            if let Err(error) = self
-                .repair_replica(strip.strip_sequence, segment, full_image.clone(), unit_bytes, 0)
-                .await
-            {
-                return (data, Err(error));
-            }
-        }
-        (data, Ok(()))
-    }
-
-    async fn repair_replica(
-        &mut self,
-        strip_sequence: u32,
-        failed: Segment,
-        image: Bytes,
-        unit_bytes: u64,
-        block_offset: u64,
-    ) -> Result<()> {
-        let _repair = RepairMetricGuard::new(Arc::clone(&self.metrics));
-        self.try_repair_replica(strip_sequence, failed, image, unit_bytes, block_offset)
-            .await
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn try_repair_replica(
-        &mut self,
-        strip_sequence: u32,
-        failed: Segment,
-        image: Bytes,
-        unit_bytes: u64,
-        block_offset: u64,
-    ) -> Result<()> {
-        self.flush_pending_advance().await?;
-        let failed_disk = failed
-            .disk_id
-            .ok_or_else(|| IoError::Internal("failed mirror segment has no disk id".into()))?;
-        self.failed_disks.insert(failed_disk);
-        let mut last_error = "no replacement attempt completed".to_string();
-        for _ in 0..self.policy.repair_attempts_per_replica {
-            self.metrics.repair_attempts.fetch_add(1, Ordering::Relaxed);
-            let strip_index = self
-                .chunk
-                .strips
-                .iter()
-                .position(|strip| strip.strip_sequence == strip_sequence)
-                .ok_or_else(|| IoError::MetadataConflict("mirror strip disappeared during repair".into()))?;
-            let old_strip = self.chunk.strips[strip_index].clone();
-            let Some(Strip::MirrorStrip(mut mirror)) = old_strip.strip.clone() else {
-                return Err(IoError::MetadataConflict(
-                    "mirror strip changed type during repair".into(),
-                ));
-            };
-            let survivors: Vec<_> = mirror
-                .segments
-                .iter()
-                .copied()
-                .filter(|segment| *segment != failed)
-                .collect();
-            let excluded = self.failed_disks.live();
-            self.metrics
-                .negative_list_hits
-                .fetch_add(excluded.len() as u64, Ordering::Relaxed);
-            let response = self
-                .allocator
-                .allocate_replacement_segment(AllocateReplacementSegmentRequest {
-                    chunk_id: self.chunk.id,
-                    old_segment: Some(failed),
-                    surviving_segments: survivors,
-                    exclude_disk_ids: excluded,
-                })
-                .await;
-            let response = match response {
-                Ok(response) => response,
-                Err(error) => {
-                    last_error = error.to_string();
-                    continue;
-                }
-            };
-            let Some(replacement) = response.segment else {
-                last_error = "replacement allocation returned no segment".into();
-                continue;
-            };
-            if let Err(error) = self
-                .disk_writer
-                .write_at_byte_offset(&replacement, unit_bytes, block_offset, image.clone())
-                .await
-            {
-                last_error = error.to_string();
-                if let Some(disk) = replacement.disk_id {
-                    self.failed_disks.insert(disk);
-                }
-                self.discard_replacement(replacement).await;
-                continue;
-            }
-            let Some(slot) = mirror.segments.iter_mut().find(|segment| **segment == failed) else {
-                self.discard_replacement(replacement).await;
-                return Err(IoError::MetadataConflict(
-                    "failed segment no longer belongs to strip".into(),
-                ));
-            };
-            *slot = replacement;
-            let mut new_strip = old_strip.clone();
-            new_strip.strip = Some(Strip::MirrorStrip(mirror));
-            let operation_id = crowdb_protocol::common::ChunkId {
-                high: self.writer_epoch ^ self.chunk.modify_ts,
-                low: u64::from(strip_sequence) ^ failed.unit_offset,
-            };
-            let request = ReplaceChunkStripRangeRequest {
-                chunk_id: self.chunk.id,
-                expected_modify_ts: self.chunk.modify_ts,
-                start_index: u32::try_from(strip_index).unwrap_or(u32::MAX),
-                old_strips: vec![old_strip],
-                replacement_strips: vec![new_strip.clone()],
-                operation_id: Some(operation_id),
-            };
-            match self.install_replacement(request, replacement).await {
-                Ok(chunk) => {
-                    if chunk
-                        .strips
-                        .iter()
-                        .any(|strip| strip.strip_sequence == strip_sequence)
-                    {
-                        self.chunk = chunk;
-                    } else {
-                        self.chunk.strips[strip_index] = new_strip;
-                        self.chunk.modify_ts = chunk.modify_ts;
-                        self.chunk.cleanup_intents = chunk.cleanup_intents;
-                        self.chunk.last_strip_replacement = chunk.last_strip_replacement;
-                    }
-                    self.metrics.repaired_replicas.fetch_add(1, Ordering::Relaxed);
-                    self.metrics
-                        .repairs_avoiding_rotation
-                        .fetch_add(1, Ordering::Relaxed);
-                    return Ok(());
-                }
-                Err(error @ IoError::MetadataConflict(_)) => return Err(error),
-                Err(_) => {}
-            }
-            // The replacement may already be installed after an ambiguous
-            // response, so never allocate or discard a different candidate.
-            break;
-        }
-        self.metrics.exhausted_repairs.fetch_add(1, Ordering::Relaxed);
-        self.mark_replica_unavailable(strip_sequence, failed).await?;
-        Err(IoError::WriteFailed(format!(
-            "mirror replica repair exhausted: {last_error}"
-        )))
-    }
-
-    async fn install_replacement(
-        &self,
-        request: ReplaceChunkStripRangeRequest,
-        replacement: Segment,
-    ) -> Result<Chunk> {
-        for attempt in 0..self.policy.repair_attempts_per_replica {
-            if attempt > 0 {
-                self.metrics.repair_attempts.fetch_add(1, Ordering::Relaxed);
-            }
-            match self.allocator.replace_chunk_strip_range(request.clone()).await {
-                Ok(response) => {
-                    return response.chunk.ok_or_else(|| {
-                        IoError::MetadataConflict("range replacement returned no chunk".into())
-                    });
-                }
-                Err(error @ IoError::MetadataConflict(_)) => {
-                    self.discard_replacement(replacement).await;
-                    return Err(error);
-                }
-                Err(_) => {}
-            }
-        }
-        Err(IoError::WriteFailed(
-            "replacement metadata retry exhausted".into(),
-        ))
-    }
-
-    async fn discard_replacement(&self, replacement: Segment) {
-        let _ = self
-            .allocator
-            .discard_replacement_segment(DiscardReplacementSegmentRequest {
-                chunk_id: self.chunk.id,
-                segment: Some(replacement),
-            })
+        let result = self
+            .mirror_flow
+            .write(
+                &mut self.chunk,
+                self.cursor,
+                strip.strip_sequence,
+                block_offset,
+                data.clone(),
+                full_image,
+                &mut self.pending_advance,
+            )
             .await;
+        (data, result)
     }
-
-    async fn mark_replica_unavailable(&mut self, strip_sequence: u32, failed: Segment) -> Result<()> {
-        let strip_index = self
-            .chunk
-            .strips
-            .iter()
-            .position(|strip| strip.strip_sequence == strip_sequence)
-            .ok_or_else(|| IoError::MetadataConflict("failed strip disappeared".into()))?;
-        let old = self.chunk.strips[strip_index].clone();
-        let strip_start = u64::from(old.chunk_offset) * 1024;
-        if self.cursor <= strip_start {
-            return Ok(());
-        }
-        let mut degraded = old.clone();
-        if !degraded.unavailable_segments.contains(&failed) {
-            degraded.unavailable_segments.push(failed);
-        }
-        let operation_id = crowdb_protocol::common::ChunkId {
-            high: self.writer_epoch ^ self.chunk.modify_ts ^ u64::MAX,
-            low: u64::from(strip_sequence) ^ failed.unit_offset,
-        };
-        let response = self
-            .allocator
-            .replace_chunk_strip_range(ReplaceChunkStripRangeRequest {
-                chunk_id: self.chunk.id,
-                expected_modify_ts: self.chunk.modify_ts,
-                start_index: u32::try_from(strip_index).unwrap_or(u32::MAX),
-                old_strips: vec![old],
-                replacement_strips: vec![degraded],
-                operation_id: Some(operation_id),
-            })
-            .await?;
-        self.chunk = response
-            .chunk
-            .ok_or_else(|| IoError::MetadataConflict("degraded marker returned no chunk".into()))?;
-        Ok(())
-    }
-
     async fn advance(&mut self, cursor: u64, closed_strip_sequence: Option<u32>) -> Result<()> {
         let chunk_id = self
             .chunk
@@ -2006,34 +1661,6 @@ fn frame_bytes(payload_bytes: usize) -> Result<usize> {
         });
     }
     Ok(FRAME_HEADER_PREFIX_BYTES + payload_bytes + FRAME_FOOTER_BYTES)
-}
-
-struct RepairMetricGuard {
-    metrics: Arc<SmallWriteMetrics>,
-    started: Instant,
-}
-
-impl RepairMetricGuard {
-    fn new(metrics: Arc<SmallWriteMetrics>) -> Self {
-        metrics.active_repairs.fetch_add(1, Ordering::Relaxed);
-        Self {
-            metrics,
-            started: Instant::now(),
-        }
-    }
-}
-
-impl Drop for RepairMetricGuard {
-    fn drop(&mut self) {
-        let elapsed = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        self.metrics.active_repairs.fetch_sub(1, Ordering::Relaxed);
-        self.metrics
-            .repair_latency_ns
-            .fetch_add(elapsed, Ordering::Relaxed);
-        self.metrics
-            .max_repair_latency_ns
-            .fetch_max(elapsed, Ordering::Relaxed);
-    }
 }
 
 fn next_writer_epoch() -> u64 {

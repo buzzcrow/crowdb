@@ -20,6 +20,7 @@ pub mod corr_id;
 pub mod diskdb;
 pub mod error;
 pub mod expand;
+pub mod launch;
 pub mod lifecycle;
 pub mod mgmt;
 pub mod monitor;

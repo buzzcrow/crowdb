@@ -1,0 +1,43 @@
+[server]
+bind_address = "127.0.0.1"
+listen_port = 13000
+rpc_workers = 4
+node_id = {{node.0.id}}
+dummy_disk_type = "null"
+o_direct = true
+
+[engine]
+thread_pool_size = 4
+sq_entries = 256
+
+[group0]
+kv_seeds = ["http://127.0.0.1:10000"]
+instance_id = {{node.0.id}}
+rack_id = {{node.0.rack_id}}
+disk_group_id = 101
+sync_interval_ms = 5000
+auto_discover_disks = false
+
+[metrics]
+log_dir = "{{log_root}}/diskio"
+interval_secs = 5
+
+[[disk]]
+id = "1:1"
+path = "{{disk.0.path}}"
+zone_capacity = {{disk.0.capacity_bytes}}
+
+[[disk]]
+id = "1:2"
+path = "{{disk.1.path}}"
+zone_capacity = {{disk.1.capacity_bytes}}
+
+[[disk]]
+id = "1:3"
+path = "{{disk.2.path}}"
+zone_capacity = {{disk.2.capacity_bytes}}
+
+[[disk]]
+id = "1:4"
+path = "{{disk.3.path}}"
+zone_capacity = {{disk.3.capacity_bytes}}

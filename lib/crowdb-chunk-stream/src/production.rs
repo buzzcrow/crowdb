@@ -49,10 +49,13 @@ impl ProductionStreamRuntime {
         chunk_io: &ChunkIoClient,
         writer_lease_ms: u64,
         read_policy: ChunkReadPolicy,
-        config: StreamConfig,
+        mut config: StreamConfig,
         mirror_copies: u32,
     ) -> Result<Self> {
         config.validate()?;
+        config.liveness_interval = config
+            .liveness_interval
+            .min(std::time::Duration::from_millis((writer_lease_ms / 3).max(1)));
         let (allocator, disk_writer) = chunk_io.storage_parts();
         let chunks = Arc::new(ProductionStreamChunkStore::new_with_mirror_copies(
             allocator,

@@ -17,7 +17,7 @@ One-time host setup for perf counters and CROWDB benchmarks on Ubuntu
 ## Run
 
 ```bash
-sudo bash tools/setup-perf.sh
+sudo bash tools/profiling/setup-perf.sh
 ```
 
 The script auto-detects AMD vs Intel, applies every setting below, and
@@ -177,10 +177,10 @@ pixi run build-cpp
 
 Regression sentinels under `tools/`:
 
-- `tools/bench-kv-read-regression.sh`
-- `tools/bench-kv-write-regression.sh`
-- `tools/bench-kv-scan-regression.sh`
-- `tools/bench-rpc-regression.sh`
-- `tools/bench-diskdb-regression.sh`
-- `tools/bench-chunkdb-regression.sh`
-- `tools/bench-chunkio-write-regression.sh`
+- `tools/benchmark/bench-kv-read-regression.sh`
+- `tools/benchmark/bench-kv-write-regression.sh`
+- `tools/benchmark/bench-kv-scan-regression.sh`
+- `tools/benchmark/bench-rpc-regression.sh`
+- `tools/benchmark/bench-diskdb-regression.sh`
+- `tools/benchmark/bench-chunkdb-regression.sh`
+- `tools/benchmark/bench-chunkio-write-regression.sh`

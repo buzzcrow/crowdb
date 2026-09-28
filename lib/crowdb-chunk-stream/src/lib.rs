@@ -8,6 +8,7 @@ mod extent_cache;
 mod kv;
 mod metadata;
 mod metrics;
+mod mirror_shadow;
 mod production;
 mod production_chunk;
 mod storage;
@@ -23,7 +24,8 @@ pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
 pub use production::ProductionStreamRuntime;
 pub use production_chunk::ProductionStreamChunkStore;
 pub use storage::{
-    CursorAdvance, DurableCursor, StreamChunkStore, StreamMetadataStore, StreamRegistry, TrimmedChunk,
+    CursorAdvance, DurableCursor, MirrorStripImage, StreamChunkStore, StreamMetadataStore, StreamRegistry,
+    TrimmedChunk,
 };
 pub use stream::{AppendRange, ChunkStream, ReadHint, ReadSegment, StreamConfig, StreamReader};
 

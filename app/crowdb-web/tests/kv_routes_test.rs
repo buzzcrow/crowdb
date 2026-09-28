@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use crowdb_console_shared::clients::http::ServerClient;
 use crowdb_console_shared::cluster::NodeHealth;
-use crowdb_console_shared::config::{NodeEntry, RackEntry, ServerEntry, ServiceType};
+use crowdb_console_shared::config::{
+    GroupEntry, NodeEntry, RackEntry, ReplicaEntry, ServerEntry, ServiceType,
+};
 use crowdb_console_shared::lifecycle::{self, crowdb_kv_server_bin, DeployRequest};
 use crowdb_console_shared::monitor::{legacy_topology_to_node_stores, NodeRecord};
 use crowdb_console_shared::ConsoleConfig;
@@ -48,7 +50,7 @@ async fn spawn_upstream() -> Option<Upstream> {
         ssh_password: None,
     };
     let req = DeployRequest {
-        server_id: "n1".to_string(),
+        server_id: "1".to_string(),
         rest_port: pick_free_port(),
         rpc_port: pick_free_port(),
         election_profile: Some("e2e".into()),
@@ -158,6 +160,18 @@ async fn kv_put_get_delete_through_web_routes() {
         .expect("add_group");
     assert_eq!(group_resp.status(), 201, "add_group failed");
 
+    let endpoint = http
+        .get(format!("{base}/api/stores/1/groups/1/endpoint"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        endpoint.status(),
+        200,
+        "endpoint: {:?}",
+        endpoint.text().await.ok()
+    );
+
     let url = format!("{base}/api/stores/1/groups/1/kv");
 
     // PUT
@@ -254,10 +268,18 @@ async fn kv_get_returns_502_when_leader_unreachable() {
         no_fsync: false,
     })
     .unwrap();
+    cfg.groups.push(GroupEntry {
+        store_id: 7,
+        group_id: 70,
+        replicas: vec![ReplicaEntry {
+            replica_id: 1,
+            node_id: 1,
+        }],
+    });
     let state = AppState::with_config(cfg, None);
 
-    // Seed a fake group on n1 with a leader hint, so resolve_kv_endpoint
-    // returns Ok(rpc_url) and the handler proceeds to connect.
+    // Even with a locally persisted group and a cached leader, the KV
+    // request must not use either when Group 0 is unavailable.
     let mut stores = BTreeMap::new();
     stores.insert(
         7,
@@ -306,4 +328,10 @@ async fn kv_get_returns_502_when_leader_unreachable() {
         "expected 502 when leader crowdb-rpc port is dead, got {}",
         resp.status()
     );
+    let endpoint = http
+        .get(format!("http://{web}/api/stores/7/groups/70/endpoint"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(endpoint.status(), 502);
 }

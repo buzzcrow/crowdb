@@ -6,12 +6,15 @@
 //! `/api/stores/:sid/groups` routes through HTTP. Skips silently when
 //! the `crowdb-kv-server` binary is not built.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crowdb_console_shared::cluster::{NodeHealth, NodeStore};
 use crowdb_console_shared::config::{NodeEntry, RackEntry, ServerEntry, ServiceType};
 use crowdb_console_shared::lifecycle::{self, crowdb_kv_server_bin, stop_pid_with_timeout, DeployRequest};
+use crowdb_console_shared::monitor::NodeRecord;
 use crowdb_console_shared::ConsoleConfig;
 use crowdb_web::{router, AppState};
 use serde_json::json;
@@ -61,7 +64,7 @@ async fn spawn_upstream() -> Option<Upstream> {
         ssh_password: None,
     };
     let req = DeployRequest {
-        server_id: "n1".to_string(),
+        server_id: "1".to_string(),
         rest_port: pick_free_port(),
         rpc_port: pick_free_port(),
         election_profile: Some("e2e".into()),
@@ -265,4 +268,55 @@ async fn full_mgmt_cycle_through_web_routes() {
     // Cleanup.
     let _ = lifecycle::stop_pid(upstream.pid);
     tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
+#[tokio::test]
+async fn store_reads_reject_cached_topology_without_group0() {
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let state = AppState::with_config(ConsoleConfig::default(), None);
+    let mut stores = BTreeMap::new();
+    stores.insert(
+        7,
+        NodeStore {
+            node_id: 1,
+            store_id: 7,
+            listen_addr: None,
+            groups: Vec::new(),
+        },
+    );
+    state
+        .monitor_cache
+        .set_node_report(
+            1,
+            NodeRecord {
+                health: NodeHealth::Up,
+                last_seen_ms: 1,
+                stores,
+                last_error: None,
+                recovering: false,
+            },
+        )
+        .await;
+    tokio::spawn(async move {
+        axum::serve(listener, router(state)).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    for path in [
+        "/api/stores",
+        "/api/stores/7",
+        "/api/stores/7/groups",
+        "/api/stores/7/groups/70",
+        "/api/stores/7/groups/70/replicas",
+    ] {
+        let response = client
+            .get(format!("http://{address}{path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 502, "{path}");
+    }
 }

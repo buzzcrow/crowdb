@@ -180,7 +180,8 @@ export interface ReplicaView {
 // Common Enums
 export enum ReplicaRole {
   Leader = 'leader',
-  Follower = 'follower'
+  Follower = 'follower',
+  Unknown = 'unknown'
 }
 
 export enum ReplicaState {

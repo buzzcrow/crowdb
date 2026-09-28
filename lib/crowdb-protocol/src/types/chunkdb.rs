@@ -466,6 +466,8 @@ pub struct DeleteChunkResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+/// Exact half-open byte range `[chunk_offset, chunk_offset + chunk_size)`.
+/// Both fields are independent u32 byte values; no KiB conversion or rounding applies.
 pub struct DeleteChunkRangeRequest {
     pub chunk_id: Option<ChunkId>,
     pub chunk_offset: u32,

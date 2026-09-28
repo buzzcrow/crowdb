@@ -5,7 +5,7 @@
 
 Write flow from client request through proposal admission, Paxos, WAL, and
 engine apply. The benchmark sentinel is
-`tools/bench-kv-write-regression.sh`.
+`tools/benchmark/bench-kv-write-regression.sh`.
 
 ## 1. Flow
 
@@ -272,7 +272,7 @@ space for 15 seconds, then repeats from clean group state three times on one
 three-node mem-block deployment. The command was:
 
 ```bash
-KV_WRITE_BENCH_CASES=largeval_16k pixi run -- bash tools/bench-kv-write-regression.sh
+KV_WRITE_BENCH_CASES=largeval_16k pixi run -- bash tools/benchmark/bench-kv-write-regression.sh
 ```
 
 Reference host: Intel Core i9-7960X (16 cores / 32 threads), x86_64, Linux

@@ -32,8 +32,9 @@ and orphan sealing.
 One client-owned pool multiplexes small objects across a bounded set of
 pipelines. Each pipeline exclusively owns one active Repo chunk containing
 mirror strips and may own one empty prepared replacement. A pipeline batches
-whole objects, writes the physical range to every mirror, durably advances the
-chunk cursor, then returns an independent `Location` to each caller.
+whole objects and writes the physical range to every mirror. Ordinary completion
+returns independent locations while cursor progress runs asynchronously; callers
+can opt into completion after the readable cursor is durably confirmed.
 
 The shared path can incrementally form 8+4 EC groups while writing mirrors.
 It retains one open-strip image and four parity accumulators, but never retains
@@ -97,6 +98,14 @@ recovers the unique mutable shadow after completion without another
 steady-state copy.
 Each returned location covers only its object's exact bytes.
 
+A caller can attach a `SmallWriteIntent` to durable completion. Once the batch
+has assigned exact locations, every attached callback completes before any of
+the batch's DiskIO. Failure aborts the batch and its pipeline; cancellation of
+the caller does not detach ownership registration from the physical operation.
+The callback has no default storage policy: FileIO uses it to persist its own
+catalog-sharded block ledger. Range reclamation defers active shared-chunk ranges
+that extend beyond the acknowledged cursor, preserving uncertain writes.
+
 Chunk allocation reserves a bounded group of hidden strips. A reserved strip
 becomes `Consumed` immediately before its first DiskIO and is confirmed into
 the readable layout only after its mirror write succeeds. Confirmation and
@@ -147,10 +156,24 @@ The response barrier is:
 4. Coalesce cursor progress in the background metadata chain. Strip close and
    batched append execute there in revision order.
 
+The physical mirror-strip flow is shared with chunk streams: it writes mirrors
+in parallel, excludes failed disks, writes a prefix-complete replacement image,
+and publishes the fenced strip swap. Each single-owner caller retains its own
+current-strip shadow and controls its publication barrier. Journal streams also
+fsync the final mirror set before advancing their durable cursor and resolve an
+uncertain replacement result against chunk metadata before retrying it.
+
 No location is visible before its complete physical range exists on every
 configured mirror. Cursor persistence is an asynchronous availability and
 orphan-recovery checkpoint; readers can transiently report `NotYetAvailable`
 until it catches up.
+
+Callers publishing immediately readable immutable authorities use
+`SharedObjectWriter::finish_durable`. A batch containing a durable-completion
+request waits for the existing metadata chain, then confirms any remaining
+cursor suffix before delivering locations. Metadata failure fails that batch
+instead of exposing an unreadable reference. Ordinary `on_finish` retains its
+asynchronous cursor behavior; no additional lock or reader-side retry is needed.
 
 ## 6. Chunk Lifecycle and Recovery
 

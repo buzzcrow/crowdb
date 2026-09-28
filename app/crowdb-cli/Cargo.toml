@@ -61,6 +61,10 @@ name = "lifecycle_cli_test"
 path = "tests/lifecycle_cli_test.rs"
 
 [[test]]
+name = "launch_registry_cli_test"
+path = "tests/launch_registry_cli_test.rs"
+
+[[test]]
 name = "mgmt_cli_test"
 path = "tests/mgmt_cli_test.rs"
 

@@ -13,9 +13,12 @@
 #include <flatbuffers/flatbuffers.h>
 #include <msg_type_generated.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace crowdb::diskio
 {
@@ -255,7 +258,14 @@ crowdb::rpc::OutFrame *DiskioServer::handle_read(crowdb::rpc::Frame *request, cr
                             static_cast<int16_t>(dproto::FBDiskIoRetCode_ZoneNotExist));
         return nullptr;
     }
-    off_t phys_offset = static_cast<off_t>(zone->base_offset + zone_offset);
+    if (zone->base_offset < 0 || zone->capacity < 0 || zone_offset > static_cast<uint64_t>(zone->capacity) ||
+        size > static_cast<uint64_t>(zone->capacity) - zone_offset ||
+        zone_offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max() - zone->base_offset)) {
+        delete request;
+        send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
+        return nullptr;
+    }
+    off_t phys_offset = zone->base_offset + static_cast<off_t>(zone_offset);
 
     auto *pool     = conn->pool();
     auto *read_buf = pool->alloc(size);
@@ -265,23 +275,65 @@ crowdb::rpc::OutFrame *DiskioServer::handle_read(crowdb::rpc::Frame *request, cr
         return nullptr;
     }
 
+    auto                     io_offset = phys_offset;
+    size_t                   io_size   = size;
+    size_t                   prefix    = 0;
+    std::shared_ptr<uint8_t> aligned_data;
+    if (disk->is_o_direct()) {
+        const size_t alignment = std::max<size_t>(4096, disk->block_size());
+        if ((alignment & (alignment - 1)) != 0 || alignment > static_cast<size_t>(std::numeric_limits<off_t>::max()) ||
+            static_cast<uint64_t>(phys_offset) + size >
+                static_cast<uint64_t>(std::numeric_limits<off_t>::max()) - alignment) {
+            read_buf->release();
+            delete request;
+            send_error_response(conn, req_id, create_nano, msg_type,
+                                static_cast<int16_t>(dproto::FBDiskIoRetCode_InvalidAlignment));
+            return nullptr;
+        }
+        prefix    = static_cast<size_t>(phys_offset) % alignment;
+        io_offset = phys_offset - static_cast<off_t>(prefix);
+        io_size   = ((prefix + size + alignment - 1) / alignment) * alignment;
+        if (io_offset < zone->base_offset ||
+            io_size > static_cast<size_t>(zone->capacity - (io_offset - zone->base_offset))) {
+            read_buf->release();
+            delete request;
+            send_error_response(conn, req_id, create_nano, msg_type,
+                                static_cast<int16_t>(dproto::FBDiskIoRetCode_InvalidAlignment));
+            return nullptr;
+        }
+        aligned_data = std::shared_ptr<uint8_t>(static_cast<uint8_t *>(std::aligned_alloc(alignment, io_size)),
+                                                [](uint8_t *data) { std::free(data); });
+        if (aligned_data == nullptr) {
+            read_buf->release();
+            delete request;
+            send_error_response(conn, req_id, create_nano, msg_type,
+                                static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
+            return nullptr;
+        }
+    }
+
     delete request;
 
     Disk *disk_ptr = disk.get();
     auto  started  = std::chrono::steady_clock::now();
-    disk_ptr->engine()->submit_read(disk_ptr, phys_offset, read_buf->data, size, test_pattern_offset,
-                                    [this, conn, req_id, create_nano, msg_type, read_buf, size, started](int res) {
+    auto *io_data  = aligned_data ? aligned_data.get() : read_buf->data;
+    disk_ptr->engine()->submit_read(disk_ptr, io_offset, io_data, io_size, test_pattern_offset,
+                                    [this, conn, req_id, create_nano, msg_type, read_buf, size, io_size, prefix,
+                                     aligned_data = std::move(aligned_data), disk = std::move(disk), started](int res) {
                                         read_latency_->observe(elapsed_nanos(started));
                                         int16_t ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
                                         crowdb::rpc::Buffer *data = nullptr;
                                         if (res < 0) {
                                             ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError);
                                         }
-                                        else if (static_cast<uint32_t>(res) < size) {
+                                        else if (static_cast<size_t>(res) < io_size) {
                                             ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_PartialWrite);
                                         }
                                         else {
-                                            read_buf->len = static_cast<uint32_t>(res);
+                                            if (aligned_data) {
+                                                std::memcpy(read_buf->data, aligned_data.get() + prefix, size);
+                                            }
+                                            read_buf->len = size;
                                             data          = read_buf;
                                         }
                                         auto *pool = conn->pool();

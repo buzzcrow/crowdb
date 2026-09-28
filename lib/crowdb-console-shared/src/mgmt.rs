@@ -129,6 +129,20 @@ impl ServerClient {
         self.post_json("/system/init", req).await
     }
 
+    /// Persist Group 0 connection hints without changing group membership.
+    ///
+    /// # Errors
+    /// Returns transport, validation, or persistence errors from the node.
+    pub async fn set_group0_discovery(&self, seeds: Vec<String>) -> Result<Group0DiscoveryRequest> {
+        self.post_json(
+            "/system/group0-discovery",
+            &Group0DiscoveryRequest {
+                management_seeds: seeds,
+            },
+        )
+        .await
+    }
+
     // ── Transport helpers shared by mgmt methods ────────────────────
 
     async fn post_json<B: serde::Serialize + ?Sized, T: serde::de::DeserializeOwned>(

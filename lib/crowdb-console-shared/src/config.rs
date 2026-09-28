@@ -21,6 +21,8 @@ use crate::error::{Error, Result};
 
 use std::fmt;
 
+pub mod web;
+
 /// Serde helper: serialize a `BTreeMap<u64, V>` with string keys (TOML
 /// requires string keys) and deserialize back to `u64` keys.
 mod int_key {

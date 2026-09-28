@@ -29,6 +29,9 @@ use crowdb_protocol::frame::{parse_frame, MAX_FRAME_PAYLOAD_BYTES};
 
 const MAX_SMALL: usize = MAX_FRAME_PAYLOAD_BYTES;
 
+#[path = "common/small_durable.rs"]
+mod durable;
+
 fn frame_bytes(payload_bytes: usize) -> u64 {
     u64::try_from(payload_bytes).unwrap() + 34
 }
@@ -50,8 +53,11 @@ struct MockState {
 
 #[derive(Default)]
 struct MockAllocator {
+    advance_gate: Option<Arc<tokio::sync::Notify>>,
+    advance_entered: tokio::sync::Notify,
     next_chunk: AtomicU64,
     advance_delay_ms: AtomicU64,
+    fail_advances: AtomicBool,
     fail_allocations: AtomicBool,
     fail_on_attempt: AtomicU64,
     fail_replacement_allocations: AtomicBool,
@@ -251,6 +257,13 @@ impl ChunkAllocator for MockAllocator {
     }
 
     async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
+        if self.fail_advances.load(Ordering::Relaxed) {
+            return Err(IoError::AllocationFailed("injected cursor failure".into()));
+        }
+        if let Some(gate) = &self.advance_gate {
+            self.advance_entered.notify_one();
+            gate.notified().await;
+        }
         let delay_ms = self.advance_delay_ms.load(Ordering::Relaxed);
         if delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;

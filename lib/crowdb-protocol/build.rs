@@ -25,6 +25,7 @@ fn main() {
         "src/fbs/chunkdb.fbs",
         "src/fbs/chunk_kv.fbs",
         "src/fbs/chunk_task.fbs",
+        "src/fbs/iceberg.fbs",
     ];
     for f in &fbs_files {
         println!("cargo:rerun-if-changed={f}");
@@ -38,6 +39,7 @@ fn main() {
         .arg(&out_dir)
         .arg("src/fbs/msg_type.fbs")
         .arg("src/fbs/common_type.fbs")
+        .arg("src/fbs/iceberg.fbs")
         .status()
         .unwrap_or_else(|e| panic!("failed to run flatc at {}: {e}", flatc.display()));
     assert!(

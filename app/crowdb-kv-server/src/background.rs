@@ -3,5 +3,7 @@
 
 //! Background tasks: service keepalive and binding monitor.
 
+pub(crate) mod discovery;
 pub mod domain_monitor;
+pub mod identity;
 pub mod keepalive;

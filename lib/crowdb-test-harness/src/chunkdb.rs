@@ -48,6 +48,7 @@ pub fn crowdb_chunkdb_bin() -> Option<std::path::PathBuf> {
 pub struct ChunkdbProcess {
     pub child: std::process::Child,
     pub listen_port: i32,
+    pub rpc_port: i32,
     pub http_port: i32,
     pub config_path: std::path::PathBuf,
     pub log_path: std::path::PathBuf,
@@ -186,18 +187,10 @@ impl ChunkdbProcess {
         // reassigns them between the probe and the subprocess bind — the
         // TOCTOU that plagues `bind(:0)`-style ephemeral port selection
         // under load. The shared per-process claim file keeps the three
-        // ports pairwise distinct. ChunkdbListen and ChunkdbRpc bases
-        // differ by 200, so rpc_port = listen_port + 200, the offset
-        // the client derives (without it the subprocess falls back to
-        // the hardcoded default 0.0.0.0:9961 and collides across tests).
+        // independently assigned ports pairwise distinct.
         let paths = prepare_runtime(runtime);
         let listen_port = paths.listen_port;
         let rpc_port = paths.rpc_port;
-        debug_assert_eq!(
-            rpc_port - listen_port,
-            i32::from(crowdb_protocol::CHUNKDB_RPC_BASE) - i32::from(crowdb_protocol::CHUNKDB_LISTEN_BASE),
-            "allocator must preserve the listen->rpc offset"
-        );
         let http_port = paths.http_port;
 
         let config_content = format!(
@@ -288,6 +281,7 @@ lock_hold_warn_threshold_ms = 1000
         Self {
             child,
             listen_port,
+            rpc_port,
             http_port,
             config_path,
             log_path,
@@ -321,7 +315,7 @@ lock_hold_warn_threshold_ms = 1000
     /// discover chunkdb through the service registry, so an end-to-end test
     /// must wait for this publication before issuing its first RPC.
     pub async fn wait_for_registry_ready(&self, service_registry: &ServiceRegistryClient) {
-        let endpoint = format!("http://127.0.0.1:{}", self.listen_port + 200);
+        let endpoint = format!("http://127.0.0.1:{}", self.rpc_port);
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let registered = service_registry

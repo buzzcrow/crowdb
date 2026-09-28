@@ -488,12 +488,22 @@ For each multi-node operation in the logical tree, the backend obeys
 these rules:
 
 - **Plan first, act second.** Resolve every required node + replica id
-  from the monitor cache before issuing any upstream RPC.
+  from Group 0 membership and live service registrations before issuing
+  mutation RPCs. Missing or ambiguous registrations fail the operation.
 - **Built on physical primitives.** The orchestrator only calls the
   per-node physical mutators; it never invents a side channel.
 - **All-or-nothing where feasible.** On partial failure, attempt to
   undo successful sub-steps and surface the resulting state in the
   error body.
+- **Confirmed membership publication.** Complete peer wiring before publishing
+  group or replica membership. A new group and its initial replica records
+  commit in one conditional batch. Create records conditionally; a concurrent
+  conflicting record is preserved. A lost write response is resolved only by
+  a linearizable read that confirms the intended record.
+- **Deletion preserves authority on node failure.** Confirm deletion on every
+  hosting node before removing membership. Store hosts include nodes from
+  replica records as well as the store record. Remove descendants before
+  parents; an already absent node-side object permits retry.
 - **Idempotent retries.** A repeat of the same logical request must
   converge to the same state.
 - **Cache refresh on success.** Every successful mutation triggers an
@@ -654,6 +664,12 @@ wires remotes, and writes the hardware + KV-cluster topology into
 group-0 sysdata. After `cluster init` completes, subsequent commands
 use `--system-ip` / `--system-port` to connect to any node in the newly
 created system group.
+
+Initialization also sends Group 0 management seeds to deployed KV processes
+outside the selected member set and waits for exactly one live registration
+per node. Those processes retain connection hints locally across restart;
+they do not become Group 0 members. Logical operations use the confirmed live
+registrations rather than treating launch configuration as a live endpoint.
 
 ### 7.4 `cluster clean` — data wipe boundary
 

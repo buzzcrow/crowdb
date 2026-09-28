@@ -14,7 +14,7 @@ interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: BadgeVariant;
   size?: BadgeSize;
   healthStatus?: 'Healthy' | 'Degraded' | 'Failed' | 'Unknown';
-  role?: 'Leader' | 'Follower' | 'Remote';
+  role?: 'Leader' | 'Follower' | 'Remote' | 'Unknown';
   icon?: React.ReactNode;
   compact?: boolean;
 }
@@ -51,18 +51,21 @@ const roleColors = {
   Leader: 'tw-bg-amber-400/15 tw-text-amber-300 tw-border tw-border-amber-300/40',
   Follower: 'tw-bg-blue-500/10 tw-text-blue-500 tw-border tw-border-blue-500/30',
   Remote: 'tw-bg-purple-500/10 tw-text-purple-500 tw-border tw-border-purple-500/30',
+  Unknown: 'tw-bg-gray-500/10 tw-text-gray-500 tw-border tw-border-gray-500/30',
 };
 
 const roleIcons = {
   Leader: <Crown className="tw-h-3.5 tw-w-3.5" />,
   Follower: <Users className="tw-h-3.5 tw-w-3.5" />,
   Remote: <Users className="tw-h-3.5 tw-w-3.5" />,
+  Unknown: <HelpCircle className="tw-h-3.5 tw-w-3.5" />,
 };
 
 const roleCompactLabel: Record<string, string> = {
   Leader: 'L',
   Follower: 'F',
   Remote: 'R',
+  Unknown: '?',
 };
 
 export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
@@ -118,7 +121,7 @@ export function HealthBadge({
   );
 }
 
-export function RoleBadge({ role, size = 'sm', compact = false }: { role: ReplicaRole | 'Leader' | 'Follower' | 'Remote'; size?: BadgeSize; compact?: boolean }) {
+export function RoleBadge({ role, size = 'sm', compact = false }: { role: ReplicaRole | 'Leader' | 'Follower' | 'Remote' | 'Unknown'; size?: BadgeSize; compact?: boolean }) {
   const normalizedRole = toUiRole(role.toString());
   return (
     <Badge variant="role" role={normalizedRole} size={size} compact={compact} title={normalizedRole}>

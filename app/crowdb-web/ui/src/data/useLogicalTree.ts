@@ -135,7 +135,9 @@ export function useLogicalTree({
       setReplicas(allReplicas);
       setError(null);
     } catch (err) {
-      console.error('Failed to fetch logical tree:', err);
+      setStores([]);
+      setGroups([]);
+      setReplicas([]);
       setError(err instanceof Error ? err : new Error('Unknown error fetching logical tree'));
     } finally {
       hasLoadedRef.current = true;

@@ -5,7 +5,7 @@
 
 Point reads (`get`) from the client through crowdb-rpc, the Paxos read
 policy, and the storage engine. The benchmark sentinel is
-`tools/bench-kv-read-regression.sh`.
+`tools/benchmark/bench-kv-read-regression.sh`.
 
 ## 1. Flow
 

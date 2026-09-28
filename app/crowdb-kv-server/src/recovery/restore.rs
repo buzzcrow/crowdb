@@ -122,9 +122,13 @@ pub async fn load_local_groups(
     }
 
     for (store_id, group_ids) in by_store {
-        let port = persisted_port_for_store(&registry.config.config_root, store_id)
-            .await
-            .unwrap_or_else(|| registry.next_port().unwrap_or(0));
+        let port = if let Some(port) = persisted_port_for_store(&registry.config.config_root, store_id).await
+        {
+            registry.claim_port(port);
+            port
+        } else {
+            registry.next_port().unwrap_or(0)
+        };
         let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
         debug!(s = store_id, bind_addr = %addr, "restore: creating PxKvStore");
         let mut store = PxKvStore::new(store_id, addr);

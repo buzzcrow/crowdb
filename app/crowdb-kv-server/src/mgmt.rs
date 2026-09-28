@@ -10,6 +10,7 @@
 //! - [`system_init`] — system initialization + health-check endpoints
 //! - [`topology`] — topology export + metrics endpoints
 
+mod discovery;
 mod group_ops;
 pub mod operation_registry;
 mod replica_ops;
@@ -122,6 +123,7 @@ pub fn router(state: RegistryArc) -> Router {
     Router::new()
         .route("/health", get(system_init::health_check))
         .route("/system/init", post(system_init::system_init))
+        .route("/system/group0-discovery", post(discovery::update))
         .route("/stores", get(store_ops::list_stores).post(store_ops::add_store))
         .route(
             "/stores/:sid",
@@ -190,6 +192,7 @@ pub fn router(state: RegistryArc) -> Router {
         replica_ops::remove_remote_replica,
         replica_ops::batch_add_remote_replicas,
         system_init::system_init,
+        discovery::update,
         topology::export_topology,
         topology::metrics
     ),

@@ -153,10 +153,18 @@ pub struct Cli {
     #[arg(long)]
     pub instance_id: Option<u64>,
 
+    /// Stable node identity published with the service-registry record.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub node_id: Option<u64>,
+
     /// Keep-alive heartbeat interval in seconds. 0 disables the
     /// keep-alive loop. Default: 10.
     #[arg(long, default_value_t = 10)]
     pub keepalive_interval: u64,
+
+    /// HTTP management seeds for discovering Group 0 when this node does not host it.
+    #[arg(long = "group0-management-seed")]
+    pub group0_management_seeds: Vec<String>,
 
     /// chunkdb range binding monitor tick interval in seconds. 0
     /// disables the monitor (the binding table is then operator-manual).

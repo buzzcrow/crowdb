@@ -820,12 +820,15 @@ Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, u
             return status;
         }
         const auto *response = verified_response<crowdb::diskio::proto::FBDiskReadResponse>(result.control);
-        if (response == nullptr || result.data == nullptr || crowdb_rpc_buffer_len(result.data) != part) {
+        if (response == nullptr) {
             return Status::corruption("DiskIO read response is malformed");
         }
         status = diskio_status(response->ret_code());
         if (!status.ok()) {
             return status;
+        }
+        if (result.data == nullptr || crowdb_rpc_buffer_len(result.data) != part) {
+            return Status::corruption("DiskIO read response is malformed");
         }
         std::memcpy(data + consumed, crowdb_rpc_buffer_data(result.data), part);
         consumed += part;

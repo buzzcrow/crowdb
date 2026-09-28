@@ -7,6 +7,7 @@
 //! removing [`ServerEntry`] records) and spawns / stops the server
 //! process via [`lifecycle`] (local-fork) or [`ssh`] (remote SSH).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crowdb_protocol::NodeId;
@@ -15,6 +16,70 @@ use crate::config::{ServerEntry, ServiceType};
 use crate::error::{Error, Result};
 use crate::lifecycle::{self, DeployRequest, DeployedServer};
 use crate::ops::OpContext;
+
+async fn group0_management_seeds(ctx: &OpContext, req: &DeployRequest) -> Result<Vec<String>> {
+    if !req.group0_management_seeds.is_empty() {
+        return Ok(req.group0_management_seeds.clone());
+    }
+    if ctx.config().group(0, 0).is_none() {
+        return Ok(Vec::new());
+    }
+
+    let members: HashSet<u64> = ctx
+        .sysmd()
+        .list_replicas_in_group(0, 0)
+        .await?
+        .into_iter()
+        .map(|replica| replica.node_id)
+        .collect();
+    let mut seeds: Vec<String> = ctx
+        .sysmd()
+        .read_all_kv_server_instances()
+        .await?
+        .into_iter()
+        .filter_map(|(_, instance)| {
+            let node_id = instance.extra?.kv_server?.node_id?;
+            members.contains(&node_id).then_some(instance.rpc_endpoint)
+        })
+        .collect();
+    seeds.sort_unstable();
+    seeds.dedup();
+    if seeds.is_empty() {
+        return Err(Error::NotFound {
+            kind: "live Group 0 management seed".into(),
+            id: "store 0 group 0".into(),
+        });
+    }
+    Ok(seeds)
+}
+
+fn restart_seed_hints(ctx: &OpContext, configured_seeds: &[String]) -> Result<Vec<String>> {
+    if !configured_seeds.is_empty() {
+        return Ok(configured_seeds.to_vec());
+    }
+    let config = ctx.config();
+    let Some(group) = config.group(0, 0) else {
+        return Ok(Vec::new());
+    };
+    let mut seeds: Vec<String> = group
+        .replicas
+        .iter()
+        .filter_map(|replica| {
+            config
+                .server_for_node(replica.node_id)
+                .map(|server| server.url.clone())
+        })
+        .collect();
+    seeds.sort_unstable();
+    seeds.dedup();
+    if seeds.is_empty() {
+        return Err(Error::NotFound {
+            kind: "configured Group 0 management seed".into(),
+            id: "store 0 group 0".into(),
+        });
+    }
+    Ok(seeds)
+}
 
 /// Deploy a `crowdb-kv-server` on a node.
 ///
@@ -41,12 +106,14 @@ pub async fn deploy(
         });
     }
 
+    let mut launch = req.clone();
+    launch.group0_management_seeds = group0_management_seeds(ctx, req).await?;
     let binary = req.binary.as_ref().map(|p| p.to_string_lossy().to_string());
     let deployed = if node.ssh_enabled() {
         let server_bin = binary.clone().unwrap_or_else(|| {
             std::env::var("CROWDB_KV_SERVER_BIN").unwrap_or_else(|_| "crowdb-kv-server".into())
         });
-        crate::ssh::deploy_via_ssh(req, &node, &server_bin)
+        crate::ssh::deploy_via_ssh(&launch, &node, &server_bin)
             .await
             .map_err(|e| Error::NodeUnreachable {
                 node_id: node_id.to_string(),
@@ -54,8 +121,8 @@ pub async fn deploy(
             })?
     } else {
         let result = match workspace_dir {
-            Some(dir) => lifecycle::deploy_local_in_dir(req, &node, dir).await,
-            None => lifecycle::deploy_local(req, &node).await,
+            Some(dir) => lifecycle::deploy_local_in_dir(&launch, &node, dir).await,
+            None => lifecycle::deploy_local(&launch, &node).await,
         };
         result.map_err(|e| Error::NodeUnreachable {
             node_id: node_id.to_string(),
@@ -129,6 +196,10 @@ pub async fn stop(ctx: &OpContext, node_id: NodeId, pid_override: Option<u32>) -
 ///
 /// `workspace_dir` is used for local-fork redeploys; `None` uses the
 /// current directory. SSH redeploys ignore it.
+/// `pid_override` is the current process PID when the caller owns a
+/// fresher runtime record than the persisted launch registry.
+/// `configured_seeds` are connection hints retained outside Group 0 so
+/// recovery works when every Group 0 member is stopped.
 ///
 /// # Errors
 /// Returns [`Error::NotFound`] if no server is deployed on the node.
@@ -136,6 +207,8 @@ pub async fn restart(
     ctx: &OpContext,
     node_id: NodeId,
     workspace_dir: Option<&std::path::Path>,
+    pid_override: Option<u32>,
+    configured_seeds: &[String],
 ) -> Result<DeployedServer> {
     let node = ctx.node_entry(node_id)?;
     let entry = ctx.server_for_node(node_id)?;
@@ -147,12 +220,22 @@ pub async fn restart(
         .rpc_port
         .ok_or_else(|| Error::Config(format!("server entry for node {node_id} has no rpc_port")))?;
 
+    let group0_management_seeds = restart_seed_hints(ctx, configured_seeds)?;
+
     // Stop the existing process if a PID is tracked.
-    if let Some(pid) = entry.pid {
+    if let Some(pid) = pid_override.or(entry.pid) {
         if node.ssh_enabled() {
-            let _ = crate::ssh::stop_via_ssh(&node, pid).await;
+            crate::ssh::stop_via_ssh(&node, pid).await?;
         } else {
-            let _ = tokio::task::spawn_blocking(move || lifecycle::stop_pid(pid)).await;
+            tokio::task::spawn_blocking(move || lifecycle::stop_pid(pid))
+                .await
+                .map_err(|error| Error::Io(std::io::Error::other(error)))??;
+            if lifecycle::process_is_alive(pid) {
+                return Err(Error::NodeUnreachable {
+                    node_id: node_id.to_string(),
+                    reason: format!("process {pid} is still alive after restart stop"),
+                });
+            }
         }
     }
 
@@ -164,6 +247,7 @@ pub async fn restart(
         election_profile: entry.election_profile.clone(),
         rpc_workers: entry.rpc_workers,
         no_fsync: entry.no_fsync,
+        group0_management_seeds,
         ..Default::default()
     };
 

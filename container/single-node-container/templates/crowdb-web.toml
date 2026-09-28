@@ -1,0 +1,10 @@
+version = 1
+mode = "docker"
+bind = "0.0.0.0"
+port = 8080
+group0_management_seeds = ["http://127.0.0.1:10000"]
+ui_root = "{{install_root}}/ui"
+monitor_status = "{{run_root}}/status/monitor.json"
+log_dir = "{{log_root}}/web"
+log_max_file_mb = 30
+log_max_files = 5

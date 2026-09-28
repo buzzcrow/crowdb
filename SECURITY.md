@@ -1,3 +1,6 @@
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
+
 # Security Policy
 
 ## Reporting a Vulnerability
@@ -5,13 +8,18 @@
 If you discover a security vulnerability in CROWDB, please report it responsibly:
 
 1. **Do not** open a public GitHub issue.
-2. Email **crow.db@outlook.com** with a description of the vulnerability and reproduction steps.
-3. You will receive an acknowledgment within 48 hours.
+2. Email **crow.db@outlook.com** with the affected version or commit, a description
+   of the vulnerability, its impact, and reproduction steps.
+3. Omit live credentials and private user data from the report.
 
 ## Scope
 
-CROWDB is currently a pre-production project. Security fixes will be prioritized but may not have defined SLAs.
+CROWDB `0.1.0-dev` is a development version for evaluation with disposable data.
+There is no production support commitment, supported stable release series, or
+guaranteed response time. Security reports are reviewed by the maintainers.
 
 ## Disclosure
 
-Once a fix is released, we will publish a GitHub Security Advisory crediting the reporter (unless they prefer to remain anonymous).
+Please coordinate public disclosure with the maintainers while a report is
+investigated and a fix is prepared. Reporter credit should follow the reporter's
+preference, including anonymity.

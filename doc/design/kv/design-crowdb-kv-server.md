@@ -132,6 +132,21 @@ Key endpoint groups:
   memtable into L1 in memory; used by the bench's
   `--flush-after-prepopulate` flag and as an admin drain).
 
+`POST /system/group0-discovery` accepts one to sixteen HTTP management
+origins for a process launched before Group 0 exists. The server atomically
+persists these connection hints and its keepalive loop discovers Group 0
+before registering. Explicit startup seeds take precedence. Repeating the
+same request is safe; malformed origins and embedded credentials are rejected.
+These hints survive process restart and never create stores, groups, replicas,
+or membership. Without hints or a local Group 0 replica, registration waits.
+
+The service instance identity is persisted with the node's fixed-layout
+configuration before opening listeners. Restarts reuse it, including when a
+previous process could not unregister. A changed explicit instance or node
+identity, or a malformed identity file, fails startup. Different durable roots
+receive different generated instance identities; duplicate live node identities
+remain ambiguous rather than being merged by discovery.
+
 ### 2.5 Group lifecycle
 
 Local replicas start as `Follower`; no role assignment needed at group

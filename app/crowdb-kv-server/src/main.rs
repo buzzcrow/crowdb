@@ -140,6 +140,15 @@ async fn main() {
     args.apply_config_overrides(&mut config)
         .unwrap_or_else(|e| panic!("invalid config after CLI overrides: {e}"));
 
+    let service_identity = (args.keepalive_interval > 0).then(|| {
+        crowdb_kv_server::background::identity::load_or_create(
+            &config.config_root,
+            args.instance_id,
+            args.node_id,
+        )
+        .unwrap_or_else(|error| panic!("failed to load service registration identity: {error}"))
+    });
+
     let registry = Arc::new(
         KvStoreRegistry::try_with_config(config.clone())
             .unwrap_or_else(|error| panic!("failed to initialize WAL backend: {error}"))
@@ -261,12 +270,7 @@ async fn main() {
     }
 
     // Start the keep-alive loop (registers under /srv/kv-server/<id>).
-    let keepalive = if args.keepalive_interval > 0 {
-        let instance_id = args.instance_id.unwrap_or_else(|| {
-            let id = crowdb_kv_client::new_client_id();
-            info!(instance_id = id, "keep-alive: generated instance id");
-            id
-        });
+    let keepalive = if let Some(identity) = service_identity {
         let mgmt_endpoint = format!("http://{display_addr}");
         // The group-0 RPC endpoint is the first store's listen addr.
         // In first-boot mode (store 0 not created yet), derive it from
@@ -282,9 +286,10 @@ async fn main() {
             .unwrap_or_else(|| format!("http://{display_addr}"));
         Some(crowdb_kv_server::background::keepalive::KeepAliveLoop::spawn(
             registry.clone(),
-            instance_id,
+            identity,
             mgmt_endpoint,
             &group0_ep,
+            args.group0_management_seeds.clone(),
             registry
                 .config
                 .node_root

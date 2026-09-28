@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
 use crowdb_protocol::common::HostedGroup;
 use tokio::task::JoinHandle;
-use tracing::{info, info_span, warn, Instrument};
+use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::store_registry::KvStoreRegistry;
 
@@ -31,47 +31,85 @@ impl KeepAliveLoop {
     /// from the registry each tick so the record reflects live state.
     pub fn spawn(
         registry: Arc<KvStoreRegistry>,
-        instance_id: u64,
+        identity: crowdb_protocol::common::KvServerIdentity,
         rpc_endpoint: String,
         group0_endpoint: &str,
+        group0_management_seeds: Vec<String>,
         data_root: String,
         interval_secs: u64,
     ) -> Self {
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let instance_id = identity.instance_id;
         let ep = group0_endpoint.to_string();
-        // The management endpoint (rpc_endpoint) is an HTTP URL suitable
-        // for /topology discovery seeds. The group0_endpoint is the
-        // crowdb-rpc endpoint for direct KV ops via seed_leader.
-        let mgmt_seeds = vec![rpc_endpoint.clone()];
+        // Before Group 0 exists, this node can seed its own RPC endpoint.
+        // Once Group 0 exists, use its management seeds for discovery.
+        let bootstrap_local = group0_management_seeds.is_empty();
+        let mgmt_seeds = if bootstrap_local {
+            vec![rpc_endpoint.clone()]
+        } else {
+            group0_management_seeds
+        };
         let handle = tokio::spawn(async move {
             let kv_client = CrowdbKvClient::new(ClientConfig::new(mgmt_seeds));
-            kv_client.seed_leader(0, 0, ep);
+            if bootstrap_local {
+                kv_client.seed_leader(0, 0, ep);
+            }
             let svc = ServiceRegistryClient::new(kv_client);
+            let mut discovered_seeds = Vec::new();
+
+            let discovery_ready = !bootstrap_local
+                || refresh_discovery(&registry, &svc, &mut discovered_seeds).await;
 
             // Initial registration.
             let (stores, groups) = hosted_summary(&registry);
-            if let Err(e) = svc
-                .register_kv_server(instance_id, &rpc_endpoint, &stores, &groups, "ok", &data_root)
+            let mut registered = if !discovery_ready {
+                false
+            } else if let Err(e) = svc
+                .register_kv_server(identity, &rpc_endpoint, &stores, &groups, "ok", &data_root)
                 .await
             {
                 warn!(error = %e, "keep-alive: initial register failed");
+                false
             } else {
                 info!(instance_id, "keep-alive: registered");
-            }
+                true
+            };
 
-            let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+            let retry_interval = tokio::time::Duration::from_secs(1);
+            let regular_interval = tokio::time::Duration::from_secs(interval_secs);
+            let mut ticker = tokio::time::interval_at(
+                tokio::time::Instant::now() + if registered { regular_interval } else { retry_interval },
+                if registered { regular_interval } else { retry_interval },
+            );
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             let mut stop_rx = stop_rx;
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
+                        if bootstrap_local
+                            && !refresh_discovery(&registry, &svc, &mut discovered_seeds).await
+                        {
+                            continue;
+                        }
                         let (stores, groups) = hosted_summary(&registry);
                         if let Err(e) = svc
-                            .heartbeat_kv_server(instance_id, &rpc_endpoint, &stores, &groups, "ok", &data_root)
+                            .heartbeat_kv_server(identity, &rpc_endpoint, &stores, &groups, "ok", &data_root)
                             .await
                         {
-                            warn!(error = %e, "keep-alive: heartbeat failed");
+                            if registered {
+                                warn!(error = %e, "keep-alive: heartbeat failed");
+                            } else {
+                                debug!(error = %e, "keep-alive: registration retry failed");
+                            }
+                        } else if !registered {
+                            registered = true;
+                            info!(instance_id, "keep-alive: registered");
+                            ticker = tokio::time::interval_at(
+                                tokio::time::Instant::now() + regular_interval,
+                                regular_interval,
+                            );
+                            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         }
                     }
                     _ = &mut stop_rx => {
@@ -113,6 +151,32 @@ impl KeepAliveLoop {
         }
         if let Some(h) = self.handle.take() {
             let _ = h.await;
+        }
+    }
+}
+
+async fn refresh_discovery(
+    registry: &KvStoreRegistry,
+    service: &ServiceRegistryClient,
+    current: &mut Vec<String>,
+) -> bool {
+    match super::discovery::load(&registry.config.config_root).await {
+        Ok(Some(seeds)) if seeds != *current => {
+            service.kv().set_mgmt_seeds(seeds.clone());
+            if let Err(error) = service.kv().refresh_topology().await {
+                debug!(%error, "keep-alive: discovery unavailable; deferring registration");
+                return false;
+            }
+            *current = seeds;
+            true
+        }
+        Ok(Some(_)) => true,
+        Ok(None) => registry
+            .get_store(0)
+            .is_some_and(|store| store.get_group(0).is_some()),
+        Err(error) => {
+            warn!(%error, "keep-alive: discovery hints unreadable; deferring registration");
+            false
         }
     }
 }

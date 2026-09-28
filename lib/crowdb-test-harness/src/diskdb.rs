@@ -104,9 +104,7 @@ impl DiskdbProcess {
         // reassigns them between the probe and the subprocess bind — the
         // TOCTOU that plagues `bind(:0)`-style ephemeral port selection
         // under load. The shared per-process claim file keeps the three
-        // ports pairwise distinct. DiskdbListen and DiskdbRpc bases
-        // differ by 200, so rpc_port = listen_port + 200, the offset
-        // the client derives.
+        // independently assigned ports pairwise distinct.
         let logical_identity = format!("instance-{instance_id}");
         let listen_port = i32::from(
             runtime
@@ -117,11 +115,6 @@ impl DiskdbProcess {
             runtime
                 .assign_named_port(ServicePort::DiskdbRpc, &logical_identity)
                 .unwrap_or_else(|error| panic!("assign DiskDB RPC port: {error}")),
-        );
-        debug_assert_eq!(
-            rpc_port - listen_port,
-            i32::from(crowdb_protocol::DISKDB_RPC_BASE) - i32::from(crowdb_protocol::DISKDB_LISTEN_BASE),
-            "allocator must preserve the listen->rpc offset"
         );
         let http_port = i32::from(
             runtime

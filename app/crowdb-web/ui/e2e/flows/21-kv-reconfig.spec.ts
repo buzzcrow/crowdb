@@ -212,10 +212,11 @@ test.describe('kv cluster · reconfiguration', () => {
 
     const allNodes = [421, 422, 423, 441, 442, 443, 444, 445, 451, 452, 453, 454, 461, 462, 463, 464, 465];
     await stepTime('setup: seedRackAndNode x17', () => Promise.all(allNodes.map((r) => seedRackAndNode(apiBase, r, r))));
-    await stepTime('setup: deployNodeServer x17', () => Promise.all(allNodes.map((n) => deployNodeServer(apiBase, n, freePort(), freePort()))));
+    await stepTime('setup: deploy Group 0 nodes', () => Promise.all(allNodes.slice(0, 3).map((n) => deployNodeServer(apiBase, n, freePort(), freePort()))));
 
     // Bootstrap group-0 on the first 3 nodes.
     await stepTime('setup: clusterInit', () => clusterInit(apiBase, [421, 422, 423]));
+    await stepTime('setup: deploy remaining nodes', () => Promise.all(allNodes.slice(3).map((n) => deployNodeServer(apiBase, n, freePort(), freePort()))));
 
     // Create all stores (skip clusterInit — group-0 already exists).
     await stepTime('setup: createStore x5', () => Promise.all([

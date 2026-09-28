@@ -13,13 +13,13 @@ use crowdb_protocol::chunkdb::rpc::{
     AdHocEcRecoveryRequest, AdHocEcRecoveryResponse, AdvanceChunkWriteRequest, AdvanceChunkWriteResponse,
     AllocateChunkRequest, AllocateChunkResponse, AllocateReplacementSegmentRequest,
     AllocateReplacementSegmentResponse, AppendChunkRequest, AppendChunkResponse,
-    CompleteMirrorToEcConversionRequest, CompleteMirrorToEcConversionResponse, DeleteChunkRequest,
-    DeleteChunkResponse, DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse,
-    MutateStripReservationRequest, MutateStripReservationResponse, PrepareMirrorToEcConversionRequest,
-    PrepareMirrorToEcConversionResponse, QueryChunkRequest, QueryChunkResponse,
-    ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, ReserveStripGroupRequest,
-    ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
-    UpdateChunkStripResponse,
+    CompleteMirrorToEcConversionRequest, CompleteMirrorToEcConversionResponse, DeleteChunkRangeRequest,
+    DeleteChunkRangeResponse, DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
+    DiscardReplacementSegmentResponse, MutateStripReservationRequest, MutateStripReservationResponse,
+    PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse, QueryChunkRequest,
+    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
+    ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
+    UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use std::sync::Arc;
 
@@ -51,6 +51,9 @@ pub trait ChunkAllocator: Send + Sync {
     }
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse>;
     async fn delete_chunk(&self, req: DeleteChunkRequest) -> Result<DeleteChunkResponse>;
+    async fn delete_chunk_range(&self, _req: DeleteChunkRangeRequest) -> Result<DeleteChunkRangeResponse> {
+        Err(crate::IoError::Unsupported("chunk range deletion".into()))
+    }
     async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse>;
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse>;
     async fn ad_hoc_ec_recovery(&self, _req: AdHocEcRecoveryRequest) -> Result<AdHocEcRecoveryResponse> {
@@ -128,6 +131,9 @@ impl<T: ChunkAllocator + ?Sized> ChunkAllocator for Arc<T> {
     async fn delete_chunk(&self, req: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
         (**self).delete_chunk(req).await
     }
+    async fn delete_chunk_range(&self, req: DeleteChunkRangeRequest) -> Result<DeleteChunkRangeResponse> {
+        (**self).delete_chunk_range(req).await
+    }
     async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
         (**self).update_chunk_strip(req).await
     }
@@ -199,6 +205,9 @@ impl ChunkAllocator for crowdb_chunkdb_client::ChunkdbClient {
     }
     async fn delete_chunk(&self, req: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::delete_chunk(self, req).await?)
+    }
+    async fn delete_chunk_range(&self, req: DeleteChunkRangeRequest) -> Result<DeleteChunkRangeResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::delete_chunk_range(self, req).await?)
     }
     async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::update_chunk_strip(self, req).await?)

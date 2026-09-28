@@ -52,7 +52,7 @@ async fn spawn_upstream() -> Option<Upstream> {
         ssh_password: None,
     };
     let req = DeployRequest {
-        server_id: "n1".into(),
+        server_id: "1".into(),
         rest_port: pick_free_port(),
         rpc_port: pick_free_port(),
         election_profile: Some("e2e".into()),
