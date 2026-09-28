@@ -68,12 +68,10 @@ not block R187 completion.
 7. Audit the S3 mini-cluster's local `console.toml` and restart path under the
    same authority boundary. Retain only launch inputs and bootstrap seeds
    locally after Group 0 cutover; do not replay a local topology copy.
-8. Migrate the verified bare-metal deployment and operations material from the
-   old `doc/user-manual/user-guide.md` into
-   `doc/user-manual/bare-metal-user-guide.md`, organized by KV cluster, chunk
-   layer, and data access servers. State that bare-metal is not yet
-   production-ready. Remove the old combined guide only after its supported
-   material and links are migrated; Docker documentation remains independent.
+8. Migrate the verified bare-metal deployment and operations material into
+   dedicated bare-metal deployment documentation, organized by KV cluster,
+   chunk layer, and data access servers. State that bare-metal is not yet
+   production-ready. Keep Docker deployment documentation independent.
 9. Complete container crash diagnostics without changing host-wide collector
    policy. Respect file-based core patterns, Ubuntu Apport, systemd-coredump and
    Docker Desktop's Linux VM; document where dumps actually go or why collection

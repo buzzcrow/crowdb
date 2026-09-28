@@ -21,7 +21,7 @@ stable IDs such as `I1`.
 Describe current state only. Omit requirement numbers, change history,
 before/after prose, file paths, and line numbers. Refer to searchable symbols.
 Keep architecture in root docs, detail in sub-designs, and operations in the
-user guide; link rather than repeat.
+relevant design or component README; link rather than repeat.
 
 When explicitly promoting a working draft, remove temporary scaffolding and
 requirement references, rewrite as current state, update `doc/doc_index.md`,

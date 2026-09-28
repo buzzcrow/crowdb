@@ -63,8 +63,8 @@ is a normal S3 object.
    separately; Kafka infrastructure is not required for the Python/SQL/engine
    acceptance above. Exercise a simple BI query through a tested SQL engine;
    do not claim direct BI-tool or catalog compatibility without its own fixture.
-6. Add only passing, reproducible recipes to
-   `doc/user-manual/docker-single-node-user-guide.md`. Maintain a client
+6. Add only passing, reproducible recipes to the container deployment
+   documentation. Maintain a client
    capability matrix with tested versions, read/write scope, known exclusions,
    and links to executable fixtures. Label the image and all examples as
    development/test, not production data storage or upgrade-stable service.

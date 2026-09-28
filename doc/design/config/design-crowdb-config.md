@@ -152,9 +152,8 @@ not produce an empty or cached topology. Hardware/process mutation is disabled,
 while authenticated logical operations use the existing operation paths.
 
 Only the container profile overrides public listeners to Iceberg 80, S3 81 and
-Web 8080. Bare-metal defaults remain independent. See the
-[single-node container guide](../../user-manual/docker-single-node-user-guide.md)
-for publication, volume and endpoint usage.
+Web 8080. Bare-metal defaults remain independent. Container publication,
+volume and endpoint usage are defined by the container deployment files.
 
 ## 7. Failure Handling
 

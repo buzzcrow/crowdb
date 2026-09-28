@@ -239,7 +239,7 @@ namespace-write capability and no catalog management or clear privilege; reader,
 manager and clearer do not inherit namespace-write rights. All four can read the
 configuration endpoint and namespaces. Only writer may invoke namespace or table mutations.
 Management commands are separate from the Iceberg REST listener. Operational
-configuration is in the [user guide](../../../user-manual/user-guide.md#9-iceberg-catalog-foundation).
+configuration follows the selected deployment profile and its startup inputs.
 
 Iceberg FileIO uses reserved S3-shaped locations so existing Iceberg clients can
 address immutable metadata and data files. The shape is a compatibility

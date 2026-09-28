@@ -45,4 +45,4 @@ and transport exposed through FFI.
   the backlog index only for selection, ordering, or status.
 - Pre-push or explicitly requested code review: `/review`.
 - Design questions: one section selected through `doc/doc_index.md`.
-- Operations/user behavior: `doc/user-manual/user-guide.md`.
+- Operations/user behavior: the relevant `doc/design/` or component README.

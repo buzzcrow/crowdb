@@ -145,12 +145,13 @@ is paused; it does not block the single-node image requirement.
   change the host-wide `core_pattern` from inside the container. Files:
   `container/single-node-container/{Dockerfile,entrypoint.sh,tests/**}`,
   `container/crowdb-monitor/src/**`,
-  `doc/user-manual/docker-single-node-user-guide.md`.
+  `container/single-node-container/README.md`.
 ## Documentation and completion
 
-- [ ] **Bare-metal guide**: migrate verified KV, chunk and access setup from
-  the old combined guide, state the non-production boundary, then fix links and
-  remove the old guide. Keep the Docker end-user guide independent.
+- [ ] **Bare-metal documentation**: migrate verified KV, chunk and access
+  setup into dedicated deployment documentation, state the non-production
+  boundary, then fix links and remove obsolete combined material. Keep Docker
+  deployment notes independent.
 - [ ] **Acceptance and cleanup**: run affected integration cases, full console
   and UI suites, Rust fmt and lint; update the relevant permanent architecture,
   then remove the requirement, backlog entry and this plan when complete.
