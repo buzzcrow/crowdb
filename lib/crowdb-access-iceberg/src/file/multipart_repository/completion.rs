@@ -21,6 +21,25 @@ pub enum MultipartWorkError {
 }
 
 impl MultipartRepository {
+    /// Loads the durable Complete selection, including any streamed part snapshots.
+    /// # Errors
+    /// Rejects missing, corrupt or foreign selection payloads.
+    pub async fn load_selection(
+        &self,
+        session: &MultipartSession,
+    ) -> Result<MultipartSelection, CatalogError> {
+        session.validate()?;
+        let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
+        let bytes = PayloadStore::new(self.store.clone())
+            .get(&completion.selection)
+            .await?;
+        let selection = MultipartSelection::decode(&bytes)?;
+        if selection.count() != completion.selected_parts {
+            return Err(ValidationError::Record.into());
+        }
+        Ok(selection)
+    }
+
     /// Freezes a caller-selected part revision list; byte work verifies each selected part.
     /// # Errors
     /// Rejects expired sessions, unresolved mutations and invalid selection bounds.

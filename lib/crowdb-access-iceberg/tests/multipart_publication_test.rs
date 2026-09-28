@@ -20,6 +20,7 @@ use crowdb_access_iceberg::file::{
 };
 use crowdb_access_iceberg::key::FileId;
 use crowdb_access_iceberg::operation::mutation_identity;
+use crowdb_access_iceberg::record::StorageRecord;
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::common::ChunkId;
 use md5::{Digest, Md5};
@@ -107,6 +108,41 @@ async fn upload_part_lookup_uses_one_catalog_read_before_the_session_cas() {
     assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - before, 1);
 }
 
+async fn replace_selected_part(fixture: &file::TestFile, first: &MultipartPart) {
+    let mut replacement = first.clone();
+    replacement.revision = 2;
+    replacement.owner.file = FileId::random();
+    replacement.stream.as_mut().unwrap().content = FileContent::from_locations(
+        &[Location {
+            chunk_id: Some(ChunkId { high: 7, low: 99 }),
+            offset: 100,
+            length: 41,
+            logical_offset: 0,
+            logical_length: 7,
+        }],
+        7,
+        "33333333333333333333333333333333".into(),
+    )
+    .unwrap();
+    let key = first.key().encode().unwrap();
+    let before = StorageRecord::MultipartPart(Box::new(first.clone()))
+        .encode()
+        .unwrap();
+    let after = StorageRecord::MultipartPart(Box::new(replacement))
+        .encode()
+        .unwrap();
+    fixture
+        .store
+        .compare_exchange(
+            &key,
+            Some(&before),
+            &after,
+            mutation_identity(&key, Some(&before), &after),
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn streamed_parts_complete_by_composing_locations_and_saved_md5_only() {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
@@ -116,7 +152,7 @@ async fn streamed_parts_complete_by_composing_locations_and_saved_md5_only() {
     session.owner.table = fixture.table;
     session.location = fixture.table.file("data/composed.parquet").unwrap();
     repository.begin(&session, 100).await.unwrap();
-    let mut selected = Vec::new();
+    let mut parts = Vec::new();
     for (number, size, md5) in [
         (1_u16, 7_u64, "11111111111111111111111111111111"),
         (2, 5, "22222222222222222222222222222222"),
@@ -150,18 +186,16 @@ async fn streamed_parts_complete_by_composing_locations_and_saved_md5_only() {
         session = load(&repository, &session).await;
         repository.settle_part(&session).await.unwrap();
         session = load(&repository, &session).await;
-        selected.push(SelectedPart {
-            number,
-            revision: 1,
-            digest: part.selection_digest(),
-        });
+        parts.push(part);
     }
-    let selection = MultipartSelection::new(selected).unwrap();
+    let selection = MultipartSelection::with_stream_parts(&parts).unwrap();
     repository
         .freeze_completion(&session, &selection, 102)
         .await
         .unwrap();
     session = load(&repository, &session).await;
+    assert_eq!(repository.load_selection(&session).await.unwrap(), selection);
+    replace_selected_part(&fixture, &parts[0]).await;
     assert_eq!(
         repository
             .prepare_stream_publication(&session, 103)

@@ -2,7 +2,7 @@ use crate::catalog::CatalogError;
 use crate::error::ValidationError;
 use crate::file::{
     file_key, ContentFormat, FileContent, FileKind, FileRecord, FileRepository, FileTree, MultipartPhase,
-    MultipartSelection, MultipartSession,
+    MultipartSelection, MultipartSession, MultipartStreamPart, SelectedPart, SelectedStreamPart,
 };
 use crate::operation::PayloadStore;
 use crate::record::StorageRecord;
@@ -40,15 +40,9 @@ impl MultipartRepository {
         let mut locations = Vec::<Location>::new();
         let mut length = 0_u64;
         let mut md5 = Md5::new();
-        for selected in selection.parts() {
-            let part = self
-                .part(session, selected.number)
-                .await?
-                .ok_or(ValidationError::Record)?;
-            if part.revision != selected.revision || part.selection_digest() != selected.digest {
-                return Err(ValidationError::Record.into());
-            }
-            let Some(stream) = &part.stream else {
+        for (index, selected) in selection.parts().iter().enumerate() {
+            let snapshot = selection.snapshots().and_then(|snapshots| snapshots.get(index));
+            let Some(stream) = self.selected_stream(session, selected, snapshot).await? else {
                 return Ok(None);
             };
             let etag = stream.content.etag().ok_or(ValidationError::Record)?;
@@ -116,6 +110,31 @@ impl MultipartRepository {
         completion.progress.completed_bytes = length;
         completion.publication = Some(publication);
         Ok(Some(self.exchange(session, &next).await?))
+    }
+
+    async fn selected_stream(
+        &self,
+        session: &MultipartSession,
+        selected: &SelectedPart,
+        snapshot: Option<&SelectedStreamPart>,
+    ) -> Result<Option<MultipartStreamPart>, CatalogError> {
+        if let Some(snapshot) = snapshot {
+            return Ok(Some(MultipartStreamPart {
+                length: snapshot.length,
+                content: FileContent::Locations {
+                    bytes: snapshot.bytes.clone(),
+                    etag: snapshot.etag.clone(),
+                },
+            }));
+        }
+        let part = self
+            .part(session, selected.number)
+            .await?
+            .ok_or(ValidationError::Record)?;
+        if part.revision != selected.revision || part.selection_digest() != selected.digest {
+            return Err(ValidationError::Record.into());
+        }
+        Ok(part.stream)
     }
     /// Freezes a semantically sealed record; callers must validate its canonical format first.
     /// # Errors

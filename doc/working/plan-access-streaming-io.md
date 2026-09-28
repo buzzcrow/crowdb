@@ -185,6 +185,13 @@ while keeping secrets in the environment.
   before/after listener loss and replay. Immutable PUT retries compare the
   saved MD5 ETag and length, so a retry that allocated a different chunk still
   resolves to the first published file; different ETags remain conflicts.
+- New streamed Complete selections now persist each selected part's length,
+  ETag and exact location bytes in the existing selection payload. Streamed
+  publication consumes that snapshot without rereading part records. A focused
+  test replaces a selected part record after freeze and still publishes the
+  originally selected locations and composite ETag; the 100 MiB replay test
+  passes with the new selection format. The old selection format remains
+  readable for legacy multipart recovery.
 
 ## Files
 
