@@ -31,7 +31,9 @@ Iceberg multipart path.
   MD5, selected revision and cleanup state. Use bucket identity and object key
   as namespace scope; preserve immutable part data after replacement.
   Versioned session/part records and ordered, binary-safe keys are in place;
-  persistence operations, replacement generations and cleanup state remain.
+  CAS-backed begin, phase transition and part replacement now use exact-value
+  confirmation after lost replies. Completion snapshots, HTTP wiring and
+  cleanup state remain.
 - [ ] **S3 routes and wire**: classify create/upload/list/complete/abort/list
   uploads, parse bounded completion XML, emit compatible responses and errors.
   Preserve SigV4 authentication and existing basic routes.

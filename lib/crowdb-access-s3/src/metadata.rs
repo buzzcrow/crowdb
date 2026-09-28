@@ -5,6 +5,7 @@
 
 mod key;
 mod multipart;
+mod multipart_repository;
 mod namespace;
 mod record;
 mod store;
@@ -23,6 +24,7 @@ mod generated {
 
 pub use key::{BucketId, MetadataKey, MetadataKeyError, TenantId};
 pub use multipart::{MultipartPartRecord, MultipartPhase, MultipartRecordError, MultipartSessionRecord};
+pub use multipart_repository::{MultipartRepository, MultipartRepositoryError};
 pub use namespace::{BucketDeleteOutcome, BucketNamespace, BucketNamespaceError};
 pub use record::{BucketNameRecord, MetadataRecordError, ObjectRecord};
 pub use store::{ChunkKvMetadataStore, MetadataStoreError, PutIfAbsentOutcome};
