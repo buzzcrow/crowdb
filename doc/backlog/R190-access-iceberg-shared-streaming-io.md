@@ -3,7 +3,7 @@
 
 ### R190: access — Shared S3 and Iceberg streaming data path
 
-Status: Deferred until R187 is complete, at the user's request. Begin with a
+Status: Ready after R187 completion, at the user's request. Begin with a
 complete read/write/delete/GC flow review before implementation.
 
 ## Problem
@@ -64,8 +64,7 @@ S3 and Iceberg metadata semantics:
 - R168/R169/R147 contain deferred shared-storage reclamation work. Do not claim
   those are implemented or weaken Iceberg recovery to bypass them; implement
   any ownership support required for this path within this requirement.
-- R187 remains open for final container/CI/docs acceptance after this refactor.
-  R188 remains paused.
+- R188 remains a separate console-authority follow-up.
 
 ## Acceptance
 

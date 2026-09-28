@@ -7,8 +7,7 @@ Implements [R190](../backlog/R190-access-iceberg-shared-streaming-io.md).
 Goal: share S3's whole-object write/read path with Iceberg, preserving authority
 and crash recovery while eliminating per-frame catalog operations.
 
-Status: Paused at the user's request until R187 completes. No production
-refactor has started.
+Status: Ready after R187 completion. No production refactor has started.
 
 ## Execution
 

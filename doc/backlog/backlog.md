@@ -18,7 +18,7 @@ complexity, and dependency. Before implementation, follow the
 - **[R190](R190-access-iceberg-shared-streaming-io.md)** — align Iceberg PUT,
   multipart and GET/Range with S3's bounded native receive and Chunk data path;
   remove per-frame catalog transactions while preserving publication and recovery.
-  Deferred until R187 completes; first review read, write, delete and GC together.
+  Ready for the full read, write, delete and GC review before implementation.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -82,18 +82,13 @@ Caches, selected ORC and container engine workflows remain separate.
   and delete validation with official-client fixtures. The Parquet catalog is
   complete; ORC does not block container or client-ecosystem acceptance.
 - **[R189](R189-access-iceberg-container-ecosystem.md)** — container client and
-  engine workflows — Area: Iceberg / clients / deployment — **Deferred until
-  R187 is publish-ready.** Verify Python dataframe, local SQL, distributed
+  engine workflows — Area: Iceberg / clients / deployment — **Ready after local
+  container verification.** Verify Python dataframe, local SQL, distributed
   engine and optional ingest scenarios against the single-node image; publish
   only tested compatibility recipes.
 
-### Planned — Single-container preview
+### Planned — Console authority and deployment
 
-- **[R187](R187-deployment-single-node-docker-preview.md)** — single-node Docker
-  preview — Area: deployment / S3 / Iceberg / web console — Build one
-  non-production image that idempotently bootstraps and supervises the normal
-  CROWDB process graph, exposes S3, Iceberg, and web endpoints, persists through
-  one mounted data root, and proves client workflows and restart behavior.
 - **[R188](R188-console-group0-authority.md)** — Group 0 authority and
   deployment configuration cleanup — Area: console / CLI / KV — Separate bare-metal launch policy from
   cluster sysdata, remove the mixed local topology fallback, and finish

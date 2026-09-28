@@ -5,7 +5,7 @@
 
 ## Status
 
-Deferred until R187 provides a locally verified single-node image. This is a
+Ready after R187 local single-node image verification. This is a
 separate client-ecosystem project, not a gate for publishing the non-production
 Docker preview and is independent of the completed REST/official-SDK acceptance.
 
