@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crowdb_access_s3::metadata::ChunkKvMetadataStore;
-use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
+use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig as ChunkKvConfig, Group0ChunkKvRangeCatalogSource,
 };
@@ -39,6 +39,25 @@ impl S3StorageClients {
         diskio_rpc_workers: u32,
         small_write: SmallWritePolicy,
     ) -> Result<Self, StorageConnectError> {
+        Self::connect_with_read_policy(
+            management_seeds,
+            diskio_connections_per_endpoint,
+            diskio_rpc_workers,
+            small_write,
+            ChunkReadPolicy::default(),
+        )
+        .await
+    }
+
+    /// # Errors
+    /// Returns an error when the management or `DiskIO` connection cannot be established.
+    pub async fn connect_with_read_policy(
+        management_seeds: Vec<String>,
+        diskio_connections_per_endpoint: usize,
+        diskio_rpc_workers: u32,
+        small_write: SmallWritePolicy,
+        read_policy: ChunkReadPolicy,
+    ) -> Result<Self, StorageConnectError> {
         let kv = Arc::new(CrowdbKvClient::new(KvConfig::new(management_seeds.clone())));
         let config = ChunkKvConfig::default();
         let catalog = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&kv)));
@@ -49,7 +68,7 @@ impl S3StorageClients {
             .refresh_catalog()
             .await
             .map_err(|error| StorageConnectError::ChunkKv(error.to_string()))?;
-        let chunks = ChunkIoClient::connect_with_kv(
+        let chunks = ChunkIoClient::connect_with_kv_read_policy(
             ChunkIoClientConfig {
                 management_seeds,
                 diskio_connections_per_endpoint,
@@ -57,6 +76,7 @@ impl S3StorageClients {
                 small_write,
             },
             Arc::clone(&kv),
+            read_policy,
         )
         .await
         .map_err(|error| StorageConnectError::ChunkIo(error.to_string()))?;

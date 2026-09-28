@@ -127,6 +127,7 @@ impl PriorManifestSource {
         let payload = match &record.content {
             FileContent::Inline { bytes, .. } => bytes.capacity(),
             FileContent::Chunks { .. } => 0,
+            FileContent::Locations { bytes, etag } => bytes.capacity() + etag.capacity(),
         };
         let bytes = std::mem::size_of::<Anchor>() + 128 + path.len() * 2 + payload;
         *retained = retained

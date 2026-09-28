@@ -7,10 +7,10 @@ const MAX_COMPLETE_XML_BYTES: usize = 2 * 1024 * 1024;
 const MAX_COMPLETE_PARTS: usize = 10_000;
 const S3_NAMESPACE: &[u8] = b"http://s3.amazonaws.com/doc/2006-03-01/";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletePart {
     pub number: u16,
-    pub digest: [u8; 32],
+    pub etag: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,7 +96,7 @@ impl CompleteSelection {
                         }
                         (State::Part, b"Part") => {
                             let number = number.take().ok_or(CompleteRequestError)?;
-                            let digest = digest.take().ok_or(CompleteRequestError)?;
+                            let etag = digest.take().ok_or(CompleteRequestError)?;
                             if number == 0
                                 || number > 10_000
                                 || parts
@@ -105,7 +105,7 @@ impl CompleteSelection {
                             {
                                 return Err(CompleteRequestError);
                             }
-                            parts.push(CompletePart { number, digest });
+                            parts.push(CompletePart { number, etag });
                             State::Root
                         }
                         (State::Root, b"CompleteMultipartUpload") if !parts.is_empty() => State::Done,
@@ -140,16 +140,16 @@ impl CompleteSelection {
                 .part(session, requested.number)
                 .await?
                 .ok_or(CompleteResolveError::InvalidPart)?;
-            if part.tree.digest != requested.digest {
+            if part.etag() != requested.etag {
                 return Err(CompleteResolveError::InvalidPart);
             }
-            if index + 1 < self.parts.len() && part.tree.length < 5 * 1024 * 1024 {
+            if index + 1 < self.parts.len() && part.length() < 5 * 1024 * 1024 {
                 return Err(CompleteResolveError::EntityTooSmall);
             }
             selected.push(SelectedPart {
                 number: part.number,
                 revision: part.revision,
-                digest: part.tree.digest,
+                digest: part.selection_digest(),
             });
         }
         MultipartSelection::new(selected).map_err(|_| CompleteResolveError::InvalidPart)
@@ -166,19 +166,18 @@ enum State {
     Done,
 }
 
-fn parse_etag(bytes: &[u8]) -> Result<[u8; 32], CompleteRequestError> {
+fn parse_etag(bytes: &[u8]) -> Result<String, CompleteRequestError> {
     let hex = bytes
         .strip_prefix(b"\"")
         .and_then(|bytes| bytes.strip_suffix(b"\""))
         .ok_or(CompleteRequestError)?;
-    if hex.len() != 64 {
+    if hex.len() != 32 && hex.len() != 64 {
         return Err(CompleteRequestError);
     }
-    let mut digest = [0; 32];
-    for (target, pair) in digest.iter_mut().zip(hex.chunks_exact(2)) {
-        *target = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
+    for pair in hex.chunks_exact(2) {
+        let _ = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
     }
-    Ok(digest)
+    String::from_utf8(hex.to_vec()).map_err(|_| CompleteRequestError)
 }
 
 fn append_etag(etag: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CompleteRequestError> {

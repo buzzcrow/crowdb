@@ -14,6 +14,33 @@ use hyper::{header::HeaderValue, HeaderMap};
 
 struct TestFrames(VecDeque<Bytes>);
 
+#[test]
+fn upload_integrity_is_present_only_with_a_declared_checksum_or_signed_chunks() {
+    let empty = HeaderMap::new();
+    assert!(!FileUploadBody::new(Full::new(Bytes::new()), &empty, None, 100)
+        .unwrap()
+        .has_integrity());
+    let mut md5 = HeaderMap::new();
+    md5.insert(
+        "content-md5",
+        HeaderValue::from_static("1B2M2Y8AsgTpgAmY7PhCfg=="),
+    );
+    assert!(FileUploadBody::new(Full::new(Bytes::new()), &md5, None, 100)
+        .unwrap()
+        .has_integrity());
+    let mut crc = HeaderMap::new();
+    crc.insert("x-amz-checksum-crc32c", HeaderValue::from_static("AAAAAA=="));
+    assert!(FileUploadBody::new(Full::new(Bytes::new()), &crc, None, 100)
+        .unwrap()
+        .has_integrity());
+    let (headers, verifier, wire) = signed::fixture();
+    assert!(
+        FileUploadBody::new(Full::new(Bytes::from(wire)), &headers, Some(verifier), 100_000)
+            .unwrap()
+            .has_integrity()
+    );
+}
+
 #[tokio::test]
 async fn content_md5_checks_decoded_bytes_before_successful_eof() {
     use base64::{engine::general_purpose::STANDARD, Engine};
@@ -85,7 +112,7 @@ async fn aws_published_signed_trailer_vector_survives_arbitrary_http_boundaries(
         let mut output = Vec::new();
         while let Some(frame) = body.frame().await {
             let bytes = frame.unwrap().into_data().unwrap();
-            assert!(bytes.len() <= 64 * 1024);
+            assert!(bytes.len() <= 1024 * 1024);
             output.extend_from_slice(&bytes);
         }
         assert!(body.is_end_stream());

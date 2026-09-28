@@ -68,7 +68,8 @@ async fn slow_first_session_does_not_starve_later_expiry_or_advance_unfinished_b
         revision: 1,
         modified_ms: 101,
         owner,
-        tree: writer.finish().await.unwrap(),
+        tree: Some(writer.finish().await.unwrap()),
+        stream: None,
     };
     repository.reserve_part(&first, &part, 101).await.unwrap();
     first = repository
@@ -85,7 +86,7 @@ async fn slow_first_session_does_not_starve_later_expiry_or_advance_unfinished_b
     let selection = MultipartSelection::new(vec![SelectedPart {
         number: 1,
         revision: 1,
-        digest: part.tree.digest,
+        digest: part.selection_digest(),
     }])
     .unwrap();
     repository

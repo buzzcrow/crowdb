@@ -78,6 +78,7 @@ impl ManagedPipeline {
 }
 
 mod batch;
+mod stream_object;
 
 struct PipelineWorker {
     runtime: Arc<SmallPoolRuntime>,
@@ -127,7 +128,13 @@ impl PipelineWorker {
             if dequeued {
                 self.note_dequeue(&first);
             }
-            if let Err(error) = self.ensure_object_fits(frame_bytes(first.len)?).await {
+            let fit = if first.len > MAX_FRAME_PAYLOAD_BYTES {
+                self.ensure_stream_object_fits(stream_object::physical_bytes(first.len)?)
+                    .await
+            } else {
+                self.ensure_object_fits(frame_bytes(first.len)?).await
+            };
+            if let Err(error) = fit {
                 fail_one(first, &error.to_string(), &self.runtime.metrics);
                 self.fail_remaining(&error.to_string()).await;
                 let _ = self.finish_chunks().await;
@@ -141,6 +148,18 @@ impl PipelineWorker {
                 .last_active_ms
                 .store(self.runtime.now_ms(), Ordering::Relaxed);
             if let Err(error) = result {
+                if matches!(error, IoError::SourceRead(_)) {
+                    let replacement = match self.replacement.take() {
+                        Some(chunk) => chunk,
+                        None => {
+                            OwnedChunk::allocate(&self.runtime, Arc::clone(&self.route.conversion_active))
+                                .await?
+                        }
+                    };
+                    self.chunk.finish().await?;
+                    self.chunk = replacement;
+                    continue;
+                }
                 self.receiver.close();
                 self.fail_remaining(&error.to_string()).await;
                 let _ = self.finish_chunks().await;
@@ -240,6 +259,9 @@ impl PipelineWorker {
     }
 
     fn collect_batch(&mut self, first: PendingObject) -> Vec<PendingObject> {
+        if first.len > MAX_FRAME_PAYLOAD_BYTES {
+            return vec![first];
+        }
         let mut bytes = frame_bytes(first.len).unwrap_or(usize::MAX);
         let mut batch = vec![first];
         while batch.len() < self.runtime.policy.max_batch_objects
@@ -1091,8 +1113,19 @@ impl OwnedChunk {
         Ok(())
     }
 
-    async fn write_batch(&mut self, batch: Vec<PendingObject>, metrics: &SmallWriteMetrics) -> Result<()> {
-        match self.try_write_batch(&batch, metrics).await {
+    async fn write_batch(
+        &mut self,
+        mut batch: Vec<PendingObject>,
+        metrics: &SmallWriteMetrics,
+    ) -> Result<()> {
+        let result = if batch.len() == 1 && batch[0].len > MAX_FRAME_PAYLOAD_BYTES {
+            self.try_write_stream_object(&mut batch[0], metrics)
+                .await
+                .map(|location| vec![location])
+        } else {
+            self.try_write_batch(&batch, metrics).await
+        };
+        match result {
             Ok(locations) => {
                 for (object, location) in batch.into_iter().zip(locations) {
                     metrics.completed.fetch_add(1, Ordering::Relaxed);

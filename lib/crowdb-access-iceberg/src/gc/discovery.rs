@@ -232,6 +232,39 @@ impl GcRepository {
         self.session_is_abandoned(task, &session, now_ms).await
     }
 
+    pub(super) async fn part_is_selected(
+        &self,
+        task: &GcTask,
+        part: &crate::file::MultipartPart,
+    ) -> Result<bool, CatalogError> {
+        let key = IcebergKey::Catalog {
+            catalog: task.context.catalog,
+            scope: CatalogScope::MultipartSession,
+            suffix: part.upload.as_bytes().to_vec(),
+        };
+        let value = self
+            .store
+            .get(&key.encode()?)
+            .await?
+            .ok_or(ValidationError::Record)?;
+        let StorageRecord::MultipartSession(session) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        if session.phase != MultipartPhase::Published {
+            return Ok(false);
+        }
+        let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
+        let bytes = crate::operation::PayloadStore::new(self.store.clone())
+            .get(&completion.selection)
+            .await?;
+        let selection = crate::file::MultipartSelection::decode(&bytes)?;
+        Ok(selection.parts().iter().any(|selected| {
+            selected.number == part.number
+                && selected.revision == part.revision
+                && selected.digest == part.selection_digest()
+        }))
+    }
+
     pub(super) async fn session_is_abandoned(
         &self,
         task: &GcTask,

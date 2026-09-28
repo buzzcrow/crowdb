@@ -129,7 +129,6 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
                 .saturating_add(grace_ms)
     };
     match record {
-        StorageRecord::GcPin(pin) => owns(pin.head.table) && pin.protects(now_ms),
         StorageRecord::TableCommitOperation(operation) => {
             owns(operation.before.table)
                 && (retained(operation.identity.issued_ms)

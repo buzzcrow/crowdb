@@ -50,7 +50,7 @@ impl Default for SmallWritePolicy {
     fn default() -> Self {
         const MIB: usize = 1024 * 1024;
         Self {
-            object_limit: MIB,
+            object_limit: 8 * MIB,
             // 1,000 concurrent 1 MiB objects are a normal S3 small-object
             // workload.  3,000 and 5,000 require roughly 3.25 GiB and 5.25
             // GiB respectively after pipeline and conversion headroom; set
@@ -82,17 +82,17 @@ impl Default for SmallWritePolicy {
 
 impl SmallWritePolicy {
     pub fn validate(&self) -> Result<(), IoError> {
-        const HARD_LIMIT: usize = 1024 * 1024;
+        const HARD_LIMIT: usize = 8 * 1024 * 1024;
         if self.object_limit == 0 || self.object_limit > HARD_LIMIT {
             return Err(IoError::Internal(
-                "small object limit must be in 1..=1 MiB".into(),
+                "small object limit must be in 1..=8 MiB".into(),
             ));
         }
-        let shadow_budget = self.max_pipelines.saturating_mul(HARD_LIMIT);
+        let shadow_budget = self.max_pipelines.saturating_mul(1024 * 1024);
         let conversion_budget = if self.conversion_enabled {
             self.conversion_data_num
                 .saturating_add(self.conversion_code_num)
-                .saturating_mul(HARD_LIMIT)
+                .saturating_mul(1024 * 1024)
         } else {
             0
         };

@@ -75,6 +75,7 @@ impl GcCandidate {
                 owner: session.owner,
                 frames: Vec::new(),
                 pending: None,
+                next_location: 0,
             })
         } else {
             TreeReclaimCursor::new(&self.file)
@@ -89,16 +90,26 @@ impl GcCandidate {
             .owner
             .table
             .file(&format!("gc-parts/{}/{:05}.parquet", part.upload, part.number))?;
+        let (length, digest, content) = if let Some(tree) = &part.tree {
+            (
+                tree.length,
+                tree.digest,
+                FileContent::Chunks {
+                    root: tree.root.clone(),
+                },
+            )
+        } else {
+            let stream = part.stream.as_ref().ok_or(ValidationError::Record)?;
+            (stream.length, [0; 32], stream.content.clone())
+        };
         let file = FileRecord {
             file: part.owner.file,
             location,
             kind: FileKind::Unbound,
             format: ContentFormat::Parquet,
-            length: part.tree.length,
-            digest: part.tree.digest,
-            content: FileContent::Chunks {
-                root: part.tree.root.clone(),
-            },
+            length,
+            digest,
+            content,
             hint: None,
         };
         file.validate()?;
@@ -133,6 +144,16 @@ impl GcCandidate {
     pub fn validate(&self) -> Result<(), ValidationError> {
         self.file.validate()?;
         self.cursor.validate()?;
+        if let Some(locations) = self.file.content.locations(self.file.length)? {
+            if usize::from(self.cursor.next_location) > locations.len()
+                || !self.cursor.frames.is_empty()
+                || self.cursor.pending.is_some()
+            {
+                return Err(ValidationError::Record);
+            }
+        } else if self.cursor.next_location != 0 {
+            return Err(ValidationError::Record);
+        }
         if let Some(session) = &self.assembly {
             if self.part.is_some()
                 || Self::assembly_file(session)? != self.file

@@ -29,7 +29,6 @@ impl StorageRecord {
                 Ok(())
             }
             (Self::GcPage(page), key) if *key == page.key() => Ok(()),
-            (Self::GcPin(pin), key) if *key == pin.key() => Ok(()),
             _ => return None,
         })
     }

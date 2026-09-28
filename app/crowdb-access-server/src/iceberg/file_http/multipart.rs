@@ -3,10 +3,11 @@ use std::sync::Arc;
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogError};
 use crowdb_access_iceberg::file::{
     FileIdentity, FileOperation, FileSealError, FileSealer, MultipartAdmissionLimits, MultipartPart,
-    MultipartPhase, MultipartSession, MultipartWorkError,
+    MultipartPhase, MultipartSession, MultipartStreamPart, MultipartWorkError,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
 use crowdb_access_s3::auth::StreamingPayloadVerifier;
+use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::http::header::HeaderValue;
@@ -45,6 +46,7 @@ impl FileHttp {
             .map(Some)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn multipart_request(
         self: &Arc<Self>,
         file: &FileRequest,
@@ -53,6 +55,7 @@ impl FileHttp {
         admission: &FileTransferAdmission,
         now_ms: u64,
         streaming: Option<StreamingPayloadVerifier>,
+        native_receiver: Option<&NativeBodyReceiver>,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         match (&file.multipart, file.operation) {
             (Some(MultipartRequest::Create), FileOperation::CreateMultipart) => {
@@ -66,6 +69,7 @@ impl FileHttp {
                     admission,
                     now_ms,
                     streaming,
+                    native_receiver,
                 )
                 .await
             }
@@ -159,6 +163,7 @@ impl FileHttp {
             .map_err(|_| FileS3ErrorCode::InternalError)
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn upload(
         &self,
         session: MultipartSession,
@@ -167,6 +172,7 @@ impl FileHttp {
         admission: &FileTransferAdmission,
         now_ms: u64,
         streaming: Option<StreamingPayloadVerifier>,
+        native_receiver: Option<&NativeBodyReceiver>,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         let digest = if streaming.is_some() {
             None
@@ -176,25 +182,52 @@ impl FileHttp {
         let (parts, body) = request.into_parts();
         let mut body = FileUploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
             .map_err(encoding_error)?;
+        if digest.is_none() && !body.has_integrity() {
+            return Err(FileS3ErrorCode::InvalidRequest);
+        }
         let length = body.decoded_length();
         let owner = FileIdentity {
             table: session.owner.table,
             file: FileId::random(),
         };
-        let tree = admission
-            .receive(
+        let (tree, stream) = if let Some(client) = self.blocks.stream_client() {
+            let record = super::stream::upload(
+                client,
                 &self.uploads,
+                admission,
                 &mut body,
-                self.blocks.clone(),
                 owner,
+                session.location.clone(),
                 length,
                 digest,
+                native_receiver,
+                self.small_threshold_exclusive,
             )
-            .await
-            .map_err(|error| {
-                body.failure()
-                    .map_or_else(|| admission_error(error), encoding_error)
-            })?;
+            .await?;
+            (
+                None,
+                Some(MultipartStreamPart {
+                    length: record.length,
+                    content: record.content,
+                }),
+            )
+        } else {
+            let tree = admission
+                .receive(
+                    &self.uploads,
+                    &mut body,
+                    self.blocks.clone(),
+                    owner,
+                    length,
+                    digest,
+                )
+                .await
+                .map_err(|error| {
+                    body.failure()
+                        .map_or_else(|| admission_error(error), encoding_error)
+                })?;
+            (Some(tree), None)
+        };
         let before = self
             .multipart
             .part(&session, part_number)
@@ -207,6 +240,7 @@ impl FileHttp {
             modified_ms: now_ms,
             owner,
             tree,
+            stream,
         };
         if !self
             .multipart
@@ -358,6 +392,17 @@ impl FileHttp {
                         .completion
                         .as_ref()
                         .ok_or(FileS3ErrorCode::InternalError)?;
+                    if completion.progress.next_part == 0
+                        && self
+                            .multipart
+                            .prepare_stream_publication(&session, now_ms)
+                            .await
+                            .map_err(catalog_error)?
+                            .is_some()
+                    {
+                        session = self.current(&session).await?;
+                        continue;
+                    }
                     if completion.progress.next_part < completion.selected_parts {
                         self.multipart
                             .advance_completion(

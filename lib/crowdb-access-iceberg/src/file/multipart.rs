@@ -2,6 +2,8 @@ use crate::catalog::CatalogContext;
 use crate::error::ValidationError;
 use crate::key::{CatalogScope, FileId, IcebergKey, OperationId};
 use crate::operation::PayloadReference;
+use sha2::{Digest, Sha256};
+use std::fmt::Write;
 
 use super::{AssemblyProgress, FileContent, FileDigest, FileIdentity, FileLocation, FileTree};
 
@@ -114,19 +116,21 @@ impl MultipartSession {
         if let Some(pending) = &self.pending {
             pending.validate(self)?;
         }
-        let candidate = self
-            .completion
-            .as_ref()
-            .and_then(|completion| completion.candidate.as_ref());
+        let completion = self.completion.as_ref();
         let valid = match self.phase {
             MultipartPhase::Open => self.completion.is_none() && self.published.is_none(),
             MultipartPhase::Completing => {
-                self.completion.is_some() && candidate.is_none() && self.published.is_none()
+                completion.is_some_and(|completion| completion.publication.is_none())
+                    && self.published.is_none()
             }
             MultipartPhase::Publishing | MultipartPhase::Conflicted => {
-                candidate.is_some() && self.published.is_none()
+                completion.is_some_and(|completion| completion.publication.is_some())
+                    && self.published.is_none()
             }
-            MultipartPhase::Published => candidate.is_some() && self.published.is_some(),
+            MultipartPhase::Published => {
+                completion.is_some_and(|completion| completion.publication.is_some())
+                    && self.published.is_some()
+            }
             MultipartPhase::Aborted => self.published.is_none(),
         };
         if !valid {
@@ -152,7 +156,9 @@ impl MultipartCompletion {
             || progress.part_offset > progress.completed_bytes
             || progress.active.is_some() != progress.part_digest.is_some()
             || progress.active.is_some() != (progress.part_offset > 0)
-            || (progress.writer.is_none() && (progress.next_part != 0 || progress.completed_bytes != 0))
+            || (progress.writer.is_none()
+                && self.publication.is_none()
+                && (progress.next_part != 0 || progress.completed_bytes != 0))
         {
             return Err(ValidationError::Record);
         }
@@ -183,7 +189,10 @@ impl MultipartCompletion {
                 return Err(ValidationError::Record);
             }
         }
-        if self.candidate.is_some() != self.publication.is_some() {
+        if self.candidate.is_none()
+            && self.publication.is_some()
+            && (progress.writer.is_some() || progress.next_part != self.selected_parts)
+        {
             return Err(ValidationError::Record);
         }
         if let Some(publication) = &self.publication {
@@ -207,7 +216,14 @@ pub struct MultipartPart {
     pub revision: u64,
     pub modified_ms: u64,
     pub owner: FileIdentity,
-    pub tree: FileTree,
+    pub tree: Option<FileTree>,
+    pub stream: Option<MultipartStreamPart>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultipartStreamPart {
+    pub length: u64,
+    pub content: FileContent,
 }
 
 impl MultipartPart {
@@ -228,7 +244,58 @@ impl MultipartPart {
         if self.number == 0 || self.number > 10_000 || self.revision == 0 || self.modified_ms == 0 {
             return Err(ValidationError::Record);
         }
-        validate_tree(&self.tree)
+        match (&self.tree, &self.stream) {
+            (Some(tree), None) => validate_tree(tree),
+            (None, Some(stream)) => stream.content.validate(stream.length, &[0; 32]),
+            _ => Err(ValidationError::Record),
+        }
+    }
+
+    #[must_use]
+    pub fn length(&self) -> u64 {
+        self.tree.as_ref().map_or_else(
+            || self.stream.as_ref().map_or(0, |stream| stream.length),
+            |tree| tree.length,
+        )
+    }
+
+    #[must_use]
+    pub fn etag(&self) -> String {
+        self.stream
+            .as_ref()
+            .and_then(|stream| stream.content.etag())
+            .map_or_else(
+                || {
+                    let mut etag = String::with_capacity(64);
+                    if let Some(tree) = &self.tree {
+                        for byte in tree.digest {
+                            write!(&mut etag, "{byte:02x}").expect("string write cannot fail");
+                        }
+                    }
+                    etag
+                },
+                str::to_owned,
+            )
+    }
+
+    #[must_use]
+    /// # Panics
+    /// Panics if the part has neither a legacy tree nor a streamed descriptor.
+    pub fn selection_digest(&self) -> [u8; 32] {
+        if let Some(tree) = &self.tree {
+            return tree.digest;
+        }
+        let stream = self
+            .stream
+            .as_ref()
+            .expect("validated multipart part has content");
+        let mut digest = Sha256::new();
+        digest.update(stream.length.to_le_bytes());
+        if let FileContent::Locations { bytes, etag } = &stream.content {
+            digest.update(bytes);
+            digest.update(etag.as_bytes());
+        }
+        digest.finalize().into()
     }
 
     /// # Errors
@@ -244,7 +311,7 @@ impl MultipartPart {
             || self.owner.table != session.owner.table
             || self.owner.file == session.owner.file
             || self.number > session.limits.max_parts
-            || self.tree.length > session.limits.max_part_bytes
+            || self.length() > session.limits.max_part_bytes
         {
             return Err(ValidationError::Record);
         }
@@ -263,7 +330,7 @@ impl MultipartPartMutation {
         self.after.validate_binding(session)?;
         if session.phase != MultipartPhase::Open
             || session.part_count == 0
-            || session.staged_bytes < self.after.tree.length
+            || session.staged_bytes < self.after.length()
         {
             return Err(ValidationError::Record);
         }

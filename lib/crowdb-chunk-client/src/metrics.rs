@@ -84,6 +84,7 @@ pub struct ChunkClientMetrics {
     pub large_write_buffer: Arc<LargeWriteBufferMetrics>,
     pub small_write: Arc<SmallWriteMetrics>,
     pub read_recovery: Arc<ReadRecoveryMetrics>,
+    pub read_flow: Arc<ReadFlowMetrics>,
 }
 
 impl ChunkClientMetrics {
@@ -107,6 +108,149 @@ impl ChunkClientMetrics {
             large_write_buffer: Arc::new(LargeWriteBufferMetrics::register(registry)),
             small_write: Arc::new(SmallWriteMetrics::register(registry)),
             read_recovery: Arc::new(ReadRecoveryMetrics::register(registry)),
+            read_flow: Arc::new(ReadFlowMetrics::register(registry)),
+        }
+    }
+}
+
+/// Aggregate read-path work counters without object or chunk labels.
+#[derive(Debug)]
+pub struct ReadFlowMetrics {
+    pub(crate) location_normalizations: Arc<Counter>,
+    pub(crate) locations_examined: Arc<Counter>,
+    pub(crate) range_locations_examined: Arc<Counter>,
+    pub(crate) stream_windows: Arc<Counter>,
+    pub(crate) stream_units_completed: Arc<Counter>,
+    pub(crate) stream_out_of_order: Arc<Counter>,
+    pub(crate) stream_credit_stalls: Arc<Counter>,
+    pub(crate) stream_credit_wait_ns: Arc<Counter>,
+    pub(crate) stream_bytes_reserved: Arc<Counter>,
+    pub(crate) stream_bytes_released: Arc<Counter>,
+    pub(crate) layout_queries: Arc<Counter>,
+    pub(crate) layout_query_wait_ns: Arc<Counter>,
+    pub(crate) strip_read_wait_ns: Arc<Counter>,
+    pub(crate) chunk_read_wait_ns: Arc<Counter>,
+    pub(crate) frame_decode_wait_ns: Arc<Counter>,
+    pub(crate) frame_parse_wait_ns: Arc<Counter>,
+}
+
+/// Cumulative read-path work visible to access-server metrics.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub struct ReadFlowMetricsSnapshot {
+    pub location_normalizations: u64,
+    pub locations_examined: u64,
+    pub range_locations_examined: u64,
+    pub stream_windows: u64,
+    pub stream_units_completed: u64,
+    pub stream_out_of_order: u64,
+    pub stream_credit_stalls: u64,
+    pub stream_credit_wait_ns: u64,
+    pub stream_bytes_reserved: u64,
+    pub stream_bytes_released: u64,
+    pub layout_queries: u64,
+    pub layout_query_wait_ns: u64,
+    pub strip_read_wait_ns: u64,
+    pub chunk_read_wait_ns: u64,
+    pub frame_decode_wait_ns: u64,
+    pub frame_parse_wait_ns: u64,
+}
+
+impl ReadFlowMetricsSnapshot {
+    pub(crate) fn since(self, earlier: Self) -> Self {
+        Self {
+            location_normalizations: self
+                .location_normalizations
+                .saturating_sub(earlier.location_normalizations),
+            locations_examined: self.locations_examined.saturating_sub(earlier.locations_examined),
+            range_locations_examined: self
+                .range_locations_examined
+                .saturating_sub(earlier.range_locations_examined),
+            stream_windows: self.stream_windows.saturating_sub(earlier.stream_windows),
+            stream_units_completed: self
+                .stream_units_completed
+                .saturating_sub(earlier.stream_units_completed),
+            stream_out_of_order: self
+                .stream_out_of_order
+                .saturating_sub(earlier.stream_out_of_order),
+            stream_credit_stalls: self
+                .stream_credit_stalls
+                .saturating_sub(earlier.stream_credit_stalls),
+            stream_credit_wait_ns: self
+                .stream_credit_wait_ns
+                .saturating_sub(earlier.stream_credit_wait_ns),
+            stream_bytes_reserved: self
+                .stream_bytes_reserved
+                .saturating_sub(earlier.stream_bytes_reserved),
+            stream_bytes_released: self
+                .stream_bytes_released
+                .saturating_sub(earlier.stream_bytes_released),
+            layout_queries: self.layout_queries.saturating_sub(earlier.layout_queries),
+            layout_query_wait_ns: self
+                .layout_query_wait_ns
+                .saturating_sub(earlier.layout_query_wait_ns),
+            strip_read_wait_ns: self.strip_read_wait_ns.saturating_sub(earlier.strip_read_wait_ns),
+            chunk_read_wait_ns: self.chunk_read_wait_ns.saturating_sub(earlier.chunk_read_wait_ns),
+            frame_decode_wait_ns: self
+                .frame_decode_wait_ns
+                .saturating_sub(earlier.frame_decode_wait_ns),
+            frame_parse_wait_ns: self
+                .frame_parse_wait_ns
+                .saturating_sub(earlier.frame_parse_wait_ns),
+        }
+    }
+}
+
+impl Default for ReadFlowMetrics {
+    fn default() -> Self {
+        Self::new(|name| Arc::new(Counter::new(name.into())))
+    }
+}
+
+impl ReadFlowMetrics {
+    fn register(registry: &mut MetricsRegistry) -> Self {
+        Self::new(|name| registry.register_counter(name))
+    }
+
+    fn new(mut counter: impl FnMut(&'static str) -> Arc<Counter>) -> Self {
+        Self {
+            location_normalizations: counter("chunkio.read.location_normalizations.c"),
+            locations_examined: counter("chunkio.read.locations_examined.c"),
+            range_locations_examined: counter("chunkio.read.range_locations_examined.c"),
+            stream_windows: counter("chunkio.read.stream_windows.c"),
+            stream_units_completed: counter("chunkio.read.stream_units_completed.c"),
+            stream_out_of_order: counter("chunkio.read.stream_out_of_order.c"),
+            stream_credit_stalls: counter("chunkio.read.stream_credit_stalls.c"),
+            stream_credit_wait_ns: counter("chunkio.read.stream_credit_wait_ns.c"),
+            stream_bytes_reserved: counter("chunkio.read.stream_bytes_reserved.c"),
+            stream_bytes_released: counter("chunkio.read.stream_bytes_released.c"),
+            layout_queries: counter("chunkio.read.layout_queries.c"),
+            layout_query_wait_ns: counter("chunkio.read.layout_query_wait_ns.c"),
+            strip_read_wait_ns: counter("chunkio.read.strip_read_wait_ns.c"),
+            chunk_read_wait_ns: counter("chunkio.read.chunk_read_wait_ns.c"),
+            frame_decode_wait_ns: counter("chunkio.read.frame_decode_wait_ns.c"),
+            frame_parse_wait_ns: counter("chunkio.read.frame_parse_wait_ns.c"),
+        }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> ReadFlowMetricsSnapshot {
+        ReadFlowMetricsSnapshot {
+            location_normalizations: self.location_normalizations.snapshot().total,
+            locations_examined: self.locations_examined.snapshot().total,
+            range_locations_examined: self.range_locations_examined.snapshot().total,
+            stream_windows: self.stream_windows.snapshot().total,
+            stream_units_completed: self.stream_units_completed.snapshot().total,
+            stream_out_of_order: self.stream_out_of_order.snapshot().total,
+            stream_credit_stalls: self.stream_credit_stalls.snapshot().total,
+            stream_credit_wait_ns: self.stream_credit_wait_ns.snapshot().total,
+            stream_bytes_reserved: self.stream_bytes_reserved.snapshot().total,
+            stream_bytes_released: self.stream_bytes_released.snapshot().total,
+            layout_queries: self.layout_queries.snapshot().total,
+            layout_query_wait_ns: self.layout_query_wait_ns.snapshot().total,
+            strip_read_wait_ns: self.strip_read_wait_ns.snapshot().total,
+            chunk_read_wait_ns: self.chunk_read_wait_ns.snapshot().total,
+            frame_decode_wait_ns: self.frame_decode_wait_ns.snapshot().total,
+            frame_parse_wait_ns: self.frame_parse_wait_ns.snapshot().total,
         }
     }
 }
@@ -351,7 +495,7 @@ impl Default for SmallWriteMetrics {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SmallWriteMetricsSnapshot {
     pub submitted: u64,
     pub completed: u64,

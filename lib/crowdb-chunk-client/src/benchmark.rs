@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use crowdb_common::metrics::perf::DramBwCounter;
 use serde::Serialize;
 use tokio::io::{AsyncRead, ReadBuf};
@@ -174,6 +175,7 @@ pub struct ReadBenchmarkResult {
     pub dram_read_mib_s: Option<f64>,
     pub dram_write_mib_s: Option<f64>,
     pub dram_total_mib_s: Option<f64>,
+    pub read_flow: crate::ReadFlowMetricsSnapshot,
     pub error_messages: Vec<String>,
 }
 
@@ -707,6 +709,7 @@ pub async fn run_read_benchmark(client: ChunkIoClient, config: ReadBenchmarkConf
         Err(error) => return failed_read_before_load(&config, &error.to_string()),
     };
     let preparation_secs = preparation_started.elapsed().as_secs_f64();
+    let read_flow_before = client.read_flow_metrics();
     let started = Instant::now();
     let deadline = config.duration.map(|duration| started + duration);
     let mut dram_bw = DramBwCounter::new();
@@ -742,6 +745,7 @@ pub async fn run_read_benchmark(client: ChunkIoClient, config: ReadBenchmarkConf
     let requested_reads = next_read.load(Ordering::Relaxed).min(config.request_count);
     let incomplete_reads = requested_reads.saturating_sub(total.reads.saturating_add(total.errors));
     let (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s) = sample_dram(&mut dram_bw);
+    let read_flow = client.read_flow_metrics().since(read_flow_before);
     finalize_read_result(
         preparation_secs,
         elapsed_secs,
@@ -749,6 +753,7 @@ pub async fn run_read_benchmark(client: ChunkIoClient, config: ReadBenchmarkConf
         incomplete_reads,
         total,
         (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s),
+        read_flow,
     )
 }
 
@@ -776,7 +781,7 @@ async fn run_read_worker(
         let object = &objects[index];
         let operation_started = Instant::now();
         match client.read_object(&object.locations).await {
-            Ok(bytes) if bytes.len() as u64 == object.logical_bytes => {
+            Ok(bytes) if bytes.iter().map(Bytes::len).sum::<usize>() as u64 == object.logical_bytes => {
                 result.reads += 1;
                 result.logical_bytes += object.logical_bytes;
                 if use_large {
@@ -793,7 +798,7 @@ async fn run_read_worker(
                     &mut result.error_messages,
                     format!(
                         "read {request}: length {} != {}",
-                        bytes.len(),
+                        bytes.iter().map(Bytes::len).sum::<usize>(),
                         object.logical_bytes
                     ),
                 );
@@ -838,6 +843,7 @@ fn finalize_read_result(
     incomplete_reads: u64,
     total: ReadWorkerResult,
     dram: (Option<f64>, Option<f64>, Option<f64>),
+    read_flow: crate::ReadFlowMetricsSnapshot,
 ) -> ReadBenchmarkResult {
     ReadBenchmarkResult {
         preparation_secs,
@@ -866,6 +872,7 @@ fn finalize_read_result(
         dram_read_mib_s: dram.0,
         dram_write_mib_s: dram.1,
         dram_total_mib_s: dram.2,
+        read_flow,
         error_messages: total.error_messages,
     }
 }
@@ -935,6 +942,7 @@ fn failed_read_before_load(config: &ReadBenchmarkConfig, message: &str) -> ReadB
         dram_read_mib_s: None,
         dram_write_mib_s: None,
         dram_total_mib_s: None,
+        read_flow: crate::ReadFlowMetricsSnapshot::default(),
         error_messages: vec![format!("prepare reads: {message}")],
     }
 }

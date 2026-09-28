@@ -1,0 +1,54 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use std::path::Path;
+
+use crowdb_access_server::config::{load_args, AccessConfig};
+use crowdb_common::config::{load_from_file, BaseConfig};
+
+#[test]
+fn tracked_access_configs_load_and_set_bounded_read_resources() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let canonical: AccessConfig =
+        load_from_file(&root.join("conf/crowdb_access_server_config.toml")).unwrap();
+    let container: AccessConfig =
+        load_from_file(&root.join("../../container/single-node-container/templates/access.toml")).unwrap();
+    for config in [canonical, container] {
+        assert_eq!(config.read.stream_slots, 3);
+        assert_eq!(config.read.stream_window_bytes, 1024 * 1024);
+        assert_eq!(config.read.global_stream_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.read.recovery_memory_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.read.policy().stream_slots, 3);
+        assert_eq!(config.small_write.memory_budget_bytes, 1280 * 1024 * 1024);
+        assert_eq!(config.small_write.policy().max_pipelines, 32);
+        assert!(config.s3.listen.is_some());
+        assert!(config.iceberg.listen.is_some());
+        assert_eq!(config.iceberg.native_budget_bytes, Some(256 * 1024 * 1024));
+        assert_eq!(config.s3.list_scan_bytes, Some(4 * 1024 * 1024));
+        assert_eq!(config.iceberg.gc.kv_bytes, Some(64 * 1024 * 1024));
+    }
+}
+
+#[test]
+fn config_argument_is_removed_from_service_commands() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path = root.join("conf/crowdb_access_server_config.toml");
+    let (_, remaining) = load_args(vec![
+        "serve".into(),
+        "--config".into(),
+        path.display().to_string(),
+    ])
+    .unwrap();
+    assert_eq!(remaining, ["serve"]);
+    assert!(load_args(vec!["--config".into()]).is_err());
+}
+
+#[test]
+fn invalid_read_budget_is_rejected() {
+    let mut config = AccessConfig::default();
+    config.read.stream_slots = 0;
+    assert!(config.validate().is_err());
+    config.read.stream_slots = 3;
+    config.small_write.memory_budget_bytes = 1;
+    assert!(config.validate().is_err());
+}

@@ -1,0 +1,60 @@
+# Access configuration shared by S3 and Iceberg processes.
+# Secrets stay in /opt/crowdb/data/secrets/server.env.
+
+[common]
+management_seeds = ["http://127.0.0.1:10000"]
+diskio_connections_per_endpoint = 2
+diskio_rpc_workers = 2
+
+[read]
+stream_window_bytes = 1048576
+stream_slots = 3
+global_stream_bytes = 268435456
+recovery_memory_bytes = 268435456
+
+[small_write]
+threshold_ratio = 0.9
+conversion_enabled = true
+ec_data = 8
+ec_code = 4
+memory_budget_bytes = 1342177280
+queue_capacity = 1024
+min_pipelines = 1
+max_pipelines = 32
+max_batch_bytes = 1048576
+
+[s3]
+listen = "0.0.0.0:81"
+tenant = "preview"
+region = "us-east-1"
+small_object_limit = 8388608
+list_scan_items = 1001
+list_scan_bytes = 4194304
+continuation_ttl_seconds = 900
+native_budget_bytes = 268435456
+cleanup_backlog_limit = 10000
+ec_data = 2
+ec_code = 1
+max_chunk_size = 1073741824
+
+[iceberg]
+listen = "0.0.0.0:80"
+native_budget_bytes = 268435456
+
+[iceberg.gc]
+enabled = false
+interval_ms = 1000
+step_bytes = 8388608
+step_ms = 1000
+page_items = 64
+page_bytes = 49152
+concurrency = 1
+kv_bytes = 67108864
+kv_requests = 128
+chunk_bytes = 8388608
+chunk_requests = 128
+retry_base_ms = 1000
+retry_max_ms = 60000
+corruption_attempts = 3
+minimum_retention_ms = 604800000
+catalogs = []

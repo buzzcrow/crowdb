@@ -32,6 +32,7 @@ pub enum ContentFormat {
     Parquet = 2,
     Orc = 3,
     Puffin = 4,
+    Opaque = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,7 +70,11 @@ impl FileRecord {
             FileKind::Statistics => matches!(self.format, ContentFormat::Puffin | ContentFormat::Parquet),
             FileKind::Unbound => matches!(
                 self.format,
-                ContentFormat::Avro | ContentFormat::Parquet | ContentFormat::Orc | ContentFormat::Puffin
+                ContentFormat::Avro
+                    | ContentFormat::Parquet
+                    | ContentFormat::Orc
+                    | ContentFormat::Puffin
+                    | ContentFormat::Opaque
             ),
         };
         if !valid_format {

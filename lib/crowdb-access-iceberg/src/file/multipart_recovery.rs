@@ -154,6 +154,19 @@ impl MultipartRecovery {
             self.repository.abort(session).await?
         } else if session.phase == MultipartPhase::Completing {
             let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
+            if completion.progress.next_part == 0 {
+                if let Some(changed) = self
+                    .repository
+                    .prepare_stream_publication(session, now_ms)
+                    .await?
+                {
+                    return Ok(if changed {
+                        RecoveryAction::Progressed
+                    } else {
+                        RecoveryAction::Deferred
+                    });
+                }
+            }
             if completion.progress.next_part == completion.selected_parts {
                 return Ok(RecoveryAction::AwaitingSeal);
             }

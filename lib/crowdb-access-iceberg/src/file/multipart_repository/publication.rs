@@ -1,14 +1,122 @@
 use crate::catalog::CatalogError;
 use crate::error::ValidationError;
 use crate::file::{
-    file_key, FileContent, FileRecord, FileRepository, FileTree, MultipartPhase, MultipartSession,
+    file_key, ContentFormat, FileContent, FileKind, FileRecord, FileRepository, FileTree, MultipartPhase,
+    MultipartSelection, MultipartSession,
 };
 use crate::operation::PayloadStore;
 use crate::record::StorageRecord;
+use crowdb_protocol::chunkdb::rpc::Location;
+use md5::{Digest, Md5};
+use std::fmt::Write;
 
 use super::{check_live, increment, MultipartRepository};
 
 impl MultipartRepository {
+    /// Publishes selected durable part locations without reading or rewriting part bytes.
+    /// # Errors
+    /// Rejects changed parts, mixed storage formats, oversized descriptors and stale sessions.
+    pub async fn prepare_stream_publication(
+        &self,
+        session: &MultipartSession,
+        now_ms: u64,
+    ) -> Result<Option<bool>, CatalogError> {
+        session.validate()?;
+        check_live(session, now_ms)?;
+        if session.phase != MultipartPhase::Completing {
+            return Err(CatalogError::Conflict);
+        }
+        let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
+        if completion.progress.next_part != 0 {
+            return Ok(None);
+        }
+        if self.load(session.context, session.upload).await?.as_ref() != Some(session) {
+            return Ok(Some(false));
+        }
+        let bytes = PayloadStore::new(self.store.clone())
+            .get(&completion.selection)
+            .await?;
+        let selection = MultipartSelection::decode(&bytes)?;
+        let mut locations = Vec::<Location>::new();
+        let mut length = 0_u64;
+        let mut md5 = Md5::new();
+        for selected in selection.parts() {
+            let part = self
+                .part(session, selected.number)
+                .await?
+                .ok_or(ValidationError::Record)?;
+            if part.revision != selected.revision || part.selection_digest() != selected.digest {
+                return Err(ValidationError::Record.into());
+            }
+            let Some(stream) = &part.stream else {
+                return Ok(None);
+            };
+            let etag = stream.content.etag().ok_or(ValidationError::Record)?;
+            for pair in etag.as_bytes().chunks_exact(2) {
+                let pair = std::str::from_utf8(pair).map_err(|_| ValidationError::Record)?;
+                md5.update([u8::from_str_radix(pair, 16).map_err(|_| ValidationError::Record)?]);
+            }
+            for mut location in stream
+                .content
+                .locations(stream.length)?
+                .ok_or(ValidationError::Record)?
+            {
+                location.logical_offset = location
+                    .logical_offset
+                    .checked_add(length)
+                    .ok_or(ValidationError::Record)?;
+                locations.push(location);
+            }
+            length = length
+                .checked_add(stream.length)
+                .filter(|length| *length <= session.limits.max_file_bytes)
+                .ok_or(ValidationError::Record)?;
+        }
+        let mut etag = String::with_capacity(40);
+        for byte in md5.finalize() {
+            write!(&mut etag, "{byte:02x}").expect("string write cannot fail");
+        }
+        write!(&mut etag, "-{}", selection.count()).expect("string write cannot fail");
+        let content = FileContent::from_locations(&locations, length, etag)?;
+        let path = session.location.relative_key();
+        let extension = std::path::Path::new(path).extension();
+        let has_extension = |wanted: &str| extension.is_some_and(|value| value.eq_ignore_ascii_case(wanted));
+        let (kind, format) = if has_extension("json") {
+            (FileKind::Metadata, ContentFormat::Json)
+        } else if has_extension("avro") {
+            (FileKind::Unbound, ContentFormat::Avro)
+        } else if has_extension("parquet") {
+            (FileKind::Unbound, ContentFormat::Parquet)
+        } else if has_extension("orc") {
+            (FileKind::Unbound, ContentFormat::Orc)
+        } else if has_extension("puffin") {
+            (FileKind::Unbound, ContentFormat::Puffin)
+        } else {
+            (FileKind::Unbound, ContentFormat::Opaque)
+        };
+        let record = FileRecord {
+            file: session.owner.file,
+            location: session.location.clone(),
+            kind,
+            format,
+            length,
+            digest: [0; 32],
+            content,
+            hint: None,
+        };
+        record.validate()?;
+        let value = StorageRecord::File(Box::new(record)).encode()?;
+        let publication = PayloadStore::new(self.store.clone())
+            .put(session.context.catalog, session.upload, &value)
+            .await?;
+        let mut next = increment(session)?;
+        next.phase = MultipartPhase::Publishing;
+        let completion = next.completion.as_mut().ok_or(ValidationError::Record)?;
+        completion.progress.next_part = selection.count();
+        completion.progress.completed_bytes = length;
+        completion.publication = Some(publication);
+        Ok(Some(self.exchange(session, &next).await?))
+    }
     /// Freezes a semantically sealed record; callers must validate its canonical format first.
     /// # Errors
     /// Rejects incomplete assembly, changed byte identity, expiry and invalid file records.
@@ -67,6 +175,7 @@ impl MultipartRepository {
                 || selected.digest != candidate.digest
                 || selected.kind != candidate.kind
                 || selected.format != candidate.format
+                || selected.content != candidate.content
             {
                 return Err(ValidationError::Record.into());
             }
@@ -97,6 +206,7 @@ impl MultipartRepository {
                 || selected.digest != candidate.digest
                 || selected.kind != candidate.kind
                 || selected.format != candidate.format
+                || selected.content != candidate.content
             {
                 let mut next = increment(session)?;
                 next.phase = MultipartPhase::Conflicted;
@@ -114,11 +224,15 @@ impl MultipartRepository {
         let StorageRecord::File(record) = StorageRecord::decode(&key, &bytes)? else {
             return Err(ValidationError::Record.into());
         };
-        validate_candidate(
-            session,
-            completion.candidate.as_ref().ok_or(ValidationError::Record)?,
-            &record,
-        )?;
+        if let Some(tree) = &completion.candidate {
+            validate_candidate(session, tree, &record)?;
+        } else if record.file != session.owner.file
+            || record.location != session.location
+            || record.length != completion.progress.completed_bytes
+            || !matches!(record.content, FileContent::Locations { .. })
+        {
+            return Err(ValidationError::Record.into());
+        }
         Ok(*record)
     }
 }

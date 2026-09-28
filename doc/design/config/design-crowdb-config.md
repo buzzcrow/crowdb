@@ -22,10 +22,10 @@ validated, and activated.
 
 ## 1. Scope
 
-The `crowdb-kv-server`, `crowdb-diskdb`, `crowdb-chunkdb`, and
-`crowdb-diskio` processes accept typed TOML startup configuration. A service
-may require a file or make it optional, but a supplied file follows the same
-resolution and failure rules in every process.
+The `crowdb-kv-server`, `crowdb-diskdb`, `crowdb-chunkdb`, `crowdb-diskio`,
+`crowdb-access-server`, and `crowdb-iceberg` processes accept typed TOML startup
+configuration. A service may require a file or make it optional, but a supplied
+file follows the same resolution and failure rules in every process.
 
 This contract covers process configuration. Durable cluster topology,
 membership, allocation metadata, and application data keep their existing
@@ -79,12 +79,23 @@ Common section names describe process roles:
 
 The service schemas retain their different domain sections:
 
-| Service | File policy | `server.rpc_workers` default | Principal domain sections                       |
-|---------|-------------|------------------------------|-------------------------------------------------|
-| KV      | Optional    | 2                            | Paxos, WAL, engine, metrics                     |
-| diskdb  | Required    | 2                            | Storage, heartbeat, persistence, scanner, sync  |
-| chunkdb | Required    | 2                            | Storage, placement, lifecycle, topology, clients|
-| diskio  | Optional    | 4                            | Engine, group-0 discovery, metrics, disk entries|
+| Service | File policy | `server.rpc_workers` default | Principal domain sections                        |
+| ------- | ----------- | ---------------------------- | ------------------------------------------------ |
+| KV      | Optional    | 2                            | Paxos, WAL, engine, metrics                      |
+| diskdb  | Required    | 2                            | Storage, heartbeat, persistence, scanner, sync   |
+| chunkdb | Required    | 2                            | Storage, placement, lifecycle, topology, clients |
+| diskio  | Optional    | 4                            | Engine, group-0 discovery, metrics, disk entries |
+| Access  | Optional    | N/A                          | HTTP listeners, shared read, S3, Iceberg GC      |
+
+The S3 and Iceberg access processes accept the same `AccessConfig` schema.
+Each process activates only its own protocol section plus `[common]`, `[read]`,
+and `[small_write]`. The file is selected with `--config`; a supplied file is
+validated before connecting to dependencies or binding listeners. Read slots,
+the per-read window, the global retained-byte budget, the separate EC recovery
+budget, and small-write memory limits are static startup settings. Credentials
+and bearer tokens remain in the environment. For access settings that predate the
+file, an explicitly populated TOML value takes precedence over the legacy
+environment variable; an omitted TOML value keeps the legacy behavior.
 
 All schemas tolerate unknown keys so a newer file can be staged before a
 binary upgrade. A known key with the wrong type or invalid value rejects the

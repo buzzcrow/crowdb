@@ -42,7 +42,8 @@ async fn part(session: &MultipartSession, number: u16, revision: u64, length: us
         revision,
         modified_ms: 101,
         owner,
-        tree: writer.finish().await.unwrap(),
+        tree: Some(writer.finish().await.unwrap()),
+        stream: None,
     }
 }
 

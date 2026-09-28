@@ -1,4 +1,5 @@
 use crate::{catalog::CasOutcome, operation::mutation_identity};
+use crowdb_protocol::chunkdb::rpc::Location;
 
 use super::{
     file_key, location_key, CandidatePhase, CatalogError, GcCandidate, GcPhase, GcStalledReason, GcTask,
@@ -179,6 +180,23 @@ impl GcWorker {
             self.repository.candidate(Some(candidate), &next).await?;
             return Ok(DeleteProgress::Advanced);
         }
+        if candidate.part.as_ref().is_some_and(|part| part.stream.is_some())
+            && self
+                .repository
+                .part_is_selected(task, candidate.part.as_ref().ok_or(ValidationError::Record)?)
+                .await?
+        {
+            self.remove_file_authority(candidate).await?;
+            next.phase = CandidatePhase::Complete;
+            next.completed_round = sweep_round;
+            self.repository.candidate(Some(candidate), &next).await?;
+            return Ok(DeleteProgress::Complete);
+        }
+        if let Some(locations) = candidate.file.content.locations(candidate.file.length)? {
+            return self
+                .delete_location_candidate(candidate, next, &locations, sweep_round)
+                .await;
+        }
         if let Some(root) = &candidate.cursor.pending {
             if self.blocks.reclaim(root).await? == ReclaimOutcome::Deferred {
                 next.phase = CandidatePhase::Deferred;
@@ -204,6 +222,37 @@ impl GcWorker {
                     next.completed_round = sweep_round;
                 }
             }
+        }
+        self.repository.candidate(Some(candidate), &next).await?;
+        Ok(if next.phase == CandidatePhase::Complete {
+            DeleteProgress::Complete
+        } else {
+            DeleteProgress::Advanced
+        })
+    }
+
+    async fn delete_location_candidate(
+        &self,
+        candidate: &GcCandidate,
+        mut next: GcCandidate,
+        locations: &[Location],
+        sweep_round: u64,
+    ) -> Result<DeleteProgress, GcWorkError> {
+        if let Some(location) = locations.get(usize::from(candidate.cursor.next_location)) {
+            if self.blocks.reclaim_location(location).await? == ReclaimOutcome::Deferred {
+                next.phase = CandidatePhase::Deferred;
+                self.repository.candidate(Some(candidate), &next).await?;
+                return Ok(DeleteProgress::Deferred);
+            }
+            next.cursor.next_location = next
+                .cursor
+                .next_location
+                .checked_add(1)
+                .ok_or(ValidationError::GenerationExhausted)?;
+        } else {
+            self.remove_file_authority(candidate).await?;
+            next.phase = CandidatePhase::Complete;
+            next.completed_round = sweep_round;
         }
         self.repository.candidate(Some(candidate), &next).await?;
         Ok(if next.phase == CandidatePhase::Complete {

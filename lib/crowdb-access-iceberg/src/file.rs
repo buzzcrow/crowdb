@@ -60,7 +60,7 @@ pub(crate) use location::validate_relative_key;
 pub use location::{FileLocation, TableLocation, MAX_OBJECT_KEY_BYTES};
 pub use multipart::{
     MultipartCompletion, MultipartLimits, MultipartPart, MultipartPartMutation, MultipartPhase,
-    MultipartSession,
+    MultipartSession, MultipartStreamPart,
 };
 pub use multipart_admission::{
     MultipartAdmissionLimits, MultipartAdmissionRecord, MultipartCredit, MultipartCreditAction,

@@ -10,7 +10,7 @@ use crowdb_access_iceberg::{
         CatalogContext, CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege, RoutedCatalogStore,
     },
     file::{file_key, ContentFormat, FileContent, FileKind, FileRecord, TableLocation},
-    gc::{GcLimits, GcRepository, GcStalledReason, ReaderPins},
+    gc::{GcLimits, GcRepository, GcStalledReason},
     key::{FileId, NamespaceId, OperationId, TableId},
     operation::{mutation_identity, ManagementAction, ManagementRequest, RequestIdentity},
     record::StorageRecord,
@@ -110,33 +110,6 @@ async fn seed_head(store: &RoutedCatalogStore, context: CatalogContext) -> Table
     table
 }
 
-async fn check_operator_pin(
-    stack: &common::TestIcebergStack,
-    store: Arc<RoutedCatalogStore>,
-    context: CatalogContext,
-    table: TableId,
-) {
-    let pin_id = OperationId::random().to_string();
-    let table_id = table.to_string();
-    let catalog_id = context.catalog.to_string();
-    response(command(stack, 'm', &["pin", &pin_id, &table_id]));
-    let pin_identity = pin_id.parse().unwrap();
-    let pins = ReaderPins::new(store);
-    assert!(pins
-        .get(context.catalog, table, pin_identity)
-        .await
-        .unwrap()
-        .unwrap()
-        .protects(common::now_ms()));
-    response(command(stack, 'm', &["unpin", &catalog_id, &table_id, &pin_id]));
-    assert!(!pins
-        .get(context.catalog, table, pin_identity)
-        .await
-        .unwrap()
-        .unwrap()
-        .protects(common::now_ms()));
-}
-
 async fn tombstone_head(store: &RoutedCatalogStore, context: CatalogContext, table: TableId) {
     let key = head_key(context.catalog, table);
     let previous = store.get(&key.encode().unwrap()).await.unwrap().unwrap();
@@ -218,7 +191,6 @@ async fn authenticated_gc_controls_survive_separate_processes() {
     assert!(!live.status.success());
     assert!(String::from_utf8_lossy(&live.stderr).contains("live-table GC is disabled"));
 
-    check_operator_pin(&stack, store.clone(), context, table).await;
     tombstone_head(store.as_ref(), context, table).await;
     let created = response(command(&stack, 'm', &["start-table", &identity, &table_id]));
     assert_eq!(created["phase"], "Discover");

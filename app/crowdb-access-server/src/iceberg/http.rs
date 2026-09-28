@@ -13,6 +13,7 @@ use crowdb_access_iceberg::catalog::{
     Capabilities, CatalogError, CatalogLifecycle, CatalogRepository, ManagementPrivilege, RootState,
 };
 use crowdb_access_iceberg::wire::{BearerAuthenticator, CatalogConfig, IcebergErrorResponse};
+use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -55,7 +56,12 @@ impl IcebergHttpService {
 
     #[must_use]
     pub fn metrics_snapshot(&self) -> IcebergMetricsSnapshot {
-        self.metrics.snapshot()
+        let mut snapshot = self.metrics.snapshot();
+        if let Some((read, write)) = self.files.as_ref().and_then(|files| files.chunk_metrics()) {
+            snapshot.chunk_read = Some(read);
+            snapshot.chunk_small_write = Some(write);
+        }
+        snapshot
     }
 
     /// # Errors
@@ -66,12 +72,44 @@ impl IcebergHttpService {
         blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,
         region: String,
     ) -> Result<Self, crowdb_access_iceberg::file::FileGrantError> {
+        self = self.with_fileio_native(store, blocks, region, None)?;
+        Ok(self)
+    }
+
+    /// Installs native receive owners for authenticated file uploads.
+    /// # Errors
+    /// Rejects invalid native file listener limits or signing configuration.
+    pub fn with_fileio_native<Store: crowdb_access_iceberg::file::MultipartPartStore + 'static>(
+        mut self,
+        store: Arc<Store>,
+        blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,
+        region: String,
+        native_allocator: Option<Arc<NativeBodyAllocator>>,
+    ) -> Result<Self, crowdb_access_iceberg::file::FileGrantError> {
         self.files = Some(Arc::new(FileHttp::new(
             store,
             blocks,
             self.authentication.namespace_token_key(),
             region,
+            native_allocator,
         )?));
+        Ok(self)
+    }
+
+    /// Applies the configured shared-chunk routing threshold to native file uploads.
+    /// # Errors
+    /// Rejects an unavailable file service or an invalid threshold.
+    pub fn with_small_object_threshold(
+        mut self,
+        threshold_exclusive: usize,
+    ) -> Result<Self, crowdb_access_iceberg::file::FileGrantError> {
+        Arc::get_mut(
+            self.files
+                .as_mut()
+                .ok_or(crowdb_access_iceberg::file::FileGrantError::Invalid)?,
+        )
+        .ok_or(crowdb_access_iceberg::file::FileGrantError::Invalid)?
+        .set_small_threshold(threshold_exclusive)?;
         Ok(self)
     }
 
@@ -217,7 +255,7 @@ impl IcebergHttpService {
             }
             return Ok(response(
                 200,
-                serde_json::to_vec(&self.metrics.snapshot()).map_err(|_| service_unavailable())?,
+                serde_json::to_vec(&self.metrics_snapshot()).map_err(|_| service_unavailable())?,
             ));
         }
         let (root, authority) = self

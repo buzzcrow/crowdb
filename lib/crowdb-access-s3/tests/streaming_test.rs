@@ -13,9 +13,9 @@ use crowdb_access_s3::metadata::{BucketId, ObjectRecord};
 use crowdb_access_s3::metrics::S3Metrics;
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_access_s3::streaming::{
-    attach_completed_locations, cleanup_after_definite_error, write_body,
-    write_native_body_with_checksums_metered, FailedPublicationCleanup, FailedPublicationTarget,
-    PutErrorCode, PutOutcome,
+    attach_completed_locations, cleanup_after_definite_error, write_body, write_body_with_checksums,
+    write_body_with_checksums_buffered, write_native_body_with_checksums_metered, FailedPublicationCleanup,
+    FailedPublicationTarget, PutErrorCode, PutOutcome,
 };
 use crowdb_chunk_client::{ChunkIoWriter, FeedStatus, FramedWriteBuffer, IoError};
 use crowdb_protocol::chunkdb::rpc::Location;
@@ -190,6 +190,65 @@ async fn declared_length_completion_does_not_poll_for_an_extra_body_frame() {
 
     write_body(&mut body, &mut writer).await.expect("body accepted");
     assert_eq!(body.polls.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn payload_sha256_is_verified_only_when_declared() {
+    let payload = Bytes::from_static(b"abc");
+    let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let invalid = "0".repeat(64);
+    for (digest, accepted) in [
+        (None, true),
+        (Some(expected), true),
+        (Some(invalid.as_str()), false),
+    ] {
+        let mut body = TestBody {
+            frames: VecDeque::from([payload.clone()]),
+            polls: AtomicUsize::new(0),
+        };
+        let mut writer = NativeOwnerWriter::default();
+        let result = write_body_with_checksums(&mut body, &mut writer, None, digest).await;
+        assert_eq!(result.is_ok(), accepted);
+        assert_eq!(writer.generic_frames, 1);
+    }
+}
+
+#[derive(Default)]
+struct CollectingWriter(Vec<Bytes>);
+
+#[async_trait]
+impl ChunkIoWriter for CollectingWriter {
+    async fn on_data(&mut self, buffer: Bytes) -> crowdb_chunk_client::Result<FeedStatus> {
+        self.0.push(buffer);
+        Ok(FeedStatus::Continue)
+    }
+
+    async fn on_finish(&mut self) -> crowdb_chunk_client::Result<Vec<Location>> {
+        Ok(Vec::new())
+    }
+    async fn on_error(&mut self) -> crowdb_chunk_client::Result<Vec<Location>> {
+        Ok(Vec::new())
+    }
+    fn require_data(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn receive_fragments_fill_one_small_object_buffer_before_pipeline_push() {
+    let mut body = TestBody {
+        frames: VecDeque::from([
+            Bytes::from_static(b"ab"),
+            Bytes::from_static(b"cd"),
+            Bytes::from_static(b"e"),
+        ]),
+        polls: AtomicUsize::new(0),
+    };
+    let mut writer = CollectingWriter::default();
+    write_body_with_checksums_buffered(&mut body, &mut writer, None, None, 5, None)
+        .await
+        .unwrap();
+    assert_eq!(writer.0, vec![Bytes::from_static(b"abcde")]);
 }
 
 #[derive(Default)]

@@ -103,7 +103,7 @@ impl MultipartRepository {
             .part(session, selected.number)
             .await?
             .ok_or(ValidationError::Record)?;
-        if part.revision != selected.revision || part.tree.digest != selected.digest {
+        if part.revision != selected.revision || part.selection_digest() != selected.digest {
             return Err(ValidationError::Record.into());
         }
         let progress = assembly
@@ -112,7 +112,7 @@ impl MultipartRepository {
                 &AssemblyPart {
                     ordinal: completion.progress.next_part,
                     owner: part.owner,
-                    tree: part.tree,
+                    tree: part.tree.ok_or(ValidationError::Record)?,
                 },
             )
             .await?;

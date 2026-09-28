@@ -7,6 +7,7 @@ use std::sync::{
 use std::task::{Context, Poll};
 
 use crowdb_access_iceberg::file::{ByteRange, FileBlockStore, FileIoError, FileReader, FileRecord};
+use crowdb_chunk_client::{ChunkReadStream, ReadError};
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 
 #[derive(Debug, thiserror::Error)]
@@ -56,10 +57,35 @@ impl FileResponseBudget {
             .map_err(|_| FileBodyError::Busy)?;
         let permit = Permit(self.active.clone());
         let length = range.map_or(record.length, |range| range.end.saturating_sub(range.start));
-        let reader = FileReader::new(store, record, range, 16 * 1024)?;
+        let stream = if let Some(locations) = record
+            .content
+            .locations(record.length)
+            .map_err(FileIoError::from)?
+        {
+            let interval = range.unwrap_or(ByteRange {
+                start: 0,
+                end: record.length,
+            });
+            Some(
+                store
+                    .stream_client()
+                    .ok_or(FileIoError::Bounds)?
+                    .read_range_stream(&locations, interval.start, interval.end)
+                    .map_err(FileIoError::from)?,
+            )
+        } else {
+            None
+        };
+        let reader = if stream.is_none() {
+            Some(FileReader::new(store, record, range, 16 * 1024)?)
+        } else {
+            None
+        };
         Ok(FileReadBody {
-            reader: (length > 0).then_some(reader),
+            reader,
             pending: None,
+            stream,
+            stream_pending: None,
             remaining: length,
             permit: (length > 0).then_some(permit),
         })
@@ -74,10 +100,13 @@ impl Drop for Permit {
 }
 
 type ReadFuture = Pin<Box<dyn Future<Output = (FileReader, Result<Option<Vec<u8>>, FileIoError>)> + Send>>;
+type StreamFuture = Pin<Box<dyn Future<Output = (ChunkReadStream, Option<Result<Bytes, ReadError>>)> + Send>>;
 
 pub struct FileReadBody {
     reader: Option<FileReader>,
     pending: Option<ReadFuture>,
+    stream: Option<ChunkReadStream>,
+    stream_pending: Option<StreamFuture>,
     remaining: u64,
     permit: Option<Permit>,
 }
@@ -86,6 +115,8 @@ impl FileReadBody {
     fn finish(&mut self) {
         self.reader = None;
         self.pending = None;
+        self.stream = None;
+        self.stream_pending = None;
         self.remaining = 0;
         self.permit = None;
     }
@@ -102,6 +133,45 @@ impl Body for FileReadBody {
         let body = self.get_mut();
         if body.remaining == 0 {
             return Poll::Ready(None);
+        }
+        if body.stream.is_some() || body.stream_pending.is_some() {
+            if body.stream_pending.is_none() {
+                let mut stream = body.stream.take().expect("stream exists");
+                body.stream_pending = Some(Box::pin(async move {
+                    let next = stream.next_chunk().await;
+                    (stream, next)
+                }));
+            }
+            let (stream, next) = match body
+                .stream_pending
+                .as_mut()
+                .expect("stream read exists")
+                .as_mut()
+                .poll(context)
+            {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(value) => value,
+            };
+            body.stream_pending = None;
+            return match next {
+                Some(Ok(bytes)) if !bytes.is_empty() && bytes.len() as u64 <= body.remaining => {
+                    body.remaining -= bytes.len() as u64;
+                    if body.remaining == 0 {
+                        body.finish();
+                    } else {
+                        body.stream = Some(stream);
+                    }
+                    Poll::Ready(Some(Ok(Frame::data(bytes))))
+                }
+                Some(Err(error)) => {
+                    body.finish();
+                    Poll::Ready(Some(Err(FileIoError::Read(error))))
+                }
+                _ => {
+                    body.finish();
+                    Poll::Ready(Some(Err(FileIoError::Bounds)))
+                }
+            };
         }
         if body.pending.is_none() {
             let Some(mut reader) = body.reader.take() else {

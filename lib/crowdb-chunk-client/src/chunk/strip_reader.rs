@@ -209,7 +209,9 @@ impl StripReader {
             };
             pieces.push((order, shard_index, local_start, read_len, result));
         }
-        pieces.sort_unstable_by_key(|(order, _, _, _, _)| *order);
+        if let [(_, shard_index, _, _, Ok(data))] = pieces.as_slice() {
+            return Ok((data.clone(), failed_segments, vec![ec.segments[*shard_index]]));
+        }
         let mut output = BytesMut::with_capacity(usize::try_from(length).unwrap_or(usize::MAX));
         let mut served_segments = Vec::new();
         for (_, shard_index, local_start, read_len, result) in pieces {

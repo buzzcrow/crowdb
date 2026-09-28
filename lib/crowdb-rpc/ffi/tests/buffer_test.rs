@@ -2,7 +2,21 @@
 // Licensed under the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use crowdb_rpc_ffi::{Buffer, BufferChain, BufferChainError};
+use crowdb_rpc_ffi::{Buffer, BufferChain, BufferChainError, BufferPool};
+
+#[test]
+fn detached_read_buffer_survives_pool_and_keeps_pointer() {
+    let pool = BufferPool::new(1);
+    let mut buffer = pool.alloc_buffer(4).expect("pool allocation");
+    buffer.write(b"read");
+    let original = buffer.bytes().as_ptr();
+    assert!(buffer.detach());
+    drop(pool);
+
+    let bytes = Bytes::from_owner(buffer);
+    assert_eq!(bytes.as_ptr(), original);
+    assert_eq!(&bytes[..], b"read");
+}
 
 #[test]
 fn owned_bytes_buffer_keeps_the_original_allocation() {

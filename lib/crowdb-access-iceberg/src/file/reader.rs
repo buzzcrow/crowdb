@@ -21,6 +21,7 @@ pub struct FileReader {
     cached: Option<(u64, Vec<u8>)>,
     leaf_directory: Option<(ChunkRoot, Vec<u8>)>,
     digest: Option<Sha256>,
+    locations: Option<Vec<crowdb_protocol::chunkdb::rpc::Location>>,
     failed: bool,
 }
 
@@ -94,7 +95,9 @@ impl FileReader {
             .content
             .inline_bytes(record.length, &record.digest)?
             .map(|bytes| (0, bytes));
-        let digest = (range.start == 0 && range.end == record.length).then(Sha256::new);
+        let digest = (range.start == 0 && range.end == record.length && record.content.etag().is_none())
+            .then(Sha256::new);
+        let locations = record.content.locations(record.length)?;
         Ok(Self {
             store,
             record,
@@ -104,6 +107,7 @@ impl FileReader {
             cached,
             leaf_directory: None,
             digest,
+            locations,
             failed: false,
         })
     }
@@ -161,6 +165,15 @@ impl FileReader {
     }
 
     async fn select_leaf(&mut self) -> Result<(u64, Vec<u8>), FileIoError> {
+        if let Some(locations) = &self.locations {
+            let start = self.cursor;
+            let end = start.saturating_add(self.frame_bytes as u64).min(self.end);
+            let bytes = self.store.read_locations(locations, start, end).await?;
+            if bytes.len() as u64 != end - start {
+                return Err(ValidationError::Record.into());
+            }
+            return Ok((start, bytes));
+        }
         let FileContent::Chunks { root: Some(root) } = &self.record.content else {
             return Err(ValidationError::Record.into());
         };

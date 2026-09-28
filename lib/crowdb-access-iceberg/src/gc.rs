@@ -9,9 +9,7 @@ mod limits;
 mod mark;
 mod node;
 mod page;
-mod pins;
 mod proof;
-mod protection;
 mod reachability;
 mod repository;
 mod retirement;
@@ -25,7 +23,6 @@ pub use limits::GcLimits;
 pub use mark::GcMarkError;
 pub use node::GcNode;
 pub use page::GcPage;
-pub use pins::{GcPin, ReaderPins};
 pub use proof::GcProofState;
 pub use reachability::{
     avro_links, metadata_links, AvroMarkCursor, AvroMarkLimits, AvroMarkPage, ReachableFile, ReachableKind,

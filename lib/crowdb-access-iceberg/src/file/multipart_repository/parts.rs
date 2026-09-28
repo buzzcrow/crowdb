@@ -75,8 +75,8 @@ impl MultipartRepository {
             .ok_or(ValidationError::Record)?;
         next.staged_bytes = session
             .staged_bytes
-            .checked_sub(before.as_ref().map_or(0, |part| part.tree.length))
-            .and_then(|bytes| bytes.checked_add(part.tree.length))
+            .checked_sub(before.as_ref().map_or(0, MultipartPart::length))
+            .and_then(|bytes| bytes.checked_add(part.length()))
             .ok_or(ValidationError::Record)?;
         next.pending = Some(MultipartPartMutation { before, after });
         self.exchange(session, &next).await

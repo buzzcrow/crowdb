@@ -209,7 +209,6 @@ impl GcWorker {
                     .await?
                     .is_none())
             }
-            StorageRecord::GcPin(pin) => Ok(!pin.protects(now_ms)),
             _ => Ok(true),
         }
     }

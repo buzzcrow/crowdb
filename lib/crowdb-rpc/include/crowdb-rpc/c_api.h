@@ -37,6 +37,7 @@ crowdb_rpc_buffer_t crowdb_rpc_buffer_alloc(crowdb_rpc_pool_t pool, uint32_t cap
 void                crowdb_rpc_buffer_write(crowdb_rpc_buffer_t buf, const uint8_t *data, uint32_t len);
 const uint8_t      *crowdb_rpc_buffer_data(crowdb_rpc_buffer_t buf);
 uint32_t            crowdb_rpc_buffer_len(crowdb_rpc_buffer_t buf);
+bool                crowdb_rpc_buffer_detach(crowdb_rpc_buffer_t buf);
 crowdb_rpc_buffer_t crowdb_rpc_buffer_ref(crowdb_rpc_buffer_t buf);
 void                crowdb_rpc_buffer_release(crowdb_rpc_buffer_t buf);
 // Create a standalone buffer (not pool-allocated) from raw bytes. The

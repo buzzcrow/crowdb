@@ -957,6 +957,17 @@ export CROWDB_MANAGEMENT_SEEDS=127.0.0.1:10000
 export CROWDB_ICEBERG_LISTEN=127.0.0.1:8181
 ```
 
+Both `crowdb-iceberg` and `crowdb-access-server` accept `--config <path>`.
+The tracked Access TOML example is
+`app/crowdb-access-server/conf/crowdb_access_server_config.toml`; it contains
+shared DiskIO, read and small-write budgets, S3 resources, and Iceberg GC limits. The
+processes read the same schema and use their respective sections. A provided
+file takes precedence over legacy environment settings for fields it sets;
+omitted fields retain their defaults or legacy environment values. Keep
+credentials and bearer tokens in the environment. In the single-node
+container, the rendered files are `/opt/crowdb/run/config/s3.toml` and
+`/opt/crowdb/run/config/iceberg.toml`.
+
 Supply three distinct, randomly generated 32–256-character ASCII tokens through
 your secret-management environment: `CROWDB_ICEBERG_READ_TOKEN`,
 `CROWDB_ICEBERG_MANAGE_TOKEN` and `CROWDB_ICEBERG_CLEAR_TOKEN`. Configure every

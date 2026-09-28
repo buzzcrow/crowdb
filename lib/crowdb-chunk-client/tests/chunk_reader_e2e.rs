@@ -230,7 +230,11 @@ async fn ec_range_read_recovers_only_the_requested_bytes() {
     let (reader, fault) = reader_with_failures(&stack, vec![failed]).await;
     let start = MIB as u64 + 123;
     let end = start + 16 * KIB as u64;
-    let actual = reader.read_range(&result.locations, start, end).await.unwrap();
+    let actual = reader
+        .read_range(&result.locations, start, end)
+        .await
+        .unwrap()
+        .concat();
     assert_eq!(
         actual,
         data[usize::try_from(start).unwrap()..usize::try_from(end).unwrap()]
@@ -241,7 +245,10 @@ async fn ec_range_read_recovers_only_the_requested_bytes() {
     let frame = parse_frame(&direct, result.locations[0].chunk_id.unwrap()).unwrap();
     assert_eq!(frame.payload, &data[..frame.payload.len()]);
     assert!(fault.max_read.load(Ordering::Relaxed) <= 64 * KIB);
-    assert_eq!(reader.read_object(&result.locations).await.unwrap(), data);
+    assert_eq!(
+        reader.read_object(&result.locations).await.unwrap().concat(),
+        data
+    );
 
     let after = stack.query_chunk(&result.locations[0]).await;
     assert!(after.strips[0].unavailable_segments.is_empty());
@@ -328,33 +335,42 @@ async fn partial_read_preserves_healthy_ec_shard_ranges_around_data_loss() {
         (partial.failures[0].start, partial.failures[0].end),
         (payload_per_shard, 3 * payload_per_shard)
     );
-    assert_eq!(partial.ranges.len(), 2);
+    assert_eq!(partial.ranges.len(), 33);
     assert_eq!(
-        (partial.ranges[0].start, partial.ranges[0].end),
+        (partial.ranges[0].start, partial.ranges[15].end),
         (0, payload_per_shard)
     );
     assert_eq!(
-        partial.ranges[0].data,
+        partial.ranges[..16]
+            .iter()
+            .map(|range| range.data.as_ref())
+            .collect::<Vec<_>>()
+            .concat(),
         data[..usize::try_from(payload_per_shard).unwrap()]
     );
     assert_eq!(
-        (partial.ranges[1].start, partial.ranges[1].end),
+        (partial.ranges[16].start, partial.ranges[32].end),
         (3 * payload_per_shard, 4 * MIB as u64)
     );
     assert_eq!(
-        partial.ranges[1].data,
+        partial.ranges[16..]
+            .iter()
+            .map(|range| range.data.as_ref())
+            .collect::<Vec<_>>()
+            .concat(),
         data[usize::try_from(3 * payload_per_shard).unwrap()..]
     );
 
     let mut stream = reader.read_stream(&result.locations).unwrap();
-    assert_eq!(
-        stream.next_chunk().await.unwrap().unwrap(),
-        data[..usize::try_from(payload_per_shard).unwrap()]
-    );
+    let mut prefix = Vec::new();
+    for _ in 0..16 {
+        prefix.extend_from_slice(&stream.next_chunk().await.unwrap().unwrap());
+    }
+    assert_eq!(prefix, data[..usize::try_from(payload_per_shard).unwrap()]);
     assert!(matches!(
         stream.next_chunk().await.unwrap(),
         Err(ReadError::FailedRange { start, end, .. })
-            if start == payload_per_shard && end == 3 * payload_per_shard
+            if start == payload_per_shard && end == payload_per_shard + MAX_FRAME_PAYLOAD_BYTES as u64
     ));
     assert!(stream.next_chunk().await.is_none());
 }
@@ -385,7 +401,8 @@ async fn mirror_read_succeeds_and_reports_replica_loss() {
             .client
             .read_object(std::slice::from_ref(&location))
             .await
-            .unwrap(),
+            .unwrap()
+            .concat(),
         data
     );
     let (unreadable, _) = reader_with_failures(&stack, vec![primary]).await;
@@ -431,7 +448,8 @@ async fn transient_mirror_read_failure_does_not_mark_segment_unavailable() {
             .client
             .read_object(std::slice::from_ref(&location))
             .await
-            .unwrap(),
+            .unwrap()
+            .concat(),
         data
     );
     stack.client.shutdown_small_writes().await.unwrap();
@@ -465,7 +483,11 @@ async fn chunkdb_restart_admits_verified_corruption_and_repairs_full_shard() {
     let (reader, fault) = reader_with_corruption(&stack, vec![failed_disk]).await;
     let length = 16 * KIB as u64;
     assert_eq!(
-        reader.read_range(&result.locations, 0, length).await.unwrap(),
+        reader
+            .read_range(&result.locations, 0, length)
+            .await
+            .unwrap()
+            .concat(),
         data[..16 * KIB]
     );
     assert!(fault.max_read.load(Ordering::Relaxed) <= 64 * KIB);
@@ -504,7 +526,8 @@ async fn chunkdb_restart_admits_verified_corruption_and_repairs_full_shard() {
         after_restart
             .read_range(&result.locations, 0, length)
             .await
-            .unwrap(),
+            .unwrap()
+            .concat(),
         data[..16 * KIB]
     );
 }

@@ -22,6 +22,7 @@ use crowdb_access_iceberg::file::{
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
+use md5::{Digest, Md5};
 use reqwest::{Client, Method};
 
 #[path = "common/iceberg_signed_file.rs"]
@@ -184,9 +185,51 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
     assert_eq!(record.kind, FileKind::Unbound);
     assert!(record.bind_kind(FileKind::EqualityDelete).is_ok());
     let conflict = client
-        .send(Method::PUT, &object, "", b"PAR1difffoot\x04\0\0\0PAR1", false)
+        .send(Method::PUT, &object, "", b"PAR1difffoot\x04\0\0\0PAR1", true)
         .await;
     assert_eq!(conflict.status(), 409);
+
+    let medium = path(table, "data/medium.parquet");
+    let medium_bytes = (0..1_200_000)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let response = client.send(Method::PUT, &medium, "", &medium_bytes, true).await;
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let stored = repository
+        .load(
+            client.credentials.grant().context,
+            &table.file("data/medium.parquet").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.content.locations(stored.length).unwrap().unwrap().len(), 1);
+    let range = client
+        .send_range(
+            Method::GET,
+            &medium,
+            "",
+            b"",
+            false,
+            Some("bytes=1048550-1048600"),
+        )
+        .await;
+    assert_eq!(range.status(), 206);
+    assert_eq!(
+        range.bytes().await.unwrap().as_ref(),
+        &medium_bytes[1048550..1048601]
+    );
+    let metrics: serde_json::Value = Client::new()
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(metrics["chunk_read"]["stream_windows"].as_u64().unwrap() > 0);
+    assert!(metrics["chunk_small_write"]["completed"].as_u64().unwrap() > 0);
 
     let metadata = path(table, "metadata/b.json");
     let create = client.send(Method::POST, &metadata, "uploads=", b"", false).await;
@@ -236,6 +279,33 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
         .await
         .unwrap()
         .ends_with("</CompleteMultipartUploadResult>"));
+    let mut composite = Md5::new();
+    composite.update(Md5::digest(first));
+    composite.update(Md5::digest(second));
+    let expected_etag = composite
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        + "-2";
+    let published = repository
+        .load(
+            client.credentials.grant().context,
+            &table.file("metadata/b.json").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(published.content.etag(), Some(expected_etag.as_str()));
+    assert_eq!(
+        published
+            .content
+            .locations(published.length)
+            .unwrap()
+            .unwrap()
+            .len(),
+        2
+    );
     let replay = client
         .send(
             Method::POST,

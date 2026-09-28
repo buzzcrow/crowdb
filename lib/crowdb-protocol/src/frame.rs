@@ -81,6 +81,99 @@ pub struct ParsedFrame<'a> {
     pub physical_length: usize,
 }
 
+/// Verified frame metadata when the physical bytes span several buffers.
+pub struct ParsedFrameViews {
+    pub header: FrameHeaderPrefix,
+    pub chunk_id: ChunkId,
+    pub physical_length: usize,
+}
+
+/// Verify a frame over ordered views without assembling its payload.
+///
+/// # Errors
+/// Returns an error for an incomplete, malformed, or corrupt frame.
+pub fn parse_frame_views(
+    views: &[&[u8]],
+    expected_chunk_id: ChunkId,
+) -> Result<ParsedFrameViews, FrameError> {
+    let mut header_bytes = [0_u8; FRAME_HEADER_PREFIX_BYTES];
+    copy_view_range(views, 0, &mut header_bytes)?;
+    let header = parse_header(&header_bytes)?;
+    let length = frame_length(header)?;
+    let available = views
+        .iter()
+        .fold(0_usize, |total, view| total.saturating_add(view.len()));
+    if available < length {
+        return Err(FrameError::Incomplete {
+            required_bytes: length,
+        });
+    }
+    let footer_start = length - FRAME_FOOTER_BYTES;
+    let mut footer = [0_u8; FRAME_FOOTER_BYTES];
+    copy_view_range(views, footer_start, &mut footer)?;
+    let expected_crc = u32::from_le_bytes(
+        footer[..4]
+            .try_into()
+            .map_err(|_| FrameError::InvalidRegionLength)?,
+    );
+    let mut crc = 0_u32;
+    let mut cursor = 0_usize;
+    for view in views {
+        let included = footer_start.saturating_sub(cursor).min(view.len());
+        if included > 0 {
+            crc = !crc32c::crc32c_append(!crc, &view[..included]);
+        }
+        cursor = cursor.saturating_add(view.len());
+        if cursor >= footer_start {
+            break;
+        }
+    }
+    crc = !crc32c::crc32c_append(!crc, &footer[4..]);
+    if crc != expected_crc {
+        return Err(FrameError::ChecksumMismatch);
+    }
+    let chunk_id = ChunkId {
+        high: u64::from_be_bytes(
+            footer[4..12]
+                .try_into()
+                .map_err(|_| FrameError::InvalidRegionLength)?,
+        ),
+        low: u64::from_be_bytes(
+            footer[12..20]
+                .try_into()
+                .map_err(|_| FrameError::InvalidRegionLength)?,
+        ),
+    };
+    if chunk_id != expected_chunk_id {
+        return Err(FrameError::ChunkIdMismatch);
+    }
+    Ok(ParsedFrameViews {
+        header,
+        chunk_id,
+        physical_length: length,
+    })
+}
+
+fn copy_view_range(views: &[&[u8]], start: usize, target: &mut [u8]) -> Result<(), FrameError> {
+    let required_bytes = start.saturating_add(target.len());
+    let mut cursor = 0_usize;
+    let mut copied = 0_usize;
+    for view in views {
+        let view_end = cursor.saturating_add(view.len());
+        if view_end > start && copied < target.len() {
+            let from = start.saturating_sub(cursor);
+            let count = (view.len() - from).min(target.len() - copied);
+            target[copied..copied + count].copy_from_slice(&view[from..from + count]);
+            copied += count;
+        }
+        cursor = view_end;
+        if copied == target.len() {
+            return Ok(());
+        }
+    }
+    Err(FrameError::Incomplete { required_bytes })
+}
+
 /// Encode a canonical v1 frame without header extensions.
 ///
 /// # Errors
@@ -405,26 +498,16 @@ fn write_header_region(region: &mut [u8], header: FrameHeaderPrefix) {
     region[6..14].copy_from_slice(&header.write_time_ms.to_le_bytes());
 }
 
-fn crc32c(bytes: &[u8]) -> u32 {
-    crc32c_parts([bytes])
-}
-
 fn crc32c_parts<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u32 {
     let mut crc = 0_u32;
     for bytes in parts {
-        for byte in bytes {
-            crc ^= u32::from(*byte);
-            for _ in 0..8 {
-                crc = (crc >> 1) ^ (0x82F6_3B78 & (0_u32.wrapping_sub(crc & 1)));
-            }
-        }
+        // The frame format stores the raw seed-zero CRC, while this API applies
+        // initial and final XOR. Invert around each append to preserve the wire value.
+        crc = !crc32c::crc32c_append(!crc, bytes);
     }
     crc
 }
 
 fn crc32c_frame_parts(prefix: &[u8], chunk_id: &[u8]) -> u32 {
-    let mut bytes = Vec::with_capacity(prefix.len() + chunk_id.len());
-    bytes.extend_from_slice(prefix);
-    bytes.extend_from_slice(chunk_id);
-    crc32c(&bytes)
+    crc32c_parts([prefix, chunk_id])
 }

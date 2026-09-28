@@ -1014,7 +1014,7 @@ impl DiskioClient {
                 data.len()
             )));
         }
-        Ok(Bytes::from(data))
+        Ok(data)
     }
 
     fn classify_wire(error: WireError, operation: OperationKind) -> DiskioError {

@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <memory>
 
 using crowdb::rpc::Buffer;
 using crowdb::rpc::BufferType;
@@ -80,5 +81,25 @@ TEST(BufferTest, ExactCapacityNoBucketing)
     Buffer          *buf = pool.alloc(200);
     ASSERT_NE(buf, nullptr);
     EXPECT_EQ(buf->capacity, 200U); // exact, not bucketed to 256
+    buf->release();
+}
+
+TEST(BufferTest, DetachedReceiveBufferOutlivesPoolWithoutCopy)
+{
+    auto    pool = std::make_unique<SystemBufferPool>(1);
+    Buffer *buf  = pool->alloc(4);
+    ASSERT_NE(buf, nullptr);
+    const uint8_t data[] = {1, 2, 3, 4};
+    buf->write(data, 4);
+    uint8_t *original = buf->data;
+
+    EXPECT_TRUE(pool->detach(buf));
+    EXPECT_EQ(buf->data, original);
+    Buffer *next = pool->alloc(4);
+    ASSERT_NE(next, nullptr);
+    next->release();
+    pool.reset();
+
+    EXPECT_EQ(std::memcmp(buf->data, data, 4), 0);
     buf->release();
 }

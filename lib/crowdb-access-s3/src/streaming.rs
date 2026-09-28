@@ -156,8 +156,7 @@ where
     write_body_with_checksums_metered(body, writer, expected_content_md5, expected_payload_sha256, None).await
 }
 
-/// Streams one body while accounting the exact bytes presented to both
-/// checksum implementations.
+/// Streams one body while accounting the exact bytes presented to integrity checks.
 ///
 /// # Errors
 ///
@@ -174,7 +173,7 @@ where
     B::Error: std::fmt::Display,
     W: ChunkIoWriter,
 {
-    let mut integrity = SinglePartIntegrity::default();
+    let mut integrity = SinglePartIntegrity::new(expected_payload_sha256.is_some());
     loop {
         if writer.input_complete() {
             return finish_integrity(integrity, expected_content_md5, expected_payload_sha256);
@@ -199,6 +198,65 @@ where
             .await
             .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
     }
+}
+
+/// Coalesces receive fragments into one bounded push per receive owner.
+/// # Errors
+/// Returns body, writer, or declared checksum errors without publishing data.
+pub async fn write_body_with_checksums_buffered<B, W>(
+    body: &mut B,
+    writer: &mut W,
+    expected_content_md5: Option<&str>,
+    expected_payload_sha256: Option<&str>,
+    receive_bytes: usize,
+    metrics: Option<&crate::metrics::S3Metrics>,
+) -> Result<(String, Vec<u8>), PutOutcome>
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: std::fmt::Display,
+    W: ChunkIoWriter,
+{
+    if receive_bytes == 0 || receive_bytes > 1024 * 1024 {
+        return Err(put_error(PutErrorCode::BodyRead, "invalid receive buffer size"));
+    }
+    let mut integrity = SinglePartIntegrity::new(expected_payload_sha256.is_some());
+    let mut pending = Vec::with_capacity(receive_bytes);
+    loop {
+        if writer.input_complete() {
+            break;
+        }
+        while !writer.require_data() && !writer.input_complete() {
+            writer.wait_for_capacity().await;
+        }
+        let frame = poll_fn(|context| Pin::new(&mut *body).poll_frame(context)).await;
+        let Some(frame) = frame else { break };
+        let frame = frame.map_err(|error| put_error(PutErrorCode::BodyRead, error))?;
+        let Ok(mut data) = frame.into_data() else { continue };
+        if let Some(metrics) = metrics {
+            metrics.record_checksum_bytes(data.len());
+        }
+        integrity.update(&data);
+        while !data.is_empty() {
+            let count = (receive_bytes - pending.len()).min(data.len());
+            pending.extend_from_slice(&data.split_to(count));
+            if pending.len() == receive_bytes {
+                writer
+                    .on_data(Bytes::from(std::mem::replace(
+                        &mut pending,
+                        Vec::with_capacity(receive_bytes),
+                    )))
+                    .await
+                    .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
+            }
+        }
+    }
+    if !pending.is_empty() {
+        writer
+            .on_data(Bytes::from(pending))
+            .await
+            .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
+    }
+    finish_integrity(integrity, expected_content_md5, expected_payload_sha256)
 }
 
 /// Streams one body through a native owner provider while calculating object
@@ -252,7 +310,7 @@ where
     B::Error: std::fmt::Display,
     W: ChunkIoWriter,
 {
-    let mut integrity = SinglePartIntegrity::default();
+    let mut integrity = SinglePartIntegrity::new(expected_payload_sha256.is_some());
     loop {
         while !writer.require_data() {
             writer.wait_for_capacity().await;

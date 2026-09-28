@@ -69,6 +69,15 @@ impl FileUploadBudget {
         self.active.load(Ordering::Acquire)
     }
 
+    pub(crate) fn acquire(&self) -> Result<Permit, FileUploadError> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.limit).then_some(active + 1)
+            })
+            .map_err(|_| FileUploadError::Busy)?;
+        Ok(Permit(self.active.clone()))
+    }
+
     /// Stages bytes only; the caller must authorize intersected limits and seal before publication.
     /// Writes each received frame in bounded slices and never polls ahead of a pending storage write.
     /// # Errors
@@ -82,12 +91,7 @@ impl FileUploadBudget {
         constraints: FileUploadConstraints,
     ) -> Result<FileTree, FileUploadError> {
         constraints.validate()?;
-        self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < self.limit).then_some(active + 1)
-            })
-            .map_err(|_| FileUploadError::Busy)?;
-        let _permit = Permit(self.active.clone());
+        let _permit = self.acquire()?;
         let mut writer = FileTreeWriter::new(store, owner, NATIVE_FILE_BLOCK_BYTES)?;
         while let Some(frame) = body.frame().await {
             let bytes = frame
@@ -125,7 +129,7 @@ impl FileUploadBudget {
     }
 }
 
-struct Permit(Arc<AtomicUsize>);
+pub(crate) struct Permit(Arc<AtomicUsize>);
 
 impl Drop for Permit {
     fn drop(&mut self) {

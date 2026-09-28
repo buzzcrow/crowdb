@@ -7,7 +7,8 @@ use crowdb_access_iceberg::catalog::{
 };
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
-use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
+use crowdb_access_s3::native_buffer::NativeBodyAllocator;
+use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
@@ -15,6 +16,7 @@ use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
 use tokio::net::TcpListener;
 
 use super::{serve, IcebergHttpService};
+use crate::config::{load_args, AccessConfig};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -28,16 +30,26 @@ impl IcebergRuntimeConfig {
     /// # Errors
     /// Rejects missing/invalid credentials, seeds or listener configuration.
     pub fn from_env() -> Result<Self, BoxError> {
-        let seeds = std::env::var("CROWDB_MANAGEMENT_SEEDS")?;
-        if seeds.len() > 8192 {
-            return Err("management seed configuration is oversized".into());
-        }
-        let management_seeds: Vec<_> = seeds
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .collect();
+        Self::from_config(&AccessConfig::default())
+    }
+
+    /// # Errors
+    /// Rejects missing/invalid credentials, seeds or listener configuration.
+    pub fn from_config(access: &AccessConfig) -> Result<Self, BoxError> {
+        let management_seeds: Vec<_> = if access.common.management_seeds.is_empty() {
+            let seeds = std::env::var("CROWDB_MANAGEMENT_SEEDS")?;
+            if seeds.len() > 8192 {
+                return Err("management seed configuration is oversized".into());
+            }
+            seeds
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect()
+        } else {
+            access.common.management_seeds.clone()
+        };
         if management_seeds.is_empty() || management_seeds.len() > 16 {
             return Err("one to sixteen management seeds are required".into());
         }
@@ -49,7 +61,12 @@ impl IcebergRuntimeConfig {
             &std::env::var("CROWDB_ICEBERG_CLEAR_TOKEN")?,
         )
         .map_err(|error| format!("invalid Iceberg bearer credential configuration: {error}"))?;
-        let listen = std::env::var("CROWDB_ICEBERG_LISTEN").unwrap_or_else(|_| "127.0.0.1:8181".into());
+        let listen = access
+            .iceberg
+            .listen
+            .clone()
+            .or_else(|| std::env::var("CROWDB_ICEBERG_LISTEN").ok())
+            .unwrap_or_else(|| "127.0.0.1:8181".into());
         let _: std::net::SocketAddr = listen.parse()?;
         Ok(Self {
             listen,
@@ -62,12 +79,19 @@ impl IcebergRuntimeConfig {
 /// # Errors
 /// Returns configuration, authentication, storage, management or listener failures.
 pub async fn run() -> Result<(), BoxError> {
-    let config = IcebergRuntimeConfig::from_env()?;
-    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    let (access_config, arguments) = load_args(std::env::args().skip(1).collect())?;
+    let config = IcebergRuntimeConfig::from_config(&access_config)?;
     if arguments.len() > 7 {
         return Err("too many Iceberg command arguments".into());
     }
-    let (repository, store, chunks) = connect(config.management_seeds.clone()).await?;
+    let (repository, store, chunks) = connect(
+        config.management_seeds.clone(),
+        access_config.read.policy(),
+        access_config.small_write.policy(),
+        access_config.common.diskio_connections_per_endpoint,
+        access_config.common.diskio_rpc_workers,
+    )
+    .await?;
     let result = if arguments.is_empty() || arguments == ["serve"] {
         Box::pin(start_listener(
             &config.listen,
@@ -76,6 +100,7 @@ pub async fn run() -> Result<(), BoxError> {
             config.authentication,
             chunks.clone(),
             config.management_seeds,
+            access_config,
         ))
         .await
     } else if arguments.first().is_some_and(|argument| argument == "gc") {
@@ -84,6 +109,7 @@ pub async fn run() -> Result<(), BoxError> {
             store.clone(),
             &config.authentication,
             &arguments[1..],
+            &access_config.iceberg.gc,
         )
         .await
     } else {
@@ -97,6 +123,10 @@ pub async fn run() -> Result<(), BoxError> {
 
 async fn connect(
     seeds: Vec<String>,
+    read_policy: ChunkReadPolicy,
+    small_write: SmallWritePolicy,
+    diskio_connections_per_endpoint: usize,
+    diskio_rpc_workers: u32,
 ) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>, ChunkIoClient), BoxError> {
     let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
     let client_config = ClientConfig::default();
@@ -108,14 +138,15 @@ async fn connect(
     ));
     let client = Arc::new(ChunkKvClient::new(client_config, source, transport)?);
     client.refresh_catalog().await?;
-    let chunks = ChunkIoClient::connect_with_kv(
+    let chunks = ChunkIoClient::connect_with_kv_read_policy(
         ChunkIoClientConfig {
             management_seeds: seeds,
-            diskio_connections_per_endpoint: 2,
-            diskio_rpc_workers: 2,
-            small_write: SmallWritePolicy::default(),
+            diskio_connections_per_endpoint,
+            diskio_rpc_workers,
+            small_write,
         },
         control,
+        read_policy,
     )
     .await?;
     let store = Arc::new(RoutedCatalogStore::new(client));
@@ -137,8 +168,9 @@ async fn start_listener(
     authentication: BearerAuthenticator,
     chunks: ChunkIoClient,
     management_seeds: Vec<String>,
+    access_config: AccessConfig,
 ) -> Result<(), BoxError> {
-    let gc_config = super::gc_runtime::GcRuntimeConfig::from_env()?;
+    let gc_config = super::gc_runtime::GcRuntimeConfig::from_config(&access_config.iceberg.gc)?;
     for _ in 0..600 {
         match repository.recover(now_ms()?).await {
             Ok(()) => break,
@@ -157,9 +189,20 @@ async fn start_listener(
     let blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> = Arc::new(
         crowdb_access_iceberg::file::NativeFileBlocks::new(chunks.clone(), store.clone()),
     );
+    let native_budget = access_config
+        .iceberg
+        .native_budget_bytes
+        .unwrap_or(256 * 1024 * 1024);
+    let native_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
     let mut service = IcebergHttpService::new(repository.clone(), authentication, timeout)
         .with_namespaces(store.clone())?
-        .with_fileio(store.clone(), blocks.clone(), "us-east-1".into())?;
+        .with_fileio_native(
+            store.clone(),
+            blocks.clone(),
+            "us-east-1".into(),
+            Some(native_allocator),
+        )?
+        .with_small_object_threshold(access_config.small_write.threshold_exclusive())?;
     if authority.admission_bounds.delegated_access_ms >= 900_000 {
         let endpoint =
             std::env::var("CROWDB_ICEBERG_PUBLIC_URI").unwrap_or_else(|_| format!("http://{address}"));
@@ -182,7 +225,14 @@ async fn start_listener(
     ));
     let tables = super::table_recovery::run(repository.clone(), store.clone(), blocks.clone());
     let (gc_store, gc_chunks) = if gc_config.enabled {
-        let (_, gc_store, gc_chunks) = connect(management_seeds).await?;
+        let (_, gc_store, gc_chunks) = connect(
+            management_seeds,
+            access_config.read.policy(),
+            access_config.small_write.policy(),
+            access_config.common.diskio_connections_per_endpoint,
+            access_config.common.diskio_rpc_workers,
+        )
+        .await?;
         (gc_store, Some(gc_chunks))
     } else {
         (store.clone(), None)

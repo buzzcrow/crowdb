@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use crate::config::IcebergGcConfig;
 use crowdb_access_iceberg::{
     catalog::{CatalogContext, CatalogRepository, RootState, RoutedCatalogStore},
     file::FileBlockStore,
@@ -32,21 +33,35 @@ pub(super) struct GcRuntimeConfig {
 }
 
 impl GcRuntimeConfig {
-    pub fn from_env() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn from_config(file: &IcebergGcConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut limits = GcLimits::default();
-        limits.step_bytes = setting("CROWDB_ICEBERG_GC_STEP_BYTES", limits.step_bytes)?;
-        limits.step_ms = setting("CROWDB_ICEBERG_GC_STEP_MS", limits.step_ms)?;
-        limits.page_items = setting("CROWDB_ICEBERG_GC_PAGE_ITEMS", limits.page_items)?;
-        limits.page_bytes = setting("CROWDB_ICEBERG_GC_PAGE_BYTES", limits.page_bytes)?;
-        limits.concurrency = setting("CROWDB_ICEBERG_GC_CONCURRENCY", limits.concurrency)?;
-        limits.retry_base_ms = setting("CROWDB_ICEBERG_GC_RETRY_BASE_MS", limits.retry_base_ms)?;
-        limits.retry_max_ms = setting("CROWDB_ICEBERG_GC_RETRY_MAX_MS", limits.retry_max_ms)?;
-        limits.corruption_attempts = setting(
+        limits.step_bytes = setting_or("CROWDB_ICEBERG_GC_STEP_BYTES", file.step_bytes, limits.step_bytes)?;
+        limits.step_ms = setting_or("CROWDB_ICEBERG_GC_STEP_MS", file.step_ms, limits.step_ms)?;
+        limits.page_items = setting_or("CROWDB_ICEBERG_GC_PAGE_ITEMS", file.page_items, limits.page_items)?;
+        limits.page_bytes = setting_or("CROWDB_ICEBERG_GC_PAGE_BYTES", file.page_bytes, limits.page_bytes)?;
+        limits.concurrency = setting_or(
+            "CROWDB_ICEBERG_GC_CONCURRENCY",
+            file.concurrency,
+            limits.concurrency,
+        )?;
+        limits.retry_base_ms = setting_or(
+            "CROWDB_ICEBERG_GC_RETRY_BASE_MS",
+            file.retry_base_ms,
+            limits.retry_base_ms,
+        )?;
+        limits.retry_max_ms = setting_or(
+            "CROWDB_ICEBERG_GC_RETRY_MAX_MS",
+            file.retry_max_ms,
+            limits.retry_max_ms,
+        )?;
+        limits.corruption_attempts = setting_or(
             "CROWDB_ICEBERG_GC_CORRUPTION_ATTEMPTS",
+            file.corruption_attempts,
             limits.corruption_attempts,
         )?;
-        limits.minimum_retention_ms = setting(
+        limits.minimum_retention_ms = setting_or(
             "CROWDB_ICEBERG_GC_MINIMUM_RETENTION_MS",
+            file.minimum_retention_ms,
             limits.minimum_retention_ms,
         )?;
         limits.validate()?;
@@ -56,35 +71,47 @@ impl GcRuntimeConfig {
         if limits.minimum_retention_ms < GcLimits::default().minimum_retention_ms {
             return Err("GC retention must be at least seven days".into());
         }
-        let interval_ms = setting("CROWDB_ICEBERG_GC_INTERVAL_MS", 1000_u64)?;
+        let interval_ms = setting_or("CROWDB_ICEBERG_GC_INTERVAL_MS", file.interval_ms, 1000_u64)?;
         if !(100..=60_000).contains(&interval_ms) {
             return Err("GC interval must be between 100 and 60000 milliseconds".into());
         }
-        let catalogs = match std::env::var("CROWDB_ICEBERG_GC_CATALOGS") {
-            Ok(value) => value,
-            Err(std::env::VarError::NotPresent) => String::new(),
-            Err(error) => return Err(error.into()),
-        }
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::parse)
-        .collect::<Result<Vec<_>, _>>()?;
+        let names = match &file.catalogs {
+            Some(names) => names.clone(),
+            None => match std::env::var("CROWDB_ICEBERG_GC_CATALOGS") {
+                Ok(value) => value.split(',').map(str::to_owned).collect(),
+                Err(std::env::VarError::NotPresent) => Vec::new(),
+                Err(error) => return Err(error.into()),
+            },
+        };
+        let catalogs = names
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::parse)
+            .collect::<Result<Vec<_>, _>>()?;
         if catalogs.len() > 64 {
             return Err("too many GC catalog scopes".into());
         }
         let mut catalogs: Vec<CatalogId> = catalogs;
         catalogs.sort_unstable();
         catalogs.dedup();
-        let enabled = match std::env::var("CROWDB_ICEBERG_GC_ENABLED").as_deref() {
-            Ok("1") => true,
-            Ok("0") | Err(std::env::VarError::NotPresent) => false,
-            _ => return Err("CROWDB_ICEBERG_GC_ENABLED must be 0 or 1".into()),
+        let enabled = match file.enabled {
+            Some(enabled) => enabled,
+            None => match std::env::var("CROWDB_ICEBERG_GC_ENABLED").as_deref() {
+                Ok("1") => true,
+                Ok("0") | Err(std::env::VarError::NotPresent) => false,
+                _ => return Err("CROWDB_ICEBERG_GC_ENABLED must be 0 or 1".into()),
+            },
         };
-        let kv_bytes = setting("CROWDB_ICEBERG_GC_KV_BYTES", 64 * 1024 * 1024_u64)?;
-        let kv_requests = setting("CROWDB_ICEBERG_GC_KV_REQUESTS", 128_u32)?;
-        let chunk_bytes = setting("CROWDB_ICEBERG_GC_CHUNK_BYTES", 8 * 1024 * 1024_u64)?;
-        let chunk_requests = setting("CROWDB_ICEBERG_GC_CHUNK_REQUESTS", 128_u32)?;
+        let kv_bytes = setting_or("CROWDB_ICEBERG_GC_KV_BYTES", file.kv_bytes, 64 * 1024 * 1024_u64)?;
+        let kv_requests = setting_or("CROWDB_ICEBERG_GC_KV_REQUESTS", file.kv_requests, 128_u32)?;
+        let chunk_bytes = setting_or(
+            "CROWDB_ICEBERG_GC_CHUNK_BYTES",
+            file.chunk_bytes,
+            8 * 1024 * 1024_u64,
+        )?;
+        let chunk_requests = setting_or("CROWDB_ICEBERG_GC_CHUNK_REQUESTS", file.chunk_requests, 128_u32)?;
         if !(4 * 1024 * 1024..=256 * 1024 * 1024).contains(&kv_bytes)
             || !(8..=4096).contains(&kv_requests)
             || !(256 * 1024..=64 * 1024 * 1024).contains(&chunk_bytes)
@@ -114,6 +141,21 @@ where
         Ok(value) => Ok(value.parse()?),
         Err(std::env::VarError::NotPresent) => Ok(default),
         Err(error) => Err(error.into()),
+    }
+}
+
+fn setting_or<T>(
+    name: &str,
+    configured: Option<T>,
+    default: T,
+) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+where
+    T: std::str::FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    match configured {
+        Some(value) => Ok(value),
+        None => setting(name, default),
     }
 }
 

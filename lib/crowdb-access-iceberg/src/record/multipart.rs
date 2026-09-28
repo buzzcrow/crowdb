@@ -6,7 +6,10 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
 use crate::catalog::CatalogContext;
 use crate::error::ValidationError;
-use crate::file::{MultipartLimits, MultipartPart, MultipartPartMutation, MultipartPhase, MultipartSession};
+use crate::file::{
+    FileContent, MultipartLimits, MultipartPart, MultipartPartMutation, MultipartPhase, MultipartSession,
+    MultipartStreamPart,
+};
 use crate::key::{FileId, OperationId};
 
 mod completion;
@@ -154,7 +157,19 @@ pub(super) fn encode_part<'buffer>(
     part.validate()?;
     let upload = builder.create_vector(part.upload.as_bytes());
     let owner = fields::encode_owner(builder, part.owner);
-    let tree = fields::encode_tree(builder, &part.tree);
+    let tree = part.tree.as_ref().map(|tree| fields::encode_tree(builder, tree));
+    let (locations, etag, stream_length) = if let Some(stream) = &part.stream {
+        let FileContent::Locations { bytes, etag } = &stream.content else {
+            return Err(ValidationError::Record);
+        };
+        (
+            Some(builder.create_vector(bytes)),
+            Some(builder.create_string(etag)),
+            stream.length,
+        )
+    } else {
+        (None, None, 0)
+    };
     Ok(FBMultipartPart::create(
         builder,
         &FBMultipartPartArgs {
@@ -162,8 +177,11 @@ pub(super) fn encode_part<'buffer>(
             number: part.number,
             revision: part.revision,
             owner: Some(owner),
-            tree: Some(tree),
+            tree,
             modified_ms: part.modified_ms,
+            locations,
+            etag,
+            stream_length,
         },
     ))
 }
@@ -175,7 +193,18 @@ pub(super) fn decode_part(value: FBMultipartPart<'_>) -> Result<MultipartPart, V
         revision: value.revision(),
         modified_ms: value.modified_ms(),
         owner: fields::decode_owner(value.owner())?,
-        tree: fields::decode_tree(value.tree())?,
+        tree: value.tree().map(fields::decode_tree).transpose()?,
+        stream: match (value.locations(), value.etag()) {
+            (Some(locations), Some(etag)) => Some(MultipartStreamPart {
+                length: value.stream_length(),
+                content: FileContent::Locations {
+                    bytes: locations.bytes().to_vec(),
+                    etag: etag.to_owned(),
+                },
+            }),
+            (None, None) => None,
+            _ => return Err(ValidationError::Record),
+        },
     };
     part.validate()?;
     Ok(part)

@@ -9,15 +9,20 @@ mod fixtures;
 #[path = "common/multipart_recovery_store.rs"]
 mod scan;
 
+use std::fmt::Write as _;
 use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::catalog::{CatalogError, CatalogStore};
 use crowdb_access_iceberg::file::{
-    FileIdentity, FileRecord, FileRepository, FileTree, FileTreeWriter, MultipartPart, MultipartPhase,
-    MultipartRecovery, MultipartRepository, MultipartSelection, MultipartSession, SelectedPart,
+    FileContent, FileIdentity, FileRecord, FileRepository, FileTree, FileTreeWriter, MultipartPart,
+    MultipartPhase, MultipartRecovery, MultipartRepository, MultipartSelection, MultipartSession,
+    MultipartStreamPart, SelectedPart,
 };
 use crowdb_access_iceberg::key::FileId;
 use crowdb_access_iceberg::operation::mutation_identity;
+use crowdb_protocol::chunkdb::rpc::Location;
+use crowdb_protocol::common::ChunkId;
+use md5::{Digest, Md5};
 
 async fn setup() -> (
     file::TestFile,
@@ -50,7 +55,8 @@ async fn setup() -> (
         revision: 1,
         modified_ms: 101,
         owner,
-        tree: writer.finish().await.unwrap(),
+        tree: Some(writer.finish().await.unwrap()),
+        stream: None,
     };
     repository.reserve_part(&session, &part, 101).await.unwrap();
     session = load(&repository, &session).await;
@@ -59,7 +65,7 @@ async fn setup() -> (
     let selection = MultipartSelection::new(vec![SelectedPart {
         number: 1,
         revision: 1,
-        digest: part.tree.digest,
+        digest: part.selection_digest(),
     }])
     .unwrap();
     repository
@@ -85,6 +91,90 @@ async fn load(repository: &MultipartRepository, session: &MultipartSession) -> M
         .await
         .unwrap()
         .unwrap()
+}
+
+#[tokio::test]
+async fn streamed_parts_complete_by_composing_locations_and_saved_md5_only() {
+    let fixture = file::TestFile::new(common::TestStore::default()).await;
+    let repository = MultipartRepository::new(fixture.store.clone());
+    let mut session = fixtures::session();
+    session.context = fixture.context;
+    session.owner.table = fixture.table;
+    session.location = fixture.table.file("data/composed.parquet").unwrap();
+    repository.begin(&session, 100).await.unwrap();
+    let mut selected = Vec::new();
+    for (number, size, md5) in [
+        (1_u16, 7_u64, "11111111111111111111111111111111"),
+        (2, 5, "22222222222222222222222222222222"),
+    ] {
+        let location = Location {
+            chunk_id: Some(ChunkId {
+                high: 7,
+                low: u64::from(number),
+            }),
+            offset: 100,
+            length: size + 34,
+            logical_offset: 0,
+            logical_length: size,
+        };
+        let part = MultipartPart {
+            upload: session.upload,
+            number,
+            revision: 1,
+            modified_ms: 101,
+            owner: FileIdentity {
+                file: FileId::random(),
+                ..session.owner
+            },
+            tree: None,
+            stream: Some(MultipartStreamPart {
+                length: size,
+                content: FileContent::from_locations(&[location], size, md5.into()).unwrap(),
+            }),
+        };
+        repository.reserve_part(&session, &part, 101).await.unwrap();
+        session = load(&repository, &session).await;
+        repository.settle_part(&session).await.unwrap();
+        session = load(&repository, &session).await;
+        selected.push(SelectedPart {
+            number,
+            revision: 1,
+            digest: part.selection_digest(),
+        });
+    }
+    let selection = MultipartSelection::new(selected).unwrap();
+    repository
+        .freeze_completion(&session, &selection, 102)
+        .await
+        .unwrap();
+    session = load(&repository, &session).await;
+    assert_eq!(
+        repository
+            .prepare_stream_publication(&session, 103)
+            .await
+            .unwrap(),
+        Some(true)
+    );
+    session = load(&repository, &session).await;
+    let published = repository.publish(&session).await.unwrap().unwrap();
+    let locations = published.content.locations(published.length).unwrap().unwrap();
+    assert_eq!(published.length, 12);
+    assert_eq!(
+        locations
+            .iter()
+            .map(|location| location.logical_offset)
+            .collect::<Vec<_>>(),
+        vec![0, 7]
+    );
+    let mut digest = Md5::new();
+    digest.update([0x11; 16]);
+    digest.update([0x22; 16]);
+    let mut expected = String::new();
+    for byte in digest.finalize() {
+        write!(&mut expected, "{byte:02x}").unwrap();
+    }
+    expected.push_str("-2");
+    assert_eq!(published.content.etag(), Some(expected.as_str()));
 }
 
 #[tokio::test]

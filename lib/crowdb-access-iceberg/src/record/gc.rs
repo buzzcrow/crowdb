@@ -1,6 +1,6 @@
 use crowdb_protocol::iceberg_fb::{
     FBGcCandidate, FBGcCandidateArgs, FBGcEntry, FBGcEntryArgs, FBGcFrame, FBGcFrameArgs, FBGcPage,
-    FBGcPageArgs, FBGcPin, FBGcPinArgs, FBGcTask, FBGcTaskArgs,
+    FBGcPageArgs, FBGcTask, FBGcTaskArgs,
 };
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
@@ -9,8 +9,8 @@ use crate::{
     error::ValidationError,
     file::FileIdentity,
     gc::{
-        CandidatePhase, GcCandidate, GcPage, GcPhase, GcPin, GcStalledReason, GcTask, GcTaskKind,
-        ReclaimFrame, TreeReclaimCursor,
+        CandidatePhase, GcCandidate, GcPage, GcPhase, GcStalledReason, GcTask, GcTaskKind, ReclaimFrame,
+        TreeReclaimCursor,
     },
     key::{CatalogId, OperationId},
 };
@@ -212,6 +212,7 @@ pub(super) fn encode_candidate<'buffer>(
             next_root: candidate.next_root,
             frames: Some(frames),
             pending,
+            next_location: candidate.cursor.next_location,
         },
     ))
 }
@@ -266,6 +267,7 @@ pub(super) fn decode_candidate(value: FBGcCandidate<'_>) -> Result<GcCandidate, 
             owner,
             frames,
             pending: value.pending().map(super::file::decode_root).transpose()?,
+            next_location: value.next_location(),
         },
     };
     candidate.validate()?;
@@ -317,47 +319,4 @@ pub(super) fn decode_page(value: FBGcPage<'_>) -> Result<GcPage, ValidationError
     };
     page.validate()?;
     Ok(page)
-}
-
-pub(super) fn encode_pin<'buffer>(
-    builder: &mut FlatBufferBuilder<'buffer>,
-    pin: &GcPin,
-) -> Result<WIPOffset<FBGcPin<'buffer>>, ValidationError> {
-    pin.validate()?;
-    let catalog = builder.create_vector(pin.context.catalog.as_bytes());
-    let identity = builder.create_vector(pin.identity.as_bytes());
-    let head = super::table::encode_head(builder, &pin.head)?;
-    let principal = builder.create_string(&pin.principal);
-    Ok(FBGcPin::create(
-        builder,
-        &FBGcPinArgs {
-            catalog: Some(catalog),
-            activation_epoch: pin.context.activation_epoch,
-            identity: Some(identity),
-            head: Some(head),
-            principal: Some(principal),
-            expires_ms: pin.expires_ms,
-            released: pin.released,
-            operator_pin: pin.operator,
-            protects_uploads: pin.protects_uploads,
-        },
-    ))
-}
-
-pub(super) fn decode_pin(value: FBGcPin<'_>) -> Result<GcPin, ValidationError> {
-    let pin = GcPin {
-        context: CatalogContext {
-            catalog: CatalogId::from_bytes(value.catalog().bytes())?,
-            activation_epoch: value.activation_epoch(),
-        },
-        identity: OperationId::from_bytes(value.identity().bytes())?,
-        head: super::table::decode_head(value.head())?,
-        principal: value.principal().to_owned(),
-        expires_ms: value.expires_ms(),
-        released: value.released(),
-        operator: value.operator_pin(),
-        protects_uploads: value.protects_uploads(),
-    };
-    pin.validate()?;
-    Ok(pin)
 }

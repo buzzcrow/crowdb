@@ -108,6 +108,15 @@ impl ChunkIoClient {
     /// Discover services using an existing KV topology client shared with the
     /// embedding process.
     pub async fn connect_with_kv(config: ChunkIoClientConfig, kv: Arc<CrowdbKvClient>) -> Result<Self> {
+        Self::connect_with_kv_read_policy(config, kv, ChunkReadPolicy::default()).await
+    }
+
+    /// Connect with explicit shared read resource limits.
+    pub async fn connect_with_kv_read_policy(
+        config: ChunkIoClientConfig,
+        kv: Arc<CrowdbKvClient>,
+        read_policy: ChunkReadPolicy,
+    ) -> Result<Self> {
         let service = ServiceRegistryClient::from_shared(kv.clone());
         let hardware = HardwareClient::from_shared(kv.clone());
         let range_binding = discover_current_range_bindings(&service, kv.clone()).await?;
@@ -136,7 +145,7 @@ impl ChunkIoClient {
             Arc::new(SmallWriteMetrics::default()),
             Arc::clone(&failed_disks),
         )?;
-        let reader = ChunkReader::new(chunkdb.clone(), disk_writer.clone(), ChunkReadPolicy::default())
+        let reader = ChunkReader::new(chunkdb.clone(), disk_writer.clone(), read_policy)
             .map_err(|error| crate::IoError::Internal(error.to_string()))?;
         Ok(Self {
             allocator: chunkdb.clone(),
@@ -254,6 +263,7 @@ impl ChunkIoClient {
             Arc::clone(&self.disk_writer),
             ChunkReadPolicy::default(),
             Arc::clone(&metrics.read_recovery),
+            Arc::clone(&metrics.read_flow),
         )
         .unwrap_or_else(|_| unreachable!("default read policy is valid"));
         self
@@ -268,17 +278,20 @@ impl ChunkIoClient {
             self.metrics
                 .as_ref()
                 .map_or_else(Arc::default, |metrics| Arc::clone(&metrics.read_recovery)),
+            self.metrics
+                .as_ref()
+                .map_or_else(Arc::default, |metrics| Arc::clone(&metrics.read_flow)),
         )?;
         Ok(self)
     }
 
-    /// Reconstruct a complete object from writer-produced locations.
-    pub async fn read_object(&self, locations: &[Location]) -> ReadResult<Bytes> {
+    /// Read a complete object as verified buffers from writer-produced locations.
+    pub async fn read_object(&self, locations: &[Location]) -> ReadResult<Vec<Bytes>> {
         self.reader.read_object(locations).await
     }
 
-    /// Reconstruct the logical half-open range `[start, end)`.
-    pub async fn read_range(&self, locations: &[Location], start: u64, end: u64) -> ReadResult<Bytes> {
+    /// Read the logical half-open range `[start, end)` as verified buffers.
+    pub async fn read_range(&self, locations: &[Location], start: u64, end: u64) -> ReadResult<Vec<Bytes>> {
         self.reader.read_range(locations, start, end).await
     }
 
@@ -351,6 +364,30 @@ impl ChunkIoClient {
         Ok(SharedObjectWriter::new(runtime, object_size, route, route_hash))
     }
 
+    /// Prepares one shared object whose complete 64 KiB frame sequence has one location.
+    pub async fn prepare_shared_object_write_for_key(
+        &self,
+        object_size: usize,
+        key: &[u8],
+    ) -> Result<SharedObjectWriter> {
+        if object_size == 0 {
+            return Ok(SharedObjectWriter::empty());
+        }
+        let runtime = self.small_pool.prepare(object_size).await?;
+        let route_hash = stable_route_hash(key);
+        let route = runtime
+            .route_for_hash(route_hash)
+            .ok_or_else(|| IoError::Internal("small write has no pipeline route".into()))?;
+        if object_size as u64 > route.capacity_bytes {
+            return Err(IoError::MemoryBudgetExhausted);
+        }
+        let mut writer = SharedObjectWriter::new(runtime, object_size, route, route_hash);
+        while !writer.try_reserve_declared() {
+            writer.wait_for_route_capacity().await;
+        }
+        Ok(writer)
+    }
+
     /// Stop admission, drain accepted objects, and finalize shared chunks.
     pub async fn shutdown_small_writes(&self) -> Result<()> {
         self.small_pool.shutdown().await
@@ -371,6 +408,11 @@ impl ChunkIoClient {
                 .unwrap_or(0);
         }
         snapshot
+    }
+
+    /// Snapshot location and layout work on the shared read path.
+    pub fn read_flow_metrics(&self) -> crate::ReadFlowMetricsSnapshot {
+        self.reader.flow_metrics_snapshot()
     }
 
     /// Snapshot in-line large-write segment replacement counters.

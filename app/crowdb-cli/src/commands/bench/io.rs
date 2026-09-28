@@ -294,13 +294,19 @@ fn print_read(workload: ReadBenchmarkWorkload, args: &ChunkioReadArgs, result: &
         ReadBenchmarkWorkload::Mixed => "read-mix",
     };
     println!(
-        "chunkio {name}: requested={} dataset_objects={} prepare_s={:.3} reads={} small_reads={} large_reads={} errors={} incomplete={} stop={} reads_s={:.2} logical_mib_s={:.1} logical_bytes={} avg_us={} p50_us={} p99_us={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
+        "chunkio {name}: requested={} dataset_objects={} prepare_s={:.3} reads={} small_reads={} large_reads={} errors={} incomplete={} stop={} reads_s={:.2} logical_mib_s={:.1} logical_bytes={} avg_us={} p50_us={} p99_us={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={} location_normalizations={} locations_examined={} range_locations_examined={} stream_windows={} layout_queries={} layout_query_wait_ns={} strip_read_wait_ns={} chunk_read_wait_ns={} frame_decode_wait_ns={} frame_parse_wait_ns={}",
         result.requested_reads, args.dataset_objects, result.preparation_secs, result.reads,
         result.small_reads, result.large_reads, result.errors, result.incomplete_reads,
         result.stop_reason, result.reads_per_sec, result.logical_mib_per_sec,
         result.logical_bytes, result.latency_avg_us, result.latency_p50_us, result.latency_p99_us,
         dram(result.dram_read_mib_s), dram(result.dram_write_mib_s),
         dram(result.dram_total_mib_s),
+        result.read_flow.location_normalizations, result.read_flow.locations_examined,
+        result.read_flow.range_locations_examined, result.read_flow.stream_windows,
+        result.read_flow.layout_queries,
+        result.read_flow.layout_query_wait_ns, result.read_flow.strip_read_wait_ns,
+        result.read_flow.chunk_read_wait_ns, result.read_flow.frame_decode_wait_ns,
+        result.read_flow.frame_parse_wait_ns,
     );
     print_errors(name, &result.error_messages);
 }

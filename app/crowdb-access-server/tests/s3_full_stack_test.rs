@@ -458,6 +458,14 @@ fn assert_native_write_metrics(listen: &str) {
         metric_value(&exported, "crowdb_s3_large_write_payload_copy_operations_total"),
         0
     );
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_location_normalizations_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_range_locations_examined_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_stream_windows_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_layout_queries_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_layout_query_wait_ns_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_strip_read_wait_ns_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_range_read_wait_ns_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_frame_decode_wait_ns_total") > 0);
 }
 
 fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
@@ -669,14 +677,14 @@ async fn run_direct_chunk_benchmark(seeds: &[String], artifacts_dir: &Path) {
                         .await
                         .expect("direct chunk read");
                     let get_ns = started.elapsed().as_nanos();
-                    assert_eq!(read, payload);
+                    assert_eq!(read.concat(), payload);
                     let started = Instant::now();
                     let range = chunks
                         .read_range(&result.locations, 0, 4096)
                         .await
                         .expect("direct chunk range read");
                     let range_ns = started.elapsed().as_nanos();
-                    assert_eq!(range, payload.slice(..4096));
+                    assert_eq!(range.concat(), payload.slice(..4096));
                     json!({
                         "size": size,
                         "concurrency": concurrency,

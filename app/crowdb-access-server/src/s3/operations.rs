@@ -17,8 +17,8 @@ use crowdb_access_s3::publication::PublicationRequest;
 use crowdb_access_s3::retrieval::{self, ObjectHeaders, RetrievalError};
 use crowdb_access_s3::route::{S3Operation, S3Route};
 use crowdb_access_s3::streaming::{
-    publish_completed_locations, write_body_with_checksums_metered, write_native_body_with_checksums_metered,
-    PutErrorCode, PutOutcome,
+    publish_completed_locations, write_body_with_checksums_buffered,
+    write_native_body_with_checksums_metered, PutErrorCode, PutOutcome,
 };
 use crowdb_chunk_client::{
     ChunkClientConfig, ChunkIoWriter, IoError, LargeWritePolicy, PreparedLargeWrite, SharedObjectWriter,
@@ -245,8 +245,11 @@ impl ProductionS3Operations {
         route_key.extend_from_slice(bucket_id.as_bytes());
         route_key.extend_from_slice(&key);
         let mut writer = self.prepare_writer(content_length, &route_key).await?;
-        let native_receiver = install_body_receive_provider(&mut request);
-        let native_receiver = native_receiver.filter(|_| writer.is_large() && content_length.is_some());
+        let native_receiver = if writer.is_large() && content_length.is_some() {
+            install_body_receive_provider(&mut request)
+        } else {
+            None
+        };
         if let Some(receiver) = &native_receiver {
             receiver.enable_owner_handoff();
         }
@@ -262,11 +265,16 @@ impl ProductionS3Operations {
             )
             .await
         } else {
-            write_body_with_checksums_metered(
+            let receive_bytes = content_length
+                .and_then(|length| usize::try_from(length).ok())
+                .unwrap_or(1024 * 1024)
+                .clamp(1, 1024 * 1024);
+            write_body_with_checksums_buffered(
                 &mut body,
                 &mut writer,
                 content_md5.as_deref(),
                 payload_sha256.as_deref(),
+                receive_bytes,
                 self.metrics.as_deref(),
             )
             .await
@@ -455,6 +463,15 @@ impl ProductionS3Operations {
             .and_then(|length| usize::try_from(length).ok())
             .filter(|length| *length <= self.config.small_object_limit)
         {
+            if length > crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES {
+                return self
+                    .storage
+                    .chunks
+                    .prepare_shared_object_write_for_key(length, key)
+                    .await
+                    .map(ObjectWriter::Small)
+                    .map_err(|_| S3ErrorCode::SlowDown);
+            }
             match self.storage.chunks.prepare_small_write_for_key(length, key).await {
                 Ok(writer) => return Ok(ObjectWriter::Small(writer)),
                 Err(IoError::ObjectTooLarge { .. }) => {}
@@ -523,7 +540,7 @@ impl ChunkIoWriter for ObjectWriter {
 
     async fn on_finish(&mut self) -> crowdb_chunk_client::Result<Vec<crowdb_chunk_client::ProtoLocation>> {
         match self {
-            Self::Small(writer) => writer.on_finish().await,
+            Self::Small(writer) => writer.finish_durable().await,
             Self::Large(writer) => writer.on_finish().await,
         }
     }

@@ -22,17 +22,20 @@ The scope boundary is
 ## Solution
 
 1. Add create, upload-part, list-parts, complete, abort, and required upload
-   listing operations as a separate S3-owned state machine.
+   listing operations through S3-owned API and namespace adapters over the
+   protocol-neutral multipart session, part, and completion core from R190.
 2. Store immutable part identities and integrity records durably; a retried
    part number replaces only that part's selected generation and schedules old
    private data for cleanup.
 3. Complete with one fenced metadata transaction that validates ordered part
    identities, sizes, checksums, and expected upload state before publishing
-   one immutable object generation. No concatenation through access-server
-   memory is allowed.
-4. Define multipart-specific ETag/checksum behavior without changing the basic
-   single-part generation rules. Abort and expiry create bounded,
-   idempotent cleanup records.
+   one immutable object generation. Compose the selected parts' chunk-location
+   arrays with adjusted logical offsets. Complete does not read part data or
+   concatenate it through access-server memory.
+4. Persist each uploaded part's raw 16-byte MD5. The multipart ETag is the
+   lowercase hexadecimal MD5 of the selected parts' raw MD5 bytes in order,
+   followed by `-<part-count>`. Keep the basic single-part ETag rule unchanged.
+   Abort and expiry create bounded, idempotent cleanup records.
 5. Preserve the basic admission bounds for parallel part traffic and wire
    compatibility for all retry and conflict outcomes.
 
@@ -41,6 +44,8 @@ The scope boundary is
 - Depends on R152–R166.
 - Reuses the basic milestone's publication/recovery, streaming input, logical
   deletion, and integrity contracts.
+- Reuses R190's protocol-neutral multipart core; S3 retains its own
+  authorization, namespace, wire errors, ETag response, and object publication.
 - R170 owns any accelerated multipart transfer and additionally depends on this
   requirement before enabling that operation.
 
@@ -48,8 +53,12 @@ The scope boundary is
 
 - Given parts uploaded out of order with part retries, when completion names a
   valid order, assert exact concatenated bytes become visible through one
-  generation without gateway concatenation. Invariant: completion is atomic
-  and storage-backed. E2E test.
+  generation without gateway concatenation or part reads. Invariant: completion
+  is metadata-only, atomic and storage-backed. E2E test.
+- Given completed parts with known MD5 values, when completion selects and
+  reorders them, assert the ETag uses only the selected raw part MD5 values in
+  completion order and the part count suffix. Invariant: multipart ETag matches
+  the S3-compatible composite algorithm. Unit test.
 - Given missing, duplicated, undersized, checksum-mismatched, or concurrently
   replaced parts, when completion runs, assert no object publishes and exact
   errors are stable. Invariant: only the validated part set can publish.

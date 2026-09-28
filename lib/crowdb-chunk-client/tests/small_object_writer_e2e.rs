@@ -110,6 +110,7 @@ fn policy() -> SmallWritePolicy {
         control_interval: Duration::from_millis(1),
         cooldown: Duration::from_millis(1),
         chunk_capacity: 2 * MIB as u64,
+        object_limit: MAX_FRAME_PAYLOAD_BYTES,
         mirror_copies: 1,
         ..SmallWritePolicy::default()
     }
@@ -119,6 +120,81 @@ async fn write_object(client: &ChunkIoClient, data: Bytes) -> Location {
     let mut writer = client.prepare_small_write(data.len()).await.unwrap();
     writer.on_data(data).await.unwrap();
     writer.on_finish().await.unwrap().remove(0)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shared_object_spans_mirror_strips_with_one_location() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.chunk_capacity = 16 * MIB as u64;
+    configured.object_limit = 2 * MIB;
+    let stack = E2eStack::start(configured).await;
+    let _prefix = write_object(&stack.client, Bytes::from_static(b"PAR1datafoot\x04\0\0\0PAR1")).await;
+    let data = Bytes::from(
+        (0_u32..1_200_000)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect::<Vec<_>>(),
+    );
+    let mut writer = stack
+        .client
+        .prepare_shared_object_write_for_key(data.len(), b"shared-span")
+        .await
+        .unwrap();
+    let submitted_before = stack.client.small_write_metrics().submitted;
+    for (index, fragment) in data.chunks(1024 * 1024).enumerate() {
+        writer.on_data(Bytes::copy_from_slice(fragment)).await.unwrap();
+        if index == 0 {
+            assert_eq!(stack.client.small_write_metrics().submitted, submitted_before + 1);
+        }
+    }
+    let locations = writer.on_finish().await.unwrap();
+    assert_eq!(locations.len(), 1);
+    let read = stack
+        .client
+        .read_range(&locations, 1_048_550, 1_048_601)
+        .await
+        .unwrap();
+    assert_eq!(read.concat(), &data[1_048_550..1_048_601]);
+    let mut stream = stack
+        .client
+        .read_range_stream(&locations, 1_048_550, 1_048_601)
+        .unwrap();
+    let mut streamed = Vec::new();
+    while let Some(chunk) = stream.next_chunk().await {
+        streamed.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(streamed, &data[1_048_550..1_048_601]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_streaming_shared_object_keeps_pipeline_available() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.chunk_capacity = 16 * MIB as u64;
+    configured.object_limit = 2 * MIB;
+    let stack = E2eStack::start(configured).await;
+    let mut cancelled = stack
+        .client
+        .prepare_shared_object_write_for_key(1_200_000, b"cancelled")
+        .await
+        .unwrap();
+    cancelled.on_data(Bytes::from(vec![7; MIB])).await.unwrap();
+    cancelled.on_error().await.unwrap();
+
+    let data = Bytes::from_static(b"surviving object");
+    let mut survivor = stack.client.prepare_small_write(data.len()).await.unwrap();
+    survivor.on_data(data.clone()).await.unwrap();
+    let location = survivor.finish_durable().await.unwrap().remove(0);
+    let read = stack
+        .client
+        .read_range(&[location], 0, data.len() as u64)
+        .await
+        .unwrap();
+    assert_eq!(read.concat(), data);
 }
 
 async fn write_full_small_strip(client: &ChunkIoClient, value: u8) -> Vec<(Bytes, Location)> {
@@ -269,7 +345,8 @@ async fn small_write_batches_concurrent_objects_and_reads_them_back() {
                 .client
                 .read_object(std::slice::from_ref(&location))
                 .await
-                .unwrap(),
+                .unwrap()
+                .concat(),
             data
         );
         let chunk = stack.query_chunk(&location).await;
@@ -348,7 +425,8 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
                     .client
                     .read_object(std::slice::from_ref(location))
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .concat(),
                 *expected
             );
         }
@@ -570,7 +648,8 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
                     .client
                     .read_object(std::slice::from_ref(location))
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .concat(),
                 *expected
             );
         }
@@ -580,7 +659,8 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
             .client
             .read_object(std::slice::from_ref(&appended))
             .await
-            .unwrap(),
+            .unwrap()
+            .concat(),
         appended_data
     );
     stack.client.shutdown_small_writes().await.unwrap();
@@ -693,7 +773,8 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
                     .client
                     .read_object(std::slice::from_ref(location))
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .concat(),
                 *expected
             );
         }

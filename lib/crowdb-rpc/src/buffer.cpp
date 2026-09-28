@@ -101,4 +101,14 @@ void SystemBufferPool::recycle(Buffer *buf)
     outstanding_.fetch_sub(1, std::memory_order_relaxed);
 }
 
+bool SystemBufferPool::detach(Buffer *buf)
+{
+    if (buf == nullptr || buf->pool != this || buf->ref->load(std::memory_order_acquire) != 1) {
+        return false;
+    }
+    buf->pool = nullptr;
+    outstanding_.fetch_sub(1, std::memory_order_relaxed);
+    return true;
+}
+
 } // namespace crowdb::rpc

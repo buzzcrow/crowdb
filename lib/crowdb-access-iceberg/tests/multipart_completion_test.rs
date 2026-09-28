@@ -46,12 +46,13 @@ async fn setup() -> (
             revision: 1,
             modified_ms: 101,
             owner,
-            tree: writer.finish().await.unwrap(),
+            tree: Some(writer.finish().await.unwrap()),
+            stream: None,
         };
         selected.push(SelectedPart {
             number,
             revision: 1,
-            digest: part.tree.digest,
+            digest: part.selection_digest(),
         });
         assert!(repository.reserve_part(&session, &part, 101).await.unwrap());
         session = load(&repository, &session).await;

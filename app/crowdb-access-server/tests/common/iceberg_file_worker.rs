@@ -64,11 +64,12 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, table: Ta
             table,
             file: FileId::random(),
         },
-        tree: FileTree {
+        tree: Some(FileTree {
             root: None,
             length: 0,
             digest: Sha256::digest([]).into(),
-        },
+        }),
+        stream: None,
     };
     assert!(repository.reserve_part(&admitted, &part, 2).await.unwrap());
     let mut worker = TestWorker::start(&stack.cluster.mgmt_endpoints);

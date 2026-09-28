@@ -45,8 +45,7 @@ impl TableHttp {
                     string_bytes: 1024 * 1024,
                     collection_entries: 10_000,
                 },
-            )
-            .with_catalog_reader_pins(),
+            ),
             lister: TableLister::new(store, secret)?,
             spools: Arc::new(AtomicUsize::new(0)),
             file_config: None,

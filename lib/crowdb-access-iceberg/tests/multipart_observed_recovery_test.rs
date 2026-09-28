@@ -41,7 +41,8 @@ async fn completing(fixture: &file::TestFile, blocks: Arc<blocks::TestBlocks>) -
         revision: 1,
         modified_ms: 101,
         owner,
-        tree: writer.finish().await.unwrap(),
+        tree: Some(writer.finish().await.unwrap()),
+        stream: None,
     };
     repository.reserve_part(&session, &part, 101).await.unwrap();
     session = repository
@@ -58,7 +59,7 @@ async fn completing(fixture: &file::TestFile, blocks: Arc<blocks::TestBlocks>) -
     let selection = MultipartSelection::new(vec![SelectedPart {
         number: 1,
         revision: 1,
-        digest: part.tree.digest,
+        digest: part.selection_digest(),
     }])
     .unwrap();
     repository
