@@ -8,6 +8,10 @@ Upstream: [R188](../backlog/R188-console-group0-authority.md).
 Goal: make Group 0 the shared CLI/Web authority while retaining only process
 and launch inputs locally.
 
+Status: paused at the verified bootstrap-publication checkpoint by user request
+to prioritize the single-node image and merge preparation. Remaining tasks below
+are retained for resumption; this requirement is not complete.
+
 ## Registration and acceptance failures
 
 - [x] **Stable registration across restart**: persist generated instance IDs
@@ -105,7 +109,7 @@ and launch inputs locally.
   without stale topology. Docker and launch-route regressions, fmt and clippy
   pass. Logs: `/tmp/crowdb-bare-authority-*.log`. Legacy physical routes and
   monitor refresh still remain for the mixed-config removal.
-- [~] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
+- [ ] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
   committed records, write only safely missing content, reject conflicts and
   delete topology intent after verified transfer. Clean/destroy use confirmed
   authority. Audit S3 mini-cluster persistence against the same contract.
@@ -114,8 +118,15 @@ and launch inputs locally.
   and requires every peer endpoint and remote-wiring request to succeed before
   recording membership. Four focused failure cases, complete shared tests,
   Web deploy/restart/migration suites, fmt and clippy pass. Logs:
-  `/tmp/crowdb-bootstrap-replay-*.log`. Metadata publication still needs
-  conditional writes and confirmation; durable intent/cutover remain pending.
+  `/tmp/crowdb-bootstrap-replay-*.log`. Durable intent/cutover remain pending.
+- [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
+  records, accept matching content without rewriting revisions, reject conflicts,
+  and conditionally create missing records. Reconcile uncertain writes with
+  confirmed reads; record local membership only after publication is confirmed.
+  Three real-authority regressions failed before the fix and now pass. Strict
+  publication exposed missing leader discovery in conditional KV writes:
+  explicit no-hint not-leader rejections now use the existing bounded retry
+  policy, while ambiguous dispatch still returns `OutcomeUnknown`.
 
 ## Documentation and completion
 
@@ -127,6 +138,13 @@ and launch inputs locally.
   then remove the requirement, backlog entry and this plan when complete.
 
 ## Evidence
+
+- Bootstrap checkpoint passes complete KV client and Console shared/CLI/Web
+  suites, five affected browser lifecycle/full-chain cases (53.8s), Rust fmt
+  and workspace clippy. Logs: `/tmp/crowdb-cas-retry-{baseline,suite,lint}.log`,
+  `/tmp/crowdb-bootstrap-confirmed-{console,ui,lint}.log`.
+  Lost-response fixtures now advertise their RPC proxy through management
+  topology, so discovery refresh cannot bypass the injected reply loss.
 
 - Deletion reconciliation passes all six cases, including a real dropped
   metadata reply for both store and group deletion. Complete Console shared,

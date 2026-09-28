@@ -43,20 +43,7 @@ pub async fn init(ctx: &OpContext, nodes: &[u64]) -> Result<InitSummary> {
     let succeeded = nodes::initialize(ctx, &target_nodes, single_node).await?;
     nodes::wire(ctx, &succeeded).await?;
 
-    // Phase 3: persist topology in local config.
     let store_nodes: Vec<u64> = succeeded.iter().map(|(n, _)| *n).collect();
-    let replicas: Vec<ReplicaEntry> = succeeded
-        .iter()
-        .map(|(nid, rid)| ReplicaEntry {
-            replica_id: *rid,
-            node_id: *nid,
-        })
-        .collect();
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.record_store(0, store_nodes.clone());
-        cfg.record_group(0, 0, replicas);
-    }
 
     // Phase 4: seed the KV client with the group-0 leader endpoint so
     // `write_topology_to_sysdata` (which uses `ctx.sysmd()`) can reach
@@ -75,7 +62,20 @@ pub async fn init(ctx: &OpContext, nodes: &[u64]) -> Result<InitSummary> {
     leader::seed_leader_after_init(ctx, single_node, &succeeded, &mgmt_seeds).await;
 
     // Phase 5: write hardware + KV-cluster topology into group-0 sysdata.
-    publication::write_topology_to_sysdata(ctx, &store_nodes, &succeeded).await;
+    publication::write_topology_to_sysdata(ctx, &store_nodes, &succeeded).await?;
+
+    let replicas: Vec<ReplicaEntry> = succeeded
+        .iter()
+        .map(|(nid, rid)| ReplicaEntry {
+            replica_id: *rid,
+            node_id: *nid,
+        })
+        .collect();
+    {
+        let mut cfg = ctx.config_mut();
+        cfg.record_store(0, store_nodes.clone());
+        cfg.record_group(0, 0, replicas);
+    }
 
     wait_for_live_registration(ctx, &store_nodes).await?;
     propagate_discovery(ctx, &store_nodes, &mgmt_seeds).await?;
