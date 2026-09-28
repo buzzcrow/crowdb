@@ -283,7 +283,9 @@ must be deleted — see the workflow's Post-merge cleanup section.
   wiring S3; keep keys, authorization and responses in the protocol adapters.
 - **R167 unreachable part cleanup:** S3 now preserves immutable part
   generations so completion can publish a selected generation across a
-  concurrent part-number replacement. Losing replacement candidates and old
+  concurrent part-number replacement. An identical durable part record retry
+  keeps its revision, but an HTTP retry may stream the same bytes to a new
+  location. Losing replacement candidates, replayed stream locations and old
   generations can remain unreachable. Abort, expiry, and replacement cleanup
   need durable bounded records and reader-pin protection before the HTTP path
   is enabled.
