@@ -67,6 +67,12 @@ and launch inputs locally.
   First complete launch arguments/readiness inputs, shared local/SSH lifecycle
   and runtime-only process identity. Then connect Web auto-start and CLI
   deployment/restart callers before removing mixed persistence.
+  Shared primitives are implemented in `launch.rs` and its local/remote/runtime
+  modules: private PID/start-time records, idempotent start, referenced service
+  config and SSH keys, readiness checks, and failure cleanup. Local and real
+  SSH transport regressions pass, including a native KV launch and refusal to
+  adopt an unrelated healthy endpoint. Complete Console shared tests, fmt and
+  clippy pass. Logs: `/tmp/crowdb-launch-{shared,lint,fmt}.log`.
 - [ ] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
   parser/writer, inline SSH secrets, topology restoration and fixtures after
   the launch lifecycle and replay-safe bootstrap paths are wired. Preserve

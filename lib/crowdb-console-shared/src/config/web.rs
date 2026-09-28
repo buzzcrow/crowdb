@@ -98,10 +98,20 @@ pub struct LaunchRecord {
     pub service_id: String,
     pub host: String,
     pub ssh_credential_ref: Option<String>,
+    pub ssh_user: Option<String>,
+    #[serde(default = "ssh_port")]
+    pub ssh_port: u16,
     pub binary_path: PathBuf,
     pub service_config_path: PathBuf,
     pub workspace: PathBuf,
     pub auto_start: bool,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub readiness_url: Option<String>,
+}
+
+const fn ssh_port() -> u16 {
+    22
 }
 
 impl LaunchRegistry {
@@ -133,8 +143,18 @@ impl LaunchRegistry {
                 || !clean_absolute(&launch.binary_path)
                 || !clean_absolute(&launch.service_config_path)
                 || !clean_absolute(&launch.workspace)
+                || launch.ssh_port == 0
+                || launch.ssh_user.as_deref().is_some_and(str::is_empty)
+                || (!launch.is_local() && launch.ssh_user.is_none())
+                || launch
+                    .args
+                    .iter()
+                    .any(|arg| arg.contains('\0') || arg == "--config" || arg.starts_with("--config="))
                 || launch.ssh_credential_ref.as_deref().is_some_and(|value| {
                     value.is_empty()
+                        || std::path::Path::new(value)
+                            .components()
+                            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
                         || !value
                             .bytes()
                             .all(|byte| byte.is_ascii_alphanumeric() || b"-._/".contains(&byte))
@@ -142,8 +162,39 @@ impl LaunchRegistry {
             {
                 return invalid("launch registry record is invalid");
             }
+            if let Some(url) = &launch.readiness_url {
+                let parsed = reqwest::Url::parse(url)
+                    .map_err(|_| Error::Config("launch readiness URL is invalid".into()))?;
+                if parsed.scheme() != "http"
+                    || parsed.host_str().is_none()
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                {
+                    return invalid("launch readiness URL must be unauthenticated HTTP");
+                }
+            }
         }
         Ok(())
+    }
+}
+
+impl LaunchRecord {
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.ssh_user.is_none() && matches!(self.host.as_str(), "localhost" | "127.0.0.1" | "::1")
+    }
+
+    /// Native service arguments; the referenced config is always selected explicitly.
+    #[must_use]
+    pub fn command_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "--config".into(),
+            self.service_config_path.to_string_lossy().into_owned(),
+        ];
+        args.extend(self.args.iter().cloned());
+        args
     }
 }
 
