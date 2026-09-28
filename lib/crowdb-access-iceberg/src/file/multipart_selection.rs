@@ -1,4 +1,5 @@
 use crate::error::ValidationError;
+use crate::operation::MAX_PAYLOAD_BYTES;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -56,6 +57,22 @@ impl MultipartSelection {
     /// # Errors
     /// Rejects mixed legacy parts, invalid descriptors or incoherent digests.
     pub fn with_stream_parts(parts: &[MultipartPart]) -> Result<Self, ValidationError> {
+        let mut estimated_bytes = 7_usize
+            .checked_add(parts.len().saturating_mul(ENTRY_BYTES + 64))
+            .ok_or(ValidationError::RecordTooLarge)?;
+        for part in parts {
+            let stream = part.stream.as_ref().ok_or(ValidationError::Record)?;
+            let FileContent::Locations { bytes, etag } = &stream.content else {
+                return Err(ValidationError::Record);
+            };
+            estimated_bytes = estimated_bytes
+                .checked_add(bytes.len())
+                .and_then(|size| size.checked_add(etag.len()))
+                .ok_or(ValidationError::RecordTooLarge)?;
+            if estimated_bytes > MAX_PAYLOAD_BYTES {
+                return Err(ValidationError::RecordTooLarge);
+            }
+        }
         let selected = parts
             .iter()
             .map(|part| SelectedPart {
@@ -124,6 +141,9 @@ impl MultipartSelection {
     /// # Errors
     /// Rejects unknown versions, invalid framing and noncanonical part sequences.
     pub fn decode(bytes: &[u8]) -> Result<Self, ValidationError> {
+        if bytes.len() > MAX_PAYLOAD_BYTES {
+            return Err(ValidationError::RecordTooLarge);
+        }
         let version = bytes.get(..5).ok_or(ValidationError::Record)?;
         if bytes.len() < 7 || (version != MAGIC_V1 && version != MAGIC_V2) {
             return Err(ValidationError::Record);

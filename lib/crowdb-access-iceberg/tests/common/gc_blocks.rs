@@ -3,12 +3,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use async_trait::async_trait;
 use crowdb_access_iceberg::file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError};
 use crowdb_chunk_client::ReclaimOutcome;
+use crowdb_protocol::chunkdb::rpc::Location;
 
 #[derive(Default)]
 pub struct TestReclaimBlocks {
     pub blocks: crate::blocks::TestBlocks,
     pub deferred: AtomicBool,
     pub deletes: AtomicUsize,
+    pub location_deletes: AtomicUsize,
     pub reply_loss: AtomicBool,
     pub delay_ms: AtomicUsize,
 }
@@ -40,6 +42,21 @@ impl FileBlockStore for TestReclaimBlocks {
         if self.reply_loss.swap(false, Ordering::Relaxed) {
             return Err(crowdb_chunk_client::IoError::Internal("lost deletion response".into()).into());
         }
+        Ok(ReclaimOutcome::Reclaimed)
+    }
+
+    async fn reclaim_location(&self, location: &Location) -> Result<ReclaimOutcome, FileIoError> {
+        if self.deferred.load(Ordering::Relaxed) {
+            return Ok(ReclaimOutcome::Deferred);
+        }
+        let chunk = location.chunk_id.ok_or(FileIoError::Bounds)?;
+        self.blocks.values.rcu(|values| {
+            let mut next = (**values).clone();
+            next.remove(&chunk.low);
+            next
+        });
+        self.deletes.fetch_add(1, Ordering::Relaxed);
+        self.location_deletes.fetch_add(1, Ordering::Relaxed);
         Ok(ReclaimOutcome::Reclaimed)
     }
 }

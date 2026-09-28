@@ -10,7 +10,8 @@ and crash recovery while eliminating per-frame catalog operations.
 Status: Bounded S3 and Iceberg reads, access configuration, conditional S3
 SHA-256, shared HTTP receive plumbing, Iceberg pin removal, location descriptors,
 whole-object uploads and metadata-only MPU completion pass focused tests.
-Fault coverage, operation-count measurements and final gates remain.
+Catalog operation counts and a release/null-DiskIO 5 MiB comparison are recorded.
+Remaining work is full acceptance, flow review and final gates.
 
 The access processes now have a shared typed TOML startup schema. The single-node
 container renders it separately for S3 and Iceberg; it exposes read slots,
@@ -25,14 +26,13 @@ while keeping secrets in the environment.
   flow before implementation; include cancellation and crash boundaries. Record
   read-window, location-normalization and Chunk layout-query counts through
   CROWDB metrics, then compare with perf counters before changing read flow.
-- [~] **Remove legacy request-level metadata amplification**: removed the
+- [x] **Remove legacy request-level metadata amplification**: removed the
   file-request, file-publication, delegated-credential and table-load GC pin writes;
   removed the pin record, protocol schema, GC handling and manual commands.
   No old Iceberg pin data exists, so no compatibility path is needed.
-  UploadPart still updates its session through multiple serialized CAS
-  operations, and the old sealer still rereads complete non-JSON files.
-  Treat new-path bytes as opaque and keep part publication independent across
-  part numbers. Measure catalog operations per request.
+  New streamed UploadPart uses one part CAS and no session writes. New-path
+  bytes remain opaque, and catalog operation counts are exposed in Iceberg
+  metrics. Legacy tree file records retain their original read behavior.
 - [x] **Bounded ordered read pipeline**: replace the 64 MiB fetch window with
   configurable per-stream slots (default three, at most 1 MiB physical data
   each). Schedule strip reads concurrently, verify complete frames, retain
@@ -70,7 +70,7 @@ while keeping secrets in the environment.
   and durable storage completion; leave client file formats opaque.
 - [x] **Shared reads**: use Chunk read streams and owner-backed Bytes for full
   GET and ranges; preserve integrity, the GC grace period and cancellation.
-- [~] **Multipart completion**: compose validated completed parts without the
+- [x] **Multipart completion**: compose validated completed parts without the
   old serial per-leaf rewrite/commit path; retain recovery and terminal credits.
   Save part MD5 values at upload and produce the final ETag from those values.
   Compute SHA-256 for a part only when explicitly requested; preserve any
@@ -213,6 +213,10 @@ while keeping secrets in the environment.
   improvement in this fixture; the request helper signs and copies the body,
   and null-DiskIO is not a production storage latency profile. Remaining
   catalog gets are request/session/context checks rather than frame writes.
+- Streamed Complete now bounds the persisted selection payload before copying
+  part location arrays. The focused test rejects an oversized snapshot and an
+  oversized decoded payload. Retired-catalog GC reclaims a streamed file's
+  physical location after worker restarts; all 18 GC worker tests pass.
 
 ## Files
 

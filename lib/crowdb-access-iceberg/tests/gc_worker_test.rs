@@ -8,6 +8,7 @@ use crowdb_access_iceberg::{
     operation::mutation_identity,
     record::StorageRecord,
 };
+use crowdb_protocol::{chunkdb::rpc::Location, common::ChunkId};
 
 #[path = "common/gc_adoption.rs"]
 mod adoption;
@@ -118,6 +119,81 @@ async fn retired_file_reclamation_survives_worker_restart_at_every_step() {
     assert!(fixture
         .store
         .get(&file_key(fixture.context.catalog, file).encode().unwrap())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn retired_streamed_file_reclaims_location_after_worker_restart() {
+    let (fixture, blocks, mut task, limits, _) = fixture(true).await;
+    let chunk = ChunkId { high: 1, low: 999 };
+    let location = Location {
+        chunk_id: Some(chunk),
+        offset: 0,
+        length: 128,
+        logical_offset: 0,
+        logical_length: 64,
+    };
+    blocks.blocks.values.rcu(|values| {
+        let mut next = (**values).clone();
+        next.insert(chunk.low, Arc::new(vec![7; 64]));
+        next
+    });
+    let file = crowdb_access_iceberg::file::FileRecord {
+        file: FileId::random(),
+        location: fixture.table.file("data/streamed.parquet").unwrap(),
+        kind: FileKind::Data,
+        format: ContentFormat::Parquet,
+        length: 64,
+        digest: [0; 32],
+        content: FileContent::from_locations(&[location], 64, "00000000000000000000000000000000".into())
+            .unwrap(),
+        hint: None,
+    };
+    let mapping = crowdb_access_iceberg::file::FileMapping {
+        file: file.file,
+        location: file.location.clone(),
+    };
+    for (key, record) in [
+        (
+            file_key(fixture.context.catalog, file.file),
+            StorageRecord::File(Box::new(file.clone())),
+        ),
+        (
+            crowdb_access_iceberg::file::location_key(&file.location),
+            StorageRecord::FileMapping(mapping),
+        ),
+    ] {
+        let key = key.encode().unwrap();
+        let bytes = record.encode().unwrap();
+        fixture
+            .store
+            .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+            .await
+            .unwrap();
+    }
+    for _ in 0..300 {
+        let repository = GcRepository::new(fixture.store.clone());
+        let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
+        task = worker.step(&task, 2000_u64.max(task.retry_at_ms)).await.unwrap();
+        task = repository
+            .task(task.context.catalog, task.identity)
+            .await
+            .unwrap()
+            .unwrap();
+        if task.phase == GcPhase::Complete {
+            break;
+        }
+    }
+    assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
+    assert_eq!(task.deleted, 2);
+    assert_eq!(task.reclaimed_bytes, 4096 + 64);
+    assert_eq!(blocks.location_deletes.load(Ordering::Relaxed), 1);
+    assert!(blocks.blocks.values.load().is_empty());
+    assert!(fixture
+        .store
+        .get(&file_key(fixture.context.catalog, file.file).encode().unwrap())
         .await
         .unwrap()
         .is_none());
