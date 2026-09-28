@@ -216,6 +216,14 @@ impl MultipartRepository {
             return Err(MultipartRepositoryError::Conflict);
         }
         let before = self.part(&current, part.number).await?;
+        if let Some(existing) = &before {
+            if existing.length == part.length
+                && existing.raw_md5 == part.raw_md5
+                && existing.locations == part.locations
+            {
+                return Ok(Some(existing.clone()));
+            }
+        }
         let mut after = part.clone();
         after.revision = before
             .as_ref()

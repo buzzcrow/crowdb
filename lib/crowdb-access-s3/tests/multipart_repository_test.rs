@@ -296,8 +296,16 @@ async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
         .unwrap()
         .unwrap();
     assert_eq!(first.revision, 1);
-    let second = repository
+    let replay = repository
         .put_stream_part(&session, &part(), 111)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay, first);
+    let mut replacement = part();
+    replacement.locations[0].offset += 39;
+    let second = repository
+        .put_stream_part(&session, &replacement, 112)
         .await
         .unwrap()
         .unwrap();
@@ -470,8 +478,10 @@ async fn frozen_part_generation_survives_a_late_pointer_change() {
     let session = session();
     repository.begin(&session).await.unwrap();
     repository.put_stream_part(&session, &part(), 110).await.unwrap();
+    let mut replacement = part();
+    replacement.locations[0].offset += 39;
     let selected = repository
-        .put_stream_part(&session, &part(), 111)
+        .put_stream_part(&session, &replacement, 111)
         .await
         .unwrap()
         .unwrap();
@@ -546,6 +556,7 @@ async fn part_listing_paginates_current_generations_in_number_order() {
     }
     let mut replacement = part();
     replacement.number = 2;
+    replacement.locations[0].offset += 39;
     repository
         .put_stream_part(&session, &replacement, 111)
         .await

@@ -35,8 +35,10 @@ Iceberg multipart path.
   as namespace scope; preserve immutable part data after replacement.
   Versioned session/part records and ordered, binary-safe keys are in place;
   CAS-backed begin, phase transition and part replacement now use exact-value
-  confirmation after lost replies. Completion snapshots and a predecessor-fenced
-  metadata-only object publication path are in place. HTTP wiring and cleanup
+  confirmation after lost replies. An identical part record retry returns the
+  existing revision; a new location remains a replacement. Completion
+  snapshots and a predecessor-fenced metadata-only object publication path are
+  in place. HTTP wiring and cleanup
   state remain.
 - [ ] **S3 routes and wire**: classify create/upload/list/complete/abort/list
   uploads, parse bounded completion XML, emit compatible responses and errors.
