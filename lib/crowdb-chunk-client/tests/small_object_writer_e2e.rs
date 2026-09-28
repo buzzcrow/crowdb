@@ -216,7 +216,12 @@ async fn read_data_image(stack: &E2eStack, chunk: &Chunk, location: &Location) -
             let end = start + u64::from(strip.capacity) * KIB as u64;
             start <= location.offset && location.offset < end
         })
-        .expect("location strip");
+        .unwrap_or_else(|| {
+            panic!(
+                "location strip missing while reading image: chunk_id={:?}, offset={}, length={}, chunk={chunk:#?}",
+                location.chunk_id, location.offset, location.length
+            )
+        });
     let strip_start = u64::from(strip.chunk_offset) * KIB as u64;
     let unit_bytes = u64::from(strip.unit_kb) * KIB as u64;
     let segment = match strip.strip.as_ref().expect("strip body") {

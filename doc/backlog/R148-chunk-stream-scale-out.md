@@ -149,5 +149,6 @@ Required gates:
   full `test-server` task pass locally at default test concurrency. CI run
   `36449749925` completed its "Upload test logs on failure" step, but the run
   artifact list contains only `docker-preview-1`; the `runtime-server` artifact
-  is absent. Preserve runtime logs on the next failure to identify the first
+  is absent. The test now prints the queried chunk and location on this failure.
+  Wait for a recurrence and use those diagnostics to identify the first
   divergent state before changing the assertion or retry policy.
