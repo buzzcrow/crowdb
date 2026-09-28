@@ -49,6 +49,9 @@ pub struct IcebergMetricsSnapshot {
     pub retry_resume: u64,
     pub retry_replay: u64,
     pub selected_versions: [u64; 3],
+    pub chunk_read: Option<crowdb_chunk_client::ReadFlowMetricsSnapshot>,
+    pub chunk_small_write: Option<crowdb_chunk_client::SmallWriteMetricsSnapshot>,
+    pub catalog: Option<crowdb_access_iceberg::catalog::CatalogStoreOperationCounts>,
 }
 
 struct Counters {
@@ -105,6 +108,9 @@ impl IcebergMetrics {
             retry_resume: self.retry[1].load(Ordering::Relaxed),
             retry_replay: self.retry[2].load(Ordering::Relaxed),
             selected_versions: array::from_fn(|index| self.selected_versions[index].load(Ordering::Relaxed)),
+            chunk_read: None,
+            chunk_small_write: None,
+            catalog: None,
         }
     }
 }

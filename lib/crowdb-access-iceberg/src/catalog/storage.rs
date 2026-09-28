@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 use async_trait::async_trait;
 use crowdb_chunk_kv_client::{ChunkKvClient, ClientError, MultiScanPage, MultiScanRequest};
@@ -37,8 +40,39 @@ pub enum CasOutcome {
     Conflict(Option<StoredValue>),
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub struct CatalogStoreOperationCounts {
+    pub get: u64,
+    pub compare_exchange: u64,
+    pub scan: u64,
+    pub conditional_delete: u64,
+}
+
+#[derive(Default)]
+struct OperationCounters {
+    get: AtomicU64,
+    compare_exchange: AtomicU64,
+    scan: AtomicU64,
+    conditional_delete: AtomicU64,
+}
+
+impl OperationCounters {
+    fn snapshot(&self) -> CatalogStoreOperationCounts {
+        CatalogStoreOperationCounts {
+            get: self.get.load(Ordering::Relaxed),
+            compare_exchange: self.compare_exchange.load(Ordering::Relaxed),
+            scan: self.scan.load(Ordering::Relaxed),
+            conditional_delete: self.conditional_delete.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[async_trait]
 pub trait CatalogStore: Send + Sync {
+    fn operation_counts(&self) -> Option<CatalogStoreOperationCounts> {
+        None
+    }
+
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError>;
     async fn compare_exchange(
         &self,
@@ -51,12 +85,16 @@ pub trait CatalogStore: Send + Sync {
 
 pub struct RoutedCatalogStore {
     client: Arc<ChunkKvClient>,
+    counters: OperationCounters,
 }
 
 impl RoutedCatalogStore {
     #[must_use]
     pub fn new(client: Arc<ChunkKvClient>) -> Self {
-        Self { client }
+        Self {
+            client,
+            counters: OperationCounters::default(),
+        }
     }
 
     pub(crate) async fn delete_mapping_if(
@@ -93,6 +131,7 @@ impl RoutedCatalogStore {
             return Err(ValidationError::Key.into());
         }
         validate_value(expected)?;
+        self.counters.conditional_delete.fetch_add(1, Ordering::Relaxed);
         let response = self
             .client
             .execute_with_identity(
@@ -143,6 +182,7 @@ impl RoutedCatalogStore {
         {
             return Err(StoreError::Response);
         }
+        self.counters.scan.fetch_add(1, Ordering::Relaxed);
         let page = self.client.scan(request).await?;
         if let Some(failure) = page.terminal_failure {
             return Err(StoreError::Rejected(failure));
@@ -160,8 +200,13 @@ impl RoutedCatalogStore {
 
 #[async_trait]
 impl CatalogStore for RoutedCatalogStore {
+    fn operation_counts(&self) -> Option<CatalogStoreOperationCounts> {
+        Some(self.counters.snapshot())
+    }
+
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         IcebergKey::decode(key)?;
+        self.counters.get.fetch_add(1, Ordering::Relaxed);
         let response = self.client.get(key.to_vec(), None).await?;
         match response.result.map_err(StoreError::Rejected)? {
             OperationResult::Value(value) => value.map(|value| stored(key, value)).transpose(),
@@ -192,6 +237,7 @@ impl CatalogStore for RoutedCatalogStore {
                 value: value.to_vec(),
             },
         };
+        self.counters.compare_exchange.fetch_add(1, Ordering::Relaxed);
         let response = self
             .client
             .execute_with_identity(operation, None, identity)

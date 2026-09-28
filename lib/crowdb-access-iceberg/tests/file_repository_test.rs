@@ -6,9 +6,11 @@ mod fixture;
 use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogError, CatalogStore, RootState};
-use crowdb_access_iceberg::file::{file_key, location_key, FileRepository};
+use crowdb_access_iceberg::file::{file_key, location_key, FileContent, FileRepository};
 use crowdb_access_iceberg::key::CatalogId;
 use crowdb_access_iceberg::operation::mutation_identity;
+use crowdb_protocol::chunkdb::rpc::Location;
+use crowdb_protocol::common::ChunkId;
 use fixture::TestFile;
 
 #[tokio::test]
@@ -45,6 +47,43 @@ async fn immutable_publication_replays_equal_bytes_without_overwriting_or_extra_
             .unwrap(),
         Some(candidate)
     );
+}
+
+#[tokio::test]
+async fn streamed_publication_replays_equal_etag_with_different_chunk_locations() {
+    let fixture = TestFile::new(common::TestStore::default()).await;
+    let repository = FileRepository::new(fixture.store.clone());
+    let make = |chunk_low, etag: &str| {
+        let mut record = fixture.record("metadata/stream.json", b"{}");
+        record.digest = [0; 32];
+        record.content = FileContent::from_locations(
+            &[Location {
+                chunk_id: Some(ChunkId {
+                    high: 7,
+                    low: chunk_low,
+                }),
+                offset: 0,
+                length: 36,
+                logical_offset: 0,
+                logical_length: 2,
+            }],
+            2,
+            etag.to_owned(),
+        )
+        .unwrap();
+        record
+    };
+    let first = make(1, "99914b932bd37a50b983c5e7c90ae93b");
+    let replay = make(2, "99914b932bd37a50b983c5e7c90ae93b");
+    let changed = make(3, "f111cdacaa915d85831037cae3622d59");
+    assert_eq!(repository.publish(fixture.context, &first).await.unwrap(), first);
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    assert_eq!(repository.publish(fixture.context, &replay).await.unwrap(), first);
+    assert!(matches!(
+        repository.publish(fixture.context, &changed).await,
+        Err(CatalogError::Conflict)
+    ));
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
 }
 
 #[tokio::test]

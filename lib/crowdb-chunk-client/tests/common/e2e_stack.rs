@@ -211,9 +211,13 @@ impl E2eStack {
         drop(chunkdb);
         let replacement = ChunkdbProcess::start_with_options(&self.cluster.mgmt_endpoints, options);
         replacement.wait_for_ready().await;
+        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+            self.cluster.mgmt_endpoints.clone(),
+        )));
+        let registry = ServiceRegistryClient::from_shared(kv);
+        replacement.wait_for_registry_ready(&registry).await;
         self.chunkdb = Some(replacement);
         self.chunkdb_options = options;
-        tokio::time::sleep(Duration::from_secs(3)).await;
     }
 
     pub async fn query_chunk(&self, location: &Location) -> Chunk {
@@ -255,6 +259,6 @@ impl E2eStack {
             .expect("send disk read");
         let (code, data) = DiskioClient::await_read_response(response).await.unwrap();
         assert_eq!(code, DiskIoRetCode::Success);
-        data.expect("successful disk read data")
+        data.expect("successful disk read data").to_vec()
     }
 }

@@ -16,7 +16,6 @@ test-util = []
 s3-e2e = ["s3"]
 iceberg-e2e = []
 s3 = [
-    "dep:crowdb-common",
     "dep:futures",
 ]
 
@@ -27,7 +26,7 @@ crowdb-access-iceberg = { path = "../../lib/crowdb-access-iceberg" }
 crowdb-access-s3 = { path = "../../lib/crowdb-access-s3" }
 crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
-crowdb-common = { path = "../../lib/crowdb-common/rust", optional = true }
+crowdb-common = { path = "../../lib/crowdb-common/rust" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 futures = { version = "0.3", optional = true }

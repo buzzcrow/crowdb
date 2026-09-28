@@ -31,7 +31,7 @@ impl FileRepository {
         Ok(result)
     }
 
-    /// Publishes a candidate; callers must verify chunk bytes and format before calling.
+    /// Publishes a candidate after callers verify transfer integrity and durable storage.
     /// # Errors
     /// Rejects invalid records, changed content, retired contexts and uncertain writes.
     pub async fn publish(
@@ -40,46 +40,7 @@ impl FileRepository {
         candidate: &FileRecord,
     ) -> Result<FileRecord, CatalogError> {
         candidate.validate()?;
-        let pin = Box::pin(self.publication_pin(context, &candidate.location)).await?;
-        let result = self.publish_inner(context, candidate).await;
-        if result.is_ok() {
-            if let Some(pin) = pin {
-                crate::gc::ReaderPins::new(self.store.clone())
-                    .release(&pin)
-                    .await?;
-            }
-        }
-        result
-    }
-
-    async fn publication_pin(
-        &self,
-        context: CatalogContext,
-        location: &FileLocation,
-    ) -> Result<Option<crate::gc::GcPin>, CatalogError> {
-        let key = crate::table::head_key(context.catalog, location.table().table);
-        if self.store.get(&key.encode()?).await?.is_none() {
-            return Ok(None);
-        }
-        let now_ms = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| ValidationError::Deadline)?
-                .as_millis(),
-        )
-        .map_err(|_| ValidationError::Deadline)?;
-        let pins = crate::gc::ReaderPins::new(self.store.clone());
-        let expiry = pins.request_expiry(context, now_ms).await?;
-        Ok(Some(
-            pins.protect_files(
-                context,
-                location.table().table,
-                "file-publication",
-                expiry,
-                now_ms,
-            )
-            .await?,
-        ))
+        self.publish_inner(context, candidate).await
     }
 
     async fn publish_inner(
@@ -241,6 +202,7 @@ fn compatible(existing: FileRecord, candidate: &FileRecord) -> Result<FileRecord
         || existing.length != candidate.length
         || existing.kind != candidate.kind
         || existing.format != candidate.format
+        || existing.content.etag() != candidate.content.etag()
     {
         return Err(CatalogError::Conflict);
     }

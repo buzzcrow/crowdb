@@ -105,18 +105,6 @@ impl GcWorker {
                 continue;
             }
             let record = StorageRecord::decode(&key, &item.value)?;
-            if let StorageRecord::GcPin(pin) = &record {
-                if pin.protects(now_ms)
-                    && task
-                        .head
-                        .as_ref()
-                        .is_some_and(|head| head.table == pin.head.table)
-                    && !pin.protects_uploads
-                {
-                    self.repository.push_proof_root(&mut next, &pin.head).await?;
-                    continue;
-                }
-            }
             if super::inactive::protects(task, &record, now_ms, grace_ms) {
                 next.stalled = GcStalledReason::Protected;
                 next.scan_after.clear();

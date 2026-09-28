@@ -110,6 +110,20 @@ uint32_t crowdb_rpc_buffer_len(crowdb_rpc_buffer_t buf)
     }
 }
 
+bool crowdb_rpc_buffer_detach(crowdb_rpc_buffer_t buf)
+{
+    try {
+        if (buf == nullptr || buf->buf == nullptr) {
+            return false;
+        }
+        auto *buffer = buf->buf;
+        return buffer->pool == nullptr || buffer->pool->detach(buffer);
+    }
+    catch (...) {
+        return false;
+    }
+}
+
 crowdb_rpc_buffer_t crowdb_rpc_buffer_ref(crowdb_rpc_buffer_t buf)
 {
     try {

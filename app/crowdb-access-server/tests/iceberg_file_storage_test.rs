@@ -23,6 +23,7 @@ async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
         diskio_connections_per_endpoint: 2,
         diskio_rpc_workers: 1,
         small_write: SmallWritePolicy {
+            object_limit: 1024 * 1024,
             min_pipelines: 1,
             max_pipelines: 1,
             memory_budget: 8 * 1024 * 1024,

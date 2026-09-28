@@ -1,6 +1,6 @@
 use crowdb_access_iceberg::{
     catalog::{CasOutcome, CatalogStore},
-    gc::{GcPhase, GcPin, GcRepository, GcStalledReason, GcTask, GcTaskKind, ReaderPins},
+    gc::{GcPhase, GcRepository, GcStalledReason, GcTask, GcTaskKind},
     key::{NamespaceId, OperationId},
     operation::mutation_identity,
     record::StorageRecord,
@@ -168,74 +168,6 @@ async fn lost_legacy_fence_release_reply_is_recovered_on_retry() {
     let retired = repository.retire_live(&task).await.unwrap();
     assert_eq!(retired.phase, GcPhase::Complete);
     assert!(!retired.fenced);
-}
-
-#[tokio::test]
-async fn new_reader_pin_cannot_be_acknowledged_during_sweep() {
-    let (fixture, task) = fixture().await;
-    let pins = ReaderPins::new(fixture.store.clone());
-    let pin = GcPin {
-        context: fixture.context,
-        identity: OperationId::random(),
-        head: task.head.clone().unwrap(),
-        principal: "reader".into(),
-        expires_ms: 2000,
-        released: false,
-        operator: false,
-        protects_uploads: false,
-    };
-    pins.acquire(&pin).await.unwrap();
-    let repository = GcRepository::new(fixture.store.clone());
-    seed_legacy_task(&fixture.store, &task).await;
-    repository.fence_table(&task).await.unwrap();
-    let mut newcomer = pin.clone();
-    newcomer.identity = OperationId::random();
-    assert!(pins.acquire(&newcomer).await.is_err());
-    assert!(fixture
-        .store
-        .get(&pin.key().encode().unwrap())
-        .await
-        .unwrap()
-        .is_some());
-    assert!(pin.protects(1999));
-    assert!(!pin.protects(2000));
-    pins.release(&pin).await.unwrap();
-    pins.release(&pin).await.unwrap();
-    repository.release_table_fence(&task).await.unwrap();
-}
-
-#[tokio::test]
-async fn operator_pin_can_be_inspected_and_released_after_restart() {
-    let (fixture, task) = fixture().await;
-    let pins = ReaderPins::new(fixture.store.clone());
-    let pin = GcPin {
-        context: fixture.context,
-        identity: OperationId::random(),
-        head: task.head.unwrap(),
-        principal: "manager".into(),
-        expires_ms: 0,
-        released: false,
-        operator: true,
-        protects_uploads: true,
-    };
-    pins.acquire(&pin).await.unwrap();
-    let restarted = ReaderPins::new(fixture.store);
-    assert_eq!(
-        restarted
-            .get(pin.context.catalog, pin.head.table, pin.identity)
-            .await
-            .unwrap(),
-        Some(pin.clone())
-    );
-    restarted.release(&pin).await.unwrap();
-    assert!(
-        restarted
-            .get(pin.context.catalog, pin.head.table, pin.identity)
-            .await
-            .unwrap()
-            .unwrap()
-            .released
-    );
 }
 
 #[tokio::test]

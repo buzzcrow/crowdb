@@ -10,6 +10,9 @@ use crowdb_access_iceberg::file::{
 };
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
+use crowdb_access_s3::native_buffer::{NativeBodyAllocator, NativeBodyReceiver};
+use crowdb_chunk_client::{ChunkClientConfig, LargeWritePolicy};
+use crowdb_common::ec::EcScheme;
 use hyper::body::Incoming;
 use hyper::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
 use hyper::{Method, Request, Response, StatusCode};
@@ -24,9 +27,9 @@ use super::file_response::{FileS3ErrorCode, MultipartResponses};
 use super::file_upload::FileUploadBudget;
 
 mod multipart;
+mod stream;
 
 pub(super) struct FileHttp {
-    pins: crowdb_access_iceberg::gc::ReaderPins,
     repository: FileRepository,
     multipart: MultipartRepository,
     admission: MultipartAdmission,
@@ -35,16 +38,31 @@ pub(super) struct FileHttp {
     issuer: FileGrantIssuer,
     responses: FileResponseBudget,
     uploads: FileUploadBudget,
+    small_threshold_exclusive: usize,
+    large_write: LargeWritePolicy,
+    native_allocator: Option<Arc<NativeBodyAllocator>>,
     region: String,
     limits: FileServiceLimits,
 }
 
 impl FileHttp {
+    pub(super) fn chunk_metrics(
+        &self,
+    ) -> Option<(
+        crowdb_chunk_client::ReadFlowMetricsSnapshot,
+        crowdb_chunk_client::SmallWriteMetricsSnapshot,
+    )> {
+        self.blocks
+            .stream_client()
+            .map(|client| (client.read_flow_metrics(), client.small_write_metrics()))
+    }
+
     pub(super) fn new<Store: MultipartPartStore + 'static>(
         store: Arc<Store>,
         blocks: Arc<dyn FileBlockStore>,
         secret: [u8; 32],
         region: String,
+        native_allocator: Option<Arc<NativeBodyAllocator>>,
     ) -> Result<Self, FileGrantError> {
         if region.is_empty()
             || region.len() > 64
@@ -55,7 +73,6 @@ impl FileHttp {
             return Err(FileGrantError::Invalid);
         }
         Ok(Self {
-            pins: crowdb_access_iceberg::gc::ReaderPins::new(store.clone()),
             repository: FileRepository::new(store.clone()),
             multipart: MultipartRepository::new(store.clone()),
             admission: MultipartAdmission::new(store.clone()),
@@ -64,6 +81,12 @@ impl FileHttp {
             issuer: FileGrantIssuer::new(secret, 15 * 60 * 1000)?,
             responses: FileResponseBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             uploads: FileUploadBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
+            small_threshold_exclusive: crate::config::SmallWriteConfig::default().threshold_exclusive(),
+            large_write: LargeWritePolicy {
+                ec_scheme: EcScheme::new(8, 4),
+                client: Arc::new(ChunkClientConfig::default()),
+            },
+            native_allocator,
             region,
             limits: FileServiceLimits {
                 max_request_bytes: 1024 * 1024 * 1024,
@@ -72,6 +95,25 @@ impl FileHttp {
                 max_staged_bytes: 1024 * 1024 * 1024 * 1024,
             },
         })
+    }
+
+    pub(super) fn set_small_threshold(&mut self, threshold_exclusive: usize) -> Result<(), FileGrantError> {
+        if threshold_exclusive == 0 || threshold_exclusive > 32 * 1024 * 1024 {
+            return Err(FileGrantError::Invalid);
+        }
+        self.small_threshold_exclusive = threshold_exclusive;
+        Ok(())
+    }
+
+    pub(super) fn set_large_write(&mut self, policy: LargeWritePolicy) -> Result<(), FileGrantError> {
+        if policy.ec_scheme.data_num == 0
+            || policy.ec_scheme.code_num == 0
+            || policy.client.read_buffer_size == 0
+        {
+            return Err(FileGrantError::Invalid);
+        }
+        self.large_write = policy;
+        Ok(())
     }
 
     pub(super) async fn dispatch(
@@ -93,7 +135,7 @@ impl FileHttp {
     async fn execute(
         self: &Arc<Self>,
         catalog: &CatalogRepository,
-        request: Request<Incoming>,
+        mut request: Request<Incoming>,
         request_timeout: Duration,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         let file_request = FileRequest::parse(request.method(), request.uri()).map_err(request_error)?;
@@ -117,45 +159,41 @@ impl FileHttp {
         grant
             .authorize(file_request.operation, &file_request.location, 0, 0)
             .map_err(|_| FileS3ErrorCode::AccessDenied)?;
-        let expires_ms = self
-            .pins
-            .request_expiry(root.context, now_ms)
-            .await
-            .map_err(catalog_error)?;
-        if matches!(file_request.operation, FileOperation::Head | FileOperation::Get) {
-            self.pins
-                .protect_file_reads(
-                    root.context,
-                    file_request.location.table().table,
-                    "file-request",
-                    expires_ms,
-                    now_ms,
-                )
-                .await
-                .map_err(catalog_error)?;
-        } else {
-            self.pins
-                .protect_files(
-                    root.context,
-                    file_request.location.table().table,
-                    "file-request",
-                    expires_ms,
-                    now_ms,
-                )
-                .await
-                .map_err(catalog_error)?;
-        }
         let session = self.load_session(root.context, &file_request).await?;
         let admission =
             FileTransferAdmission::authorize(&grant, &file_request, self.limits, session.as_ref(), now_ms)
                 .map_err(admission_error)?;
+        let declared_receive = request
+            .headers()
+            .get("x-amz-decoded-content-length")
+            .or_else(|| request.headers().get(CONTENT_LENGTH))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let native_receiver = if matches!(
+            file_request.operation,
+            FileOperation::Put | FileOperation::UploadPart
+        ) && declared_receive.map_or(true, |length| length >= 1024 * 1024)
+        {
+            self.native_allocator.as_ref().map(|allocator| {
+                crate::http_receive::install_native_body_receive_provider(&mut request, allocator)
+            })
+        } else {
+            None
+        };
         match file_request.operation {
             FileOperation::Head | FileOperation::Get => {
                 self.read(&file_request, &request, root.context, &admission).await
             }
             FileOperation::Put => {
-                self.put(&file_request, request, root.context, &admission, streaming)
-                    .await
+                self.put(
+                    &file_request,
+                    request,
+                    root.context,
+                    &admission,
+                    streaming,
+                    native_receiver.as_deref(),
+                )
+                .await
             }
             _ => {
                 Box::pin(self.multipart_request(
@@ -165,6 +203,7 @@ impl FileHttp {
                     &admission,
                     now_ms,
                     streaming,
+                    native_receiver.as_deref(),
                 ))
                 .await
             }
@@ -178,6 +217,7 @@ impl FileHttp {
         context: crowdb_access_iceberg::catalog::CatalogContext,
         admission: &FileTransferAdmission,
         streaming: Option<StreamingPayloadVerifier>,
+        native_receiver: Option<&NativeBodyReceiver>,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         let digest = if streaming.is_some() {
             None
@@ -187,11 +227,38 @@ impl FileHttp {
         let (parts, body) = request.into_parts();
         let mut body = FileUploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
             .map_err(multipart::encoding_error)?;
+        if digest.is_none() && !body.has_integrity() {
+            return Err(FileS3ErrorCode::InvalidRequest);
+        }
         let length = body.decoded_length();
         let owner = crowdb_access_iceberg::file::FileIdentity {
             table: file_request.location.table(),
             file: crowdb_access_iceberg::key::FileId::random(),
         };
+        if let Some(client) = self.blocks.stream_client() {
+            let sealed = stream::upload(
+                client,
+                &self.uploads,
+                admission,
+                &mut body,
+                owner,
+                file_request.location.clone(),
+                length,
+                digest,
+                native_receiver,
+                self.small_threshold_exclusive,
+                &self.large_write,
+            )
+            .await?;
+            let published = self
+                .repository
+                .publish(context, &sealed)
+                .await
+                .map_err(catalog_error)?;
+            let mut response = Response::new(IcebergBody::new(Vec::new()));
+            set_header(&mut response, ETAG, &etag(&published))?;
+            return Ok(response);
+        }
         let tree = admission
             .receive(
                 &self.uploads,
@@ -292,6 +359,9 @@ fn set_header(
 }
 
 fn etag(record: &FileRecord) -> String {
+    if let Some(etag) = record.content.etag() {
+        return format!("\"{etag}\"");
+    }
     let mut value = String::from("\"");
     for byte in record.digest {
         write!(value, "{byte:02x}").expect("string writes do not fail");

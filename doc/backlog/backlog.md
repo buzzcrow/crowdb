@@ -13,13 +13,6 @@ complexity, and dependency. Before implementation, follow the
 
 **Next R number: R191** — Bump this line in the same commit when adding a new item.
 
-### Planned — Shared access streaming
-
-- **[R190](R190-access-iceberg-shared-streaming-io.md)** — align Iceberg PUT,
-  multipart and GET/Range with S3's bounded native receive and Chunk data path;
-  remove per-frame catalog transactions while preserving publication and recovery.
-  Ready for the full read, write, delete and GC review before implementation.
-
 ### Next Milestone — Chunk-backed range KV
 
 R144 is a deferred merge follow-up to the completed chunk-KV server and routed

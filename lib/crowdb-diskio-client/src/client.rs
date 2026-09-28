@@ -3,6 +3,7 @@
 
 //! Internal `DiskIO` wire transport.
 
+use bytes::Bytes;
 use crowdb_common::RequestIdGen;
 use crowdb_protocol::diskio_fb::{
     FBDiskFsyncRequest, FBDiskFsyncRequestArgs, FBDiskFsyncResponse, FBDiskReadRequest,
@@ -397,10 +398,10 @@ impl WireClient {
     /// # Errors
     ///
     /// Returns `DiskioError::Rpc` if the response is missing or invalid.
-    pub async fn await_read_response(fut: CallFuture) -> WireResult<(DiskIoRetCode, Option<Vec<u8>>)> {
+    pub async fn await_read_response(fut: CallFuture) -> WireResult<(DiskIoRetCode, Option<Bytes>)> {
         let resp = fut.await.map_err(WireError::from)?;
         let code = parse_ret_code(&resp)?;
-        let data = resp.data.map(|b| b.bytes().to_vec());
+        let data = resp.data.map(Bytes::from_owner);
         Ok((code, data))
     }
 

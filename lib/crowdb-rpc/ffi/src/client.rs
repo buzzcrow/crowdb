@@ -520,7 +520,7 @@ unsafe extern "C" fn on_complete_cb(
         Ok(Response {
             request_id,
             control: standalone_buffer(control),
-            data: standalone_buffer(data),
+            data: receive_data_buffer(data),
         })
     } else {
         Err(RpcError::from_status(status))
@@ -536,6 +536,19 @@ fn standalone_buffer(handle: sys::crowdb_rpc_buffer_t) -> Option<Buffer> {
     let pooled = Buffer::from_raw(handle);
     let bytes = pooled.bytes().to_vec();
     Some(Buffer::from_bytes(&bytes))
+}
+
+fn receive_data_buffer(handle: sys::crowdb_rpc_buffer_t) -> Option<Buffer> {
+    if handle.is_null() {
+        return None;
+    }
+    let mut buffer = Buffer::from_raw(handle);
+    if buffer.detach() {
+        Some(buffer)
+    } else {
+        let copy = Buffer::from_bytes(buffer.bytes());
+        Some(copy)
+    }
 }
 
 // Rust-side histograms (registered with the Rust MetricsRegistry::global(),

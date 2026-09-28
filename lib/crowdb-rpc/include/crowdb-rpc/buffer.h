@@ -69,6 +69,14 @@ class BufferPool
     // Called by Buffer::release when ref == 0. Returns the buffer to the
     // free list for reuse.
     virtual void recycle(Buffer *buf) = 0;
+
+    // Transfer an immutable receive buffer out of the pool without copying.
+    // The caller must hold the only live reference before detaching.
+    virtual bool detach(Buffer *buf)
+    {
+        (void)buf;
+        return false;
+    }
 };
 
 // SystemBufferPool: direct heap allocation (posix_memalign + new/delete),
@@ -85,6 +93,7 @@ class SystemBufferPool : public BufferPool
 
     Buffer *alloc(uint32_t capacity) override;
     void    recycle(Buffer *buf) override;
+    bool    detach(Buffer *buf) override;
 
   private:
     uint32_t              max_buffers_;

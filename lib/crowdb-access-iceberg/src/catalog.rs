@@ -15,4 +15,6 @@ pub use deadline::ClearBounds;
 pub use repository::{CatalogError, CatalogRepository, ManagementPrivilege};
 pub use root::{ActiveCatalogRecord, RootState};
 pub use state::{CatalogAuthority, CatalogContext, CatalogLifecycle, ClearTransition};
-pub use storage::{CasOutcome, CatalogStore, RoutedCatalogStore, StoreError, StoredValue};
+pub use storage::{
+    CasOutcome, CatalogStore, CatalogStoreOperationCounts, RoutedCatalogStore, StoreError, StoredValue,
+};

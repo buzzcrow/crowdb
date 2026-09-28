@@ -21,6 +21,7 @@ pub mod mirror_chunk_writer;
 pub mod mirror_flow;
 pub mod mirror_strip_writer;
 pub mod parity_writer;
+pub(crate) mod read_credit;
 pub(crate) mod segment_writer;
 pub mod strip;
 pub mod strip_reader;

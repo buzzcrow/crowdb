@@ -8,6 +8,105 @@ use crate::record::StorageRecord;
 use super::{check_live, increment, MultipartRepository};
 
 impl MultipartRepository {
+    /// Publishes a streamed part with one CAS on that part number. The session
+    /// is read for admission, but distinct part numbers do not write it.
+    /// # Errors
+    /// Rejects closed sessions, invalid parts, stale contexts and storage failures.
+    pub async fn put_stream_part(
+        &self,
+        session: &MultipartSession,
+        part: &MultipartPart,
+        now_ms: u64,
+    ) -> Result<Option<MultipartPart>, CatalogError> {
+        session.validate()?;
+        let current = self
+            .load(session.context, session.upload)
+            .await?
+            .ok_or(CatalogError::Conflict)?;
+        check_live(&current, now_ms)?;
+        if current.phase != MultipartPhase::Open || current.pending.is_some() {
+            return Err(CatalogError::Conflict);
+        }
+        if u64::from(current.limits.max_parts)
+            .checked_mul(current.limits.max_part_bytes)
+            .map_or(true, |bytes| bytes > current.limits.max_staged_bytes)
+            || part.stream.is_none()
+            || part.tree.is_some()
+        {
+            return Err(ValidationError::Record.into());
+        }
+        part.validate_for(&current)?;
+        let before = self.read_part(&part.key()).await?;
+        if let Some(before) = &before {
+            before.validate_for(&current)?;
+        }
+        let mut after = part.clone();
+        after.revision = before
+            .as_ref()
+            .map_or(Some(1), |before| before.revision.checked_add(1))
+            .ok_or(ValidationError::Record)?;
+        after.modified_ms = now_ms;
+        after.validate_for(&current)?;
+        let key = after.key().encode()?;
+        let expected = before.as_ref().map(encode_part).transpose()?;
+        let value = encode_part(&after)?;
+        let outcome = self
+            .store
+            .compare_exchange(
+                &key,
+                expected.as_deref(),
+                &value,
+                mutation_identity(&key, expected.as_deref(), &value),
+            )
+            .await;
+        let written = match outcome {
+            Ok(CasOutcome::Applied(_)) => Some(after),
+            Ok(CasOutcome::Conflict(Some(existing))) if existing.bytes == value => Some(after),
+            Ok(CasOutcome::Conflict(_)) => None,
+            Err(error) => {
+                if self.read_part(&after.key()).await?.as_ref() == Some(&after) {
+                    Some(after)
+                } else {
+                    return Err(error.into());
+                }
+            }
+        };
+        if written.is_some() {
+            check_context(self.store.as_ref(), current.context).await?;
+        }
+        Ok(written)
+    }
+
+    /// Reads the current part for an `UploadPart` replacement. The later session
+    /// compare-and-swap rejects a stale snapshot before the part becomes visible.
+    /// # Errors
+    /// Rejects invalid part numbers, phases and corrupt stored parts.
+    pub async fn part_for_upload(
+        &self,
+        session: &MultipartSession,
+        number: u16,
+    ) -> Result<Option<MultipartPart>, CatalogError> {
+        session.validate()?;
+        if session.phase != MultipartPhase::Open || session.pending.is_some() {
+            return Err(CatalogError::Busy);
+        }
+        if number == 0 || number > session.limits.max_parts {
+            return Err(ValidationError::Record.into());
+        }
+        let mut suffix = session.upload.as_bytes().to_vec();
+        suffix.extend_from_slice(&number.to_be_bytes());
+        let key = IcebergKey::Catalog {
+            catalog: session.context.catalog,
+            scope: CatalogScope::MultipartPart,
+            suffix,
+        };
+        let part = self.read_part(&key).await?;
+        if let Some(part) = &part {
+            part.validate_for(session)?;
+        }
+        Ok(part)
+    }
+
     /// Reads a committed part only while the supplied session snapshot stays current.
     /// # Errors
     /// Rejects unresolved mutations, stale snapshots, invalid numbers and corrupt parts.
@@ -52,6 +151,18 @@ impl MultipartRepository {
         part: &MultipartPart,
         now_ms: u64,
     ) -> Result<bool, CatalogError> {
+        Ok(self.reserve_part_state(session, part, now_ms).await?.is_some())
+    }
+
+    /// Reserves a part and returns the exact pending session written by the CAS.
+    /// # Errors
+    /// Rejects stale revisions, expired sessions, exhausted limits and pending mutations.
+    pub async fn reserve_part_state(
+        &self,
+        session: &MultipartSession,
+        part: &MultipartPart,
+        now_ms: u64,
+    ) -> Result<Option<MultipartSession>, CatalogError> {
         check_live(session, now_ms)?;
         let mut after = part.clone();
         after.modified_ms = now_ms;
@@ -75,11 +186,11 @@ impl MultipartRepository {
             .ok_or(ValidationError::Record)?;
         next.staged_bytes = session
             .staged_bytes
-            .checked_sub(before.as_ref().map_or(0, |part| part.tree.length))
-            .and_then(|bytes| bytes.checked_add(part.tree.length))
+            .checked_sub(before.as_ref().map_or(0, MultipartPart::length))
+            .and_then(|bytes| bytes.checked_add(part.length()))
             .ok_or(ValidationError::Record)?;
         next.pending = Some(MultipartPartMutation { before, after });
-        self.exchange(session, &next).await
+        Ok(self.exchange(session, &next).await?.then_some(next))
     }
 
     /// Helps one durable part mutation and then clears its session fence.

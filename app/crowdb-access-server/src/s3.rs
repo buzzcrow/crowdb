@@ -10,10 +10,9 @@ use std::time::Instant;
 
 use crowdb_access_s3::error::S3Error;
 use crowdb_access_s3::metrics::{OutcomeClass, S3Metrics};
-use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use crowdb_access_s3::route::S3Operation;
 use http_body_util::{BodyExt, Full};
-use hyper::body::{Body, Bytes, Frame, Http1BodyReceiveProvider, Incoming, SizeHint};
+use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -23,6 +22,7 @@ use tokio::net::TcpListener;
 mod dispatcher;
 mod operations;
 
+pub use crate::http_receive::install_body_receive_provider;
 pub use dispatcher::S3Dispatcher;
 pub use operations::{ProductionS3Operations, S3Operations, S3OperationsFuture, S3ServiceConfig};
 
@@ -33,39 +33,6 @@ pub type HandlerFuture =
 
 pub trait S3HttpHandler: Send + Sync + 'static {
     fn handle(&self, request: Request<Incoming>) -> HandlerFuture;
-}
-
-#[derive(Clone)]
-pub(crate) struct DeferredBodyReceiveProvider {
-    provider: Arc<dyn Http1BodyReceiveProvider>,
-    native: Option<Arc<NativeBodyReceiver>>,
-}
-
-impl DeferredBodyReceiveProvider {
-    fn generic(provider: Arc<dyn Http1BodyReceiveProvider>) -> Self {
-        Self {
-            provider,
-            native: None,
-        }
-    }
-
-    fn native(receiver: Arc<NativeBodyReceiver>) -> Self {
-        Self {
-            provider: receiver.clone(),
-            native: Some(receiver),
-        }
-    }
-}
-
-/// Installs the admitted request's provider immediately before body polling.
-pub fn install_body_receive_provider(request: &mut Request<Incoming>) -> Option<Arc<NativeBodyReceiver>> {
-    if let Some(deferred) = request.extensions_mut().remove::<DeferredBodyReceiveProvider>() {
-        request
-            .body_mut()
-            .set_http1_body_receive_provider(deferred.provider);
-        return deferred.native;
-    }
-    None
 }
 
 /// Runs one independent HTTP/1 S3 listener until shutdown.

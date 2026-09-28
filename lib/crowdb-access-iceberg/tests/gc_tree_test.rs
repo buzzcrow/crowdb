@@ -111,6 +111,7 @@ async fn corrupt_directory_never_authorizes_a_child_deletion() {
             next_child: 0,
         }],
         pending: None,
+        next_location: 0,
     };
     assert!(cursor.next(&blocks).await.is_err());
     assert!(cursor.pending.is_none());

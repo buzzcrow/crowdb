@@ -535,6 +535,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 length,
             )
             .await
+            .map(|buffers| Bytes::from(buffers.concat()))
             .map_err(read_error)
     }
 

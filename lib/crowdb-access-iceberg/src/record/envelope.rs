@@ -21,7 +21,6 @@ pub enum StorageRecord {
     GcTask(Box<crate::gc::GcTask>),
     GcCandidate(Box<crate::gc::GcCandidate>),
     GcPage(Box<crate::gc::GcPage>),
-    GcPin(Box<crate::gc::GcPin>),
     TableLifecycleOperation(Box<crate::table::TableLifecycleOperation>),
     TablePurgeTask(Box<crate::table::TablePurgeTask>),
     TableCreateOperation(Box<crate::commit::TableCreateOperation>),
@@ -78,7 +77,7 @@ impl StorageRecord {
                 FBRecordValue::FBFileWriteIntent,
                 super::write_intent::encode(builder, intent)?.as_union_value(),
             ),
-            Self::GcNode(_) | Self::GcTask(_) | Self::GcCandidate(_) | Self::GcPage(_) | Self::GcPin(_) => {
+            Self::GcNode(_) | Self::GcTask(_) | Self::GcCandidate(_) | Self::GcPage(_) => {
                 return Err(ValidationError::Record);
             }
             Self::TableLifecycleOperation(operation) => (
@@ -186,10 +185,6 @@ impl StorageRecord {
                 FBRecordValue::FBGcPage,
                 super::gc::encode_page(builder, page)?.as_union_value(),
             ),
-            Self::GcPin(pin) => (
-                FBRecordValue::FBGcPin,
-                super::gc::encode_pin(builder, pin)?.as_union_value(),
-            ),
             _ => return Ok(None),
         }))
     }
@@ -241,11 +236,6 @@ impl StorageRecord {
             FBRecordValue::FBGcPage => {
                 return Ok(Self::GcPage(Box::new(super::gc::decode_page(
                     envelope.value_as_fbgc_page().ok_or(ValidationError::Record)?,
-                )?)))
-            }
-            FBRecordValue::FBGcPin => {
-                return Ok(Self::GcPin(Box::new(super::gc::decode_pin(
-                    envelope.value_as_fbgc_pin().ok_or(ValidationError::Record)?,
                 )?)))
             }
             _ => {}

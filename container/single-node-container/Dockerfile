@@ -29,7 +29,6 @@ LABEL org.opencontainers.image.title="CROWDB Iceberg" \
       org.opencontainers.image.description="Apache Iceberg REST catalog with native storage, in one container for development and testing." \
       org.opencontainers.image.url="https://crowdb.dev/" \
       org.opencontainers.image.source="https://github.com/buzzcrow/crowdb" \
-      org.opencontainers.image.documentation="https://github.com/buzzcrow/crowdb/blob/v${PREVIEW_VERSION}/doc/user-manual/docker-single-node-user-guide.md" \
       org.opencontainers.image.authors="Gian <crow.db@outlook.com>" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="$SOURCE_REVISION" \

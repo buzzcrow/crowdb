@@ -65,7 +65,8 @@ async fn multipart_records_round_trip_open_partial_publishing_published_and_abor
         revision: 2,
         modified_ms: 101,
         owner,
-        tree: part.tree,
+        tree: Some(part.tree),
+        stream: None,
     };
     let record = StorageRecord::MultipartPart(Box::new(part.clone()));
     let bytes = record.encode().unwrap();

@@ -22,7 +22,13 @@ use crowdb_access_iceberg::file::{
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
+use crowdb_access_server::config::SmallWriteConfig;
+use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, Strip};
+use crowdb_test_harness::chunkdb::make_client as make_chunkdb_client;
+use md5::{Digest, Md5};
 use reqwest::{Client, Method};
+use std::fmt::Write as _;
+use std::time::Instant;
 
 #[path = "common/iceberg_signed_file.rs"]
 mod signed;
@@ -61,6 +67,19 @@ async fn setup() -> (
 
 async fn setup_with_bounds(
     bounds: ClearBounds,
+) -> (
+    TestIcebergStack,
+    process::TestIcebergProcess,
+    TestFileClient,
+    TableLocation,
+) {
+    setup_with_bounds_and_file_limit(bounds, 16 * 1024 * 1024, 64 * 1024 * 1024).await
+}
+
+async fn setup_with_bounds_and_file_limit(
+    bounds: ClearBounds,
+    max_request_bytes: u64,
+    max_file_bytes: u64,
 ) -> (
     TestIcebergStack,
     process::TestIcebergProcess,
@@ -137,8 +156,8 @@ async fn setup_with_bounds(
                 FileOperation::AbortMultipart,
             ])
             .unwrap(),
-            max_request_bytes: 16 * 1024 * 1024,
-            max_file_bytes: 64 * 1024 * 1024,
+            max_request_bytes,
+            max_file_bytes,
         })
         .unwrap();
     let client = TestFileClient {
@@ -151,6 +170,107 @@ async fn setup_with_bounds(
 
 fn path(table: TableLocation, key: &str) -> String {
     format!("/{}/{}", table.bucket(), table.file(key).unwrap().object_key())
+}
+
+async fn catalog_counts(client: &TestFileClient) -> (u64, u64, u64, u64) {
+    let response: serde_json::Value = client
+        .client
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let catalog = &response["catalog"];
+    (
+        catalog["get"].as_u64().unwrap(),
+        catalog["compare_exchange"].as_u64().unwrap(),
+        catalog["scan"].as_u64().unwrap(),
+        catalog["conditional_delete"].as_u64().unwrap(),
+    )
+}
+
+fn catalog_delta(before: (u64, u64, u64, u64), after: (u64, u64, u64, u64)) -> String {
+    format!(
+        "get={} cas={} scan={} delete={}",
+        after.0 - before.0,
+        after.1 - before.1,
+        after.2 - before.2,
+        after.3 - before.3
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "native null-DiskIO release performance fixture"]
+async fn native_file_5_mib_profile() {
+    let (_stack, _process, client, table) = setup().await;
+    let bytes = vec![0x5a; 5 * 1024 * 1024];
+    let object = path(table, "data/profile-put.bin");
+    let before = catalog_counts(&client).await;
+    let started = Instant::now();
+    let put = client.send(Method::PUT, &object, "", &bytes, true).await;
+    let put_ms = started.elapsed().as_millis();
+    assert_eq!(put.status(), 200, "{}", put.text().await.unwrap());
+    println!(
+        "iceberg 5MiB PUT: {put_ms}ms {}",
+        catalog_delta(before, catalog_counts(&client).await)
+    );
+
+    let multipart = path(table, "data/profile-mpu.bin");
+    let created = client
+        .send(Method::POST, &multipart, "uploads=", b"", false)
+        .await;
+    assert_eq!(created.status(), 200);
+    let created = created.text().await.unwrap();
+    let upload = created
+        .split_once("<UploadId>")
+        .unwrap()
+        .1
+        .split_once("</UploadId>")
+        .unwrap()
+        .0;
+    let query = format!("partNumber=1&uploadId={upload}");
+    let before = catalog_counts(&client).await;
+    let started = Instant::now();
+    let part = client.send(Method::PUT, &multipart, &query, &bytes, true).await;
+    let part_ms = started.elapsed().as_millis();
+    assert_eq!(part.status(), 200, "{}", part.text().await.unwrap());
+    let etag = part.headers()["etag"].to_str().unwrap();
+    println!(
+        "iceberg 5MiB UploadPart: {part_ms}ms {}",
+        catalog_delta(before, catalog_counts(&client).await)
+    );
+    let manifest = format!(
+        "<CompleteMultipartUpload><Part><ETag>{etag}</ETag><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>"
+    );
+    let complete = client
+        .send(
+            Method::POST,
+            &multipart,
+            &format!("uploadId={upload}"),
+            manifest.as_bytes(),
+            false,
+        )
+        .await;
+    assert_eq!(complete.status(), 200);
+    assert!(complete
+        .text()
+        .await
+        .unwrap()
+        .contains("</CompleteMultipartUploadResult>"));
+
+    let before = catalog_counts(&client).await;
+    let started = Instant::now();
+    let get = client.send(Method::GET, &object, "", b"", false).await;
+    assert_eq!(get.status(), 200);
+    assert_eq!(get.bytes().await.unwrap().as_ref(), bytes);
+    let get_ms = started.elapsed().as_millis();
+    println!(
+        "iceberg 5MiB GET: {get_ms}ms {}",
+        catalog_delta(before, catalog_counts(&client).await)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -184,9 +304,51 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
     assert_eq!(record.kind, FileKind::Unbound);
     assert!(record.bind_kind(FileKind::EqualityDelete).is_ok());
     let conflict = client
-        .send(Method::PUT, &object, "", b"PAR1difffoot\x04\0\0\0PAR1", false)
+        .send(Method::PUT, &object, "", b"PAR1difffoot\x04\0\0\0PAR1", true)
         .await;
     assert_eq!(conflict.status(), 409);
+
+    let medium = path(table, "data/medium.parquet");
+    let medium_bytes = (0..1_200_000)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let response = client.send(Method::PUT, &medium, "", &medium_bytes, true).await;
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let stored = repository
+        .load(
+            client.credentials.grant().context,
+            &table.file("data/medium.parquet").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.content.locations(stored.length).unwrap().unwrap().len(), 1);
+    let range = client
+        .send_range(
+            Method::GET,
+            &medium,
+            "",
+            b"",
+            false,
+            Some("bytes=1048550-1048600"),
+        )
+        .await;
+    assert_eq!(range.status(), 206);
+    assert_eq!(
+        range.bytes().await.unwrap().as_ref(),
+        &medium_bytes[1048550..1048601]
+    );
+    let metrics: serde_json::Value = Client::new()
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(metrics["chunk_read"]["stream_windows"].as_u64().unwrap() > 0);
+    assert!(metrics["chunk_small_write"]["completed"].as_u64().unwrap() > 0);
 
     let metadata = path(table, "metadata/b.json");
     let create = client.send(Method::POST, &metadata, "uploads=", b"", false).await;
@@ -236,6 +398,33 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
         .await
         .unwrap()
         .ends_with("</CompleteMultipartUploadResult>"));
+    let mut composite = Md5::new();
+    composite.update(Md5::digest(first));
+    composite.update(Md5::digest(second));
+    let expected_etag = composite
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        + "-2";
+    let published = repository
+        .load(
+            client.credentials.grant().context,
+            &table.file("metadata/b.json").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(published.content.etag(), Some(expected_etag.as_str()));
+    assert_eq!(
+        published
+            .content
+            .locations(published.length)
+            .unwrap()
+            .unwrap()
+            .len(),
+        2
+    );
     let replay = client
         .send(
             Method::POST,
@@ -254,6 +443,214 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
     let get = client.send(Method::GET, &metadata, "", b"", false).await;
     assert_eq!(get.status(), 200);
     assert_eq!(get.bytes().await.unwrap().as_ref(), document);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
+    let (stack, _process, client, table) = setup_with_bounds_and_file_limit(
+        ClearBounds {
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+        128 * 1024 * 1024,
+        128 * 1024 * 1024,
+    )
+    .await;
+    let repository = FileRepository::new(stack.store().await);
+    for size in [10 * 1024, 1024 * 1024, 12 * 1024 * 1024, 100 * 1024 * 1024] {
+        let key = format!("data/size-{size}.parquet");
+        let object = path(table, &key);
+        let bytes = (0..size).map(|offset| (offset % 256) as u8).collect::<Vec<_>>();
+        let expected = Md5::digest(&bytes);
+        let started = Instant::now();
+        let put = client.send(Method::PUT, &object, "", &bytes, true).await;
+        assert_eq!(put.status(), 200, "{}", put.text().await.unwrap());
+        let put_elapsed = started.elapsed();
+        let head = client.send(Method::HEAD, &object, "", b"", false).await;
+        assert_eq!(head.status(), 200);
+        assert_eq!(head.headers()["content-length"], size.to_string());
+        let record = repository
+            .load(client.credentials.grant().context, &table.file(&key).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.length, size as u64);
+        let locations = record.content.locations(record.length).unwrap().unwrap();
+        assert!(!locations.is_empty());
+        if size == 12 * 1024 * 1024 {
+            let chunkdb = make_chunkdb_client(stack.cluster.make_service_registry_client());
+            let chunk = chunkdb
+                .query_chunk(QueryChunkRequest {
+                    chunk_id: locations[0].chunk_id,
+                })
+                .await
+                .unwrap()
+                .chunk
+                .unwrap();
+            let ec = chunk.strips.iter().find_map(|strip| match strip.strip.as_ref() {
+                Some(Strip::EcStrip(ec)) => Some(ec),
+                _ => None,
+            });
+            let ec = ec.expect("large Iceberg write has an EC strip");
+            assert_eq!((ec.data_num, ec.code_num), (8, 4));
+        }
+        let get_started = Instant::now();
+        let mut response = client.send(Method::GET, &object, "", b"", false).await;
+        assert_eq!(response.status(), 200);
+        let mut received = Md5::new();
+        let mut received_size = 0;
+        while let Some(chunk) = response.chunk().await.unwrap() {
+            received.update(&chunk);
+            received_size += chunk.len();
+        }
+        assert_eq!(received_size, size);
+        assert_eq!(received.finalize().as_slice(), expected.as_slice());
+        let get_elapsed = get_started.elapsed();
+        for start in [0, usize::min(size - 1, 65500), size - 1] {
+            let end = usize::min(size - 1, start + 127);
+            let range = format!("bytes={start}-{end}");
+            let response = client
+                .send_range(Method::GET, &object, "", b"", false, Some(&range))
+                .await;
+            assert_eq!(response.status(), 206);
+            assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[start..=end]);
+        }
+        println!("iceberg ordinary size={size} PUT={put_elapsed:?} GET={get_elapsed:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn small_routing_is_strict_at_the_strip_threshold() {
+    let (_stack, _process, client, table) = setup().await;
+    let threshold = SmallWriteConfig::default().threshold_exclusive();
+    let completed = async || {
+        let metrics: serde_json::Value = Client::new()
+            .get(format!("http://{}/_crowdb/metrics", client.address))
+            .bearer_auth("m".repeat(32))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        metrics["chunk_small_write"]["completed"].as_u64().unwrap()
+    };
+    let mut previous = completed().await;
+    for size in [threshold - 1, threshold, threshold + 1] {
+        let object = path(table, &format!("data/threshold-{size}.parquet"));
+        let bytes = vec![u8::try_from(size % 251).unwrap(); size];
+        let response = client.send(Method::PUT, &object, "", &bytes, true).await;
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let current = completed().await;
+        assert_eq!(current - previous, u64::from(size < threshold), "size={size}");
+        previous = current;
+        let last = format!("bytes={}-{}", size - 2, size - 1);
+        let response = client
+            .send_range(Method::GET, &object, "", b"", false, Some(&last))
+            .await;
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[size - 2..]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multipart_100_mib_survives_restart_and_complete_replay() {
+    const PART_BYTES: usize = 5 * 1024 * 1024;
+    const PART_COUNT: usize = 20;
+    let (stack, process, mut client, table) = setup_with_bounds_and_file_limit(
+        ClearBounds {
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+        128 * 1024 * 1024,
+        128 * 1024 * 1024,
+    )
+    .await;
+    let object = path(table, "data/large-multipart.parquet");
+    let created = client.send(Method::POST, &object, "uploads=", b"", false).await;
+    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
+    let created = created.text().await.unwrap();
+    let upload = created
+        .split_once("<UploadId>")
+        .unwrap()
+        .1
+        .split_once("</UploadId>")
+        .unwrap()
+        .0;
+    let mut manifest = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+    );
+    let mut composite = Md5::new();
+    for first_number in (1..=PART_COUNT).step_by(2) {
+        let second_number = first_number + 1;
+        let first_bytes = vec![u8::try_from(first_number).unwrap(); PART_BYTES];
+        let second_bytes = vec![u8::try_from(second_number).unwrap(); PART_BYTES];
+        let first_query = format!("partNumber={first_number}&uploadId={upload}");
+        let second_query = format!("partNumber={second_number}&uploadId={upload}");
+        let (first_response, second_response) = tokio::join!(
+            client.send(Method::PUT, &object, &first_query, &first_bytes, true),
+            client.send(Method::PUT, &object, &second_query, &second_bytes, true),
+        );
+        for (number, bytes, response) in [
+            (first_number, first_bytes, first_response),
+            (second_number, second_bytes, second_response),
+        ] {
+            assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+            let etag = response.headers()["etag"].to_str().unwrap();
+            composite.update(Md5::digest(&bytes));
+            write!(
+                manifest,
+                "<Part><ETag>{etag}</ETag><PartNumber>{number}</PartNumber></Part>"
+            )
+            .unwrap();
+        }
+    }
+    manifest.push_str("</CompleteMultipartUpload>");
+    let mut expected_etag = String::new();
+    for byte in composite.finalize() {
+        write!(expected_etag, "{byte:02x}").unwrap();
+    }
+    expected_etag.push_str("-20");
+    let query = format!("uploadId={upload}");
+    let completed = client
+        .send(Method::POST, &object, &query, manifest.as_bytes(), false)
+        .await;
+    assert_eq!(completed.status(), 200);
+    let completed = completed.text().await.unwrap();
+    assert!(
+        completed.contains("</CompleteMultipartUploadResult>"),
+        "{completed}"
+    );
+    let repository = FileRepository::new(stack.store().await);
+    let record = repository
+        .load(
+            client.credentials.grant().context,
+            &table.file("data/large-multipart.parquet").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.length, (PART_BYTES * PART_COUNT) as u64);
+    assert_eq!(record.content.etag(), Some(expected_etag.as_str()));
+    assert_eq!(
+        record.content.locations(record.length).unwrap().unwrap().len(),
+        PART_COUNT
+    );
+
+    drop(process);
+    let restarted = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    client.address = restarted.address;
+    let replay = client
+        .send(Method::POST, &object, &query, manifest.as_bytes(), false)
+        .await;
+    assert_eq!(replay.status(), 200, "{}", replay.text().await.unwrap());
+    let response = client.send(Method::GET, &object, "", b"", false).await;
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(bytes.len(), PART_BYTES * PART_COUNT);
+    for (index, part) in bytes.chunks_exact(PART_BYTES).enumerate() {
+        assert!(part.iter().all(|byte| *byte == u8::try_from(index + 1).unwrap()));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

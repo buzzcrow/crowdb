@@ -15,7 +15,6 @@ import org.apache.iceberg.io.SeekableInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CompletedPart;
-import software.amazon.awssdk.services.s3.model.S3Exception;
 
 public class TestIcebergFileIO {
   public static void main(String[] args) throws Exception {
@@ -51,6 +50,7 @@ public class TestIcebergFileIO {
       files.initialize(properties);
       String prefix = configuration.getProperty("location");
       byte[] small = "{\"client\":\"iceberg-java-1.11.0\"}".getBytes(StandardCharsets.UTF_8);
+      System.out.println("S3FileIO: small PUT/GET");
       verify(files, prefix + "metadata/sdk-small.json", small);
       byte[] large = new byte[6 * 1024 * 1024];
       Arrays.fill(large, (byte) 'x');
@@ -58,8 +58,11 @@ public class TestIcebergFileIO {
       System.arraycopy(start, 0, large, 0, start.length);
       large[large.length - 2] = '"';
       large[large.length - 1] = '}';
+      System.out.println("S3FileIO: multipart PUT/GET");
       verify(files, prefix + "metadata/sdk-multipart.json", large);
-      verifyLateError(files.client(), prefix + "metadata/sdk-invalid.json");
+      System.out.println("S3FileIO: opaque multipart Complete");
+      verifyOpaqueMultipart(files.client(), prefix + "metadata/sdk-opaque.json");
+      System.out.println("S3FileIO: file operations");
       TestIcebergFileOperations.run(files.client(), prefix);
       if (credentialRequests.get() != 1) {
         throw new AssertionError("SDK did not fetch and cache the delegated credential response");
@@ -67,27 +70,23 @@ public class TestIcebergFileIO {
     } finally {
       credentials.stop(0);
     }
-    System.out.println("Apache Iceberg 1.11.0 S3FileIO PUT, multipart, HEAD, GET, seek and embedded error passed");
+    System.out.println("Apache Iceberg 1.11.0 S3FileIO PUT, multipart, HEAD, GET, seek and opaque file passed");
   }
 
-  private static void verifyLateError(S3Client client, String location) {
+  private static void verifyOpaqueMultipart(S3Client client, String location) {
     URI uri = URI.create(location);
     String bucket = uri.getHost();
     String key = uri.getPath().substring(1);
     String upload = client.createMultipartUpload(request -> request.bucket(bucket).key(key)).uploadId();
+    byte[] payload = "{invalid-json".getBytes(StandardCharsets.UTF_8);
     String etag = client.uploadPart(
         request -> request.bucket(bucket).key(key).uploadId(upload).partNumber(1),
-        RequestBody.fromString("{invalid-json")).eTag();
-    try {
-      client.completeMultipartUpload(request -> request.bucket(bucket).key(key).uploadId(upload)
-          .multipartUpload(parts -> parts.parts(CompletedPart.builder().partNumber(1).eTag(etag).build())));
-      throw new AssertionError("SDK accepted an embedded Complete error as success");
-    } catch (S3Exception error) {
-      if (!"InvalidRequest".equals(error.awsErrorDetails().errorCode())) {
-        throw error;
-      }
-    } finally {
-      client.abortMultipartUpload(request -> request.bucket(bucket).key(key).uploadId(upload));
+        RequestBody.fromBytes(payload)).eTag();
+    client.completeMultipartUpload(request -> request.bucket(bucket).key(key).uploadId(upload)
+        .multipartUpload(parts -> parts.parts(CompletedPart.builder().partNumber(1).eTag(etag).build())));
+    byte[] stored = client.getObjectAsBytes(request -> request.bucket(bucket).key(key)).asByteArray();
+    if (!Arrays.equals(stored, payload)) {
+      throw new AssertionError("opaque multipart payload changed");
     }
   }
 

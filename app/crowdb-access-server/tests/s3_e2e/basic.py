@@ -240,7 +240,7 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         bucket = f"{self.bucket}-slow"
         path = f"/{bucket}/slow.bin"
         second_path = f"/{bucket}/slow-second.bin"
-        payload = bytes(range(256)) * (4096 + 1)
+        payload = bytes(range(256)) * (32768 + 1)
         status, _, _ = self.signed_http("PUT", f"/{bucket}")
         self.assertEqual(status, 200)
         barrier = Barrier(2)
@@ -259,12 +259,12 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         status, _, metrics = self.signed_http("GET", "/_crowdb/metrics")
         self.assertEqual(status, 200)
         self.assertIn(b"crowdb_s3_native_retained_bytes 0\n", metrics)
-        backpressure = next(
+        direct_bytes = next(
             int(line.split()[-1])
             for line in metrics.splitlines()
-            if line.startswith(b"crowdb_s3_native_backpressure_events_total ")
+            if line.startswith(b"crowdb_s3_native_direct_bytes_total ")
         )
-        self.assertGreater(backpressure, 0)
+        self.assertGreater(direct_bytes, 0)
         self.client.delete_object(Bucket=bucket, Key="slow.bin")
         self.client.delete_object(Bucket=bucket, Key="slow-second.bin")
         self.client.delete_bucket(Bucket=bucket)
@@ -475,6 +475,43 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         listed = client.list_objects_v2(Bucket=bucket, Prefix="encoded/")
         self.assertEqual(len(listed.get("Contents", [])), len(keys))
         for key in keys:
+            client.delete_object(Bucket=bucket, Key=key)
+        client.delete_bucket(Bucket=bucket)
+
+    def test_ordinary_put_size_matrix(self):
+        client = self.client
+        bucket = f"{self.bucket}-sizes"
+        client.create_bucket(Bucket=bucket)
+        sizes = [10 * 1024, 1024 * 1024, 12 * 1024 * 1024, 100 * 1024 * 1024]
+        for size in sizes:
+            key = f"size-{size}.bin"
+            payload = bytes(range(256)) * (size // 256)
+            digest = md5(payload)
+            started = time.monotonic()
+            result = client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=BytesIO(payload),
+                ContentLength=size,
+                ContentMD5=b64encode(digest.digest()).decode("ascii"),
+            )
+            self.assertEqual(result["ETag"], f'"{digest.hexdigest()}"')
+            put_s = time.monotonic() - started
+            self.assertEqual(client.head_object(Bucket=bucket, Key=key)["ContentLength"], size)
+            get_started = time.monotonic()
+            fetched = client.get_object(Bucket=bucket, Key=key)["Body"]
+            downloaded = md5()
+            while block := fetched.read(1024 * 1024):
+                downloaded.update(block)
+            self.assertEqual(downloaded.digest(), digest.digest())
+            get_s = time.monotonic() - get_started
+            for start in [0, min(size - 1, 65500), size - 1]:
+                end = min(size - 1, start + 127)
+                ranged = client.get_object(
+                    Bucket=bucket, Key=key, Range=f"bytes={start}-{end}"
+                )["Body"].read()
+                self.assertEqual(ranged, payload[start : end + 1])
+            print(f"S3 ordinary size={size} PUT={put_s:.3f}s GET={get_s:.3f}s")
             client.delete_object(Bucket=bucket, Key=key)
         client.delete_bucket(Bucket=bucket)
 

@@ -84,9 +84,11 @@ impl FileTransferAdmission {
         if self.operation != FileOperation::CreateMultipart {
             return Err(FileAdmissionError::Scope);
         }
+        let max_part_bytes = self.request_bytes.min(self.file_bytes);
+        let max_parts = (self.staged_bytes / max_part_bytes).min(10_000);
         let limits = MultipartLimits {
-            max_parts: 10_000,
-            max_part_bytes: self.request_bytes.min(self.file_bytes),
+            max_parts: u16::try_from(max_parts).map_err(|_| FileAdmissionError::Bounds)?,
+            max_part_bytes,
             max_file_bytes: self.file_bytes,
             max_staged_bytes: self.staged_bytes,
             ttl_ms: 24 * 60 * 60 * 1000,

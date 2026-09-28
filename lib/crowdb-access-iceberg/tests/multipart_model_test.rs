@@ -91,11 +91,12 @@ fn staged_parts_are_physical_bytes_bound_to_one_upload_table_and_revision() {
             file: FileId::random(),
             ..session.owner
         },
-        tree: FileTree {
+        tree: Some(FileTree {
             root: None,
             length: 0,
             digest: Sha256::digest([]).into(),
-        },
+        }),
+        stream: None,
     };
     part.validate_for(&session).unwrap();
     part.number = 0;

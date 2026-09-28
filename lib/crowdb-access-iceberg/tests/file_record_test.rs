@@ -4,6 +4,7 @@ use crowdb_access_iceberg::file::{
 };
 use crowdb_access_iceberg::key::{CatalogId, FileId, TableId};
 use crowdb_access_iceberg::record::{StorageRecord, MAX_RECORD_BYTES};
+use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::common::ChunkId;
 use sha2::{Digest, Sha256};
 
@@ -23,6 +24,45 @@ fn record(input: &[u8]) -> FileRecord {
         content: FileContent::select_inline(FileKind::Metadata, input).unwrap(),
         hint: None,
     }
+}
+
+#[test]
+fn complete_chunk_locations_round_trip_without_a_file_sha256() {
+    let locations = vec![
+        Location {
+            chunk_id: Some(ChunkId { high: 1, low: 2 }),
+            offset: 0,
+            length: 65_536,
+            logical_offset: 0,
+            logical_length: 65_500,
+        },
+        Location {
+            chunk_id: Some(ChunkId { high: 3, low: 4 }),
+            offset: 128,
+            length: 80,
+            logical_offset: 65_500,
+            logical_length: 44,
+        },
+    ];
+    let length = 65_544;
+    let content =
+        FileContent::from_locations(&locations, length, "d41d8cd98f00b204e9800998ecf8427e".into()).unwrap();
+    let mut file = record(b"{}");
+    file.kind = FileKind::Unbound;
+    file.format = ContentFormat::Opaque;
+    file.length = length;
+    file.digest = [0; 32];
+    file.content = content;
+    file.validate().unwrap();
+    let key = file_key(file.location.table().catalog, file.file);
+    let encoded = StorageRecord::File(Box::new(file.clone())).encode().unwrap();
+    assert_eq!(
+        StorageRecord::decode(&key, &encoded).unwrap(),
+        StorageRecord::File(Box::new(file))
+    );
+    let mut broken = locations;
+    broken[1].logical_offset += 1;
+    assert!(FileContent::from_locations(&broken, length, "d41d8cd98f00b204e9800998ecf8427e".into()).is_err());
 }
 
 #[test]

@@ -202,6 +202,49 @@ fn encode_parity_from_shards_partial_2_of_4() {
     assert_eq!(recovered2[1], shard1);
 }
 
+#[test]
+fn partial_8_2_strip_recovers_two_mib_with_virtual_zero_shards() {
+    let scheme = EcScheme::new(8, 2);
+    let shard_bytes = 1024 * 1024;
+    let first: Vec<u8> = (0..shard_bytes).map(|index| (index % 251) as u8).collect();
+    let second: Vec<u8> = (0..shard_bytes).map(|index| ((index * 7) % 253) as u8).collect();
+
+    let mut encoder = IncrementalParity::new(scheme).unwrap();
+    encoder.push_partial(&first).unwrap();
+    encoder.push_partial(&second).unwrap();
+    let parity = encoder.finish_partial().unwrap();
+    assert_eq!(parity.len(), 2);
+    assert!(parity.iter().all(|shard| shard.len() == shard_bytes));
+
+    let empty = vec![0; shard_bytes];
+    let full_data = [
+        &first[..],
+        &second[..],
+        &empty,
+        &empty,
+        &empty,
+        &empty,
+        &empty,
+        &empty,
+    ];
+    assert_eq!(parity, encode_parity_from_shards(scheme, &full_data).unwrap());
+
+    for missing in [[0, 1], [0, 8], [1, 9]] {
+        let mut blocks: Vec<Option<Vec<u8>>> = vec![Some(first.clone()), Some(second.clone())];
+        blocks.extend((0..6).map(|_| Some(vec![0; shard_bytes])));
+        blocks.extend(parity.iter().cloned().map(Some));
+        for index in missing {
+            blocks[index] = None;
+        }
+        let recovered = decode(scheme, blocks).unwrap();
+        assert_eq!(recovered[0], first);
+        assert_eq!(recovered[1], second);
+        assert!(recovered[2..8]
+            .iter()
+            .all(|shard| shard.iter().all(|byte| *byte == 0)));
+    }
+}
+
 /// Single short shard (1 of 4, < 1 MB). Encode parity → parity length
 /// matches shard length.
 #[test]

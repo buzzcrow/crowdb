@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use crowdb_chunk_client::{
-    ChunkIoClient, LargeWriteBufferMetricsSnapshot, LargeWriteRepairMetricsSnapshot,
+    ChunkIoClient, LargeWriteBufferMetricsSnapshot, LargeWriteRepairMetricsSnapshot, ReadFlowMetricsSnapshot,
     SmallWriteMetricsSnapshot,
 };
 
@@ -210,6 +210,7 @@ impl S3Metrics {
             large_write_buffers: chunks.large_write_buffer_metrics(),
             large_write_repairs: chunks.large_write_repair_metrics(),
             small_writes: chunks.small_write_metrics(),
+            read_flow: chunks.read_flow_metrics(),
             checksum_bytes: request.checksum_bytes,
             metadata_retries: request.metadata_retries,
             cleanup_enqueued: request.cleanup_enqueued,
@@ -271,6 +272,8 @@ impl S3Metrics {
         }
         if let Some(chunks) = chunks {
             append_chunk_metrics(&mut output, chunks.large_write_buffer_metrics());
+            append_small_write_metrics(&mut output, &chunks.small_write_metrics());
+            append_read_flow_metrics(&mut output, chunks.read_flow_metrics());
         }
         output
     }
@@ -341,6 +344,107 @@ fn append_chunk_metrics(output: &mut String, buffers: LargeWriteBufferMetricsSna
     }
 }
 
+fn append_small_write_metrics(output: &mut String, small: &SmallWriteMetricsSnapshot) {
+    for (name, value) in [
+        ("crowdb_s3_small_write_submitted_total", small.submitted),
+        ("crowdb_s3_small_write_completed_total", small.completed),
+        ("crowdb_s3_small_write_failed_total", small.failed),
+        (
+            "crowdb_s3_small_write_aggregate_buffers_total",
+            small.aggregate_write_buffers,
+        ),
+        (
+            "crowdb_s3_small_write_aggregate_payload_bytes_total",
+            small.aggregate_write_payload_bytes,
+        ),
+        ("crowdb_s3_small_write_queue_delay_ns_total", small.queue_delay_ns),
+        (
+            "crowdb_s3_small_write_reservation_wait_ns_total",
+            small.reservation_wait_ns,
+        ),
+    ] {
+        append_metric(output, name, "", value);
+    }
+    append_metric(
+        output,
+        "crowdb_s3_small_write_active_pipelines",
+        "",
+        small.active_pipelines,
+    );
+}
+
+fn append_read_flow_metrics(output: &mut String, flow: ReadFlowMetricsSnapshot) {
+    for (name, value) in [
+        (
+            "crowdb_s3_chunk_read_location_normalizations_total",
+            flow.location_normalizations,
+        ),
+        (
+            "crowdb_s3_chunk_read_locations_examined_total",
+            flow.locations_examined,
+        ),
+        (
+            "crowdb_s3_chunk_read_range_locations_examined_total",
+            flow.range_locations_examined,
+        ),
+        ("crowdb_s3_chunk_read_stream_windows_total", flow.stream_windows),
+        (
+            "crowdb_s3_chunk_read_stream_units_completed_total",
+            flow.stream_units_completed,
+        ),
+        (
+            "crowdb_s3_chunk_read_stream_out_of_order_total",
+            flow.stream_out_of_order,
+        ),
+        (
+            "crowdb_s3_chunk_read_stream_credit_stalls_total",
+            flow.stream_credit_stalls,
+        ),
+        (
+            "crowdb_s3_chunk_read_stream_credit_wait_ns_total",
+            flow.stream_credit_wait_ns,
+        ),
+        (
+            "crowdb_s3_chunk_read_stream_bytes_reserved_total",
+            flow.stream_bytes_reserved,
+        ),
+        (
+            "crowdb_s3_chunk_read_stream_bytes_released_total",
+            flow.stream_bytes_released,
+        ),
+        ("crowdb_s3_chunk_read_layout_queries_total", flow.layout_queries),
+        (
+            "crowdb_s3_chunk_read_layout_query_wait_ns_total",
+            flow.layout_query_wait_ns,
+        ),
+        (
+            "crowdb_s3_chunk_read_strip_read_wait_ns_total",
+            flow.strip_read_wait_ns,
+        ),
+        (
+            "crowdb_s3_chunk_range_read_wait_ns_total",
+            flow.chunk_read_wait_ns,
+        ),
+        (
+            "crowdb_s3_chunk_read_frame_decode_wait_ns_total",
+            flow.frame_decode_wait_ns,
+        ),
+        (
+            "crowdb_s3_chunk_read_frame_parse_wait_ns_total",
+            flow.frame_parse_wait_ns,
+        ),
+    ] {
+        append_metric(output, name, "", value);
+    }
+    append_metric(
+        output,
+        "crowdb_s3_chunk_read_stream_retained_bytes",
+        "",
+        flow.stream_bytes_reserved
+            .saturating_sub(flow.stream_bytes_released),
+    );
+}
+
 fn append_metric(output: &mut String, name: &str, labels: &str, value: u64) {
     if labels.is_empty() {
         let _ = writeln!(output, "{name} {value}");
@@ -376,6 +480,7 @@ pub struct S3DataPathMetricsSnapshot {
     pub large_write_buffers: LargeWriteBufferMetricsSnapshot,
     pub large_write_repairs: LargeWriteRepairMetricsSnapshot,
     pub small_writes: SmallWriteMetricsSnapshot,
+    pub read_flow: ReadFlowMetricsSnapshot,
     pub checksum_bytes: u64,
     pub metadata_retries: u64,
     pub cleanup_enqueued: u64,

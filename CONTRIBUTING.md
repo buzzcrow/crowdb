@@ -76,9 +76,10 @@ pixi run test-single-node-container
 - Add dependencies through the owning package manager and avoid newly published
   versions until they have had time for ecosystem review.
 
-Start documentation work at `doc/doc_index.md`. Permanent architecture belongs
-under `doc/design/`, user behavior in `doc/user-manual/user-guide.md`, future
-contracts in `doc/backlog/`, and temporary execution plans in `doc/working/`.
+Start documentation work at `doc/doc_index.md`. Permanent architecture and
+operational behavior belong under `doc/design/` or the relevant component
+README, future contracts in `doc/backlog/`, and temporary execution plans in
+`doc/working/`.
 
 ## Code and tests
 

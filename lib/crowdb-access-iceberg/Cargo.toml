@@ -16,12 +16,14 @@ test-util = []
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22"
+bincode = "1.3"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 crc32fast = "1"
 data-encoding = "2"
 hmac = "0.12"
 lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode", "safe-decode", "frame"] }
+md-5 = "0.10"
 crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
 crowdb-chunk-client = { path = "../crowdb-chunk-client" }
 crowdb-common = { workspace = true }

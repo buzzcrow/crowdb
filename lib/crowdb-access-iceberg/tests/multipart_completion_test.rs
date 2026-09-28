@@ -10,8 +10,8 @@ mod fixtures;
 use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::file::{
-    FileIdentity, FileReader, FileTreeWriter, MultipartPart, MultipartPhase, MultipartRepository,
-    MultipartSelection, MultipartSession, SelectedPart,
+    FileContent, FileIdentity, FileReader, FileTreeWriter, MultipartPart, MultipartPhase,
+    MultipartRepository, MultipartSelection, MultipartSession, MultipartStreamPart, SelectedPart,
 };
 use crowdb_access_iceberg::key::FileId;
 
@@ -46,12 +46,13 @@ async fn setup() -> (
             revision: 1,
             modified_ms: 101,
             owner,
-            tree: writer.finish().await.unwrap(),
+            tree: Some(writer.finish().await.unwrap()),
+            stream: None,
         };
         selected.push(SelectedPart {
             number,
             revision: 1,
-            digest: part.tree.digest,
+            digest: part.selection_digest(),
         });
         assert!(repository.reserve_part(&session, &part, 101).await.unwrap());
         session = load(&repository, &session).await;
@@ -104,6 +105,34 @@ fn frozen_selection_is_ordered_versioned_and_independently_bounded() {
         ..parts[0]
     }])
     .is_err());
+}
+
+#[test]
+fn streamed_selection_rejects_oversized_snapshot_before_copying_part_locations() {
+    let session = fixtures::session();
+    let part = MultipartPart {
+        upload: session.upload,
+        number: 1,
+        revision: 1,
+        modified_ms: 100,
+        owner: session.owner,
+        tree: None,
+        stream: Some(MultipartStreamPart {
+            length: 1,
+            content: FileContent::Locations {
+                bytes: vec![0; crowdb_access_iceberg::operation::MAX_PAYLOAD_BYTES],
+                etag: "00000000000000000000000000000000".into(),
+            },
+        }),
+    };
+    assert!(matches!(
+        MultipartSelection::with_stream_parts(&[part]),
+        Err(crowdb_access_iceberg::error::ValidationError::RecordTooLarge)
+    ));
+    assert!(matches!(
+        MultipartSelection::decode(&vec![0; crowdb_access_iceberg::operation::MAX_PAYLOAD_BYTES + 1]),
+        Err(crowdb_access_iceberg::error::ValidationError::RecordTooLarge)
+    ));
 }
 
 #[tokio::test]

@@ -57,8 +57,6 @@ pub async fn run() {
             assert!(labels.contains("multipart-Completing"));
             assert!(labels.contains("multipart-Publishing"));
             assert!(labels.contains("multipart-Published"));
-        } else {
-            assert!(labels.contains("file-block"));
         }
     }
 }

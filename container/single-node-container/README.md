@@ -3,8 +3,8 @@
 
 # Single-node container development
 
-For running CROWDB, see the [Docker user guide](../../doc/user-manual/docker-single-node-user-guide.md).
-This page describes building from source on a Linux amd64 development or CI host.
+This page describes building and running CROWDB from source on a Linux amd64
+development or CI host.
 
 ```sh
 pixi run build-single-node-container

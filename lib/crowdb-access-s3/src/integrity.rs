@@ -28,23 +28,31 @@ pub enum IntegrityError {
 /// future contract.
 pub struct SinglePartIntegrity {
     md5: md5::Context,
-    sha256: Sha256,
+    sha256: Option<Sha256>,
 }
 
 impl Default for SinglePartIntegrity {
     fn default() -> Self {
-        Self {
-            md5: md5::Context::new(),
-            sha256: Sha256::new(),
-        }
+        Self::new(false)
     }
 }
 
 impl SinglePartIntegrity {
+    /// Enables payload SHA-256 only when the request declares that digest.
+    #[must_use]
+    pub fn new(check_payload_sha256: bool) -> Self {
+        Self {
+            md5: md5::Context::new(),
+            sha256: check_payload_sha256.then(Sha256::new),
+        }
+    }
+
     /// Adds one immutable body frame without copying it.
     pub fn update(&mut self, bytes: &Bytes) {
         self.md5.consume(bytes);
-        self.sha256.update(bytes);
+        if let Some(sha256) = &mut self.sha256 {
+            sha256.update(bytes);
+        }
     }
 
     /// Returns the persisted single-part `ETag` and its raw checksum bytes.
@@ -95,6 +103,7 @@ impl SinglePartIntegrity {
             if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return Err(IntegrityError::InvalidPayloadDigest);
             }
+            let sha256 = sha256.ok_or(IntegrityError::InvalidPayloadDigest)?;
             let actual = format!("{:x}", sha256.finalize());
             if !actual.eq_ignore_ascii_case(expected) {
                 return Err(IntegrityError::PayloadMismatch);

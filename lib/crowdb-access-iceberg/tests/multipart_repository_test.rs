@@ -11,11 +11,14 @@ use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::catalog::{CatalogError, CatalogStore, RootState};
 use crowdb_access_iceberg::file::{
-    FileIdentity, FileTreeWriter, MultipartPart, MultipartPhase, MultipartRepository, MultipartSession,
+    FileContent, FileIdentity, FileTreeWriter, MultipartPart, MultipartPhase, MultipartRepository,
+    MultipartSession, MultipartStreamPart,
 };
 use crowdb_access_iceberg::key::FileId;
 use crowdb_access_iceberg::operation::mutation_identity;
 use crowdb_access_iceberg::record::StorageRecord;
+use crowdb_protocol::chunkdb::rpc::Location;
+use crowdb_protocol::common::ChunkId;
 
 async fn setup() -> (file::TestFile, MultipartSession) {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
@@ -42,8 +45,97 @@ async fn part(session: &MultipartSession, number: u16, revision: u64, length: us
         revision,
         modified_ms: 101,
         owner,
-        tree: writer.finish().await.unwrap(),
+        tree: Some(writer.finish().await.unwrap()),
+        stream: None,
     }
+}
+
+fn stream_part(session: &MultipartSession, number: u16, chunk_low: u64) -> MultipartPart {
+    MultipartPart {
+        upload: session.upload,
+        number,
+        revision: 1,
+        modified_ms: 101,
+        owner: FileIdentity {
+            file: FileId::random(),
+            ..session.owner
+        },
+        tree: None,
+        stream: Some(MultipartStreamPart {
+            length: 10,
+            content: FileContent::from_locations(
+                &[Location {
+                    chunk_id: Some(ChunkId {
+                        high: 7,
+                        low: chunk_low,
+                    }),
+                    offset: 0,
+                    length: 44,
+                    logical_offset: 0,
+                    logical_length: 10,
+                }],
+                10,
+                "0123456789abcdef0123456789abcdef".into(),
+            )
+            .unwrap(),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn streamed_parts_commit_independently_without_session_mutations() {
+    let (fixture, initial) = setup().await;
+    let repository = MultipartRepository::new(fixture.store.clone());
+    repository.begin(&initial, 100).await.unwrap();
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    let first_input = stream_part(&initial, 1, 1);
+    let second_input = stream_part(&initial, 2, 2);
+    let (first, second) = tokio::join!(
+        repository.put_stream_part(&initial, &first_input, 101),
+        repository.put_stream_part(&initial, &second_input, 101),
+    );
+    let first = first.unwrap().unwrap();
+    let second = second.unwrap().unwrap();
+    assert_eq!(first.revision, 1);
+    assert_eq!(second.revision, 1);
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst) - writes, 2);
+    assert_eq!(load(&repository, &initial).await, initial);
+    let replacement = repository
+        .put_stream_part(&initial, &stream_part(&initial, 1, 3), 102)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement.revision, 2);
+    assert_eq!(
+        repository.part_for_upload(&initial, 1).await.unwrap(),
+        Some(replacement)
+    );
+    assert!(repository.abort(&initial).await.unwrap());
+    assert!(repository
+        .put_stream_part(&initial, &stream_part(&initial, 3, 4), 103)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn streamed_part_lost_cas_reply_resolves_from_the_part_record() {
+    let (fixture, initial) = setup().await;
+    let repository = MultipartRepository::new(fixture.store.clone());
+    repository.begin(&initial, 100).await.unwrap();
+    fixture
+        .store
+        .fail_after
+        .store(fixture.store.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    let published = repository
+        .put_stream_part(&initial, &stream_part(&initial, 1, 1), 101)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        repository.part_for_upload(&initial, 1).await.unwrap(),
+        Some(published)
+    );
+    assert_eq!(load(&repository, &initial).await, initial);
 }
 
 #[tokio::test]

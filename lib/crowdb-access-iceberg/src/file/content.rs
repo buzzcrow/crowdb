@@ -1,3 +1,4 @@
+use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::common::ChunkId;
 use sha2::{Digest, Sha256};
 
@@ -50,9 +51,54 @@ impl ChunkRoot {
 pub enum FileContent {
     Inline { codec: InlineCodec, bytes: Vec<u8> },
     Chunks { root: Option<ChunkRoot> },
+    Locations { bytes: Vec<u8>, etag: String },
 }
 
 impl FileContent {
+    /// Encodes complete Chunk locations once, after the whole file is durable.
+    /// # Errors
+    /// Rejects gaps, overlapping locations and metadata that cannot fit one record.
+    pub fn from_locations(
+        locations: &[Location],
+        length: u64,
+        etag: String,
+    ) -> Result<Self, ValidationError> {
+        validate_locations(locations, length)?;
+        validate_etag(&etag)?;
+        let bytes = bincode::serialize(locations).map_err(|_| ValidationError::Record)?;
+        if bytes.len() > crate::record::MAX_RECORD_BYTES - 4096 {
+            return Err(ValidationError::RecordTooLarge);
+        }
+        Ok(Self::Locations { bytes, etag })
+    }
+
+    /// # Errors
+    /// Rejects malformed location encodings and inconsistent logical ranges.
+    pub fn locations(&self, length: u64) -> Result<Option<Vec<Location>>, ValidationError> {
+        let Self::Locations { bytes, etag } = self else {
+            return Ok(None);
+        };
+        validate_etag(etag)?;
+        if bytes.len() < 8 || bytes.len() > crate::record::MAX_RECORD_BYTES - 4096 {
+            return Err(ValidationError::RecordTooLarge);
+        }
+        let count = u64::from_le_bytes(bytes[..8].try_into().map_err(|_| ValidationError::Record)?);
+        if count > 1250 {
+            return Err(ValidationError::RecordTooLarge);
+        }
+        let locations: Vec<Location> = bincode::deserialize(bytes).map_err(|_| ValidationError::Record)?;
+        validate_locations(&locations, length)?;
+        Ok(Some(locations))
+    }
+
+    #[must_use]
+    pub fn etag(&self) -> Option<&str> {
+        match self {
+            Self::Locations { etag, .. } => Some(etag),
+            _ => None,
+        }
+    }
+
     pub(crate) fn validate(&self, length: u64, digest: &[u8; 32]) -> Result<(), ValidationError> {
         match self {
             Self::Inline { .. } => {
@@ -68,6 +114,12 @@ impl FileContent {
                 {
                     return Err(ValidationError::Record);
                 }
+            }
+            Self::Locations { .. } => {
+                if *digest != [0; 32] {
+                    return Err(ValidationError::Record);
+                }
+                self.locations(length)?;
             }
         }
         Ok(())
@@ -119,4 +171,42 @@ impl FileContent {
         }
         Ok(Some(decoded))
     }
+}
+
+fn validate_locations(locations: &[Location], length: u64) -> Result<(), ValidationError> {
+    let mut cursor = 0;
+    for location in locations {
+        if location.chunk_id.is_none()
+            || location.length == 0
+            || location.logical_length == 0
+            || location.logical_offset != cursor
+            || location.offset.checked_add(location.length).is_none()
+        {
+            return Err(ValidationError::Record);
+        }
+        cursor = cursor
+            .checked_add(location.logical_length)
+            .ok_or(ValidationError::Record)?;
+    }
+    if cursor != length {
+        return Err(ValidationError::Record);
+    }
+    Ok(())
+}
+
+fn validate_etag(etag: &str) -> Result<(), ValidationError> {
+    let (digest, count) = etag
+        .split_once('-')
+        .map_or((etag, None), |(digest, count)| (digest, Some(count)));
+    if digest.len() != 32
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || count.is_some_and(|count| {
+            count.is_empty() || count.starts_with('0') || count.parse::<u16>().map_or(true, |n| n == 0)
+        })
+    {
+        return Err(ValidationError::Record);
+    }
+    Ok(())
 }

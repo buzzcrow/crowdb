@@ -3,9 +3,9 @@
 
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{
-    encode_frame, encode_frame_regions, encode_frames, merge_adjacent_locations, parse_frame, ChunkLocation,
-    FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES,
-    MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame, encode_frame_regions, encode_frames, merge_adjacent_locations, parse_frame,
+    parse_frame_views, ChunkLocation, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES,
+    MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
 };
 
 const CHUNK: ChunkId = ChunkId { high: 7, low: 11 };
@@ -23,6 +23,55 @@ fn frame_matches_cross_language_vector() {
         parse_frame(&REPO_SMALL_VECTOR, CHUNK).unwrap().payload,
         &[1, 2, 3]
     );
+}
+
+#[test]
+fn split_frame_views_verify_without_assembling_payload() {
+    let payload = vec![0x6b; 1024];
+    let frame = encode_frame(FrameMagic::RepoSmallV1, CHUNK, &payload, 42).unwrap();
+    let boundaries = [3, 11, 127, frame.len() - 9, frame.len() - 2];
+    let mut views = Vec::new();
+    let mut start = 0;
+    for end in boundaries.into_iter().chain(std::iter::once(frame.len())) {
+        views.push(&frame[start..end]);
+        start = end;
+    }
+    let parsed = parse_frame_views(&views, CHUNK).unwrap();
+    assert_eq!(parsed.header.magic, FrameMagic::RepoSmallV1);
+    assert_eq!(parsed.physical_length, frame.len());
+
+    let mut corrupted = frame;
+    corrupted[127] ^= 1;
+    let mut start = 0;
+    let mut damaged = Vec::new();
+    for end in boundaries.into_iter().chain(std::iter::once(corrupted.len())) {
+        damaged.push(&corrupted[start..end]);
+        start = end;
+    }
+    assert_eq!(
+        parse_frame_views(&damaged, CHUNK).err(),
+        Some(FrameError::ChecksumMismatch)
+    );
+}
+
+#[test]
+fn frame_crc_matches_bitwise_reference_across_header_payload_and_chunk_id() {
+    for length in [0, 1, 17, 1024, MAX_FRAME_PAYLOAD_BYTES] {
+        let payload: Vec<u8> = (0..length)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect();
+        let frame = encode_frame(FrameMagic::RepoLargeV1, CHUNK, &payload, 42).unwrap();
+        let footer = frame.len() - FRAME_FOOTER_BYTES;
+        let mut crc = 0_u32;
+        for byte in frame[..footer].iter().chain(frame[footer + 4..].iter()) {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0x82F6_3B78 & (0_u32.wrapping_sub(crc & 1)));
+            }
+        }
+        assert_eq!(frame[footer..footer + 4], crc.to_le_bytes());
+        assert_eq!(parse_frame(&frame, CHUNK).unwrap().payload, payload);
+    }
 }
 
 #[test]

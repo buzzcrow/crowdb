@@ -1,26 +1,26 @@
 use crowdb_access_server::iceberg::CompleteSelection;
 
 #[test]
-fn complete_xml_accepts_only_ordered_sha256_parts() {
+fn complete_xml_accepts_ordered_part_etags() {
     let first = "01".repeat(32);
     let second = "ab".repeat(32);
     let xml = format!("<?xml version=\"1.0\"?><CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"{first}\"</ETag></Part><Part><PartNumber>10000</PartNumber><ETag>\"{second}\"</ETag></Part></CompleteMultipartUpload>");
     let selection = CompleteSelection::parse(xml.as_bytes()).unwrap();
     assert_eq!(selection.parts().len(), 2);
     assert_eq!(selection.parts()[0].number, 1);
-    assert_eq!(selection.parts()[0].digest, [1; 32]);
+    assert_eq!(selection.parts()[0].etag, first);
     assert_eq!(selection.parts()[1].number, 10_000);
-    assert_eq!(selection.parts()[1].digest, [0xab; 32]);
+    assert_eq!(selection.parts()[1].etag, second);
     let sdk_xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Part><ETag>\"{first}\"</ETag><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>");
     assert_eq!(
-        CompleteSelection::parse(sdk_xml.as_bytes()).unwrap().parts()[0].digest,
-        [1; 32]
+        CompleteSelection::parse(sdk_xml.as_bytes()).unwrap().parts()[0].etag,
+        first
     );
     for quote in ["&quot;", "&#34;", "&#x22;"] {
         let escaped = sdk_xml.replace(&format!("\"{first}\""), &format!("{quote}{first}{quote}"));
         assert_eq!(
-            CompleteSelection::parse(escaped.as_bytes()).unwrap().parts()[0].digest,
-            [1; 32]
+            CompleteSelection::parse(escaped.as_bytes()).unwrap().parts()[0].etag,
+            first
         );
     }
 }

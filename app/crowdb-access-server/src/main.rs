@@ -18,6 +18,8 @@ use crowdb_access_s3::metrics::{DependencyHealth, S3Health, S3Metrics};
 #[cfg(feature = "s3")]
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 #[cfg(feature = "s3")]
+use crowdb_access_server::config::{load_args, AccessConfig};
+#[cfg(feature = "s3")]
 use crowdb_access_server::credentials::CredentialAuthority;
 #[cfg(feature = "s3")]
 use crowdb_access_server::s3::{serve, ProductionS3Operations, S3Dispatcher, S3ServiceConfig};
@@ -25,6 +27,7 @@ use crowdb_access_server::s3::{serve, ProductionS3Operations, S3Dispatcher, S3Se
 use crowdb_access_server::storage::S3StorageClients;
 #[cfg(feature = "s3")]
 use crowdb_chunk_client::SmallWritePolicy;
+#[cfg(feature = "s3")]
 #[cfg(feature = "s3")]
 use crowdb_common::ec::EcScheme;
 #[cfg(feature = "s3")]
@@ -36,58 +39,73 @@ use tokio::net::TcpListener;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_writer(std::io::stderr).init();
     #[cfg(feature = "s3")]
+    let (access_config, remaining_args) = load_args(std::env::args().skip(1).collect())?;
+    #[cfg(feature = "s3")]
     if matches!(
-        std::env::args().nth(1).as_deref(),
+        remaining_args.first().map(String::as_str),
         Some("issue-user" | "ensure-user" | "lookup-user")
     ) {
-        return issue_user().await;
+        return issue_user(&remaining_args, &access_config).await;
     }
     #[cfg(feature = "s3")]
-    if let Ok(address) = std::env::var("CROWDB_S3_LISTEN") {
-        let management_seeds = management_seeds()?;
-        let tenant = TenantId::new(required_env("CROWDB_S3_TENANT")?.into_bytes())?;
+    if !remaining_args.is_empty() {
+        return Err("unexpected S3 server arguments".into());
+    }
+    #[cfg(feature = "s3")]
+    run_s3(&access_config).await?;
+    Ok(())
+}
+
+#[cfg(feature = "s3")]
+async fn run_s3(access_config: &AccessConfig) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(address) = access_config
+        .s3
+        .listen
+        .clone()
+        .or_else(|| std::env::var("CROWDB_S3_LISTEN").ok())
+    {
+        let management_seeds = if access_config.common.management_seeds.is_empty() {
+            management_seeds()?
+        } else {
+            access_config.common.management_seeds.clone()
+        };
+        let tenant_name = match &access_config.s3.tenant {
+            Some(name) => name.clone(),
+            None => required_env("CROWDB_S3_TENANT")?,
+        };
+        let tenant = TenantId::new(tenant_name.into_bytes())?;
         let master_key = MasterKey::from_hex(&required_env("CROWDB_S3_MASTER_KEY")?)?;
         let credential_cipher = Arc::new(CredentialCipher::new(&master_key));
         let continuation_key = credential_cipher.continuation_key().to_vec();
-        let small_write = SmallWritePolicy::default();
-        let storage = S3StorageClients::connect(management_seeds, 2, 2, small_write.clone()).await?;
+        let (ec_scheme, small_write, small_threshold) = s3_write_routing(access_config)?;
+        let storage = S3StorageClients::connect_with_read_policy(
+            management_seeds,
+            access_config.common.diskio_connections_per_endpoint,
+            access_config.common.diskio_rpc_workers,
+            small_write.clone(),
+            access_config.read.policy(),
+        )
+        .await?;
         let chunks = Arc::clone(&storage.chunks);
         let authority = Arc::new(CredentialAuthority::new(
             Arc::clone(&storage.control),
             Arc::clone(&credential_cipher),
         ));
-        let trusted_network = std::env::var("CROWDB_S3_TRUSTED_NETWORK").as_deref() == Ok("true");
-        let (authenticator, credential_refresh): (
-            Arc<dyn RequestAuthenticator>,
-            Option<tokio::task::JoinHandle<()>>,
-        ) = if trusted_network {
-            tracing::warn!(%address, "starting S3 with explicit trusted-network authentication bypass");
-            (Arc::new(TrustedNetworkAuthenticator::new()), None)
-        } else {
-            let cache = Arc::new(CredentialCache::new(90));
-            refresh_credentials(&authority, &cache).await?;
-            let refresh_authority = Arc::clone(&authority);
-            let refresh_cache = Arc::clone(&cache);
-            let task = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(30));
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    if let Err(error) = refresh_credentials(&refresh_authority, &refresh_cache).await {
-                        tracing::error!(%error, "S3 credential refresh failed; cache will fail closed when stale");
-                    }
-                }
-            });
-            let region = std::env::var("CROWDB_S3_REGION").unwrap_or_else(|_| "us-east-1".into());
-            (Arc::new(SigV4Verifier::new(cache, region, 900)), Some(task))
-        };
-        let mut service_config = S3ServiceConfig::basic(tenant, continuation_key, small_write.object_limit);
-        service_config.small_object_limit =
-            optional_usize("CROWDB_S3_SMALL_OBJECT_LIMIT")?.unwrap_or(service_config.small_object_limit);
-        configure_large_write(&mut service_config)?;
+        let (authenticator, credential_refresh, trusted_network) =
+            authenticate_s3(access_config, &address, &authority).await?;
+        let service_config = s3_service_config(
+            access_config,
+            tenant,
+            continuation_key,
+            small_threshold,
+            ec_scheme,
+        )?;
         let metrics = Arc::new(S3Metrics::default());
-        let cleanup_backlog_limit = optional_usize("CROWDB_S3_CLEANUP_BACKLOG_LIMIT")?
-            .map_or(10_000, |value| u64::try_from(value).unwrap_or(u64::MAX));
+        let cleanup_backlog_limit = configured_u64(
+            access_config.s3.cleanup_backlog_limit,
+            "CROWDB_S3_CLEANUP_BACKLOG_LIMIT",
+        )?
+        .unwrap_or(10_000);
         let health = Arc::new(S3Health::starting(cleanup_backlog_limit));
         health.set_metadata(DependencyHealth::Ready);
         health.set_chunks(DependencyHealth::Ready);
@@ -98,7 +116,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_metrics(Arc::clone(&metrics))
                 .with_health(Arc::clone(&health)),
         );
-        let native_budget = optional_usize("CROWDB_S3_NATIVE_BUDGET_BYTES")?.unwrap_or(256 * 1024 * 1024);
+        let native_budget = configured_usize(
+            access_config.s3.native_budget_bytes,
+            "CROWDB_S3_NATIVE_BUDGET_BYTES",
+        )?
+        .unwrap_or(256 * 1024 * 1024);
         let body_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
         let handler = Arc::new(
             S3Dispatcher::new(
@@ -130,36 +152,142 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(feature = "s3")]
-fn configure_large_write(config: &mut S3ServiceConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let ec_data = optional_usize("CROWDB_S3_EC_DATA")?.unwrap_or(config.large_write.ec_scheme.data_num);
-    let ec_code = optional_usize("CROWDB_S3_EC_CODE")?.unwrap_or(config.large_write.ec_scheme.code_num);
-    if ec_data == 0 || ec_code == 0 {
-        return Err("CROWDB S3 EC data and code counts must be nonzero".into());
+async fn authenticate_s3(
+    access: &AccessConfig,
+    address: &str,
+    authority: &Arc<CredentialAuthority>,
+) -> Result<
+    (
+        Arc<dyn RequestAuthenticator>,
+        Option<tokio::task::JoinHandle<()>>,
+        bool,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let trusted_network = access
+        .s3
+        .trusted_network
+        .unwrap_or(std::env::var("CROWDB_S3_TRUSTED_NETWORK").as_deref() == Ok("true"));
+    if trusted_network {
+        tracing::warn!(%address, "starting S3 with explicit trusted-network authentication bypass");
+        return Ok((Arc::new(TrustedNetworkAuthenticator::new()), None, true));
     }
-    config.large_write.ec_scheme = EcScheme::new(ec_data, ec_code);
-    if let Some(max_chunk_size) = optional_usize("CROWDB_S3_MAX_CHUNK_SIZE")? {
+    let cache = Arc::new(CredentialCache::new(90));
+    refresh_credentials(authority, &cache).await?;
+    let refresh_authority = Arc::clone(authority);
+    let refresh_cache = Arc::clone(&cache);
+    let task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = refresh_credentials(&refresh_authority, &refresh_cache).await {
+                tracing::error!(%error, "S3 credential refresh failed; cache will fail closed when stale");
+            }
+        }
+    });
+    let region = access
+        .s3
+        .region
+        .clone()
+        .or_else(|| std::env::var("CROWDB_S3_REGION").ok())
+        .unwrap_or_else(|| "us-east-1".into());
+    Ok((
+        Arc::new(SigV4Verifier::new(cache, region, 900)),
+        Some(task),
+        false,
+    ))
+}
+
+#[cfg(feature = "s3")]
+fn s3_service_config(
+    access: &AccessConfig,
+    tenant: TenantId,
+    continuation_key: Vec<u8>,
+    small_write_limit: usize,
+    ec_scheme: EcScheme,
+) -> Result<S3ServiceConfig, Box<dyn std::error::Error>> {
+    let mut config = S3ServiceConfig::basic(tenant, continuation_key, small_write_limit);
+    config.large_write.ec_scheme = ec_scheme;
+    if let Some(limit) = access.s3.list_scan_items {
+        config.list_scan_items = limit;
+    }
+    if let Some(limit) = access.s3.list_scan_bytes {
+        config.list_scan_bytes = limit;
+    }
+    if let Some(ttl) = access.s3.continuation_ttl_seconds {
+        config.continuation_ttl_seconds = ttl;
+    }
+    config.small_object_limit =
+        configured_usize(access.s3.small_object_limit, "CROWDB_S3_SMALL_OBJECT_LIMIT")?
+            .unwrap_or(config.small_object_limit)
+            .min(small_write_limit.saturating_sub(1));
+    configure_large_write(&mut config, access)?;
+    Ok(config)
+}
+
+#[cfg(feature = "s3")]
+fn configure_large_write(
+    config: &mut S3ServiceConfig,
+    access: &AccessConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Arc::make_mut(&mut config.large_write.client).read_buffer_size = access.small_write.disk_block_bytes;
+    if let Some(max_chunk_size) = configured_u64(access.s3.max_chunk_size, "CROWDB_S3_MAX_CHUNK_SIZE")? {
         if max_chunk_size == 0 {
             return Err("CROWDB S3 max chunk size must be nonzero".into());
         }
-        Arc::make_mut(&mut config.large_write.client).max_chunk_size =
-            u64::try_from(max_chunk_size).unwrap_or(u64::MAX);
+        Arc::make_mut(&mut config.large_write.client).max_chunk_size = max_chunk_size;
     }
     Ok(())
 }
 
 #[cfg(feature = "s3")]
-async fn issue_user() -> Result<(), Box<dyn std::error::Error>> {
-    let command = std::env::args().nth(1).ok_or("missing S3 user command")?;
-    let user = std::env::args()
-        .nth(2)
+fn s3_ec_scheme(access: &AccessConfig) -> Result<EcScheme, Box<dyn std::error::Error>> {
+    let ec_data =
+        configured_usize(access.s3.ec_data, "CROWDB_S3_EC_DATA")?.unwrap_or(access.small_write.ec_data);
+    let ec_code =
+        configured_usize(access.s3.ec_code, "CROWDB_S3_EC_CODE")?.unwrap_or(access.small_write.ec_code);
+    if ec_data == 0 || ec_data > 32 || ec_code == 0 {
+        return Err("CROWDB S3 EC data and code counts are invalid".into());
+    }
+    Ok(EcScheme::new(ec_data, ec_code))
+}
+
+#[cfg(feature = "s3")]
+fn s3_write_routing(
+    access: &AccessConfig,
+) -> Result<(EcScheme, SmallWritePolicy, usize), Box<dyn std::error::Error>> {
+    let ec_scheme = s3_ec_scheme(access)?;
+    let mut config = access.small_write.clone();
+    config.ec_data = ec_scheme.data_num;
+    config.ec_code = ec_scheme.code_num;
+    let policy = config.policy();
+    policy.validate()?;
+    let threshold = config.threshold_exclusive();
+    if threshold > policy.object_limit {
+        return Err("S3 small-object threshold exceeds the shared writer limit".into());
+    }
+    Ok((ec_scheme, policy, threshold))
+}
+
+#[cfg(feature = "s3")]
+async fn issue_user(args: &[String], access: &AccessConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let command = args.first().ok_or("missing S3 user command")?;
+    let user = args
+        .get(1)
         .filter(|value| !value.is_empty())
         .ok_or("usage: crowdb-access-server issue-user|ensure-user|lookup-user USER")?;
-    if std::env::args().nth(3).is_some() {
+    if args.len() != 2 {
         return Err("usage: crowdb-access-server issue-user|ensure-user|lookup-user USER".into());
     }
     let master_key = MasterKey::from_hex(&required_env("CROWDB_S3_MASTER_KEY")?)?;
     let cipher = Arc::new(CredentialCipher::new(&master_key));
-    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(management_seeds()?)));
+    let seeds = if access.common.management_seeds.is_empty() {
+        management_seeds()?
+    } else {
+        access.common.management_seeds.clone()
+    };
+    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds)));
     let authority = CredentialAuthority::new(control, cipher);
     let token = match command.as_str() {
         "ensure-user" => authority.ensure_user(user.as_bytes()).await?,
@@ -209,6 +337,30 @@ fn optional_usize(name: &str) -> Result<Option<usize>, Box<dyn std::error::Error
                 .map_err(|error| format!("{name} is invalid: {error}").into())
         })
         .transpose()
+}
+
+#[cfg(feature = "s3")]
+fn configured_usize(
+    configured: Option<usize>,
+    env_name: &str,
+) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+    match configured {
+        Some(value) => Ok(Some(value)),
+        None => optional_usize(env_name),
+    }
+}
+
+#[cfg(feature = "s3")]
+fn configured_u64(
+    configured: Option<u64>,
+    env_name: &str,
+) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+    match configured {
+        Some(value) => Ok(Some(value)),
+        None => {
+            optional_usize(env_name).map(|value| value.map(|value| u64::try_from(value).unwrap_or(u64::MAX)))
+        }
+    }
 }
 
 #[cfg(feature = "s3")]

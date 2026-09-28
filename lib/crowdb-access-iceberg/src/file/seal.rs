@@ -165,6 +165,7 @@ impl FileSealer {
                 read_puffin_metadata(self.store.clone(), record, 1024 * 1024, 1024 * 1024).await?;
                 Ok(Some(hint))
             }
+            ContentFormat::Opaque => Ok(None),
         }
     }
 }

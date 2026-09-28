@@ -123,6 +123,12 @@ impl std::fmt::Debug for Buffer {
 }
 
 impl Buffer {
+    /// Transfer a receive buffer out of its pool, preserving its allocation.
+    /// Returns false for pool types that cannot detach receive memory.
+    pub fn detach(&mut self) -> bool {
+        !self.handle.is_null() && unsafe { sys::crowdb_rpc_buffer_detach(self.handle) }
+    }
+
     /// Allocate a new buffer from the pool with the given capacity.
     /// Returns `None` if the pool is exhausted.
     pub fn alloc(pool: &BufferPool, capacity: u32) -> Option<Self> {
@@ -239,6 +245,12 @@ impl Drop for Buffer {
             unsafe { sys::crowdb_rpc_buffer_release(self.handle) };
             self.handle = ptr::null_mut();
         }
+    }
+}
+
+impl AsRef<[u8]> for Buffer {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes()
     }
 }
 

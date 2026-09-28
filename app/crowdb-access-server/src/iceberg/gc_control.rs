@@ -4,7 +4,7 @@ use crowdb_access_iceberg::{
     catalog::{
         CatalogContext, CatalogRepository, CatalogStore, ManagementPrivilege, RootState, RoutedCatalogStore,
     },
-    gc::{GcLimits, GcPin, GcRepository, GcTask, ReaderPins},
+    gc::{GcLimits, GcRepository, GcTask},
     key::{CatalogId, OperationId, TableId},
     operation::{ManagementAction, ManagementPhase},
     record::StorageRecord,
@@ -13,6 +13,7 @@ use crowdb_access_iceberg::{
 };
 
 use super::gc_runtime::GcRuntimeConfig;
+use crate::config::IcebergGcConfig;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -21,6 +22,7 @@ pub(super) async fn manage(
     store: Arc<RoutedCatalogStore>,
     authentication: &BearerAuthenticator,
     arguments: &[String],
+    gc_settings: &IcebergGcConfig,
 ) -> Result<(), BoxError> {
     let token = std::env::var("CROWDB_ICEBERG_TOKEN")?;
     let principal = authentication
@@ -29,10 +31,9 @@ pub(super) async fn manage(
     if principal.management == ManagementPrivilege::None {
         return Err("management privilege is required".into());
     }
-    let config = GcRuntimeConfig::from_env()?;
+    let config = GcRuntimeConfig::from_config(gc_settings)?;
     let limits = config.limits;
     let repository = GcRepository::new(store.clone());
-    let pins = ReaderPins::new(store.clone());
     match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["limits"] => {
             println!("{}", serde_json::json!({
@@ -74,13 +75,7 @@ pub(super) async fn manage(
             };
             show(&task);
         }
-        ["pin", identity, table] => {
-            pin_table(catalog, store.as_ref(), &pins, principal.name, identity, table).await?;
-        }
-        ["unpin", catalog_id, table, identity] => {
-            unpin_table(&pins, principal.name, catalog_id, table, identity).await?;
-        }
-        _ => return Err("usage: crowdb-iceberg gc limits | start-table UUID TABLE_ID | start-retired UUID CATALOG_ID EPOCH | inspect|pause|resume|retry CATALOG_ID TASK_ID | pin UUID TABLE_ID | unpin CATALOG_ID TABLE_ID PIN_ID".into()),
+        _ => return Err("usage: crowdb-iceberg gc limits | start-table UUID TABLE_ID | start-retired UUID CATALOG_ID EPOCH | inspect|pause|resume|retry CATALOG_ID TASK_ID".into()),
     }
     Ok(())
 }
@@ -151,59 +146,6 @@ async fn start_retired(
         .admit_retired(&clear, super::runtime::now_ms()?, limits)
         .await?;
     show(&task);
-    Ok(())
-}
-
-async fn pin_table(
-    catalog: &CatalogRepository,
-    store: &RoutedCatalogStore,
-    pins: &ReaderPins,
-    principal: &str,
-    identity: &str,
-    table: &str,
-) -> Result<(), BoxError> {
-    let (root, _) = catalog.status().await?;
-    if root.state != RootState::Ready {
-        return Err("catalog is not ready".into());
-    }
-    let table: TableId = table.parse()?;
-    let pin = GcPin {
-        context: root.context,
-        identity: identity.parse()?,
-        head: load_head(store, root.context.catalog, table).await?,
-        principal: principal.to_owned(),
-        expires_ms: 0,
-        released: false,
-        operator: true,
-        protects_uploads: true,
-    };
-    pins.acquire(&pin).await?;
-    println!(
-        "{}",
-        serde_json::json!({"pin": pin.identity.to_string(), "table": table.to_string()})
-    );
-    Ok(())
-}
-
-async fn unpin_table(
-    pins: &ReaderPins,
-    principal: &str,
-    catalog_id: &str,
-    table: &str,
-    identity: &str,
-) -> Result<(), BoxError> {
-    let catalog_id: CatalogId = catalog_id.parse()?;
-    let table: TableId = table.parse()?;
-    let identity: OperationId = identity.parse()?;
-    let pin = pins
-        .get(catalog_id, table, identity)
-        .await?
-        .ok_or("GC pin is missing")?;
-    if !pin.operator || pin.principal != principal {
-        return Err("operator pin is owned by another principal".into());
-    }
-    pins.release(&pin).await?;
-    println!("{}", serde_json::json!({"released": identity.to_string()}));
     Ok(())
 }
 

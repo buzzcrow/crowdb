@@ -35,7 +35,7 @@ fn content_md5_is_checked_before_publication() {
 
 #[test]
 fn signed_payload_sha256_is_checked_incrementally() {
-    let mut valid = SinglePartIntegrity::default();
+    let mut valid = SinglePartIntegrity::new(true);
     valid.update(&Bytes::from_static(b"abc"));
     assert!(valid
         .finish_validated_checksums(
@@ -44,7 +44,7 @@ fn signed_payload_sha256_is_checked_incrementally() {
         )
         .is_ok());
 
-    let mut mismatch = SinglePartIntegrity::default();
+    let mut mismatch = SinglePartIntegrity::new(true);
     mismatch.update(&Bytes::from_static(b"abc"));
     assert_eq!(
         mismatch.finish_validated_checksums(

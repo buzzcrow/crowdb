@@ -17,6 +17,7 @@ pub struct TreeReclaimCursor {
     pub owner: FileIdentity,
     pub frames: Vec<ReclaimFrame>,
     pub pending: Option<ChunkRoot>,
+    pub next_location: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,6 +47,7 @@ impl TreeReclaimCursor {
             },
             frames,
             pending: None,
+            next_location: 0,
         })
     }
 

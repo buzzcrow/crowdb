@@ -122,6 +122,7 @@ extern "C" {
     pub fn crowdb_rpc_buffer_write(buf: crowdb_rpc_buffer_t, data: *const u8, len: u32);
     pub fn crowdb_rpc_buffer_data(buf: crowdb_rpc_buffer_t) -> *const u8;
     pub fn crowdb_rpc_buffer_len(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_detach(buf: crowdb_rpc_buffer_t) -> bool;
     pub fn crowdb_rpc_buffer_ref(buf: crowdb_rpc_buffer_t) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_buffer_release(buf: crowdb_rpc_buffer_t);
     pub fn crowdb_rpc_buffer_create(data: *const u8, len: u32) -> crowdb_rpc_buffer_t;

@@ -16,9 +16,9 @@ use hyper::{Method, Request, Response, StatusCode};
 use tracing::Instrument;
 
 use super::{
-    error_response, full_body, measured_body, DeferredBodyReceiveProvider, HandlerFuture, ResponseBody,
-    S3HttpHandler, S3Operations,
+    error_response, full_body, measured_body, HandlerFuture, ResponseBody, S3HttpHandler, S3Operations,
 };
+use crate::http_receive::DeferredBodyReceiveProvider;
 
 pub struct S3Dispatcher {
     authenticator: Arc<dyn RequestAuthenticator>,

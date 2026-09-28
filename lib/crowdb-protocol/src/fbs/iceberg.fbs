@@ -171,6 +171,8 @@ table FBFileRecord {
     has_hint:bool;
     hint_offset:ulong;
     hint_length:ulong;
+    locations:[ubyte];
+    etag:string;
 }
 
 table FBFileMapping {
@@ -252,8 +254,11 @@ table FBMultipartPart {
     number:ushort;
     revision:ulong;
     owner:FBFileIdentity (required);
-    tree:FBFileTree (required);
+    tree:FBFileTree;
     modified_ms:ulong;
+    locations:[ubyte];
+    etag:string;
+    stream_length:ulong;
 }
 
 table FBMultipartCreditMutation {
@@ -426,6 +431,7 @@ table FBGcCandidate {
     next_root:ushort;
     frames:[FBGcFrame] (required);
     pending:FBFileChunkRoot;
+    next_location:ushort;
 }
 
 table FBFileWriteIntent {
@@ -451,18 +457,6 @@ table FBGcPage {
     entries:[FBGcEntry] (required);
 }
 
-table FBGcPin {
-    catalog:[ubyte] (required);
-    activation_epoch:ulong;
-    identity:[ubyte] (required);
-    head:FBTableHead (required);
-    principal:string (required);
-    expires_ms:ulong;
-    released:bool;
-    operator_pin:bool;
-    protects_uploads:bool;
-}
-
 table FBGcNode {
     continuation:FBPayloadReference;
     head:FBTableHead;
@@ -476,7 +470,7 @@ table FBGcNode {
     complete:bool;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcPin, FBGcNode, FBFileWriteIntent }
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent }
 
 table FBIcebergRecord {
     schema_version:ushort;

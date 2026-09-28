@@ -21,6 +21,25 @@ pub enum MultipartWorkError {
 }
 
 impl MultipartRepository {
+    /// Loads the durable Complete selection, including any streamed part snapshots.
+    /// # Errors
+    /// Rejects missing, corrupt or foreign selection payloads.
+    pub async fn load_selection(
+        &self,
+        session: &MultipartSession,
+    ) -> Result<MultipartSelection, CatalogError> {
+        session.validate()?;
+        let completion = session.completion.as_ref().ok_or(ValidationError::Record)?;
+        let bytes = PayloadStore::new(self.store.clone())
+            .get(&completion.selection)
+            .await?;
+        let selection = MultipartSelection::decode(&bytes)?;
+        if selection.count() != completion.selected_parts {
+            return Err(ValidationError::Record.into());
+        }
+        Ok(selection)
+    }
+
     /// Freezes a caller-selected part revision list; byte work verifies each selected part.
     /// # Errors
     /// Rejects expired sessions, unresolved mutations and invalid selection bounds.
@@ -38,7 +57,7 @@ impl MultipartRepository {
         if session.pending.is_some() {
             return Err(CatalogError::Busy);
         }
-        if selection.parts().len() > usize::from(session.part_count)
+        if (selection.snapshots().is_none() && selection.parts().len() > usize::from(session.part_count))
             || selection
                 .parts()
                 .iter()
@@ -103,7 +122,7 @@ impl MultipartRepository {
             .part(session, selected.number)
             .await?
             .ok_or(ValidationError::Record)?;
-        if part.revision != selected.revision || part.tree.digest != selected.digest {
+        if part.revision != selected.revision || part.selection_digest() != selected.digest {
             return Err(ValidationError::Record.into());
         }
         let progress = assembly
@@ -112,7 +131,7 @@ impl MultipartRepository {
                 &AssemblyPart {
                     ordinal: completion.progress.next_part,
                     owner: part.owner,
-                    tree: part.tree,
+                    tree: part.tree.ok_or(ValidationError::Record)?,
                 },
             )
             .await?;

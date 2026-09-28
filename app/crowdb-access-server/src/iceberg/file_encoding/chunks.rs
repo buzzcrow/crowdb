@@ -2,7 +2,7 @@ use crowdb_access_s3::auth::StreamingPayloadVerifier;
 use hyper::body::Bytes;
 use sha2::{Digest, Sha256};
 
-use super::{checksum::Checksum, FileEncodingError};
+use super::{checksum::Checksum, FileEncodingError, MAX_RECEIVE_FRAME_BYTES};
 
 enum State {
     Header,
@@ -44,7 +44,7 @@ impl Chunks {
             if let State::Data(remaining) = self.state {
                 let length = input
                     .len()
-                    .min(64 * 1024)
+                    .min(MAX_RECEIVE_FRAME_BYTES)
                     .min(usize::try_from(remaining).unwrap_or(usize::MAX));
                 let bytes = input.split_to(length);
                 self.hash.update(&bytes);

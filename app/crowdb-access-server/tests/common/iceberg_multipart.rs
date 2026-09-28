@@ -54,7 +54,8 @@ pub async fn verify_restart(stack: &mut TestIcebergStack, context: CatalogContex
         revision: 1,
         modified_ms: 101,
         owner,
-        tree: writer.finish().await.unwrap(),
+        tree: Some(writer.finish().await.unwrap()),
+        stream: None,
     };
     assert!(repository.reserve_part(&initial, &part, 101).await.unwrap());
     let recovery = MultipartRecovery::new(stack.store().await, blocks.clone(), 7, 8).unwrap();
@@ -66,7 +67,7 @@ pub async fn verify_restart(stack: &mut TestIcebergStack, context: CatalogContex
     let selection = MultipartSelection::new(vec![SelectedPart {
         number: 1,
         revision: 1,
-        digest: part.tree.digest,
+        digest: part.selection_digest(),
     }])
     .unwrap();
     assert!(repository

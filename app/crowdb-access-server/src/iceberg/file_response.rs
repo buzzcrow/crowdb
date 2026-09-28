@@ -110,7 +110,7 @@ impl MultipartResponses {
         let mut response = Response::new(Vec::new());
         response.headers_mut().insert(
             ETAG,
-            HeaderValue::from_str(&etag(part.tree.digest)).map_err(|_| FileResponseError::Invalid)?,
+            HeaderValue::from_str(&format!("\"{}\"", part.etag())).map_err(|_| FileResponseError::Invalid)?,
         );
         Ok(response)
     }
@@ -169,8 +169,8 @@ impl MultipartResponses {
                 "LastModified",
                 &timestamp.to_rfc3339_opts(SecondsFormat::Millis, true),
             );
-            element(&mut body, "ETag", &etag(part.tree.digest));
-            element(&mut body, "Size", &part.tree.length.to_string());
+            element(&mut body, "ETag", &format!("\"{}\"", part.etag()));
+            element(&mut body, "Size", &part.length().to_string());
             body.push_str("</Part>");
         }
         end(&mut body, "ListPartsResult");
@@ -191,20 +191,24 @@ impl MultipartResponses {
             || session.location != record.location
             || response_url.len() > 2048
             || !(response_url.starts_with("https://") || response_url.starts_with("http://"))
-            || session
-                .completion
-                .as_ref()
-                .and_then(|completion| completion.candidate.as_ref())
-                .map_or(true, |candidate| {
+            || session.completion.as_ref().map_or(true, |completion| {
+                if let Some(candidate) = &completion.candidate {
                     candidate.length != record.length || candidate.digest != record.digest
-                })
+                } else {
+                    completion.publication.is_none() || completion.progress.completed_bytes != record.length
+                }
+            })
         {
             return Err(FileResponseError::Invalid);
         }
         let mut body = start("CompleteMultipartUploadResult");
         element(&mut body, "Location", response_url);
         location_fields(&mut body, session);
-        element(&mut body, "ETag", &etag(record.digest));
+        let tag = record
+            .content
+            .etag()
+            .map_or_else(|| etag(record.digest), |value| format!("\"{value}\""));
+        element(&mut body, "ETag", &tag);
         end(&mut body, "CompleteMultipartUploadResult");
         Ok(xml(StatusCode::OK, body))
     }

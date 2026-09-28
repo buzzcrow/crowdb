@@ -77,8 +77,9 @@ and subprocess startup/shutdown, so feature changes and cold builds affect it.
 Counts are runner-reported cases, not assertions; ignored cases are excluded.
 Native Iceberg and Java/Rust/RCK SDK acceptance use release binaries, matching
 the published container profile. Component suites retain their default test
-profile. Debug native upload deadline failures are tracked for the R190 I/O
-review; successful release acceptance does not resolve that issue.
+profile. The focused debug native 100 MiB multipart upload, completion,
+restart, replay, and full read passed on 2026-09-29 in 54.40 s. Its previous
+10 s completion deadline failure did not recur after the streaming I/O changes.
 
 Status icons: ✅ = PASS, ⚠️ = PASS with ignored tests, ❌ = FAIL,
 ⏳ = measurement pending.

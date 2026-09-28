@@ -42,11 +42,12 @@ async fn setup() -> (file::TestFile, MultipartSession, Vec<MultipartPart>) {
                 file: FileId::random(),
                 ..session.owner
             },
-            tree: FileTree {
+            tree: Some(FileTree {
                 root: None,
                 length: 0,
                 digest: Sha256::digest([]).into(),
-            },
+            }),
+            stream: None,
         })
         .collect();
     fixture.store.values.rcu(|values| {

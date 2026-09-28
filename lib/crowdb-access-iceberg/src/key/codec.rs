@@ -44,7 +44,6 @@ pub enum CatalogScope {
     GcTask = 18,
     GcCandidate = 19,
     GcPage = 20,
-    GcPin = 21,
     GcNode = 22,
     GcPending = 23,
     GcClaim = 24,
@@ -194,7 +193,6 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         18 => Ok(CatalogScope::GcTask),
         19 => Ok(CatalogScope::GcCandidate),
         20 => Ok(CatalogScope::GcPage),
-        21 => Ok(CatalogScope::GcPin),
         22 => Ok(CatalogScope::GcNode),
         23 => Ok(CatalogScope::GcPending),
         24 => Ok(CatalogScope::GcClaim),
@@ -280,13 +278,6 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
                 return Err(ValidationError::Key);
             }
             super::OperationId::from_bytes(&suffix[..16]).map(|_| ())
-        }
-        CatalogScope::GcPin => {
-            if suffix.len() != 32 {
-                return Err(ValidationError::Key);
-            }
-            super::TableId::from_bytes(&suffix[..16])?;
-            super::OperationId::from_bytes(&suffix[16..]).map(|_| ())
         }
         CatalogScope::GcNode | CatalogScope::GcPending => {
             if suffix.len() != 32 {

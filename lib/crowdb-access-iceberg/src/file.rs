@@ -60,7 +60,7 @@ pub(crate) use location::validate_relative_key;
 pub use location::{FileLocation, TableLocation, MAX_OBJECT_KEY_BYTES};
 pub use multipart::{
     MultipartCompletion, MultipartLimits, MultipartPart, MultipartPartMutation, MultipartPhase,
-    MultipartSession,
+    MultipartSession, MultipartStreamPart,
 };
 pub use multipart_admission::{
     MultipartAdmissionLimits, MultipartAdmissionRecord, MultipartCredit, MultipartCreditAction,
@@ -73,7 +73,7 @@ pub use multipart_recovery::{
     MultipartRecoveryStore,
 };
 pub use multipart_repository::{MultipartRepository, MultipartWorkError};
-pub use multipart_selection::{MultipartSelection, SelectedPart};
+pub use multipart_selection::{MultipartSelection, SelectedPart, SelectedStreamPart};
 #[cfg(feature = "test-util")]
 pub use parquet::{
     read_parquet_integer_column_for_tests, read_parquet_nullable_integer_column_for_tests,

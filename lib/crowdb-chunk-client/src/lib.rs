@@ -53,7 +53,7 @@ pub use error::{IoError, ReadError, ReadResult, Result};
 pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus, FramedWriteBuffer};
 pub use metrics::{
     ChunkClientMetrics, LargeWriteBufferMetricsSnapshot, LargeWriteRepairMetricsSnapshot,
-    SmallWriteMetricsSnapshot,
+    ReadFlowMetricsSnapshot, SmallWriteMetricsSnapshot,
 };
 pub use negative_list::FailedDiskList;
 pub use reclamation::{reclaim_location, ReclaimOutcome};

@@ -9,6 +9,8 @@ mod checksum;
 mod chunks;
 mod content_md5;
 
+const MAX_RECEIVE_FRAME_BYTES: usize = 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum FileEncodingError {
     #[error("invalid upload framing")]
@@ -28,11 +30,12 @@ pub struct FileUploadBody<Input> {
     buffered: Bytes,
     chunks: Option<chunks::Chunks>,
     checksum: Option<checksum::Checksum>,
-    content_md5: Option<content_md5::ContentMd5>,
+    content_md5: content_md5::ContentMd5,
     length: Option<u64>,
     wire_length: Option<u64>,
     wire_bytes: u64,
     max_wire_bytes: u64,
+    has_integrity: bool,
     done: bool,
     failure: Option<FileEncodingError>,
 }
@@ -52,7 +55,7 @@ impl<Input> FileUploadBody<Input> {
         if wire_length.is_some_and(|length| length > max_wire_bytes) {
             return Err(FileEncodingError::Length);
         }
-        let (length, chunks, checksum) = if let Some(verifier) = verifier {
+        let (length, chunks, checksum, streaming_integrity) = if let Some(verifier) = verifier {
             if header(headers, "content-encoding")? != Some("aws-chunked") {
                 return Err(FileEncodingError::Framing);
             }
@@ -65,10 +68,12 @@ impl<Input> FileUploadBody<Input> {
                 return Err(FileEncodingError::Framing);
             }
             let checksum = checksum::Checksum::from_headers(headers, verifier.has_trailer())?;
+            let streaming_integrity = verifier.is_signed() || checksum.is_some();
             (
                 Some(length),
                 Some(chunks::Chunks::new(verifier, checksum, length)),
                 None,
+                streaming_integrity,
             )
         } else {
             if headers.contains_key("x-amz-decoded-content-length")
@@ -82,18 +87,22 @@ impl<Input> FileUploadBody<Input> {
                 wire_length,
                 None,
                 checksum::Checksum::from_headers(headers, false)?,
+                false,
             )
         };
+        let content_md5 = content_md5::ContentMd5::from_headers(headers)?;
+        let has_integrity = streaming_integrity || checksum.is_some() || content_md5.is_declared();
         Ok(Self {
             input,
             buffered: Bytes::new(),
             chunks,
             checksum,
-            content_md5: content_md5::ContentMd5::from_headers(headers)?,
+            content_md5,
             length,
             wire_length,
             wire_bytes: 0,
             max_wire_bytes,
+            has_integrity,
             done: false,
             failure: None,
         })
@@ -102,6 +111,21 @@ impl<Input> FileUploadBody<Input> {
     #[must_use]
     pub const fn decoded_length(&self) -> Option<u64> {
         self.length
+    }
+
+    #[must_use]
+    pub const fn has_integrity(&self) -> bool {
+        self.has_integrity
+    }
+
+    #[must_use]
+    pub const fn native_handoff_eligible(&self) -> bool {
+        self.chunks.is_none() && self.length.is_some()
+    }
+
+    #[must_use]
+    pub fn md5(&self) -> [u8; 16] {
+        self.content_md5.digest()
     }
 
     pub(super) const fn failure(&self) -> Option<FileEncodingError> {
@@ -118,9 +142,7 @@ impl<Input> FileUploadBody<Input> {
         if let Some(checksum) = &self.checksum {
             checksum.verify()?;
         }
-        if let Some(checksum) = &self.content_md5 {
-            checksum.verify()?;
-        }
+        self.content_md5.verify()?;
         Ok(())
     }
 }
@@ -134,7 +156,9 @@ impl<Input: Body<Data = Bytes> + Unpin> FileUploadBody<Input> {
                         return Poll::Ready(Ok(Some(bytes)));
                     }
                 } else {
-                    let bytes = self.buffered.split_to(self.buffered.len().min(64 * 1024));
+                    let bytes = self
+                        .buffered
+                        .split_to(self.buffered.len().min(MAX_RECEIVE_FRAME_BYTES));
                     if let Some(checksum) = &mut self.checksum {
                         checksum.update(&bytes);
                     }
@@ -179,9 +203,7 @@ impl<Input: Body<Data = Bytes> + Unpin> Body for FileUploadBody<Input> {
         }
         match std::task::ready!(body.poll_data(context)) {
             Ok(Some(bytes)) => {
-                if let Some(checksum) = &mut body.content_md5 {
-                    checksum.update(&bytes);
-                }
+                body.content_md5.update(&bytes);
                 Poll::Ready(Some(Ok(Frame::data(bytes))))
             }
             Ok(None) => {

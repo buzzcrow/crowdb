@@ -60,11 +60,12 @@ fn part(session: &MultipartSession, number: u16, modified_ms: u64) -> MultipartP
             file: FileId::random(),
             ..session.owner
         },
-        tree: FileTree {
+        tree: Some(FileTree {
             root: None,
             length: 0,
             digest: Sha256::digest([]).into(),
-        },
+        }),
+        stream: None,
     }
 }
 
@@ -161,7 +162,7 @@ fn complete_uses_only_a_published_matching_record() {
     let candidate = FileTree {
         root: match &record.content {
             FileContent::Chunks { root } => root.clone(),
-            FileContent::Inline { .. } => None,
+            FileContent::Inline { .. } | FileContent::Locations { .. } => None,
         },
         length: record.length,
         digest: record.digest,

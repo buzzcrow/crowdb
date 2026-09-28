@@ -22,8 +22,8 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{encode_frame, FrameMagic};
-use tokio::sync::Semaphore;
+use crowdb_protocol::frame::{encode_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use tokio::sync::{Notify, Semaphore};
 
 const KIB: usize = 1024;
 const SHARD: usize = 64 * KIB;
@@ -32,6 +32,37 @@ struct MemoryDiskIo {
     shards: Vec<(DiskId, Bytes)>,
     failed: Vec<DiskId>,
     reads: Arc<AtomicUsize>,
+}
+
+struct BlockingDiskIo {
+    inner: MemoryDiskIo,
+    release_first: Arc<Notify>,
+    started: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl DiskWriter for BlockingDiskIo {
+    async fn write(&self, _seg: &Segment, _unit_bytes: u64, _data: Bytes) -> Result<()> {
+        unreachable!("reader test does not write")
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        _seg: &Segment,
+        _unit_bytes: u64,
+        _byte_offset: u64,
+        _data: Bytes,
+    ) -> Result<()> {
+        unreachable!("reader test does not write")
+    }
+
+    async fn read(&self, segment: &Segment, unit_bytes: u64, offset: u64, length: u32) -> Result<Bytes> {
+        self.started.fetch_add(1, Ordering::AcqRel);
+        if offset == 0 {
+            self.release_first.notified().await;
+        }
+        self.inner.read(segment, unit_bytes, offset, length).await
+    }
 }
 
 struct SequenceAllocator {
@@ -402,8 +433,396 @@ async fn object_reader_discards_bytes_from_an_expired_layout() {
         logical_length: 4,
         ..Location::default()
     };
-    assert_eq!(reader.read_object(&[location]).await.unwrap(), b"new!".as_slice());
+    assert_eq!(
+        reader.read_object(&[location]).await.unwrap().concat(),
+        b"new!".as_slice()
+    );
     assert_eq!(allocator.queries.load(Ordering::Acquire), 2);
+    assert_eq!(reader.flow_metrics_snapshot().location_normalizations, 1);
+}
+
+#[tokio::test]
+async fn framed_read_stream_keeps_whole_frame_under_small_window_setting() {
+    let id = ChunkId { high: 13, low: 37 };
+    let segment = segment(1);
+    let payload = b"abcdefghij";
+    let frame = Bytes::from(encode_frame(FrameMagic::RepoLargeV1, id, payload, 1).unwrap());
+    let chunk = Chunk {
+        id: Some(id),
+        state: ChunkState::Sealed as i32,
+        capacity: 1,
+        sealed_length: 1,
+        strips: vec![ChunkStrip {
+            unit_kb: 1,
+            capacity: 1,
+            sealed_length: 1,
+            sealed_ts_ms: 1,
+            strip_type: StripType::Mirror as i32,
+            strip: Some(Strip::MirrorStrip(MirrorStrip {
+                segments: vec![segment],
+            })),
+            ..ChunkStrip::default()
+        }],
+        ..Chunk::default()
+    };
+    let allocator = Arc::new(SequenceAllocator {
+        queries: AtomicUsize::new(0),
+        first: chunk.clone(),
+        current: Mutex::new(chunk),
+        first_layout_validity_ms: 1_000,
+        full_reply: None,
+        full_calls: AtomicUsize::new(0),
+    });
+    let disk_io = Arc::new(MemoryDiskIo {
+        shards: vec![(segment.disk_id.unwrap(), frame.clone())],
+        failed: Vec::new(),
+        reads: Arc::new(AtomicUsize::new(0)),
+    });
+    let reader = ChunkReader::new(
+        allocator.clone(),
+        disk_io,
+        ChunkReadPolicy {
+            stream_window_bytes: 4,
+            ..ChunkReadPolicy::default()
+        },
+    )
+    .unwrap();
+    let location = Location {
+        chunk_id: Some(id),
+        length: frame.len() as u64,
+        logical_length: payload.len() as u64,
+        ..Location::default()
+    };
+    let mut stream = reader.read_stream(&[location]).unwrap();
+    assert_eq!(stream.next_chunk().await.unwrap().unwrap(), payload.as_slice());
+    assert!(stream.next_chunk().await.is_none());
+    assert_eq!(allocator.queries.load(Ordering::Relaxed), 1);
+    let metrics = reader.flow_metrics_snapshot();
+    assert_eq!(metrics.location_normalizations, 1);
+    assert_eq!(metrics.locations_examined, 1);
+    assert_eq!(metrics.range_locations_examined, 1);
+    assert_eq!(metrics.stream_windows, 1);
+    assert_eq!(metrics.layout_queries, 1);
+}
+
+#[tokio::test]
+async fn read_stream_selects_only_locations_overlapping_each_window() {
+    let id = ChunkId { high: 19, low: 41 };
+    let segment = segment(1);
+    let mut physical = Vec::new();
+    let mut locations = Vec::new();
+    for (index, payload) in [b"abcd", b"efgh", b"ijkl"].into_iter().enumerate() {
+        let frame = encode_frame(FrameMagic::RepoLargeV1, id, payload, 1).unwrap();
+        locations.push(Location {
+            chunk_id: Some(id),
+            offset: physical.len() as u64,
+            length: frame.len() as u64,
+            logical_offset: (index * 4) as u64,
+            logical_length: 4,
+        });
+        physical.extend_from_slice(&frame);
+    }
+    let chunk = Chunk {
+        id: Some(id),
+        state: ChunkState::Sealed as i32,
+        capacity: 1,
+        sealed_length: 1,
+        strips: vec![ChunkStrip {
+            unit_kb: 1,
+            capacity: 1,
+            sealed_length: 1,
+            sealed_ts_ms: 1,
+            strip_type: StripType::Mirror as i32,
+            strip: Some(Strip::MirrorStrip(MirrorStrip {
+                segments: vec![segment],
+            })),
+            ..ChunkStrip::default()
+        }],
+        ..Chunk::default()
+    };
+    let allocator = Arc::new(SequenceAllocator {
+        queries: AtomicUsize::new(0),
+        first: chunk.clone(),
+        current: Mutex::new(chunk),
+        first_layout_validity_ms: 1_000,
+        full_reply: None,
+        full_calls: AtomicUsize::new(0),
+    });
+    let disk_io = Arc::new(MemoryDiskIo {
+        shards: vec![(segment.disk_id.unwrap(), Bytes::from(physical))],
+        failed: Vec::new(),
+        reads: Arc::new(AtomicUsize::new(0)),
+    });
+    let reader = ChunkReader::new(
+        allocator.clone(),
+        disk_io,
+        ChunkReadPolicy {
+            stream_window_bytes: 4,
+            ..ChunkReadPolicy::default()
+        },
+    )
+    .unwrap();
+    let mut stream = reader.read_stream(&locations).unwrap();
+    for expected in [b"abcd".as_slice(), b"efgh", b"ijkl"] {
+        assert_eq!(stream.next_chunk().await.unwrap().unwrap(), expected);
+    }
+    assert!(stream.next_chunk().await.is_none());
+    let metrics = reader.flow_metrics_snapshot();
+    assert_eq!(metrics.location_normalizations, 1);
+    assert_eq!(metrics.locations_examined, 3);
+    assert_eq!(metrics.range_locations_examined, 3);
+    assert_eq!(metrics.stream_windows, 3);
+    assert_eq!(metrics.layout_queries, 1);
+}
+
+#[tokio::test]
+async fn stream_waits_for_first_result_and_retains_three_slots_until_consumer_releases_buffers() {
+    let id = ChunkId { high: 23, low: 51 };
+    let segment = segment(1);
+    let mut physical = Vec::new();
+    let mut locations = Vec::new();
+    for (index, payload) in [b"aaaa", b"bbbb", b"cccc", b"dddd"].into_iter().enumerate() {
+        let frame = encode_frame(FrameMagic::RepoLargeV1, id, payload, 1).unwrap();
+        locations.push(Location {
+            chunk_id: Some(id),
+            offset: physical.len() as u64,
+            length: frame.len() as u64,
+            logical_offset: (index * 4) as u64,
+            logical_length: 4,
+        });
+        physical.extend_from_slice(&frame);
+    }
+    let chunk = Chunk {
+        id: Some(id),
+        state: ChunkState::Sealed as i32,
+        capacity: 1,
+        sealed_length: 1,
+        strips: vec![ChunkStrip {
+            unit_kb: 1,
+            capacity: 1,
+            sealed_length: 1,
+            sealed_ts_ms: 1,
+            strip_type: StripType::Mirror as i32,
+            strip: Some(Strip::MirrorStrip(MirrorStrip {
+                segments: vec![segment],
+            })),
+            ..ChunkStrip::default()
+        }],
+        ..Chunk::default()
+    };
+    let allocator = Arc::new(SequenceAllocator {
+        queries: AtomicUsize::new(0),
+        first: chunk.clone(),
+        current: Mutex::new(chunk),
+        first_layout_validity_ms: 1_000,
+        full_reply: None,
+        full_calls: AtomicUsize::new(0),
+    });
+    let started = Arc::new(AtomicUsize::new(0));
+    let release_first = Arc::new(Notify::new());
+    let disk_io = Arc::new(BlockingDiskIo {
+        inner: MemoryDiskIo {
+            shards: vec![(segment.disk_id.unwrap(), Bytes::from(physical))],
+            failed: Vec::new(),
+            reads: Arc::new(AtomicUsize::new(0)),
+        },
+        release_first: Arc::clone(&release_first),
+        started: Arc::clone(&started),
+    });
+    let reader = ChunkReader::new(
+        allocator,
+        disk_io,
+        ChunkReadPolicy {
+            stream_slots: 3,
+            stream_window_bytes: 4,
+            layout_safety_margin: Duration::ZERO,
+            ..ChunkReadPolicy::default()
+        },
+    )
+    .unwrap();
+    let mut stream = reader.read_stream(&locations).unwrap();
+    let waiting = tokio::spawn(async move {
+        let first = stream.next_chunk().await.unwrap().unwrap();
+        (stream, first)
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while started.load(Ordering::Acquire) < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(started.load(Ordering::Acquire), 3);
+    release_first.notify_one();
+    let (mut stream, first) = waiting.await.unwrap();
+    assert_eq!(&first[..], b"aaaa");
+    let second = stream.next_chunk().await.unwrap().unwrap();
+    let third = stream.next_chunk().await.unwrap().unwrap();
+    assert_eq!(&second[..], b"bbbb");
+    assert_eq!(&third[..], b"cccc");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), stream.next_chunk())
+            .await
+            .is_err()
+    );
+    assert_eq!(started.load(Ordering::Acquire), 3);
+    drop(first);
+    assert_eq!(stream.next_chunk().await.unwrap().unwrap(), b"dddd".as_slice());
+    assert!(stream.next_chunk().await.is_none());
+}
+
+#[tokio::test]
+async fn global_read_budget_remains_charged_while_http_keeps_frame_views() {
+    let id = ChunkId { high: 29, low: 57 };
+    let mut segment = segment(1);
+    segment.unit_count = 2;
+    let payload = vec![0x5a; MAX_FRAME_PAYLOAD_BYTES];
+    let frame = encode_frame(FrameMagic::RepoLargeV1, id, &payload, 1).unwrap();
+    assert_eq!(frame.len(), MAX_FRAME_BYTES);
+    let physical = Bytes::from(frame.repeat(32));
+    let chunk = Chunk {
+        id: Some(id),
+        state: ChunkState::Sealed as i32,
+        capacity: 2048,
+        sealed_length: 2048,
+        strips: vec![ChunkStrip {
+            unit_kb: 1024,
+            capacity: 2048,
+            sealed_length: 2048,
+            sealed_ts_ms: 1,
+            strip_type: StripType::Mirror as i32,
+            strip: Some(Strip::MirrorStrip(MirrorStrip {
+                segments: vec![segment],
+            })),
+            ..ChunkStrip::default()
+        }],
+        ..Chunk::default()
+    };
+    let allocator = Arc::new(SequenceAllocator {
+        queries: AtomicUsize::new(0),
+        first: chunk.clone(),
+        current: Mutex::new(chunk),
+        first_layout_validity_ms: 1_000,
+        full_reply: None,
+        full_calls: AtomicUsize::new(0),
+    });
+    let reads = Arc::new(AtomicUsize::new(0));
+    let disk_io = Arc::new(MemoryDiskIo {
+        shards: vec![(segment.disk_id.unwrap(), physical)],
+        failed: Vec::new(),
+        reads: Arc::clone(&reads),
+    });
+    let reader = ChunkReader::new(
+        allocator,
+        disk_io,
+        ChunkReadPolicy {
+            stream_slots: 3,
+            global_stream_bytes: 1024 * 1024,
+            layout_safety_margin: Duration::ZERO,
+            ..ChunkReadPolicy::default()
+        },
+    )
+    .unwrap();
+    let location = Location {
+        chunk_id: Some(id),
+        length: 32 * MAX_FRAME_BYTES as u64,
+        logical_length: 32 * MAX_FRAME_PAYLOAD_BYTES as u64,
+        ..Location::default()
+    };
+    let mut stream = reader.read_stream(&[location]).unwrap();
+    let mut retained = Vec::new();
+    for _ in 0..16 {
+        retained.push(stream.next_chunk().await.unwrap().unwrap());
+    }
+    assert_eq!(reads.load(Ordering::Acquire), 1);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), stream.next_chunk())
+            .await
+            .is_err()
+    );
+    drop(retained);
+    assert_eq!(stream.next_chunk().await.unwrap().unwrap(), payload.as_slice());
+    assert_eq!(reads.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
+async fn frame_crossing_physical_parts_returns_two_original_payload_views() {
+    let id = ChunkId { high: 31, low: 59 };
+    let first_segment = segment(1);
+    let second_segment = segment(2);
+    let payload = b"abcdefghijklmnopqrst";
+    let frame = encode_frame(FrameMagic::RepoSmallV1, id, payload, 1).unwrap();
+    let frame_offset = 1000_usize;
+    let first_length = 1024 - frame_offset;
+    let mut first_data = vec![0; 1024];
+    first_data[frame_offset..].copy_from_slice(&frame[..first_length]);
+    let first_data = Bytes::from(first_data);
+    let second_data = Bytes::from(frame[first_length..].to_vec());
+    let strips = [first_segment, second_segment]
+        .into_iter()
+        .enumerate()
+        .map(|(index, segment)| ChunkStrip {
+            strip_sequence: u32::try_from(index).unwrap(),
+            chunk_offset: u32::try_from(index).unwrap(),
+            unit_kb: 1,
+            capacity: 1,
+            sealed_length: 1,
+            sealed_ts_ms: 1,
+            strip_type: StripType::Mirror as i32,
+            strip: Some(Strip::MirrorStrip(MirrorStrip {
+                segments: vec![segment],
+            })),
+            ..ChunkStrip::default()
+        })
+        .collect();
+    let chunk = Chunk {
+        id: Some(id),
+        state: ChunkState::Sealed as i32,
+        capacity: 2,
+        sealed_length: 2,
+        strips,
+        ..Chunk::default()
+    };
+    let allocator = Arc::new(SequenceAllocator {
+        queries: AtomicUsize::new(0),
+        first: chunk.clone(),
+        current: Mutex::new(chunk),
+        first_layout_validity_ms: 1_000,
+        full_reply: None,
+        full_calls: AtomicUsize::new(0),
+    });
+    let disk_io = Arc::new(MemoryDiskIo {
+        shards: vec![
+            (first_segment.disk_id.unwrap(), first_data.clone()),
+            (second_segment.disk_id.unwrap(), second_data.clone()),
+        ],
+        failed: Vec::new(),
+        reads: Arc::new(AtomicUsize::new(0)),
+    });
+    let reader = ChunkReader::new(
+        allocator,
+        disk_io,
+        ChunkReadPolicy {
+            layout_safety_margin: Duration::ZERO,
+            ..ChunkReadPolicy::default()
+        },
+    )
+    .unwrap();
+    let location = Location {
+        chunk_id: Some(id),
+        offset: frame_offset as u64,
+        length: frame.len() as u64,
+        logical_length: payload.len() as u64,
+        ..Location::default()
+    };
+    let views = reader
+        .read_range(&[location], 0, payload.len() as u64)
+        .await
+        .unwrap();
+    assert_eq!(views.concat(), payload);
+    assert_eq!(views.len(), 2);
+    assert_eq!(views[0].as_ptr(), first_data.slice(frame_offset + 14..).as_ptr());
+    assert_eq!(views[1].as_ptr(), second_data.as_ptr());
 }
 
 #[tokio::test]
@@ -456,7 +875,10 @@ async fn framed_mirror_crc_failure_uses_a_verified_fallback() {
         logical_length: payload.len() as u64,
         ..Location::default()
     };
-    assert_eq!(reader.read_object(&[location]).await.unwrap(), payload.as_slice());
+    assert_eq!(
+        reader.read_object(&[location]).await.unwrap().concat(),
+        payload.as_slice()
+    );
     assert!(allocator.queries.load(Ordering::Acquire) >= 2);
     assert_eq!(
         allocator.current.lock().unwrap().strips[0].unavailable_segments,
@@ -531,8 +953,8 @@ async fn marked_ec_fragment_shares_one_full_recovery_future() {
         reader.read_range(std::slice::from_ref(&location), 0, SHARD as u64),
         reader.read_range(std::slice::from_ref(&location), 0, SHARD as u64)
     );
-    assert_eq!(first.unwrap(), data[..SHARD]);
-    assert_eq!(second.unwrap(), data[..SHARD]);
+    assert_eq!(first.unwrap().concat(), data[..SHARD]);
+    assert_eq!(second.unwrap().concat(), data[..SHARD]);
     assert_eq!(allocator.full_calls.load(Ordering::Acquire), 1);
 
     let bounded = ChunkReader::new(
@@ -545,7 +967,11 @@ async fn marked_ec_fragment_shares_one_full_recovery_future() {
     )
     .unwrap();
     assert_eq!(
-        bounded.read_range(&[location], 0, SHARD as u64).await.unwrap(),
+        bounded
+            .read_range(&[location], 0, SHARD as u64)
+            .await
+            .unwrap()
+            .concat(),
         data[..SHARD]
     );
     assert_eq!(allocator.full_calls.load(Ordering::Acquire), 1);

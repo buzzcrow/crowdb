@@ -51,7 +51,8 @@ async fn bounded_sweeps_settle_abandoned_part_mutations_then_expire_without_dele
             revision: 1,
             modified_ms: 101,
             owner,
-            tree: writer.finish().await.unwrap(),
+            tree: Some(writer.finish().await.unwrap()),
+            stream: None,
         };
         assert!(repository.reserve_part(&session, &part, 101).await.unwrap());
         uploads.push((session, part));
@@ -110,7 +111,8 @@ async fn recovery_advances_one_byte_window_per_visit_and_reports_unpublished_sea
         revision: 1,
         modified_ms: 101,
         owner,
-        tree: writer.finish().await.unwrap(),
+        tree: Some(writer.finish().await.unwrap()),
+        stream: None,
     };
     repository.reserve_part(&initial, &part, 101).await.unwrap();
     let pending = repository
@@ -127,7 +129,7 @@ async fn recovery_advances_one_byte_window_per_visit_and_reports_unpublished_sea
     let selection = MultipartSelection::new(vec![SelectedPart {
         number: 1,
         revision: 1,
-        digest: part.tree.digest,
+        digest: part.selection_digest(),
     }])
     .unwrap();
     repository

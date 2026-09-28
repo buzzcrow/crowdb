@@ -32,7 +32,7 @@ use hyper::body::Bytes;
 use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const TEST_COUNT: usize = 17;
+const TEST_COUNT: usize = 18;
 const BOTO3_CASES: &[&str] = &[
     "test_signed_raw_http_wire_contract",
     "test_independent_frontends_share_one_namespace",
@@ -42,6 +42,7 @@ const BOTO3_CASES: &[&str] = &[
     "test_slow_response_reader_keeps_full_object_consistent",
     "test_basic_bucket_object_matrix",
     "test_fragmentation_and_storage_boundaries",
+    "test_ordinary_put_size_matrix",
 ];
 
 struct AccessServerProcess {
@@ -454,10 +455,19 @@ fn assert_native_write_metrics(listen: &str) {
     assert!(native_body_bytes > 0);
     assert!(metric_value(&exported, "crowdb_s3_large_write_framed_owners_total") > 0);
     assert!(metric_value(&exported, "crowdb_s3_large_write_framed_views_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_small_write_completed_total") > 0);
     assert_eq!(
         metric_value(&exported, "crowdb_s3_large_write_payload_copy_operations_total"),
         0
     );
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_location_normalizations_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_range_locations_examined_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_stream_windows_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_layout_queries_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_layout_query_wait_ns_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_strip_read_wait_ns_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_range_read_wait_ns_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_chunk_read_frame_decode_wait_ns_total") > 0);
 }
 
 fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
@@ -525,7 +535,6 @@ fn start_access_server(
         .env("CROWDB_S3_TENANT", "boto3-e2e")
         .env("CROWDB_S3_MASTER_KEY", MASTER_KEY)
         .env("CROWDB_S3_REGION", "us-east-1")
-        .env("CROWDB_S3_SMALL_OBJECT_LIMIT", "0")
         .env("CROWDB_S3_EC_DATA", "2")
         .env("CROWDB_S3_EC_CODE", "1")
         .env("CROWDB_S3_NATIVE_BUDGET_BYTES", (1024 * 1024).to_string())
@@ -563,6 +572,9 @@ fn run_boto3_case(method: &str, context: &Boto3CaseContext<'_>) {
         context.access_server.log_content(),
         context.chunk_kv.log_content(),
     );
+    if method == "test_ordinary_put_size_matrix" {
+        print!("{}", String::from_utf8_lossy(&python.stdout));
+    }
 }
 
 fn run_restart_phase(phase: &str, listen: &str, access_key: &str, secret_key: &str) {
@@ -669,14 +681,14 @@ async fn run_direct_chunk_benchmark(seeds: &[String], artifacts_dir: &Path) {
                         .await
                         .expect("direct chunk read");
                     let get_ns = started.elapsed().as_nanos();
-                    assert_eq!(read, payload);
+                    assert_eq!(read.concat(), payload);
                     let started = Instant::now();
                     let range = chunks
                         .read_range(&result.locations, 0, 4096)
                         .await
                         .expect("direct chunk range read");
                     let range_ns = started.elapsed().as_nanos();
-                    assert_eq!(range, payload.slice(..4096));
+                    assert_eq!(range.concat(), payload.slice(..4096));
                     json!({
                         "size": size,
                         "concurrency": concurrency,

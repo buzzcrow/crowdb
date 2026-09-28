@@ -18,7 +18,7 @@ pub(super) fn encode<'buffer>(
     let file_id = builder.create_vector(record.file.as_bytes());
     let location = builder.create_string(&record.location.to_string());
     let digest = builder.create_vector(&record.digest);
-    let (storage, inline_bytes, root) = match &record.content {
+    let (storage, inline_bytes, root, locations, etag) = match &record.content {
         FileContent::Inline { codec, bytes } => (
             match codec {
                 InlineCodec::Raw => 0,
@@ -26,8 +26,23 @@ pub(super) fn encode<'buffer>(
             },
             Some(builder.create_vector(bytes)),
             None,
+            None,
+            None,
         ),
-        FileContent::Chunks { root } => (2, None, root.as_ref().map(|root| encode_root(builder, root))),
+        FileContent::Chunks { root } => (
+            2,
+            None,
+            root.as_ref().map(|root| encode_root(builder, root)),
+            None,
+            None,
+        ),
+        FileContent::Locations { bytes, etag } => (
+            3,
+            None,
+            None,
+            Some(builder.create_vector(bytes)),
+            Some(builder.create_string(etag)),
+        ),
     };
     Ok(FBFileRecord::create(
         builder,
@@ -44,13 +59,21 @@ pub(super) fn encode<'buffer>(
             has_hint: record.hint.is_some(),
             hint_offset: record.hint.map_or(0, |hint| hint.offset),
             hint_length: record.hint.map_or(0, |hint| hint.length),
+            locations,
+            etag,
         },
     ))
 }
 
 pub(super) fn decode(value: FBFileRecord<'_>) -> Result<FileRecord, ValidationError> {
-    let content = match (value.storage(), value.inline_bytes(), value.root()) {
-        (codec @ (0 | 1), Some(bytes), None) => FileContent::Inline {
+    let content = match (
+        value.storage(),
+        value.inline_bytes(),
+        value.root(),
+        value.locations(),
+        value.etag(),
+    ) {
+        (codec @ (0 | 1), Some(bytes), None, None, None) => FileContent::Inline {
             codec: if codec == 0 {
                 InlineCodec::Raw
             } else {
@@ -58,8 +81,12 @@ pub(super) fn decode(value: FBFileRecord<'_>) -> Result<FileRecord, ValidationEr
             },
             bytes: bytes.bytes().to_vec(),
         },
-        (2, None, root) => FileContent::Chunks {
+        (2, None, root, None, None) => FileContent::Chunks {
             root: root.map(decode_root).transpose()?,
+        },
+        (3, None, None, Some(locations), Some(etag)) => FileContent::Locations {
+            bytes: locations.bytes().to_vec(),
+            etag: etag.to_owned(),
         },
         _ => return Err(ValidationError::Record),
     };
@@ -84,6 +111,7 @@ pub(super) fn decode(value: FBFileRecord<'_>) -> Result<FileRecord, ValidationEr
             2 => ContentFormat::Parquet,
             3 => ContentFormat::Orc,
             4 => ContentFormat::Puffin,
+            5 => ContentFormat::Opaque,
             _ => return Err(ValidationError::Record),
         },
         length: value.length(),

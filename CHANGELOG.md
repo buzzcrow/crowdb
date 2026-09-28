@@ -35,5 +35,5 @@ The intended image is `crowdb/crowdb-iceberg:v0.1.0-dev`; no published digest is
 recorded yet. The GUI is not ready for this container. Multi-node deployment,
 production hardening and data-format upgrades are outside this release.
 
-See the [container guide](doc/user-manual/docker-single-node-user-guide.md) for
-supported startup, persistence, credentials and recovery behavior.
+See the container deployment files for supported startup, persistence,
+credentials and recovery behavior.

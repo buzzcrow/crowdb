@@ -31,9 +31,28 @@ pub enum FileIoError {
 
 #[async_trait]
 pub trait FileBlockStore: Send + Sync {
+    fn stream_client(&self) -> Option<&ChunkIoClient> {
+        None
+    }
+
+    async fn read_locations(
+        &self,
+        _locations: &[Location],
+        _start: u64,
+        _end: u64,
+    ) -> Result<Vec<u8>, FileIoError> {
+        Err(FileIoError::Bounds)
+    }
+
     async fn put(&self, owner: FileIdentity, height: u8, bytes: &[u8]) -> Result<ChunkRoot, FileIoError>;
     async fn read(&self, root: &ChunkRoot) -> Result<Vec<u8>, FileIoError>;
     async fn reclaim(&self, _root: &ChunkRoot) -> Result<crowdb_chunk_client::ReclaimOutcome, FileIoError> {
+        Ok(crowdb_chunk_client::ReclaimOutcome::Deferred)
+    }
+    async fn reclaim_location(
+        &self,
+        _location: &Location,
+    ) -> Result<crowdb_chunk_client::ReclaimOutcome, FileIoError> {
         Ok(crowdb_chunk_client::ReclaimOutcome::Deferred)
     }
 }
@@ -53,6 +72,27 @@ impl NativeFileBlocks {
 
 #[async_trait]
 impl FileBlockStore for NativeFileBlocks {
+    async fn reclaim_location(
+        &self,
+        location: &Location,
+    ) -> Result<crowdb_chunk_client::ReclaimOutcome, FileIoError> {
+        let (allocator, _) = self.client.storage_parts();
+        Ok(crowdb_chunk_client::reclaim_location(allocator.as_ref(), location).await?)
+    }
+
+    fn stream_client(&self) -> Option<&ChunkIoClient> {
+        Some(&self.client)
+    }
+
+    async fn read_locations(
+        &self,
+        locations: &[Location],
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<u8>, FileIoError> {
+        Ok(self.client.read_range(locations, start, end).await?.concat())
+    }
+
     async fn reclaim(&self, root: &ChunkRoot) -> Result<crowdb_chunk_client::ReclaimOutcome, FileIoError> {
         root.validate()?;
         let location = Location {
@@ -116,9 +156,9 @@ impl FileBlockStore for NativeFileBlocks {
             logical_offset: root.logical_offset,
             logical_length: root.logical_length,
         };
-        let bytes = self.client.read_object(&[location]).await?;
+        let bytes = self.client.read_object(&[location]).await?.concat();
         verify_block(root, &bytes)?;
-        Ok(bytes.to_vec())
+        Ok(bytes)
     }
 }
 

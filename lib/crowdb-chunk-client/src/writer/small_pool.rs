@@ -25,6 +25,7 @@ pub(crate) struct PendingObject {
     pub route_hash: u64,
     pub route: Arc<PipelineRoute>,
     pub fragments: Vec<Bytes>,
+    pub stream: Option<mpsc::Receiver<Bytes>>,
     pub len: usize,
     pub enqueued_at: Instant,
     pub completion: oneshot::Sender<Result<Vec<Location>>>,
@@ -53,6 +54,24 @@ impl RouteCharge {
         self.bytes = self.bytes.saturating_add(bytes);
         self.route.used_bytes.fetch_add(bytes, Ordering::Relaxed);
         self.metrics.reserved_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn try_reserve(&mut self, bytes: usize) -> bool {
+        let bytes = bytes as u64;
+        if self
+            .route
+            .used_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes)
+                    .filter(|next| *next <= self.route.capacity_bytes)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.bytes += bytes;
+        self.metrics.reserved_bytes.fetch_add(bytes, Ordering::Relaxed);
+        true
     }
 
     fn rebind(&mut self, route: Arc<PipelineRoute>) {
