@@ -14,6 +14,26 @@ pub enum MultipartPhase {
     Conflicted,
 }
 
+/// Protocol-neutral admission bounds for a durable multipart upload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MultipartBounds {
+    pub max_parts: u16,
+    pub max_part_bytes: u64,
+    pub max_object_bytes: u64,
+    pub max_staged_bytes: u64,
+}
+
+impl MultipartBounds {
+    #[must_use]
+    pub const fn valid(self) -> bool {
+        self.max_parts > 0
+            && self.max_parts <= 10_000
+            && self.max_part_bytes > 0
+            && self.max_part_bytes <= self.max_object_bytes
+            && self.max_object_bytes <= self.max_staged_bytes
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SelectedPart {
     pub number: u16,

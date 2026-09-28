@@ -4,7 +4,7 @@
 //! Versioned durable S3 multipart session and part values.
 
 use bincode::Options as _;
-use crowdb_access_multipart::{validate_selected_parts, MultipartComposer, SelectedPart};
+use crowdb_access_multipart::{validate_selected_parts, MultipartBounds, MultipartComposer, SelectedPart};
 use crowdb_protocol::chunkdb::rpc::Location;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -99,11 +99,13 @@ impl MultipartSessionRecord {
             || self.revision == 0
             || self.created_ms >= self.expires_ms
             || self.content_type.len() > MAX_CONTENT_TYPE_BYTES
-            || self.max_parts == 0
-            || self.max_parts > 10_000
-            || self.max_part_bytes == 0
-            || self.max_part_bytes > self.max_object_bytes
-            || self.max_object_bytes > self.max_staged_bytes
+            || !(MultipartBounds {
+                max_parts: self.max_parts,
+                max_part_bytes: self.max_part_bytes,
+                max_object_bytes: self.max_object_bytes,
+                max_staged_bytes: self.max_staged_bytes,
+            })
+            .valid()
             || self.part_count > self.max_parts
             || self.staged_bytes > self.max_staged_bytes
         {

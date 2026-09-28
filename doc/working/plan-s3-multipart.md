@@ -22,9 +22,10 @@ Iceberg multipart path.
 - [~] **Durable transition core**: isolate session/part states, replacement
   generations, completion selection, abort and recovery transitions from
   Iceberg catalog-specific keys and records. Keep store CAS and namespace
-  adaptation in each protocol. Shared phase vocabulary, selection validation,
-  accounting and location composition are now used by both adapters; storage
-  CAS and durable record layouts remain protocol-specific. Files: shared
+  adaptation in each protocol. Shared phase vocabulary, admission bounds,
+  selection validation, accounting and location composition are now used by
+  both adapters; storage CAS and durable record layouts remain protocol-specific.
+  Files: shared
   multipart crate, Iceberg file repository, S3 metadata store.
 
 ## S3 adapter and HTTP

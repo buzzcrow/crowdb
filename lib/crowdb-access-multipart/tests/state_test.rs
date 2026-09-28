@@ -2,7 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_access_multipart::{
-    reserve_part_accounting, validate_selected_parts, PartAccounting, SelectedPart, StateError,
+    reserve_part_accounting, validate_selected_parts, MultipartBounds, PartAccounting, SelectedPart,
+    StateError,
 };
 
 fn selected(number: u16, revision: u64) -> SelectedPart {
@@ -11,6 +12,32 @@ fn selected(number: u16, revision: u64) -> SelectedPart {
         revision,
         digest: [1; 32],
     }
+}
+
+#[test]
+fn both_protocols_share_the_same_multipart_admission_bounds() {
+    let valid = MultipartBounds {
+        max_parts: 10_000,
+        max_part_bytes: 10,
+        max_object_bytes: 100,
+        max_staged_bytes: 200,
+    };
+    assert!(valid.valid());
+    assert!(!MultipartBounds {
+        max_parts: 10_001,
+        ..valid
+    }
+    .valid());
+    assert!(!MultipartBounds {
+        max_part_bytes: 101,
+        ..valid
+    }
+    .valid());
+    assert!(!MultipartBounds {
+        max_staged_bytes: 99,
+        ..valid
+    }
+    .valid());
 }
 
 #[test]
