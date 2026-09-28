@@ -180,6 +180,11 @@ while keeping secrets in the environment.
   Iceberg listener accepted Complete replay and returned the full verified
   object. The focused end-to-end test passed with a 128 MiB request grant;
   the ordinary 16 MiB test grant correctly rejects a 100 MiB full GET.
+- The native publication crash matrix now uses the streamed Chunk client through
+  its fault-injection wrapper. Every PUT and MPU catalog write boundary passed
+  before/after listener loss and replay. Immutable PUT retries compare the
+  saved MD5 ETag and length, so a retry that allocated a different chunk still
+  resolves to the first published file; different ETags remain conflicts.
 
 ## Files
 

@@ -12,6 +12,7 @@ use crowdb_access_iceberg::{
     namespace::{ChildScan, NamespaceStore},
     record::StorageRecord,
 };
+use crowdb_chunk_client::ChunkIoClient;
 use crowdb_chunk_kv_client::MultiScanPage;
 use crowdb_protocol::chunk_kv::ClientRequestId;
 
@@ -115,6 +116,10 @@ pub struct TestCommitBlocks {
 
 #[async_trait]
 impl FileBlockStore for TestCommitBlocks {
+    fn stream_client(&self) -> Option<&ChunkIoClient> {
+        self.inner.stream_client()
+    }
+
     async fn put(&self, owner: FileIdentity, height: u8, bytes: &[u8]) -> Result<ChunkRoot, FileIoError> {
         let index = self.boundary.before("file-block").await;
         let result = self.inner.put(owner, height, bytes).await;

@@ -202,7 +202,7 @@ fn compatible(existing: FileRecord, candidate: &FileRecord) -> Result<FileRecord
         || existing.length != candidate.length
         || existing.kind != candidate.kind
         || existing.format != candidate.format
-        || (existing.content.etag().is_some() && existing.content != candidate.content)
+        || existing.content.etag() != candidate.content.etag()
     {
         return Err(CatalogError::Conflict);
     }
