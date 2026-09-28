@@ -5,10 +5,11 @@
 
 ## Status
 
-Deferred by user decision until the Parquet catalog path is functional. ORC is a
-standard Iceberg file format, but server-side ORC decoding is not a prerequisite
-for implementing the REST Catalog. Initial selected-file validation rejects ORC
-explicitly rather than representing an unchecked file as validated.
+Retained by user decision as an independent, unimplemented ORC follow-up. The
+Parquet catalog path is complete. R189 owns container client and engine workflows
+and does not absorb this requirement; ORC does not block the container or client
+ecosystem acceptance. Selected-file validation continues to reject ORC explicitly
+rather than representing an unchecked file as validated.
 
 ## Problem
 

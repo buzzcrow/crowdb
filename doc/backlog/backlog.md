@@ -70,9 +70,10 @@ Caches, selected ORC and container engine workflows remain separate.
   cache manager, qualified entries, internal-RPC invalidation, and TTL safety nets.
 
 - **[R186](R186-access-iceberg-orc-validation.md)** — selected ORC validation —
-  Area: access server / Iceberg — **Deferred until the Parquet catalog path is
-  functional.** Add bounded canonical ORC schema, row-count and delete validation
-  with official-client fixtures; not a prerequisite for the initial catalog.
+  Area: access server / Iceberg — **Independent follow-up retained by user
+  decision; not absorbed by R189.** Add bounded canonical ORC schema, row-count
+  and delete validation with official-client fixtures. The Parquet catalog is
+  complete; ORC does not block container or client-ecosystem acceptance.
 - **[R189](R189-access-iceberg-container-ecosystem.md)** — container client and
   engine workflows — Area: Iceberg / clients / deployment — **Deferred until
   R187 is publish-ready.** Verify Python dataframe, local SQL, distributed
