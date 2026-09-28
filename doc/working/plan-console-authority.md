@@ -8,9 +8,8 @@ Upstream: [R188](../backlog/R188-console-group0-authority.md).
 Goal: make Group 0 the shared CLI/Web authority while retaining only process
 and launch inputs locally.
 
-Status: paused at the verified bootstrap-publication checkpoint by user request
-to prioritize the single-node image and merge preparation. Remaining tasks below
-are retained for resumption; this requirement is not complete.
+Status: active after the single-node CI repair. The remaining authority,
+configuration, documentation and crash-diagnostics tasks below are pending.
 
 ## Registration and acceptance failures
 
@@ -91,7 +90,7 @@ are retained for resumption; this requirement is not complete.
   Three-service lifecycle regressions and the complete CLI suite, fmt and
   clippy pass. Logs: `/tmp/crowdb-chunk-launch-*.log`. Removal of legacy
   startup/restore paths remains coupled to bootstrap cutover below.
-- [ ] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
+- [~] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
   parser/writer, inline SSH secrets, topology restoration and fixtures after
   the launch lifecycle and replay-safe bootstrap paths are wired. Preserve
   bootstrap intent independently until verified cutover. Update CLI commands,
@@ -146,6 +145,10 @@ is paused; it does not block the single-node image requirement.
   `container/single-node-container/{Dockerfile,entrypoint.sh,tests/**}`,
   `container/crowdb-monitor/src/**`,
   `container/single-node-container/README.md`.
+  The single-node README now states the host collector boundary and identifies
+  Apport, systemd-coredump and Docker Desktop lookup paths without promising a
+  volume dump. This host reports an Apport pipe pattern and core ulimit 0.
+  Volume retention, exact-build symbols and disposable-host acceptance remain.
 ## Documentation and completion
 
 - [ ] **Bare-metal documentation**: migrate verified KV, chunk and access
