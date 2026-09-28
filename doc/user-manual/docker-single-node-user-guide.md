@@ -156,7 +156,9 @@ alone does not guarantee a dump.
 
 - File patterns use the process's filesystem namespace; relative paths use its
   working directory. The destination must be writable.
-- Ubuntu Apport commonly collects on the host under `/var/crash`.
+- Ubuntu Apport can reject container crashes when its container forwarding
+  support is absent. This image does not include an Apport agent; do not assume
+  a report will appear under the host's `/var/crash`.
 - systemd-coredump uses the host journal and usually `/var/lib/systemd/coredump`;
   inspect with `coredumpctl` on the host.
 - Docker Desktop uses its Linux VM's collector policy.

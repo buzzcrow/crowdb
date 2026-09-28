@@ -423,7 +423,11 @@ docker exec crowdb-iceberg crowdb-monitor readiness</code></pre>
 </ul>
 <p>  working directory. The destination must be writable.</p>
 <ul>
-<li>Ubuntu Apport commonly collects on the host under <code>/var/crash</code>.</li>
+<li>Ubuntu Apport can reject container crashes when its container forwarding</li>
+</ul>
+<p>  support is absent. This image does not include an Apport agent; do not assume</p>
+<p>  a report will appear under the host's <code>/var/crash</code>.</p>
+<ul>
 <li>systemd-coredump uses the host journal and usually <code>/var/lib/systemd/coredump</code>;</li>
 </ul>
 <p>  inspect with <code>coredumpctl</code> on the host.</p>
