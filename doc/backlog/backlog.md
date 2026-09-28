@@ -263,9 +263,11 @@ must be deleted — see the workflow's Post-merge cleanup section.
 - **Server Tests intermittent strip lookup:** The CI log for
   `small_object_writer_e2e::eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread`
   failed at `location strip`, while the exact test and its 16-test suite pass
-  locally. Preserve the failing run's runtime-server logs and artifact to
-  identify the first divergent state before changing the assertion or retry
-  policy.
+  locally. CI run `36449749925` completed its "Upload test logs on failure"
+  step, but the run artifact list contains only `docker-preview-1`; the
+  `runtime-server` artifact is absent. Preserve runtime logs on the next
+  failure to identify the first divergent state before changing the assertion
+  or retry policy.
 - **R188 hardware display data:** Group 0 rack and node values hold IDs and
   status but not the console's rack name, node host or SSH settings. The
   authority cutover must define where shared display names live and keep
