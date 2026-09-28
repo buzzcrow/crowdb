@@ -262,8 +262,9 @@ must be deleted — see the workflow's Post-merge cleanup section.
   Bounded volume retention and source-line symbolization remain unverified.
 - **Server Tests intermittent strip lookup:** The CI log for
   `small_object_writer_e2e::eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread`
-  failed at `location strip`, while the exact test and its 16-test suite pass
-  locally. CI run `36449749925` completed its "Upload test logs on failure"
+  failed at `location strip`, while the exact test, its 16-test suite, and the
+  full `test-server` task all pass locally at default test concurrency. CI run
+  `36449749925` completed its "Upload test logs on failure"
   step, but the run artifact list contains only `docker-preview-1`; the
   `runtime-server` artifact is absent. Preserve runtime logs on the next
   failure to identify the first divergent state before changing the assertion
