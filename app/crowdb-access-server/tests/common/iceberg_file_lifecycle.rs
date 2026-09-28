@@ -29,18 +29,6 @@ pub async fn run() {
     let authentication =
         BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
     let issuer = FileGrantIssuer::new(authentication.namespace_token_key(), 900_000).unwrap();
-    value(
-        rest(
-            &endpoint,
-            Method::POST,
-            "/v1/namespaces",
-            "w",
-            Some(json!({"namespace":["analytics"]})),
-        )
-        .await,
-        200,
-    )
-    .await;
     let created = create(&endpoint).await;
     let table = location(&created);
     let first_grant = refresh(&endpoint, NAME, "w", &issuer, context).await;
