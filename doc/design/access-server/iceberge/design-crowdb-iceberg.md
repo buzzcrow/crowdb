@@ -252,22 +252,27 @@ bytes. Dot traversal, leading slash, backslash, controls, query and fragment
 delimiters are rejected rather than normalized. HTTP percent decoding belongs
 only at the transport boundary, not in stored S3-shaped locations.
 
-Native file records bind FileId to exact location, kind, format, canonical length
-and SHA-256 digest. Eligible metadata stores at most 16 KiB inline; bounded LZ4
+Native file records bind FileId to exact location, kind, format and canonical length.
+Legacy tree and inline records also bind a whole-file SHA-256 digest; streamed
+records bind a bounded array of complete Chunk locations and an HTTP ETag, and
+rely on verified 64-KiB storage frames rather than a whole-file digest. Eligible
+metadata stores at most 16 KiB inline; bounded LZ4
 compression considers at most 64 KiB original input, and decoding verifies the
-canonical length and digest. Other file kinds retain a fixed-size chunk root,
-never a growing location vector. Hints are non-authoritative and out-of-bounds
+canonical length and digest. Location vectors are validated for exact logical
+coverage and bounded by the record limit. Hints are non-authoritative and out-of-bounds
 hints are ignored. The publication primitive stages an immutable authority before
 the exact-location CAS; equal-content retries return the selected FileId, while
 conflicts retain losing candidates without overwriting or physical deletion.
 An SDK upload supplies a path and bytes, not the eventual Iceberg data/delete
-use. Sealing validates physical container bytes and records ambiguous Avro,
-Parquet, ORC and Puffin uses as unbound. Selected metadata and manifests must
-validate declared uses against these canonical records before table publication.
+use. FileIO treats client-supplied bytes as opaque. It verifies the declared
+transport checksum and durable frame writes before publishing the descriptor;
+format interpretation belongs to the client or to a CROWDB component that
+constructs those bytes. Selected metadata and manifests validate their declared
+uses during table publication.
 The isolated native HTTP surface exposes signed immutable object reads/writes
 and multipart operations, but no general S3 bucket authority or file DELETE.
 
-Chunk-backed files use bounded leaf blocks and immutable chunk-resident directory
+Legacy chunk-backed files use bounded leaf blocks and immutable chunk-resident directory
 pages, with at most 256 children per page and eight directory levels. Each page
 binds its catalog, table and file identity, child heights and covered byte count.
 The writer retains only one partial leaf and bounded per-level frontiers. Native
@@ -289,7 +294,7 @@ coverage. SHA-256 compression uses RustCrypto; versioned digest checkpoints reta
 only chaining state, byte length and a partial block. They are trusted-storage
 recovery records, not client authentication assertions. Failed checkpoint writes
 poison the current writer without invalidating earlier durable checkpoints.
-Native block writes persist an exact physical-range ownership intent in the
+Legacy native block writes persist an exact physical-range ownership intent in the
 catalog before DiskIO. A shared-writer callback receives the assigned location;
 uncertain catalog writes are read back before the physical batch proceeds.
 This ledger also covers process loss before file publication and checkpoints
@@ -318,19 +323,29 @@ immutable before/after session references; policy-bound sequence receipts make
 create and terminal release recoverable without double accounting. Released
 receipts remain in terminal sessions. These logical credits are not physical disk
 reclamation or accounting for retained orphan bytes.
-The native multipart repository reserves one part mutation in the session before
+The legacy tree multipart repository reserves one part mutation in the session before
 changing its part authority. A bounded before/after snapshot and monotonically
 increasing revisions make the write and fence release recoverable across servers.
 Counts and current staged bytes are reserved once at the session CAS. Abort cannot
 bypass an unresolved mutation; stale helpers cannot restore an older part. Abort
 retains parts and completion evidence rather than deleting physical storage.
-Completion freezes an ordered part-number/revision/digest selection in immutable
+Legacy completion freezes an ordered part-number/revision/digest selection in immutable
 payload pages, then changes the session phase by CAS to fence part replacement.
 Selections are independently bounded to 10,000 entries and 420,007 encoded bytes.
 Each completion step verifies that bounded selection and one selected part before
 copying a bounded byte window and publishing its checkpoint by session CAS. Lost
 replies reload progress without appending selected bytes twice. Assembled bytes
 remain unexposed until semantic sealing and immutable location publication.
+Streamed UploadPart writes one part key by CAS without changing the session for
+each part. Create caps part count by the reserved staged-byte ceiling divided
+by the per-part byte ceiling. Complete freezes an ordered selection with each
+part's exact location bytes, length and MD5 ETag in bounded immutable payload
+pages. A later replacement cannot change that selection. Completion composes
+logical offsets across the selected locations and derives the multipart ETag
+from the ordered raw part MD5 values; it does not read part data or assemble a
+new chunk. Session phase CAS freezes publication against later selections. The
+final file descriptor becomes visible through the immutable location publication
+protocol.
 Foreground and recovery drivers use the same native-block-aligned byte window
 below the one-MiB assembly ceiling. Equal windows prevent systematic CAS losses
 to a smaller competing recovery step; alignment avoids checkpoint-only tiny leaves.
@@ -369,12 +384,15 @@ number. Current-session checks bracket each scan; concurrent mutations invalidat
 the page rather than mixing pending counters with old part records. Expired or
 terminal sessions and malformed storage pages are not reported as successful lists.
 
-Native HTTP upload staging holds an independent concurrency
-credit, slices each received frame into bounded writes and awaits storage before pulling more
-input. Declared/actual byte limits, exact content length and optional signed SHA-256
-are checked before returning a tree. Failed or cancelled uploads retain orphan
-blocks without publishing file authority. This transport adapter does not infer
-semantic file kind, authorize grants or accept unchecked checksum trailers.
+Native HTTP upload staging holds an independent concurrency credit and bounded
+1-MiB receive owners. A body below 1 MiB enters its write pipeline in one push;
+larger bodies push each filled owner while the next owner receives. The Chunk
+writer frames data at 64 KiB and chooses shared chunks only below the configured
+fraction of one strip's data capacity. Unknown-length bodies choose a dedicated
+chunk. PUT and UploadPart require a verified request checksum or signed payload;
+SHA-256 is calculated only when declared. Durable completion and exact length
+precede metadata publication. Failed or cancelled uploads leave unpublished
+allocations for orphan scanning without exposing partial file authority.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner
@@ -542,7 +560,7 @@ Physical reclamation follows a proof that no live metadata, snapshot, reference,
 lease, or retained operation can reach the file. General S3 deletion and
 lifecycle rules cannot reclaim Iceberg-owned data.
 
-The reclamation proof binds current and pinned historical metadata to their
+The reclamation proof binds current and retained historical metadata to their
 captured heads. Its immutable traversal stack and compressed binary file-ID index
 use content-addressed payload pages. A task CAS publishes the pending stack and
 mark root together; a missing page is an error, including during a nonmembership
@@ -564,19 +582,19 @@ authorizes deletion. Committed files remain readable when new chunk allocation
 fails. Progress resumes after capacity is restored through the normal storage
 flow. Shared-chunk ranges remain pending while range deletion is unsupported.
 
-Metadata readers, direct FileIO, file publication and both published and staged
-credentials persist pins before rechecking their authority. Pin expiry includes
-the applicable persisted request and clock-skew bounds. Once a file's canonical
+Metadata readers, direct FileIO, file publication and credentials recheck their
+authority without writing request-level pins. Physical reclamation observes a
+minimum retention interval that covers admitted request lifetimes. Once a file's canonical
 deletion intent has started, ordinary resolution and publication reject it even
 if physical range reclamation is deferred. Legacy live tasks are retired without
 further deletion, releasing an owned table fence. Retained and deferred
 candidates remain durable work for later inactive passes.
 
-An already authorized FileIO GET or HEAD can pin a tombstoned table while its
-credential remains valid. The pin is persisted before the exact head is
-rechecked; a concurrent transition to `Reclaiming` rejects admission. Uploads
-and new table credentials still require a Ready table. Logical drop therefore
-does not invalidate retained file reads or bypass the physical deletion fence.
+An already authorized FileIO GET or HEAD can continue within the configured
+retention interval after a logical deletion. A concurrent transition to
+`Reclaiming` rejects new admission. Uploads and new table credentials require
+a Ready table. Logical drop preserves admitted file reads until their bounded
+response lifetime ends.
 
 Retired catalog recovery scans system retry and management ledgers before file
 deletion and after the final file rescan. Pending or retained bindings stop the
@@ -588,6 +606,12 @@ candidates. Assembly checkpoints have separate claims and a durable frontier-roo
 index. Abandoned frontiers are authenticated before traversal; a conflicted final
 tree is traversed once instead of revisiting its shared frontier. Published
 sessions reclaim only the checkpoint block, preserving the assembled data tree.
+Streamed file and part candidates instead reclaim their exact Chunk location
+ranges after retention. A published selected part remains owned by the immutable
+file descriptor; part cleanup does not reclaim it a second time. Allocations
+abandoned before a file or part descriptor is published have no per-chunk catalog
+intent and remain for ChunkDB's orphan scanner to discover after checking
+published descriptors, frozen selections and active writers.
 Each physical step rechecks the terminal session and retention. The checkpoint
 block is deleted after its children, and session cleanup requires its completed
 claim. Block intents are swept after tree candidates, preserving reachable owners
