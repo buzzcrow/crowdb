@@ -277,17 +277,3 @@ is paused; it does not block the single-node image requirement.
   collector/export and exact-build source-line symbolization acceptance through
   `pixi run test-monitor` and `pixi run test-single-node-container`.
 - Style: `pixi run rs-fmt-check` and `pixi run rs-lint`.
-
-## Open Questions
-
-- **Crash collection and symbols:** the current host routes `core_pattern` to
-  Apport. A container-local file directory/ulimit cannot override that policy,
-  and changing the host-wide collector is outside container implementation.
-  Choose acceptance on a disposable Linux host with file-based core collection,
-  or certify and document a host-collector export workflow. Source-line symbol
-  distribution also needs a choice: bundle compressed CROWDB line tables and
-  adjust the measured image-size ceiling, or publish exact-build debug symbols
-  separately while retaining runtime function names. The existing all-dependency
-  experiment increased monitor size substantially; neither complete-image option
-  has yet been measured. Bounded volume retention and end-to-end source-line
-  symbolization remain incomplete, not claimed acceptance.

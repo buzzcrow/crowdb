@@ -257,7 +257,9 @@ must be deleted — see the workflow's Post-merge cleanup section.
   with file-based collection or a verified host-collector export workflow.
   Exact-build source-line symbols also need a distribution choice: compressed
   line tables in the image with a measured size increase, or separate
-  exact-build debug symbols. Retention and symbolization remain unverified.
+  exact-build debug symbols. The all-dependency symbol experiment enlarged the
+  monitor substantially; a complete-image measurement remains pending.
+  Bounded volume retention and source-line symbolization remain unverified.
 - **Server Tests intermittent strip lookup:** The CI log for
   `small_object_writer_e2e::eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread`
   failed at `location strip`, while the exact test and its 16-test suite pass
