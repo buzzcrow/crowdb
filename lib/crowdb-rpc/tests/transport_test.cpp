@@ -135,20 +135,19 @@ TEST_F(TransportLoopbackTest, SendAndReceiveFrame)
     flags = fcntl(server_fd, F_GETFL, 0);
     fcntl(server_fd, F_SETFL, flags | O_NONBLOCK);
 
-    // Create a connection for the server side (receiver).
-    auto server_conn = transport.create_connection(server_fd, "server");
-
     // Atomic flag + received frame data.
     std::atomic<bool> got_frame{false};
+    std::atomic<bool> registered_before_frame{false};
     uint16_t          recv_msg_type = 0;
     uint32_t          recv_msg_size = 0;
 
-    server_conn->set_on_frame([&](Frame *frame, Connection *) {
+    auto on_frame = [&](Frame *frame, Connection *conn) {
+        registered_before_frame.store(transport.lookup_conn(conn).has_value(), std::memory_order_release);
         recv_msg_type = frame->header.msg_type;
         recv_msg_size = frame->header.msg_size;
         got_frame.store(true, std::memory_order_release);
         delete frame;
-    });
+    };
 
     // Build an OutFrame on the client side and send it via raw write
     // (bypassing the transport's send path — we're testing the receive
@@ -165,11 +164,15 @@ TEST_F(TransportLoopbackTest, SendAndReceiveFrame)
     ssize_t written = ::write(client_fd, buf, sizeof(buf));
     ASSERT_EQ(written, static_cast<ssize_t>(sizeof(buf)));
 
+    // The first frame is already readable when the worker starts.
+    auto server_conn = transport.create_connection(server_fd, "server", on_frame);
+
     // Wait for the frame to arrive (up to 2 seconds).
     for (int i = 0; i < 200 && !got_frame.load(std::memory_order_acquire); i++) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_TRUE(got_frame.load(std::memory_order_acquire));
+    EXPECT_TRUE(registered_before_frame.load(std::memory_order_acquire));
     EXPECT_EQ(recv_msg_type, 42U);
     EXPECT_EQ(recv_msg_size, 16U);
 

@@ -630,11 +630,14 @@ Worker *SocketTransport::get_worker()
     return workers_[idx].get();
 }
 
-std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std::string &name)
+std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std::string &name,
+                                                               Connection::OnFrameCallback on_frame,
+                                                               Connection::OnCloseCallback on_close)
 {
     int64_t id             = next_conn_id_.fetch_add(1, std::memory_order_relaxed);
     auto    conn           = std::make_shared<Connection>(id, name, pool_, 4 << 20, send_queue_capacity_);
     conn->transport_handle = static_cast<uint64_t>(fd);
+    conn->quickack         = quickack_;
     // dup() the fd for independent read/write epoll registration (buzz-cpp
     // pattern). This allows EPOLLONESHOT on read and write to be independent
     // — arming write does not re-arm read, preventing multi-worker races.
@@ -649,12 +652,18 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
     // Set the on_close callback to unregister from the live-conn
     // registry. This ensures submit() on a stale handle returns false
     // instead of crashing (use-after-free).
-    conn->set_on_close([this](Connection *c) { unregister_conn(c); });
+    conn->set_on_frame(std::move(on_frame));
+    conn->set_on_close([this, on_close = std::move(on_close)](Connection *c) {
+        if (on_close) {
+            on_close(c);
+        }
+        unregister_conn(c);
+    });
+    register_conn(conn);
     Worker *w = get_worker();
     if (w != nullptr) {
         w->add_connection(fd, write_fd, conn);
     }
-    register_conn(conn);
     return conn;
 }
 
@@ -723,8 +732,7 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
     }
 #endif
 
-    auto conn      = create_connection(fd, addr + ":" + std::to_string(port));
-    conn->quickack = quickack_;
+    auto conn = create_connection(fd, addr + ":" + std::to_string(port));
     CRB_LOG_INFO("rpc transport: connection established -> {}:{} conn_id={}", addr, port,
                  static_cast<long long>(conn->id()));
     return conn;

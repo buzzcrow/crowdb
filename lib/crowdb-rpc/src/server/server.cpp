@@ -169,16 +169,14 @@ void RpcServer::handle_accept(int listen_fd)
         }
 #endif
 
-        auto conn      = transport_->create_connection(fd, std::string(peer_ip) + ":" + std::to_string(peer_port));
-        conn->quickack = transport_->quickack();
-        conn->set_on_frame([this](Frame *frame, Connection *c) { dispatch(frame, c); });
-        // Fail pending server-initiated requests when the connection closes.
-        // Per-connection scoping: only fail requests sent on this connection.
-        conn->set_on_close([this](Connection *c) {
-            if (request_client_ != nullptr) {
-                request_client_->fail_all(c, RpcError::ConnectionClosed);
-            }
-        });
+        auto conn = transport_->create_connection(
+            fd, std::string(peer_ip) + ":" + std::to_string(peer_port),
+            [this](Frame *frame, Connection *c) { dispatch(frame, c); },
+            [this](Connection *c) {
+                if (request_client_ != nullptr) {
+                    request_client_->fail_all(c, RpcError::ConnectionClosed);
+                }
+            });
         CRB_LOG_INFO("rpc server: connection accepted {}:{} -> conn_id={}", peer_ip, peer_port,
                      static_cast<long long>(conn->id()));
     }

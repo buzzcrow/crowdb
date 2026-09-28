@@ -321,7 +321,9 @@ class SocketTransport : public Transport
 
     // Create a connection and add it to a worker. Called by the acceptor
     // (server side) or the connect path (client side).
-    std::shared_ptr<Connection> create_connection(int fd, const std::string &name);
+    std::shared_ptr<Connection> create_connection(int fd, const std::string &name,
+                                                  Connection::OnFrameCallback on_frame = {},
+                                                  Connection::OnCloseCallback on_close = {});
 
     // Client-side connect: create a non-blocking socket, connect to the
     // peer, register the connection with a worker. Returns the connection
