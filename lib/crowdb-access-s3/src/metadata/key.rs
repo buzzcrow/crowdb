@@ -172,6 +172,40 @@ impl MetadataKey {
         key
     }
 
+    /// Starts the upload interval whose object names share a byte prefix.
+    ///
+    /// # Errors
+    /// Rejects a prefix longer than an object key.
+    pub fn multipart_session_key_prefix(
+        tenant: &TenantId,
+        bucket: BucketId,
+        object_prefix: &[u8],
+    ) -> Result<Vec<u8>, MetadataKeyError> {
+        if object_prefix.len() > MAX_KEY_BYTES {
+            return Err(MetadataKeyError::TooLong("object key prefix"));
+        }
+        let mut key = Self::multipart_session_prefix(tenant, bucket);
+        append_ordered_bytes_prefix(&mut key, object_prefix);
+        Ok(key)
+    }
+
+    /// Ends the upload interval whose object names share a byte prefix.
+    ///
+    /// # Errors
+    /// Rejects a prefix longer than an object key.
+    pub fn multipart_session_key_prefix_end(
+        tenant: &TenantId,
+        bucket: BucketId,
+        object_prefix: &[u8],
+    ) -> Result<Vec<u8>, MetadataKeyError> {
+        if object_prefix.is_empty() {
+            return Ok(Self::multipart_session_end(tenant, bucket));
+        }
+        let mut end = Self::multipart_session_key_prefix(tenant, bucket, object_prefix)?;
+        increment_lexicographic(&mut end);
+        Ok(end)
+    }
+
     /// Identifies one upload by object key and stable upload ID.
     ///
     /// # Errors

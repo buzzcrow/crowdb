@@ -25,7 +25,7 @@ mod generated {
 pub use key::{BucketId, MetadataKey, MetadataKeyError, TenantId};
 pub use multipart::{MultipartPartRecord, MultipartPhase, MultipartRecordError, MultipartSessionRecord};
 pub use multipart_repository::{
-    CompletionPart, MultipartPartPage, MultipartRepository, MultipartRepositoryError,
+    CompletionPart, MultipartPartPage, MultipartRepository, MultipartRepositoryError, MultipartUploadPage,
 };
 pub use namespace::{BucketDeleteOutcome, BucketNamespace, BucketNamespaceError};
 pub use record::{BucketNameRecord, MetadataRecordError, ObjectRecord};

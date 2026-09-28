@@ -92,6 +92,12 @@ impl MultipartSessionRecord {
         Ok(record)
     }
 
+    pub(crate) fn decode_unbound(bytes: &[u8]) -> Result<Self, MultipartRecordError> {
+        let record: Self = decode(SESSION_MAGIC, bytes)?;
+        record.validate()?;
+        Ok(record)
+    }
+
     fn validate(&self) -> Result<(), MultipartRecordError> {
         if self.object_key.is_empty()
             || self.object_key.len() > MAX_OBJECT_KEY_BYTES

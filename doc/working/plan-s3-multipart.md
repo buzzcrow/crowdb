@@ -42,8 +42,10 @@ Iceberg multipart path.
   uploads, parse bounded completion XML, emit compatible responses and errors.
   Preserve SigV4 authentication and existing basic routes. The repository now
   provides bounded, ordered ListParts pagination over current generations;
-  multipart query shapes are parsed separately. Upload listing and HTTP dispatch
-  remain pending. S3-compatible multipart error codes and the create, complete
+  multipart query shapes are parsed separately. Bounded upload listing now
+  paginates active sessions by key and upload ID, skipping terminal/expired
+  records and failing on scan-budget exhaustion; HTTP dispatch remains pending.
+  S3-compatible multipart error codes and the create, complete
   and ListParts XML response builders have focused tests. The bounded completion
   XML parser now has one implementation in access-server and is exposed by both
   the Iceberg and S3 protocol modules. The S3 HTTP path still needs wiring.

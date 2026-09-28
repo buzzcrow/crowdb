@@ -7,16 +7,114 @@ use super::{
     MetadataKey, MultipartPartRecord, MultipartPhase, MultipartRepository, MultipartRepositoryError,
     MultipartSessionRecord,
 };
+use crate::metadata::BucketId;
 
 const MAX_LIST_PARTS: usize = 1_000;
 const MAX_SCAN_BYTES: usize = 4 * 1024 * 1024;
+const MAX_UPLOAD_SCAN_PAGES: usize = 8;
+const MAX_UPLOAD_SCAN_ITEMS: usize = 4_096;
 
 pub struct MultipartPartPage {
     pub parts: Vec<MultipartPartRecord>,
     pub next_part_number_marker: Option<u16>,
 }
 
+pub struct MultipartUploadPage {
+    pub uploads: Vec<MultipartSessionRecord>,
+    pub next: Option<(Vec<u8>, [u8; 16])>,
+}
+
 impl MultipartRepository {
+    /// Lists active uploads in object-key and upload-ID order with bounded scans.
+    ///
+    /// Callers must create upload IDs in initiation-time order for the same key.
+    /// A dense interval of terminal records returns a scan-budget error rather
+    /// than an incomplete success page.
+    ///
+    /// # Errors
+    /// Rejects invalid markers, corrupt records and exhausted scan budgets.
+    pub async fn list_uploads(
+        &self,
+        bucket: BucketId,
+        prefix: &[u8],
+        key_marker: Option<&[u8]>,
+        upload_marker: Option<&[u8; 16]>,
+        max_uploads: usize,
+        now_ms: u64,
+    ) -> Result<MultipartUploadPage, MultipartRepositoryError> {
+        if max_uploads == 0
+            || max_uploads > MAX_LIST_PARTS
+            || (upload_marker.is_some() && key_marker.is_none())
+        {
+            return Err(MultipartRepositoryError::Conflict);
+        }
+        let mut start = MetadataKey::multipart_session_key_prefix(&self.tenant, bucket, prefix)?;
+        let end = MetadataKey::multipart_session_key_prefix_end(&self.tenant, bucket, prefix)?;
+        if let Some(key) = key_marker {
+            let mut after = MetadataKey::multipart_session(
+                &self.tenant,
+                bucket,
+                key,
+                upload_marker.unwrap_or(&[u8::MAX; 16]),
+            )?;
+            after.push(0);
+            start = start.max(after);
+        }
+        if start >= end {
+            return Ok(MultipartUploadPage {
+                uploads: Vec::new(),
+                next: None,
+            });
+        }
+        let mut uploads = Vec::with_capacity(max_uploads + 1);
+        let mut continuation = None;
+        let mut scanned = 0;
+        for _ in 0..MAX_UPLOAD_SCAN_PAGES {
+            let page = self
+                .store
+                .scan_page(
+                    start.clone(),
+                    end.clone(),
+                    (MAX_UPLOAD_SCAN_ITEMS - scanned).min(MAX_LIST_PARTS),
+                    MAX_SCAN_BYTES,
+                    continuation,
+                )
+                .await?;
+            scanned += page.items.len();
+            for item in page.items {
+                let session = MultipartSessionRecord::decode_unbound(&item.value)?;
+                if session.bucket_id != bucket
+                    || MetadataKey::multipart_session(
+                        &self.tenant,
+                        bucket,
+                        &session.object_key,
+                        &session.upload_id,
+                    )? != item.key
+                {
+                    return Err(MultipartRepositoryError::Conflict);
+                }
+                if session.phase == MultipartPhase::Open
+                    && session.created_ms <= now_ms
+                    && now_ms < session.expires_ms
+                {
+                    uploads.push(session);
+                    if uploads.len() > max_uploads {
+                        uploads.pop();
+                        let last = uploads.last().ok_or(MultipartRepositoryError::Conflict)?;
+                        let next = Some((last.object_key.clone(), last.upload_id));
+                        return Ok(MultipartUploadPage { uploads, next });
+                    }
+                }
+            }
+            match page.continuation {
+                None => return Ok(MultipartUploadPage { uploads, next: None }),
+                Some(next) if scanned < MAX_UPLOAD_SCAN_ITEMS => continuation = Some(next),
+                Some(_) => return Err(MultipartRepositoryError::ScanBudgetExhausted),
+            }
+        }
+        Err(MultipartRepositoryError::ScanBudgetExhausted)
+    }
+
     /// Lists current, visible part generations in ascending part-number order.
     ///
     /// # Errors

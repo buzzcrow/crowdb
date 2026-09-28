@@ -16,7 +16,7 @@ mod publication;
 mod terminal;
 
 pub use completion::CompletionPart;
-pub use listing::MultipartPartPage;
+pub use listing::{MultipartPartPage, MultipartUploadPage};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartRepositoryError {
@@ -32,6 +32,8 @@ pub enum MultipartRepositoryError {
     InvalidPart,
     #[error("a nonfinal multipart part is smaller than 5 MiB")]
     EntityTooSmall,
+    #[error("multipart listing exhausted its bounded scan budget")]
+    ScanBudgetExhausted,
 }
 
 pub struct MultipartRepository {

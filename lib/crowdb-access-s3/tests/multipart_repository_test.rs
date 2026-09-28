@@ -564,3 +564,48 @@ async fn part_listing_paginates_current_generations_in_number_order() {
     );
     assert_eq!(second.next_part_number_marker, None);
 }
+
+#[tokio::test]
+async fn upload_listing_filters_terminal_records_and_resumes_same_key() {
+    let (repository, _, _) = repository().await;
+    let mut first = session();
+    first.object_key = b"pre/a".to_vec();
+    first.upload_id = [1; 16];
+    let mut second = first.clone();
+    second.upload_id = [2; 16];
+    second.created_ms = 101;
+    let mut third = first.clone();
+    third.object_key = b"pre/b".to_vec();
+    third.upload_id = [3; 16];
+    let mut terminal = first.clone();
+    terminal.object_key = b"pre/aborted".to_vec();
+    terminal.upload_id = [4; 16];
+    for upload in [&first, &second, &third, &terminal] {
+        repository.begin(upload).await.unwrap();
+    }
+    repository.abort(&terminal).await.unwrap();
+
+    let page = repository
+        .list_uploads(first.bucket_id, b"pre/", None, None, 1, 110)
+        .await
+        .unwrap();
+    assert_eq!(page.uploads, [first.clone()]);
+    assert_eq!(page.next, Some((first.object_key.clone(), first.upload_id)));
+    let (key, id) = page.next.unwrap();
+    let page = repository
+        .list_uploads(first.bucket_id, b"pre/", Some(&key), Some(&id), 1, 110)
+        .await
+        .unwrap();
+    assert_eq!(page.uploads, [second.clone()]);
+    assert_eq!(page.next, Some((second.object_key.clone(), second.upload_id)));
+    let page = repository
+        .list_uploads(first.bucket_id, b"pre/", Some(b"pre/a"), None, 10, 110)
+        .await
+        .unwrap();
+    assert_eq!(page.uploads, [third]);
+    assert!(page.next.is_none());
+    assert!(repository
+        .list_uploads(first.bucket_id, b"pre/", None, Some(&id), 1, 110)
+        .await
+        .is_err());
+}
