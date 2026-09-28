@@ -23,7 +23,9 @@ mod generated {
 }
 
 pub use key::{BucketId, MetadataKey, MetadataKeyError, TenantId};
-pub use multipart::{MultipartPartRecord, MultipartPhase, MultipartRecordError, MultipartSessionRecord};
+pub use multipart::{
+    new_upload_id, MultipartPartRecord, MultipartPhase, MultipartRecordError, MultipartSessionRecord,
+};
 pub use multipart_repository::{
     CompletionPart, MultipartPartPage, MultipartRepository, MultipartRepositoryError, MultipartUploadPage,
 };

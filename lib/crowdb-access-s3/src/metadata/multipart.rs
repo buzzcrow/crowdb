@@ -19,6 +19,15 @@ const MAX_CONTENT_TYPE_BYTES: usize = 1024;
 
 pub use crowdb_access_multipart::MultipartPhase;
 
+/// Creates a random upload identity whose byte order follows initiation time.
+/// Uploads created in the same millisecond have an unspecified relative order.
+#[must_use]
+pub fn new_upload_id(now_ms: u64) -> [u8; 16] {
+    let mut id = *uuid::Uuid::new_v4().as_bytes();
+    id[..8].copy_from_slice(&now_ms.to_be_bytes());
+    id
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MultipartSessionRecord {
     pub bucket_id: BucketId,

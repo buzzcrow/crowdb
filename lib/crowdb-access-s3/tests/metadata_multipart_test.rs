@@ -3,7 +3,8 @@
 
 use crowdb_access_multipart::SelectedPart;
 use crowdb_access_s3::metadata::{
-    BucketId, MultipartPartRecord, MultipartPhase, MultipartRecordError, MultipartSessionRecord,
+    new_upload_id, BucketId, MultipartPartRecord, MultipartPhase, MultipartRecordError,
+    MultipartSessionRecord,
 };
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::common::ChunkId;
@@ -49,6 +50,15 @@ fn part() -> MultipartPartRecord {
             logical_length: 5,
         }],
     }
+}
+
+#[test]
+fn generated_upload_ids_sort_by_initiation_millisecond() {
+    let first = new_upload_id(100);
+    let second = new_upload_id(101);
+    assert!(first < second);
+    assert_ne!(first, [0; 16]);
+    assert_ne!(second, [0; 16]);
 }
 
 #[test]
