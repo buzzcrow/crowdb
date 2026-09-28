@@ -3,6 +3,17 @@
 
 //! Protocol-neutral part selection and reservation invariants.
 
+/// Durable multipart transition phase shared by S3 and Iceberg.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MultipartPhase {
+    Open,
+    Completing,
+    Publishing,
+    Published,
+    Aborted,
+    Conflicted,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SelectedPart {
     pub number: u16,

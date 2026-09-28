@@ -454,3 +454,28 @@ fn part_for(session: &MultipartSessionRecord) -> MultipartPartRecord {
     value.upload_id = session.upload_id;
     value
 }
+
+#[tokio::test]
+async fn abort_confirms_lost_reply_and_rejects_part_publication() {
+    let (repository, lose_reply, _) = repository().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    repository.put_stream_part(&session, &part(), 110).await.unwrap();
+    lose_reply.store(true, Ordering::SeqCst);
+    let aborted = repository.abort(&session).await.unwrap();
+    assert_eq!(aborted.phase, MultipartPhase::Aborted);
+    assert_eq!(repository.abort(&session).await.unwrap(), aborted);
+    assert!(matches!(
+        repository.put_stream_part(&session, &part(), 120).await,
+        Err(MultipartRepositoryError::Conflict)
+    ));
+    assert_eq!(
+        repository
+            .part_generation(&session, 1, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .length,
+        5
+    );
+}

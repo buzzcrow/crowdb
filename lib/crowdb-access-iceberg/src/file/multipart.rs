@@ -35,15 +35,7 @@ impl MultipartLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MultipartPhase {
-    Open,
-    Completing,
-    Publishing,
-    Published,
-    Aborted,
-    Conflicted,
-}
+pub use crowdb_access_multipart::MultipartPhase;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultipartCompletion {

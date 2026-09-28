@@ -17,14 +17,7 @@ const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 const MAX_OBJECT_KEY_BYTES: usize = 1024;
 const MAX_CONTENT_TYPE_BYTES: usize = 1024;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum MultipartPhase {
-    Open,
-    Completing,
-    Publishing,
-    Published,
-    Aborted,
-}
+pub use crowdb_access_multipart::MultipartPhase;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MultipartSessionRecord {

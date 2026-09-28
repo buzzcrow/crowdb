@@ -12,6 +12,7 @@ use super::{
 
 mod completion;
 mod publication;
+mod terminal;
 
 pub use completion::CompletionPart;
 

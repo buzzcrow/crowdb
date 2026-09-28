@@ -22,8 +22,10 @@ Iceberg multipart path.
 - [~] **Durable transition core**: isolate session/part states, replacement
   generations, completion selection, abort and recovery transitions from
   Iceberg catalog-specific keys and records. Keep store CAS and namespace
-  adaptation in each protocol. Files: shared multipart crate, Iceberg file
-  repository, S3 metadata store.
+  adaptation in each protocol. Shared phase vocabulary, selection validation,
+  accounting and location composition are now used by both adapters; storage
+  CAS and durable record layouts remain protocol-specific. Files: shared
+  multipart crate, Iceberg file repository, S3 metadata store.
 
 ## S3 adapter and HTTP
 
@@ -49,6 +51,8 @@ Iceberg multipart path.
   part-number replacement. The HTTP path and end-to-end publication test remain.
 - [ ] **Abort and expiry**: make terminal states idempotent, queue unreachable
   private part data for bounded cleanup, and protect active/read-pinned data.
+  The S3 adapter now has an idempotent, response-loss-safe logical abort; the
+  durable cleanup queue, expiry scan and read-pin protection remain.
 
 ## Acceptance and cleanup
 

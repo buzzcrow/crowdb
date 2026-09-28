@@ -14,7 +14,10 @@ use md5::{Digest, Md5};
 
 mod state;
 
-pub use state::{reserve_part_accounting, validate_selected_parts, PartAccounting, SelectedPart, StateError};
+pub use state::{
+    reserve_part_accounting, validate_selected_parts, MultipartPhase, PartAccounting, SelectedPart,
+    StateError,
+};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ComposeError {
