@@ -23,6 +23,7 @@ mod dispatcher;
 mod operations;
 
 pub use crate::http_receive::install_body_receive_provider;
+pub use crate::multipart_complete::{CompletePart, CompleteRequestError, CompleteSelection};
 pub use dispatcher::S3Dispatcher;
 pub use operations::{ProductionS3Operations, S3Operations, S3OperationsFuture, S3ServiceConfig};
 

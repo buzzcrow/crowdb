@@ -44,7 +44,9 @@ Iceberg multipart path.
   provides bounded, ordered ListParts pagination over current generations;
   multipart query shapes are parsed separately. Upload listing and HTTP dispatch
   remain pending. S3-compatible multipart error codes and the create, complete
-  and ListParts XML response builders have focused tests.
+  and ListParts XML response builders have focused tests. The bounded completion
+  XML parser now has one implementation in access-server and is exposed by both
+  the Iceberg and S3 protocol modules. The S3 HTTP path still needs wiring.
 - [ ] **Part ingestion**: reuse the bounded streaming writer and admission
   budget, persist part location/integrity before success, reconcile lost replies.
 - [ ] **Atomic completion**: fence selected part generations, validate order,
