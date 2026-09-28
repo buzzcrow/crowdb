@@ -94,7 +94,7 @@ jobs:
   publish:
     needs: verify
     runs-on: ubuntu-24.04
-    environment: preview-release
+    environment: DockerHub
     permissions:
       contents: read
       id-token: write
