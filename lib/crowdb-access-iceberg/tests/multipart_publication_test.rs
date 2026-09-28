@@ -94,6 +94,20 @@ async fn load(repository: &MultipartRepository, session: &MultipartSession) -> M
 }
 
 #[tokio::test]
+async fn upload_part_lookup_uses_one_catalog_read_before_the_session_cas() {
+    let fixture = file::TestFile::new(common::TestStore::default()).await;
+    let repository = MultipartRepository::new(fixture.store.clone());
+    let mut session = fixtures::session();
+    session.context = fixture.context;
+    session.owner.table = fixture.table;
+    session.location = fixture.table.file("data/part.parquet").unwrap();
+    repository.begin(&session, 100).await.unwrap();
+    let before = fixture.store.reads.load(Ordering::SeqCst);
+    assert!(repository.part_for_upload(&session, 1).await.unwrap().is_none());
+    assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - before, 1);
+}
+
+#[tokio::test]
 async fn streamed_parts_complete_by_composing_locations_and_saved_md5_only() {
     let fixture = file::TestFile::new(common::TestStore::default()).await;
     let repository = MultipartRepository::new(fixture.store.clone());

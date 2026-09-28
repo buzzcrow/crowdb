@@ -18,6 +18,7 @@ pub struct TestStore {
     #[allow(dead_code)]
     pub gc_delete_reply_loss: AtomicBool,
     pub writes: AtomicUsize,
+    pub reads: AtomicUsize,
     pub fencing_delay_ms: AtomicUsize,
     pub fencing_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub fencing_visits: AtomicUsize,
@@ -111,6 +112,7 @@ impl TestStore {
 #[async_trait]
 impl CatalogStore for TestStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.values.load().get(key).cloned())
     }
 

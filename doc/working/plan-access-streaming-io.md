@@ -165,6 +165,16 @@ while keeping secrets in the environment.
   Offline `exec:java` reached the Java program with all dependencies present.
   The ChunkDB restart fixture now waits for a usable registry read instead of
   sleeping for three seconds; its focused and full reader E2E suites pass.
+- The Iceberg UploadPart response can use the part value just successfully
+  settled; reloading the session and part added four catalog reads. A separate
+  upload lookup now performs one part read and leaves the session CAS to reject
+  stale snapshots, removing two more catalog reads. The reserve CAS now
+  returns its pending session to settlement, removing another reload. The
+  focused repository test confirms exactly one read for the part lookup.
+  The remaining session
+  reservation/settlement CAS operations still serialize different part numbers;
+  removing them needs a completion snapshot that keeps selected overwritten
+  parts reachable when UploadPart races Complete.
 
 ## Files
 

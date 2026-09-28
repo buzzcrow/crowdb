@@ -230,7 +230,7 @@ impl FileHttp {
         };
         let before = self
             .multipart
-            .part(&session, part_number)
+            .part_for_upload(&session, part_number)
             .await
             .map_err(catalog_error)?;
         let part = MultipartPart {
@@ -242,20 +242,12 @@ impl FileHttp {
             tree,
             stream,
         };
-        if !self
-            .multipart
-            .reserve_part(&session, &part, now_ms)
-            .await
-            .map_err(catalog_error)?
-        {
-            return Err(FileS3ErrorCode::SlowDown);
-        }
         let pending = self
             .multipart
-            .load(session.context, session.upload)
+            .reserve_part_state(&session, &part, now_ms)
             .await
             .map_err(catalog_error)?
-            .ok_or(FileS3ErrorCode::InternalError)?;
+            .ok_or(FileS3ErrorCode::SlowDown)?;
         if !self
             .multipart
             .settle_part(&pending)
@@ -264,18 +256,6 @@ impl FileHttp {
         {
             return Err(FileS3ErrorCode::SlowDown);
         }
-        let settled = self
-            .multipart
-            .load(session.context, session.upload)
-            .await
-            .map_err(catalog_error)?
-            .ok_or(FileS3ErrorCode::InternalError)?;
-        let part = self
-            .multipart
-            .part(&settled, part_number)
-            .await
-            .map_err(catalog_error)?
-            .ok_or(FileS3ErrorCode::InternalError)?;
         MultipartResponses::upload_part(&part)
             .map(|response| response.map(IcebergBody::new))
             .map_err(|_| FileS3ErrorCode::InternalError)
