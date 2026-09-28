@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crate::metadata::{BucketNameRecord, ObjectRecord};
+use crate::metadata::{BucketNameRecord, MultipartPartPage, ObjectRecord};
 use crate::object::ListObjectsV2Page;
 
 #[must_use]
@@ -20,6 +20,79 @@ pub fn list_buckets(tenant: &[u8], buckets: &[BucketNameRecord]) -> String {
     }
     output.push_str("</Buckets></ListAllMyBucketsResult>");
     output
+}
+
+#[must_use]
+pub fn create_multipart_upload(bucket: &[u8], key: &[u8], upload_id: &[u8; 16]) -> String {
+    let mut output = xml_start("InitiateMultipartUploadResult");
+    element(&mut output, "Bucket", &String::from_utf8_lossy(bucket));
+    element(&mut output, "Key", &String::from_utf8_lossy(key));
+    element(&mut output, "UploadId", &hex_upload_id(upload_id));
+    output.push_str("</InitiateMultipartUploadResult>");
+    output
+}
+
+#[must_use]
+pub fn complete_multipart_upload(location: &str, bucket: &[u8], key: &[u8], etag: &str) -> String {
+    let mut output = xml_start("CompleteMultipartUploadResult");
+    element(&mut output, "Location", location);
+    element(&mut output, "Bucket", &String::from_utf8_lossy(bucket));
+    element(&mut output, "Key", &String::from_utf8_lossy(key));
+    element(&mut output, "ETag", &format!("\"{etag}\""));
+    output.push_str("</CompleteMultipartUploadResult>");
+    output
+}
+
+#[must_use]
+pub fn list_multipart_parts(
+    bucket: &[u8],
+    key: &[u8],
+    upload_id: &[u8; 16],
+    marker: u16,
+    max_parts: usize,
+    page: &MultipartPartPage,
+) -> String {
+    let mut output = xml_start("ListPartsResult");
+    element(&mut output, "Bucket", &String::from_utf8_lossy(bucket));
+    element(&mut output, "Key", &String::from_utf8_lossy(key));
+    element(&mut output, "UploadId", &hex_upload_id(upload_id));
+    element(&mut output, "PartNumberMarker", &marker.to_string());
+    if let Some(next) = page.next_part_number_marker {
+        element(&mut output, "NextPartNumberMarker", &next.to_string());
+    }
+    element(&mut output, "MaxParts", &max_parts.to_string());
+    element(
+        &mut output,
+        "IsTruncated",
+        if page.next_part_number_marker.is_some() {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    for part in &page.parts {
+        output.push_str("<Part>");
+        element(&mut output, "PartNumber", &part.number.to_string());
+        element(&mut output, "LastModified", &iso8601(part.modified_ms));
+        element(
+            &mut output,
+            "ETag",
+            &format!("\"{:x}\"", md5::Digest(part.raw_md5)),
+        );
+        element(&mut output, "Size", &part.length.to_string());
+        output.push_str("</Part>");
+    }
+    output.push_str("</ListPartsResult>");
+    output
+}
+
+fn hex_upload_id(upload_id: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    let mut result = String::with_capacity(32);
+    for byte in upload_id {
+        write!(&mut result, "{byte:02x}").expect("string write cannot fail");
+    }
+    result
 }
 
 #[must_use]

@@ -1,7 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_access_s3::metadata::{BucketId, BucketNameRecord, ObjectRecord, TenantId};
+use crowdb_access_s3::metadata::{
+    BucketId, BucketNameRecord, MultipartPartPage, MultipartPartRecord, ObjectRecord, TenantId,
+};
 use crowdb_access_s3::object::ListObjectsV2Page;
 use crowdb_access_s3::wire;
 
@@ -45,4 +47,35 @@ fn list_objects_serializes_stable_etag_time_and_continuation() {
     assert!(xml.contains("<LastModified>1970-01-01T00:00:01Z</LastModified>"));
     assert!(xml.contains("<IsTruncated>true</IsTruncated>"));
     assert!(xml.contains("<NextContinuationToken>opaque</NextContinuationToken>"));
+}
+
+#[test]
+fn multipart_xml_escapes_names_and_reports_selected_part_metadata() {
+    let id = [0xab; 16];
+    let created = wire::create_multipart_upload(b"b&", b"k<", &id);
+    assert!(created.contains("<Bucket>b&amp;</Bucket>"));
+    assert!(created.contains("<Key>k&lt;</Key>"));
+    assert!(created.contains(&format!("<UploadId>{}</UploadId>", "ab".repeat(16))));
+
+    let page = MultipartPartPage {
+        parts: vec![MultipartPartRecord {
+            bucket_id: BucketId::new([1; 16]),
+            upload_id: id,
+            number: 4,
+            revision: 1,
+            modified_ms: 1_000,
+            length: 8,
+            raw_md5: [9; 16],
+            locations: Vec::new(),
+        }],
+        next_part_number_marker: Some(4),
+    };
+    let listed = wire::list_multipart_parts(b"b&", b"k<", &id, 2, 1, &page);
+    assert!(listed.contains("<PartNumberMarker>2</PartNumberMarker>"));
+    assert!(listed.contains("<NextPartNumberMarker>4</NextPartNumberMarker>"));
+    assert!(listed.contains("<ETag>&quot;09090909090909090909090909090909&quot;</ETag>"));
+    assert!(listed.contains("<Size>8</Size>"));
+    let completed = wire::complete_multipart_upload("http://host/b&/k<", b"b&", b"k<", "abc-1");
+    assert!(completed.contains("<Location>http://host/b&amp;/k&lt;</Location>"));
+    assert!(completed.contains("<ETag>&quot;abc-1&quot;</ETag>"));
 }
