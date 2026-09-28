@@ -32,7 +32,7 @@ refactor has started.
 - [ ] **Faults and measurements**: test cancellation, lost replies, crash points,
   ownership reclamation, stale grants and existing records; compare identical
   5 MiB baseline plus ordinary 10 KiB/1 MiB/12 MiB/100 MiB PUTs and a
-  100 MiB multipart upload (ten 10 MiB parts), with matching build profiles.
+  100 MiB multipart upload (twenty 5 MiB parts), with matching build profiles.
 - [ ] **Final gates and cleanup**: run affected S3/Iceberg suites, fmt/clippy,
   update current architecture, close this requirement after the full reviewed flow passes.
 

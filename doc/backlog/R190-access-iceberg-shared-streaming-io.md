@@ -82,7 +82,7 @@ S3 and Iceberg metadata semantics:
 - Given full, cross-frame and cross-chunk ranges, read -> exact bytes, bounded
   retained buffers, integrity checks and cancellation propagation.
   **Shared bounded reads. Integration test.**
-- Given a 100 MiB multipart upload (ten 10 MiB parts), complete/replay/restart
+- Given a 100 MiB multipart upload (twenty 5 MiB parts), complete/replay/restart
   -> one correct immutable file,
   no per-leaf rewrite/commit loop and no premature part reclamation.
   **Multipart correctness. E2E test.**
