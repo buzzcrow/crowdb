@@ -175,6 +175,11 @@ while keeping secrets in the environment.
   reservation/settlement CAS operations still serialize different part numbers;
   removing them needs a completion snapshot that keeps selected overwritten
   parts reachable when UploadPart races Complete.
+- A native 100 MiB upload with twenty 5 MiB parts completed into one immutable
+  descriptor with twenty locations and the expected composite MD5 ETag. A new
+  Iceberg listener accepted Complete replay and returned the full verified
+  object. The focused end-to-end test passed with a 128 MiB request grant;
+  the ordinary 16 MiB test grant correctly rejects a 100 MiB full GET.
 
 ## Files
 

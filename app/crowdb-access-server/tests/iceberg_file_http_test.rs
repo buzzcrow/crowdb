@@ -24,6 +24,7 @@ use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, Requ
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use md5::{Digest, Md5};
 use reqwest::{Client, Method};
+use std::fmt::Write as _;
 
 #[path = "common/iceberg_signed_file.rs"]
 mod signed;
@@ -62,6 +63,19 @@ async fn setup() -> (
 
 async fn setup_with_bounds(
     bounds: ClearBounds,
+) -> (
+    TestIcebergStack,
+    process::TestIcebergProcess,
+    TestFileClient,
+    TableLocation,
+) {
+    setup_with_bounds_and_file_limit(bounds, 16 * 1024 * 1024, 64 * 1024 * 1024).await
+}
+
+async fn setup_with_bounds_and_file_limit(
+    bounds: ClearBounds,
+    max_request_bytes: u64,
+    max_file_bytes: u64,
 ) -> (
     TestIcebergStack,
     process::TestIcebergProcess,
@@ -138,8 +152,8 @@ async fn setup_with_bounds(
                 FileOperation::AbortMultipart,
             ])
             .unwrap(),
-            max_request_bytes: 16 * 1024 * 1024,
-            max_file_bytes: 64 * 1024 * 1024,
+            max_request_bytes,
+            max_file_bytes,
         })
         .unwrap();
     let client = TestFileClient {
@@ -324,6 +338,95 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
     let get = client.send(Method::GET, &metadata, "", b"", false).await;
     assert_eq!(get.status(), 200);
     assert_eq!(get.bytes().await.unwrap().as_ref(), document);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multipart_100_mib_survives_restart_and_complete_replay() {
+    const PART_BYTES: usize = 5 * 1024 * 1024;
+    const PART_COUNT: usize = 20;
+    let (stack, process, mut client, table) = setup_with_bounds_and_file_limit(
+        ClearBounds {
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+        128 * 1024 * 1024,
+        128 * 1024 * 1024,
+    )
+    .await;
+    let object = path(table, "data/large-multipart.parquet");
+    let created = client.send(Method::POST, &object, "uploads=", b"", false).await;
+    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
+    let created = created.text().await.unwrap();
+    let upload = created
+        .split_once("<UploadId>")
+        .unwrap()
+        .1
+        .split_once("</UploadId>")
+        .unwrap()
+        .0;
+    let mut manifest = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+    );
+    let mut composite = Md5::new();
+    for number in 1..=PART_COUNT {
+        let bytes = vec![u8::try_from(number).unwrap(); PART_BYTES];
+        let query = format!("partNumber={number}&uploadId={upload}");
+        let response = client.send(Method::PUT, &object, &query, &bytes, true).await;
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let etag = response.headers()["etag"].to_str().unwrap();
+        composite.update(Md5::digest(&bytes));
+        write!(
+            manifest,
+            "<Part><ETag>{etag}</ETag><PartNumber>{number}</PartNumber></Part>"
+        )
+        .unwrap();
+    }
+    manifest.push_str("</CompleteMultipartUpload>");
+    let mut expected_etag = String::new();
+    for byte in composite.finalize() {
+        write!(expected_etag, "{byte:02x}").unwrap();
+    }
+    expected_etag.push_str("-20");
+    let query = format!("uploadId={upload}");
+    let completed = client
+        .send(Method::POST, &object, &query, manifest.as_bytes(), false)
+        .await;
+    assert_eq!(completed.status(), 200);
+    let completed = completed.text().await.unwrap();
+    assert!(
+        completed.contains("</CompleteMultipartUploadResult>"),
+        "{completed}"
+    );
+    let repository = FileRepository::new(stack.store().await);
+    let record = repository
+        .load(
+            client.credentials.grant().context,
+            &table.file("data/large-multipart.parquet").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.length, (PART_BYTES * PART_COUNT) as u64);
+    assert_eq!(record.content.etag(), Some(expected_etag.as_str()));
+    assert_eq!(
+        record.content.locations(record.length).unwrap().unwrap().len(),
+        PART_COUNT
+    );
+
+    drop(process);
+    let restarted = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    client.address = restarted.address;
+    let replay = client
+        .send(Method::POST, &object, &query, manifest.as_bytes(), false)
+        .await;
+    assert_eq!(replay.status(), 200, "{}", replay.text().await.unwrap());
+    let response = client.send(Method::GET, &object, "", b"", false).await;
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let bytes = response.bytes().await.unwrap();
+    assert_eq!(bytes.len(), PART_BYTES * PART_COUNT);
+    for (index, part) in bytes.chunks_exact(PART_BYTES).enumerate() {
+        assert!(part.iter().all(|byte| *byte == u8::try_from(index + 1).unwrap()));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
