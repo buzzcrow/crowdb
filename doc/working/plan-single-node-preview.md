@@ -201,6 +201,12 @@ the R187 requirement and git history; this plan tracks only work still needed.
   tests, workspace fmt and lint passed on 2026-09-27.
 - Docker Hub release workflow and local policy checks are retained. The user
   deferred only actual publication verification until their preparation is done.
+- Release preparation is confirmed for `crowdb/crowdb-iceberg:v0.1.0-dev`;
+  `VERSION` remains `0.1.0-dev`. Publication uses the GitHub `DockerHub`
+  environment and its user-configured reviewer approval. The extra
+  `PREVIEW_RELEASE_ENABLED` variable has been removed at the user's request.
+  `DOCKERHUB_USERNAME` remains an environment variable and `DOCKERHUB_TOKEN`
+  a secret. Release policy checks pass; no registry publication has run.
 - Candidate builds and smoke/E2E scripts accept `CROWDB_CONTAINER_IMAGE` so the
   existing dev tag can remain intact during final-image verification.
 - Docker Markdown/HTML guide now records volume, ports, credentials, probes,
