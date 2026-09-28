@@ -25,10 +25,25 @@ pixi run test-single-node-container
   `CROWDB_CONTAINER_IMAGE` to build and test a separate candidate tag.
 
 `pixi run stage-single-node-container` produces the runtime directory without
-building a Docker image. The release workflow archives the verified directory
-and packages those same files in its publish job, without recompiling them.
-Docker Hub publication is manual; actual publication verification is deferred
-until administrator preparation is complete.
+building a Docker image. To prepare a release from a clean, current `main`
+checkout, preview the patch bump and then run it explicitly:
+
+```sh
+pixi run -- python tools/release.py --dry-run
+pixi run -- python tools/release.py --execute
+```
+
+`--bump minor` and `--bump major` select larger version changes. The script
+updates every version manifest, commits and tags the release, atomically pushes
+`main` and the tag, creates a draft GitHub Release, then dispatches the existing
+verified DockerHub workflow. Execution requires authenticated `gh` and GitHub
+permission to push `main`; the dry run changes no files or remote state. The
+workflow archives the verified runtime and its separate exact-build symbol
+package from one build, then packages those same runtime files in its publish
+job without recompiling them. The symbol archive is attached to the GitHub
+Release as `crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst`.
+The workflow publishes the GitHub Release after the Docker image, signature
+and symbol upload succeed.
 
 ## Crash collection boundary
 
@@ -36,9 +51,9 @@ The image does not configure the host's Linux core collector. Inspect
 `/proc/sys/kernel/core_pattern` on the Docker host before expecting a dump in
 the mounted data volume. A leading `|` sends a crash to a host-side collector;
 relative file patterns write in the crashing process's working directory.
-The container does not currently set a private core working directory or a
-core size limit, and it does not provide dump retention or exact-build debug
-symbols. Do not assume `/opt/crowdb/data` contains a core after a crash.
+The container does not currently set a private core working directory, a
+core size limit, or dump retention. Release debug symbols are provided
+separately. Do not assume `/opt/crowdb/data` contains a core after a crash.
 
 - On a systemd-coredump host, use `coredumpctl list` and `coredumpctl dump`
   on the host to locate and export a captured dump.
@@ -49,8 +64,8 @@ symbols. Do not assume `/opt/crowdb/data` contains a core after a crash.
 
 Core dumps can contain credentials and user data. Store exports privately,
 apply host retention policy, and match the exact image revision and binary
-build when symbolizing. The required bounded volume collection and symbol
-distribution remain tracked by R188.
+build when symbolizing. The required bounded volume collection and source-line
+symbolization check remain tracked by R188.
 
 Collector behavior follows the [Linux core pattern documentation](https://docs.kernel.org/admin-guide/sysctl/kernel.html),
 [systemd-coredump manual](https://www.freedesktop.org/software/systemd/man/250/systemd-coredump.socket.html),

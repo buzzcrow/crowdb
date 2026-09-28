@@ -19,6 +19,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CROWDB_PACKAGE_SYMBOLS: "1"
     permissions:
       contents: read
     outputs:
@@ -47,7 +48,7 @@ jobs:
           [[ "$RELEASE_TAG" == "v$(cat VERSION)" ]]
           revision=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
           [[ "$revision" == "$(git rev-parse HEAD)" ]]
-          [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" == false ]]
+          [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" == true ]]
           printf "version=%s\nrevision=%s\n" "${RELEASE_TAG#v}" "$revision" >> "$GITHUB_OUTPUT"
         '
     - name: Free disk space
@@ -84,12 +85,22 @@ jobs:
       run: pixi run clean-env && pixi run test-console-ui
     - name: Check Rust formatting and lint
       run: pixi run rs-fmt-check && pixi run rs-lint
+    - name: Verify exact-build source-line symbols
+      run: pixi run -- python tools/ci-checks/check-container-symbols.py
     - name: Archive verified runtime files
-      run: pixi run tar -C target/container-runtime -czf target/container-runtime.tar.gz .
+      run: |
+        pixi run tar -C target/container-runtime -czf target/container-runtime.tar.gz .
+        pixi run tar -C target/container-symbols -I zstd -cf "target/crowdb-symbols-${{ inputs.tag }}-git-${{ steps.source.outputs.revision }}-linux-amd64.tar.zst" .
     - uses: actions/upload-artifact@v4
       with:
         name: verified-container-runtime
         path: target/container-runtime.tar.gz
+        compression-level: 0
+        retention-days: 7
+    - uses: actions/upload-artifact@v4
+      with:
+        name: verified-container-symbols
+        path: target/crowdb-symbols-*.tar.zst
         compression-level: 0
         retention-days: 7
     - name: Upload preview failure logs
@@ -106,7 +117,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: DockerHub
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
     - uses: actions/checkout@v4
@@ -138,6 +149,10 @@ jobs:
       with:
         name: verified-container-runtime
         path: target
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-container-symbols
+        path: target
     - name: Extract verified runtime files
       run: |
         pixi run bash -euc 'mkdir -p target/container-runtime && tar -C target/container-runtime -xzf target/container-runtime.tar.gz'
@@ -167,3 +182,14 @@ jobs:
       env:
         DIGEST: ${{ steps.build.outputs.digest }}
       run: pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"
+    - name: Attach exact-build symbols to GitHub Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        REVISION: ${{ needs.verify.outputs.revision }}
+      run: pixi run gh release upload "$RELEASE_TAG" "target/crowdb-symbols-$RELEASE_TAG-git-$REVISION-linux-amd64.tar.zst" --repo "$GITHUB_REPOSITORY"
+    - name: Publish verified GitHub Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ inputs.tag }}
+      run: pixi run gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false

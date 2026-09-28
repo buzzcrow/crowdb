@@ -25,7 +25,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-rpc crowdb-rpc-bui
 # when built with the `ffi` feature.
 set(CROWDB_KV_CLIENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-kv-client)
 set(CROWDB_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   set(CARGO_PROFILE release)
 else()
   set(CARGO_PROFILE debug)
