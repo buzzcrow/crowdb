@@ -26,6 +26,8 @@ the R187 requirement and git history; this plan tracks only work still needed.
   S3 mini-cluster cleanup, and pre-Group-0 nonmember seed propagation belong
   to R188, not the Docker image gate. Do not introduce a Docker-only
   topology or logical-operation implementation to avoid that follow-up.
+- Core dump collection, bounded retention and exact-build source-line
+  symbolization are tracked in R188 by user request; they do not block R187.
 
 ## Runtime and Web
 
@@ -36,19 +38,6 @@ the R187 requirement and git history; this plan tracks only work still needed.
   codes and bounded operation. Files: `container/crowdb-monitor/src/**`,
   `container/crowdb-monitor/tests/**`,
   `container/single-node-container/tests/container-e2e.sh`.
-- [ ] **Crash dump location and retention**: document and test how Linux
-  host `core_pattern`, Docker's core ulimit, and the non-root container affect
-  CROWDB child and PID 1 crashes. Cover a plain relative core-file pattern,
-  Ubuntu Apport, systemd-coredump, and Docker Desktop's Linux VM. Choose a
-  bounded, private location under the mounted `/opt/crowdb/data` volume where
-  the host permits file dumps; otherwise report the host collector location
-  and provide explicit setup guidance instead of claiming the volume contains
-  a core. Verify one disposable child crash end to end, retention/cleanup,
-  secret exposure, and symbolization against the exact binary build. Do not
-  change the host-wide `core_pattern` from inside the container. Files:
-  `container/single-node-container/{Dockerfile,entrypoint.sh,tests/**}`,
-  `container/crowdb-monitor/src/**`,
-  `doc/user-manual/docker-single-node-user-guide.md`.
 - [x] **Docker Web read model**: finish the managed-mode Web view using Group 0
   for CROWDB topology and live service registration, and monitor status for
   process health/restart state. Show source and unavailable state rather than
@@ -211,7 +200,8 @@ the R187 requirement and git history; this plan tracks only work still needed.
   existing dev tag can remain intact during final-image verification.
 - Docker Markdown/HTML guide now records volume, ports, credentials, probes,
   client boundaries, restart, logs and host core-collector limitations. Core
-  volume retention and source-line symbolization are still unfinished work.
+  volume retention and source-line symbolization moved to R188 at the user's
+  request and are not R187 completion gates.
 
 - Checkpoint gates on 2026-09-27 passed: `pixi run rs-fmt-check`,
   `pixi run rs-lint`, `pixi run test-monitor`, `pixi run test-console-shared`,
@@ -276,14 +266,4 @@ the R187 requirement and git history; this plan tracks only work still needed.
 
 ## Open Questions
 
-- **Crash collection and symbols:** the current host routes `core_pattern` to
-  Apport. A container-local file directory/ulimit cannot override that policy,
-  and changing the host-wide collector is outside container implementation.
-  Choose acceptance on a disposable Linux host with file-based core collection,
-  or certify and document a host-collector export workflow. Source-line symbol
-  distribution also needs a choice: bundle compressed CROWDB line tables and
-  adjust the measured image-size ceiling, or publish exact-build debug symbols
-  separately while retaining runtime function names. The existing all-dependency
-  experiment increased monitor size substantially; neither complete-image option
-  has yet been measured. Bounded volume retention and end-to-end source-line
-  symbolization remain incomplete, not claimed acceptance.
+None. Crash collection and symbol-distribution decisions are tracked in R188.

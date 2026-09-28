@@ -19,6 +19,12 @@ generations, or machine-local launch policy. Completing a cross-mode console
 rewrite is not a prerequisite for packaging that monitor and the single-node
 profile. The remaining boundary cleanup belongs in this separate requirement.
 
+At the user's request, this requirement also owns the deferred container crash
+diagnostics work: core collection, bounded retention and source-line
+symbolization. Existing crash recovery is implemented, but usable diagnostic
+dumps depend on the host collector and exact-build symbols. This follow-up does
+not block R187 completion.
+
 ## Solution
 
 1. Keep Group 0 as the durable authority for CROWDB hardware hierarchy,
@@ -68,6 +74,15 @@ profile. The remaining boundary cleanup belongs in this separate requirement.
    layer, and data access servers. State that bare-metal is not yet
    production-ready. Remove the old combined guide only after its supported
    material and links are migrated; Docker documentation remains independent.
+9. Complete container crash diagnostics without changing host-wide collector
+   policy. Respect file-based core patterns, Ubuntu Apport, systemd-coredump and
+   Docker Desktop's Linux VM; document where dumps actually go or why collection
+   is unavailable. Where file dumps are supported, retain them in a bounded,
+   private data-volume location. Provide an exact-build source-line
+   symbolization workflow for child and monitor crashes. Dumps can contain
+   secrets and user data; diagnostics must not expose them in ordinary logs.
+   Host acceptance and symbol-distribution choices remain open in the execution
+   plan; no image-size increase or host configuration change is assumed.
 
 ## Dependencies
 
@@ -120,10 +135,23 @@ profile. The remaining boundary cleanup belongs in this separate requirement.
   assert each layer has a verified setup and health check, the non-production
   boundary is explicit, and no link targets the removed combined guide.
   Invariant: deployment guidance follows its implementation. E2E test.
+- Given a disposable container on a supported file-based core collector, when
+  a child or PID 1 crashes, assert the dump has private ownership, bounded
+  retention and cleanup, and resolves to source lines using exact-build symbols.
+  Assert ordinary logs disclose no dump contents or credentials and the
+  container does not change host-wide collector policy. Invariant: private,
+  bounded and reproducible crash diagnostics. E2E test.
+- Given Apport, systemd-coredump or Docker Desktop collector policies, when
+  crash collection is attempted, assert the documented host export workflow
+  locates the dump or explicitly reports unsupported collection, without
+  claiming an absent data-volume core. Invariant: truthful collector boundary.
+  Integration test.
 
 Required gates:
 
 - `pixi run clean-env && pixi run test-console`
 - `pixi run clean-env && pixi run test-console-ui`
+- `pixi run test-monitor`
+- `pixi run test-single-node-container`
 - `pixi run rs-fmt-check`
 - `pixi run rs-lint`

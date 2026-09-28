@@ -128,6 +128,24 @@ are retained for resumption; this requirement is not complete.
   explicit no-hint not-leader rejections now use the existing bounded retry
   policy, while ambiguous dispatch still returns `OutcomeUnknown`.
 
+## Crash diagnostics follow-up
+
+Transferred from R187 by user request. This work remains pending while R188
+is paused; it does not block the single-node image requirement.
+
+- [ ] **Crash dump location and retention**: document and test how Linux
+  host `core_pattern`, Docker's core ulimit, and the non-root container affect
+  CROWDB child and PID 1 crashes. Cover a plain relative core-file pattern,
+  Ubuntu Apport, systemd-coredump, and Docker Desktop's Linux VM. Choose a
+  bounded, private location under the mounted `/opt/crowdb/data` volume where
+  the host permits file dumps; otherwise report the host collector location
+  and provide explicit setup guidance instead of claiming the volume contains
+  a core. Verify one disposable child crash end to end, retention/cleanup,
+  secret exposure, and symbolization against the exact binary build. Do not
+  change the host-wide `core_pattern` from inside the container. Files:
+  `container/single-node-container/{Dockerfile,entrypoint.sh,tests/**}`,
+  `container/crowdb-monitor/src/**`,
+  `doc/user-manual/docker-single-node-user-guide.md`.
 ## Documentation and completion
 
 - [ ] **Bare-metal guide**: migrate verified KV, chunk and access setup from
@@ -248,8 +266,21 @@ are retained for resumption; this requirement is not complete.
   and operation tests, affected shell/node-inspection/canvas/full-chain specs.
 - Full: `pixi run clean-env && pixi run test-console` and
   `pixi run clean-env && pixi run test-console-ui`, sequentially.
+- Crash diagnostics: monitor retention tests and disposable-container crash,
+  collector/export and exact-build source-line symbolization acceptance through
+  `pixi run test-monitor` and `pixi run test-single-node-container`.
 - Style: `pixi run rs-fmt-check` and `pixi run rs-lint`.
 
 ## Open Questions
 
-None identified yet.
+- **Crash collection and symbols:** the current host routes `core_pattern` to
+  Apport. A container-local file directory/ulimit cannot override that policy,
+  and changing the host-wide collector is outside container implementation.
+  Choose acceptance on a disposable Linux host with file-based core collection,
+  or certify and document a host-collector export workflow. Source-line symbol
+  distribution also needs a choice: bundle compressed CROWDB line tables and
+  adjust the measured image-size ceiling, or publish exact-build debug symbols
+  separately while retaining runtime function names. The existing all-dependency
+  experiment increased monitor size substantially; neither complete-image option
+  has yet been measured. Bounded volume retention and end-to-end source-line
+  symbolization remain incomplete, not claimed acceptance.
