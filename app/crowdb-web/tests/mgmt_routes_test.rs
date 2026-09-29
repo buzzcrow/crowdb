@@ -11,7 +11,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crowdb_console_shared::bootstrap_intent::BootstrapIntent;
 use crowdb_console_shared::cluster::{NodeHealth, NodeStore};
+use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
 use crowdb_console_shared::config::{NodeEntry, RackEntry, ServerEntry, ServiceType};
 use crowdb_console_shared::lifecycle::{self, crowdb_kv_server_bin, stop_pid_with_timeout, DeployRequest};
 use crowdb_console_shared::monitor::NodeRecord;
@@ -95,6 +97,19 @@ async fn spawn_web_with_config_path(
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
+    let cfg = config_for_upstream(upstream);
+    let state = AppState::with_config(cfg, config_path);
+    // Register the upstream's pid so `refresh_node_cache` (which skips
+    // nodes with no tracked runtime pid) refreshes after mutations.
+    state.set_runtime_pid(1, upstream.pid);
+    tokio::spawn(async move {
+        axum::serve(listener, router(state)).await.unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    addr
+}
+
+fn config_for_upstream(upstream: &Upstream) -> ConsoleConfig {
     let mut cfg = ConsoleConfig::default();
     cfg.racks.push(RackEntry {
         id: 1,
@@ -126,15 +141,7 @@ async fn spawn_web_with_config_path(
         no_fsync: false,
     })
     .unwrap();
-    let state = AppState::with_config(cfg, config_path);
-    // Register the upstream's pid so `refresh_node_cache` (which skips
-    // nodes with no tracked runtime pid) refreshes after mutations.
-    state.set_runtime_pid(1, upstream.pid);
-    tokio::spawn(async move {
-        axum::serve(listener, router(state)).await.unwrap();
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    addr
+    cfg
 }
 
 #[tokio::test]
@@ -154,6 +161,53 @@ async fn persistent_web_bootstrap_clears_verified_intent() {
     assert_eq!(response.status(), 201, "{}", response.text().await.unwrap());
     assert!(config_path.exists());
     assert!(!upstream.workspace.join("bootstrap-intent.toml").exists());
+}
+
+#[tokio::test]
+async fn bare_metal_web_bootstrap_consumes_sealed_topology_input() {
+    let Some(upstream) = spawn_upstream().await else {
+        eprintln!("skipping: crowdb-kv-server binary not built");
+        return;
+    };
+    let source = upstream.workspace.join("bootstrap-source.toml");
+    BootstrapIntent::capture(&config_for_upstream(&upstream), &[1])
+        .unwrap()
+        .seal(&source)
+        .unwrap();
+    let config = WebProcessConfig {
+        version: 1,
+        mode: WebMode::BareMetal,
+        bind: "127.0.0.1".into(),
+        port: 14000,
+        group0_management_seeds: vec![upstream.mgmt_url.clone()],
+        ui_root: "/tmp".into(),
+        monitor_status: None,
+        log_dir: "/tmp".into(),
+        log_max_file_mb: 30,
+        log_max_files: 5,
+        request_timeout_ms: Some(500),
+    };
+    let state = AppState::with_config_engine(ConsoleConfig::default(), None, upstream.workspace.clone())
+        .with_process_config(&config)
+        .with_management_token("bare-metal-bootstrap-test-token-12345".into())
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router(state)).await.unwrap();
+    });
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/api/cluster/init"))
+        .bearer_auth("bare-metal-bootstrap-test-token-12345")
+        .json(&json!({"nodes": [1], "bootstrap_file": source}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201, "{}", response.text().await.unwrap());
+    assert!(!upstream.workspace.join("bootstrap-intent.toml").exists());
+    assert!(!upstream.workspace.join("console.toml").exists());
 }
 
 #[tokio::test]

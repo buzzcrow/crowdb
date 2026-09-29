@@ -78,6 +78,10 @@ pub fn router(state: AppState) -> axum::Router {
         let managed = if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
             let hardware = axum::Router::new()
                 .route(
+                    "/api/cluster/init",
+                    post(mgmt::http_cluster_init).route_layer(authorization.clone()),
+                )
+                .route(
                     "/api/racks",
                     get(managed_hardware::list_racks)
                         .merge(post(managed_hardware::add_rack).route_layer(authorization.clone())),
