@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{authority_context, commit_config, config_path, op_context};
+use crate::commands::{authority_context, commit_config, op_context};
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]
@@ -187,7 +187,11 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             nodes,
             bootstrap_file,
         } => {
-            let ctx = match op_context(cli) {
+            let Some(registry) = &cli.registry else {
+                eprintln!("error: cluster init requires --registry and a versioned bootstrap file");
+                return ExitCode::from(2);
+            };
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -198,45 +202,31 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let result = if let Some(registry) = &cli.registry {
-                let sealed_path = registry.with_extension("bootstrap-intent.toml");
-                if let Some(source) = bootstrap_file {
-                    let intent = match crowdb_console_shared::bootstrap_intent::BootstrapIntent::load(&source)
-                    {
-                        Ok(intent) => intent,
-                        Err(error) => {
-                            eprintln!("error: load bootstrap file: {error}");
-                            return ExitCode::from(2);
-                        }
-                    };
-                    if intent.members() != node_ids.as_slice() {
-                        eprintln!("error: bootstrap file members differ from --nodes");
-                        return ExitCode::from(1);
-                    }
-                    if let Err(error) = intent.seal(&sealed_path) {
-                        eprintln!("error: seal bootstrap intent: {error}");
+            let sealed_path = registry.with_extension("bootstrap-intent.toml");
+            if let Some(source) = bootstrap_file {
+                let intent = match crowdb_console_shared::bootstrap_intent::BootstrapIntent::load(&source) {
+                    Ok(intent) => intent,
+                    Err(error) => {
+                        eprintln!("error: load bootstrap file: {error}");
                         return ExitCode::from(2);
                     }
-                } else if !sealed_path.exists() {
-                    eprintln!("error: --bootstrap-file is required for the first registry-mode init");
+                };
+                if intent.members() != node_ids.as_slice() {
+                    eprintln!("error: bootstrap file members differ from --nodes");
                     return ExitCode::from(1);
                 }
-                crowdb_console_shared::ops::cluster::init_with_intent(&ctx, &node_ids, &sealed_path).await
-            } else {
-                if bootstrap_file.is_some() {
-                    eprintln!("error: --bootstrap-file requires --registry");
-                    return ExitCode::from(1);
+                if let Err(error) = intent.seal(&sealed_path) {
+                    eprintln!("error: seal bootstrap intent: {error}");
+                    return ExitCode::from(2);
                 }
-                let intent_path = config_path().with_extension("bootstrap.toml");
-                crowdb_console_shared::ops::cluster::init_with_intent(&ctx, &node_ids, &intent_path).await
-            };
+            } else if !sealed_path.exists() {
+                eprintln!("error: --bootstrap-file is required for the first init");
+                return ExitCode::from(1);
+            }
+            let result =
+                crowdb_console_shared::ops::cluster::init_with_intent(&ctx, &node_ids, &sealed_path).await;
             match result {
                 Ok(summary) => {
-                    if cli.registry.is_none() {
-                        if let Err(c) = commit_config(cli, &ctx) {
-                            return c;
-                        }
-                    }
                     println!(
                         "cluster initialized: store {}, group {}, {} nodes",
                         summary.store_id,

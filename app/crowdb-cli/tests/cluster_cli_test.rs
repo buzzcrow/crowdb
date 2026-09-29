@@ -71,23 +71,21 @@ async fn cluster_status_topology_via_direct_group0() {
         return;
     }
 
-    // cluster init — writes store/group/replica topology into group-0
-    // sysdata (idempotent: group 0 already exists from spawn_group0,
-    // init handles the 409 conflict and still writes topology).
+    // Bootstrap requires an independent versioned intent and launch registry.
     let (code, _, stderr) = run(
         &cli,
         g0.mgmt_port,
         &g0.config_path,
         &["cluster", "init", "-n", "1"],
     );
-    assert_eq!(code, 0, "cluster init stderr={stderr}");
-    assert!(!g0.config_path.with_extension("bootstrap.toml").exists());
+    assert_eq!(code, 2, "cluster init stderr={stderr}");
+    assert!(stderr.contains("--registry"), "stderr={stderr}");
     std::fs::write(&g0.config_path, "invalid local topology").unwrap();
 
     // status — lists stores from group-0 sysdata.
     let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "status"]);
     assert_eq!(code, 0, "status stderr={stderr}");
-    assert!(stdout.contains('0'), "stdout={stdout}");
+    assert!(stdout.contains("(no stores)"), "stdout={stdout}");
 
     // topology — from a node's /topology endpoint.
     let (code, stdout, stderr) = run(
@@ -99,10 +97,10 @@ async fn cluster_status_topology_via_direct_group0() {
     assert_eq!(code, 0, "topology stderr={stderr}");
     assert!(stdout.contains("store"), "stdout={stdout}");
 
-    // Status always uses the human-readable console table.
+    // Status reflects the uninitialized authority without a local fallback.
     let (code, stdout, _) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "status"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("STORE"), "stdout={stdout}");
+    assert!(stdout.contains("(no stores)"), "stdout={stdout}");
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 }

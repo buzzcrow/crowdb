@@ -106,6 +106,9 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   `kv server` process commands now require the versioned launch registry;
   their former no-registry branch, including persisted PID/topology updates,
   is removed. The registry lifecycle regressions and complete CLI suite pass.
+  `cluster init` now requires the registry and independent versioned bootstrap
+  input; it cannot seal or publish from the old mixed file. The registry
+  bootstrap test passes, and a no-registry CLI test verifies the rejection.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware
