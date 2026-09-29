@@ -36,14 +36,17 @@ pixi run -- python tools/release.py --execute
 `--bump minor` and `--bump major` select larger version changes. The script
 updates every version manifest, commits and tags the release, atomically pushes
 `main` and the tag, creates a draft GitHub Release, then dispatches the existing
-verified DockerHub workflow. Execution requires authenticated `gh` and GitHub
+verified DockerHub workflow. Add `--symbols` to either command to include the
+large exact-build symbol archive; the default release skips it. Execution
+requires authenticated `gh` and GitHub
 permission to push `main`; the dry run changes no files or remote state. The
-workflow archives the verified runtime and its separate exact-build symbol
-package from one build, then packages those same runtime files in its publish
-job without recompiling them. The symbol archive is attached to the GitHub
-Release as `crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst`.
-The workflow publishes the GitHub Release after the Docker image, signature
-and symbol upload succeed.
+workflow archives the verified runtime, then packages those same files in its
+publish job without recompiling them. With `--symbols`, it also archives
+exact-build symbols from that build and attaches
+`crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst` to the GitHub
+Release. The workflow publishes the GitHub Release after the Docker image and
+signature succeed. If the optional symbol upload fails, the published release
+remains available and the workflow reports a warning.
 
 ## Crash collection boundary
 
@@ -52,8 +55,9 @@ The image does not configure the host's Linux core collector. Inspect
 the mounted data volume. A leading `|` sends a crash to a host-side collector;
 relative file patterns write in the crashing process's working directory.
 The container does not currently set a private core working directory, a
-core size limit, or dump retention. Release debug symbols are provided
-separately. Do not assume `/opt/crowdb/data` contains a core after a crash.
+core size limit, or dump retention. Release debug symbols are available when
+the release was run with `--symbols`. Do not assume `/opt/crowdb/data` contains
+a core after a crash.
 
 - On a systemd-coredump host, use `coredumpctl list` and `coredumpctl dump`
   on the host to locate and export a captured dump.

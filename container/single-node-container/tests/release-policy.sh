@@ -36,8 +36,13 @@ publish_job=$(sed -n '/^  publish:/,$p' "$release")
 [[ "$publish_job" == *'name: verified-container-runtime'* ]]
 [[ "$verify_job" == *'name: verified-container-symbols'* ]]
 [[ "$publish_job" == *'name: verified-container-symbols'* ]]
-[[ "$verify_job" == *'CROWDB_PACKAGE_SYMBOLS: "1"'* ]]
+[[ "$events" == *'include_symbols:'* && "$events" == *'default: false'* ]]
+[[ "$verify_job" == *"CROWDB_PACKAGE_SYMBOLS: \${{ inputs.include_symbols && '1' || '0' }}"* ]]
 [[ "$verify_job" == *'pixi run -- python tools/ci-checks/check-container-symbols.py'* ]]
+[[ "$verify_job" == *'if: inputs.include_symbols'* ]]
+[[ "$publish_job" == *'if: inputs.include_symbols && steps.symbols_download.outcome'* ]]
+[[ "$verify_job" == *'continue-on-error: true'* ]]
+[[ "$publish_job" == *'continue-on-error: true'* ]]
 [[ "$publish_job" == *'gh release upload "$RELEASE_TAG"'* ]]
 [[ "$publish_job" == *'gh release edit "$RELEASE_TAG"'* ]]
 [[ "$publish_job" == *'context: target/container-runtime'* ]]
@@ -56,7 +61,7 @@ ci_job=$(sed -n '/^  DockerPreview:/,$p' "$ci")
 ! grep -Eq 'secrets\.|docker/login-action|docker/build-push-action' <<<"$ci_job"
 
 release_tool=tools/release.py
-for required in '--dry-run' '--execute' 'git", "push", "--atomic"' \
+for required in '--dry-run' '--execute' '--symbols' 'git", "push", "--atomic"' \
     '"release", "create"' '"workflow", "run"'; do
     grep -Fq -- "$required" "$release_tool"
 done

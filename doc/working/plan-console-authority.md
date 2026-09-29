@@ -154,12 +154,12 @@ is paused; it does not block the single-node image requirement.
   Apport, systemd-coredump and Docker Desktop lookup paths without promising a
   volume dump. This host reports an Apport pipe pattern and core ulimit 0.
   Volume retention, exact-build symbols and disposable-host acceptance remain.
-- [ ] **Manual release and symbols**: add a `tools/` release script with a
-  read-only dry run, consistent version updates, tag and GitHub Release
-  creation, and dispatch of the existing publication workflow. Extract debug
-  symbols from the same staged ELF files as the image, keep them out of the
-  image, and upload the version/revision-named archive to that release.
-  Verify symbol identity and source-line lookup. Files:
+- [ ] **Manual release and optional symbols**: the `tools/` release script now
+  has a read-only dry run, consistent version updates, tag and GitHub Release
+  creation, and workflow dispatch. Optional `--symbols` extracts debug symbols
+  from the same staged ELF files as the image and uploads the named archive;
+  the default release skips that large asset. Local symbol identity checks pass.
+  A real release and source-line lookup remain to verify. Files:
   `tools/release.py`, `container/single-node-container/{build.sh,collect-libs.sh}`,
   `.github/workflows/release-container.yml`.
 ## Documentation and completion

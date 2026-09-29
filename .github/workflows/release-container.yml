@@ -7,6 +7,11 @@ on:
         description: Existing Git release tag to publish
         required: true
         type: string
+      include_symbols:
+        description: Build and attach the large exact-build symbol archive
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: crowdb-iceberg-single-node-preview-release
@@ -19,7 +24,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
-      CROWDB_PACKAGE_SYMBOLS: "1"
+      CROWDB_PACKAGE_SYMBOLS: ${{ inputs.include_symbols && '1' || '0' }}
     permissions:
       contents: read
     outputs:
@@ -86,11 +91,13 @@ jobs:
     - name: Check Rust formatting and lint
       run: pixi run rs-fmt-check && pixi run rs-lint
     - name: Verify exact-build source-line symbols
+      if: inputs.include_symbols
       run: pixi run -- python tools/ci-checks/check-container-symbols.py
     - name: Archive verified runtime files
-      run: |
-        pixi run tar -C target/container-runtime -czf target/container-runtime.tar.gz .
-        pixi run tar -C target/container-symbols -I zstd -cf "target/crowdb-symbols-${{ inputs.tag }}-git-${{ steps.source.outputs.revision }}-linux-amd64.tar.zst" .
+      run: pixi run tar -C target/container-runtime -czf target/container-runtime.tar.gz .
+    - name: Archive exact-build symbols
+      if: inputs.include_symbols
+      run: pixi run tar -C target/container-symbols -I zstd -cf "target/crowdb-symbols-${{ inputs.tag }}-git-${{ steps.source.outputs.revision }}-linux-amd64.tar.zst" .
     - uses: actions/upload-artifact@v4
       with:
         name: verified-container-runtime
@@ -98,6 +105,9 @@ jobs:
         compression-level: 0
         retention-days: 7
     - uses: actions/upload-artifact@v4
+      id: symbols_artifact
+      if: inputs.include_symbols
+      continue-on-error: true
       with:
         name: verified-container-symbols
         path: target/crowdb-symbols-*.tar.zst
@@ -150,6 +160,9 @@ jobs:
         name: verified-container-runtime
         path: target
     - uses: actions/download-artifact@v4
+      id: symbols_download
+      if: inputs.include_symbols
+      continue-on-error: true
       with:
         name: verified-container-symbols
         path: target
@@ -182,14 +195,20 @@ jobs:
       env:
         DIGEST: ${{ steps.build.outputs.digest }}
       run: pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"
-    - name: Attach exact-build symbols to GitHub Release
-      env:
-        GH_TOKEN: ${{ github.token }}
-        RELEASE_TAG: ${{ inputs.tag }}
-        REVISION: ${{ needs.verify.outputs.revision }}
-      run: pixi run gh release upload "$RELEASE_TAG" "target/crowdb-symbols-$RELEASE_TAG-git-$REVISION-linux-amd64.tar.zst" --repo "$GITHUB_REPOSITORY"
     - name: Publish verified GitHub Release
       env:
         GH_TOKEN: ${{ github.token }}
         RELEASE_TAG: ${{ inputs.tag }}
       run: pixi run gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+    - name: Attach exact-build symbols to GitHub Release
+      id: symbol_upload
+      if: inputs.include_symbols && steps.symbols_download.outcome == 'success'
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        REVISION: ${{ needs.verify.outputs.revision }}
+      run: pixi run gh release upload "$RELEASE_TAG" "target/crowdb-symbols-$RELEASE_TAG-git-$REVISION-linux-amd64.tar.zst" --repo "$GITHUB_REPOSITORY"
+    - name: Report optional symbol upload failure
+      if: inputs.include_symbols && (steps.symbols_download.outcome == 'failure' || steps.symbol_upload.outcome == 'failure')
+      run: echo '::warning::The image and release were published, but the optional symbol archive could not be uploaded.'

@@ -100,6 +100,7 @@ def main() -> None:
     mode.add_argument("--dry-run", action="store_true", help="Print the plan without writing or contacting GitHub")
     mode.add_argument("--execute", action="store_true", help="Update, tag, push, release and dispatch")
     parser.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
+    parser.add_argument("--symbols", action="store_true", help="Build and upload the large optional symbol archive")
     args = parser.parse_args()
 
     current = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
@@ -110,7 +111,7 @@ def main() -> None:
     for path in updates:
         print(f"  update {path.relative_to(ROOT)}", flush=True)
     print("  check versions and diff; commit; tag; atomically push main + tag", flush=True)
-    print("  create draft GitHub Release; dispatch release-container.yml", flush=True)
+    print(f"  create draft GitHub Release; dispatch release-container.yml (symbols: {args.symbols})", flush=True)
     if args.dry_run:
         for path, updated in updates.items():
             original = path.read_text(encoding="utf-8")
@@ -132,7 +133,7 @@ def main() -> None:
     command("git", "push", "--atomic", "origin", "HEAD:refs/heads/main", f"refs/tags/{tag}")
     command("gh", "release", "create", tag, "--repo", REPO, "--verify-tag", "--generate-notes", "--draft")
     command("gh", "workflow", "run", "release-container.yml", "--repo", REPO,
-            "--ref", tag, "-f", f"tag={tag}")
+            "--ref", tag, "-f", f"tag={tag}", "-f", f"include_symbols={str(args.symbols).lower()}")
     print(f"Started verified publication for {tag}")
 
 

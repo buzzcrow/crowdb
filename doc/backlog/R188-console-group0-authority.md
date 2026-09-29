@@ -82,9 +82,10 @@ not block R187 completion.
    private data-volume location. Provide an exact-build source-line
    symbolization workflow for child and monitor crashes. Dumps can contain
    secrets and user data; diagnostics must not expose them in ordinary logs.
-   Ship exact-build debug symbols as a separate GitHub Release asset generated
-   from the same staged runtime as the image, indexed by version and source
-   revision. The release preparation script in `tools/` runs manually, shows a
+   Optionally ship exact-build debug symbols as a separate GitHub Release asset
+   generated from the same staged runtime as the image, indexed by version and
+   source revision. Omit this large asset by default so its upload cannot block
+   image publication. The release preparation script in `tools/` runs manually, shows a
    dry-run plan, updates versions, creates the tag and GitHub Release, then
    dispatches the existing verified DockerHub publication workflow. Host
    acceptance remains open; no host configuration change is assumed.
@@ -160,10 +161,11 @@ not block R187 completion.
 - Given a clean main checkout and a version bump, when the release tool runs in
   dry-run mode, assert it shows every version change and no file or remote is
   modified. When run for a release, assert the tag and GitHub Release identify
-  the same verified revision, the symbol asset contains source-line information,
-  GNU debuglink CRCs and SHA-256 hashes match the image's stripped binaries.
-  Invariant: released symbols come from the image build and
-  remain available after a build host changes. E2E test.
+  the same verified revision and image publication succeeds without symbol
+  upload. When symbols are requested, assert the asset contains source-line
+  information and GNU debuglink CRCs and SHA-256 hashes match the image's
+  stripped binaries. Invariant: optional released symbols come from the image
+  build and remain available after a build host changes. E2E test.
 
 Required gates:
 
