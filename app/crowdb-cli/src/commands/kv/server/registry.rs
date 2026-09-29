@@ -64,22 +64,7 @@ async fn execute(cli: &Cli, path: &Path, verb: KvServerVerb) -> Result<()> {
             id: node.to_string(),
         })?;
     match verb {
-        KvServerVerb::Deploy {
-            rest_port,
-            rpc_port,
-            binary,
-            ..
-        } => {
-            if rest_port.is_some() || rpc_port.is_some() || binary.is_some() {
-                return Err(Error::Validation {
-                    field: "registry".into(),
-                    message: "binary and listener arguments must come from the launch registry".into(),
-                });
-            }
-            let identity = runtime.start(&launch).await?;
-            println!("started kv on node {node} (pid {})", identity.pid);
-        }
-        KvServerVerb::Start { .. } => {
+        KvServerVerb::Deploy { .. } | KvServerVerb::Start { .. } => {
             let identity = runtime.start(&launch).await?;
             println!("started kv on node {node} (pid {})", identity.pid);
         }
@@ -92,7 +77,8 @@ async fn execute(cli: &Cli, path: &Path, verb: KvServerVerb) -> Result<()> {
             println!("stopped kv on node {node}");
         }
         KvServerVerb::Delete { .. } => {
-            let ctx = crate::commands::op_context(cli)
+            let ctx = crate::commands::authority_context(cli)
+                .await
                 .map_err(|_| Error::Config("cannot initialize authority client".into()))?;
             if ctx
                 .sysmd()

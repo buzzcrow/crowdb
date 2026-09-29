@@ -103,6 +103,9 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   mixed local topology, including its in-process legacy test router; focused
   bootstrap, lifecycle and deployer tests pass. The CLI legacy config path and
   shared parser/writer still need removal.
+  `kv server` process commands now require the versioned launch registry;
+  their former no-registry branch, including persisted PID/topology updates,
+  is removed. The registry lifecycle regressions and complete CLI suite pass.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware

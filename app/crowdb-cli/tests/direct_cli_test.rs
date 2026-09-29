@@ -71,7 +71,7 @@ async fn cluster_node_list_ignores_legacy_local_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kv_server_list_via_direct_config() {
+async fn kv_server_controls_require_launch_registry() {
     let Some(g0) = spawn_group0().await else {
         eprintln!("skipping: crowdb-kv-server binary not built");
         return;
@@ -82,8 +82,8 @@ async fn kv_server_list_via_direct_config() {
         return;
     }
 
-    // `kv server list` should list the server on node 1.
+    // A legacy topology file cannot supply process launch policy.
     let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["kv", "server", "list"]);
-    assert_eq!(code, 0, "kv server list stderr={stderr}");
-    assert!(stdout.contains('1'), "kv server list stdout={stdout}");
+    assert_eq!(code, 2, "stdout={stdout} stderr={stderr}");
+    assert!(stderr.contains("--registry"), "stderr={stderr}");
 }
