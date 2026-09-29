@@ -271,6 +271,38 @@ fn equality_ids_require_a_bounded_unique_list_and_matching_element_id() {
 }
 
 #[test]
+fn pyiceberg_long_equality_ids_use_the_same_bounded_field_ids() {
+    let mut fixture = TestManifestEntry::new(ManifestVersion::V2);
+    fixture.file.iter_mut().find(|field| field.0 == 135).unwrap().1 = "long-array";
+    fixture.set(134, json!(2));
+    fixture.set(135, json!([3, 8]));
+    let schema = fixture.schema();
+    let projection = ManifestEntryProjection::new(&schema, ManifestVersion::V2, table()).unwrap();
+    let mut state = ManifestEntryState::new(
+        ManifestVersion::V2,
+        table(),
+        ManifestContent::Deletes,
+        50,
+        9,
+        None,
+    )
+    .unwrap();
+    let entry = projection
+        .records(&fixture.bytes(), 1, limits(), &mut state)
+        .unwrap()
+        .next_entry()
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.file.equality_ids, Some(vec![3, 8]));
+    fixture.set(135, json!([i64::from(i32::MAX) + 1]));
+    assert!(projection
+        .records(&fixture.bytes(), 1, limits(), &mut state)
+        .unwrap()
+        .next_entry()
+        .is_err());
+}
+
+#[test]
 fn equality_ids_accept_sized_avro_blocks_and_reject_excess_work() {
     let mut fixture = TestManifestEntry::new(ManifestVersion::V2);
     fixture.set(134, json!(2));

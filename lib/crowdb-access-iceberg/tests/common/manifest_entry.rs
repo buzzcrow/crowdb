@@ -75,8 +75,8 @@ impl TestManifestEntry {
 
     pub fn schema_bytes(&self) -> Vec<u8> {
         let field = |(id, kind, _): &(i32, &'static str, Value)| {
-            let kind = if *kind == "int-array" {
-                json!({"type":"array","items":"int","element-id":136})
+            let kind = if matches!(*kind, "int-array" | "long-array") {
+                json!({"type":"array","items":if *kind == "int-array" { "int" } else { "long" },"element-id":136})
             } else if matches!(*kind, "long-map" | "bytes-map") {
                 let (key, value) = match id {
                     108 => (117, 118),
@@ -157,7 +157,7 @@ fn encode((_, kind, value): &(i32, &'static str, Value), bytes: &mut Vec<u8>) {
             }
         }
         bytes.push(0);
-    } else if *kind == "int-array" {
+    } else if matches!(*kind, "int-array" | "long-array") {
         let values = value.as_array().unwrap();
         long(i64::try_from(values.len()).unwrap(), bytes);
         for item in values {

@@ -1,7 +1,7 @@
 use std::sync::{atomic::AtomicUsize, Arc};
 
 use crowdb_access_iceberg::{
-    catalog::{Capabilities, CatalogContext, CatalogStore},
+    catalog::{CatalogAuthority, CatalogContext, CatalogStore},
     commit::{CommitProofLimits, StagedCommitLimits, TableCreator},
     file::FileBlockStore,
     namespace::{NamespaceRepository, NamespaceStore},
@@ -9,7 +9,7 @@ use crowdb_access_iceberg::{
     table::TableRepository,
     wire::{IcebergErrorResponse, Principal, RequestKey},
 };
-use hyper::{body::Incoming, Method, Request, Response};
+use hyper::{body::Incoming, Method, Request, Response, Uri};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -67,7 +67,7 @@ impl TableWrites {
     pub(super) async fn execute(
         &self,
         context: CatalogContext,
-        capabilities: Capabilities,
+        authority: &CatalogAuthority,
         principal: Principal,
         request: Request<Incoming>,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
@@ -96,6 +96,8 @@ impl TableWrites {
         let uri = request.uri().clone();
         let method = request.method().clone();
         let bytes = read_body(request.into_body()).await?;
+        let capabilities = authority.capabilities;
+        let configuration_target = self.configuration_target(&uri, &method, &bytes);
         let route = if method == Method::DELETE {
             "DELETE table"
         } else {
@@ -120,7 +122,15 @@ impl TableWrites {
         let (record, resuming) = match admission {
             RetryAdmission::Replay(record) => {
                 super::metrics::record_retry(3);
-                return Ok(response(record.status, record.body));
+                let body = self.decorate_response(
+                    record.status,
+                    record.body,
+                    configuration_target,
+                    context,
+                    authority,
+                    principal,
+                )?;
+                return Ok(response(record.status, body));
             }
             RetryAdmission::New(record) => {
                 super::metrics::record_retry(1);
@@ -135,7 +145,7 @@ impl TableWrites {
             let result = self
                 .mutate_lifecycle(&record, capabilities, resuming, &method, &uri, &bytes)
                 .await;
-            let (status, body) = self.outcome_response(result, None, context).await?;
+            let (status, body) = self.outcome_response(result).await?;
             self.ledger
                 .finish(record, status, body.clone(), now_ms()?)
                 .await
@@ -143,38 +153,25 @@ impl TableWrites {
             return Ok(response(status, body));
         }
         let target = request::parse(&uri);
-        let configuration_target = target.as_ref().ok().and_then(|target| {
-            let name = target.name.clone().or_else(|| {
-                crowdb_access_iceberg::commit::CreateTableRequest::decode(
-                    &bytes,
-                    self.limits.preparation.request.json,
-                )
-                .ok()
-                .map(|request| request.name().to_owned())
-            })?;
-            Some((target.namespace.clone(), name))
-        });
         let result = match target {
             Ok(target) => self.mutate(&record, capabilities, target, bytes, now).await,
             Err(error) => Err(error),
         };
-        let (status, body) = self
-            .outcome_response(result, configuration_target, context)
-            .await?;
+        let (status, body) = self.outcome_response(result).await?;
         self.ledger
             .finish(record, status, body.clone(), now_ms()?)
             .await
             .map_err(|error| mutation_error(&error))?;
+        let body =
+            self.decorate_response(status, body, configuration_target, context, authority, principal)?;
         Ok(response(status, body))
     }
 
     async fn outcome_response(
         &self,
         result: Result<crowdb_access_iceberg::commit::TableCommitOutcome, IcebergErrorResponse>,
-        configuration_target: Option<(crowdb_access_iceberg::namespace::NamespaceIdentifier, String)>,
-        context: CatalogContext,
     ) -> Result<(u16, Vec<u8>), IcebergErrorResponse> {
-        let (status, mut body) = match result {
+        let (status, body) = match result {
             Ok(outcome) => (
                 outcome.status,
                 self.payloads
@@ -188,11 +185,30 @@ impl TableWrites {
             ),
             Err(error) => return Err(error),
         };
+        Ok((status, body))
+    }
+
+    fn decorate_response(
+        &self,
+        status: u16,
+        mut body: Vec<u8>,
+        configuration_target: Option<(
+            crowdb_access_iceberg::namespace::NamespaceIdentifier,
+            String,
+            bool,
+        )>,
+        context: CatalogContext,
+        authority: &CatalogAuthority,
+        principal: Principal,
+    ) -> Result<Vec<u8>, IcebergErrorResponse> {
         if status == 200 {
-            if let (Some(config), Some((namespace, name))) = (&self.file_config, configuration_target) {
+            if let (Some(config), Some((namespace, name, staged))) = (&self.file_config, configuration_target)
+            {
                 #[derive(serde::Deserialize)]
                 struct Metadata {
                     location: String,
+                    #[serde(rename = "format-version")]
+                    format_version: u8,
                 }
                 #[derive(serde::Deserialize)]
                 struct Envelope {
@@ -206,10 +222,51 @@ impl TableWrites {
                 if table.catalog != context.catalog {
                     return Err(service_unavailable());
                 }
-                config.append(&mut body, &namespace, &name, table.table)?;
+                config.append(
+                    &mut body,
+                    super::table_credentials::TableFileTarget {
+                        namespace: &namespace,
+                        name: &name,
+                        table: table.table,
+                        version: envelope.metadata.format_version,
+                        staged,
+                    },
+                    super::table_credentials::TableFileAccess {
+                        context,
+                        authority,
+                        principal,
+                    },
+                )?;
             }
         }
-        Ok((status, body))
+        Ok(body)
+    }
+
+    fn configuration_target(
+        &self,
+        uri: &Uri,
+        method: &Method,
+        bytes: &[u8],
+    ) -> Option<(
+        crowdb_access_iceberg::namespace::NamespaceIdentifier,
+        String,
+        bool,
+    )> {
+        if *method == Method::DELETE || uri.path() == "/v1/tables/rename" {
+            return None;
+        }
+        let target = request::parse(uri).ok()?;
+        let (name, staged) = if let Some(name) = target.name {
+            (name, false)
+        } else {
+            let create = crowdb_access_iceberg::commit::CreateTableRequest::decode(
+                bytes,
+                self.limits.preparation.request.json,
+            )
+            .ok()?;
+            (create.name().to_owned(), create.stage_create())
+        };
+        Some((target.namespace, name, staged))
     }
 
     async fn admit(

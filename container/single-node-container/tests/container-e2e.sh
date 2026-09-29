@@ -38,7 +38,7 @@ start_container() {
     fi
     docker run -d --name "$name" \
         "${mount_args[@]}" \
-        -p 127.0.0.1::80 -p 127.0.0.1::81 -p 127.0.0.1::8080 \
+        -p 127.0.0.1:80:80 -p 127.0.0.1::81 -p 127.0.0.1::8080 \
         "$image" >/dev/null
     for attempt in $(seq 1 240); do
         state=$(docker inspect --format '{{.State.Status}}' "$name")

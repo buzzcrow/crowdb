@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, CatalogLifecycle, CatalogRepository, CatalogStore, FormatAction, RootState},
+    catalog::{
+        CatalogAuthority, CatalogContext, CatalogLifecycle, CatalogRepository, CatalogStore, FormatAction,
+        RootState,
+    },
     commit::{TableCreateJournal, TableCreatePhase},
     file::FileGrantIssuer,
     key::{OperationId, TableId},
@@ -30,18 +33,59 @@ pub(super) struct TableCredentials {
 #[derive(Clone)]
 pub(super) struct TableFileConfig {
     endpoint: String,
+    issuer: Arc<FileGrantIssuer>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct TableFileTarget<'a> {
+    pub(super) namespace: &'a NamespaceIdentifier,
+    pub(super) name: &'a str,
+    pub(super) table: TableId,
+    pub(super) version: u8,
+    pub(super) staged: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct TableFileAccess<'a> {
+    pub(super) context: CatalogContext,
+    pub(super) authority: &'a CatalogAuthority,
+    pub(super) principal: Principal,
 }
 
 impl TableFileConfig {
     pub(super) fn append(
         &self,
         bytes: &mut Vec<u8>,
-        namespace: &NamespaceIdentifier,
-        name: &str,
-        table: TableId,
+        target: TableFileTarget<'_>,
+        access: TableFileAccess<'_>,
     ) -> Result<(), IcebergErrorResponse> {
-        let config = serde_json::to_vec(&self.properties(namespace, name, table))
-            .map_err(|_| service_unavailable())?;
+        let mut properties = self.properties(target.namespace, target.name, target.table);
+        let credentials = FileDelegationLimits {
+            ttl_ms: 900_000,
+            max_request_bytes: 1024 * 1024 * 1024,
+            max_file_bytes: 1024 * 1024 * 1024 * 1024,
+        }
+        .issue(
+            &self.issuer,
+            access.principal,
+            access.context,
+            access.authority,
+            FileDelegationTarget {
+                table: target.table,
+                format_version: target.version,
+                staged: target.staged,
+            },
+            now_ms()?,
+        )
+        .map_err(|_| service_unavailable())?;
+        properties.insert("s3.access-key-id", credentials.access_key_id().to_owned());
+        properties.insert("s3.secret-access-key", credentials.secret_access_key().to_owned());
+        properties.insert("s3.session-token", credentials.session_token().to_owned());
+        properties.insert(
+            "s3.session-token-expires-at-ms",
+            credentials.grant().expires_ms.to_string(),
+        );
+        let config = serde_json::to_vec(&properties).map_err(|_| service_unavailable())?;
         if bytes.last() != Some(&b'}')
             || bytes.len() + config.len() + 16 > crowdb_access_iceberg::operation::MAX_PAYLOAD_BYTES
         {
@@ -53,7 +97,10 @@ impl TableFileConfig {
         bytes.push(b'}');
         Ok(())
     }
-    pub(super) fn new(mut endpoint: String) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
+    pub(super) fn new(
+        mut endpoint: String,
+        secret: [u8; 32],
+    ) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
         let uri: hyper::Uri = endpoint
             .parse()
             .map_err(|_| crowdb_access_iceberg::error::ValidationError::Text)?;
@@ -69,7 +116,13 @@ impl TableFileConfig {
             return Err(crowdb_access_iceberg::error::ValidationError::Text);
         }
         endpoint.truncate(endpoint.trim_end_matches('/').len());
-        Ok(Self { endpoint })
+        Ok(Self {
+            endpoint,
+            issuer: Arc::new(
+                FileGrantIssuer::new(secret, 900_000)
+                    .map_err(|_| crowdb_access_iceberg::error::ValidationError::Record)?,
+            ),
+        })
     }
 
     pub(super) fn properties(

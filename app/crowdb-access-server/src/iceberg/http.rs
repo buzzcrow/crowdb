@@ -186,7 +186,10 @@ impl IcebergHttpService {
         store: Arc<Store>,
         endpoint: String,
     ) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
-        let config = super::table_credentials::TableFileConfig::new(endpoint)?;
+        let config = super::table_credentials::TableFileConfig::new(
+            endpoint,
+            self.authentication.namespace_token_key(),
+        )?;
         self.tables
             .as_mut()
             .ok_or(crowdb_access_iceberg::error::ValidationError::Record)?
@@ -311,13 +314,13 @@ impl IcebergHttpService {
                     .table_writes
                     .as_ref()
                     .ok_or_else(super::table_read::unsupported)?;
-                Box::pin(writes.execute(root.context, authority.capabilities, principal, request)).await
+                Box::pin(writes.execute(root.context, &authority, principal, request)).await
             }
             Route::TableList | Route::TableLoad | Route::TableExists => {
                 self.tables
                     .as_ref()
                     .ok_or_else(super::table_read::unsupported)?
-                    .read(root.context, authority.capabilities, &request)
+                    .read(root.context, &authority, principal, &request)
                     .await
             }
             _ => {

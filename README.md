@@ -33,9 +33,11 @@ Read the full motivation in
 
 ## Development preview
 
-Version `0.1.0-dev` is being prepared for public evaluation on Linux amd64.
-Use disposable data. Production use and on-disk upgrade compatibility are not
-supported, and Dataset and direct GPU delivery are not available yet.
+The [0.1.0 Linux amd64 container](https://hub.docker.com/r/crowdb/crowdb-iceberg/tags)
+is available for public evaluation. Use disposable data. Production use and
+on-disk upgrade compatibility are not supported, and Dataset and direct GPU
+delivery are not available yet. The container's PyIceberg write and pandas
+example is in the [quick start](https://crowdb.dev/docs/quickstart/).
 
 - [Project homepage](https://crowdb.dev/)
 - [Quick start](https://crowdb.dev/docs/quickstart/)

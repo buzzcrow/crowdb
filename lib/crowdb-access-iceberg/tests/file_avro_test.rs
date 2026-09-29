@@ -5,12 +5,38 @@ use std::sync::{atomic::Ordering, Arc};
 
 use blocks::TestBlocks;
 use crowdb_access_iceberg::file::{
-    AvroBlocks, AvroContainerError, AvroDatumLimits, AvroLimits, AvroRecords, ContentFormat, FileContent,
-    FileIdentity, FileKind, FileRecord, FileTreeWriter, TableLocation,
+    AvroBlock, AvroBlocks, AvroCodec, AvroContainerError, AvroDatumLimits, AvroLimits, AvroRecords,
+    ContentFormat, FileContent, FileIdentity, FileKind, FileRecord, FileTreeWriter, FormatHint,
+    TableLocation,
 };
 use crowdb_access_iceberg::key::{CatalogId, FileId, TableId};
 
 const SYNC: [u8; 16] = [42; 16];
+
+#[test]
+fn pyiceberg_deflate_trailer_is_checked() {
+    let decode = |encoded: Vec<u8>| {
+        AvroBlock {
+            records: 1,
+            payload: FormatHint {
+                offset: 0,
+                length: encoded.len() as u64,
+            },
+            encoded,
+        }
+        .decode(AvroCodec::Deflate, 64)
+    };
+    assert_eq!(decode(vec![99, 2, 0]).unwrap(), [2]);
+    assert_eq!(decode(vec![99, 2, 0, 0, 3, 0]).unwrap(), [2]);
+    assert!(matches!(
+        decode(vec![99, 2, 0, 0, 3, 1]),
+        Err(AvroContainerError::Framing)
+    ));
+    assert!(matches!(
+        decode(vec![99, 2, 0, 0]),
+        Err(AvroContainerError::Framing)
+    ));
+}
 
 #[tokio::test]
 async fn avro_gc_resume_preserves_digest_and_advances_across_blocks() {

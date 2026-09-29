@@ -52,7 +52,13 @@ async fn optional_access_delegation_list_does_not_change_table_identity() {
         .unwrap();
     assert_eq!(delegated.status(), 200);
     let delegated: Value = delegated.json().await.unwrap();
-    assert_eq!(plain, delegated);
+    assert_eq!(plain["metadata"], delegated["metadata"]);
+    assert_eq!(plain["metadata-location"], delegated["metadata-location"]);
+    for key in ["s3.endpoint", "client.refresh-credentials-endpoint"] {
+        assert_eq!(plain["config"][key], delegated["config"][key]);
+    }
+    assert!(plain["config"]["s3.session-token"].is_string());
+    assert!(delegated["config"]["s3.session-token"].is_string());
     fixture.finish().await;
 }
 
@@ -74,7 +80,7 @@ async fn successful_load_counts_selected_version_and_emitted_response() {
 }
 
 #[tokio::test]
-async fn configured_load_etag_includes_sdk_configuration_and_preserves_conditionals() {
+async fn configured_load_refreshes_sdk_credentials_even_with_a_conditional_request() {
     use sha2::{Digest, Sha256};
     let fixture = TestTableHttp::vending().await;
     let (head, _) = fixture.install("events").await;
@@ -91,6 +97,7 @@ async fn configured_load_etag_includes_sdk_configuration_and_preserves_condition
         .await;
     assert_eq!(loaded.status(), 200);
     let etag = loaded.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(loaded.headers()["cache-control"], "no-store");
     let bytes = loaded.bytes().await.unwrap();
     let mut digest = Sha256::new();
     digest.update(metadata_etag.as_bytes());
@@ -99,12 +106,19 @@ async fn configured_load_etag_includes_sdk_configuration_and_preserves_condition
     assert_ne!(etag, metadata_etag);
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(body["config"]["s3.endpoint"].is_string());
+    assert!(body["config"]["s3.access-key-id"].is_string());
+    assert!(body["config"]["s3.secret-access-key"].is_string());
+    assert!(body["config"]["s3.session-token"].is_string());
     let unchanged = fixture
         .request(Method::GET, PATH, "r", Some(&format!("W/{etag}")))
         .await;
-    assert_eq!(unchanged.status(), 304);
-    assert_eq!(unchanged.headers()["etag"], etag);
-    assert!(unchanged.bytes().await.unwrap().is_empty());
+    assert_eq!(unchanged.status(), 200);
+    assert_eq!(unchanged.headers()["cache-control"], "no-store");
+    assert!(
+        serde_json::from_slice::<Value>(&unchanged.bytes().await.unwrap()).unwrap()["config"]
+            ["s3.session-token"]
+            .is_string()
+    );
     fixture.finish().await;
 }
 

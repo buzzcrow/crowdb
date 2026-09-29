@@ -222,7 +222,7 @@ fn primitive(schema: &AvroSchema, node: &Node) -> bool {
     matches!(
         node,
         Node::Boolean | Node::Bytes | Node::Int | Node::Long | Node::String
-    ) || matches!(node, Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int))
+    ) || matches!(node, Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int | Node::Long))
         || metric_map::layout(schema, node).is_some()
 }
 
@@ -233,7 +233,9 @@ fn scalar_type(schema: &AvroSchema, index: usize) -> Option<AvroScalarType> {
         Node::Int => Some(AvroScalarType::Int),
         Node::Long => Some(AvroScalarType::Long),
         Node::String => Some(AvroScalarType::String),
-        Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int) => Some(AvroScalarType::IntList),
+        Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int | Node::Long) => {
+            Some(AvroScalarType::IntList)
+        }
         node @ Node::LogicalMap(_) => metric_map::layout(schema, node).map(|(kind, _)| kind),
         Node::Union(branches) => branches.iter().find_map(|branch| scalar_type(schema, *branch)),
         _ => None,
@@ -291,7 +293,7 @@ pub(super) fn read_scalar<'data>(
                 std::str::from_utf8(input.take(length)?).map_err(|_| AvroContainerError::Schema)?,
             )
         }
-        Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int) => {
+        Node::Array(child, _) if matches!(schema.nodes[*child], Node::Int | Node::Long) => {
             AvroScalar::IntList(AvroIntList(input.take_remaining()?))
         }
         node @ Node::LogicalMap(_) => {

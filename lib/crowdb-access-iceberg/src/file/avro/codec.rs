@@ -64,10 +64,29 @@ fn inflate(encoded: &[u8], limit: usize) -> Result<Vec<u8>, AvroContainerError> 
     if decoder.total_out() > limit as u64 {
         return Err(AvroContainerError::Bounds);
     }
-    if status != Status::StreamEnd || decoder.total_in() != encoded.len() as u64 {
+    if status != Status::StreamEnd {
         return Err(AvroContainerError::Framing);
     }
     let length = usize::try_from(decoder.total_out()).map_err(|_| AvroContainerError::Bounds)?;
     output.truncate(length);
+    let consumed = usize::try_from(decoder.total_in()).map_err(|_| AvroContainerError::Bounds)?;
+    let trailer = &encoded[consumed..];
+    if !trailer.is_empty() && !pyiceberg_adler_prefix(&output, trailer) {
+        return Err(AvroContainerError::Framing);
+    }
     Ok(output)
+}
+
+fn pyiceberg_adler_prefix(decoded: &[u8], trailer: &[u8]) -> bool {
+    // PyIceberg 0.11 writes zlib.compress(data)[2:-1], leaving three Adler-32 bytes.
+    if trailer.len() != 3 {
+        return false;
+    }
+    let mut a = 1_u32;
+    let mut b = 0_u32;
+    for byte in decoded {
+        a = (a + u32::from(*byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    trailer == &((b << 16) | a).to_be_bytes()[..3]
 }

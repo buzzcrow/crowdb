@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::{atomic::AtomicUsize, Arc};
 
 use crowdb_access_iceberg::{
-    catalog::{Capabilities, CatalogContext, CatalogError, FormatAction},
+    catalog::{CatalogAuthority, CatalogContext, CatalogError, FormatAction},
     error::ValidationError,
     key::NameSuffix,
     namespace::NamespaceIdentifier,
     table::{SnapshotLoadingMode, TableListLimits, TableLister, TableLoad, TableLoader},
-    wire::IcebergErrorResponse,
+    wire::{IcebergErrorResponse, Principal},
 };
 use crowdb_access_iceberg::{file::FileBlockStore, namespace::NamespaceStore, table::TableMetadataLimits};
 use hyper::{header, Method, Request, Response};
@@ -20,6 +20,12 @@ use super::{
 };
 
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+struct TableReadAccess<'a> {
+    context: CatalogContext,
+    authority: &'a CatalogAuthority,
+    principal: Principal,
+}
 
 pub(super) struct TableHttp {
     loader: TableLoader,
@@ -55,12 +61,14 @@ impl TableHttp {
     pub(super) async fn read(
         &self,
         context: CatalogContext,
-        capabilities: Capabilities,
+        authority: &CatalogAuthority,
+        principal: Principal,
         request: &Request<hyper::body::Incoming>,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         if request.method() != Method::GET && request.method() != Method::HEAD {
             return Err(unsupported());
         }
+        let capabilities = authority.capabilities;
         let suffix = request
             .uri()
             .path()
@@ -101,8 +109,11 @@ impl TableHttp {
                 response(204, Vec::new())
             } else {
                 self.load(
-                    context,
-                    capabilities,
+                    TableReadAccess {
+                        context,
+                        authority,
+                        principal,
+                    },
                     &namespace,
                     &name,
                     &mut parameters,
@@ -123,13 +134,14 @@ impl TableHttp {
 
     async fn load(
         &self,
-        context: CatalogContext,
-        capabilities: Capabilities,
+        access: TableReadAccess<'_>,
         namespace: &NamespaceIdentifier,
         name: &str,
         parameters: &mut BTreeMap<String, String>,
         headers: &hyper::HeaderMap,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
+        let context = access.context;
+        let capabilities = access.authority.capabilities;
         let mode = match parameters.remove("snapshots").as_deref() {
             None | Some("all") => SnapshotLoadingMode::All,
             Some("refs") => SnapshotLoadingMode::Refs,
@@ -163,7 +175,21 @@ impl TableHttp {
                 append(&mut bytes, &metadata)?;
                 append(&mut bytes, b"}")?;
                 let etag = if let Some(config) = &self.file_config {
-                    config.append(&mut bytes, namespace, name, head.table)?;
+                    config.append(
+                        &mut bytes,
+                        super::table_credentials::TableFileTarget {
+                            namespace,
+                            name,
+                            table: head.table,
+                            version: head.format_version,
+                            staged: false,
+                        },
+                        super::table_credentials::TableFileAccess {
+                            context,
+                            authority: access.authority,
+                            principal: access.principal,
+                        },
+                    )?;
                     let mut digest = Sha256::new();
                     digest.update(etag.as_bytes());
                     digest.update(&bytes);
@@ -171,12 +197,13 @@ impl TableHttp {
                 } else {
                     etag
                 };
-                let unchanged = condition.as_deref().is_some_and(|header| {
-                    header.split(',').any(|tag| {
-                        let tag = tag.trim();
-                        tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag
-                    })
-                });
+                let unchanged = self.file_config.is_none()
+                    && condition.as_deref().is_some_and(|header| {
+                        header.split(',').any(|tag| {
+                            let tag = tag.trim();
+                            tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag
+                        })
+                    });
                 (
                     if unchanged {
                         response(304, Vec::new())
@@ -190,6 +217,12 @@ impl TableHttp {
         result
             .headers_mut()
             .insert(header::ETAG, etag.parse().map_err(|_| service_unavailable())?);
+        if self.file_config.is_some() {
+            result.headers_mut().insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-store"),
+            );
+        }
         Ok(result)
     }
 
