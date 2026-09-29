@@ -77,14 +77,6 @@ Caches, selected ORC and container engine workflows remain separate.
   engine and optional ingest scenarios against the single-node image; publish
   only tested compatibility recipes.
 
-### Planned — Console authority and deployment
-
-- **[R188](R188-console-group0-authority.md)** — Group 0 authority and
-  deployment configuration cleanup — Area: console / CLI / KV — Separate bare-metal launch policy from
-  cluster sysdata, remove the mixed local topology fallback, and finish
-  cross-mode console consistency without moving Docker process state into
-  Group 0.
-
 ### High Priority
 
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
