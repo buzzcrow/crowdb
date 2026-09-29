@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R192** — Bump this line in the same commit when adding a new item.
+**Next R number: R193** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -44,6 +44,11 @@ optional cuObject/RDMA acceleration after the TCP baseline is correct and measur
   Area: access server / S3 / Iceberg / chunk IO / chunkdb — Give S3 and Iceberg
   distinct chunk types, independent small-write pools and EC/prefetch settings,
   and move protocol storage wiring into their access libraries.
+- **[R192](R192-chunkio-deployment-protection.md)** — explicit protection and
+  strip I/O — Area: KV / chunk IO / chunkdb / deployment — Require at least
+  three nodes for production and preserve service after one node fails. Keep
+  single-node as an explicit, unprotected test mode with one 1 MiB mirror
+  strip. No dedicated two-node deployment mode.
 - **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
   reclamation — Area: access server / S3 / chunkdb — **Deferred on R95.** Turn
   exact pending shared ranges into qualified, restart-safe physical deletion.
