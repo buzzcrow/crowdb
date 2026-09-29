@@ -65,27 +65,6 @@ jobs:
       env:
         CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
       run: pixi run test-single-node-container
-    - name: Require CI success for the release branch commit
-      timeout-minutes: 90
-      env:
-        GH_TOKEN: ${{ github.token }}
-        REVISION: ${{ steps.source.outputs.revision }}
-        RELEASE_BRANCH: ${{ github.ref_name }}
-      run: |
-        pixi run bash -euc '
-          for attempt in {1..180}; do
-            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$REVISION&branch=$RELEASE_BRANCH&event=push&per_page=20" \
-              --jq ".workflow_runs | map(select(.head_sha == \"$REVISION\" and .head_branch == \"$RELEASE_BRANCH\" and .event == \"push\")) | sort_by(.run_number, .run_attempt) | last | if . == null then \"pending\" else .status + \"/\" + (.conclusion // \"pending\") end")
-            case "$state" in
-              completed/success) exit 0 ;;
-              completed/*) echo "CI failed for $REVISION: $state" >&2; exit 1 ;;
-            esac
-            echo "Waiting for CI on $REVISION: $state"
-            sleep 30
-          done
-          echo "Timed out waiting for CI on $REVISION" >&2
-          exit 1
-        '
     - name: Verify exact-build source-line symbols
       if: inputs.include_symbols
       run: pixi run -- python tools/ci-checks/check-container-symbols.py

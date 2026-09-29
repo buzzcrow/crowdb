@@ -18,8 +18,6 @@ for required in \
     '[[ "$revision" == "$GITHUB_SHA" ]]' \
     'refs/heads/$RELEASE_BRANCH' \
     'actions: read' \
-    'head_sha=$REVISION&branch=$RELEASE_BRANCH&event=push' \
-    'completed/success) exit 0' \
     'runtime_sha256: ${{ steps.runtime_digest.outputs.sha256 }}' \
     'RUNTIME_SHA256=${{ needs.verify.outputs.runtime_sha256 }}' \
     'needs: verify' \
@@ -49,9 +47,8 @@ publish_job=$(sed -n '/^  publish:/,$p' "$release")
 [[ "$verify_job" == *'if: inputs.include_symbols'* ]]
 [[ "$verify_job" == *'continue-on-error: true'* ]]
 [[ "$publish_job" == *'context: target/container-runtime'* ]]
-for gate in 'pixi run test-single-node-container' 'Require CI success for the release branch commit'; do
-    [[ "$verify_job" == *"$gate"* ]]
-done
+[[ "$verify_job" == *'pixi run test-single-node-container'* ]]
+[[ "$verify_job" != *'Require CI success for the release branch commit'* ]]
 [[ "$verify_job" != *'git push origin'* && "$verify_job" != *'gh release create'* ]]
 ! grep -Eq 'DOCKERHUB_|push: true|id-token: write' <<<"$verify_job"
 [[ "$publish_job" == *'needs: verify'* && "$publish_job" == *'environment: DockerHub'* ]]

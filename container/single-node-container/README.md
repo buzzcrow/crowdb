@@ -39,8 +39,7 @@ The script only dispatches the workflow; it does not change files or push.
 `--symbols` archives the optional exact-build symbol files as a workflow
 artifact. The dry run does not contact GitHub.
 
-The workflow checks that CI passed for the selected release branch commit,
-builds and tests the container, then waits for DockerHub environment approval.
+The workflow builds and tests the container, then waits for DockerHub environment approval.
 Before publishing, it checks that the remote branch still points to the same
 commit. A newer branch commit requires a new run. Each successful run replaces
 `crowdb/crowdb-iceberg:<version>` and signs the new image digest. It does not
