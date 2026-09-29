@@ -111,6 +111,14 @@ pub async fn list_nodes_from_group0(ctx: &OpContext, rack_id: Option<u64>) -> Re
     Ok(nodes)
 }
 
+/// Remove an empty rack after Group 0 confirms no node belongs to it.
+///
+/// # Errors
+/// Returns a conflict if children remain, or the authority error.
+pub async fn remove_rack_from_group0(ctx: &OpContext, rack_id: u64) -> Result<()> {
+    authority::remove_empty_rack(ctx, rack_id).await
+}
+
 // ── rack ────────────────────────────────────────────────────────
 
 /// Add a rack to the local config and group-0 sysdata.

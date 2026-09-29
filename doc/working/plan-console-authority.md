@@ -119,6 +119,8 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   in one Group 0 batch. Two concurrent consoles retain both child IDs; a
   repeated rack add preserves its existing children. Retried node creation
   compares immutable connection identity while preserving live status fields.
+  Registry CLI rack removal now conditionally deletes only a confirmed empty
+  rack; shared and real CLI regressions cover child conflict and absence.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.

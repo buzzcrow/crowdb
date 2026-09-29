@@ -208,5 +208,12 @@ async fn registry_hardware_uses_group_zero_across_cli_invocations() {
         ],
     );
     assert!(run_command(&path, g0.mgmt_port, &["cluster", "node", "list"]).contains("10.0.0.2"));
+    run_command(
+        &path,
+        g0.mgmt_port,
+        &["cluster", "rack", "add", "--id", "3", "--name", "empty"],
+    );
+    run_command(&path, g0.mgmt_port, &["cluster", "rack", "remove", "--id", "3"]);
+    assert!(!run_command(&path, g0.mgmt_port, &["cluster", "rack", "list"]).contains("empty"));
     assert!(!dir.path().join("invalid-legacy.toml").exists());
 }

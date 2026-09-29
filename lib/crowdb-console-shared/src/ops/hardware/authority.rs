@@ -162,3 +162,59 @@ fn same_node_connection(actual: &NodeValue, intended: &NodeValue) -> bool {
         && actual.ssh_user == intended.ssh_user
         && actual.ssh_credential_ref == intended.ssh_credential_ref
 }
+
+/// Delete an empty rack only while its confirmed revision still matches.
+pub(super) async fn remove_empty_rack(ctx: &OpContext, rack_id: u64) -> Result<()> {
+    ready(ctx).await?;
+    let path = RackKey { rack_id }.to_path();
+    for attempt in 0..10u64 {
+        let (rack, revision) = match ctx
+            .kv()
+            .get(0, 0, path.as_bytes(), ReadMode::Linearizable, None)
+            .await?
+        {
+            GetOutcome::Found { value, revision } => (
+                serde_json::from_slice::<RackValue>(&value)
+                    .map_err(|error| Error::Config(error.to_string()))?,
+                revision,
+            ),
+            GetOutcome::NotFound => {
+                return Err(Error::NotFound {
+                    kind: "rack".into(),
+                    id: rack_id.to_string(),
+                })
+            }
+        };
+        if !rack.node_ids.is_empty() || !ctx.sysmd().list_nodes_in_rack(rack_id).await?.is_empty() {
+            return Err(Error::Conflict {
+                kind: "rack with nodes".into(),
+                id: rack_id.to_string(),
+            });
+        }
+        let ops = [BatchOp::Delete {
+            key: path.as_bytes().to_vec().into(),
+        }];
+        match ctx
+            .kv()
+            .batch_write_cas(0, 0, &ops, path.as_bytes(), revision)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(KvError::CasFailed { .. } | KvError::CasBusy) => {
+                tokio::time::sleep(std::time::Duration::from_millis((attempt + 1) * 5)).await;
+            }
+            Err(KvError::OutcomeUnknown) => {
+                return match ctx
+                    .kv()
+                    .get(0, 0, path.as_bytes(), ReadMode::Linearizable, None)
+                    .await?
+                {
+                    GetOutcome::NotFound => Ok(()),
+                    GetOutcome::Found { .. } => Err(KvError::OutcomeUnknown.into()),
+                };
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(KvError::CasBusy.into())
+}

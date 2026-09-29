@@ -90,6 +90,14 @@ async fn separate_consoles_confirm_matching_hardware_and_reject_conflicts() {
     assert!(listed[0].ssh_password.is_none());
     assert!(second.config().nodes.is_empty());
 
+    let occupied = hardware::remove_rack_from_group0(&second, 2).await.unwrap_err();
+    assert!(matches!(occupied, Error::Conflict { .. }), "{occupied:?}");
+    assert!(second.sysmd().get_rack(2).await.unwrap().is_some());
+
+    hardware::add_rack_to_group0(&first, 3, "empty").await.unwrap();
+    hardware::remove_rack_from_group0(&second, 3).await.unwrap();
+    assert!(first.sysmd().get_rack(3).await.unwrap().is_none());
+
     // A repeated rack create preserves its confirmed child membership.
     hardware::add_rack_to_group0(&first, 2, "rack-two").await.unwrap();
     assert_eq!(
