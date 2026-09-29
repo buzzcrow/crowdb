@@ -96,6 +96,11 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   bootstrap intent independently until verified cutover. Update CLI commands,
   Web persistence and S3 mini-cluster callers together; no compatibility reader
   or migration path because the old configuration was never released.
+  S3 mini-clusters now persist versioned local process/seed state rather than
+  `console.toml`; restored KV launch nodes are ephemeral process inputs and the
+  bundled Web uses `WebProcessConfig`. The full persistent S3 stop/restart and
+  range-read E2E passes. Remaining CLI/Web legacy config paths and the shared
+  parser/writer still need removal.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware
@@ -163,7 +168,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   retry copy beside the launch registry, runs the same confirmation path and
   deletes that copy after success. It does not write the mixed console file.
   The legacy CLI/Web path still writes that file; S3 mini-cluster still needs
-  cutover before it can be removed.
+  bootstrap-interruption replay before the old format can be removed. Its
+  completed cluster now restarts from launch-only local state and Group 0
+  seeds; no local topology is loaded after publication. A full persistent S3
+  stop/restart and range-read E2E passes.
 - [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
   records, accept matching content without rewriting revisions, reject conflicts,
   and conditionally create missing records. Reconcile uncertain writes with

@@ -874,7 +874,7 @@ pub async fn local_deploy_diskdb(
     workspace: &std::path::Path,
     cfg: &LocalDiskdbDeployConfig,
 ) -> Result<LocalDiskdbDeploySummary> {
-    let nodes = validate_diskdb_deploy(ctx, cfg)?;
+    let nodes = validate_diskdb_deploy(ctx, cfg).await?;
     ensure_diskdb_hardware(ctx, &nodes).await?;
     let (disk_group_count, disk_count) = provision_diskdb_topology(ctx, &nodes, cfg).await?;
     let ports = alloc_diskdb_ports(workspace, nodes.len())?;
@@ -932,7 +932,7 @@ async fn ensure_diskdb_hardware(ctx: &OpContext, nodes: &[NodeEntry]) -> Result<
     Ok(())
 }
 
-fn validate_diskdb_deploy(ctx: &OpContext, cfg: &LocalDiskdbDeployConfig) -> Result<Vec<NodeEntry>> {
+async fn validate_diskdb_deploy(ctx: &OpContext, cfg: &LocalDiskdbDeployConfig) -> Result<Vec<NodeEntry>> {
     if cfg.disk_groups_per_node == 0 || cfg.disks_per_group == 0 || cfg.data_groups.is_empty() {
         return Err(Error::Validation {
             field: "diskdb_topology".into(),
@@ -947,12 +947,9 @@ fn validate_diskdb_deploy(ctx: &OpContext, cfg: &LocalDiskdbDeployConfig) -> Res
             message: "deploy the KV cluster before DiskDB".into(),
         });
     }
-    let configured_groups = ctx.config().groups.clone();
+    ctx.kv().refresh_topology().await?;
     for group_id in &cfg.data_groups {
-        if !configured_groups
-            .iter()
-            .any(|group| group.store_id == 0 && group.group_id == *group_id)
-        {
+        if ctx.sysmd().get_group(0, *group_id).await?.is_none() {
             return Err(Error::NotFound {
                 kind: "kv_group".into(),
                 id: format!("0:{group_id}"),
