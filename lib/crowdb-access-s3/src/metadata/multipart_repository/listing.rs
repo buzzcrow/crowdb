@@ -51,7 +51,7 @@ impl MultipartRepository {
         let mut start = MetadataKey::multipart_session_key_prefix(&self.tenant, bucket, prefix)?;
         let end = MetadataKey::multipart_session_key_prefix_end(&self.tenant, bucket, prefix)?;
         if let Some(key) = key_marker {
-            let mut after = MetadataKey::multipart_session(
+            let mut after = MetadataKey::multipart_upload_index(
                 &self.tenant,
                 bucket,
                 key,
@@ -82,14 +82,18 @@ impl MultipartRepository {
                 .await?;
             scanned += page.items.len();
             for item in page.items {
-                let session = MultipartSessionRecord::decode_unbound(&item.value)?;
+                let Some(record) = self.store.get(item.value).await? else {
+                    continue;
+                };
+                let session = MultipartSessionRecord::decode_unbound(&record.value)?;
                 if session.bucket_id != bucket
-                    || MetadataKey::multipart_session(
+                    || MetadataKey::multipart_upload_index(
                         &self.tenant,
                         bucket,
                         &session.object_key,
                         &session.upload_id,
                     )? != item.key
+                    || MetadataKey::multipart_session(&self.tenant, bucket, &session.upload_id) != record.key
                 {
                     return Err(MultipartRepositoryError::Conflict);
                 }

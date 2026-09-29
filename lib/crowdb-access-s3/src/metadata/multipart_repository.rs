@@ -58,8 +58,30 @@ impl MultipartRepository {
         if session.phase != MultipartPhase::Open || session.revision != 1 {
             return Err(MultipartRepositoryError::Conflict);
         }
-        let key = self.session_key(session)?;
         let value = session.encode()?;
+        let key = self.session_key(session);
+        let index = MetadataKey::multipart_upload_index(
+            &self.tenant,
+            session.bucket_id,
+            &session.object_key,
+            &session.upload_id,
+        )?;
+        let indexed = self.store.put_if_absent(index.clone(), key.clone()).await;
+        match indexed {
+            Ok(PutIfAbsentOutcome::Inserted { .. }) => {}
+            Ok(PutIfAbsentOutcome::Existing(existing)) if existing.value == key => {}
+            Ok(PutIfAbsentOutcome::Existing(_)) => return Err(MultipartRepositoryError::Conflict),
+            Err(error) => {
+                if !self
+                    .store
+                    .get(index)
+                    .await?
+                    .is_some_and(|entry| entry.value == key)
+                {
+                    return Err(error.into());
+                }
+            }
+        }
         let result = self.store.put_if_absent(key, value.clone()).await;
         match result {
             Ok(PutIfAbsentOutcome::Inserted { .. }) => Ok(session.clone()),
@@ -83,7 +105,7 @@ impl MultipartRepository {
         &self,
         identity: &MultipartSessionRecord,
     ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        let key = self.session_key(identity)?;
+        let key = self.session_key(identity);
         self.store
             .get(key)
             .await?
@@ -116,7 +138,7 @@ impl MultipartRepository {
         {
             return Err(MultipartRepositoryError::Conflict);
         }
-        let key = self.session_key(previous)?;
+        let key = self.session_key(previous);
         let expected = previous.encode()?;
         let value = next.encode()?;
         match self.store.compare_exchange(key, expected, value).await {
@@ -287,12 +309,7 @@ impl MultipartRepository {
         }
     }
 
-    fn session_key(&self, session: &MultipartSessionRecord) -> Result<Vec<u8>, MetadataKeyError> {
-        MetadataKey::multipart_session(
-            &self.tenant,
-            session.bucket_id,
-            &session.object_key,
-            &session.upload_id,
-        )
+    fn session_key(&self, session: &MultipartSessionRecord) -> Vec<u8> {
+        MetadataKey::multipart_session(&self.tenant, session.bucket_id, &session.upload_id)
     }
 }

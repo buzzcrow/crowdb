@@ -5,9 +5,11 @@ use std::fmt;
 
 const BUCKET_NAME_KIND: u8 = 1;
 const OBJECT_KIND: u8 = 2;
-const MULTIPART_SESSION_KIND: u8 = 3;
-const MULTIPART_PART_KIND: u8 = 4;
-const MULTIPART_PART_GENERATION_KIND: u8 = 5;
+const MULTIPART_INDEX_KIND: u8 = 3;
+const MULTIPART_UPLOAD_KIND: u8 = 4;
+const MULTIPART_SESSION_ENTRY: u8 = 0;
+const MULTIPART_PART_ENTRY: u8 = 1;
+const MULTIPART_GENERATION_ENTRY: u8 = 2;
 const MAX_KEY_BYTES: usize = 1024;
 
 /// A tenant namespace identity.
@@ -154,12 +156,12 @@ impl MetadataKey {
         end
     }
 
-    /// Starts the ordered multipart upload interval for one bucket.
+    /// Starts the ordered multipart listing index for one bucket.
     #[must_use]
     pub fn multipart_session_prefix(tenant: &TenantId, bucket: BucketId) -> Vec<u8> {
         let mut key = namespace_prefix(tenant);
         key.extend_from_slice(bucket.as_bytes());
-        key.push(MULTIPART_SESSION_KIND);
+        key.push(MULTIPART_INDEX_KIND);
         key
     }
 
@@ -168,7 +170,7 @@ impl MetadataKey {
     pub fn multipart_session_end(tenant: &TenantId, bucket: BucketId) -> Vec<u8> {
         let mut key = namespace_prefix(tenant);
         key.extend_from_slice(bucket.as_bytes());
-        key.push(MULTIPART_SESSION_KIND + 1);
+        key.push(MULTIPART_INDEX_KIND + 1);
         key
     }
 
@@ -206,11 +208,11 @@ impl MetadataKey {
         Ok(end)
     }
 
-    /// Identifies one upload by object key and stable upload ID.
+    /// Identifies one immutable listing entry by object key and upload ID.
     ///
     /// # Errors
     /// Rejects an empty or oversized object key.
-    pub fn multipart_session(
+    pub fn multipart_upload_index(
         tenant: &TenantId,
         bucket: BucketId,
         object: &[u8],
@@ -223,13 +225,29 @@ impl MetadataKey {
         Ok(key)
     }
 
-    /// Starts the part interval of one upload.
+    /// Starts the session and all part records for one upload.
     #[must_use]
-    pub fn multipart_part_prefix(tenant: &TenantId, bucket: BucketId, upload_id: &[u8; 16]) -> Vec<u8> {
+    pub fn multipart_upload_prefix(tenant: &TenantId, bucket: BucketId, upload_id: &[u8; 16]) -> Vec<u8> {
         let mut key = namespace_prefix(tenant);
         key.extend_from_slice(bucket.as_bytes());
-        key.push(MULTIPART_PART_KIND);
+        key.push(MULTIPART_UPLOAD_KIND);
         key.extend_from_slice(upload_id);
+        key
+    }
+
+    /// Identifies the mutable session inside one upload interval.
+    #[must_use]
+    pub fn multipart_session(tenant: &TenantId, bucket: BucketId, upload_id: &[u8; 16]) -> Vec<u8> {
+        let mut key = Self::multipart_upload_prefix(tenant, bucket, upload_id);
+        key.push(MULTIPART_SESSION_ENTRY);
+        key
+    }
+
+    /// Starts the current-part interval of one upload.
+    #[must_use]
+    pub fn multipart_part_prefix(tenant: &TenantId, bucket: BucketId, upload_id: &[u8; 16]) -> Vec<u8> {
+        let mut key = Self::multipart_upload_prefix(tenant, bucket, upload_id);
+        key.push(MULTIPART_PART_ENTRY);
         key
     }
 
@@ -273,10 +291,8 @@ impl MetadataKey {
         if number == 0 || number > 10_000 || revision == 0 {
             return Err(MetadataKeyError::InvalidPartNumber);
         }
-        let mut key = namespace_prefix(tenant);
-        key.extend_from_slice(bucket.as_bytes());
-        key.push(MULTIPART_PART_GENERATION_KIND);
-        key.extend_from_slice(upload_id);
+        let mut key = Self::multipart_upload_prefix(tenant, bucket, upload_id);
+        key.push(MULTIPART_GENERATION_ENTRY);
         key.extend_from_slice(&number.to_be_bytes());
         key.extend_from_slice(&revision.to_be_bytes());
         Ok(key)

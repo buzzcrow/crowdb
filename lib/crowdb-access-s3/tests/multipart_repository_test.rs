@@ -577,6 +577,47 @@ async fn part_listing_paginates_current_generations_in_number_order() {
 }
 
 #[tokio::test]
+async fn upload_prefix_retains_session_and_replaced_part_generations() {
+    let (repository, _, store) = repository().await;
+    let session = session();
+    repository.begin(&session).await.unwrap();
+    repository.put_stream_part(&session, &part(), 110).await.unwrap();
+    let mut replacement = part();
+    replacement.locations[0].offset += 39;
+    repository
+        .put_stream_part(&session, &replacement, 111)
+        .await
+        .unwrap();
+    repository.abort(&session).await.unwrap();
+
+    let tenant = TenantId::new(b"tenant".to_vec()).unwrap();
+    let prefix = MetadataKey::multipart_upload_prefix(&tenant, session.bucket_id, &session.upload_id);
+    let mut end = prefix.clone();
+    end.push(u8::MAX);
+    let records = store.scan(prefix, end, 10, 1024 * 1024).await.unwrap();
+    assert_eq!(records.len(), 4);
+    assert_eq!(
+        records[0].key,
+        MetadataKey::multipart_session(&tenant, session.bucket_id, &session.upload_id)
+    );
+    assert_eq!(
+        records[1].key,
+        MetadataKey::multipart_part(&tenant, session.bucket_id, &session.upload_id, 1).unwrap()
+    );
+    for revision in [1, 2] {
+        assert!(records.iter().any(|record| record.key
+            == MetadataKey::multipart_part_generation(
+                &tenant,
+                session.bucket_id,
+                &session.upload_id,
+                1,
+                revision,
+            )
+            .unwrap()));
+    }
+}
+
+#[tokio::test]
 async fn upload_listing_filters_terminal_records_and_resumes_same_key() {
     let (repository, _, _) = repository().await;
     let mut first = session();

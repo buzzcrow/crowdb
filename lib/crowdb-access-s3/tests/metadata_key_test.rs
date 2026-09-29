@@ -63,14 +63,16 @@ fn maximum_binary_object_key_stays_within_its_bucket_interval() {
 }
 
 #[test]
-fn multipart_keys_keep_uploads_and_parts_in_separate_bounded_intervals() {
+fn multipart_keys_group_session_current_parts_and_generations_by_upload() {
     let tenant = TenantId::new(b"tenant".to_vec()).unwrap();
     let bucket = BucketId::new([5; 16]);
     let upload = [9; 16];
-    let session = MetadataKey::multipart_session(&tenant, bucket, b"a\0", &upload).unwrap();
+    let index = MetadataKey::multipart_upload_index(&tenant, bucket, b"a\0", &upload).unwrap();
     let start = MetadataKey::multipart_session_prefix(&tenant, bucket);
     let end = MetadataKey::multipart_session_end(&tenant, bucket);
-    assert!(start < session && session < end);
+    assert!(start < index && index < end);
+    let upload_prefix = MetadataKey::multipart_upload_prefix(&tenant, bucket, &upload);
+    let session = MetadataKey::multipart_session(&tenant, bucket, &upload);
     let part_start = MetadataKey::multipart_part_prefix(&tenant, bucket, &upload);
     let part_end = MetadataKey::multipart_part_end(&tenant, bucket, &upload);
     let first = MetadataKey::multipart_part(&tenant, bucket, &upload, 1).unwrap();
@@ -79,7 +81,10 @@ fn multipart_keys_keep_uploads_and_parts_in_separate_bounded_intervals() {
     assert!(MetadataKey::multipart_part(&tenant, bucket, &upload, 0).is_err());
     assert!(MetadataKey::multipart_part(&tenant, bucket, &upload, 10_001).is_err());
     assert!(MetadataKey::object_end(&tenant, bucket) <= start);
-    assert!(end <= part_start);
+    assert!(end <= upload_prefix);
+    assert!(session.starts_with(&upload_prefix));
+    assert!(part_start.starts_with(&upload_prefix));
+    assert!(session < part_start);
     let generation = MetadataKey::multipart_part_generation(&tenant, bucket, &upload, 1, 2).unwrap();
-    assert!(part_end < generation);
+    assert!(part_end < generation && generation.starts_with(&upload_prefix));
 }

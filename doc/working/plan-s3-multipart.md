@@ -38,8 +38,9 @@ Iceberg multipart path.
   confirmation after lost replies. An identical part record retry returns the
   existing revision; a new location remains a replacement. Completion
   snapshots and a predecessor-fenced metadata-only object publication path are
-  in place. The current session, part and generation key families still need
-  grouping under one upload prefix for R95. HTTP wiring remains.
+  in place. The session, current part and immutable generations now share one
+  upload prefix for R95; an immutable object-key/upload-ID index preserves
+  bounded ListMultipartUploads ordering. HTTP wiring remains.
 - [ ] **S3 routes and wire**: classify create/upload/list/complete/abort/list
   uploads, parse bounded completion XML, emit compatible responses and errors.
   Preserve SigV4 authentication and existing basic routes. The repository now
