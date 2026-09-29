@@ -92,3 +92,9 @@ Required gates:
   recovery is bound to its catalog identity and store. Extract the remaining
   protocol-neutral transition decisions while keeping keys, authorization and
   responses in the protocol adapters.
+- A part writer can load `Open` before completion freezes the session and
+  advance the current-part pointer afterward. Publication uses the immutable
+  frozen generation, so the published bytes are stable, but the current pointer
+  may differ at publication time. The acceptance rule above requires a
+  concurrent replacement to prevent publication; add a session fence to part
+  replacement or define an explicit snapshot boundary, then test the race.
