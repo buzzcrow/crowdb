@@ -26,7 +26,7 @@ pub async fn add_rack_to_group0(ctx: &OpContext, rack_id: u64, name: &str) -> Re
         id: rack_id,
         name: name.to_owned(),
     };
-    authority::create(
+    let created = authority::create(
         ctx,
         crowdb_protocol::key::RackKey { rack_id },
         &RackValue {
@@ -35,7 +35,18 @@ pub async fn add_rack_to_group0(ctx: &OpContext, rack_id: u64, name: &str) -> Re
             name: name.to_owned(),
         },
     )
-    .await?;
+    .await;
+    if let Err(Error::Conflict { .. }) = &created {
+        if ctx
+            .sysmd()
+            .get_rack(rack_id)
+            .await?
+            .is_some_and(|rack| rack.name == name)
+        {
+            return Ok(entry);
+        }
+    }
+    created?;
     Ok(entry)
 }
 
@@ -44,13 +55,6 @@ pub async fn add_rack_to_group0(ctx: &OpContext, rack_id: u64, name: &str) -> Re
 /// # Errors
 /// Returns a missing rack, conflicting node, or authority error.
 pub async fn add_node_to_group0(ctx: &OpContext, entry: NodeEntry) -> Result<NodeEntry> {
-    authority::ready(ctx).await?;
-    if ctx.sysmd().get_rack(entry.rack_id).await?.is_none() {
-        return Err(Error::NotFound {
-            kind: "rack".into(),
-            id: entry.rack_id.to_string(),
-        });
-    }
     let value = NodeValue {
         status: HwStatus::Up as i32,
         management_host: entry.host.clone(),
@@ -59,15 +63,7 @@ pub async fn add_node_to_group0(ctx: &OpContext, entry: NodeEntry) -> Result<Nod
         ssh_credential_ref: entry.ssh_credential_ref.clone(),
         ..Default::default()
     };
-    authority::create(
-        ctx,
-        crowdb_protocol::key::NodeKey {
-            rack_id: entry.rack_id,
-            node_id: entry.id,
-        },
-        &value,
-    )
-    .await?;
+    authority::create_node(ctx, entry.rack_id, entry.id, &value).await?;
     Ok(entry)
 }
 

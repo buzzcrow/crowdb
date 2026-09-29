@@ -115,6 +115,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   pass. A real RPC proxy drops the committed rack write reply; a confirmed
   linearizable read recovers the successful outcome. Registry-mode Web,
   deletions, disks and legacy bootstrap still remain.
+  Node creation now conditionally updates rack membership and creates the node
+  in one Group 0 batch. Two concurrent consoles retain both child IDs; a
+  repeated rack add preserves its existing children. Retried node creation
+  compares immutable connection identity while preserving live status fields.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.

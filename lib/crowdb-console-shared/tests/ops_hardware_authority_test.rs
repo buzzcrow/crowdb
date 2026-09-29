@@ -60,6 +60,20 @@ async fn separate_consoles_confirm_matching_hardware_and_reject_conflicts() {
     };
     hardware::add_node_to_group0(&first, node.clone()).await.unwrap();
     hardware::add_node_to_group0(&second, node.clone()).await.unwrap();
+    second
+        .sysmd()
+        .set_node_status(2, 2, crowdb_protocol::common::HwStatus::Maintenance)
+        .await
+        .unwrap();
+    hardware::add_node_to_group0(&first, node.clone()).await.unwrap();
+    assert_eq!(
+        first.sysmd().get_node(2, 2).await.unwrap().unwrap().status,
+        crowdb_protocol::common::HwStatus::Maintenance as i32
+    );
+    assert_eq!(
+        second.sysmd().get_rack(2).await.unwrap().unwrap().node_ids,
+        vec![2]
+    );
     let changed = NodeEntry {
         host: "10.0.0.3".into(),
         ..node
@@ -75,6 +89,54 @@ async fn separate_consoles_confirm_matching_hardware_and_reject_conflicts() {
     assert!(listed[0].ssh_key.is_none());
     assert!(listed[0].ssh_password.is_none());
     assert!(second.config().nodes.is_empty());
+
+    // A repeated rack create preserves its confirmed child membership.
+    hardware::add_rack_to_group0(&first, 2, "rack-two").await.unwrap();
+    assert_eq!(
+        first.sysmd().get_rack(2).await.unwrap().unwrap().node_ids,
+        vec![2]
+    );
+}
+
+#[tokio::test]
+async fn concurrent_node_creates_preserve_both_rack_memberships() {
+    let cluster = KvCluster::start().await;
+    let bootstrap = bootstrap_authority::context(&cluster).await;
+    cluster_ops::init(&bootstrap, &[1]).await.unwrap();
+    let first = OpContext::new(
+        cluster.group0_leader_endpoint.clone(),
+        cluster.mgmt_endpoints.clone(),
+        ConsoleConfig::default(),
+    );
+    let second = OpContext::new(
+        cluster.group0_leader_endpoint.clone(),
+        cluster.mgmt_endpoints.clone(),
+        ConsoleConfig::default(),
+    );
+    hardware::add_rack_to_group0(&first, 7, "rack-seven")
+        .await
+        .unwrap();
+    let node = |id| NodeEntry {
+        id,
+        rack_id: 7,
+        host: format!("10.0.0.{id}"),
+        ssh_port: 22,
+        ssh_user: String::new(),
+        ssh_key: None,
+        ssh_password: None,
+        ssh_credential_ref: None,
+    };
+    let (a, b) = tokio::join!(
+        hardware::add_node_to_group0(&first, node(8)),
+        hardware::add_node_to_group0(&second, node(9))
+    );
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(
+        first.sysmd().get_rack(7).await.unwrap().unwrap().node_ids,
+        vec![8, 9]
+    );
+    assert_eq!(first.sysmd().list_nodes_in_rack(7).await.unwrap().len(), 2);
 }
 
 #[tokio::test]
