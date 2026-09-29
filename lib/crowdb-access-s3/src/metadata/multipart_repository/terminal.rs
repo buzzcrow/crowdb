@@ -7,6 +7,7 @@ use super::{
     MetadataKey, MultipartPhase, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord,
 };
 use crate::metadata::BucketId;
+use crowdb_access_multipart::next_revision;
 
 const MAX_EXPIRY_PAGE: usize = 1_000;
 const MAX_EXPIRY_SCAN_BYTES: usize = 4 * 1024 * 1024;
@@ -110,10 +111,7 @@ impl MultipartRepository {
             return Err(MultipartRepositoryError::Conflict);
         }
         let mut next = current.clone();
-        next.revision = current
-            .revision
-            .checked_add(1)
-            .ok_or(MultipartRepositoryError::Conflict)?;
+        next.revision = next_revision(current.revision).ok_or(MultipartRepositoryError::Conflict)?;
         next.phase = MultipartPhase::Aborted;
         if self.exchange(&current, &next).await? {
             Ok(next)

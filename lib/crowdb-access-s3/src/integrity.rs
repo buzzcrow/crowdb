@@ -24,8 +24,8 @@ pub enum IntegrityError {
 ///
 /// The `ETag` is lowercase hexadecimal MD5 of the logical object bytes. It is
 /// intentionally calculated before metadata publication, never from physical
-/// chunks, so frame and EC boundaries cannot change it. Multipart has its own
-/// future contract.
+/// chunks, so frame and EC boundaries cannot change it. Multipart uses the
+/// selected parts' raw MD5 digests to calculate a composite `ETag`.
 pub struct SinglePartIntegrity {
     md5: md5::Context,
     sha256: Option<Sha256>,

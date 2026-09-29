@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Parse the S3 multipart query surface without enabling HTTP dispatch yet.
+//! Parse the authenticated S3 multipart query surface.
 
 use hyper::{Method, Uri};
 

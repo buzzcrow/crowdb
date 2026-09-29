@@ -15,8 +15,8 @@ use md5::{Digest, Md5};
 mod state;
 
 pub use state::{
-    reserve_part_accounting, validate_selected_parts, MultipartBounds, MultipartPhase, PartAccounting,
-    SelectedPart, StateError,
+    live_at, next_part_revision, next_revision, reserve_part_accounting, validate_selected_parts,
+    MultipartBounds, MultipartPhase, PartAccounting, SelectedPart, StateError,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

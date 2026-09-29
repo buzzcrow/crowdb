@@ -2,9 +2,22 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_access_multipart::{
-    reserve_part_accounting, validate_selected_parts, MultipartBounds, PartAccounting, SelectedPart,
-    StateError,
+    live_at, next_part_revision, next_revision, reserve_part_accounting, validate_selected_parts,
+    MultipartBounds, PartAccounting, SelectedPart, StateError,
 };
+
+#[test]
+fn both_adapters_share_lifetime_and_revision_edges() {
+    assert!(!live_at(100, 200, 99));
+    assert!(live_at(100, 200, 100));
+    assert!(live_at(100, 200, 199));
+    assert!(!live_at(100, 200, 200));
+    assert_eq!(next_revision(1), Some(2));
+    assert_eq!(next_revision(u64::MAX), None);
+    assert_eq!(next_part_revision(None), Some(1));
+    assert_eq!(next_part_revision(Some(1)), Some(2));
+    assert_eq!(next_part_revision(Some(u64::MAX)), None);
+}
 
 fn selected(number: u16, revision: u64) -> SelectedPart {
     SelectedPart {

@@ -4,7 +4,7 @@ use crate::file::{MultipartPart, MultipartPartMutation, MultipartPhase, Multipar
 use crate::key::{CatalogScope, IcebergKey};
 use crate::operation::mutation_identity;
 use crate::record::StorageRecord;
-use crowdb_access_multipart::{reserve_part_accounting, PartAccounting};
+use crowdb_access_multipart::{next_part_revision, reserve_part_accounting, PartAccounting};
 
 use super::{check_live, increment, MultipartRepository};
 
@@ -42,9 +42,7 @@ impl MultipartRepository {
             before.validate_for(&current)?;
         }
         let mut after = part.clone();
-        after.revision = before
-            .as_ref()
-            .map_or(Some(1), |before| before.revision.checked_add(1))
+        after.revision = next_part_revision(before.as_ref().map(|before| before.revision))
             .ok_or(ValidationError::Record)?;
         after.modified_ms = now_ms;
         after.validate_for(&current)?;

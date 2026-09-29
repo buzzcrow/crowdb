@@ -3,6 +3,7 @@
 
 //! CAS-backed multipart authority in the S3 Chunk-KV namespace.
 
+use crowdb_access_multipart::{live_at, next_part_revision, next_revision};
 use std::sync::Arc;
 
 use super::{
@@ -150,7 +151,7 @@ impl MultipartRepository {
         if previous.bucket_id != next.bucket_id
             || previous.object_key != next.object_key
             || previous.upload_id != next.upload_id
-            || previous.revision.checked_add(1) != Some(next.revision)
+            || next_revision(previous.revision) != Some(next.revision)
         {
             return Err(MultipartRepositoryError::Conflict);
         }
@@ -241,8 +242,7 @@ impl MultipartRepository {
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
         if current.phase != MultipartPhase::Open
-            || now_ms < current.created_ms
-            || now_ms >= current.expires_ms
+            || !live_at(current.created_ms, current.expires_ms, now_ms)
             || u64::from(current.max_parts)
                 .checked_mul(current.max_part_bytes)
                 .map_or(true, |bytes| bytes > current.max_staged_bytes)
@@ -260,9 +260,7 @@ impl MultipartRepository {
             }
         }
         let mut after = part.clone();
-        after.revision = before
-            .as_ref()
-            .map_or(Some(1), |before| before.revision.checked_add(1))
+        after.revision = next_part_revision(before.as_ref().map(|before| before.revision))
             .ok_or(MultipartRepositoryError::Conflict)?;
         after.modified_ms = now_ms;
         let value = after.encode()?;

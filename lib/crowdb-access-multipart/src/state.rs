@@ -63,6 +63,27 @@ pub enum StateError {
     InvalidAccounting,
 }
 
+/// Admission time is inclusive at creation and exclusive at expiry.
+#[must_use]
+pub const fn live_at(created_ms: u64, expires_ms: u64, now_ms: u64) -> bool {
+    created_ms <= now_ms && now_ms < expires_ms
+}
+
+/// Returns the next durable session revision without wrapping.
+#[must_use]
+pub const fn next_revision(current: u64) -> Option<u64> {
+    current.checked_add(1)
+}
+
+/// Returns the first or replacement part revision without wrapping.
+#[must_use]
+pub const fn next_part_revision(previous: Option<u64>) -> Option<u64> {
+    match previous {
+        Some(current) => next_revision(current),
+        None => Some(1),
+    }
+}
+
 /// Validates one ordered completion selection independent of wire format.
 ///
 /// # Errors

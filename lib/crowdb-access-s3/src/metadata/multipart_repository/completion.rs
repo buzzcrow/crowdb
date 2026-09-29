@@ -3,7 +3,9 @@
 
 //! Freeze the exact selected part generations before object publication.
 
-use crowdb_access_multipart::{validate_selected_parts, MultipartComposer, SelectedPart};
+use crowdb_access_multipart::{
+    live_at, next_revision, validate_selected_parts, MultipartComposer, SelectedPart,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::{MultipartPhase, MultipartRepository, MultipartRepositoryError, MultipartSessionRecord};
@@ -46,8 +48,7 @@ impl MultipartRepository {
         }
         if current != *session
             || current.phase != MultipartPhase::Open
-            || now_ms < current.created_ms
-            || now_ms >= current.expires_ms
+            || !live_at(current.created_ms, current.expires_ms, now_ms)
             || requested.is_empty()
             || requested.len() > usize::from(current.max_parts)
         {
@@ -86,10 +87,7 @@ impl MultipartRepository {
             .finish()
             .map_err(|_| MultipartRepositoryError::InvalidPart)?;
         let mut next = current.clone();
-        next.revision = current
-            .revision
-            .checked_add(1)
-            .ok_or(MultipartRepositoryError::Conflict)?;
+        next.revision = next_revision(current.revision).ok_or(MultipartRepositoryError::Conflict)?;
         next.phase = MultipartPhase::Publishing;
         next.part_count =
             u16::try_from(selection.len()).map_err(|_| MultipartRepositoryError::InvalidPart)?;

@@ -26,7 +26,10 @@ Iceberg multipart path.
   selection validation, accounting and location composition are now used by
   both adapters; storage CAS and durable record layouts remain protocol-specific.
   Files: shared
-  multipart crate, Iceberg file repository, S3 metadata store.
+  multipart crate, Iceberg file repository, S3 metadata store. Both adapters
+  now also use the same inclusive/exclusive lifetime decision and checked
+  session/part revision advancement. The remaining Iceberg completion/recovery
+  sequencing still needs protocol-neutral extraction.
 
 ## S3 adapter and HTTP
 
