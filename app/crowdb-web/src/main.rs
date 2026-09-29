@@ -68,6 +68,9 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
+    if args.config.is_none() && !args.test_mode {
+        return Err("crowdb-web requires a versioned --config outside test mode".into());
+    }
     let process_config = args.config.as_deref().map(WebProcessConfig::load).transpose()?;
     if args.registry.is_some()
         && process_config
@@ -89,22 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     info!(%addr, "crowdb-web starting");
 
-    // Load the persisted registry; absence yields an empty default.
-    // Mutating handlers (rack/node/server CRUD) write back to this path.
-    let path = if args.test_mode || process_config.is_some() {
-        None
-    } else {
-        crowdb_console_shared::TomlFileEngine::default_path()
-    };
-    let cfg = match path.as_ref() {
-        Some(p) => {
-            let engine = crowdb_console_shared::TomlFileEngine::new(p.clone());
-            crowdb_console_shared::ConsoleConfig::load_with_engine(&engine)?
-        }
-        None => crowdb_console_shared::ConsoleConfig::default(),
-    };
-    let server_count = cfg.servers.len();
-    let mut state = crowdb_web::AppState::with_config(cfg, path).with_test_mode(args.test_mode);
+    let mut state = crowdb_web::AppState::default().with_test_mode(args.test_mode);
     if let Some(config) = process_config {
         state = state.with_process_config(&config);
         state = state.with_management_token(std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN")?)?;
@@ -115,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(started, "reconciled configured service launches");
     }
     tracing::info!(
-        servers = server_count,
+        servers = 0,
         launches = launch_registry
             .as_ref()
             .map_or(0, |registry| registry.launches.len()),

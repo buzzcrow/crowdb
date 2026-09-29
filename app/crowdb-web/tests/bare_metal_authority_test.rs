@@ -199,6 +199,24 @@ async fn bare_metal_hardware_routes_share_confirmed_group_zero_state() {
     assert_eq!(nodes[0]["ssh_credential_ref"], "ops-key");
     assert!(nodes[0].get("ssh_key").is_none());
     assert_eq!(
+        hardware_request(&first, axum::http::Method::GET, "/api/racks/8", None, false)
+            .await
+            .1["name"],
+        "rack-eight"
+    );
+    assert_eq!(
+        hardware_request(&first, axum::http::Method::GET, "/api/racks/8/nodes", None, false)
+            .await
+            .1[0]["id"],
+        9
+    );
+    assert_eq!(
+        hardware_request(&first, axum::http::Method::GET, "/api/nodes/9", None, false)
+            .await
+            .1["host"],
+        "node-nine.example"
+    );
+    assert_eq!(
         hardware_request(&second, axum::http::Method::DELETE, "/api/racks/8", None, true)
             .await
             .0,
@@ -248,6 +266,18 @@ async fn verify_storage_hardware(first: &axum::Router, second: &axum::Router) {
         "hot"
     );
     let disks = "/api/nodes/9/disk-groups/4/disks";
+    assert_eq!(
+        hardware_request(
+            second,
+            axum::http::Method::GET,
+            "/api/nodes/9/disk-groups/4",
+            None,
+            false
+        )
+        .await
+        .1["name"],
+        "hot"
+    );
     let disk = serde_json::json!({
         "disk_id": "0000000000000000-0000000000000009", "disk_type": "Ssd",
         "capacity_bytes": 4096, "zone_size_bytes": 4096, "unit_size_bytes": 4096,
@@ -268,6 +298,22 @@ async fn verify_storage_hardware(first: &axum::Router, second: &axum::Router) {
             .len(),
         1
     );
+    assert_eq!(
+        hardware_request(
+            first,
+            axum::http::Method::GET,
+            "/api/nodes/9/disk-groups/4/disks/0000000000000000-0000000000000009",
+            None,
+            false
+        )
+        .await
+        .1["device_path"],
+        "/dev/test"
+    );
+    verify_storage_removal(first, second).await;
+}
+
+async fn verify_storage_removal(first: &axum::Router, second: &axum::Router) {
     assert_eq!(
         hardware_request(
             first,

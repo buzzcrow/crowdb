@@ -13,6 +13,7 @@ use serde::Deserialize;
 use crate::error::ErrorBody;
 use crate::managed_logical::api_error;
 use crate::state::AppState;
+use crowdb_console_shared::error::Error as ConsoleError;
 
 type ApiError = (StatusCode, Json<ErrorBody>);
 
@@ -41,6 +42,25 @@ pub(crate) async fn list_racks(State(state): State<AppState>) -> Result<Json<Vec
         .await
         .map(Json)
         .map_err(api_error)
+}
+
+pub(crate) async fn get_rack(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<Json<RackEntry>, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::list_racks_from_group0(&ctx)
+        .await
+        .map_err(api_error)?
+        .into_iter()
+        .find(|rack| rack.id == id)
+        .map(Json)
+        .ok_or_else(|| {
+            api_error(ConsoleError::NotFound {
+                kind: "rack".into(),
+                id: id.to_string(),
+            })
+        })
 }
 
 pub(crate) async fn add_rack(
@@ -74,6 +94,36 @@ pub(crate) async fn list_nodes(
         .await
         .map(Json)
         .map_err(api_error)
+}
+
+pub(crate) async fn list_rack_nodes(
+    State(state): State<AppState>,
+    Path(rack_id): Path<u64>,
+) -> Result<Json<Vec<NodeEntry>>, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::list_nodes_from_group0(&ctx, Some(rack_id))
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+pub(crate) async fn get_node(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<Json<NodeEntry>, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::list_nodes_from_group0(&ctx, None)
+        .await
+        .map_err(api_error)?
+        .into_iter()
+        .find(|node| node.id == id)
+        .map(Json)
+        .ok_or_else(|| {
+            api_error(ConsoleError::NotFound {
+                kind: "node".into(),
+                id: id.to_string(),
+            })
+        })
 }
 
 pub(crate) async fn add_node(
@@ -117,6 +167,25 @@ pub(crate) async fn list_disk_groups(
         .map_err(api_error)
 }
 
+pub(crate) async fn get_disk_group(
+    State(state): State<AppState>,
+    Path((node_id, dg_id)): Path<(u64, u64)>,
+) -> Result<Json<DiskGroupEntry>, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::list_disk_groups_from_group0(&ctx, node_id)
+        .await
+        .map_err(api_error)?
+        .into_iter()
+        .find(|group| group.id == dg_id)
+        .map(Json)
+        .ok_or_else(|| {
+            api_error(ConsoleError::NotFound {
+                kind: "disk_group".into(),
+                id: dg_id.to_string(),
+            })
+        })
+}
+
 pub(crate) async fn add_disk_group(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
@@ -149,6 +218,25 @@ pub(crate) async fn list_disks(
         .await
         .map(Json)
         .map_err(api_error)
+}
+
+pub(crate) async fn get_disk(
+    State(state): State<AppState>,
+    Path((node_id, dg_id, disk_id)): Path<(u64, u64, String)>,
+) -> Result<Json<DiskEntry>, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::list_disks_from_group0(&ctx, node_id, dg_id)
+        .await
+        .map_err(api_error)?
+        .into_iter()
+        .find(|disk| disk.disk_id == disk_id)
+        .map(Json)
+        .ok_or_else(|| {
+            api_error(ConsoleError::NotFound {
+                kind: "disk".into(),
+                id: disk_id,
+            })
+        })
 }
 
 pub(crate) async fn add_disk(

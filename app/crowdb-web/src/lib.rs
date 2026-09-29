@@ -88,7 +88,12 @@ pub fn router(state: AppState) -> axum::Router {
                 )
                 .route(
                     "/api/racks/:rack_id",
-                    delete(managed_hardware::remove_rack).route_layer(authorization.clone()),
+                    get(managed_hardware::get_rack)
+                        .merge(delete(managed_hardware::remove_rack).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/racks/:rack_id/nodes",
+                    get(managed_hardware::list_rack_nodes),
                 )
                 .route(
                     "/api/nodes",
@@ -97,7 +102,8 @@ pub fn router(state: AppState) -> axum::Router {
                 )
                 .route(
                     "/api/nodes/:id",
-                    delete(managed_hardware::remove_node).route_layer(authorization.clone()),
+                    get(managed_hardware::get_node)
+                        .merge(delete(managed_hardware::remove_node).route_layer(authorization.clone())),
                 )
                 .route(
                     "/api/nodes/:id/disk-groups",
@@ -106,7 +112,9 @@ pub fn router(state: AppState) -> axum::Router {
                 )
                 .route(
                     "/api/nodes/:id/disk-groups/:dg_id",
-                    delete(managed_hardware::remove_disk_group).route_layer(authorization.clone()),
+                    get(managed_hardware::get_disk_group).merge(
+                        delete(managed_hardware::remove_disk_group).route_layer(authorization.clone()),
+                    ),
                 )
                 .route(
                     "/api/nodes/:id/disk-groups/:dg_id/disks",
@@ -115,7 +123,8 @@ pub fn router(state: AppState) -> axum::Router {
                 )
                 .route(
                     "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id",
-                    delete(managed_hardware::remove_disk).route_layer(authorization.clone()),
+                    get(managed_hardware::get_disk)
+                        .merge(delete(managed_hardware::remove_disk).route_layer(authorization.clone())),
                 );
             managed
                 .merge(hardware)

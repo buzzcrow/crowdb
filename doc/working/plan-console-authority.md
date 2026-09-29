@@ -147,7 +147,11 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   cover missing, duplicate and expired registrations, recovery, and outage
   without stale topology. Docker and launch-route regressions, fmt and clippy
   pass. Logs: `/tmp/crowdb-bare-authority-*.log`. Legacy physical routes and
-  monitor refresh still remain for the mixed-config removal.
+  monitor refresh still remain for the mixed-config removal. Production Web
+  startup now requires a versioned process config, so it never loads the old
+  mixed file; bare-metal rack/node/disk-group/disk detail and collection
+  routes read Group 0 directly. The old in-process router and CLI no-registry
+  paths remain to migrate or remove.
 - [ ] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
   committed records, write only safely missing content, reject conflicts and
   delete topology intent after verified transfer. Clean/destroy use confirmed
