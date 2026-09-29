@@ -2,7 +2,7 @@
 set -euo pipefail
 
 release=.github/workflows/release-container.yml
-ci=.github/workflows/ci.yml
+preview=.github/workflows/docker-preview.yml
 
 events=$(sed -n '/^on:/,/^concurrency:/p' "$release")
 [[ "$events" == *'workflow_dispatch:'* ]]
@@ -55,10 +55,13 @@ done
 [[ "$publish_job" != *'RELEASE_ENABLED'* ]]
 [[ "$publish_job" == *'[[ "$(git rev-parse HEAD)" == "$REVISION" ]]'* ]]
 
-ci_job=$(sed -n '/^  DockerPreview:/,$p' "$ci")
-[[ "$ci_job" == *'contents: read'* && "$ci_job" == *'pixi run test-single-node-container'* ]]
-[[ "$ci_job" == *'Upload preview failure logs'* && "$ci_job" == *'CROWDB_PREVIEW_TEST_ARTIFACTS'* ]]
-! grep -Eq 'secrets\.|docker/login-action|docker/build-push-action' <<<"$ci_job"
+preview_events=$(sed -n '/^on:/,/^jobs:/p' "$preview")
+[[ "$preview_events" == *'workflow_dispatch:'* ]]
+! grep -Eq '^  (push|pull_request|release|create):' <<<"$preview_events"
+preview_job=$(sed -n '/^  DockerPreview:/,$p' "$preview")
+[[ "$preview_job" == *'contents: read'* && "$preview_job" == *'pixi run test-single-node-container'* ]]
+[[ "$preview_job" == *'Upload preview failure logs'* && "$preview_job" == *'CROWDB_PREVIEW_TEST_ARTIFACTS'* ]]
+! grep -Eq 'secrets\.|docker/login-action|docker/build-push-action' <<<"$preview_job"
 
 release_tool=tools/release.py
 for required in '--dry-run' '--execute' '--symbols' 'git", "push", "--atomic"' \
