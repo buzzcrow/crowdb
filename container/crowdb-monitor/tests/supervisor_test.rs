@@ -5,9 +5,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crowdb_monitor::{DeploymentProfile, MonitorPhase, ProbeKind, Supervisor};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
@@ -266,7 +269,25 @@ async fn child_exit_after_probe_failure_is_recorded() {
     let roots = TestRoots::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let probe_healthy = Arc::new(AtomicBool::new(true));
+    let probe_state = Arc::clone(&probe_healthy);
+    let probe_server = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            assert!(stream.read(&mut request).await.unwrap() > 0);
+            let status = if probe_state.load(Ordering::SeqCst) {
+                "200 OK"
+            } else {
+                "503 Service Unavailable"
+            };
+            let response = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
     let mut profile = roots.profile("exec sleep 30".into(), address.port(), 2);
+    profile.services[0].probe.kind = ProbeKind::Http;
+    profile.services[0].probe.target = format!("http://{address}/health");
     profile.services[0].probe.failure_threshold = 5;
     let mut supervisor = Supervisor::new(
         profile,
@@ -279,8 +300,10 @@ async fn child_exit_after_probe_failure_is_recorded() {
     supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
     supervisor.mark_ready().await.unwrap();
     let pid = supervisor.status().services["kv"].pid.unwrap();
-    drop(listener);
+    probe_healthy.store(false, Ordering::SeqCst);
     supervisor.poll_once().await.unwrap();
+    assert_eq!(supervisor.status().phase, MonitorPhase::Restarting);
+    assert!(!supervisor.status().services["kv"].healthy);
     let pid = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
     rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -297,10 +320,11 @@ async fn child_exit_after_probe_failure_is_recorded() {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::task::yield_now().await;
     }
-    let _listener = TcpListener::bind(address).await.unwrap();
+    probe_healthy.store(true, Ordering::SeqCst);
     supervisor.poll_once().await.unwrap();
     assert_eq!(supervisor.status().services["kv"].generation, 2);
     supervisor.shutdown().await.unwrap();
+    probe_server.abort();
     let body = fs::read_to_string(roots.0.join("data/log/monitor/monitor.log")).unwrap();
     assert!(body.contains("\"kind\":\"probe_failed\""));
     assert!(body.contains("\"kind\":\"child_exited\""));
