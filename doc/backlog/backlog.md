@@ -37,12 +37,9 @@ requirement is implemented.
 ### Planned — S3 data access service
 
 R152–R166 delivered the limited basic S3 service, including the restart
-acceptance baseline. R167–R169 defer multipart upload and shared-storage GC
-without blocking basic large-object deletion. R170 separately adds optional
-cuObject/RDMA acceleration after the TCP baseline is correct and measured.
-- **[R167](R167-s3-multipart-upload.md)** — multipart upload — Area: access
-  server / S3 — **Deferred.** Add durable part state, atomic completion, cleanup,
-  and multipart integrity after the basic milestone stabilizes.
+acceptance baseline. Multipart upload is available; R168–R169 defer
+shared-storage GC without blocking basic large-object deletion. R170 adds
+optional cuObject/RDMA acceleration after the TCP baseline is correct and measured.
 - **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
   reclamation — Area: access server / S3 / chunkdb — **Deferred on R95.** Turn
   exact pending shared ranges into qualified, restart-safe physical deletion.

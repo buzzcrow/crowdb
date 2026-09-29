@@ -29,10 +29,11 @@ add metadata writes to the upload path and still miss those pre-record crashes.
    unused. Refuse deletion when reference or reader state cannot be confirmed.
 4. Keep S3 MPU session, current-part and immutable part-generation keys under
    a common upload prefix in Chunk-KV so the scanner can enumerate one upload's
-   references with a bounded prefix scan. R167 owns that key layout and the
-   metadata-only Abort/expiry transition; old part generations remain available
-   until the scanner proves their bytes are unreachable. An aborted or expired
-   upload becomes a candidate only after the age gate and reference checks.
+   references with a bounded prefix scan. The S3 multipart authority owns that
+   key layout and the metadata-only Abort/expiry transition; old part
+   generations remain available until the scanner proves their bytes are
+   unreachable. An aborted or expired upload becomes a candidate only after
+   the age gate and reference checks.
 5. Recheck chunk identity, layout generation and exact range against current
    authority immediately before reclaim. Treat lost delete replies
    idempotently and keep an in-memory scan cursor and bounded work budget.
@@ -42,8 +43,9 @@ add metadata writes to the upload path and still miss those pre-record crashes.
 ## Dependencies
 
 - R92 supplies in-chunk strip reclamation after R95 qualifies dead ranges.
-- R167 supplies grouped MPU keys and durable session, part and completion
-  references. The scanner also recognizes Iceberg's frozen MPU selection.
+- The S3 multipart authority supplies grouped MPU keys and durable session,
+  part and completion references. The scanner also recognizes Iceberg's frozen
+  MPU selection.
 - Reader protection and published generation references must be queryable
   before physical deletion is enabled; R168 may use the qualified range-delete
   interface for ordinary S3 object deletion.
