@@ -44,10 +44,17 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            match crowdb_console_shared::ops::hardware::add_rack(&ctx, rack_id, &name).await {
+            let result = if cli.registry.is_some() {
+                crowdb_console_shared::ops::hardware::add_rack_to_group0(&ctx, rack_id, &name).await
+            } else {
+                crowdb_console_shared::ops::hardware::add_rack(&ctx, rack_id, &name).await
+            };
+            match result {
                 Ok(entry) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
+                    if cli.registry.is_none() {
+                        if let Err(c) = commit_config(cli, &ctx) {
+                            return c;
+                        }
                     }
                     println!("added rack {}", entry.id);
                     ExitCode::SUCCESS
@@ -89,7 +96,17 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            let racks = crowdb_console_shared::ops::hardware::list_racks(&ctx);
+            let racks = if cli.registry.is_some() {
+                match crowdb_console_shared::ops::hardware::list_racks_from_group0(&ctx).await {
+                    Ok(racks) => racks,
+                    Err(error) => {
+                        eprintln!("error: list racks: {error}");
+                        return ExitCode::from(2);
+                    }
+                }
+            } else {
+                crowdb_console_shared::ops::hardware::list_racks(&ctx)
+            };
             if racks.is_empty() {
                 println!("(no racks)");
                 return ExitCode::SUCCESS;
@@ -120,6 +137,8 @@ pub enum NodeVerb {
         ssh_user: String,
         #[arg(short = 'k', long)]
         ssh_key: Option<String>,
+        #[arg(long)]
+        ssh_credential_ref: Option<String>,
     },
     Remove {
         #[arg(short = 'I', long)]
@@ -143,7 +162,12 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
             ssh_port,
             ssh_user,
             ssh_key,
+            ssh_credential_ref,
         } => {
+            if cli.registry.is_some() && ssh_key.is_some() {
+                eprintln!("error: --ssh-key is local secret material; use --ssh-credential-ref with a launch registry");
+                return ExitCode::from(1);
+            }
             let node_id: NodeId = match id.parse() {
                 Ok(n) => n,
                 Err(e) => {
@@ -166,16 +190,23 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                 ssh_user,
                 ssh_key,
                 ssh_password: None,
-                ssh_credential_ref: None,
+                ssh_credential_ref,
             };
             let ctx = match op_context(cli) {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            match crowdb_console_shared::ops::hardware::add_node(&ctx, entry.clone()).await {
+            let result = if cli.registry.is_some() {
+                crowdb_console_shared::ops::hardware::add_node_to_group0(&ctx, entry.clone()).await
+            } else {
+                crowdb_console_shared::ops::hardware::add_node(&ctx, entry.clone()).await
+            };
+            match result {
                 Ok(e) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
+                    if cli.registry.is_none() {
+                        if let Err(c) = commit_config(cli, &ctx) {
+                            return c;
+                        }
                     }
                     println!("added node {} (rack {})", e.id, e.rack_id);
                     ExitCode::SUCCESS
@@ -217,7 +248,17 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            let nodes = crowdb_console_shared::ops::hardware::list_nodes(&ctx, None);
+            let nodes = if cli.registry.is_some() {
+                match crowdb_console_shared::ops::hardware::list_nodes_from_group0(&ctx, None).await {
+                    Ok(nodes) => nodes,
+                    Err(error) => {
+                        eprintln!("error: list nodes: {error}");
+                        return ExitCode::from(2);
+                    }
+                }
+            } else {
+                crowdb_console_shared::ops::hardware::list_nodes(&ctx, None)
+            };
             print_node_table(&nodes)
         }
         NodeVerb::ListRack { rack } => {
@@ -232,7 +273,18 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            let nodes = crowdb_console_shared::ops::hardware::list_nodes(&ctx, Some(rack_id));
+            let nodes = if cli.registry.is_some() {
+                match crowdb_console_shared::ops::hardware::list_nodes_from_group0(&ctx, Some(rack_id)).await
+                {
+                    Ok(nodes) => nodes,
+                    Err(error) => {
+                        eprintln!("error: list nodes: {error}");
+                        return ExitCode::from(2);
+                    }
+                }
+            } else {
+                crowdb_console_shared::ops::hardware::list_nodes(&ctx, Some(rack_id))
+            };
             print_node_table(&nodes)
         }
     }

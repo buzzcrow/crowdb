@@ -105,8 +105,14 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   fields are now part of rack/node records and bootstrap writes the names,
   management host, SSH port/user and reference without copying secret material.
   Bare-metal snapshots expose the same Group 0 values to separate consoles.
-  Exact-value
-  confirmation and the CLI/Web cutover remain.
+  Conditional rack/node creation now confirms matching existing values and
+  rejects conflicting values without changing either console's local topology.
+  Group 0 rack/node lists expose shared names, management hosts, SSH settings
+  and credential references but no private key material. Registry-mode CLI
+  add/list commands use these operations; a real CLI process regression caught
+  a management-port-as-RPC seed and now refreshes topology before the hardware
+  write. Complete Console shared and CLI suites, Rust fmt and workspace clippy
+  pass. Registry-mode Web, deletions, disks and legacy bootstrap still remain.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.

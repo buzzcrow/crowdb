@@ -169,3 +169,44 @@ async fn chunk_commands_and_generic_launch_controls_share_process_identity() {
     }
     assert_eq!(LaunchRegistry::load(&path).unwrap().launches, records);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_hardware_uses_group_zero_across_cli_invocations() {
+    let g0 = common::direct::spawn_group0()
+        .await
+        .expect("KV server binary must be built");
+    let dir = tempdir_in_test_data("cli-registry-hardware");
+    let path = dir.path().join("launches.toml");
+    LaunchRegistry {
+        version: 1,
+        launches: Vec::new(),
+    }
+    .save(&path)
+    .unwrap();
+
+    run_command(
+        &path,
+        g0.mgmt_port,
+        &["cluster", "rack", "add", "--id", "2", "--name", "rack-two"],
+    );
+    assert!(run_command(&path, g0.mgmt_port, &["cluster", "rack", "list"]).contains("rack-two"));
+    run_command(
+        &path,
+        g0.mgmt_port,
+        &[
+            "cluster",
+            "node",
+            "add",
+            "--id",
+            "2",
+            "--rack",
+            "2",
+            "--host",
+            "10.0.0.2",
+            "--ssh-credential-ref",
+            "ops-key",
+        ],
+    );
+    assert!(run_command(&path, g0.mgmt_port, &["cluster", "node", "list"]).contains("10.0.0.2"));
+    assert!(!dir.path().join("invalid-legacy.toml").exists());
+}

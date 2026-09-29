@@ -15,6 +15,106 @@ use crate::config::{DiskEntry, DiskGroupEntry, NodeEntry, RackEntry};
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
+mod authority;
+
+/// Create a rack only after Group 0 confirms the exact record.
+///
+/// # Errors
+/// Returns a conflict for a different existing record, or the authority error.
+pub async fn add_rack_to_group0(ctx: &OpContext, rack_id: u64, name: &str) -> Result<RackEntry> {
+    let entry = RackEntry {
+        id: rack_id,
+        name: name.to_owned(),
+    };
+    authority::create(
+        ctx,
+        crowdb_protocol::key::RackKey { rack_id },
+        &RackValue {
+            status: HwStatus::Up as i32,
+            node_ids: Vec::new(),
+            name: name.to_owned(),
+        },
+    )
+    .await?;
+    Ok(entry)
+}
+
+/// Create a node only after its rack and exact record are confirmed in Group 0.
+///
+/// # Errors
+/// Returns a missing rack, conflicting node, or authority error.
+pub async fn add_node_to_group0(ctx: &OpContext, entry: NodeEntry) -> Result<NodeEntry> {
+    authority::ready(ctx).await?;
+    if ctx.sysmd().get_rack(entry.rack_id).await?.is_none() {
+        return Err(Error::NotFound {
+            kind: "rack".into(),
+            id: entry.rack_id.to_string(),
+        });
+    }
+    let value = NodeValue {
+        status: HwStatus::Up as i32,
+        management_host: entry.host.clone(),
+        ssh_port: entry.ssh_port,
+        ssh_user: entry.ssh_user.clone(),
+        ssh_credential_ref: entry.ssh_credential_ref.clone(),
+        ..Default::default()
+    };
+    authority::create(
+        ctx,
+        crowdb_protocol::key::NodeKey {
+            rack_id: entry.rack_id,
+            node_id: entry.id,
+        },
+        &value,
+    )
+    .await?;
+    Ok(entry)
+}
+
+/// Read rack names from confirmed Group 0 state.
+///
+/// # Errors
+/// Returns an authority error; a local topology file is never consulted.
+pub async fn list_racks_from_group0(ctx: &OpContext) -> Result<Vec<RackEntry>> {
+    authority::ready(ctx).await?;
+    let mut racks: Vec<_> = ctx
+        .sysmd()
+        .list_racks()
+        .await?
+        .into_iter()
+        .map(|(id, value)| RackEntry { id, name: value.name })
+        .collect();
+    racks.sort_unstable_by_key(|rack| rack.id);
+    Ok(racks)
+}
+
+/// Read node connection identity from confirmed Group 0 state.
+///
+/// # Errors
+/// Returns an authority error; private SSH material is never returned.
+pub async fn list_nodes_from_group0(ctx: &OpContext, rack_id: Option<u64>) -> Result<Vec<NodeEntry>> {
+    authority::ready(ctx).await?;
+    let mut nodes: Vec<_> = ctx
+        .sysmd()
+        .list_nodes()
+        .await?
+        .into_iter()
+        .filter(|(rack, _, _)| rack_id.is_none() || rack_id == Some(*rack))
+        .map(|(rack_id, id, value)| NodeEntry {
+            id,
+            rack_id,
+            host: value.management_host,
+            ssh_port: value.ssh_port,
+            ssh_user: value.ssh_user,
+            ssh_key: None,
+            ssh_password: None,
+            ssh_credential_ref: value.ssh_credential_ref,
+        })
+        .collect();
+    nodes.sort_unstable_by_key(|node| node.id);
+    Ok(nodes)
+}
+
 // ── rack ────────────────────────────────────────────────────────
 
 /// Add a rack to the local config and group-0 sysdata.
