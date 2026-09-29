@@ -108,6 +108,9 @@ async fn start_with_profile(
 ) -> Result<MiniClusterStatus> {
     archive_incomplete_attempt(data_dir)?;
     validate_location(data_dir)?;
+    std::fs::create_dir_all(data_dir)?;
+    let canonical_root = std::fs::canonicalize(data_dir)?;
+    let data_dir = canonical_root.as_path();
     let marker_path = data_dir.join(MARKER_FILE);
     if marker_path.exists() {
         let (_, record) = load(data_dir)?;
@@ -129,7 +132,6 @@ async fn start_with_profile(
         return restart(data_dir).await;
     }
 
-    std::fs::create_dir_all(data_dir)?;
     if storage_profile == StorageProfile::Persistent {
         RuntimeNamespace::persistent(data_dir, NAMESPACE_ID).map_err(namespace_error)?;
     }

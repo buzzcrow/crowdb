@@ -17,9 +17,14 @@ fn cli() -> Command {
 fn interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file() {
     let directory = TestDir::new("s3-bootstrap-replay-cli").expect("test directory");
     let root = directory.path();
+    let workspace = crowdb_test_harness::test_dirs::workspace_root();
+    let relative_root = root
+        .strip_prefix(&workspace)
+        .expect("test root is below workspace");
     let failed = cli()
+        .current_dir(&workspace)
         .args(["s3", "cluster", "start", "--root"])
-        .arg(root)
+        .arg(relative_root)
         .env("CROWDB_CHUNK_KV_SERVER_BIN", "/bin/false")
         .output()
         .expect("run interrupted launch");
@@ -75,6 +80,11 @@ fn write_cluster_record(root: &Path, endpoint: &str) {
         serde_json::to_vec_pretty(&record).expect("record json"),
     )
     .expect("write record");
+    std::fs::write(
+        root.join("s3-local-state.toml"),
+        "version = 1\ngroup0_seeds = ['http://127.0.0.1:10000']\n[[service]]\nid = 'kv-1'\nurl = 'http://127.0.0.1:10000'\nnode_id = 1\n",
+    )
+    .expect("write launch-only state");
 }
 
 fn mock_http_once(response_content_type: &str, response_body: &[u8]) -> (String, mpsc::Receiver<Vec<u8>>) {

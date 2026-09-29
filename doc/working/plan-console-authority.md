@@ -188,6 +188,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   The CLI integration test reproduces this interruption and recovery. Partial
   storage-service launch sets still fail closed and need completion or an
   explicit operator recovery path; mixed CLI/Web config remains to remove.
+  S3 now canonicalizes a relative root before creating child launch paths;
+  the interrupted CLI test covers a relative root. The S3 CLI mock fixture
+  supplies the required launch-only state; its three previously failing cases
+  now pass. The complete Console gate needs rerun.
 - [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
   records, accept matching content without rewriting revisions, reject conflicts,
   and conditionally create missing records. Reconcile uncertain writes with
