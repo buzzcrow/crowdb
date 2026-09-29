@@ -30,6 +30,9 @@ pub const CHUNK_TYPE_REPO: u8 = 0;
 pub const CHUNK_TYPE_WAL: u8 = 1;
 pub const CHUNK_TYPE_BTREE_PAGE: u8 = 2;
 pub const CHUNK_TYPE_PAGE_INDEX: u8 = 3;
+pub const CHUNK_TYPE_STREAM: u8 = 4;
+pub const CHUNK_TYPE_S3: u8 = 5;
+pub const CHUNK_TYPE_ICEBERG_TABLE: u8 = 6;
 
 /// 128-bit chunk ID parts — mirrors the proto `ChunkId` (high, low).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

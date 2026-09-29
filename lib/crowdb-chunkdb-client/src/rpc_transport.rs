@@ -1519,6 +1519,8 @@ fn chunk_type_to_fb(t: ProtoChunkType) -> FBChunkType {
         ProtoChunkType::BtreePage => FBChunkType::BtreePage,
         ProtoChunkType::PageIndex => FBChunkType::PageIndex,
         ProtoChunkType::Stream => FBChunkType::Stream,
+        ProtoChunkType::S3 => FBChunkType::S3,
+        ProtoChunkType::IcebergTable => FBChunkType::IcebergTable,
     }
 }
 
@@ -1528,6 +1530,8 @@ fn fb_chunk_type_to_proto(t: FBChunkType) -> ProtoChunkType {
         FBChunkType::BtreePage => ProtoChunkType::BtreePage,
         FBChunkType::PageIndex => ProtoChunkType::PageIndex,
         FBChunkType::Stream => ProtoChunkType::Stream,
+        FBChunkType::S3 => ProtoChunkType::S3,
+        FBChunkType::IcebergTable => ProtoChunkType::IcebergTable,
         _ => ProtoChunkType::Repo,
     }
 }

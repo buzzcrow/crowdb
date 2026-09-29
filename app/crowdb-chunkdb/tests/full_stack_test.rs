@@ -2911,6 +2911,54 @@ async fn generated_chunk_ids_stay_with_the_serving_range_owner() {
 }
 
 #[tokio::test]
+async fn allocated_chunk_type_matches_its_id_prefix() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+
+    for chunk_type in [ChunkType::S3, ChunkType::IcebergTable] {
+        let chunk = harness
+            .handler
+            .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 1, chunk_type, 0, 0)
+            .await
+            .expect("typed allocation");
+        let id = chunk.id.expect("allocated id");
+        assert_eq!(id.high >> 56, chunk_type as u64);
+        assert_eq!(chunk.chunk_type, chunk_type as i32);
+        let persisted = harness.handler.query_chunk(&id).await.expect("persisted chunk");
+        assert_eq!(persisted.chunk_type, chunk_type as i32);
+    }
+
+    let mismatched = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
+    let result = harness
+        .handler
+        .allocate_chunk(
+            Some(mismatched),
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            1,
+            ChunkType::IcebergTable,
+            0,
+            0,
+        )
+        .await;
+    assert!(matches!(result, Err(LifecycleError::InvalidRequest(_))));
+    assert!(matches!(
+        harness.handler.query_chunk(&mismatched).await,
+        Err(LifecycleError::ChunkNotFound)
+    ));
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {

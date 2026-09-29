@@ -356,6 +356,11 @@ impl LifecycleHandler {
             Some(id) => id,
             None => self.generate_owned_chunk_id(chunk_type)?,
         };
+        if (id.high >> 56) != u64::from(chunk_type as u8) {
+            return Err(LifecycleError::InvalidRequest(
+                "chunk id prefix does not match chunk type".into(),
+            ));
+        }
         self.check_range(&id)?;
         let mut allocation_guard = AllocationMetricGuard::new(self.metrics.clone());
 

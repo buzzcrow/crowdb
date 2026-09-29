@@ -67,6 +67,8 @@ enum FBChunkType : int16 {
     BtreePage = 2,
     PageIndex = 3,
     Stream = 4,
+    S3 = 5,
+    IcebergTable = 6,
 }
 
 // ── Strip types ──────────────────────────────────────────────────

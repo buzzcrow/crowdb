@@ -6,8 +6,8 @@
 use std::collections::HashSet;
 
 use crowdb_protocol::chunk_id::{
-    generate, is_zero, ChunkIdParts, CHUNK_TYPE_BTREE_PAGE, CHUNK_TYPE_PAGE_INDEX, CHUNK_TYPE_REPO,
-    CHUNK_TYPE_WAL,
+    generate, is_zero, ChunkIdParts, CHUNK_TYPE_BTREE_PAGE, CHUNK_TYPE_ICEBERG_TABLE, CHUNK_TYPE_PAGE_INDEX,
+    CHUNK_TYPE_REPO, CHUNK_TYPE_S3, CHUNK_TYPE_STREAM, CHUNK_TYPE_WAL,
 };
 use crowdb_protocol::common::ChunkId;
 
@@ -18,6 +18,9 @@ fn generate_sets_chunk_type() {
         CHUNK_TYPE_WAL,
         CHUNK_TYPE_BTREE_PAGE,
         CHUNK_TYPE_PAGE_INDEX,
+        CHUNK_TYPE_STREAM,
+        CHUNK_TYPE_S3,
+        CHUNK_TYPE_ICEBERG_TABLE,
     ] {
         let id = generate(ct);
         assert_eq!(id.chunk_type(), ct, "chunk type bits must match");

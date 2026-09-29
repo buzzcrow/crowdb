@@ -89,6 +89,8 @@ pub enum ChunkType {
     BtreePage = 2,
     PageIndex = 3,
     Stream = 4,
+    S3 = 5,
+    IcebergTable = 6,
 }
 impl_enum_conversions!(
     ChunkType,
@@ -96,7 +98,9 @@ impl_enum_conversions!(
     Wal = 1,
     BtreePage = 2,
     PageIndex = 3,
-    Stream = 4
+    Stream = 4,
+    S3 = 5,
+    IcebergTable = 6
 );
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
