@@ -26,7 +26,7 @@ use super::{
     content_length, full_body, install_body_receive_provider, map_put_outcome, required_bucket, required_key,
     response, strict_header, unix_millis, xml_response, ProductionS3Operations, Query, ResponseBody,
 };
-use crate::multipart_complete::CompleteSelection;
+use crate::multipart_complete::{CompleteRequestError, CompleteSelection};
 
 const MAX_PARTS: u16 = 10_000;
 const MAX_PART_BYTES: u64 = 5 * 1024 * 1024 * 1024;
@@ -329,7 +329,10 @@ impl ProductionS3Operations {
         integrity
             .finish_validated_checksums(content_md5.as_deref(), payload_sha256.as_deref())
             .map_err(map_integrity_error)?;
-        let selection = CompleteSelection::parse(&bytes).map_err(|_| S3ErrorCode::InvalidRequest)?;
+        let selection = CompleteSelection::parse(&bytes).map_err(|error| match error {
+            CompleteRequestError::InvalidRequest => S3ErrorCode::InvalidRequest,
+            CompleteRequestError::InvalidPartOrder => S3ErrorCode::InvalidPartOrder,
+        })?;
         let requested: Vec<CompletionPart> = selection
             .parts()
             .iter()

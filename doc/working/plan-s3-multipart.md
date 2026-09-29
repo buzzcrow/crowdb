@@ -58,6 +58,8 @@ Iceberg multipart path.
   response builders have focused tests. The bounded completion
   XML parser now has one implementation in access-server and is exposed by both
   the Iceberg and S3 protocol modules. The six S3 HTTP operations are wired.
+  Duplicate or descending completion parts now map to S3 `InvalidPartOrder`;
+  malformed XML remains `InvalidRequest`.
   Full boto3 stack acceptance passes Create, UploadPart, ListParts, Complete,
   Abort and ListUploads, including replay, replacement and invalid ETag cases.
 - [ ] **Part ingestion**: reuse the bounded streaming writer and admission
