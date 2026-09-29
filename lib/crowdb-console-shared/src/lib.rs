@@ -12,6 +12,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 #![allow(clippy::mod_module_files)]
 
+pub mod bootstrap_intent;
 pub mod clients;
 pub mod cluster;
 pub mod cluster_deployer;

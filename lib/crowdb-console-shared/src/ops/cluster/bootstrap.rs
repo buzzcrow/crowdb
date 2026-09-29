@@ -4,10 +4,12 @@
 //! Initialize system-group processes and publish bootstrap metadata.
 
 use super::server_client;
+use crate::bootstrap_intent::BootstrapIntent;
 use crate::config::{ReplicaEntry, ServiceType};
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 mod leader;
 mod nodes;
@@ -19,6 +21,40 @@ pub struct InitSummary {
     pub store_id: u64,
     pub group_id: u64,
     pub nodes: Vec<(u64, u64)>,
+}
+
+/// Initialize from a sealed pre-Group-0 intent, then delete it after verified
+/// publication. A retry can restore an empty in-memory console context.
+///
+/// # Errors
+/// Rejects changed member or topology identity and propagates bootstrap errors.
+pub async fn init_with_intent(ctx: &OpContext, nodes: &[u64], path: &Path) -> Result<InitSummary> {
+    let intent = if std::fs::symlink_metadata(path).is_ok() {
+        let sealed = BootstrapIntent::load(path)?;
+        if sealed.members() != nodes {
+            return Err(Error::Conflict {
+                kind: "bootstrap members".into(),
+                id: path.display().to_string(),
+            });
+        }
+        let current = ctx.config().clone();
+        if current.racks.is_empty() && current.nodes.is_empty() && current.servers.is_empty() {
+            *ctx.config_mut() = sealed.to_config();
+        } else if BootstrapIntent::capture(&current, nodes)? != sealed {
+            return Err(Error::Conflict {
+                kind: "bootstrap topology".into(),
+                id: path.display().to_string(),
+            });
+        }
+        sealed
+    } else {
+        let captured = BootstrapIntent::capture(&ctx.config(), nodes)?;
+        captured.seal(path)?;
+        captured
+    };
+    let result = init(ctx, intent.members()).await?;
+    BootstrapIntent::clear_verified(path)?;
+    Ok(result)
 }
 
 /// Initialize the cluster by bootstrapping group 0 on the listed nodes.

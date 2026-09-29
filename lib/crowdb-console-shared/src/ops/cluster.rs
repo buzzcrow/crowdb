@@ -27,7 +27,7 @@ use crate::ops::hardware::{self, AddDiskInput};
 use crate::ops::OpContext;
 
 mod bootstrap;
-pub use bootstrap::{init, InitSummary};
+pub use bootstrap::{init, init_with_intent, InitSummary};
 
 fn server_client(ctx: &OpContext, node_id: u64) -> Result<ServerClient> {
     let url = ctx.node_mgmt_url(node_id)?;
