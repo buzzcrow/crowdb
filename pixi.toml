@@ -158,8 +158,8 @@ clean-env = "bash tools/runtime/clean-runtime.sh env"
 # Optional full-workspace compile check. CI test groups use their component
 # tasks to avoid building unrelated test targets on each runner.
 build-tests = "cargo test --workspace --all-targets --no-run"
-# Verify every workspace package with tests is assigned to a CI test task.
-test-task-coverage = "python tools/ci-checks/check-test-task-coverage.py"
+# Verify every workspace package is assigned to a test task reachable from CI.
+check-ci-test-tasks = "python tools/ci-checks/check-ci-test-tasks.py"
 
 # ── Lint job ──
 # (uses rs-fmt / rs-lint / tree-lint defined above, no separate test-* tasks)
@@ -184,6 +184,7 @@ test-chunk-kv = { cmd = "cargo test -p crowdb-chunk-kv --tests" }
 test-chunk-stream = { cmd = "cargo test -p crowdb-chunk-stream --tests" }
 test-chunk-kv-client = { cmd = "cargo test -p crowdb-chunk-kv-client --tests" }
 test-chunk-kv-server = { cmd = "cargo test -p crowdb-chunk-kv-server --tests" }
+test-access-multipart = { cmd = "cargo test -p crowdb-access-multipart --tests" }
 test-unit = { cmd = "bash tools/pixi-tasks/test-unit.sh" }
 
 # ── ServerTests job: spawns crowdb-kv-server / crowdb-diskdb / crowdb-diskio ──

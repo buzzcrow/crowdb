@@ -10,6 +10,7 @@ pixi run test-server
 pixi run -e s3-e2e test-boto3-e2e
 pixi run -e iceberg-e2e test-iceberg-e2e
 pixi run -e iceberg-e2e test-iceberg-sdk
+pixi run -e iceberg-e2e test-rust-iceberg-e2e
 pixi run test-console
 pixi run clean-env
 pixi run test-console-ui
