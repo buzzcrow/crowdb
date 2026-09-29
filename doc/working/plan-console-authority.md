@@ -121,6 +121,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   compares immutable connection identity while preserving live status fields.
   Registry CLI rack removal now conditionally deletes only a confirmed empty
   rack; shared and real CLI regressions cover child conflict and absence.
+  Bare-metal Web now exposes authenticated Group 0 rack creation/removal and
+  node creation, with public confirmed rack/node reads. Two Web instances
+  observe the same records; inline SSH material is rejected. Node deletion,
+  disks and remaining legacy routes still need conversion.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
@@ -146,12 +150,13 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   paths or inline SSH secrets. It is atomically sealed with mode 0600;
   interrupted retries restore a fresh in-memory context, reject changed
   topology before mutating Group 0, then delete the intent only after
-  confirmed publication. Persistent CLI and Web cluster-init callers, including
-  versioned Web process mode, now use this path. Real Web and CLI regressions
-  confirm the intent is removed after successful Group 0 publication. The old
-  mixed console file is still written
-  afterward; the launch-registry bootstrap path and S3 mini-cluster caller
-  still need cutover before that file can be removed.
+  confirmed publication. Persistent CLI and legacy Web cluster-init callers
+  now use this path. Real Web and CLI regressions confirm the intent is removed
+  after successful Group 0 publication. The versioned Web handler is prepared
+  to use the intent, but its managed router does not expose cluster init yet.
+  The old mixed console file is still written afterward; the launch-registry
+  bootstrap path and S3 mini-cluster caller still need cutover before that
+  file can be removed.
 - [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
   records, accept matching content without rewriting revisions, reject conflicts,
   and conditionally create missing records. Reconcile uncertain writes with

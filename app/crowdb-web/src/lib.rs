@@ -19,6 +19,7 @@ pub mod kv;
 mod launch;
 pub mod lifecycle;
 mod managed;
+mod managed_hardware;
 mod managed_logical;
 pub mod mgmt;
 pub mod owner_assignment;
@@ -75,7 +76,24 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/*path", any(health::managed_api_unavailable))
             .fallback(spa::spa_fallback);
         let managed = if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
-            managed.merge(launch::routes().route_layer(authorization))
+            let hardware = axum::Router::new()
+                .route(
+                    "/api/racks",
+                    get(managed_hardware::list_racks)
+                        .merge(post(managed_hardware::add_rack).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/racks/:rack_id",
+                    delete(managed_hardware::remove_rack).route_layer(authorization.clone()),
+                )
+                .route(
+                    "/api/nodes",
+                    get(managed_hardware::list_nodes)
+                        .merge(post(managed_hardware::add_node).route_layer(authorization.clone())),
+                );
+            managed
+                .merge(hardware)
+                .merge(launch::routes().route_layer(authorization))
         } else {
             managed
         };

@@ -13,7 +13,7 @@ use crate::state::AppState;
 type ApiError = (StatusCode, Json<ErrorBody>);
 
 #[allow(clippy::needless_pass_by_value)]
-fn api_error(error: Error) -> ApiError {
+pub(crate) fn api_error(error: Error) -> ApiError {
     let status = match error {
         Error::NotFound { .. } => StatusCode::NOT_FOUND,
         Error::Conflict { .. } => StatusCode::CONFLICT,
