@@ -10,23 +10,18 @@ use crowdb_console_shared::error::{Error, Result};
 use crowdb_console_shared::launch::LaunchRuntime;
 use crowdb_console_shared::monitor::MonitorCache;
 use crowdb_console_shared::ops::OpContext;
-use crowdb_console_shared::{
-    config::{ConsoleConfigEngine, ServerEntry, TomlFileEngine},
-    ConsoleConfig,
-};
+use crowdb_console_shared::{config::ServerEntry, ConsoleConfig};
 
 /// Shared, mutable console state.
 ///
-/// `config` carries the full `ConsoleConfig` (racks, nodes, servers)
-/// behind a `RwLock`; mutations are persisted via `ConsoleConfig::save`
-/// to `config_path` when present.
+/// `config` is an in-memory context for bootstrap and test-only routes.
+/// Production authority reads use Group 0 and live registrations.
 ///
 /// `diskdb_client` is lazily initialized on the first `/api/diskdb/*`
 /// request (the service registry may not be ready at console startup).
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<RwLock<ConsoleConfig>>,
-    pub config_engine: Option<Arc<dyn ConsoleConfigEngine>>,
     pub runtime_root: Arc<PathBuf>,
     pub monitor_cache: Arc<MonitorCache>,
     pub runtime_pids: Arc<std::sync::Mutex<HashMap<String, u32>>>,
@@ -79,32 +74,24 @@ impl AppState {
         Self::with_config(cfg, None)
     }
 
-    /// Build state from an already-loaded `ConsoleConfig`. `path` is the
-    /// on-disk location used by mutating handlers to persist changes;
-    /// pass `None` for in-memory-only state (tests).
+    /// Build test state from an in-memory `ConsoleConfig`. `path` contributes
+    /// only the runtime workspace directory; it is never a topology file.
     #[must_use]
     pub fn with_config(config: ConsoleConfig, path: Option<PathBuf>) -> Self {
         let runtime_root = path
-            .as_ref()
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
             .unwrap_or_else(|| {
                 crowdb_protocol::port::namespace::runtime_root()
                     .join("persistent")
                     .join("console")
             });
-        let engine = path.map(|path| Arc::new(TomlFileEngine::new(path)) as Arc<dyn ConsoleConfigEngine>);
-        Self::with_config_engine(config, engine, runtime_root)
+        Self::with_runtime_root(config, runtime_root)
     }
 
     #[must_use]
-    pub fn with_config_engine(
-        config: ConsoleConfig,
-        engine: Option<Arc<dyn ConsoleConfigEngine>>,
-        runtime_root: PathBuf,
-    ) -> Self {
+    pub fn with_runtime_root(config: ConsoleConfig, runtime_root: PathBuf) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
-            config_engine: engine,
             runtime_root: Arc::new(runtime_root),
             monitor_cache: Arc::new(MonitorCache::new()),
             runtime_pids: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -189,19 +176,12 @@ impl AppState {
         self
     }
 
-    /// Persist the current config to `config_path`, if one was provided.
-    /// No-op for in-memory state.
-    ///
-    /// # Panics
-    /// Panics if the `RwLock` is poisoned.
+    /// The legacy in-memory handlers share state only within this Web process.
+    /// No topology is written to a local file.
     ///
     /// # Errors
-    /// Returns an error if config saving fails.
+    /// Reserved for callers that propagate operation errors.
     pub fn persist(&self) -> crowdb_console_shared::error::Result<()> {
-        if let Some(engine) = self.config_engine.as_ref() {
-            let cfg = self.config.read().unwrap();
-            cfg.save_with_engine(engine.as_ref())?;
-        }
         Ok(())
     }
 
@@ -590,12 +570,10 @@ impl AppState {
     ///
     /// The write-back is a short critical section with no `await`
     /// inside the lock — the `OpContext`'s config is cloned in, the
-    /// old config is replaced, and the lock is released before
-    /// persistence (which may do file I/O).
+    /// old config is replaced, and the lock is released.
     ///
     /// # Errors
-    /// Returns an error if the config lock is poisoned or persistence
-    /// fails.
+    /// Returns an error if the config lock is poisoned.
     pub fn commit_op_context(&self, ctx: &OpContext) -> Result<()> {
         let new_config = ctx.config().clone();
         {
@@ -680,8 +658,7 @@ mod tests {
         let root = tempdir("relative-runtime-root");
         std::env::set_current_dir(&root).unwrap();
 
-        let state =
-            AppState::with_config_engine(ConsoleConfig::default(), None, PathBuf::from("example-runtime"));
+        let state = AppState::with_runtime_root(ConsoleConfig::default(), PathBuf::from("example-runtime"));
         let workspace = state.prepare_node_workspace("n1").unwrap();
 
         assert!(workspace.is_absolute());

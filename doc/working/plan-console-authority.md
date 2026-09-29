@@ -99,8 +99,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   S3 mini-clusters now persist versioned local process/seed state rather than
   `console.toml`; restored KV launch nodes are ephemeral process inputs and the
   bundled Web uses `WebProcessConfig`. The full persistent S3 stop/restart and
-  range-read E2E passes. Remaining CLI/Web legacy config paths and the shared
-  parser/writer still need removal.
+  range-read E2E passes. Web no longer constructs a `TomlFileEngine` or writes
+  mixed local topology, including its in-process legacy test router; focused
+  bootstrap, lifecycle and deployer tests pass. The CLI legacy config path and
+  shared parser/writer still need removal.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware

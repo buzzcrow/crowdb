@@ -41,7 +41,7 @@ pub(crate) async fn http_cluster_init(
     Json(body): Json<ClusterInitBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let summary = if state.config_engine.is_some() || state.web_mode.is_some() {
+    let summary = if state.web_mode.is_some() {
         let path = state.runtime_root.join("bootstrap-intent.toml");
         if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
             if let Some(source) = &body.bootstrap_file {

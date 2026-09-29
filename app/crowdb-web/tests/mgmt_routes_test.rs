@@ -145,7 +145,7 @@ fn config_for_upstream(upstream: &Upstream) -> ConsoleConfig {
 }
 
 #[tokio::test]
-async fn persistent_web_bootstrap_clears_verified_intent() {
+async fn legacy_in_memory_web_bootstrap_does_not_persist_topology() {
     let Some(upstream) = spawn_upstream().await else {
         eprintln!("skipping: crowdb-kv-server binary not built");
         return;
@@ -159,7 +159,7 @@ async fn persistent_web_bootstrap_clears_verified_intent() {
         .await
         .unwrap();
     assert_eq!(response.status(), 201, "{}", response.text().await.unwrap());
-    assert!(config_path.exists());
+    assert!(!config_path.exists());
     assert!(!upstream.workspace.join("bootstrap-intent.toml").exists());
 }
 
@@ -187,7 +187,7 @@ async fn bare_metal_web_bootstrap_consumes_sealed_topology_input() {
         log_max_files: 5,
         request_timeout_ms: Some(500),
     };
-    let state = AppState::with_config_engine(ConsoleConfig::default(), None, upstream.workspace.clone())
+    let state = AppState::with_runtime_root(ConsoleConfig::default(), upstream.workspace.clone())
         .with_process_config(&config)
         .with_management_token("bare-metal-bootstrap-test-token-12345".into())
         .unwrap();

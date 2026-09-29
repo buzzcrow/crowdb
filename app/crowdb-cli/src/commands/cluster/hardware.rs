@@ -40,7 +40,7 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match authority_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -64,7 +64,7 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match authority_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -81,7 +81,7 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
             }
         }
         RackVerb::List => {
-            let ctx = match authority_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -177,7 +177,7 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                 ssh_password: None,
                 ssh_credential_ref,
             };
-            let ctx = match authority_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -201,7 +201,7 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match authority_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -218,7 +218,7 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
             }
         }
         NodeVerb::List => {
-            let ctx = match authority_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -239,7 +239,7 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match authority_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -295,7 +295,7 @@ pub enum DiskGroupVerb {
 
 pub async fn run_disk_group_verb(cli: &Cli, verb: DiskGroupVerb) -> ExitCode {
     use crowdb_console_shared::ops::hardware;
-    let ctx = match authority_context(cli) {
+    let ctx = match authority_context(cli).await {
         Ok(ctx) => ctx,
         Err(code) => return code,
     };
@@ -408,7 +408,7 @@ pub enum DiskVerb {
 pub async fn run_disk_verb(cli: &Cli, verb: DiskVerb) -> ExitCode {
     use crowdb_console_shared::ops::hardware::{self, AddDiskInput};
     use crowdb_protocol::DiskIdExt;
-    let ctx = match authority_context(cli) {
+    let ctx = match authority_context(cli).await {
         Ok(ctx) => ctx,
         Err(code) => return code,
     };
