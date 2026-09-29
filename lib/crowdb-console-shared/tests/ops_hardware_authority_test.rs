@@ -5,9 +5,12 @@ use crowdb_console_shared::config::{ConsoleConfig, NodeEntry};
 use crowdb_console_shared::error::Error;
 use crowdb_console_shared::ops::{cluster as cluster_ops, hardware, OpContext};
 use crowdb_test_harness::cluster::KvCluster;
+use std::sync::atomic::Ordering;
 
 #[path = "common/bootstrap_authority.rs"]
 mod bootstrap_authority;
+#[path = "common/rpc_response_proxy.rs"]
+mod rpc_response_proxy;
 
 #[tokio::test]
 async fn separate_consoles_confirm_matching_hardware_and_reject_conflicts() {
@@ -72,4 +75,19 @@ async fn separate_consoles_confirm_matching_hardware_and_reject_conflicts() {
     assert!(listed[0].ssh_key.is_none());
     assert!(listed[0].ssh_password.is_none());
     assert!(second.config().nodes.is_empty());
+}
+
+#[tokio::test]
+async fn committed_rack_survives_a_lost_conditional_write_response() {
+    let cluster = KvCluster::start().await;
+    let proxy = rpc_response_proxy::TestResponseProxy::start(cluster.group0_leader_endpoint.clone()).await;
+    let ctx = OpContext::new(
+        proxy.endpoint.clone(),
+        vec![proxy.management_endpoint.clone()],
+        ConsoleConfig::default(),
+    );
+    proxy.armed.store(true, Ordering::SeqCst);
+    hardware::add_rack_to_group0(&ctx, 9, "rack-nine").await.unwrap();
+    assert_eq!(proxy.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(ctx.sysmd().get_rack(9).await.unwrap().unwrap().name, "rack-nine");
 }

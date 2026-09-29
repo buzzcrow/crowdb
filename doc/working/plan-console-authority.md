@@ -112,7 +112,9 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   add/list commands use these operations; a real CLI process regression caught
   a management-port-as-RPC seed and now refreshes topology before the hardware
   write. Complete Console shared and CLI suites, Rust fmt and workspace clippy
-  pass. Registry-mode Web, deletions, disks and legacy bootstrap still remain.
+  pass. A real RPC proxy drops the committed rack write reply; a confirmed
+  linearizable read recovers the successful outcome. Registry-mode Web,
+  deletions, disks and legacy bootstrap still remain.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
