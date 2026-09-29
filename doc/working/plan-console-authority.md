@@ -140,9 +140,12 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   paths or inline SSH secrets. It is atomically sealed with mode 0600;
   interrupted retries restore a fresh in-memory context, reject changed
   topology before mutating Group 0, then delete the intent only after
-  confirmed publication. Focused real Group 0 tests pass. CLI, Web and S3
-  mini-cluster callers still need to use this path before removing the mixed
-  persisted config.
+  confirmed publication. Persistent CLI and Web cluster-init callers, including
+  versioned Web process mode, now use this path. Real Web and CLI regressions
+  confirm the intent is removed after successful Group 0 publication. The old
+  mixed console file is still written
+  afterward; the launch-registry bootstrap path and S3 mini-cluster caller
+  still need cutover before that file can be removed.
 - [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
   records, accept matching content without rewriting revisions, reject conflicts,
   and conditionally create missing records. Reconcile uncertain writes with

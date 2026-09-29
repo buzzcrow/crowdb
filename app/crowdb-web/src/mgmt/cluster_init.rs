@@ -38,9 +38,13 @@ pub(crate) async fn http_cluster_init(
     Json(body): Json<ClusterInitBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let summary = ops::cluster::init(&ctx, &body.nodes)
-        .await
-        .map_err(map_config_err)?;
+    let summary = if state.config_engine.is_some() || state.web_mode.is_some() {
+        let path = state.runtime_root.join("bootstrap-intent.toml");
+        ops::cluster::init_with_intent(&ctx, &body.nodes, &path).await
+    } else {
+        ops::cluster::init(&ctx, &body.nodes).await
+    }
+    .map_err(map_config_err)?;
     state.commit_op_context(&ctx).map_err(map_persist_err)?;
 
     // The cluster is now live — re-seed the shared kv_client with the

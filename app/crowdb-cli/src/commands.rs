@@ -95,7 +95,7 @@ pub(crate) fn load_config(cli: &Cli) -> Result<crowdb_console_shared::ConsoleCon
 /// Resolve the private CLI state file. The environment override is reserved
 /// for isolated test and benchmark harnesses and is intentionally not a CLI
 /// option.
-fn config_path() -> std::path::PathBuf {
+pub(crate) fn config_path() -> std::path::PathBuf {
     std::env::var_os("CROWDB_CLI_STATE").map_or_else(
         || {
             crowdb_protocol::port::namespace::runtime_root()

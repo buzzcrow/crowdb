@@ -84,6 +84,13 @@ async fn spawn_upstream() -> Option<Upstream> {
 }
 
 async fn spawn_web(upstream: &Upstream) -> SocketAddr {
+    spawn_web_with_config_path(upstream, None).await
+}
+
+async fn spawn_web_with_config_path(
+    upstream: &Upstream,
+    config_path: Option<std::path::PathBuf>,
+) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
         .expect("bind");
@@ -119,7 +126,7 @@ async fn spawn_web(upstream: &Upstream) -> SocketAddr {
         no_fsync: false,
     })
     .unwrap();
-    let state = AppState::with_config(cfg, None);
+    let state = AppState::with_config(cfg, config_path);
     // Register the upstream's pid so `refresh_node_cache` (which skips
     // nodes with no tracked runtime pid) refreshes after mutations.
     state.set_runtime_pid(1, upstream.pid);
@@ -128,6 +135,25 @@ async fn spawn_web(upstream: &Upstream) -> SocketAddr {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     addr
+}
+
+#[tokio::test]
+async fn persistent_web_bootstrap_clears_verified_intent() {
+    let Some(upstream) = spawn_upstream().await else {
+        eprintln!("skipping: crowdb-kv-server binary not built");
+        return;
+    };
+    let config_path = upstream.workspace.join("console.toml");
+    let web = spawn_web_with_config_path(&upstream, Some(config_path.clone())).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{web}/api/cluster/init"))
+        .json(&json!({"nodes": [1]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201, "{}", response.text().await.unwrap());
+    assert!(config_path.exists());
+    assert!(!upstream.workspace.join("bootstrap-intent.toml").exists());
 }
 
 #[tokio::test]

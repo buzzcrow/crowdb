@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{commit_config, op_context};
+use crate::commands::{commit_config, config_path, op_context};
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]
@@ -192,7 +192,13 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            match crowdb_console_shared::ops::cluster::init(&ctx, &node_ids).await {
+            let result = if cli.registry.is_some() {
+                crowdb_console_shared::ops::cluster::init(&ctx, &node_ids).await
+            } else {
+                let intent_path = config_path().with_extension("bootstrap.toml");
+                crowdb_console_shared::ops::cluster::init_with_intent(&ctx, &node_ids, &intent_path).await
+            };
+            match result {
                 Ok(summary) => {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
