@@ -3,13 +3,14 @@
 
 //! Authenticated S3 multipart operations over durable session and part records.
 
+use crowdb_access_s3::bucket;
 use crowdb_access_s3::error::S3ErrorCode;
 use crowdb_access_s3::integrity::{IntegrityError, SinglePartIntegrity};
 use crowdb_access_s3::metadata::{
     new_upload_id, CompletionPart, MultipartPartRecord, MultipartPhase, MultipartRepository,
     MultipartRepositoryError, MultipartSessionRecord,
 };
-use crowdb_access_s3::route::S3Route;
+use crowdb_access_s3::route::{S3Operation, S3Route};
 use crowdb_access_s3::streaming::{
     write_body_with_checksums_buffered, write_native_body_with_checksums_metered,
 };
@@ -35,6 +36,38 @@ const UPLOAD_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_COMPLETE_BODY: usize = 2 * 1024 * 1024;
 
 impl ProductionS3Operations {
+    /// Walks bounded metadata pages and marks expired sessions terminal.
+    ///
+    /// # Errors
+    /// Defers the sweep when bucket or upload metadata is unavailable.
+    pub async fn expire_multipart_uploads(&self) -> Result<usize, S3ErrorCode> {
+        let buckets = bucket::list_buckets(&self.storage.metadata, &self.config.tenant, 1_001)
+            .await
+            .map_err(|_| S3ErrorCode::ServiceUnavailable)?;
+        if buckets.len() > 1_000 {
+            return Err(S3ErrorCode::SlowDown);
+        }
+        let now = unix_millis();
+        let mut expired = 0;
+        for bucket in buckets {
+            let mut cursor = None;
+            loop {
+                let page = self
+                    .multipart()
+                    .expire_page(bucket.bucket_id, cursor.as_deref(), now, 1_000)
+                    .await
+                    .map_err(|error| map_multipart_error(&error))?;
+                expired += page.expired;
+                let Some(next) = page.next else {
+                    break;
+                };
+                cursor = Some(next);
+                tokio::task::yield_now().await;
+            }
+        }
+        Ok(expired)
+    }
+
     fn multipart(&self) -> MultipartRepository {
         MultipartRepository::new(self.storage.metadata.clone(), self.config.tenant.clone())
     }
@@ -43,11 +76,24 @@ impl ProductionS3Operations {
         let bucket = self.resolve_bucket(required_bucket(route)?).await?;
         let key = required_key(route)?;
         let upload_id = route.upload_id.ok_or(S3ErrorCode::InvalidRequest)?;
-        self.multipart()
+        let session = self
+            .multipart()
             .load_identity(bucket, key, &upload_id)
             .await
             .map_err(|error| map_multipart_error(&error))?
-            .ok_or(S3ErrorCode::NoSuchUpload)
+            .ok_or(S3ErrorCode::NoSuchUpload)?;
+        if session.phase == MultipartPhase::Open && session.expires_ms <= unix_millis() {
+            let expired = self
+                .multipart()
+                .abort(&session)
+                .await
+                .map_err(|error| map_multipart_error(&error))?;
+            if route.operation != S3Operation::AbortMultipartUpload {
+                return Err(S3ErrorCode::NoSuchUpload);
+            }
+            return Ok(expired);
+        }
+        Ok(session)
     }
 
     pub(super) async fn create_multipart_upload(

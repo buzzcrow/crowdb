@@ -153,7 +153,7 @@ impl FullStackSetup {
             run_boto3_case(method, &context);
             case.pass();
         }
-        let case = TestCase::start("boto3::lost_put_reply_is_idempotent");
+        let case = TestCase::start("boto3::lost_put_and_multipart_replies_are_idempotent");
         run_restart_phase("lost-reply", &self.listen, &self.access_key, &self.secret_key);
         assert_native_write_metrics(&self.listen);
         case.pass();

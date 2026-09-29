@@ -17,6 +17,7 @@ mod terminal;
 
 pub use completion::CompletionPart;
 pub use listing::{MultipartPartPage, MultipartUploadPage};
+pub use terminal::MultipartExpiryPage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MultipartRepositoryError {

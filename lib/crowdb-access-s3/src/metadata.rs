@@ -27,7 +27,8 @@ pub use multipart::{
     new_upload_id, MultipartPartRecord, MultipartPhase, MultipartRecordError, MultipartSessionRecord,
 };
 pub use multipart_repository::{
-    CompletionPart, MultipartPartPage, MultipartRepository, MultipartRepositoryError, MultipartUploadPage,
+    CompletionPart, MultipartExpiryPage, MultipartPartPage, MultipartRepository, MultipartRepositoryError,
+    MultipartUploadPage,
 };
 pub use namespace::{BucketDeleteOutcome, BucketNamespace, BucketNamespaceError};
 pub use record::{BucketNameRecord, MetadataRecordError, ObjectRecord};

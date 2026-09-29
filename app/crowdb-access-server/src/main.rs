@@ -116,6 +116,7 @@ async fn run_s3(access_config: &AccessConfig) -> Result<(), Box<dyn std::error::
                 .with_metrics(Arc::clone(&metrics))
                 .with_health(Arc::clone(&health)),
         );
+        let expiry_task = start_multipart_expiry(Arc::clone(&operations));
         let native_budget = configured_usize(
             access_config.s3.native_budget_bytes,
             "CROWDB_S3_NATIVE_BUDGET_BYTES",
@@ -141,6 +142,7 @@ async fn run_s3(access_config: &AccessConfig) -> Result<(), Box<dyn std::error::
         })
         .await;
         health.stop();
+        expiry_task.abort();
         let shutdown_result = chunks.shutdown_small_writes().await;
         if let Some(task) = credential_refresh {
             task.abort();
@@ -149,6 +151,21 @@ async fn run_s3(access_config: &AccessConfig) -> Result<(), Box<dyn std::error::
         shutdown_result?;
     }
     Ok(())
+}
+
+#[cfg(feature = "s3")]
+fn start_multipart_expiry(operations: Arc<ProductionS3Operations>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+        loop {
+            interval.tick().await;
+            match operations.expire_multipart_uploads().await {
+                Ok(0) => {}
+                Ok(count) => tracing::debug!(count, "expired S3 multipart sessions"),
+                Err(error) => tracing::warn!(?error, "S3 multipart expiry sweep deferred"),
+            }
+        }
+    })
 }
 
 #[cfg(feature = "s3")]

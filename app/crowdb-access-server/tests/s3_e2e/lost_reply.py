@@ -1,7 +1,7 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
 
-"""Drop a completed PUT response at a loopback proxy, then retry the PUT."""
+"""Drop committed PUT and multipart responses at a loopback proxy, then retry."""
 
 import os
 import socket
@@ -17,7 +17,7 @@ from botocore.config import Config
 from botocore.credentials import Credentials
 
 
-def swallow_put_reply(listener, endpoint):
+def swallow_reply(listener, endpoint, expected_status):
     parsed = urlsplit(endpoint)
     with listener:
         client, _ = listener.accept()
@@ -30,11 +30,11 @@ def swallow_put_reply(listener, endpoint):
                 assert received, "client closed before signed PUT headers"
                 request.extend(received)
             headers, body = bytes(request).split(b"\r\n\r\n", 1)
-            content_length = next(
+            content_length = next((
                 int(line.split(b":", 1)[1].strip())
                 for line in headers.split(b"\r\n")
                 if line.lower().startswith(b"content-length:")
-            )
+            ), 0)
             backend.sendall(headers + b"\r\n\r\n" + body)
             remaining = content_length - len(body)
             while remaining:
@@ -45,13 +45,45 @@ def swallow_put_reply(listener, endpoint):
             response = bytearray()
             while chunk := backend.recv(8192):
                 response.extend(chunk)
-            assert response.startswith(b"HTTP/1.1 200 "), response[:256]
+            assert response.startswith(f"HTTP/1.1 {expected_status} ".encode()), response[:256]
             return bytes(response)
+
+
+def drop_reply(endpoint, credentials, method, path, payload, expected_status):
+    parsed = urlsplit(endpoint)
+    request = AWSRequest(
+        method=method,
+        url=f"{endpoint}{path}",
+        data=payload,
+        headers={
+            "Host": parsed.netloc,
+            "Content-Length": str(len(payload)),
+            "Connection": "close",
+            "x-amz-content-sha256": sha256(payload).hexdigest(),
+        },
+    )
+    S3SigV4Auth(credentials, "s3", os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1")).add_auth(request)
+
+    with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as workers:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        forwarded = workers.submit(swallow_reply, listener, endpoint, expected_status)
+        proxy = HTTPConnection("127.0.0.1", listener.getsockname()[1], timeout=15)
+        try:
+            proxy.request(method, path, body=payload, headers=dict(request.headers.items()))
+            try:
+                proxy.getresponse()
+            except RemoteDisconnected:
+                pass
+            else:
+                raise AssertionError(f"proxy unexpectedly returned the completed {method} response")
+        finally:
+            proxy.close()
+        return forwarded.result(timeout=20)
 
 
 def main():
     endpoint = os.environ["CROWDB_S3_E2E_ENDPOINT"]
-    parsed = urlsplit(endpoint)
     credentials = Credentials(
         os.environ["CROWDB_S3_E2E_ACCESS_KEY"], os.environ["CROWDB_S3_E2E_SECRET_KEY"]
     )
@@ -68,42 +100,45 @@ def main():
     payload = bytes(range(256)) * 257
     etag = f'"{md5(payload).hexdigest()}"'
     client.create_bucket(Bucket=bucket)
-    request = AWSRequest(
-        method="PUT",
-        url=f"{endpoint}/{bucket}/{key}",
-        data=payload,
-        headers={
-            "Host": parsed.netloc,
-            "Content-Length": str(len(payload)),
-            "Connection": "close",
-            "x-amz-content-sha256": sha256(payload).hexdigest(),
-        },
-    )
-    S3SigV4Auth(credentials, "s3", os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1")).add_auth(request)
-
-    with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as workers:
-        listener.bind(("127.0.0.1", 0))
-        listener.listen(1)
-        forwarded = workers.submit(swallow_put_reply, listener, endpoint)
-        proxy = HTTPConnection("127.0.0.1", listener.getsockname()[1], timeout=15)
-        try:
-            proxy.request("PUT", f"/{bucket}/{key}", body=payload, headers=dict(request.headers.items()))
-            try:
-                proxy.getresponse()
-            except RemoteDisconnected:
-                pass
-            else:
-                raise AssertionError("proxy unexpectedly returned the completed PUT response")
-        finally:
-            proxy.close()
-        response = forwarded.result(timeout=20)
-        assert f"\r\netag: {etag}\r\n".lower().encode() in response.lower(), response[:512]
+    response = drop_reply(endpoint, credentials, "PUT", f"/{bucket}/{key}", payload, 200)
+    assert f"\r\netag: {etag}\r\n".lower().encode() in response.lower(), response[:512]
 
     assert client.put_object(Bucket=bucket, Key=key, Body=payload)["ETag"] == etag
     assert client.get_object(Bucket=bucket, Key=key)["Body"].read() == payload
     listed = client.list_objects_v2(Bucket=bucket, Prefix="retry/")
     assert [item["Key"] for item in listed["Contents"]] == [key]
     client.delete_object(Bucket=bucket, Key=key)
+
+    multipart_key = "retry/multipart.bin"
+    part = b"multipart-response-loss" * 512
+    part_etag = f'"{md5(part).hexdigest()}"'
+    upload_id = client.create_multipart_upload(Bucket=bucket, Key=multipart_key)["UploadId"]
+    query = f"?partNumber=1&uploadId={upload_id}"
+    response = drop_reply(endpoint, credentials, "PUT", f"/{bucket}/{multipart_key}{query}", part, 200)
+    assert f"\r\netag: {part_etag}\r\n".lower().encode() in response.lower(), response[:512]
+    assert client.upload_part(Bucket=bucket, Key=multipart_key, UploadId=upload_id,
+                              PartNumber=1, Body=part)["ETag"] == part_etag
+    assert len(client.list_parts(Bucket=bucket, Key=multipart_key, UploadId=upload_id)["Parts"]) == 1
+
+    complete = (
+        f"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{part_etag}</ETag>"
+        "</Part></CompleteMultipartUpload>"
+    ).encode()
+    path = f"/{bucket}/{multipart_key}?uploadId={upload_id}"
+    drop_reply(endpoint, credentials, "POST", path, complete, 200)
+    published = client.complete_multipart_upload(
+        Bucket=bucket, Key=multipart_key, UploadId=upload_id,
+        MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": part_etag}]},
+    )
+    assert published["ETag"] == f'"{md5(md5(part).digest()).hexdigest()}-1"'
+    assert client.get_object(Bucket=bucket, Key=multipart_key)["Body"].read() == part
+    client.delete_object(Bucket=bucket, Key=multipart_key)
+
+    aborted = client.create_multipart_upload(Bucket=bucket, Key=multipart_key)["UploadId"]
+    drop_reply(endpoint, credentials, "DELETE", f"/{bucket}/{multipart_key}?uploadId={aborted}", b"", 204)
+    client.abort_multipart_upload(Bucket=bucket, Key=multipart_key, UploadId=aborted)
+    assert all(item["UploadId"] != aborted for item in
+               client.list_multipart_uploads(Bucket=bucket).get("Uploads", []))
     client.delete_bucket(Bucket=bucket)
 
 

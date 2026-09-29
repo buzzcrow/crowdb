@@ -62,8 +62,8 @@ Iceberg multipart path.
   Production UploadPart now uses the basic streaming writer and saves raw MD5
   with locations. A byte-identical retry keeps the selected generation even
   when a new write produced different chunk locations; R95 can reclaim those
-  unreachable chunks. Full stack ingestion passes 5 MiB and small parts; real
-  response-loss and restart acceptance remain.
+  unreachable chunks. Full stack ingestion passes 5 MiB and small parts, a
+  dropped UploadPart success response, and retries after service restart.
 - [ ] **Atomic completion**: fence selected part generations, validate order,
   count, size and checksum, compose locations through the shared core, and
   publish one immutable object generation without reading part bytes. The S3
@@ -74,16 +74,22 @@ Iceberg multipart path.
   the full boto3 stack, including a repeated Complete request.
 - [ ] **Abort and expiry**: make terminal states idempotent and preserve the
   part generations that R95's chunk-centered scanner needs for reference checks.
-  The S3 adapter now has an idempotent, response-loss-safe logical abort; the
-  expiry scan and common-prefix key layout remain. R95 owns physical cleanup.
+  The S3 adapter now has an idempotent, response-loss-safe logical abort and a
+  bounded hourly expiry sweep over the upload listing index. Session and part
+  records remain under one upload prefix after terminal transition. Focused
+  expiry pagination and evidence tests pass. Requests encountering an expired
+  open session terminate it before the hourly sweep. R95 owns physical cleanup.
 
 ## Acceptance and cleanup
 
 - [ ] **Focused and E2E tests**: known MD5 vectors, out-of-order/replaced parts,
   invalid completion, response loss and restart, abort/expiry metadata, and
   ordinary single-part compatibility. The complete S3 library and access-server
-  suites plus 19 full-stack boto3/restart cases pass. Multipart response-loss,
-  expiry and restart cases remain.
+  suites plus 19 full-stack boto3/restart cases pass. The new cases drop
+  UploadPart, Complete and Abort success replies, replay them, preserve an
+  incomplete session across six service restarts, then complete it. Hourly
+  expiry has a focused metadata test; broader concurrency and error-matrix
+  acceptance remains.
 - [ ] **Gates and docs**: run both access crate suites, access-server E2E,
   Rust fmt and clippy separately; update S3 design and remove R167 plus this
   plan only after all acceptance criteria pass.

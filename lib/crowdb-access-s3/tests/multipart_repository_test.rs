@@ -686,3 +686,44 @@ async fn upload_listing_filters_terminal_records_and_resumes_same_key() {
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn expiry_pages_mark_old_uploads_terminal_without_removing_part_evidence() {
+    let (repository, _, store) = repository().await;
+    let first = session();
+    let mut second = first.clone();
+    second.upload_id = [8; 16];
+    second.object_key = b"later".to_vec();
+    second.expires_ms = 300;
+    repository.begin(&first).await.unwrap();
+    repository.begin(&second).await.unwrap();
+    repository.put_stream_part(&first, &part(), 110).await.unwrap();
+
+    let page = repository
+        .expire_page(first.bucket_id, None, 250, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.expired, 0);
+    let next = page.next.expect("another index page remains");
+    let page = repository
+        .expire_page(first.bucket_id, Some(&next), 250, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.expired, 1);
+    assert!(page.next.is_none());
+    assert_eq!(
+        repository.load(&first).await.unwrap().unwrap().phase,
+        MultipartPhase::Aborted
+    );
+    assert_eq!(
+        repository.load(&second).await.unwrap().unwrap().phase,
+        MultipartPhase::Open
+    );
+    assert!(repository.part_generation(&first, 1, 1).await.unwrap().is_some());
+
+    let tenant = TenantId::new(b"tenant".to_vec()).unwrap();
+    let index =
+        MetadataKey::multipart_upload_index(&tenant, first.bucket_id, &first.object_key, &first.upload_id)
+            .unwrap();
+    assert!(store.get(index).await.unwrap().is_some());
+}
