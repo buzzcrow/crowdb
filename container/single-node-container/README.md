@@ -34,14 +34,27 @@ pixi run -- python tools/release.py --execute
 ```
 
 `--bump minor` and `--bump major` select larger version changes. The script
-updates every version manifest, commits and tags the release, atomically pushes
-`main` and the tag, creates a draft GitHub Release, then dispatches the existing
-verified DockerHub workflow. Add `--symbols` to either command to include the
-large exact-build symbol archive; the default release skips it. Execution
-requires authenticated `gh` and GitHub
-permission to push `main`; the dry run changes no files or remote state. The
-workflow archives the verified runtime, then packages those same files in its
-publish job without recompiling them. With `--symbols`, it also archives
+updates every version manifest, commits and pushes the candidate to `main`,
+then dispatches the release workflow. It does not create a tag or GitHub
+Release. You can also run the workflow manually on `main`; it derives the tag
+from `VERSION`, so no tag input is needed. Add `--symbols` to either command
+to include the large exact-build symbol archive; the default release skips it.
+Execution requires authenticated `gh` and GitHub permission to push `main`;
+the dry run changes no files or remote state.
+The script passes its candidate commit SHA to the workflow so a later push to
+`main` cannot silently change which commit gets published.
+
+The workflow checks that CI passed for the exact candidate commit, builds and
+tests the container, then waits for DockerHub environment approval. Only after
+verification does it create the Git tag and publish the signed Docker image
+and GitHub Release. A failed verification leaves no tag or draft release. Fix
+the candidate and run the workflow again; if code changes after a tag was
+created, use the next patch version. A publication retry for the same commit
+reuses an existing image only when both registry tags have the same digest and
+the image labels match the release version, commit, and verified runtime archive.
+
+The workflow archives the verified runtime, then packages those same files in
+its publish job without recompiling them. With `--symbols`, it also archives
 exact-build symbols from that build and attaches
 `crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst` to the GitHub
 Release. The workflow publishes the GitHub Release after the Docker image and

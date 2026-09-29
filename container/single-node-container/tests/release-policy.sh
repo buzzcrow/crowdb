@@ -11,14 +11,23 @@ events=$(sed -n '/^on:/,/^concurrency:/p' "$release")
 for required in \
     'environment: DockerHub' \
     'DOCKERHUB_TOKEN' \
-    'ref: ${{ inputs.tag }}' \
-    'git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}"' \
-    '[[ "$revision" == "$(git rev-parse HEAD)" ]]' \
+    'ref: ${{ github.sha }}' \
+    'ref: ${{ needs.verify.outputs.revision }}' \
+    'git rev-parse "refs/tags/$RELEASE_TAG^{commit}"' \
+    '[[ "$revision" == "$GITHUB_SHA" ]]' \
     'gh release view "$RELEASE_TAG"' \
-    '== true ]]' \
-    '[[ "$status" == 404 ]]' \
+    'gh release create "$RELEASE_TAG"' \
+    'git push origin "refs/tags/$RELEASE_TAG"' \
+    'actions: read' \
+    'head_sha=$REVISION&branch=main&event=push' \
+    'completed/success) exit 0' \
+    'reuse=false' \
+    'reuse=true' \
+    'runtime_sha256: ${{ steps.runtime_digest.outputs.sha256 }}' \
+    'RUNTIME_SHA256=${{ needs.verify.outputs.runtime_sha256 }}' \
+    'org.crowdb.runtime.sha256' \
     'needs: verify' \
-    'docker.io/crowdb/crowdb-iceberg:${{ inputs.tag }}' \
+    'docker.io/crowdb/crowdb-iceberg:${{ needs.verify.outputs.tag }}' \
     'docker.io/crowdb/crowdb-iceberg:git-${{ needs.verify.outputs.revision }}' \
     'provenance: mode=max' \
     'sbom: true' \
@@ -29,6 +38,7 @@ done
 [[ $(grep -c 'push: true' "$release") == 1 ]]
 [[ $(grep -c 'id-token: write' "$release") == 1 ]]
 [[ "$events" != *'schedule:'* ]]
+[[ "$events" != *'      tag:'* ]]
 
 verify_job=$(sed -n '/^  verify:/,/^  publish:/p' "$release")
 publish_job=$(sed -n '/^  publish:/,$p' "$release")
@@ -46,14 +56,16 @@ publish_job=$(sed -n '/^  publish:/,$p' "$release")
 [[ "$publish_job" == *'gh release upload "$RELEASE_TAG"'* ]]
 [[ "$publish_job" == *'gh release edit "$RELEASE_TAG"'* ]]
 [[ "$publish_job" == *'context: target/container-runtime'* ]]
-for gate in 'pixi run test-single-node-container' 'test-boto3-e2e' 'test-pyiceberg-e2e' \
-    'pixi run test-console' 'pixi run test-console-ui' 'pixi run rs-fmt-check && pixi run rs-lint'; do
+for gate in 'pixi run test-single-node-container' 'Require CI success for the release commit'; do
     [[ "$verify_job" == *"$gate"* ]]
 done
+[[ "$verify_job" != *'git push origin'* && "$verify_job" != *'gh release create'* ]]
 ! grep -Eq 'DOCKERHUB_|push: true|id-token: write' <<<"$verify_job"
 [[ "$publish_job" == *'needs: verify'* && "$publish_job" == *'environment: DockerHub'* ]]
 [[ "$publish_job" != *'RELEASE_ENABLED'* ]]
 [[ "$publish_job" == *'[[ "$(git rev-parse HEAD)" == "$REVISION" ]]'* ]]
+[[ "$publish_job" == *'Create release tag after verification'* ]]
+grep -Fq 'org.crowdb.runtime.sha256="$RUNTIME_SHA256"' container/single-node-container/Dockerfile
 
 preview_events=$(sed -n '/^on:/,/^jobs:/p' "$preview")
 [[ "$preview_events" == *'workflow_dispatch:'* ]]
@@ -64,7 +76,8 @@ preview_job=$(sed -n '/^  DockerPreview:/,$p' "$preview")
 ! grep -Eq 'secrets\.|docker/login-action|docker/build-push-action' <<<"$preview_job"
 
 release_tool=tools/release.py
-for required in '--dry-run' '--execute' '--symbols' 'git", "push", "--atomic"' \
-    '"release", "create"' '"workflow", "run"'; do
+for required in '--dry-run' '--execute' '--symbols' '"push", "origin", "HEAD:refs/heads/main"' \
+    '"workflow", "run"' '"--ref", "main"'; do
     grep -Fq -- "$required" "$release_tool"
 done
+! grep -Eq '"release", "create"|"tag", "-a"' "$release_tool"

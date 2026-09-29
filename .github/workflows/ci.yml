@@ -280,8 +280,8 @@ jobs:
         name: runtime-icebergsdk-${{ github.run_attempt }}
         path: |
           .crowdb-runtime/
-          target/iceberg-rck/open-api/build/reports/tests/
-          target/iceberg-rck/open-api/build/test-results/
+          ${{ runner.temp }}/iceberg-rck/open-api/build/reports/tests/
+          ${{ runner.temp }}/iceberg-rck/open-api/build/test-results/
         if-no-files-found: ignore
         retention-days: 7
     - name: Clean subprocesses

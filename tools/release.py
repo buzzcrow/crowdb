@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Prepare a versioned release and dispatch the verified container workflow.
+"""Prepare a versioned candidate and dispatch the verified container workflow.
 
 Run through Pixi: pixi run -- python tools/release.py --dry-run
                  pixi run -- python tools/release.py --execute
@@ -110,8 +110,8 @@ def main() -> None:
     print(f"Release {current} -> {target} ({tag})", flush=True)
     for path in updates:
         print(f"  update {path.relative_to(ROOT)}", flush=True)
-    print("  check versions and diff; commit; tag; atomically push main + tag", flush=True)
-    print(f"  create draft GitHub Release; dispatch release-container.yml (symbols: {args.symbols})", flush=True)
+    print("  check versions and diff; commit and push the candidate to main", flush=True)
+    print(f"  dispatch release-container.yml (symbols: {args.symbols}); tag after verification", flush=True)
     if args.dry_run:
         for path, updated in updates.items():
             original = path.read_text(encoding="utf-8")
@@ -129,12 +129,12 @@ def main() -> None:
     command("git", "diff", "--check")
     command("git", "add", *(str(path.relative_to(ROOT)) for path in updates))
     command("git", "commit", "-m", f"Release {target}")
-    command("git", "tag", "-a", tag, "-m", tag)
-    command("git", "push", "--atomic", "origin", "HEAD:refs/heads/main", f"refs/tags/{tag}")
-    command("gh", "release", "create", tag, "--repo", REPO, "--verify-tag", "--generate-notes", "--draft")
+    command("git", "push", "origin", "HEAD:refs/heads/main")
+    revision = command("git", "rev-parse", "HEAD", capture=True)
     command("gh", "workflow", "run", "release-container.yml", "--repo", REPO,
-            "--ref", tag, "-f", f"tag={tag}", "-f", f"include_symbols={str(args.symbols).lower()}")
-    print(f"Started verified publication for {tag}")
+            "--ref", "main", "-f", f"candidate_sha={revision}",
+            "-f", f"include_symbols={str(args.symbols).lower()}")
+    print(f"Started candidate verification for {tag}")
 
 
 if __name__ == "__main__":
