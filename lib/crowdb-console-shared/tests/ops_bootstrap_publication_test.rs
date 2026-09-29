@@ -3,7 +3,7 @@
 
 use crowdb_console_shared::error::Error;
 use crowdb_console_shared::ops::cluster;
-use crowdb_protocol::common::{HwStatus, RackValue};
+use crowdb_protocol::common::{HwStatus, NodeValue, RackValue};
 use crowdb_protocol::TextKey;
 use crowdb_test_harness::cluster::KvCluster;
 #[path = "common/bootstrap_authority.rs"]
@@ -25,6 +25,42 @@ async fn bootstrap_rejects_conflicting_hardware_without_overwriting_authority() 
     assert_eq!(ctx.sysmd().get_rack(1).await.unwrap(), Some(existing));
     assert!(ctx.sysmd().get_store(0).await.unwrap().is_none());
     assert!(ctx.config().stores.is_empty());
+}
+
+#[tokio::test]
+async fn bootstrap_retry_preserves_known_rack_membership_and_node_runtime_fields() {
+    let cluster = KvCluster::start().await;
+    let ctx = context(&cluster).await;
+    ctx.sysmd()
+        .add_rack(
+            1,
+            &RackValue {
+                status: HwStatus::Maintenance as i32,
+                node_ids: vec![1],
+                name: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    ctx.sysmd()
+        .add_node(
+            1,
+            1,
+            &NodeValue {
+                status: HwStatus::Maintenance as i32,
+                management_host: "127.0.0.1".into(),
+                ssh_port: 22,
+                disk_group_ids: vec![42],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    cluster::init(&ctx, &[1]).await.unwrap();
+    assert_eq!(ctx.sysmd().get_rack(1).await.unwrap().unwrap().node_ids, vec![1]);
+    let node = ctx.sysmd().get_node(1, 1).await.unwrap().unwrap();
+    assert_eq!(node.status, HwStatus::Maintenance as i32);
+    assert_eq!(node.disk_group_ids, vec![42]);
 }
 
 #[tokio::test]

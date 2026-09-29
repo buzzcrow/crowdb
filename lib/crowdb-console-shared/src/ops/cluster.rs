@@ -477,8 +477,22 @@ pub async fn local_deploy_combined(
     diskio_dummy_disk_type: &str,
 ) -> Result<LocalCombinedDeploySummary> {
     local_deploy(ctx, 3, Some(workspace), tunables).await?;
+    local_deploy_combined_after_kv(ctx, workspace, disk, chunk, diskio_dummy_disk_type).await
+}
+
+/// Complete the local storage stack after a verified KV bootstrap.
+///
+/// # Errors
+/// Returns a provisioning or readiness error.
+pub async fn local_deploy_combined_after_kv(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+    diskio_dummy_disk_type: &str,
+) -> Result<LocalCombinedDeploySummary> {
     for group_id in &disk.data_groups {
-        crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
+        ensure_local_data_group(ctx, *group_id).await?;
     }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
     let diskio = local_deploy_diskio(
@@ -514,8 +528,21 @@ pub async fn local_deploy_combined_file_backed(
     chunk: &LocalChunkdbDeployConfig,
 ) -> Result<LocalCombinedDeploySummary> {
     local_deploy(ctx, 3, Some(workspace), tunables).await?;
+    local_deploy_combined_file_backed_after_kv(ctx, workspace, disk, chunk).await
+}
+
+/// Complete the file-backed storage stack after a verified KV bootstrap.
+///
+/// # Errors
+/// Returns a provisioning or readiness error.
+pub async fn local_deploy_combined_file_backed_after_kv(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+) -> Result<LocalCombinedDeploySummary> {
     for group_id in &disk.data_groups {
-        crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
+        ensure_local_data_group(ctx, *group_id).await?;
     }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
     let diskio = local_deploy_diskio(
@@ -535,6 +562,28 @@ pub async fn local_deploy_combined_file_backed(
         chunkdb_instances: chunkdb.instance_count,
         diskio_instances: diskio,
     })
+}
+
+async fn ensure_local_data_group(ctx: &OpContext, group_id: u64) -> Result<()> {
+    let group = ctx.sysmd().get_group(0, group_id).await?;
+    let replicas = ctx.sysmd().list_replicas_in_group(0, group_id).await?;
+    if group.is_none() && replicas.is_empty() {
+        return crate::ops::kv_logical::add_group(ctx, 0, group_id, 100 + group_id, &[1, 2, 3]).await;
+    }
+    let mut actual: Vec<_> = replicas
+        .iter()
+        .map(|replica| (replica.replica_id, replica.node_id))
+        .collect();
+    actual.sort_unstable();
+    let expected = vec![(100 + group_id, 1), (101 + group_id, 2), (102 + group_id, 3)];
+    if group.is_some() && actual == expected {
+        Ok(())
+    } else {
+        Err(Error::Conflict {
+            kind: "local data group".into(),
+            id: format!("0/{group_id}"),
+        })
+    }
 }
 
 async fn local_deploy_diskio(
@@ -975,8 +1024,13 @@ async fn provision_diskdb_topology(
     for node in nodes {
         for local_group in 0..cfg.disk_groups_per_node {
             let disk_group_id = node.id * 100 + u64::try_from(local_group).unwrap_or(u64::MAX) + 1;
-            hardware::add_disk_group(ctx, node.id, disk_group_id, &format!("bench-dg-{disk_group_id}"))
-                .await?;
+            hardware::add_disk_group_to_group0(
+                ctx,
+                node.id,
+                disk_group_id,
+                &format!("bench-dg-{disk_group_id}"),
+            )
+            .await?;
             let disks = (0..cfg.disks_per_group)
                 .map(|disk| AddDiskInput {
                     disk_id: format!("{:016x}{:016x}", disk_group_id, disk + 1),
@@ -987,15 +1041,26 @@ async fn provision_diskdb_topology(
                     device_path: String::new(),
                 })
                 .collect::<Vec<_>>();
-            hardware::add_disks_batch(ctx, node.id, disk_group_id, &disks).await?;
+            for disk in &disks {
+                hardware::add_disk_to_group0(ctx, node.id, disk_group_id, disk).await?;
+            }
             let instance_id = 10_000 + node.id;
             ctx.sysmd()
                 .set_owner(node.rack_id, node.id, disk_group_id, instance_id, lease_expiry_ms)
                 .await?;
             let data_group = cfg.data_groups[disk_group_count % cfg.data_groups.len()];
-            ctx.sysmd()
-                .set_bind(node.rack_id, node.id, disk_group_id, 0, data_group)
-                .await?;
+            if let Some(binding) = ctx.sysmd().get_bind(node.rack_id, node.id, disk_group_id).await? {
+                if binding.store_id != 0 || binding.group_id != data_group {
+                    return Err(Error::Conflict {
+                        kind: "disk group binding".into(),
+                        id: disk_group_id.to_string(),
+                    });
+                }
+            } else {
+                ctx.sysmd()
+                    .set_bind(node.rack_id, node.id, disk_group_id, 0, data_group)
+                    .await?;
+            }
             disk_group_count += 1;
             disk_count += disks.len();
         }
@@ -1162,6 +1227,26 @@ pub async fn local_deploy(
     workspace_dir: Option<&std::path::Path>,
     tunables: Option<&KvDeployTunables>,
 ) -> Result<LocalDeploySummary> {
+    let (rack_id, node_ids) = prepare_local_deploy(ctx, node_count, workspace_dir, tunables).await?;
+    let init_summary = init(ctx, &node_ids).await?;
+    Ok(LocalDeploySummary {
+        node_count,
+        rack_id,
+        node_ids,
+        init_summary,
+    })
+}
+
+/// Start local KV processes and retain their bootstrap inputs without writing Group 0.
+///
+/// # Errors
+/// Returns a validation, binary, spawn, or readiness error.
+pub async fn prepare_local_deploy(
+    ctx: &OpContext,
+    node_count: usize,
+    workspace_dir: Option<&std::path::Path>,
+    tunables: Option<&KvDeployTunables>,
+) -> Result<(u64, Vec<u64>)> {
     if node_count == 0 {
         return Err(Error::Validation {
             field: "node_count".into(),
@@ -1202,14 +1287,7 @@ pub async fn local_deploy(
         }
     }
 
-    let init_summary = init(ctx, &node_ids).await?;
-
-    Ok(LocalDeploySummary {
-        node_count,
-        rack_id,
-        node_ids,
-        init_summary,
-    })
+    Ok((rack_id, node_ids))
 }
 
 /// Default workspace path for `local_deploy` when no explicit

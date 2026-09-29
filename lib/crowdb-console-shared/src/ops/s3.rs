@@ -22,6 +22,7 @@ mod local_state;
 
 const MARKER_FILE: &str = "s3-mini-cluster.json";
 const INITIALIZING_FILE: &str = "s3-mini-cluster.initializing.json";
+const BOOTSTRAP_INTENT_FILE: &str = "bootstrap-intent.toml";
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const NAMESPACE_ID: &str = "s3-mini-cluster";
 const BODY_PREVIEW_LIMIT: usize = 64 * 1024;
@@ -175,6 +176,9 @@ async fn start_with_profile(
         diskdb_client_rpc_workers: None,
         metrics_interval: None,
     };
+    if let Some(status) = resume_if_interrupted(data_dir, &disk, &chunk, storage_profile).await? {
+        return Ok(status);
+    }
     let mut record = MiniClusterRecord {
         version: 1,
         endpoint: String::new(),
@@ -202,8 +206,31 @@ async fn start_with_profile(
     Ok(status)
 }
 
+async fn resume_if_interrupted(
+    data_dir: &Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+    storage_profile: StorageProfile,
+) -> Result<Option<MiniClusterStatus>> {
+    if !data_dir.join(INITIALIZING_FILE).exists() || !local_state::path(data_dir).exists() {
+        return Ok(None);
+    }
+    let record: MiniClusterRecord = serde_json::from_slice(&std::fs::read(data_dir.join(INITIALIZING_FILE))?)
+        .map_err(|error| Error::Config(error.to_string()))?;
+    if record.version != 1 || record.storage_profile != storage_profile {
+        return Err(Error::Conflict {
+            kind: "S3 bootstrap profile".into(),
+            id: data_dir.display().to_string(),
+        });
+    }
+    resume_incomplete(data_dir, disk, chunk, record).await.map(Some)
+}
+
 fn archive_incomplete_attempt(data_dir: &Path) -> Result<()> {
     if !data_dir.join(INITIALIZING_FILE).exists() || data_dir.join(MARKER_FILE).exists() {
+        return Ok(());
+    }
+    if local_state::path(data_dir).exists() || data_dir.join(BOOTSTRAP_INTENT_FILE).exists() {
         return Ok(());
     }
     let name = data_dir
@@ -240,13 +267,54 @@ async fn initialize_new(
         no_fsync: (storage_profile == StorageProfile::Memory).then_some(true),
         ..KvDeployTunables::default()
     };
-    match storage_profile {
-        StorageProfile::Persistent => {
-            cluster::local_deploy_combined_file_backed(ctx, data_dir, Some(&tunables), disk, chunk).await?;
+    let (_, nodes) = cluster::prepare_local_deploy(ctx, 3, Some(data_dir), Some(&tunables)).await?;
+    local_state::save(data_dir, &ctx.config())?;
+    cluster::init_with_intent(ctx, &nodes, &data_dir.join(BOOTSTRAP_INTENT_FILE)).await?;
+    initialize_after_kv(ctx, data_dir, disk, chunk, storage_profile).await
+}
+
+async fn initialize_after_kv(
+    ctx: &OpContext,
+    data_dir: &Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+    storage_profile: StorageProfile,
+) -> Result<StartedEndpoints> {
+    let storage_services = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| {
+            matches!(
+                server.service_type,
+                ServiceType::Diskdb | ServiceType::Diskio | ServiceType::Chunkdb
+            )
+        })
+        .count();
+    if storage_services == 9 {
+        for group in &disk.data_groups {
+            if ctx.sysmd().get_group(0, *group).await?.is_none() {
+                return Err(Error::NotFound {
+                    kind: "S3 data group".into(),
+                    id: group.to_string(),
+                });
+            }
         }
-        StorageProfile::Memory => {
-            cluster::local_deploy_combined(ctx, data_dir, Some(&tunables), disk, chunk, "mem").await?;
+        cluster::restart_storage_services(ctx).await?;
+    } else if storage_services == 0 {
+        match storage_profile {
+            StorageProfile::Persistent => {
+                cluster::local_deploy_combined_file_backed_after_kv(ctx, data_dir, disk, chunk).await?;
+            }
+            StorageProfile::Memory => {
+                cluster::local_deploy_combined_after_kv(ctx, data_dir, disk, chunk, "mem").await?;
+            }
         }
+    } else {
+        return Err(Error::Conflict {
+            kind: "partial S3 storage launch state".into(),
+            id: format!("{storage_services} of 9 services"),
+        });
     }
     let seeds = management_seeds(&ctx.config());
     local_state::save(data_dir, &ctx.config())?;
@@ -263,6 +331,42 @@ async fn initialize_new(
         web: web_endpoint,
         web_pid,
     })
+}
+
+async fn resume_incomplete(
+    data_dir: &Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+    mut record: MiniClusterRecord,
+) -> Result<MiniClusterStatus> {
+    let (mut config, seeds) = local_state::load(data_dir)?;
+    restore_launch_nodes(&mut config)?;
+    let group0 = config
+        .servers
+        .iter()
+        .find(|server| server.service_type == ServiceType::Kv)
+        .and_then(|server| server.rpc_url.as_deref())
+        .ok_or_else(|| Error::Config("S3 bootstrap has no KV RPC seed".into()))?
+        .trim_start_matches("http://")
+        .to_owned();
+    let ctx = OpContext::new(group0, seeds.clone(), config);
+    for node_id in 1..=3 {
+        let server_dir = data_dir
+            .join("rack1")
+            .join(format!("node{node_id}"))
+            .join(format!("kv-server-{node_id}"));
+        crate::ops::kv_server::restart(&ctx, node_id, Some(&server_dir), None, &seeds).await?;
+    }
+    local_state::save(data_dir, &ctx.config())?;
+    cluster::init_with_intent(&ctx, &[1, 2, 3], &data_dir.join(BOOTSTRAP_INTENT_FILE)).await?;
+    let endpoints = initialize_after_kv(&ctx, data_dir, disk, chunk, record.storage_profile).await?;
+    record.endpoint = endpoints.s3;
+    record.web_endpoint = endpoints.web;
+    record.web_pid = Some(endpoints.web_pid);
+    save_record(&data_dir.join(MARKER_FILE), &record)?;
+    std::fs::remove_file(data_dir.join(INITIALIZING_FILE))?;
+    let status = status_from(data_dir, false, &ctx.config(), &record);
+    Ok(status)
 }
 
 async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
@@ -395,7 +499,10 @@ fn validate_location(data_dir: &Path) -> Result<()> {
         return Ok(());
     }
     let mut entries = std::fs::read_dir(data_dir)?;
-    if entries.next().transpose()?.is_none() || data_dir.join(MARKER_FILE).exists() {
+    if entries.next().transpose()?.is_none()
+        || data_dir.join(MARKER_FILE).exists()
+        || (data_dir.join(INITIALIZING_FILE).exists() && local_state::path(data_dir).exists())
+    {
         return Ok(());
     }
     Err(Error::Validation {
@@ -427,7 +534,7 @@ fn management_seeds(config: &ConsoleConfig) -> Vec<String> {
 fn restore_launch_nodes(config: &mut ConsoleConfig) -> Result<()> {
     config.add_rack(RackEntry {
         id: 1,
-        name: "local-launch".into(),
+        name: "rack-1".into(),
     })?;
     let node_ids: Vec<_> = config
         .servers

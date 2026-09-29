@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_test_harness::test_dirs::TestDir;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,46 @@ use std::sync::mpsc;
 
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_crowdb-cli"))
+}
+
+#[test]
+#[ignore = "starts the complete local storage stack twice"]
+fn interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file() {
+    let directory = TestDir::new("s3-bootstrap-replay-cli").expect("test directory");
+    let root = directory.path();
+    let failed = cli()
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(root)
+        .env("CROWDB_CHUNK_KV_SERVER_BIN", "/bin/false")
+        .output()
+        .expect("run interrupted launch");
+    assert!(!failed.status.success(), "failure injection must stop launch");
+    assert!(root.join("s3-mini-cluster.initializing.json").exists());
+    assert!(root.join("s3-local-state.toml").exists());
+    assert!(!root.join("console.toml").exists());
+    let restarted = cli()
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(root)
+        .env_remove("CROWDB_CHUNK_KV_SERVER_BIN")
+        .output()
+        .expect("resume interrupted launch");
+    assert!(
+        restarted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+    assert!(!root.join("bootstrap-intent.toml").exists());
+    assert!(!root.join("s3-mini-cluster.initializing.json").exists());
+    let deleted = cli()
+        .args(["s3", "cluster", "delete", "--root"])
+        .arg(root)
+        .output()
+        .expect("delete test cluster");
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
 }
 
 fn tempdir(tag: &str) -> PathBuf {

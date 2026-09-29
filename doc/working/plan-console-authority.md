@@ -176,7 +176,14 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   bootstrap-interruption replay before the old format can be removed. Its
   completed cluster now restarts from launch-only local state and Group 0
   seeds; no local topology is loaded after publication. A full persistent S3
-  stop/restart and range-read E2E passes.
+  stop/restart and range-read E2E passes. S3 now saves its local KV launch
+  state before sealing bootstrap intent and publishing Group 0. An interrupted
+  launch retains that state for identity-checked retry instead of archiving the
+  committed cluster. A real failure injected at Chunk KV startup recovers on
+  the next CLI invocation, with all 15 services ready and no topology file.
+  The CLI integration test reproduces this interruption and recovery. Partial
+  storage-service launch sets still fail closed and need completion or an
+  explicit operator recovery path; mixed CLI/Web config remains to remove.
 - [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
   records, accept matching content without rewriting revisions, reject conflicts,
   and conditionally create missing records. Reconcile uncertain writes with
