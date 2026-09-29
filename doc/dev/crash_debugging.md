@@ -102,37 +102,10 @@ nonzero core limit in the launcher. A shell launch can use
 `LimitCORE=1G`. Verify the actual process limit in `/proc/PID/limits`.
 There is no container monitor retention rule for bare-metal cores.
 
-## 4. Open a container core with exact-build symbols
+## 4. Open a container core
 
-Use the image that ran the crashed process and its matching optional symbol
-archive. From the CROWDB checkout:
-
-```sh
-pixi run -- python tools/symbolize-container-core.py \
-  --image 'docker.io/crowdb/crowdb-iceberg:<tag>' \
-  --symbols '/private/crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst' \
-  --binary crowdb-kv-server \
-  --core /private/core.crowdb-kv-ser.PID.TIME
-```
-
-The tool checks the image revision, version and binary SHA-256 hashes against
-the archive, places the `.debug` files beside the matching stripped ELF files,
-and starts GDB with the image's shared libraries. GNU debuglinks let GDB load
-the separate symbols. Replace `--binary` with the actual crashed CROWDB
-binary. If the archive was not released, build the exact Git tag with
-`CROWDB_PACKAGE_SYMBOLS=1 pixi run build-single-node-container` and package
-its local `target/container-symbols` directory for the helper:
-
-```sh
-pixi run -- bash -c 'tar -C target/container-symbols -cf - . | zstd -q -o /private/crowdb-symbols-local.tar.zst'
-```
-
-Use that archive with the image produced by the same build. A different
-commit or build is not a safe substitute.
-
-For an interactive session, keep private copies of the same image's `bin/`
-and `lib/`, put each matching `.debug` file beside its stripped binary or
-library, and run:
+Use the exact image that ran the crashed process. Export its binary and shared
+libraries to a private directory, then run:
 
 ```sh
 pixi run -- gdb -q /private/runtime/bin/crowdb-kv-server /private/core
@@ -142,14 +115,14 @@ pixi run -- gdb -q /private/runtime/bin/crowdb-kv-server /private/core
 (gdb) thread apply all bt
 ```
 
+The release image contains stripped binaries, so source lines may be absent.
 Do not use a newly built binary against an older core just because its version
 string is unchanged.
 
 ## 5. Open a bare-metal core
 
 Bare-metal deployment keeps the binary's debug information. Use the exact
-binary and shared libraries that were running when the core was made; no
-separate container symbol archive is needed:
+binary and shared libraries that were running when the core was made:
 
 ```sh
 pixi run -- gdb -q /path/to/exact/crowdb-kv-server /private/core

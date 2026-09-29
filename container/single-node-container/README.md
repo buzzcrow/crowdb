@@ -36,8 +36,7 @@ pixi run -- python tools/release.py --execute
 ```
 
 The script only dispatches the workflow; it does not change files or push.
-`--symbols` archives the optional exact-build symbol files as a workflow
-artifact. The dry run does not contact GitHub.
+The dry run does not contact GitHub.
 
 The workflow builds and tests the container, then waits for DockerHub environment approval.
 Before publishing, it checks that the remote branch still points to the same
@@ -47,9 +46,7 @@ create a Git tag or GitHub Release. Fix a failed candidate on the release
 branch and run the workflow again.
 
 The workflow archives the verified runtime, then packages those same files in
-its publish job without recompiling them. With `--symbols`, it also archives
-exact-build symbols from that build as a workflow artifact named
-`crowdb-symbols-<version>-git-<revision>-linux-amd64.tar.zst`.
+its publish job without recompiling them.
 
 ## Crash collection boundary
 
@@ -99,24 +96,9 @@ The container never changes `core_pattern` or the host's dumpability policy.
   native crash directory is not the container's core directory.
 
 Core dumps can contain credentials and user data. Keep exports in a private
-directory and do not attach them to ordinary logs or issues. If the release
-included the optional symbol archive, use the exact image and matching archive
-to show source-line stacks:
-
-```sh
-pixi run -- python tools/symbolize-container-core.py \
-  --image 'docker.io/crowdb/crowdb-iceberg:<tag>' \
-  --symbols '/private/path/crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst' \
-  --binary crowdb-monitor --core /private/path/core
-```
-
-The tool copies binaries from a stopped container into a temporary private
-directory, verifies source revision, version and SHA-256 hashes, then runs
-`gdb` without printing frame arguments. Use the crashed child binary instead
-of `crowdb-monitor` for a child core. The temporary binaries are removed after
-the stack is shown; the core stays at the path supplied by the operator.
-The operator will validate collection and source-line output when a real
-crash is available. No host collector change is required by the image build.
+directory and do not attach them to ordinary logs or issues. The release image
+contains stripped binaries, so a core may give only a limited stack trace.
+No host collector change is required by the image build.
 
 Collector behavior follows the [Linux core pattern documentation](https://docs.kernel.org/admin-guide/sysctl/kernel.html),
 [systemd-coredump manual](https://www.freedesktop.org/software/systemd/man/250/systemd-coredump.socket.html),

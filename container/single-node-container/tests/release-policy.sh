@@ -39,13 +39,8 @@ verify_job=$(sed -n '/^  verify:/,/^  publish:/p' "$release")
 publish_job=$(sed -n '/^  publish:/,$p' "$release")
 [[ "$verify_job" == *'name: verified-container-runtime'* ]]
 [[ "$publish_job" == *'name: verified-container-runtime'* ]]
-[[ "$verify_job" == *'name: verified-container-symbols'* ]]
-[[ "$publish_job" != *'name: verified-container-symbols'* ]]
-[[ "$events" == *'include_symbols:'* && "$events" == *'default: false'* ]]
-[[ "$verify_job" == *"CROWDB_PACKAGE_SYMBOLS: \${{ inputs.include_symbols && '1' || '0' }}"* ]]
-[[ "$verify_job" == *'pixi run -- python tools/ci-checks/check-container-symbols.py'* ]]
-[[ "$verify_job" == *'if: inputs.include_symbols'* ]]
-[[ "$verify_job" == *'continue-on-error: true'* ]]
+[[ "$events" != *'include_symbols:'* ]]
+[[ "$verify_job" != *'verified-container-symbols'* ]]
 [[ "$publish_job" == *'context: target/container-runtime'* ]]
 [[ "$verify_job" == *'pixi run test-single-node-container'* ]]
 [[ "$verify_job" != *'Require CI success for the release branch commit'* ]]
@@ -68,8 +63,9 @@ preview_job=$(sed -n '/^  DockerPreview:/,$p' "$preview")
 ! grep -Eq 'secrets\.|docker/login-action|docker/build-push-action' <<<"$preview_job"
 
 release_tool=tools/release.py
-for required in '--dry-run' '--execute' '--symbols' '"workflow", "run"' \
+for required in '--dry-run' '--execute' '"workflow", "run"' \
     '"--ref", branch'; do
     grep -Fq -- "$required" "$release_tool"
 done
 ! grep -Eq '"release", "create"|"tag", "-a"|"push", "origin"|candidate_sha' "$release_tool"
+! grep -Fq -- '--symbols' "$release_tool"

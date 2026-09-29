@@ -56,19 +56,6 @@ for library in "$output"/lib/*; do
 done
 rm "$output/dependencies.txt"
 
-if [[ "${CROWDB_PACKAGE_SYMBOLS:-0}" == 1 ]]; then
-    for artifact in "$output"/bin/* "$output"/lib/libcrowdb*.so; do
-        [[ -f "$artifact" ]] || continue
-        if ! readelf -W -S "$artifact" | grep -E '[[:space:]]\.debug_line[[:space:]]' >/dev/null; then
-            echo "Missing source-line symbols: $artifact" >&2
-            exit 1
-        fi
-        symbol="$output/symbols/$(basename "$(dirname "$artifact")")/$(basename "$artifact").debug"
-        mkdir -p "$(dirname "$symbol")"
-        objcopy --only-keep-debug "$artifact" "$symbol"
-        objcopy --add-gnu-debuglink="$symbol" "$artifact"
-    done
-fi
 for artifact in "$output"/bin/* "$output"/lib/*; do
     strip --strip-debug "$artifact"
 done

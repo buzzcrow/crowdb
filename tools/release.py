@@ -61,19 +61,17 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="Print the plan without contacting GitHub")
     mode.add_argument("--execute", action="store_true", help="Dispatch the container workflow")
-    parser.add_argument("--symbols", action="store_true", help="Archive the optional exact-build symbols")
     args = parser.parse_args()
 
     branch = release_branch()
-    print(f"Dispatch release-container.yml on {branch} (symbols: {args.symbols})", flush=True)
+    print(f"Dispatch release-container.yml on {branch}", flush=True)
     print(f"Image tag: crowdb/crowdb-iceberg:{branch.removeprefix('release/')}", flush=True)
     if args.dry_run:
         return
 
     preflight(branch)
     command("gh", "workflow", "run", "release-container.yml", "--repo", REPO,
-            "--ref", branch,
-            "-f", f"include_symbols={str(args.symbols).lower()}")
+            "--ref", branch)
     print(f"Started container verification for {branch}")
 
 

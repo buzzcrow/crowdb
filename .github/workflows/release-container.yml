@@ -2,12 +2,6 @@ name: Publish crowdb-iceberge docker container
 
 on:
   workflow_dispatch:
-    inputs:
-      include_symbols:
-        description: Build and attach the large exact-build symbol archive
-        required: false
-        default: false
-        type: boolean
 
 concurrency:
   group: crowdb-iceberg-${{ github.ref_name }}
@@ -20,7 +14,6 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
-      CROWDB_PACKAGE_SYMBOLS: ${{ inputs.include_symbols && '1' || '0' }}
     permissions:
       contents: read
       actions: read
@@ -65,30 +58,15 @@ jobs:
       env:
         CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
       run: pixi run test-single-node-container
-    - name: Verify exact-build source-line symbols
-      if: inputs.include_symbols
-      run: pixi run -- python tools/ci-checks/check-container-symbols.py
     - name: Archive verified runtime files
       run: pixi run tar -C target/container-runtime -czf target/container-runtime.tar.gz .
     - name: Record verified runtime digest
       run: pixi run bash -euc 'printf "sha256=%s\n" "$(sha256sum target/container-runtime.tar.gz | cut -d " " -f1)" >> "$GITHUB_OUTPUT"'
       id: runtime_digest
-    - name: Archive exact-build symbols
-      if: inputs.include_symbols
-      run: pixi run tar -C target/container-symbols -I zstd -cf "target/crowdb-symbols-${{ steps.source.outputs.image_tag }}-git-${{ steps.source.outputs.revision }}-linux-amd64.tar.zst" .
     - uses: actions/upload-artifact@v4
       with:
         name: verified-container-runtime
         path: target/container-runtime.tar.gz
-        compression-level: 0
-        retention-days: 7
-    - uses: actions/upload-artifact@v4
-      id: symbols_artifact
-      if: inputs.include_symbols
-      continue-on-error: true
-      with:
-        name: verified-container-symbols
-        path: target/crowdb-symbols-*.tar.zst
         compression-level: 0
         retention-days: 7
     - name: Upload preview failure logs
