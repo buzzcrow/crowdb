@@ -6,7 +6,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use crowdb_console_shared::config::{NodeEntry, RackEntry};
+use crowdb_console_shared::config::{DiskEntry, DiskGroupEntry, NodeEntry, RackEntry};
 use crowdb_console_shared::ops::hardware;
 use serde::Deserialize;
 
@@ -26,6 +26,13 @@ pub(crate) struct CreateRack {
 #[derive(Deserialize)]
 pub(crate) struct NodeFilter {
     rack_id: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CreateDiskGroup {
+    id: u64,
+    #[serde(default)]
+    name: String,
 }
 
 pub(crate) async fn list_racks(State(state): State<AppState>) -> Result<Json<Vec<RackEntry>>, ApiError> {
@@ -94,6 +101,74 @@ pub(crate) async fn remove_node(
 ) -> Result<StatusCode, ApiError> {
     let ctx = state.op_context().await.map_err(api_error)?;
     hardware::remove_node_from_group0(&ctx, id)
+        .await
+        .map_err(api_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn list_disk_groups(
+    State(state): State<AppState>,
+    Path(node_id): Path<u64>,
+) -> Result<Json<Vec<DiskGroupEntry>>, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::list_disk_groups_from_group0(&ctx, node_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+pub(crate) async fn add_disk_group(
+    State(state): State<AppState>,
+    Path(node_id): Path<u64>,
+    Json(body): Json<CreateDiskGroup>,
+) -> Result<(StatusCode, Json<DiskGroupEntry>), ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    let group = hardware::add_disk_group_to_group0(&ctx, node_id, body.id, &body.name)
+        .await
+        .map_err(api_error)?;
+    Ok((StatusCode::CREATED, Json(group)))
+}
+
+pub(crate) async fn remove_disk_group(
+    State(state): State<AppState>,
+    Path((node_id, dg_id)): Path<(u64, u64)>,
+) -> Result<StatusCode, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::remove_disk_group_from_group0(&ctx, node_id, dg_id)
+        .await
+        .map_err(api_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn list_disks(
+    State(state): State<AppState>,
+    Path((node_id, dg_id)): Path<(u64, u64)>,
+) -> Result<Json<Vec<DiskEntry>>, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::list_disks_from_group0(&ctx, node_id, dg_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+pub(crate) async fn add_disk(
+    State(state): State<AppState>,
+    Path((node_id, dg_id)): Path<(u64, u64)>,
+    Json(body): Json<hardware::AddDiskInput>,
+) -> Result<(StatusCode, Json<DiskEntry>), ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    let disk = hardware::add_disk_to_group0(&ctx, node_id, dg_id, &body)
+        .await
+        .map_err(api_error)?;
+    Ok((StatusCode::CREATED, Json(disk)))
+}
+
+pub(crate) async fn remove_disk(
+    State(state): State<AppState>,
+    Path((node_id, dg_id, disk_id)): Path<(u64, u64, String)>,
+) -> Result<StatusCode, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::remove_disk_from_group0(&ctx, node_id, dg_id, &disk_id)
         .await
         .map_err(api_error)?;
     Ok(StatusCode::NO_CONTENT)

@@ -134,6 +134,7 @@ async fn seed_restart_hardware(hardware: &HardwareClient) {
                 &DiskGroupValue {
                     status: HwStatus::Up as i32,
                     disk_ids: vec![disk_id],
+                    name: String::new(),
                 },
             )
             .await

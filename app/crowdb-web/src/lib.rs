@@ -98,6 +98,24 @@ pub fn router(state: AppState) -> axum::Router {
                 .route(
                     "/api/nodes/:id",
                     delete(managed_hardware::remove_node).route_layer(authorization.clone()),
+                )
+                .route(
+                    "/api/nodes/:id/disk-groups",
+                    get(managed_hardware::list_disk_groups)
+                        .merge(post(managed_hardware::add_disk_group).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/nodes/:id/disk-groups/:dg_id",
+                    delete(managed_hardware::remove_disk_group).route_layer(authorization.clone()),
+                )
+                .route(
+                    "/api/nodes/:id/disk-groups/:dg_id/disks",
+                    get(managed_hardware::list_disks)
+                        .merge(post(managed_hardware::add_disk).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id",
+                    delete(managed_hardware::remove_disk).route_layer(authorization.clone()),
                 );
             managed
                 .merge(hardware)

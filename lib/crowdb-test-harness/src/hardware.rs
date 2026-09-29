@@ -61,6 +61,7 @@ pub async fn seed_hardware(hw: &HardwareClient, disk_ids: &[DiskId]) {
         &DiskGroupValue {
             status: HwStatus::Up as i32,
             disk_ids: disk_ids.to_vec(),
+            name: String::new(),
         },
     )
     .await

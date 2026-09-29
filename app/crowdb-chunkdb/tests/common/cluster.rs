@@ -501,6 +501,7 @@ pub async fn seed_hardware_layout_from_disk_group(
                 &DiskGroupValue {
                     status: HwStatus::Up as i32,
                     disk_ids: disk_ids.clone(),
+                    name: String::new(),
                 },
             )
             .await

@@ -132,7 +132,12 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   observe the same records; inline SSH material is rejected. Registry CLI and
   bare-metal Web now remove only unused nodes through one conditional Group 0
   rack-membership/node deletion; occupied nodes and unauthenticated Web writes
-  fail. Disk groups, disks and remaining legacy routes still need conversion.
+  fail. Disk-group and disk creation/removal now update the child and parent
+  records in one rack-revision-fenced Group 0 batch. Their names, membership
+  and disk attributes are read from confirmed authority by CLI and bare-metal
+  Web; tests cover two consoles, conflicts, occupied deletion, private Web
+  writes and a lost committed write response. Legacy Web routes and CLI
+  mixed-config paths still need removal.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
@@ -225,10 +230,15 @@ requirement.
 
 ## Documentation and completion
 
-- [ ] **Bare-metal documentation**: publish verified KV, chunk and access
+- [x] **Bare-metal documentation**: publish verified KV, chunk and access
   setup under `/nv/cpp/crowdb-web/site/docs/`, state the non-production
   boundary, then fix website links and remove obsolete combined material.
   Keep Docker deployment notes independent; do not put these guides in crowdb.
+  The KV, chunk and access guides, deployment index, navigation and sitemap
+  are published in crowdb-web commit `1c6fc3c`. CLI command shapes were
+  checked against the executable help and the website route/link test passes.
+  Final R188 acceptance will verify the complete deployment path after the
+  remaining hardware operations are wired.
 - [ ] **Acceptance and cleanup**: run affected integration cases, full console
   and UI suites, Rust fmt and lint; update the relevant permanent architecture,
   then remove the requirement, backlog entry and this plan when complete.

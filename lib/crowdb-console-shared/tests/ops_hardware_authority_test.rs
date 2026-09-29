@@ -176,3 +176,122 @@ async fn committed_rack_survives_a_lost_conditional_write_response() {
     assert_eq!(proxy.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(ctx.sysmd().get_rack(9).await.unwrap().unwrap().name, "rack-nine");
 }
+
+#[tokio::test]
+async fn two_consoles_share_disk_groups_and_disks_without_local_topology() {
+    let cluster = KvCluster::start().await;
+    let bootstrap = bootstrap_authority::context(&cluster).await;
+    cluster_ops::init(&bootstrap, &[1]).await.unwrap();
+    let first = OpContext::new(
+        cluster.group0_leader_endpoint.clone(),
+        cluster.mgmt_endpoints.clone(),
+        ConsoleConfig::default(),
+    );
+    let second = OpContext::new(
+        cluster.group0_leader_endpoint.clone(),
+        cluster.mgmt_endpoints.clone(),
+        ConsoleConfig::default(),
+    );
+    hardware::add_rack_to_group0(&first, 12, "storage").await.unwrap();
+    hardware::add_node_to_group0(
+        &first,
+        NodeEntry {
+            id: 12,
+            rack_id: 12,
+            host: "127.0.0.1".into(),
+            ssh_port: 22,
+            ssh_user: String::new(),
+            ssh_key: None,
+            ssh_password: None,
+            ssh_credential_ref: None,
+        },
+    )
+    .await
+    .unwrap();
+    hardware::add_disk_group_to_group0(&first, 12, 5, "hot")
+        .await
+        .unwrap();
+    hardware::add_disk_group_to_group0(&second, 12, 5, "hot")
+        .await
+        .unwrap();
+    let conflict = hardware::add_disk_group_to_group0(&second, 12, 5, "cold")
+        .await
+        .unwrap_err();
+    assert!(matches!(conflict, Error::Conflict { .. }));
+    assert_eq!(
+        hardware::list_disk_groups_from_group0(&second, 12).await.unwrap()[0].name,
+        "hot"
+    );
+    let disk = hardware::AddDiskInput {
+        disk_id: "0000000000000000-000000000000000c".into(),
+        disk_type: "Ssd".into(),
+        capacity_bytes: 4096,
+        zone_size_bytes: 4096,
+        unit_size_bytes: 4096,
+        device_path: "/dev/test".into(),
+    };
+    hardware::add_disk_to_group0(&first, 12, 5, &disk).await.unwrap();
+    hardware::add_disk_to_group0(&second, 12, 5, &disk).await.unwrap();
+    assert_eq!(
+        hardware::list_disks_from_group0(&second, 12, 5)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        hardware::remove_disk_group_from_group0(&second, 12, 5).await,
+        Err(Error::Conflict { .. })
+    ));
+    assert!(matches!(
+        hardware::remove_node_from_group0(&second, 12).await,
+        Err(Error::Conflict { .. })
+    ));
+    hardware::remove_disk_from_group0(&second, 12, 5, &disk.disk_id)
+        .await
+        .unwrap();
+    hardware::remove_disk_group_from_group0(&first, 12, 5)
+        .await
+        .unwrap();
+    hardware::remove_node_from_group0(&second, 12).await.unwrap();
+    assert!(first.config().disk_groups.is_empty());
+    assert!(second.config().disks.is_empty());
+}
+
+#[tokio::test]
+async fn committed_disk_group_survives_a_lost_response() {
+    let cluster = KvCluster::start().await;
+    let bootstrap = bootstrap_authority::context(&cluster).await;
+    cluster_ops::init(&bootstrap, &[1]).await.unwrap();
+    let proxy = rpc_response_proxy::TestResponseProxy::start(cluster.group0_leader_endpoint.clone()).await;
+    let ctx = OpContext::new(
+        proxy.endpoint.clone(),
+        vec![proxy.management_endpoint.clone()],
+        ConsoleConfig::default(),
+    );
+    hardware::add_rack_to_group0(&ctx, 13, "storage").await.unwrap();
+    hardware::add_node_to_group0(
+        &ctx,
+        NodeEntry {
+            id: 13,
+            rack_id: 13,
+            host: "127.0.0.1".into(),
+            ssh_port: 22,
+            ssh_user: String::new(),
+            ssh_key: None,
+            ssh_password: None,
+            ssh_credential_ref: None,
+        },
+    )
+    .await
+    .unwrap();
+    proxy.armed.store(true, Ordering::SeqCst);
+    hardware::add_disk_group_to_group0(&ctx, 13, 1, "recovered")
+        .await
+        .unwrap();
+    assert_eq!(proxy.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        hardware::list_disk_groups_from_group0(&ctx, 13).await.unwrap()[0].name,
+        "recovered"
+    );
+}

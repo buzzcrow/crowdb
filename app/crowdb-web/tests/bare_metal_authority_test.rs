@@ -216,7 +216,94 @@ async fn bare_metal_hardware_routes_share_confirmed_group_zero_state() {
         .0,
         StatusCode::CONFLICT
     );
+    verify_storage_hardware(&first, &second).await;
     verify_hardware_deletion(&first, &second).await;
+}
+
+async fn verify_storage_hardware(first: &axum::Router, second: &axum::Router) {
+    let groups = "/api/nodes/9/disk-groups";
+    let group = serde_json::json!({"id": 4, "name": "hot"});
+    assert_eq!(
+        hardware_request(
+            first,
+            axum::http::Method::POST,
+            groups,
+            Some(group.clone()),
+            false
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        hardware_request(first, axum::http::Method::POST, groups, Some(group), true)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        hardware_request(second, axum::http::Method::GET, groups, None, false)
+            .await
+            .1[0]["name"],
+        "hot"
+    );
+    let disks = "/api/nodes/9/disk-groups/4/disks";
+    let disk = serde_json::json!({
+        "disk_id": "0000000000000000-0000000000000009", "disk_type": "Ssd",
+        "capacity_bytes": 4096, "zone_size_bytes": 4096, "unit_size_bytes": 4096,
+        "device_path": "/dev/test",
+    });
+    assert_eq!(
+        hardware_request(second, axum::http::Method::POST, disks, Some(disk), true)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        hardware_request(first, axum::http::Method::GET, disks, None, false)
+            .await
+            .1
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        hardware_request(
+            first,
+            axum::http::Method::DELETE,
+            "/api/nodes/9/disk-groups/4",
+            None,
+            true
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        hardware_request(
+            second,
+            axum::http::Method::DELETE,
+            "/api/nodes/9/disk-groups/4/disks/0000000000000000-0000000000000009",
+            None,
+            true
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        hardware_request(
+            first,
+            axum::http::Method::DELETE,
+            "/api/nodes/9/disk-groups/4",
+            None,
+            true
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
 }
 
 async fn verify_hardware_deletion(first: &axum::Router, second: &axum::Router) {

@@ -150,6 +150,8 @@ pub struct DiskValue {
 pub struct DiskGroupValue {
     pub status: i32,
     pub disk_ids: Vec<DiskId>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]

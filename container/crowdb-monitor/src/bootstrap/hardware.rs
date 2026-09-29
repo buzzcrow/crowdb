@@ -416,6 +416,7 @@ fn expected(profile: &DeploymentProfile) -> Result<ExpectedHardware, HardwareBoo
         group: DiskGroupValue {
             status: HwStatus::Up as i32,
             disk_ids,
+            name: String::new(),
         },
         disks,
     })

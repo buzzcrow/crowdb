@@ -341,9 +341,83 @@ pub enum DiskGroupVerb {
 }
 
 pub async fn run_disk_group_verb(cli: &Cli, verb: DiskGroupVerb) -> ExitCode {
-    let _ = (cli, verb);
-    eprintln!("disk-group commands not yet wired to ops (Phase 3)");
-    ExitCode::from(1)
+    use crowdb_console_shared::ops::hardware;
+    let ctx = match op_context(cli) {
+        Ok(ctx) => ctx,
+        Err(code) => return code,
+    };
+    let result = match verb {
+        DiskGroupVerb::Add { id, rack, node, name } => {
+            let (Ok(id), Ok(rack), Ok(node)) = (id.parse::<u64>(), rack.parse::<u64>(), node.parse::<u64>())
+            else {
+                eprintln!("error: disk-group, rack and node IDs must be integers");
+                return ExitCode::from(1);
+            };
+            match hardware::list_nodes_from_group0(&ctx, Some(rack)).await {
+                Ok(nodes) if nodes.iter().any(|entry| entry.id == node) => {}
+                Ok(_) => {
+                    eprintln!("error: node {node} is not in rack {rack}");
+                    return ExitCode::from(2);
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            }
+            hardware::add_disk_group_to_group0(&ctx, node, id, &name)
+                .await
+                .map(|entry| {
+                    println!("added disk group {} on node {}", entry.id, node);
+                })
+        }
+        DiskGroupVerb::Remove { id } => {
+            let id = match id.parse::<u64>() {
+                Ok(id) => id,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            };
+            let groups = match ctx.sysmd().list_disk_groups().await {
+                Ok(groups) => groups,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let matches: Vec<_> = groups.into_iter().filter(|group| group.dg_id == id).collect();
+            if matches.len() != 1 {
+                eprintln!(
+                    "error: disk group {id} has {} matches; specify a unique ID",
+                    matches.len()
+                );
+                return ExitCode::from(2);
+            }
+            hardware::remove_disk_group_from_group0(&ctx, matches[0].node_id, id)
+                .await
+                .map(|()| println!("removed disk group {id}"))
+        }
+        DiskGroupVerb::List => match ctx.sysmd().list_disk_groups().await {
+            Ok(mut groups) => {
+                groups.sort_unstable_by_key(|group| (group.rack_id, group.node_id, group.dg_id));
+                for group in groups {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        group.rack_id, group.node_id, group.dg_id, group.value.name
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        },
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 // ── disk ─────────────────────────────────────────────────────────
@@ -377,8 +451,117 @@ pub enum DiskVerb {
     List,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run_disk_verb(cli: &Cli, verb: DiskVerb) -> ExitCode {
-    let _ = (cli, verb);
-    eprintln!("disk commands not yet wired to ops (Phase 3)");
-    ExitCode::from(1)
+    use crowdb_console_shared::ops::hardware::{self, AddDiskInput};
+    use crowdb_protocol::DiskIdExt;
+    let ctx = match op_context(cli) {
+        Ok(ctx) => ctx,
+        Err(code) => return code,
+    };
+    let result = match verb {
+        DiskVerb::Add {
+            id,
+            rack,
+            node,
+            group,
+            disk_type,
+            capacity,
+            zone_size,
+            unit_size,
+            device_path,
+        } => {
+            let (Ok(rack), Ok(node), Ok(group), Ok(capacity_bytes), Ok(zone_size_bytes), Ok(unit_size_bytes)) = (
+                rack.parse::<u64>(),
+                node.parse::<u64>(),
+                group.parse::<u64>(),
+                capacity.parse::<u64>(),
+                zone_size.parse::<u64>(),
+                unit_size.parse::<u32>(),
+            ) else {
+                eprintln!("error: rack, node, group and size arguments must be integers");
+                return ExitCode::from(1);
+            };
+            let nodes = match hardware::list_nodes_from_group0(&ctx, Some(rack)).await {
+                Ok(nodes) => nodes,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            if !nodes.iter().any(|entry| entry.id == node) {
+                eprintln!("error: node {node} is not in rack {rack}");
+                return ExitCode::from(2);
+            }
+            let input = AddDiskInput {
+                disk_id: id,
+                disk_type,
+                capacity_bytes,
+                zone_size_bytes,
+                unit_size_bytes,
+                device_path,
+            };
+            hardware::add_disk_to_group0(&ctx, node, group, &input)
+                .await
+                .map(|entry| println!("added disk {}", entry.disk_id))
+        }
+        DiskVerb::Remove { id } => {
+            let disk_id = match crowdb_protocol::common::DiskId::from_display_string(&id) {
+                Ok(id) => id,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            };
+            let disks = match ctx.sysmd().list_all_disks().await {
+                Ok(disks) => disks,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let matches: Vec<_> = disks.into_iter().filter(|disk| disk.disk_id == disk_id).collect();
+            if matches.len() != 1 {
+                eprintln!(
+                    "error: disk {id} has {} matches; specify a unique ID",
+                    matches.len()
+                );
+                return ExitCode::from(2);
+            }
+            hardware::remove_disk_from_group0(&ctx, matches[0].node_id, matches[0].disk_group_id, &id)
+                .await
+                .map(|_| println!("removed disk {id}"))
+        }
+        DiskVerb::List => match ctx.sysmd().list_all_disks().await {
+            Ok(mut disks) => {
+                disks.sort_unstable_by_key(|disk| {
+                    (
+                        disk.rack_id,
+                        disk.node_id,
+                        disk.disk_group_id,
+                        disk.disk_id.high,
+                        disk.disk_id.low,
+                    )
+                });
+                for disk in disks {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        disk.rack_id,
+                        disk.node_id,
+                        disk.disk_group_id,
+                        disk.disk_id.to_display_string()
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        },
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

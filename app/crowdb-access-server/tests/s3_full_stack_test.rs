@@ -804,6 +804,7 @@ async fn seed_compact_hardware(hardware: &HardwareClient) -> Vec<DiskioGroup0Ide
                 &DiskGroupValue {
                     status: HwStatus::Up as i32,
                     disk_ids: vec![disk_id],
+                    name: String::new(),
                 },
             )
             .await

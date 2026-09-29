@@ -16,6 +16,12 @@ use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
 mod authority;
+mod authority_storage;
+
+pub use authority_storage::{
+    add_disk_group_to_group0, add_disk_to_group0, list_disk_groups_from_group0, list_disks_from_group0,
+    remove_disk_from_group0, remove_disk_group_from_group0,
+};
 
 /// Create a rack only after Group 0 confirms the exact record.
 ///
@@ -271,6 +277,7 @@ pub async fn add_disk_group(ctx: &OpContext, node_id: u64, dg_id: u64, name: &st
         let value = crowdb_protocol::diskdb::rpc::DiskGroupValue {
             status: HwStatus::Up as i32,
             disk_ids: Vec::new(),
+            name: String::new(),
         };
         let _ = ctx.sysmd().add_disk_group(rack_id, node_id, dg_id, &value).await;
     }
@@ -337,7 +344,7 @@ pub fn list_disk_groups(ctx: &OpContext, node_id: u64) -> Vec<DiskGroupEntry> {
 // ── disk ────────────────────────────────────────────────────────
 
 /// Input for adding a disk. Mirrors the web handler's `AddDiskBody`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct AddDiskInput {
     pub disk_id: String,
     pub disk_type: String,

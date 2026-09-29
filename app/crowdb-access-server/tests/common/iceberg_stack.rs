@@ -195,6 +195,7 @@ async fn seed(cluster: &KvCluster) {
             &DiskGroupValue {
                 status: HwStatus::Up as i32,
                 disk_ids: vec![disk],
+                name: String::new(),
             },
         )
         .await

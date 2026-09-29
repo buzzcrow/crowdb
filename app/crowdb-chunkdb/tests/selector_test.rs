@@ -22,6 +22,7 @@ fn make_dg_entry(dg_id: u64, rack: u64, node: u64, status: HwStatus) -> DiskGrou
         value: DiskGroupValue {
             status: status as i32,
             disk_ids: vec![],
+            name: String::new(),
         },
     }
 }
