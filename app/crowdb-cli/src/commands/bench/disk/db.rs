@@ -63,7 +63,7 @@ pub async fn run(cli: &Cli, verb: DiskdbBenchVerb) -> ExitCode {
     if !valid_args(&args) {
         return ExitCode::from(2);
     }
-    let kv = match build_kv_client(cli, ReadEndpointPolicy::Leader, &KvClientTunables::default()) {
+    let kv = match build_kv_client(cli, ReadEndpointPolicy::Leader, &KvClientTunables::default()).await {
         Ok(kv) => Arc::new(kv),
         Err(code) => return code,
     };

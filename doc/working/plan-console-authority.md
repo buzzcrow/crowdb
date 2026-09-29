@@ -118,6 +118,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   Group 0. Optional storage process restarts use the validated launch registry
   in DiskIO, DiskDB, ChunkDB order; without one the command rejects the
   restart request before wiping data.
+  CLI chunk service lists and benchmark discovery no longer load the old
+  topology file. KV benchmark metrics resolve confirmed replica hosts and
+  their live management registrations. The direct CLI fixture keeps bootstrap
+  input only in memory. The complete CLI suite and workspace clippy pass.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware

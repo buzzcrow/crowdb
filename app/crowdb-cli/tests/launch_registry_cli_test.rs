@@ -236,8 +236,7 @@ async fn registry_bootstrap_uses_sealed_intent_without_legacy_topology_file() {
     .save(&path)
     .unwrap();
     let source = dir.path().join("bootstrap-source.toml");
-    let config = crowdb_console_shared::ConsoleConfig::load(&g0.config_path).unwrap();
-    let intent = BootstrapIntent::capture(&config, &[1]).unwrap();
+    let intent = BootstrapIntent::capture(&g0.bootstrap_config, &[1]).unwrap();
     intent.seal(&source).unwrap();
     std::fs::write(dir.path().join("invalid-legacy.toml"), "invalid legacy config").unwrap();
 
