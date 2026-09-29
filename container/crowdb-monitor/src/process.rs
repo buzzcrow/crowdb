@@ -13,7 +13,9 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-use crate::{LogProfile, MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError, ServiceProfile};
+use crate::{
+    CrashRetention, LogProfile, MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError, ServiceProfile,
+};
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
@@ -37,12 +39,17 @@ pub struct ProcessManager {
     log_root: PathBuf,
     log_policy: LogProfile,
     events: MonitorLog,
+    crashes: Option<CrashRetention>,
 }
 
 impl ProcessManager {
     /// # Errors
     /// Rejects an unavailable monitor lifecycle log.
     pub async fn new(log_root: PathBuf, log_policy: LogProfile) -> Result<Self, ProcessError> {
+        let crashes = std::env::var_os("CROWDB_CORE_DIR")
+            .map(PathBuf::from)
+            .map(CrashRetention::open)
+            .transpose()?;
         let mut events = MonitorLog::open(&log_root, log_policy.clone()).await?;
         events
             .record(&MonitorEvent {
@@ -57,6 +64,7 @@ impl ProcessManager {
             log_root,
             log_policy,
             events,
+            crashes,
         })
     }
 
@@ -74,6 +82,9 @@ impl ProcessManager {
         std::fs::create_dir_all(&log_directory)?;
         retention::prune(&log_directory, None, self.log_policy.max_files.saturating_sub(1)).await?;
         let mut command = Command::new(&service.program);
+        if let Some(crashes) = &self.crashes {
+            command.current_dir(crashes.root());
+        }
         command
             .args(&service.args)
             .envs(&service.env)
@@ -191,6 +202,9 @@ impl ProcessManager {
             })
             .await?;
         retention::prune(&self.log_root.join(id), None, self.log_policy.max_files).await?;
+        if let Some(crashes) = &self.crashes {
+            crashes.prune()?;
+        }
         Ok(())
     }
 

@@ -53,11 +53,24 @@ remains available and the workflow reports a warning.
 The image does not configure the host's Linux core collector. Inspect
 `/proc/sys/kernel/core_pattern` on the Docker host before expecting a dump in
 the mounted data volume. A leading `|` sends a crash to a host-side collector;
-relative file patterns write in the crashing process's working directory.
-The container does not currently set a private core working directory, a
-core size limit, or dump retention. Release debug symbols are available when
-the release was run with `--symbols`. Do not assume `/opt/crowdb/data` contains
-a core after a crash.
+relative `core` or `core.*` patterns write in the crashing process's working
+directory. The container runs the monitor and managed children from the private
+`/opt/crowdb/data/crash` directory. On monitor startup and after a child is
+reaped, it removes older regular `core` files and keeps the newest one.
+The directory has mode `0700`; symlinks named `core.*` are not followed or
+deleted. This is one-core retention, not a promise that the host creates a
+volume file. Other relative filename patterns are outside this retention rule.
+
+For a host with a relative `core` pattern, add a size bound to `docker run`:
+
+```sh
+--ulimit core=1073741824:1073741824
+```
+
+The example bounds each core to 1 GiB. A small bound may truncate a dump and
+make some stack frames unavailable. Core collection can also be suppressed by
+the host's dumpability policy, including for executables with file capabilities.
+The container never changes `core_pattern` or the host's dumpability policy.
 
 - On a systemd-coredump host, use `coredumpctl list` and `coredumpctl dump`
   on the host to locate and export a captured dump.
@@ -66,10 +79,25 @@ a core after a crash.
 - On Docker Desktop, inspect the Linux VM's collector. The desktop host's
   native crash directory is not the container's core directory.
 
-Core dumps can contain credentials and user data. Store exports privately,
-apply host retention policy, and match the exact image revision and binary
-build when symbolizing. The required bounded volume collection and source-line
-symbolization check remain tracked by R188.
+Core dumps can contain credentials and user data. Keep exports in a private
+directory and do not attach them to ordinary logs or issues. If the release
+included the optional symbol archive, use the exact image and matching archive
+to show source-line stacks:
+
+```sh
+pixi run -- python tools/symbolize-container-core.py \
+  --image 'docker.io/crowdb/crowdb-iceberg:<tag>' \
+  --symbols '/private/path/crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst' \
+  --binary crowdb-monitor --core /private/path/core
+```
+
+The tool copies binaries from a stopped container into a temporary private
+directory, verifies source revision, version and SHA-256 hashes, then runs
+`gdb` without printing frame arguments. Use the crashed child binary instead
+of `crowdb-monitor` for a child core. The temporary binaries are removed after
+the stack is shown; the core stays at the path supplied by the operator.
+The exact-build source-line check on a supported file-based collector remains
+tracked by R188.
 
 Collector behavior follows the [Linux core pattern documentation](https://docs.kernel.org/admin-guide/sysctl/kernel.html),
 [systemd-coredump manual](https://www.freedesktop.org/software/systemd/man/250/systemd-coredump.socket.html),

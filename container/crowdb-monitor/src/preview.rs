@@ -10,11 +10,11 @@ use tokio::time::{sleep, Instant};
 use crate::{
     disk_step_names, ensure_disk_files, hardware_step_names, iceberg_step_names, kv_step_names,
     logical_step_names, render_configs, s3_step_names, verify_chunk_services, verify_diskio_disks,
-    BootstrapSession, ChunkBootstrapError, CredentialError, DeploymentProfile, DiskBootstrapError,
-    HardwareBootstrap, HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError, KvBootstrap,
-    KvBootstrapError, LivenessError, LivenessServer, LogicalBootstrap, LogicalBootstrapError, ManifestError,
-    ManifestState, MonitorEvent, MonitorEventKind, MonitorLogError, ProfileError, RenderError, S3Bootstrap,
-    S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
+    BootstrapSession, ChunkBootstrapError, CrashRetention, CredentialError, DeploymentProfile,
+    DiskBootstrapError, HardwareBootstrap, HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError,
+    KvBootstrap, KvBootstrapError, LivenessError, LivenessServer, LogicalBootstrap, LogicalBootstrapError,
+    ManifestError, ManifestState, MonitorEvent, MonitorEventKind, MonitorLogError, ProfileError, RenderError,
+    S3Bootstrap, S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
 };
 
 const PROFILE_NAME: &str = "single-node-container";
@@ -83,6 +83,10 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
         &config_bytes,
         &step_refs,
     )?;
+    if let Some(root) = std::env::var_os("CROWDB_CORE_DIR") {
+        let crashes = CrashRetention::open(root.into())?;
+        std::env::set_current_dir(crashes.root())?;
+    }
     let credentials = if session.manifest().state() == ManifestState::Ready
         || session.manifest().step_complete("s3-user") == Some(true)
     {

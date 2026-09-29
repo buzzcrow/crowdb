@@ -71,15 +71,18 @@ not block R187 completion.
 7. Audit the S3 mini-cluster's local `console.toml` and restart path under the
    same authority boundary. Retain only launch inputs and bootstrap seeds
    locally after Group 0 cutover; do not replay a local topology copy.
-8. Migrate the verified bare-metal deployment and operations material into
-   dedicated bare-metal deployment documentation, organized by KV cluster,
-   chunk layer, and data access servers. State that bare-metal is not yet
-   production-ready. Keep Docker deployment documentation independent.
+8. Publish the verified bare-metal deployment and operations material under
+   `/nv/cpp/crowdb-web/site/docs/`, organized by KV cluster, chunk layer, and
+   data access servers. State that bare-metal is not yet production-ready.
+   Keep Docker deployment documentation independent and do not add deployment
+   guides to this repository.
 9. Complete container crash diagnostics without changing host-wide collector
    policy. Respect file-based core patterns, Ubuntu Apport, systemd-coredump and
    Docker Desktop's Linux VM; document where dumps actually go or why collection
-   is unavailable. Where file dumps are supported, retain them in a bounded,
-   private data-volume location. Provide an exact-build source-line
+   is unavailable. Where relative `core` file dumps are supported, use a
+   private directory inside the container data volume and retain only the
+   newest core across child recovery and monitor restart. Bound each dump with
+   Docker's core ulimit. Provide an exact-build source-line
    symbolization workflow for child and monitor crashes. Dumps can contain
    secrets and user data; diagnostics must not expose them in ordinary logs.
    Optionally ship exact-build debug symbols as a separate GitHub Release asset
@@ -148,8 +151,8 @@ not block R187 completion.
   boundary is explicit, and no link targets the removed combined guide.
   Invariant: deployment guidance follows its implementation. E2E test.
 - Given a disposable container on a supported file-based core collector, when
-  a child or PID 1 crashes, assert the dump has private ownership, bounded
-  retention and cleanup, and resolves to source lines using exact-build symbols.
+  a child or PID 1 crashes, assert the dump has private ownership, one-core
+  retention and size bounds, and resolves to source lines using exact-build symbols.
   Assert ordinary logs disclose no dump contents or credentials and the
   container does not change host-wide collector policy. Invariant: private,
   bounded and reproducible crash diagnostics. E2E test.
@@ -181,5 +184,6 @@ Required gates:
 - This host routes `core_pattern` to Apport, so a container-local directory and
   core ulimit cannot guarantee a dump in `/opt/crowdb/data`. End-to-end
   acceptance needs a disposable host with file-based collection or a verified
-  host-collector export workflow. Bounded volume retention and source-line
-  symbolization remain unverified.
+  host-collector export workflow. Private one-core retention has passed local
+  tests, while collection and source-line symbolization on a real dump remain
+  unverified.

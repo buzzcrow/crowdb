@@ -138,17 +138,19 @@ configuration, documentation and crash-diagnostics tasks below are pending.
 
 ## Crash diagnostics follow-up
 
-Transferred from R187 by user request. This work remains pending while R188
-is paused; it does not block the single-node image requirement.
+Transferred from R187 by user request. It does not block the single-node image
+requirement.
 
-- [ ] **Crash dump location and retention**: document and test how Linux
+- [~] **Crash dump location and retention**: document and test how Linux
   host `core_pattern`, Docker's core ulimit, and the non-root container affect
   CROWDB child and PID 1 crashes. Cover a plain relative core-file pattern,
   Ubuntu Apport, systemd-coredump, and Docker Desktop's Linux VM. Choose a
   bounded, private location under the mounted `/opt/crowdb/data` volume where
   the host permits file dumps; otherwise report the host collector location
   and provide explicit setup guidance instead of claiming the volume contains
-  a core. Verify one disposable child crash end to end, retention/cleanup,
+  a core. Use a private data-volume directory and retain the newest `core`
+  file after child recovery and monitor restart. Require Docker's core ulimit
+  for a per-dump size bound. Verify one disposable child crash end to end, retention/cleanup,
   secret exposure, and symbolization against the exact binary build. Do not
   change the host-wide `core_pattern` from inside the container. Files:
   `container/single-node-container/{Dockerfile,entrypoint.sh,tests/**}`,
@@ -157,7 +159,14 @@ is paused; it does not block the single-node image requirement.
   The single-node README now states the host collector boundary and identifies
   Apport, systemd-coredump and Docker Desktop lookup paths without promising a
   volume dump. This host reports an Apport pipe pattern and core ulimit 0.
-  Volume retention, exact-build symbols and disposable-host acceptance remain.
+  The container now creates a private crash directory after the bootstrap
+  manifest is opened, runs the monitor and children there, and retains the
+  newest regular `core` file after restart or child recovery. A 1 GiB Docker
+  core ulimit example bounds each dump. Focused retention and monitor suites
+  pass. The complete container release, image and E2E gate passes, including
+  startup, crash and hang recovery, persisted-volume restart, exhausted restart
+  budget and monitor death. Rust fmt and clippy pass. The host's Apport pipe
+  still prevents file-based end-to-end acceptance.
 - [ ] **Manual release and optional symbols**: the `tools/` release script now
   has a read-only dry run, consistent version updates, tag and GitHub Release
   creation, and workflow dispatch. Optional `--symbols` extracts debug symbols
@@ -168,10 +177,10 @@ is paused; it does not block the single-node image requirement.
   `.github/workflows/release-container.yml`.
 ## Documentation and completion
 
-- [ ] **Bare-metal documentation**: migrate verified KV, chunk and access
-  setup into dedicated deployment documentation, state the non-production
-  boundary, then fix links and remove obsolete combined material. Keep Docker
-  deployment notes independent.
+- [ ] **Bare-metal documentation**: publish verified KV, chunk and access
+  setup under `/nv/cpp/crowdb-web/site/docs/`, state the non-production
+  boundary, then fix website links and remove obsolete combined material.
+  Keep Docker deployment notes independent; do not put these guides in crowdb.
 - [ ] **Acceptance and cleanup**: run affected integration cases, full console
   and UI suites, Rust fmt and lint; update the relevant permanent architecture,
   then remove the requirement, backlog entry and this plan when complete.
