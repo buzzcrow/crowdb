@@ -38,6 +38,7 @@ async fn spawn_web_with_disk_group(rack_id: u64, node_id: u64, dg_id: u64) -> So
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         })
         .unwrap();
     config

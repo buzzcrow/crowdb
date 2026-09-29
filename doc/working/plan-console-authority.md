@@ -101,7 +101,11 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   client cascades now stop at a failed child deletion instead of deleting its
   parent while a descendant may survive. Extend Group 0 hardware values with
   rack names, node management hosts, nonsecret SSH connection settings and
-  credential reference IDs; resolve secret material locally. Exact-value
+  credential reference IDs; resolve secret material locally. Those Group 0
+  fields are now part of rack/node records and bootstrap writes the names,
+  management host, SSH port/user and reference without copying secret material.
+  Bare-metal snapshots expose the same Group 0 values to separate consoles.
+  Exact-value
   confirmation and the CLI/Web cutover remain.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or

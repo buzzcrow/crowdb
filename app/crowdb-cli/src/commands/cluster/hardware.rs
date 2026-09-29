@@ -166,6 +166,7 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                 ssh_user,
                 ssh_key,
                 ssh_password: None,
+                ssh_credential_ref: None,
             };
             let ctx = match op_context(cli) {
                 Ok(c) => c,

@@ -106,6 +106,7 @@ async fn seed_restart_hardware(hardware: &HardwareClient) {
                 &RackValue {
                     status: HwStatus::Up as i32,
                     node_ids: vec![node_id],
+                    ..Default::default()
                 },
             )
             .await
@@ -120,6 +121,7 @@ async fn seed_restart_hardware(hardware: &HardwareClient) {
                     disk_group_ids: vec![disk_group_id],
                     status_changed_at_ms: 0,
                     temp_failure_since_ms: None,
+                    ..Default::default()
                 },
             )
             .await

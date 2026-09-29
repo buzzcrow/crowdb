@@ -56,6 +56,7 @@ async fn initialized_authority(cluster: &KvCluster) -> CrowdbSysmdClient {
             &RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: vec![1],
+                name: "rack-a".into(),
             },
         )
         .await
@@ -66,6 +67,10 @@ async fn initialized_authority(cluster: &KvCluster) -> CrowdbSysmdClient {
             1,
             &NodeValue {
                 status: HwStatus::Up as i32,
+                management_host: "node-a.example".into(),
+                ssh_port: 2222,
+                ssh_user: "operator".into(),
+                ssh_credential_ref: Some("node-a-key".into()),
                 ..Default::default()
             },
         )
@@ -110,6 +115,12 @@ async fn bare_metal_snapshot_requires_live_authority_without_a_docker_monitor() 
     assert_eq!(code, StatusCode::OK, "{view}");
     assert_eq!(view["source"], "group0");
     assert_eq!(view["nodes"][0]["id"], 1);
+    assert_eq!(view["racks"][0]["name"], "rack-a");
+    assert_eq!(view["nodes"][0]["management_host"], "node-a.example");
+    assert_eq!(view["nodes"][0]["ssh_port"], 2222);
+    assert_eq!(view["nodes"][0]["ssh_user"], "operator");
+    assert_eq!(view["nodes"][0]["ssh_credential_ref"], "node-a-key");
+    assert_eq!(snapshot(&application(&cluster)).await.1["nodes"], view["nodes"]);
     assert!(view["monitor"].is_null());
 
     register(&sysmd, 1, 7002, &cluster.mgmt_endpoints[0]).await;

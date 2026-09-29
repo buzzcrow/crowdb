@@ -233,6 +233,9 @@ pub struct NodeEntry {
     /// back to local-fork lifecycle (C3 path) for tests.
     #[serde(default)]
     pub ssh_user: String,
+    /// Local secret-store lookup key shared across consoles, never secret material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_credential_ref: Option<String>,
     /// Optional explicit private-key path. `None` falls back to
     /// `~/.ssh/id_ed25519` then `~/.ssh/id_rsa`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -430,6 +433,8 @@ struct PersistedNodeEntry {
     ssh_port: u16,
     #[serde(default)]
     ssh_user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ssh_credential_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ssh_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -971,6 +976,7 @@ impl ConsoleConfig {
                         host: entry.host.clone(),
                         ssh_port: entry.ssh_port,
                         ssh_user: entry.ssh_user.clone(),
+                        ssh_credential_ref: entry.ssh_credential_ref.clone(),
                         ssh_key: entry.ssh_key.clone(),
                         ssh_password: entry.ssh_password.clone(),
                     },
@@ -1091,6 +1097,7 @@ impl ConsoleConfig {
                 host: entry.host,
                 ssh_port: entry.ssh_port,
                 ssh_user: entry.ssh_user,
+                ssh_credential_ref: entry.ssh_credential_ref,
                 ssh_key: entry.ssh_key,
                 ssh_password: entry.ssh_password,
             })
@@ -1210,6 +1217,21 @@ mod tests {
         cfg.add_server(a).unwrap();
         cfg.add_server(ServerEntry::new("b", "http://127.0.0.1:10001"))
             .unwrap();
+        cfg.racks.push(super::RackEntry {
+            id: 1,
+            name: "rack-a".into(),
+        });
+        cfg.nodes.push(
+            serde_json::from_value(serde_json::json!({
+                "id": 1,
+                "rack_id": 1,
+                "host": "node.example",
+                "ssh_port": 2222,
+                "ssh_user": "operator",
+                "ssh_credential_ref": "node-1"
+            }))
+            .unwrap(),
+        );
         cfg.local_launches.insert(
             "b".into(),
             LocalLaunchSpec {

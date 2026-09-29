@@ -891,12 +891,20 @@ pub async fn local_deploy_diskdb(
 async fn ensure_diskdb_hardware(ctx: &OpContext, nodes: &[NodeEntry]) -> Result<()> {
     for node in nodes {
         if ctx.sysmd().get_rack(node.rack_id).await?.is_none() {
+            let name = ctx
+                .config()
+                .racks
+                .iter()
+                .find(|rack| rack.id == node.rack_id)
+                .map(|rack| rack.name.clone())
+                .unwrap_or_default();
             ctx.sysmd()
                 .add_rack(
                     node.rack_id,
                     &RackValue {
                         status: HwStatus::Up as i32,
                         node_ids: Vec::new(),
+                        name,
                     },
                 )
                 .await?;
@@ -912,6 +920,10 @@ async fn ensure_diskdb_hardware(ctx: &OpContext, nodes: &[NodeEntry]) -> Result<
                         disk_group_ids: Vec::new(),
                         status_changed_at_ms: 0,
                         temp_failure_since_ms: None,
+                        management_host: node.host.clone(),
+                        ssh_port: node.ssh_port,
+                        ssh_user: node.ssh_user.clone(),
+                        ssh_credential_ref: node.ssh_credential_ref.clone(),
                     },
                 )
                 .await?;
@@ -1269,6 +1281,7 @@ fn write_rack_and_nodes(ctx: &OpContext, rack_id: u64, node_ids: &[u64]) {
                 ssh_user: String::new(),
                 ssh_key: None,
                 ssh_password: None,
+                ssh_credential_ref: None,
             });
         }
     }
@@ -1325,6 +1338,7 @@ async fn deploy_servers(
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         };
         // Every process owns a stable server directory. WAL and btree data
         // remain direct children of that directory as waldata/ and ctdata/.

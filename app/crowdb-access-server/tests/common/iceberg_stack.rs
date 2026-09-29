@@ -166,6 +166,7 @@ async fn seed(cluster: &KvCluster) {
             &RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: vec![10],
+                ..Default::default()
             },
         )
         .await
@@ -180,6 +181,7 @@ async fn seed(cluster: &KvCluster) {
                 disk_group_ids: vec![100],
                 status_changed_at_ms: 0,
                 temp_failure_since_ms: None,
+                ..Default::default()
             },
         )
         .await

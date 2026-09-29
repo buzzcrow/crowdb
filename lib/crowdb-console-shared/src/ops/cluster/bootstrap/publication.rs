@@ -97,6 +97,7 @@ fn intended_records(ctx: &OpContext, store_nodes: &[u64], members: &[(u64, u64)]
             RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: Vec::new(),
+                name: rack.name.clone(),
             },
         )?);
     }
@@ -108,6 +109,10 @@ fn intended_records(ctx: &OpContext, store_nodes: &[u64], members: &[(u64, u64)]
             },
             NodeValue {
                 status: HwStatus::Up as i32,
+                management_host: node.host.clone(),
+                ssh_port: node.ssh_port,
+                ssh_user: node.ssh_user.clone(),
+                ssh_credential_ref: node.ssh_credential_ref.clone(),
                 ..Default::default()
             },
         )?);

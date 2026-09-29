@@ -50,6 +50,7 @@ async fn spawn_upstream() -> Option<Upstream> {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     };
     let req = DeployRequest {
         server_id: "1".into(),
@@ -85,6 +86,7 @@ async fn spawn_web(upstream: &Upstream) -> SocketAddr {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     });
     cfg.add_server(ServerEntry {
         id: "n1".into(),

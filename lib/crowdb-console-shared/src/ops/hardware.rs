@@ -35,6 +35,7 @@ pub async fn add_rack(ctx: &OpContext, rack_id: u64, name: &str) -> Result<RackE
         let value = RackValue {
             status: HwStatus::Up as i32,
             node_ids: Vec::new(),
+            name: name.to_owned(),
         };
         let _ = ctx.sysmd().add_rack(rack_id, &value).await;
     }
@@ -81,6 +82,10 @@ pub async fn add_node(ctx: &OpContext, entry: NodeEntry) -> Result<NodeEntry> {
             disk_group_ids: Vec::new(),
             status_changed_at_ms: 0,
             temp_failure_since_ms: None,
+            management_host: entry.host.clone(),
+            ssh_port: entry.ssh_port,
+            ssh_user: entry.ssh_user.clone(),
+            ssh_credential_ref: entry.ssh_credential_ref.clone(),
         };
         let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
     }
@@ -565,6 +570,7 @@ mod tests {
                 ssh_user: String::new(),
                 ssh_key: None,
                 ssh_password: None,
+                ssh_credential_ref: None,
             })
             .unwrap();
         config

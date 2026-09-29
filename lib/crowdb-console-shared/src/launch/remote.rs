@@ -24,6 +24,7 @@ async fn connect(launch: &LaunchRecord, credential_root: &Path) -> Result<Sessio
             .as_ref()
             .map(|reference| credential_root.join(reference).to_string_lossy().into_owned()),
         ssh_password: None,
+        ssh_credential_ref: None,
     };
     Session::connect(&node, &SshCreds::resolve(&node)?).await
 }

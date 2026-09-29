@@ -77,6 +77,7 @@ impl Cluster {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         };
         let replica_id = node_id;
         let extra_args = vec![
@@ -150,6 +151,7 @@ async fn spawn_upstream(node_id: u64, workspace: &std::path::Path, binary: &Path
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     };
     let req = DeployRequest {
         server_id: node_id.to_string(),
@@ -195,6 +197,7 @@ async fn spawn_web(upstreams: &BTreeMap<u64, Upstream>) -> SocketAddr {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         });
         cfg.add_server(ServerEntry {
             id: u.node_id.to_string(),

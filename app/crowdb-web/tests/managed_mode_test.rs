@@ -239,6 +239,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
             &RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: vec![1],
+                ..Default::default()
             },
         )
         .await

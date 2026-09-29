@@ -142,6 +142,7 @@ async fn spawn_web_with_seeded_physical_tree() -> SocketAddr {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     })
     .unwrap();
     let state = AppState::with_config(cfg, None);

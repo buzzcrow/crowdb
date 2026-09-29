@@ -760,6 +760,7 @@ async fn seed_compact_hardware(hardware: &HardwareClient) -> Vec<DiskioGroup0Ide
             &RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: node_ids.clone(),
+                ..Default::default()
             },
         )
         .await
@@ -790,6 +791,7 @@ async fn seed_compact_hardware(hardware: &HardwareClient) -> Vec<DiskioGroup0Ide
                     disk_group_ids: vec![disk_group_id],
                     status_changed_at_ms: 0,
                     temp_failure_since_ms: None,
+                    ..Default::default()
                 },
             )
             .await

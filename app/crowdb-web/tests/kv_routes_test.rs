@@ -48,6 +48,7 @@ async fn spawn_upstream() -> Option<Upstream> {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     };
     let req = DeployRequest {
         server_id: "1".to_string(),
@@ -83,6 +84,7 @@ async fn spawn_web(upstream: &Upstream) -> SocketAddr {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     });
     cfg.add_server(ServerEntry {
         id: "n1".to_string(),
@@ -226,7 +228,6 @@ async fn kv_put_get_delete_through_web_routes() {
 async fn kv_get_returns_502_when_leader_unreachable() {
     use crowdb_console_shared::cluster::{LocalReplicaInfo, NodeGroup, NodeStore, ReplicaRole, ReplicaState};
     use std::collections::BTreeMap;
-
     // Pick a free port, drop the listener: nothing accepts on it now.
     let dead = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let dead_port = dead.local_addr().unwrap().port();
@@ -250,6 +251,7 @@ async fn kv_get_returns_502_when_leader_unreachable() {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     });
     // The node has a configured rpc_url, but the port is dead.
     cfg.add_server(ServerEntry {
@@ -320,14 +322,12 @@ async fn kv_get_returns_502_when_leader_unreachable() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let http = reqwest::Client::new();
-    let url = format!("http://{web}/api/stores/7/groups/70/kv/get?key=anything");
-    let resp = http.get(&url).send().await.unwrap();
-    assert_eq!(
-        resp.status(),
-        502,
-        "expected 502 when leader crowdb-rpc port is dead, got {}",
-        resp.status()
-    );
+    let resp = http
+        .get(format!("http://{web}/api/stores/7/groups/70/kv/get?key=anything"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 502);
     let endpoint = http
         .get(format!("http://{web}/api/stores/7/groups/70/endpoint"))
         .send()

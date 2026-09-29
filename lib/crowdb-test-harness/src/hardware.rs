@@ -33,6 +33,7 @@ pub async fn seed_hardware(hw: &HardwareClient, disk_ids: &[DiskId]) {
         &RackValue {
             status: HwStatus::Up as i32,
             node_ids: vec![NODE_ID],
+            ..Default::default()
         },
     )
     .await
@@ -47,6 +48,7 @@ pub async fn seed_hardware(hw: &HardwareClient, disk_ids: &[DiskId]) {
             disk_group_ids: vec![DG_ID],
             status_changed_at_ms: 0,
             temp_failure_since_ms: None,
+            ..Default::default()
         },
     )
     .await
