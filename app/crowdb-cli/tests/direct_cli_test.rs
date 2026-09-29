@@ -116,22 +116,6 @@ async fn incremental_local_deploy_reads_group_zero_instead_of_legacy_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reset_verifies_confirmed_hosts_without_legacy_file() {
-    let Some(g0) = spawn_group0().await else {
-        return;
-    };
-    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
-    let (code, stdout, stderr) = run(
-        &crowdb_cli_bin(),
-        g0.mgmt_port,
-        &g0.config_path,
-        &["cluster", "reset"],
-    );
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(stdout.contains("membership verified"), "stdout={stdout}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn destroy_reads_group_zero_and_requires_launch_registry() {
     let Some(g0) = spawn_group0().await else {
         return;

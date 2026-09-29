@@ -90,153 +90,40 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   Three-service lifecycle regressions and the complete CLI suite, fmt and
   clippy pass. Logs: `/tmp/crowdb-chunk-launch-*.log`. Removal of legacy
   startup/restore paths remains coupled to bootstrap cutover below.
-- [~] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
-  parser/writer, inline SSH secrets, topology restoration and fixtures after
-  the launch lifecycle and replay-safe bootstrap paths are wired. Preserve
-  bootstrap intent independently until verified cutover. Update CLI commands,
-  Web persistence and S3 mini-cluster callers together; no compatibility reader
-  or migration path because the old configuration was never released.
-  S3 mini-clusters now persist versioned local process/seed state rather than
-  `console.toml`; restored KV launch nodes are ephemeral process inputs and the
-  bundled Web uses `WebProcessConfig`. The full persistent S3 stop/restart and
-  range-read E2E passes. Web no longer constructs a `TomlFileEngine` or writes
-  mixed local topology, including its in-process legacy test router; focused
-  bootstrap, lifecycle and deployer tests pass. The CLI legacy config path and
-  shared parser/writer still need removal.
-  `kv server` process commands now require the versioned launch registry;
-  their former no-registry branch, including persisted PID/topology updates,
-  is removed. The registry lifecycle regressions and complete CLI suite pass.
-  `cluster init` now requires the registry and independent versioned bootstrap
-  input; it cannot seal or publish from the old mixed file. The registry
-  bootstrap test passes, and a no-registry CLI test verifies the rejection.
-  `cluster local-deploy` uses a fresh in-memory context for new loopback
-  clusters and reconstructs incremental DiskDB/ChunkDB inputs from confirmed
-  Group 0 hardware and live KV registrations. It no longer reads or writes
-  the old topology file. A real CLI regression reaches Group 0 validation
-  with a deliberately invalid legacy file.
-  CLI `cluster clean` now obtains replica membership and live endpoints from
-  Group 0. Optional storage process restarts use the validated launch registry
-  in DiskIO, DiskDB, ChunkDB order; without one the command rejects the
-  restart request before wiping data.
-  CLI chunk service lists and benchmark discovery no longer load the old
-  topology file. KV benchmark metrics resolve confirmed replica hosts and
-  their live management registrations. The direct CLI fixture keeps bootstrap
-  input only in memory. The complete CLI suite and workspace clippy pass.
-  The `ConsoleConfigEngine`/`TomlFileEngine` parser and writer are removed;
-  `ConsoleConfig` remains an ephemeral operation/intent input. CLI `destroy`
-  requires a launch registry, removes confirmed logical metadata before Group
-  0, then stops configured local processes. CLI `reset` verifies live confirmed
-  hosts without deleting stopped nodes as presumed orphans. Real one-node
-  CLI regressions cover both commands with an invalid legacy file.
-- [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
-  shared Group 0 hardware operations; preserve conflicts and uncertain writes
-  without local-first commits. Docker keeps its hardware restrictions. Hardware
-  client cascades now stop at a failed child deletion instead of deleting its
-  parent while a descendant may survive. Extend Group 0 hardware values with
-  rack names, node management hosts, nonsecret SSH connection settings and
-  credential reference IDs; resolve secret material locally. Those Group 0
-  fields are now part of rack/node records and bootstrap writes the names,
-  management host, SSH port/user and reference without copying secret material.
-  Bare-metal snapshots expose the same Group 0 values to separate consoles.
-  Conditional rack/node creation now confirms matching existing values and
-  rejects conflicting values without changing either console's local topology.
-  Group 0 rack/node lists expose shared names, management hosts, SSH settings
-  and credential references but no private key material. Registry-mode CLI
-  add/list commands use these operations; a real CLI process regression caught
-  a management-port-as-RPC seed and now refreshes topology before the hardware
-  write. Complete Console shared and CLI suites, Rust fmt and workspace clippy
-  pass. A real RPC proxy drops the committed rack write reply; a confirmed
-  linearizable read recovers the successful outcome. Registry-mode Web,
-  deletions, disks and legacy bootstrap still remain.
-  Node creation now conditionally updates rack membership and creates the node
-  in one Group 0 batch. Two concurrent consoles retain both child IDs; a
-  repeated rack add preserves its existing children. Retried node creation
-  compares immutable connection identity while preserving live status fields.
-  Registry CLI rack removal now conditionally deletes only a confirmed empty
-  rack; shared and real CLI regressions cover child conflict and absence.
-  Bare-metal Web now exposes authenticated Group 0 rack creation/removal and
-  node creation, with public confirmed rack/node reads. Two Web instances
-  observe the same records; inline SSH material is rejected. Registry CLI and
-  bare-metal Web now remove only unused nodes through one conditional Group 0
-  rack-membership/node deletion; occupied nodes and unauthenticated Web writes
-  fail. Disk-group and disk creation/removal now update the child and parent
-  records in one rack-revision-fenced Group 0 batch. Their names, membership
-  and disk attributes are read from confirmed authority by CLI and bare-metal
-  Web; tests cover two consoles, conflicts, occupied deletion, private Web
-  writes and a lost committed write response. Legacy Web routes and CLI
-  mixed-config paths still need removal.
-  Every CLI rack/node/disk-group/disk command now builds a Group 0-only
-  context, including when `--registry` is omitted. A malformed legacy file
-  cannot alter or block rack/node reads. The complete CLI suite passes;
-  remaining mixed CLI operations are outside hardware.
-  CLI logical store/group/replica mutations and reads, plus cluster status
-  and node topology, now also ignore the old file. Live node registration
-  locates the topology endpoint; a management read supplies only the initial
-  RPC connection hint. The logical round-trip and status/topology tests pass
-  with a deliberately invalid legacy file, and the complete CLI suite passes.
-  CLI KV data commands also use this context; the put/get/delete/scan
-  round-trip passes with an invalid legacy file.
-- [ ] **Authority-only reads**: replace local monitor/config topology and
-  endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
-  expired registrations remain unavailable.
-  Versioned bare-metal snapshots now read Group 0 without requiring a Docker
-  monitor; Docker keeps its monitor requirement and overlay. Validate every
-  replica host as well as the store's original hosts. Real Group 0 regressions
-  cover missing, duplicate and expired registrations, recovery, and outage
-  without stale topology. Docker and launch-route regressions, fmt and clippy
-  pass. Logs: `/tmp/crowdb-bare-authority-*.log`. Legacy physical routes and
-  monitor refresh still remain for the mixed-config removal. Production Web
-  startup now requires a versioned process config, so it never loads the old
-  mixed file; bare-metal rack/node/disk-group/disk detail and collection
-  routes read Group 0 directly. The old in-process router and CLI no-registry
-  paths remain to migrate or remove.
-- [ ] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
-  committed records, write only safely missing content, reject conflicts and
-  delete topology intent after verified transfer. Clean/destroy use confirmed
-  authority. Replace S3 mini-cluster persistence against the same contract,
-  without a migration path for its unreleased mixed configuration.
-  System initialization now confirms an existing replica's identity after a
-  conflict or lost response, preserves groups for retry after peer failures,
-  and requires every peer endpoint and remote-wiring request to succeed before
-  recording membership. Four focused failure cases, complete shared tests,
-  Web deploy/restart/migration suites, fmt and clippy pass. Logs:
-  `/tmp/crowdb-bootstrap-replay-*.log`. Durable intent/cutover remain pending.
-  A separate versioned bootstrap intent now captures rack/node identity, KV
-  management endpoints and selected member order without process PIDs, binary
-  paths or inline SSH secrets. It is atomically sealed with mode 0600;
-  interrupted retries restore a fresh in-memory context, reject changed
-  topology before mutating Group 0, then delete the intent only after
-  confirmed publication. Persistent CLI and legacy Web cluster-init callers
-  now use this path. Real Web and CLI regressions confirm the intent is removed
-  after successful Group 0 publication. Versioned bare-metal Web now exposes
-  an authenticated cluster-init route and accepts the same independent
-  bootstrap input without writing a mixed console file. Registry CLI accepts
-  a versioned bootstrap input, seals an immutable
-  retry copy beside the launch registry, runs the same confirmation path and
-  deletes that copy after success. It does not write the mixed console file.
-  The legacy CLI/Web path still writes that file; S3 mini-cluster still needs
-  bootstrap-interruption replay before the old format can be removed. Its
-  completed cluster now restarts from launch-only local state and Group 0
-  seeds; no local topology is loaded after publication. A full persistent S3
-  stop/restart and range-read E2E passes. S3 now saves its local KV launch
-  state before sealing bootstrap intent and publishing Group 0. An interrupted
-  launch retains that state for identity-checked retry instead of archiving the
-  committed cluster. A real failure injected at Chunk KV startup recovers on
-  the next CLI invocation, with all 15 services ready and no topology file.
-  The CLI integration test reproduces this interruption and recovery. Partial
-  storage-service launch sets now clear only the incomplete local process
-  entries after checking a still-live process's work directory, then replay
-  provisioning from confirmed Group 0 metadata. A DiskIO startup failure
-  after DiskDB launch recovers on the next CLI invocation with no local
-  topology copy. Mixed CLI/Web config remains to remove.
-  S3 now canonicalizes a relative root before creating child launch paths;
-  the interrupted CLI test covers a relative root. The S3 CLI mock fixture
-  supplies the required launch-only state; its three previously failing cases
-  now pass. The complete Console gate passes after the S3 fixture update.
-  `cluster clean` now derives its target nodes from confirmed Group 0 replica
-  membership and resolves each live management registration; local launch
-  entries cannot justify a wipe. A real Group 0 regression rejects a group
-  absent from authority even when the console has a local server entry.
+- [x] **Remove mixed persistence**: production Web requires versioned
+  `WebProcessConfig`; bare-metal process controls use `LaunchRegistry` and
+  `LaunchRuntime`. Docker rejects that registry. CLI and Web do not parse or
+  write a local topology file. `ConsoleConfigEngine` and `TomlFileEngine` are
+  removed; `ConsoleConfig` remains an ephemeral bootstrap/development input.
+  S3 stores only launch inputs and seeds locally. CLI hardware, logical,
+  data, chunk discovery, benchmarks, clean and destroy do not read the
+  old file. No migration or compatibility reader is kept. The old
+  mixed-binary rolling-upgrade fixture was removed because no release exists;
+  current-version restart cases remain.
+- [x] **Confirmed hardware operations**: CLI and bare-metal Web rack, node,
+  disk-group and disk operations use shared conditional Group 0 writes and
+  confirmed reads. Parent membership and child records change atomically;
+  matching retries reconcile lost replies, conflicts preserve the winning
+  record, and inline SSH material is rejected. Docker Web rejects hardware
+  writes. Real two-console and dropped-reply regressions pass.
+- [x] **Authority-only reads**: production Web snapshots and CLI read Group 0
+  membership with live service registration. Docker process state comes from
+  the monitor; bare-metal process status comes from `LaunchRuntime`.
+  Missing, duplicated and expired registrations, monitor absence, and Group
+  0 outages report unavailable without using local topology as fallback.
+  The in-process Web test router keeps ephemeral fixture state and is not a
+  production compatibility path.
+- [x] **Replay-safe bootstrap cutover**: versioned sealed `BootstrapIntent`
+  survives interruption, confirms already committed content, conditionally
+  publishes safely missing records, rejects conflict and clears only after
+  verification. Nonmember KV processes receive seed hints and register one
+  live identity. S3 replays partial KV and storage launches from local
+  process inputs and confirmed Group 0 metadata, without a topology copy.
+  `cluster clean` targets confirmed replicas; `cluster destroy` removes
+  confirmed logical records before Group 0 and stops registry processes.
+  The old orphan-guessing `cluster reset` command and Web route are removed;
+  an unreachable service cannot cause metadata deletion. Focused real authority and replay
+  tests plus the complete Console gate pass.
 - [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
   records, accept matching content without rewriting revisions, reject conflicts,
   and conditionally create missing records. Reconcile uncertain writes with
@@ -302,6 +189,10 @@ requirement.
 - [ ] **Acceptance and cleanup**: run affected integration cases, full console
   and UI suites, Rust fmt and lint; update the relevant permanent architecture,
   then remove the requirement, backlog entry and this plan when complete.
+  The full Console and UI gates pass (86 component tests, 56 browser tests).
+  The website deployment route/link tests pass after correcting the chunk
+  guide's Group 0 wording. Monitor, container, final fmt/lint and cleanup
+  remain.
 
 ## Evidence
 

@@ -146,7 +146,6 @@ All individual tests or test binaries with wall-clock time >= 7 s.
 | `test-chunk-client`   | 18.33 s | `small_object_writer_e2e` — small-write E2E with real ChunkDB + DiskIO (14) |
 | `test-console-server` | 18.07 s | `cluster_deployer_test` — deployer lifecycle (3 tests)                      |
 | `test-console-shared` | 15.12 s | `lifecycle_e2e_test` — lifecycle E2E (1 test)                               |
-| `test-console-server` | 13.53 s | `rolling_upgrade_test` — rolling upgrade (1 test)                           |
 | `test-console-ui`     | 10.8 s  | `50-chunk-capacity-disk-group:428` — assign disk-group to diskdb via UI     |
 | `test-chunk-client`   | 10.39 s | `chunk_reader_e2e` — chunk reader E2E with failure injection (6 tests)      |
 | `test-console-server` | 9.93 s  | `cluster_restart_incremental_test` — restart cycles (5 tests)               |

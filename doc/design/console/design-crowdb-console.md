@@ -21,10 +21,10 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [3.2 Logical (usage) view](#32-logical-usage-view)
   - [3.3 Source of truth and freshness](#33-source-of-truth-and-freshness)
   - [3.4 Design decisions](#34-design-decisions)
-- [4. Console Backend Persistence and Monitor Task](#4-console-backend-persistence-and-monitor-task)
-  - [4.1 Persisted state (config file)](#41-persisted-state-config-file)
-  - [4.2 Monitor task](#42-monitor-task)
-  - [4.3 Persistent Cluster Config](#43-persistent-cluster-config)
+- [4. Console Configuration and Authority](#4-console-configuration-and-authority)
+  - [4.1 Separated local configuration](#41-separated-local-configuration)
+  - [4.2 Runtime observation](#42-runtime-observation)
+  - [4.3 Group 0 authority](#43-group-0-authority)
   - [4.4 Local runtime namespace](#44-local-runtime-namespace)
 - [5. Node Access Model](#5-node-access-model)
   - [5.1 Two transports per node](#51-two-transports-per-node)
@@ -32,7 +32,7 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [5.3 Process lifecycle (deploy / start / stop)](#53-process-lifecycle-deploy--start--stop)
 - [6. Web UI Backend (Axum)](#6-web-ui-backend-axum)
   - [6.1 Design Rules](#61-design-rules)
-  - [6.2 Recursive reads (?recursive=<depth>)](#62-recursive-reads-recursivedepth)
+  - [6.2 In-process test API](#62-in-process-test-api)
   - [6.3 Orchestration semantics](#63-orchestration-semantics)
   - [6.4 Resolution rules](#64-resolution-rules)
   - [6.5 Frontend contract](#65-frontend-contract)
@@ -47,9 +47,8 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [7.8 S3 mini-clusters and benchmarks](#78-s3-mini-clusters-and-benchmarks)
 - [8. Error Model and Operation Logging](#8-error-model-and-operation-logging)
 - [9. Observability](#9-observability)
-- [10. Open Questions](#10-open-questions)
-- [11. Sysdata sync — rack/node/disk-group/disk handlers](#11-sysdata-sync--racknodedisk-groupdisk-handlers)
-- [12. Cluster reset](#12-cluster-reset)
+- [10. Hardware mutations](#10-hardware-mutations)
+- [11. Cluster teardown and verification](#11-cluster-teardown-and-verification)
 
 ## 1. Goals and Non-Goals
 
@@ -60,8 +59,8 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
 
 ### Non-Goals
 - Bypassing `crowdb-kv-server` to talk to Paxos / WAL / storage internals.
-- Authentication, authorization, multi-tenancy, audit logging.
-- Persisting console state beyond local config files.
+- Multi-tenancy and a general audit-log service.
+- Making a console-local file authoritative for cluster topology.
 
 Local deployments use one stable directory per logical server below their
 runtime namespace. Each server owns its `data/`, `config/`, `log/`, and
@@ -102,15 +101,12 @@ path through the shared `ops` module:
 - **Web**: `user → crowdb-web (Axum) → shared (ops module) → group-0 sysdata + crowdb-kv-server`
 - **CLI**: `user → crowdb-cli → shared (ops module) → group-0 sysdata + crowdb-kv-server mgmt`
 
-Both frontends build an `OpContext` and call the same `ops::*`
-functions. The CLI builds one per invocation from `--system-ip` /
-`--system-port`; either endpoint may name any system-group node because the
-client discovers the leader. The web backend builds one per request via
-`AppState::op_context()`, sharing the cached `CrowdbKvClient`
-(topology cache + connection pool) and snapshotting the persisted
-`ConsoleConfig`. Mutations inside `ops::*` update the per-request
-`OpContext` config snapshot; the handler writes the mutated config
-back to `AppState.config` + persists to TOML after `ops::*` returns.
+Both frontends build an `OpContext` with Group 0 discovery seeds. The CLI
+uses `--system-ip` and `--system-port`; production Web uses a versioned process
+configuration. Both read confirmed hardware and logical records through Group 0
+and resolve node management endpoints from live registration. The process
+launch registry is local to each bare-metal console. Docker process state is
+owned by `crowdb-monitor`.
 
 The CLI talks directly to group-0 system metadata via
 `CrowdbSysmdClient` and to individual `crowdb-kv-server` management
@@ -129,8 +125,8 @@ call.
                           ┌───────────────┐
                           │    shared     │              (business logic:
                           │  (lib crate)  │               ops module,
-                          └──────┬────────┘               monitor cache,
-                                 │                        leader resolution,
+                          └──────┬────────┘               leader discovery,
+                                 │                        registry controls,
                   ┌──────────────┼──────────────┐         SSH session pool)
                   ▼              ▼              ▼
                HTTP            crowdb-rpc            SSH
@@ -151,9 +147,10 @@ call.
 - Both frontends build an `OpContext` and call `shared`'s `ops`
   module directly — the CLI from `--system-ip` / `--system-port` global
   flags, the web backend via `AppState::op_context()` (sharing the
-  cached `CrowdbKvClient` + snapshotting `ConsoleConfig`).
-- Both frontends share the same `shared` entry points, so any feature
-  is reachable from both surfaces by construction.
+  cached `CrowdbKvClient` and Group 0 management seeds).
+- Shared hardware and logical operations provide the same authority and
+  conditional publication rules to both frontends. Deployment-mode policy
+  controls which process and hardware mutations Web exposes.
 
 ## 3. Data Model
 
@@ -184,23 +181,25 @@ Identity is the parent chain
 Rooted at **Cluster → Store → Group → Replica…** with a unified replica
 list (no local/remote split; each replica carries a `node_id`). This is
 the view that KV traffic, leader resolution, and routine cluster
-operations use. The web backend is the only component that needs to
-translate logical ids into upstream `(node_id, mgmt_url, rpc_url)`
-tuples; the SPA and the CLI never see those.
+operations use. Shared operations translate logical IDs into confirmed
+membership and live endpoints for both frontends.
 
 Identity is `(store_id[, group_id[, replica_id]])`.
 
 ### 3.3 Source of truth and freshness
 
-- **Persisted (config file, see §4):** rack/node entries and the
-  *intended* server deployment record (host, ports, binary path).
-  These survive restart.
-- **Live (rebuilt on every console start):** process state, health,
-  per-node store/group/replica state, leader hints. The monitor task
-  (§4) pings each node and fetches per-node state; the logical view is
-  derived by aggregating those reports.
-- **No `ClusterSnapshot` polling endpoint.** The SPA queries
-  per-resource live endpoints, all served from the monitor cache.
+- **Group 0:** rack and node identity, nonsecret SSH connection settings and
+  credential references, disk hierarchy, bindings, KV stores, groups,
+  replicas, and service registration.
+- **Local process inputs:** a versioned Web process configuration, bare-metal
+  launch registry, and per-console secret store. Neither topology nor inline
+  SSH secrets are accepted in the launch registry.
+- **Live state:** management health, process identity, and current endpoints.
+  Docker reads monitor-owned process state; bare-metal process identity is
+  checked by `LaunchRuntime`. A stopped process is not a live registration.
+- **Unavailable authority:** missing or ambiguous registration and Group 0
+  outages are reported as unavailable. The monitor and launch registry do not
+  supply fallback topology.
 
 ### 3.4 Design decisions
 
@@ -216,121 +215,49 @@ Identity is `(store_id[, group_id[, replica_id]])`.
   where possible; the console-side wrapper adds the `node_id`
   projection that the per-server protocol does not encode.
 
-## 4. Console Backend Persistence and Monitor Task
+## 4. Console Configuration and Authority
 
-### 4.1 Persisted state (config file)
+### 4.1 Separated local configuration
 
-- Single internal TOML file:
-  `.crowdb-runtime/persistent/console/crowdb-kv.db.toml`. It is CLI state, not
-  a user-facing command option.
-- Contents:
-  - `rack` / `node` entries (id, rack_id, host, SSH creds).
-  - Optional per-node server deployment record: management endpoint,
-    rpc endpoint, and binary/config path as implementation evolves.
-    This records the operator's intended deployment target, not
-    authoritative live state.
-- **Plaintext** SSH credentials are acceptable for v1 (internal demo);
-  a single `ConsoleConfig` struct is the only place that reads /
-  writes the file, so a future move to OS keychain or libsodium
-  sealed-box does not touch any caller.
-- **Never persisted:** live process state, per-node store/group/
-  replica state, leader hints, health flags. These are rebuilt on
-  every console start.
+`WebProcessConfig` contains the listener, Group 0 management seeds, UI and log
+paths, deployment mode, and (for Docker) the monitor status path. Production
+Web requires this versioned input. Docker rejects a launch registry.
 
-### 4.2 Monitor task
+`LaunchRegistry` contains bare-metal process policy: service, node, host,
+binary, service config, workspace and auto-start setting. Runtime PID and
+start-time identity are retained separately by `LaunchRuntime`. SSH credential
+reference IDs are read from Group 0 and resolved against each console's local
+secret store. Group 0 never contains private keys, passwords, PIDs, images or
+container IDs.
 
-On startup, after loading the rack/node table, `shared` spawns a
-long-running monitor task that owns the live cache:
+The `ConsoleConfig` struct is an ephemeral operation input for bootstrap and
+local development. It has no file parser or writer. A sealed `BootstrapIntent`
+retains pre-Group-0 identity across interruption and is deleted only after all
+committed records are verified.
 
-1. **Ping loop** — every `monitor.ping_interval` (default 2 s), the
-   task probes each node's `/health` over HTTP (and SSH liveness on
-   demand for the lifecycle API). It updates `NodeHealth` and
-   `ProcState` in the cache.
-2. **Monitor refresh** — for every node observed `Up`, the task
-   calls the server's topology-report API to fetch `NodeStore` /
-   `NodeGroup` data (per-node store, group, local replica, remote
-   list). The aggregated `StoreView` / `GroupView` / `ReplicaView`
-   needed by the logical API are derived from these per-node reports.
-3. **Event-driven refresh** — every successful mutation through
-   `shared` (deploy, store create, group create, replica add/remove)
-   triggers an immediate refresh for the affected nodes so the next
-   read reflects the change without waiting for the next ping tick.
-4. **Cache reads are non-blocking.** API handlers read the most
-   recent cached value; they do not issue an upstream RPC per
-   request. A handler that needs a stronger guarantee ("force fresh")
-   can request an inline refresh, but that is the exception.
+### 4.2 Runtime observation
 
-### 4.3 Persistent Cluster Config
+The production `/api/preview` snapshot reads Group 0 hardware and logical
+records and validates live service registrations. Docker overlays monitor
+process status, while bare-metal Web uses its local launch runtime. Missing
+monitor status makes Docker runtime observation unavailable. The in-process
+Web test router keeps a monitor cache for fixture orchestration; that cache is
+not production topology authority.
 
-**Problem**: The TOML config file is a single point of failure. Losing
-the console host loses the full topology. Per-node server config is also
-not persisted independently; a node restart relies on the console to
-re-push topology.
+### 4.3 Group 0 authority
 
-**Solution**: A designated Paxos group, **system group (store 0,
-group 0)**, stores the full cluster topology as regular KV entries.
-Since it is a Paxos group, the topology is replicated and HA by the
-same mechanism that protects user data. No external coordinator
-needed. This is the standard industry pattern (closest
-analog: CockroachDB system ranges).
+System group (store 0, group 0) replicates hardware and KV-cluster metadata.
+Bootstrap initializes selected KV members, wires peers and conditionally
+publishes the rack, node, store, group and replica records. A retry compares
+sealed identity and already committed content, writes only missing records,
+and rejects conflicting content. Nonmember KV processes receive Group 0 seeds
+and must register exactly one live identity before logical operations use them.
 
-- **Two-phase bootstrap**:
-  - Phase 1: Console TOML is source of truth (existing behavior).
-  - Phase 2: `HardwareClient` writes hardware hierarchy (racks, nodes)
-    and `KVClusterMetaClient` writes KV-cluster topology (stores,
-    groups, replicas) into group 0 via text-path keys with JSON
-    values. No readiness flag. diskdb's sync loop treats empty group 0
-    as "nothing assigned yet" and retries.
-  - Console restart: two-way fallback. Group 0 missing → TOML mode;
-    group 0 exists → group 0 authoritative.
-
-The TOML file remains available for the whole local-deployment lifecycle.
-Group-0 initialization does not make it disposable: subsequent CLI processes
-use it to find endpoints and tracked process IDs for status, clean, restart,
-and destroy operations. Regression runs keep `console.toml` at the retained
-run root after teardown as diagnostic state; it is not stored inside a single
-command's invocation directory.
-
-- **Group-0 sysdata schema** (text-path keys, JSON values):
-  - `/hw/rack/<rack_id>` — rack metadata (`RackValue`)
-  - `/hw/node/<rack_id>/<node_id>` — node metadata (`NodeValue`)
-  - `/hw/dg/<rack_id>/<node_id>/<dg_id>` — disk-group metadata
-  - `/hw/disk/<rack_id>/<node_id>/<dg_id>/<disk_id_hex>` — disk metadata
-  - `/hw/owner/<rack_id>/<node_id>/<dg_id>` — ownership map
-  - `/hw/bind/<rack_id>/<node_id>/<dg_id>` — bind map
-  - `/kv/store/<store_id>` — store metadata (`StoreValue`)
-  - `/kv/group/<store_id>/<group_id>` — group metadata (`GroupValue`)
-  - `/kv/replica/<store_id>/<group_id>/<replica_id>` — replica metadata
-  - `/srv/<service>/<instance_id>` — service registry instances
-
-- **Per-node config cache** (`conf/node-config.json`): Local cache
-  derived from the system group. On startup: load cache → create
-  stores/groups → replay WAL → reconcile with group 0 KV. If cache is
-  lost, node queries group 0 to rebuild it.
-
-- **Divergence reconciliation**: On node startup, if group 0 is
-  reachable and finalized, compare local cache against group 0 KV.
-  Create missing stores/groups, remove stale ones. If group 0 not
-  reachable, boot from local cache only (deferred).
-
-- **Cluster init flow**: `POST /api/cluster/init` on the console
-  orchestrates: calls `POST /system/init` on selected nodes, wires
-  remotes for multi-node, persists topology in console config, then
-  writes hardware + KV-cluster topology into group 0 via
-  `HardwareClient` + `KVClusterMetaClient`. Data store/group creation
-  is blocked (`409`) until cluster is initialized.
-
-- **Management API endpoints** (on `crowdb-kv-server`, internal — only
-  called by `crowdb-kv-client`'s `KVClusterAdmin`):
-  - `POST /system/init` — bootstrap store 0 + group 0 on this node
-  - Lifecycle: `add_store`, `remove_store`, `add_group`,
-    `remove_group`, `add_remote_replicas`, `remove_remote_replica`,
-    `step_down`, `join_group_via_snapshot`, `flush_group`
-  - Query: `GET /topology` (export), `GET /health`, `GET /metrics`
-
-- **Group 0 membership evolution**: Reuses shipped Model B
-  reconfiguration (direct HTTP mutation + `membership_epoch` fence).
-  No new consensus primitive required.
+The metadata namespaces are `/hw/rack`, `/hw/node`, `/hw/dg`, `/hw/disk`,
+`/hw/owner`, `/hw/bind`, `/kv/store`, `/kv/group`, `/kv/replica`, and `/srv`.
+Logical mutations confirm all node-side steps before publishing membership;
+conditional writes and confirmed reads reconcile a lost response. A local
+launch or monitor record never substitutes for a missing Group 0 result.
 
 ### 4.4 Local runtime namespace
 
@@ -370,117 +297,44 @@ namespaces.
 - Default host: `127.0.0.1` with the current OS user.
 - Pre-flight: every operation calls `ssh::probe(node)` which performs a real handshake before any side-effecting work. Failure surfaces as `NodeUnreachable { node_id, reason }`.
 
-**SSH credential storage lifecycle** — two phases:
-
-- **Bootstrap phase** (before group 0 exists) — SSH creds are stored
-  in the shared TOML config file below
-  `.crowdb-runtime/persistent/console/`
-  (via `TomlFileEngine::default_path()` in
-  `lib/crowdb-console-shared/src/config.rs`). This file stores
-  rack/node/server/store/group/disk-group/disk entries, with SSH creds
-  in `NodeEntry` (`ssh_user`, `ssh_key`, `ssh_password`). The CLI and
-  UI share the same `ConsoleConfig` + `TomlFileEngine` flow — `cluster
-  rack add` / `cluster node add` write to this file, `kv server deploy`
-  reads SSH creds from it. No separate CLI-only config file.
-- **Steady-state phase** (after group 0 exists) — SSH creds are moved
-  into group-0 sysdata, encrypted with a default key. Subsequent `kv
-  server deploy` calls read creds from group-0 sysdata via
-  `KVClusterMetaClient`. The TOML file is no longer the source of truth
-  for SSH creds; group 0 is. The TOML file remains as a local cache /
-  bootstrap fallback.
-
+**SSH credential boundary:** Group 0 stores only the SSH user, port and
+credential reference associated with a node. Each bare-metal console resolves
+the reference in its own local secret store. Bootstrap intent rejects inline
+private keys and passwords; the launch registry accepts references only.
 
 ### 5.3 Process lifecycle (deploy / start / stop)
 
-**SSH path** (`ssh_user` non-empty):
-1. SSH into node (`russh` crate, pure Rust async).
-2. `nohup crowdb-kv-server --management-addr 127.0.0.1 --management-port <p> --ports <gp> &`;
-   capture pid via `echo $!`; record in the persisted node server entry.
-3. Health-check via the new server's HTTP `/health` until ready or timeout (10 s).
-
-**Local-fork path** (`ssh_user` empty, for tests/dev on `127.0.0.1`):
-1. `tokio::process::Command::new(crowdb-kv-server)` with the same args.
-2. Stage the binary into the node's stable service directory in the runtime
-   namespace.
-3. Detach the child (do not kill on drop); track the pid.
-4. Health-check via `/health`.
-
-Binary resolution: `$CROWDB_KV_SERVER_BIN` → sibling of current executable →
-`$PATH` lookup for `crowdb-kv-server`.
-
-(Future: scp the binary to the remote host on first deploy and render
-a config template. Not yet implemented. The SSH path assumes the
-binary is already present on the remote host.)
-
-`server deploy`, `server restart`, and `server stop` address a node. There is no separate
-server id namespace in the console API.
+`LaunchRuntime` uses the validated launch registry for local or SSH process
+start, restart, stop and readiness checks. It records PID plus process start
+time as local runtime identity and refuses to signal an unrelated process.
+Auto-start policy is reconciled on Web startup and reload. A successful process
+launch is not a substitute for a Group 0 service registration. Docker delegates
+child recovery and status to `crowdb-monitor`.
 
 ## 6. Web UI Backend (Axum)
 
 ### 6.1 Design Rules
 
-The console-facing API is split along the **two hierarchy views**
-defined in §3, and every route lives under exactly one of them. Every
-handler builds an `OpContext` via `AppState::op_context()` and
-delegates to the matching `ops::*` function — the web backend no
-longer hand-rolls orchestration logic (fan-out, rollback, sysdata
-sync). The `ops` module owns all multi-step logic; the handler only
-parses input, calls `ops::*`, writes back config, and renders output.
+Production Web uses the managed router and a versioned process configuration.
+`/api/preview` combines confirmed Group 0 records, live registration, and the
+mode-specific process view. `/api/stores/...` provides authenticated logical
+mutations through shared operations in both modes. Bare-metal Web additionally
+exposes rack, node, disk-group and disk reads and authenticated mutations, plus
+registry-backed launch controls and bootstrap. Docker Web does not expose
+hardware or process mutation routes. Unknown managed API routes report
+unavailable rather than entering an in-memory topology path.
 
-**R1. Two URL trees, one per hierarchy.**
-- `/api/racks/...` and `/api/nodes/...` form the **physical** tree.
-  Every resource is addressed by its parent chain.
-- `/api/stores/...` forms the **logical** tree. KV traffic and
-  cluster-wide operations live here, addressed by
-  `(store_id[, group_id[, replica_id]])`. Logical-tree responses still
-  carry `node_id` on every entry so a caller can see placement without
-  a physical-tree query; only the **path** is node-free.
-- A route never crosses trees.
+A mutation is accepted only after the required node-side steps and Group 0
+publication are confirmed. Authenticated management routes use a bearer token.
+The SPA calls the Axum backend; it does not talk directly to KV management
+endpoints.
 
-**R2. Logical reads aggregate; physical reads are per-node.**
-The same store, observed through the two trees, returns different
-shapes: aggregated `StoreView` vs. that node's local `NodeStore`.
-This is how the operator inspects "is the cluster consistent?" vs.
-"what does this one node think it has?".
+### 6.2 In-process test API
 
-**R3. Logical writes orchestrate; physical writes act on one node.**
-A logical write declares *intent*; the `ops` function fans out
-per-node calls and rolls back on partial failure. A physical write
-is the low-level primitive. It touches exactly that node, never fans
-out. Logical writes are implemented on top of physical primitives.
-
-**R4. No `server_id` namespace.**
-Process lifecycle and reachability probes use
-`/api/nodes/:node_id/server/...`. Node identity *is* server identity.
-
-**R5. `OpContext` per request.**
-Each handler builds an `OpContext` from `AppState::op_context()`,
-which shares the cached `Arc<CrowdbKvClient>` (topology cache +
-connection pool) and snapshots the persisted `ConsoleConfig`. After
-`ops::*` returns, the handler writes the mutated config back to
-`AppState.config` (short write-lock, no `await` inside) and persists
-via the config engine. On error, the snapshot is discarded —
-`AppState.config` is unchanged.
-
-> **Retired contracts (no compatibility shim):** `?server=<mgmt_url>`
-> query parameter, `/api/servers/:sid/...`,
-> `/api/openapi.json?server=<id>`, `/api/cluster/snapshot`,
-> `/api/swagger/...`, `/api/nodes/:id/openapi.json`.
-
-The full endpoint list is defined in the Axum route handlers and the
-OpenAPI spec; this section covers design rules only.
-
-### 6.2 Recursive reads (`?recursive=<depth>`)
-
-Any `GET` in either tree accepts `?recursive=<n>` to inline up to `n`
-child levels in one response, avoiding O(N) follow-up requests for
-UIs that render a whole sub-tree. `recursive=all` is a capped alias
-(default max depth 8) intended for the SPA's initial render.
-
-Rules: read-only (mutations ignore it), depth counts child hops from
-the addressed resource, each tree expands along its own hierarchy, KV
-key/value payloads are never inlined, and all responses use the
-monitor cache so `recursive` is cheap even at high depth.
+The in-process Web router and `--test-mode` retain fixture orchestration for
+browser and integration tests. Their recursive physical views and monitor cache
+help exercise the UI, but are never selected by a production Web process.
+They do not persist a topology file or provide a fallback for managed requests.
 
 ### 6.3 Orchestration semantics
 
@@ -506,8 +360,8 @@ these rules:
   parents; an already absent node-side object permits retry.
 - **Idempotent retries.** A repeat of the same logical request must
   converge to the same state.
-- **Cache refresh on success.** Every successful mutation triggers an
-  immediate monitor refresh for the affected nodes.
+- **Read after write.** A mutation returns only after the required node-side
+  and Group 0 confirmation steps complete.
 
 ### 6.4 Resolution rules
 
@@ -525,8 +379,8 @@ backend-facing contract here:
 
 - Bundle output is `app/crowdb-web/ui/dist/`; `crowdb-web` serves
   it via SPA fallback.
-- The SPA polls per-resource live endpoints on a short interval. No
-  WebSocket/SSE. All reads are served from the monitor cache.
+- The SPA polls the management API on a short interval. An unavailable
+  authority clears stale logical rows and is shown explicitly.
 - No `/api/cluster/snapshot` aggregate endpoint.
 
 ## 7. CLI Design
@@ -557,108 +411,25 @@ this section covers design rules only.
 
 ### 7.1 Four-Domain Hierarchy
 
-The CLI is split by service domain into four top-level groups, each
-cohesive and focused:
-
-- **`cluster`** (alias `cls`) — hardware topology (rack, node,
-  disk-group, disk, including runtime hardware state via
-  `set-status`) + cluster-level ops (init, reset, clean, status,
-  topology). `disk-group` and `disk` live here, not under `chunk`,
-  because they are hardware topology concepts — physical disks grouped
-  into disk-groups on nodes in racks. The `set-status` /
-  `set-dg-status` verbs are executed through the diskdb service API,
-  but the CLI verb belongs under `cluster` because it changes hardware
-  topology state, not chunk service state. `chunk diskdb` owns only the
-  diskdb service lifecycle and maintenance (scan/recalc/compact/
-  rebuild).
-- **`kv`** — KV layer: `kv server` (crowdb-kv-server lifecycle),
-  `kv store` / `kv group` / `kv replica` (logical concepts), `kv put`
-  / `get` / `delete` / `scan` / `snapshot` (data-plane). The verb
-  distinguishes management from data-plane; no `kv` prefix needed on
-  resource names.
-- **`chunk`** — chunk storage service cluster: `chunk diskdb` /
-  `chunk chunkdb` / `chunk diskio` (server lifecycle + maintenance) +
-  future chunk data-plane (`allocate` / `free` / `write` / `read` /
-  `gc`). diskdb (block allocator), chunkdb (chunk metadata), diskio
-  (disk I/O), and the chunk client lib compose the chunk storage
-  service cluster; the group name reflects the unified service, not
-  individual servers. Stubs pending implementation.
-- **`bench`** — load injection per layer.
-
-The four-domain hierarchy is the **standard concept** across the
-production system — not CLI-specific. The console UI (`crowdb-web`)
-uses the same domain grouping for its navigation and operation
-surfaces (see `design-crowdb-console-ui.md`). The operation logic
-behind each verb lives in `crowdb-console-shared`'s `ops` module
-(§2.2); both frontends call the same shared operations, so CLI and UI
-behave identically.
+`cluster` owns hardware metadata and bootstrap, clean, destroy and status.
+`kv` owns KV server launch controls, logical store/group/replica operations
+and KV data commands. `chunk` owns storage-service launch controls and
+maintenance. `bench` owns workload runners. The CLI connects to Group 0
+directly and shares the authority operations with production Web.
 
 ### 7.2 Command Hierarchy
 
-```
-crowdb-cli
-│
-├── cluster  (alias: cls)           ← hardware topology + cluster-level ops
-│   ├── init                        (--nodes; bootstraps group 0 — §7.3)
-│   ├── reset                       (full teardown — §13)
-│   ├── clean                       (wipe user data, keep metadata + group-0 — §7.4)
-│   ├── status
-│   ├── topology
-│   ├── rack        { add, remove, list }
-│   ├── node        { add, remove, list, ping }
-│   ├── disk-group  { add, remove, list, set-status }
-│   └── disk        { add, remove, list, set-status }
-│
-├── kv                              ← KV layer: server + logical concepts + data-plane
-│   ├── server    { deploy, restart (alias start), stop, delete, list }   (delete — §7.5)
-│   ├── store     { add, remove, list, inspect }
-│   ├── group     { add, remove, list, inspect }
-│   ├── replica   { add, remove }
-│   ├── put / get / delete / scan
-│   └── snapshot  { create, list, scan, release }
-│
-├── chunk                           ← chunk storage service cluster (stubs)
-│   ├── diskdb    { deploy, restart, stop, delete, list, usage,
-│   │               scan-status, scan, recalc, compact, rebuild }
-│   ├── chunkdb   { deploy, restart, stop, delete, list }   (future)
-│   ├── diskio    { deploy, restart, stop, delete, list }   (future)
-│   └── allocate / free / write / read / gc                 (future data-plane)
-│
-└── bench                           ← load injection
-    ├── kv { read, write, scan, mix }
-    ├── rpc
-    ├── diskdb { allocate, mix }                            (future)
-    ├── chunkdb { allocate, mix }                           (future)
-    └── chunk { write, read, mix }                          (future)
-```
-
-**Three layers max** — `crowdb-cli <domain> <subcommand> <verb>`
-(e.g. `kv server deploy`, `kv store add`, `cluster rack list`).
-Direct data-plane verbs are two layers (`kv put`, `chunk allocate`).
-
-**Verb vocabulary:**
-- Resource CRUD: `add / remove / list / inspect`.
-- Server lifecycle: `deploy / restart / stop / delete` — consistent
-  across `kv server`, `chunk diskdb`, `chunk chunkdb`, `chunk diskio`.
-  `start` is an alias of `restart`. Servers are deployed one-per-node
-  by default; `list` enumerates instances across all nodes.
-- Data-plane: `put / get / delete / scan`. The API uses `scan` for
-  prefix-scan; `list` is management-only (enumerates resources, not
-  data), never data-plane.
-- Hardware state: `set-status` on `cluster disk` / `cluster disk-group`.
-
-**Logical entity addressing**: store/group/replica/KV commands use
-`--store` / `--group`; the backend resolves placement. Server
-lifecycle uses `--node`.
-
-**Leaders are elected, not assigned.** `kv group add` takes no
-`--leader` flag; leadership is decided by Paxos election.
+The `clap` command enums define the exact verbs and flags. Hardware and
+logical commands use Group 0 for identity and membership. Process controls
+require `--registry`; `cluster init` additionally requires sealed bootstrap
+input for first creation. Development `local-deploy` runs a one-shot loopback
+cluster and prints the Group 0 management seed for later CLI invocations.
 
 ### 7.3 `cluster init` — bootstrap special case
 
-`cluster init` is the only command that runs before group 0 exists.
-It takes `--nodes <n1,n2,n3>` directly (not `--system-ip` /
-`--system-port`) and bootstraps group-0/store-0 on those nodes via
+`cluster init` requires `--registry` and a versioned `--bootstrap-file`
+for first creation, or a sealed retry intent beside the registry. It takes
+`--nodes <n1,n2,n3>` and bootstraps group-0/store-0 on those nodes via
 direct node REST calls (the `POST /system/init` mechanism, §4.3),
 wires remotes, and writes the hardware + KV-cluster topology into
 group-0 sysdata. After `cluster init` completes, subsequent commands
@@ -673,43 +444,17 @@ registrations rather than treating launch configuration as a live endpoint.
 
 ### 7.4 `cluster clean` — data wipe boundary
 
-`cluster clean` wipes user-layer data across all storage services,
-keeping services running and group 0 intact:
+`cluster clean --store <id> --group <id>` derives the target replica nodes
+from confirmed Group 0 membership and resolves every live KV management
+registration. It asks each target to wipe user data, then waits for a new
+leader. Group 0 hardware, logical records, and process launch policy remain
+intact. A missing group, registration, or acknowledgement fails the operation;
+a local launch record cannot justify a wipe.
 
-- **KV user data** — remove all user stores + groups via the existing
-  store/group removal flow (cascades to replicas and on-disk WAL/tree
-  cleanup). group-0/store-0 preserved.
-- **chunkdb metadata** — chunkdb stores metadata in CROWDB KV; cleaning
-  the chunkdb KV store (same as any KV store removal) wipes chunkdb
-  metadata.
-- **diskio data** — diskio writes at positions it points to; later
-  writes overwrite old data. No explicit clean needed — new writes
-  supersede old data.
-- **diskdb metadata + backing** — remove all diskdb metadata (clean the
-  diskdb group(s) in KV sysdata). For file-simulated disks, trim or
-  reset the backing file to reclaim space. For real devices, metadata
-  removal is sufficient (zones are reclaimed on next allocation).
-
-Services (`crowdb-kv-server`, `crowdb-diskdb`, `crowdb-chunkdb`,
-`crowdb-diskio`) stay running. group-0 leadership continues — leaders
-are elected, not assigned; as long as group-0 replicas survive, they
-elect a leader. Topology (racks/nodes/disk-groups/disks) is preserved.
-
-For repeated full-stack benchmarks, `cluster clean --restart-services`
-extends the boundary after the KV wipe. The console stops all locally deployed
-DiskDB, DiskIO, and ChunkDB processes, then starts DiskDB and DiskIO before
-ChunkDB with the same identities, endpoints, working directories, and launch
-arguments. It waits for health, service registration, and ChunkDB range
-bindings before returning. KV processes remain running so group 0 and hardware
-topology survive. Suites with multiple data groups clean every group and request
-the service restart on the final clean. A high-volume `mem-block` suite may use
-`cluster destroy` followed by a fresh combined deployment for each case. This
-process boundary releases the complete in-memory working set and prevents RSS
-from accumulating across independent benchmark cases.
-
-Local auxiliary launch commands are retained in the run-root `console.toml`.
-They are diagnostic lifecycle state, are removed with their server entry, and
-are cleared by `cluster destroy`.
+`--restart-services` additionally restarts locally configured DiskIO, DiskDB
+and ChunkDB processes in dependency order through `LaunchRuntime`. It requires
+a validated launch registry before the wipe begins. KV processes stay running
+so Group 0 remains available.
 
 ### 7.5 `kv server delete` — graceful + require-empty
 
@@ -735,7 +480,9 @@ Verb distinction:
 
 - `bench kv <read|write|scan|mix>` runs KV workloads against a target
   store/group. `bench rpc` measures raw RPC transport throughput.
-- Both are stubs pending re-wiring to the `ops` module.
+- Bench discovery starts from the explicit Group 0 management seed and
+  resolves metrics hosts from confirmed replica membership and live
+  registrations. It does not load a console topology file.
 
 ### 7.7 Bench lifecycle verbs (deploy / prepare / run / teardown)
 
@@ -787,7 +534,7 @@ path. The location, rather than the caller's global console configuration, is
 the cluster identity and recovery boundary:
 
 - a missing or empty location is initialized as a three-node cluster;
-- a location containing `s3-mini-cluster.json` and `console.toml` is restarted
+- a location containing `s3-mini-cluster.json` and versioned local launch state is restarted
   with the same service identities, endpoints, launch commands, KV/WAL/tree
   directories, and DiskIO files;
 - a non-empty location without the marker is rejected without modification.
@@ -801,11 +548,11 @@ does not remove configuration or storage. `delete` stops the cluster, releases
 its persistent port claims, and removes the named location. `status` is
 read-only.
 
-First start is transactional. The complete marker is published only after the
-access endpoint is ready; failure stops the processes created by that
-invocation. A later start archives an incomplete initialization directory next
-to the selected location before retrying, preserving its logs for diagnosis
-without treating it as a recoverable cluster.
+First start seals bootstrap intent before publishing Group 0 and publishes the
+complete marker only after the access endpoint is ready. Interrupted launch
+steps replay from retained process and seed inputs; committed Group 0 content
+is verified before a missing step is retried. A non-empty foreign directory is
+rejected. Local state cannot reconstruct topology during a Group 0 outage.
 
 The mini topology is intentionally loopback and places its simulated nodes in
 one rack, so ChunkDB explicitly permits colocated fragments. This is not the
@@ -821,12 +568,10 @@ be used for a non-loopback listener. Bucket and object
 commands take the same `--root`, discover the persisted endpoint, preserve
 S3 errors, and do not fall back to another mutation.
 
-The durable record is deliberately small. `console.toml` retains service PIDs
-and reproducible launch specifications; `s3-mini-cluster.json` retains only the
-format version, storage profile, loopback endpoint, and non-secret tenant name.
-The access master key is injected into a child only while it starts and is not
-persisted in either record. Runtime liveness is derived from recorded PIDs,
-not represented by additional compound cluster states.
+The durable local record holds only versioned launch inputs, process
+identities, bootstrap seeds, the storage profile, loopback endpoint and
+nonsecret tenant name. It does not contain rack, node or logical topology. The
+access master key is injected into a child only while it starts.
 
 `crowdb-cli bench s3` owns a separate, invocation-scoped memory profile. KV and
 WAL blocks use memory backing, DiskIO uses memory disks, and chunk-KV keeps its
@@ -893,59 +638,23 @@ The following invariants apply:
   events; metric validation therefore checks metric sections and counters
   independently of auxiliary log size.
 
-## 10. Open Questions
+## 10. Hardware mutations
 
-- **SSH crate**: `russh` (decided). Defaults to `~/.ssh/*`; `(user,
-  password)` is an explicit alternative.
-- **Frontend bundle**: built on demand; `npm run build` produces `dist/`
-  which the Axum server serves. The committed repo does not include
-  `web/dist/`.
-- **Credentials storage**: plaintext TOML, accessed only through
-  `ConsoleConfig` so the source can change later without touching call
-  sites.
-- **Multiple servers per node**: UI and console enforce one; lower
-  layers remain unrestricted.
+CLI and bare-metal Web use the shared Group 0 hardware operations. Rack,
+node, disk-group and disk changes update parent and child records in one
+conditional batch where membership changes. Matching retries are confirmed;
+conflicting concurrent writes preserve the existing record. Docker Web does
+not expose hardware or process mutations.
 
-## 11. Sysdata sync — rack/node/disk-group/disk handlers
+## 11. Cluster teardown and verification
 
-Console add/remove handlers for racks, nodes, disk-groups, and disks
-delegate to `ops::hardware::*`, which updates the `OpContext` config
-snapshot first, then syncs group-0 sysdata via `ctx.sysmd()`
-(`HardwareClient`). If group 0 is not yet initialized, the sysdata
-sync is skipped — `cluster_init` Phase 5 writes the full hierarchy on
-bootstrap. After `ops::*` returns, the handler writes the mutated
-config back to `AppState.config` and persists to TOML.
+`cluster destroy` requires the local launch registry. It reads confirmed Group
+0 membership, removes user stores and groups through shared logical operations,
+then removes the system group last. Only after metadata teardown succeeds does
+it stop processes named by that console's launch registry. A failed or
+unconfirmed step returns an error instead of deleting presumed local topology.
 
-## 12. Cluster reset
-
-`cluster destroy` is full teardown. It is implemented in
-`crowdb-console-shared`'s `ops::cluster::reset` as a hybrid operation
-— group-0 discovery + direct node teardown — so the CLI no longer
-depends on a `crowdb-web` endpoint. The flow:
-
-1. **Discovery** — connect to the system group (via `--system-ip` /
-   `--system-port`) to enumerate all resources: user stores/groups/
-   replicas, diskdb/chunkdb/diskio instances, server entries, topology.
-2. **Teardown in dependency order** — erase resources one by one:
-   remove user groups → user stores → clean group-0 sysdata (rack
-   cascade + store records + diskdb service unregister) → SIGTERM each
-   node's processes.
-3. **Destroy group 0** — tear down group-0/store-0 itself (last, after
-   all user resources are gone).
-4. **Delete topology** — remove all nodes and racks from
-   the persistent console configuration.
-5. **Fast path** — if group 0 is not created (e.g. `cluster init`
-   failed or was never run), skip steps 1-3 and use the TOML config
-   info (rack/node entries) to clean up any stray processes and clear
-   the config.
-
-The `POST /internal/reset` endpoint on `crowdb-kv-server` remains for
-UI use; the CLI implements its own teardown via the shared `ops`
-module. When no KV servers are running, the RPC steps are skipped
-(fast path for E2E test fixtures).
-
-The web backend exposes `POST /api/cluster/reset` (calls
-`ops::cluster::reset`) and `POST /api/cluster/clean` (calls
-`ops::cluster::clean` — removes orphaned sysdata entries from stopped
-servers without full teardown). Both are reachable from the CLI and
-the web UI.
+There is no orphan-guessing reset command. A stopped or unreachable node does
+not imply its membership should be deleted. `cluster clean` derives its
+replica targets from Group 0, wipes each live target, and waits for a new
+leader while preserving topology.

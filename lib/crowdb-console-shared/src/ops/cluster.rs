@@ -1,13 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Cluster-level operations: status, topology, init, reset, clean.
+//! Cluster-level operations: status, topology, init, destroy, clean.
 //!
 //! `init` bootstraps group 0 (store 0, group 0) on the selected nodes,
 //! wires remotes, and writes the hardware + KV-cluster topology into
-//! group-0 sysdata. `reset` tears down the cluster in dependency order.
-//! `clean` removes orphaned sysdata entries without touching running
-//! servers.
+//! group-0 sysdata. `destroy` tears down confirmed membership in
+//! dependency order. `clean` wipes data on confirmed replicas.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -93,21 +92,6 @@ pub async fn destroy(ctx: &OpContext) -> Result<()> {
     for client in &system_clients {
         client.remove_group(0, 0).await?;
         client.remove_store(0).await?;
-    }
-    Ok(())
-}
-
-/// Verify that every confirmed store host has one live registration. A
-/// stopped or unreachable node is not evidence that its metadata is orphaned.
-///
-/// # Errors
-/// Returns an error if any confirmed host cannot be verified.
-pub async fn reset(ctx: &OpContext) -> Result<()> {
-    for store in ctx.sysmd().list_stores().await? {
-        for node_id in store.node_ids {
-            let url = ctx.live_node_mgmt_url(node_id).await?;
-            ServerClient::new(&url)?.health().await?;
-        }
     }
     Ok(())
 }

@@ -243,7 +243,9 @@ pub(crate) async fn http_remove_group(
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorBody {
-                error: "group 0 in store 0 is the system group; use POST /api/cluster/reset to tear down the entire cluster".into(),
+                error:
+                    "group 0 in store 0 is the system group; destroy and recreate the cluster to remove it"
+                        .into(),
             }),
         ));
     }

@@ -307,7 +307,6 @@ pub fn router(state: AppState) -> axum::Router {
         // ── Cluster init (R2): system group bootstrap ────────────────
         .route("/api/cluster/init", post(mgmt::http_cluster_init))
         .route("/api/cluster/destroy", post(lifecycle::http_internal_reset))
-        .route("/api/cluster/reset", post(lifecycle::http_cluster_reset))
         .route("/api/cluster/clean", post(lifecycle::http_cluster_clean))
         // ── Internal: E2E test reset (alias for destroy) ─────────────
         .route("/internal/reset", post(lifecycle::http_internal_reset))

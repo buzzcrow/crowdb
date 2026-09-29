@@ -130,8 +130,7 @@ pub struct DiskEntry {
     pub device_path: String,
 }
 
-/// Discriminator for console-deployed server entries. `Kv` is the
-/// default for backward compatibility with existing persisted configs.
+/// Discriminator for ephemeral console deployment inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ServiceType {
     #[default]
@@ -142,14 +141,13 @@ pub enum ServiceType {
     ChunkKv,
     AccessServer,
     /// Standalone crowdb-rpc-fb-server (C++ echo server for RPC bench).
-    /// Not a full KV server — no management port, no sysdata. Tracked
-    /// in config only for PID/port lifecycle via `cluster destroy`.
+    /// Not a full KV server — no management port or sysdata.
     Rpc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerEntry {
-    /// Console-side identifier; must be unique within the file.
+    /// Console-side identifier; must be unique within an operation context.
     pub id: String,
     /// Service URL. For KV this is the `crowdb-kv-server` management base
     /// URL; for `DiskDB` this is its public crowdb-rpc endpoint.
@@ -174,13 +172,11 @@ pub struct ServerEntry {
     pub election_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
-    /// Service type discriminator (R77). Defaults to `Kv` for
-    /// backward compatibility with pre-R77 persisted configs.
+    /// Service type discriminator. KV is the default for local fixtures.
     #[serde(default, skip_serializing_if = "is_default_service_type")]
     pub service_type: ServiceType,
     /// `--rpc-workers` value passed to the spawned `crowdb-kv-server`.
-    /// `None` means the server's default (2) is used. Persisted so
-    /// restart reuses the same value.
+    /// `None` means the server's default (2) is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_workers: Option<u32>,
     /// `--no-fsync` flag passed to the spawned `crowdb-kv-server`.

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `cluster` domain — cluster-level ops: init, reset, clean, status,
+//! `cluster` domain — cluster-level ops: init, destroy, clean, status,
 //! topology, plus hardware subcommands (rack/node/disk-group/disk).
 
 pub mod hardware;
@@ -179,8 +179,6 @@ pub enum ClusterVerb {
     },
     /// Tear down the entire cluster (all groups, stores, servers, sysdata).
     Destroy,
-    /// Verify confirmed store hosts have live registrations and healthy servers.
-    Reset,
     /// Wipe user data on every node + wait for re-election. Preserves
     /// group-0 sysdata + topology — servers stay running. Use --store/--group
     /// to target a non-system group (recommended for benchmarks).
@@ -382,6 +380,9 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                             summary.chunkdb_instances,
                             summary.diskio_instances
                         );
+                        if let Some(seed) = ctx.config().servers.first() {
+                            println!("Group 0 management seed: {}", seed.url);
+                        }
                         ExitCode::SUCCESS
                     }
                     Err(error) => {
@@ -436,6 +437,9 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         );
+                        if let Some(seed) = ctx.config().servers.first() {
+                            println!("Group 0 management seed: {}", seed.url);
+                        }
                         ExitCode::SUCCESS
                     }
                     Err(e) => {
@@ -593,22 +597,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("error: cluster destroy: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        }
-        ClusterVerb::Reset => {
-            let ctx = match authority_context(cli).await {
-                Ok(c) => c,
-                Err(c) => return c,
-            };
-            match crowdb_console_shared::ops::cluster::reset(&ctx).await {
-                Ok(()) => {
-                    println!("cluster membership verified");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("error: cluster reset: {e}");
                     ExitCode::from(2)
                 }
             }

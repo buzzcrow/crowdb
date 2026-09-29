@@ -1047,22 +1047,6 @@ pub async fn http_cluster_clean(
         .map_err(|e| err_502(format!("{e}")))
 }
 
-/// `POST /api/cluster/reset`. Remove orphaned sysdata entries
-/// (stores/groups/replicas that have no corresponding running server).
-/// Does not stop any running servers.
-///
-/// # Errors
-/// Returns `502` if the sysdata scan fails.
-pub async fn http_cluster_reset(
-    State(state): State<AppState>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorBody>)> {
-    let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    ops::cluster::reset(&ctx)
-        .await
-        .map_err(|e| err_502(format!("{e}")))?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 /// `POST /api/cluster/destroy` (alias: `/internal/reset`). Tear down
 /// the entire cluster in dependency order: groups → stores → server
 /// processes → nodes → racks, then clear workspace dirs and caches.
