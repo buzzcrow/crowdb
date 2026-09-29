@@ -10,6 +10,16 @@ mod common;
 
 use common::direct::{crowdb_cli_bin, run, spawn_group0};
 
+#[test]
+fn clean_rejects_service_restart_without_launch_registry() {
+    let output = std::process::Command::new(crowdb_cli_bin())
+        .args(["cluster", "clean", "--restart-services"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--registry"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cluster_status_via_direct_group0() {
     let Some(g0) = spawn_group0().await else {

@@ -567,23 +567,48 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             group,
             restart_services,
         } => {
-            let ctx = match op_context(cli) {
+            let restart = if restart_services {
+                let Some(path) = &cli.registry else {
+                    eprintln!("error: --restart-services requires --registry");
+                    return ExitCode::from(2);
+                };
+                let registry = match crowdb_console_shared::config::web::LaunchRegistry::load(path) {
+                    Ok(registry) => registry,
+                    Err(error) => {
+                        eprintln!("error: load launch registry: {error}");
+                        return ExitCode::from(2);
+                    }
+                };
+                let runtime = match crowdb_console_shared::launch::LaunchRuntime::for_registry(path) {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        eprintln!("error: launch runtime: {error}");
+                        return ExitCode::from(2);
+                    }
+                };
+                Some((registry, runtime))
+            } else {
+                None
+            };
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
             match crowdb_console_shared::ops::cluster::clean(&ctx, store, group).await {
                 Ok(mut result) => {
-                    if restart_services {
-                        match crowdb_console_shared::ops::cluster::restart_storage_services(&ctx).await {
-                            Ok(count) => result.restarted_services = count,
-                            Err(error) => {
-                                let _ = commit_config(cli, &ctx);
-                                eprintln!("error: cluster clean service restart: {error}");
-                                return ExitCode::from(2);
+                    if let Some((registry, runtime)) = restart {
+                        for kind in ["diskio", "diskdb", "chunkdb"] {
+                            for launch in registry
+                                .launches
+                                .iter()
+                                .filter(|launch| launch.service_id == kind)
+                            {
+                                if let Err(error) = runtime.restart(launch).await {
+                                    eprintln!("error: restart {kind} on node {}: {error}", launch.node_id);
+                                    return ExitCode::from(2);
+                                }
+                                result.restarted_services += 1;
                             }
-                        }
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
                         }
                     }
                     println!(

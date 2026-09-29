@@ -109,6 +109,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   `cluster init` now requires the registry and independent versioned bootstrap
   input; it cannot seal or publish from the old mixed file. The registry
   bootstrap test passes, and a no-registry CLI test verifies the rejection.
+  CLI `cluster clean` now obtains replica membership and live endpoints from
+  Group 0. Optional storage process restarts use the validated launch registry
+  in DiskIO, DiskDB, ChunkDB order; without one the command rejects the
+  restart request before wiping data.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware
