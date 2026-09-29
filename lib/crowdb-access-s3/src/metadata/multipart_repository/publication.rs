@@ -3,7 +3,7 @@
 
 //! Publish the frozen multipart object through one object-key mutation.
 
-use crowdb_access_multipart::MultipartComposer;
+use crowdb_access_multipart::{next_revision, MultipartComposer};
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -39,6 +39,15 @@ impl MultipartRepository {
             .ok_or(MultipartRepositoryError::Conflict)?;
         let mut composer = MultipartComposer::new(current.max_object_bytes);
         for selected in selection {
+            if self
+                .part(&current, selected.number)
+                .await?
+                .as_ref()
+                .map(|part| part.revision)
+                != Some(selected.revision)
+            {
+                return Err(MultipartRepositoryError::InvalidPart);
+            }
             let part = self
                 .part_generation(&current, selected.number, selected.revision)
                 .await?
@@ -115,10 +124,7 @@ impl MultipartRepository {
         current: &MultipartSessionRecord,
     ) -> Result<MultipartSessionRecord, MultipartRepositoryError> {
         let mut next = current.clone();
-        next.revision = current
-            .revision
-            .checked_add(1)
-            .ok_or(MultipartRepositoryError::Conflict)?;
+        next.revision = next_revision(current.revision).ok_or(MultipartRepositoryError::Conflict)?;
         next.phase = MultipartPhase::Published;
         if self.exchange(current, &next).await? {
             Ok(next)

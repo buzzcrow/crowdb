@@ -4,14 +4,16 @@
 //! Versioned durable S3 multipart session and part values.
 
 use bincode::Options as _;
-use crowdb_access_multipart::{validate_selected_parts, MultipartBounds, MultipartComposer, SelectedPart};
+use crowdb_access_multipart::{
+    next_part_revision, validate_selected_parts, MultipartBounds, MultipartComposer, SelectedPart,
+};
 use crowdb_protocol::chunkdb::rpc::Location;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::BucketId;
 
-const SESSION_MAGIC: [u8; 5] = *b"S3MS\x01";
+const SESSION_MAGIC: [u8; 5] = *b"S3MS\x02";
 const PART_MAGIC: [u8; 5] = *b"S3MP\x01";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 const MAX_OBJECT_KEY_BYTES: usize = 1024;
@@ -44,11 +46,24 @@ pub struct MultipartSessionRecord {
     pub max_staged_bytes: u64,
     pub part_count: u16,
     pub staged_bytes: u64,
+    pub pending: Option<PendingPartMutation>,
     pub selection: Option<Vec<SelectedPart>>,
     pub completion_request_digest: Option<[u8; 32]>,
     pub publication_ms: Option<u64>,
     pub object_predecessor: Option<Option<[u8; 32]>>,
     pub etag: Option<String>,
+}
+
+/// A durable session fence for publishing one current-part pointer.
+/// The immutable after-generation is stored before reserving this mutation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PendingPartMutation {
+    pub number: u16,
+    pub before_revision: Option<u64>,
+    pub before_digest: Option<[u8; 32]>,
+    pub after_revision: u64,
+    pub after_digest: [u8; 32],
+    pub after_length: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -129,6 +144,19 @@ impl MultipartSessionRecord {
         if let Some(selection) = &self.selection {
             validate_selected_parts(selection, self.max_parts).map_err(|_| MultipartRecordError::Invalid)?;
             if selection.len() > usize::from(self.part_count) {
+                return Err(MultipartRecordError::Invalid);
+            }
+        }
+        if let Some(pending) = &self.pending {
+            if self.phase != MultipartPhase::Open
+                || self.part_count == 0
+                || pending.number == 0
+                || pending.number > self.max_parts
+                || pending.after_length > self.max_part_bytes
+                || self.staged_bytes < pending.after_length
+                || pending.before_revision.is_some() != pending.before_digest.is_some()
+                || next_part_revision(pending.before_revision) != Some(pending.after_revision)
+            {
                 return Err(MultipartRecordError::Invalid);
             }
         }

@@ -73,6 +73,27 @@ reused.
 Listings are ordered and continuation-safe within their documented consistency
 model. Continuation state is opaque and bound to the original request scope.
 
+Multipart uploads keep a durable session, current part pointers, and immutable
+part generations under one upload prefix. Replacing a part number advances its
+generation while retaining the previous generation as reference evidence for
+the chunk reclamation scan. The upload session records admission bounds, part
+accounting, expiration, and completion state. Its pending part mutation is a
+durable reservation: a writer stores the immutable generation, reserves the
+pointer update with a session compare-and-swap, publishes the pointer, then
+clears the reservation. A later request can finish an interrupted reservation.
+Completion cannot freeze while one is pending.
+
+Completion validates the ordered selected part numbers, raw MD5 values,
+minimum nonfinal size, and current generations. It freezes the selection under
+the session compare-and-swap, composes chunk locations with adjusted logical
+offsets, and publishes one object record through a predecessor-fenced
+object-key mutation. Publication checks the current pointers and immutable
+generation digests again. It never reads or concatenates part bytes. The
+multipart ETag is the hexadecimal MD5 of the selected raw part MD5 values in
+order, followed by the part count suffix. Abort and expiry mark the session
+terminal; physical chunk reclamation follows the ordinary reference and age
+checks.
+
 ## 5. Relationship to other access models
 
 Iceberg is not implemented as special objects in the S3 namespace. Its catalog,
@@ -99,3 +120,6 @@ native topology access remain Dataset semantics.
   reclaim Iceberg or Dataset authority.
 - **S3-I7 — Transport equivalence:** ordinary HTTP and accelerated transfer
   produce the same S3 range, integrity, publication, and error outcome.
+- **S3-I8 — Multipart selection fence:** a part pointer cannot advance after
+  completion freezes its selection. An interrupted pointer reservation is
+  settled before completion or abort proceeds.

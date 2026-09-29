@@ -25,6 +25,7 @@ fn session() -> MultipartSessionRecord {
         max_staged_bytes: 1_000,
         part_count: 0,
         staged_bytes: 0,
+        pending: None,
         selection: None,
         completion_request_digest: None,
         publication_ms: None,

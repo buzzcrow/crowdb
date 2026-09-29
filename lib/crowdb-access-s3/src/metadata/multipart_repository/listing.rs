@@ -139,6 +139,10 @@ impl MultipartRepository {
         if current.phase != MultipartPhase::Open {
             return Err(MultipartRepositoryError::Conflict);
         }
+        if current.pending.is_some() {
+            self.settle_pending_part(&current).await?;
+            return Err(MultipartRepositoryError::Busy);
+        }
         if after_number == 10_000 {
             return Ok(MultipartPartPage {
                 parts: Vec::new(),

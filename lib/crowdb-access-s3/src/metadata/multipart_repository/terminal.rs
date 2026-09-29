@@ -100,10 +100,20 @@ impl MultipartRepository {
         &self,
         session: &MultipartSessionRecord,
     ) -> Result<MultipartSessionRecord, MultipartRepositoryError> {
-        let current = self
+        let mut current = self
             .load(session)
             .await?
             .ok_or(MultipartRepositoryError::Conflict)?;
+        if current.pending.is_some() {
+            self.settle_pending_part(&current).await?;
+            current = self
+                .load(session)
+                .await?
+                .ok_or(MultipartRepositoryError::Conflict)?;
+            if current.pending.is_some() {
+                return Err(MultipartRepositoryError::Busy);
+            }
+        }
         if current.phase == MultipartPhase::Aborted {
             return Ok(current);
         }

@@ -22,8 +22,8 @@ pub struct CompletionPart {
 impl MultipartRepository {
     /// Validates and freezes an ordered part selection under the session CAS.
     ///
-    /// The part records can still race with this phase write. Publication
-    /// rechecks every recorded digest and refuses changed generations.
+    /// A reserved part mutation settles before this phase write. Publication
+    /// rechecks the selected pointer and generation evidence.
     ///
     /// # Errors
     /// Rejects missing, duplicate, undersized or mismatched parts and
@@ -46,8 +46,11 @@ impl MultipartRepository {
         {
             return Ok(Some(current));
         }
-        if current != *session
-            || current.phase != MultipartPhase::Open
+        if current.pending.is_some() {
+            self.settle_pending_part(&current).await?;
+            return Ok(None);
+        }
+        if current.phase != MultipartPhase::Open
             || !live_at(current.created_ms, current.expires_ms, now_ms)
             || requested.is_empty()
             || requested.len() > usize::from(current.max_parts)

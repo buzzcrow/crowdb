@@ -99,6 +99,7 @@ fn multipart_upload_listing_emits_stable_markers_and_initiation_time() {
         max_staged_bytes: 5,
         part_count: 0,
         staged_bytes: 0,
+        pending: None,
         selection: None,
         completion_request_digest: None,
         publication_ms: None,

@@ -127,6 +127,7 @@ impl ProductionS3Operations {
             max_staged_bytes: MAX_STAGED_BYTES,
             part_count: 0,
             staged_bytes: 0,
+            pending: None,
             selection: None,
             completion_request_digest: None,
             publication_ms: None,
@@ -366,9 +367,11 @@ fn map_multipart_error(error: &MultipartRepositoryError) -> S3ErrorCode {
         MultipartRepositoryError::Key(_) | MultipartRepositoryError::Record(_) => S3ErrorCode::InvalidRequest,
         MultipartRepositoryError::Store(_) => S3ErrorCode::ServiceUnavailable,
         MultipartRepositoryError::Conflict => S3ErrorCode::NoSuchUpload,
+        MultipartRepositoryError::Busy | MultipartRepositoryError::ScanBudgetExhausted => {
+            S3ErrorCode::SlowDown
+        }
         MultipartRepositoryError::InvalidPart => S3ErrorCode::InvalidPart,
         MultipartRepositoryError::EntityTooSmall => S3ErrorCode::EntityTooSmall,
-        MultipartRepositoryError::ScanBudgetExhausted => S3ErrorCode::SlowDown,
     }
 }
 

@@ -19,7 +19,7 @@ Iceberg multipart path.
   `lib/crowdb-access-multipart`, preserving the existing selected-part fences
   in Iceberg. Include overflow and malformed location tests. Files: new crate,
   Iceberg publication, workspace manifests.
-- [~] **Durable transition core**: isolate session/part states, replacement
+- [x] **Durable transition core**: isolate session/part states, replacement
   generations, completion selection, abort and recovery transitions from
   Iceberg catalog-specific keys and records. Keep store CAS and namespace
   adaptation in each protocol. Shared phase vocabulary, admission bounds,
@@ -27,13 +27,14 @@ Iceberg multipart path.
   both adapters; storage CAS and durable record layouts remain protocol-specific.
   Files: shared
   multipart crate, Iceberg file repository, S3 metadata store. Both adapters
-  now also use the same inclusive/exclusive lifetime decision and checked
-  session/part revision advancement. The remaining Iceberg completion/recovery
-  sequencing still needs protocol-neutral extraction.
+  use the same inclusive/exclusive lifetime decision and checked session/part
+  revision advancement. Iceberg's byte assembly checkpoints and S3's
+  metadata-only object publication remain in their adapters because their
+  durable evidence and work units differ.
 
 ## S3 adapter and HTTP
 
-- [ ] **Durable S3 records**: add upload and part keys/records with raw 16-byte
+- [x] **Durable S3 records**: add upload and part keys/records with raw 16-byte
   MD5 and selected revision under one upload prefix. Use bucket identity and
   object key as namespace scope; preserve immutable part data after replacement.
   Versioned session/part records and ordered, binary-safe keys are in place;
@@ -44,7 +45,7 @@ Iceberg multipart path.
   in place. The session, current part and immutable generations now share one
   upload prefix for R95; an immutable object-key/upload-ID index preserves
   bounded ListMultipartUploads ordering. HTTP wiring remains.
-- [ ] **S3 routes and wire**: classify create/upload/list/complete/abort/list
+- [x] **S3 routes and wire**: classify create/upload/list/complete/abort/list
   uploads, parse bounded completion XML, emit compatible responses and errors.
   Preserve SigV4 authentication and existing basic routes. The repository now
   provides bounded, ordered ListParts pagination over current generations;
@@ -62,14 +63,14 @@ Iceberg multipart path.
   malformed XML remains `InvalidRequest`.
   Full boto3 stack acceptance passes Create, UploadPart, ListParts, Complete,
   Abort and ListUploads, including replay, replacement and invalid ETag cases.
-- [ ] **Part ingestion**: reuse the bounded streaming writer and admission
+- [x] **Part ingestion**: reuse the bounded streaming writer and admission
   budget, persist part location/integrity before success, reconcile lost replies.
   Production UploadPart now uses the basic streaming writer and saves raw MD5
   with locations. A byte-identical retry keeps the selected generation even
   when a new write produced different chunk locations; R95 can reclaim those
   unreachable chunks. Full stack ingestion passes 5 MiB and small parts, a
   dropped UploadPart success response, and retries after service restart.
-- [ ] **Atomic completion**: fence selected part generations, validate order,
+- [x] **Atomic completion**: fence selected part generations, validate order,
   count, size and checksum, compose locations through the shared core, and
   publish one immutable object generation without reading part bytes. The S3
   adapter now freezes selection under session CAS, validates it again before
@@ -77,7 +78,15 @@ Iceberg multipart path.
   immutable generation records preserve selected bytes across a concurrent
   part-number replacement. Metadata-only completion and byte-exact GET pass
   the full boto3 stack, including a repeated Complete request.
-- [ ] **Abort and expiry**: make terminal states idempotent and preserve the
+- [x] **Part publication fence**: reserve each changed current-part pointer
+  under session CAS, persist the immutable generation, settle the pointer and
+  clear the reservation. Complete and Abort must not pass an unresolved
+  reservation. A helper can finish a committed reservation after reply loss or
+  restart. Test a replacement racing with freeze, then test recovery at every
+  durable boundary. Keep this CAS-based path lock-free and retain orphan
+  generations for R95. A focused test freezes an interrupted reservation only
+  after recovery, and a changed pointer prevents object publication.
+- [x] **Abort and expiry**: make terminal states idempotent and preserve the
   part generations that R95's chunk-centered scanner needs for reference checks.
   The S3 adapter now has an idempotent, response-loss-safe logical abort and a
   bounded hourly expiry sweep over the upload listing index. Session and part
@@ -87,7 +96,7 @@ Iceberg multipart path.
 
 ## Acceptance and cleanup
 
-- [ ] **Focused and E2E tests**: known MD5 vectors, out-of-order/replaced parts,
+- [x] **Focused and E2E tests**: known MD5 vectors, out-of-order/replaced parts,
   invalid completion, response loss and restart, abort/expiry metadata, and
   ordinary single-part compatibility. The complete S3 library and access-server
   suites plus 19 full-stack boto3/restart cases pass. The new cases drop
@@ -95,7 +104,7 @@ Iceberg multipart path.
   incomplete session across six service restarts, then complete it. Hourly
   expiry has a focused metadata test; broader concurrency and error-matrix
   acceptance remains.
-- [ ] **Gates and docs**: run both access crate suites, access-server E2E,
+- [x] **Gates and docs**: run both access crate suites, access-server E2E,
   Rust fmt and clippy separately; update S3 design and remove R167 plus this
   plan only after all acceptance criteria pass.
 

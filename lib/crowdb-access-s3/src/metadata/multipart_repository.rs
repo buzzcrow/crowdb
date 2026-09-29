@@ -3,7 +3,7 @@
 
 //! CAS-backed multipart authority in the S3 Chunk-KV namespace.
 
-use crowdb_access_multipart::{live_at, next_part_revision, next_revision};
+use crowdb_access_multipart::next_revision;
 use std::sync::Arc;
 
 use super::{
@@ -13,6 +13,7 @@ use super::{
 
 mod completion;
 mod listing;
+mod parts;
 mod publication;
 mod terminal;
 
@@ -30,6 +31,8 @@ pub enum MultipartRepositoryError {
     Store(#[from] MetadataStoreError),
     #[error("multipart operation conflicts with durable state")]
     Conflict,
+    #[error("multipart mutation is still settling")]
+    Busy,
     #[error("multipart completion references a missing or changed part")]
     InvalidPart,
     #[error("a nonfinal multipart part is smaller than 5 MiB")]
@@ -220,104 +223,6 @@ impl MultipartRepository {
                 Ok(part)
             })
             .transpose()
-    }
-
-    /// Conditionally publishes an independently streamed part generation.
-    ///
-    /// Distinct part numbers write independent keys. The conservative
-    /// `max_parts * max_part_bytes` bound prevents aggregate staged bytes from
-    /// exceeding the session budget even when all parts arrive concurrently.
-    ///
-    /// # Errors
-    /// Rejects closed, expired or foreign sessions, invalid parts and
-    /// unconfirmed storage errors. A competing writer returns `None`.
-    pub async fn put_stream_part(
-        &self,
-        session: &MultipartSessionRecord,
-        part: &MultipartPartRecord,
-        now_ms: u64,
-    ) -> Result<Option<MultipartPartRecord>, MultipartRepositoryError> {
-        let current = self
-            .load(session)
-            .await?
-            .ok_or(MultipartRepositoryError::Conflict)?;
-        if current.phase != MultipartPhase::Open
-            || !live_at(current.created_ms, current.expires_ms, now_ms)
-            || u64::from(current.max_parts)
-                .checked_mul(current.max_part_bytes)
-                .map_or(true, |bytes| bytes > current.max_staged_bytes)
-            || part.bucket_id != current.bucket_id
-            || part.upload_id != current.upload_id
-            || part.length > current.max_part_bytes
-            || part.number > current.max_parts
-        {
-            return Err(MultipartRepositoryError::Conflict);
-        }
-        let before = self.part(&current, part.number).await?;
-        if let Some(existing) = &before {
-            if existing.length == part.length && existing.raw_md5 == part.raw_md5 {
-                return Ok(Some(existing.clone()));
-            }
-        }
-        let mut after = part.clone();
-        after.revision = next_part_revision(before.as_ref().map(|before| before.revision))
-            .ok_or(MultipartRepositoryError::Conflict)?;
-        after.modified_ms = now_ms;
-        let value = after.encode()?;
-        let generation_key = MetadataKey::multipart_part_generation(
-            &self.tenant,
-            current.bucket_id,
-            &current.upload_id,
-            part.number,
-            after.revision,
-        )?;
-        let generation_write = self.store.put_if_absent(generation_key, value.clone()).await;
-        match generation_write {
-            Ok(PutIfAbsentOutcome::Inserted { .. }) => {}
-            Ok(PutIfAbsentOutcome::Existing(existing)) if existing.value == value => {}
-            Ok(PutIfAbsentOutcome::Existing(_)) => return Ok(None),
-            Err(error) => {
-                if self
-                    .part_generation(&current, part.number, after.revision)
-                    .await?
-                    .as_ref()
-                    != Some(&after)
-                {
-                    return Err(error.into());
-                }
-            }
-        }
-        let key =
-            MetadataKey::multipart_part(&self.tenant, current.bucket_id, &current.upload_id, part.number)?;
-        let outcome = if let Some(before) = &before {
-            self.store
-                .compare_exchange(key, before.encode()?, value.clone())
-                .await
-                .map(|applied| applied.then_some(after.clone()))
-        } else {
-            self.store
-                .put_if_absent(key, value.clone())
-                .await
-                .map(|outcome| match outcome {
-                    PutIfAbsentOutcome::Inserted { .. } => Some(after.clone()),
-                    PutIfAbsentOutcome::Existing(existing) if existing.value == value => Some(after.clone()),
-                    PutIfAbsentOutcome::Existing(_) => None,
-                })
-        };
-        match outcome {
-            Ok(Some(result)) => Ok(Some(result)),
-            Ok(None) => Ok(self
-                .part(&current, part.number)
-                .await?
-                .filter(|existing| existing == &after)),
-            Err(error) => {
-                if self.part(&current, part.number).await?.as_ref() == Some(&after) {
-                    Ok(Some(after))
-                } else {
-                    Err(error.into())
-                }
-            }
-        }
     }
 
     fn session_key(&self, session: &MultipartSessionRecord) -> Vec<u8> {
