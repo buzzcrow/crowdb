@@ -87,3 +87,14 @@ pub(crate) async fn add_node(
         .map_err(api_error)?;
     Ok((StatusCode::CREATED, Json(node)))
 }
+
+pub(crate) async fn remove_node(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<StatusCode, ApiError> {
+    let ctx = state.op_context().await.map_err(api_error)?;
+    hardware::remove_node_from_group0(&ctx, id)
+        .await
+        .map_err(api_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}

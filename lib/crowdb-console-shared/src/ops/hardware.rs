@@ -119,6 +119,15 @@ pub async fn remove_rack_from_group0(ctx: &OpContext, rack_id: u64) -> Result<()
     authority::remove_empty_rack(ctx, rack_id).await
 }
 
+/// Remove an unused node and its rack membership in one confirmed Group 0 write.
+///
+/// # Errors
+/// Rejects a node with disk groups or KV replicas, a missing node, or an
+/// uncertain authority result.
+pub async fn remove_node_from_group0(ctx: &OpContext, node_id: u64) -> Result<()> {
+    authority::remove_empty_node(ctx, node_id).await
+}
+
 // ── rack ────────────────────────────────────────────────────────
 
 /// Add a rack to the local config and group-0 sysdata.

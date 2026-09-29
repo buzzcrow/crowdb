@@ -94,6 +94,10 @@ pub fn router(state: AppState) -> axum::Router {
                     "/api/nodes",
                     get(managed_hardware::list_nodes)
                         .merge(post(managed_hardware::add_node).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/nodes/:id",
+                    delete(managed_hardware::remove_node).route_layer(authorization.clone()),
                 );
             managed
                 .merge(hardware)

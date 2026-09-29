@@ -104,6 +104,21 @@ async fn separate_consoles_confirm_matching_hardware_and_reject_conflicts() {
         first.sysmd().get_rack(2).await.unwrap().unwrap().node_ids,
         vec![2]
     );
+
+    let occupied = hardware::remove_node_from_group0(&second, 1).await.unwrap_err();
+    assert!(matches!(occupied, Error::Conflict { .. }), "{occupied:?}");
+    hardware::remove_node_from_group0(&second, 2).await.unwrap();
+    assert!(first.sysmd().get_node(2, 2).await.unwrap().is_none());
+    assert!(first
+        .sysmd()
+        .get_rack(2)
+        .await
+        .unwrap()
+        .unwrap()
+        .node_ids
+        .is_empty());
+    hardware::remove_rack_from_group0(&first, 2).await.unwrap();
+    assert!(second.sysmd().get_rack(2).await.unwrap().is_none());
 }
 
 #[tokio::test]

@@ -216,6 +216,37 @@ async fn bare_metal_hardware_routes_share_confirmed_group_zero_state() {
         .0,
         StatusCode::CONFLICT
     );
+    verify_hardware_deletion(&first, &second).await;
+}
+
+async fn verify_hardware_deletion(first: &axum::Router, second: &axum::Router) {
+    assert_eq!(
+        hardware_request(second, axum::http::Method::DELETE, "/api/nodes/9", None, false)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        hardware_request(second, axum::http::Method::DELETE, "/api/nodes/9", None, true)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, nodes) = hardware_request(
+        first,
+        axum::http::Method::GET,
+        "/api/nodes?rack_id=8",
+        None,
+        false,
+    )
+    .await;
+    assert!(nodes.as_array().unwrap().is_empty());
+    assert_eq!(
+        hardware_request(first, axum::http::Method::DELETE, "/api/racks/8", None, true)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
 }
 
 async fn unavailable(app: &axum::Router) {

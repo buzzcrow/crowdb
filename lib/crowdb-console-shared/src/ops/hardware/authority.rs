@@ -218,3 +218,131 @@ pub(super) async fn remove_empty_rack(ctx: &OpContext, rack_id: u64) -> Result<(
     }
     Err(KvError::CasBusy.into())
 }
+
+/// Remove a node only after confirmed authority shows no children or KV replicas.
+pub(super) async fn remove_empty_node(ctx: &OpContext, node_id: u64) -> Result<()> {
+    ready(ctx).await?;
+    for attempt in 0..10u64 {
+        let (rack_id, node) = ctx
+            .sysmd()
+            .list_nodes()
+            .await?
+            .into_iter()
+            .find_map(|(rack_id, id, value)| (id == node_id).then_some((rack_id, value)))
+            .ok_or_else(|| Error::NotFound {
+                kind: "node".into(),
+                id: node_id.to_string(),
+            })?;
+        if node_is_used(ctx, rack_id, node_id, &node).await? {
+            return Err(Error::Conflict {
+                kind: "node with children".into(),
+                id: node_id.to_string(),
+            });
+        }
+        let rack_path = RackKey { rack_id }.to_path();
+        let node_path = NodeKey { rack_id, node_id }.to_path();
+        let (mut rack, revision) = match ctx
+            .kv()
+            .get(0, 0, rack_path.as_bytes(), ReadMode::Linearizable, None)
+            .await?
+        {
+            GetOutcome::Found { value, revision } => (
+                serde_json::from_slice::<RackValue>(&value)
+                    .map_err(|error| Error::Config(error.to_string()))?,
+                revision,
+            ),
+            GetOutcome::NotFound => {
+                return Err(Error::Conflict {
+                    kind: "node without rack".into(),
+                    id: node_id.to_string(),
+                })
+            }
+        };
+        if !rack.node_ids.contains(&node_id) {
+            return Err(Error::Conflict {
+                kind: "node missing from rack membership".into(),
+                id: node_id.to_string(),
+            });
+        }
+        rack.node_ids.retain(|id| *id != node_id);
+        let rack_bytes = serde_json::to_vec(&rack).map_err(|error| Error::Config(error.to_string()))?;
+        let ops = [
+            BatchOp::Put {
+                key: rack_path.as_bytes().to_vec().into(),
+                value: rack_bytes.into(),
+            },
+            BatchOp::Delete {
+                key: node_path.as_bytes().to_vec().into(),
+            },
+        ];
+        match ctx
+            .kv()
+            .batch_write_cas(0, 0, &ops, rack_path.as_bytes(), revision)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(KvError::CasFailed { .. } | KvError::CasBusy) => {
+                tokio::time::sleep(std::time::Duration::from_millis((attempt + 1) * 5)).await;
+            }
+            Err(KvError::OutcomeUnknown) => {
+                if node_removal_confirmed(ctx, &rack_path, &node_path, node_id).await? {
+                    return Ok(());
+                }
+                return Err(KvError::OutcomeUnknown.into());
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(KvError::CasBusy.into())
+}
+
+async fn node_is_used(ctx: &OpContext, rack_id: u64, node_id: u64, node: &NodeValue) -> Result<bool> {
+    if !node.disk_group_ids.is_empty()
+        || !ctx
+            .sysmd()
+            .list_disk_groups_on_node(rack_id, node_id)
+            .await?
+            .is_empty()
+        || ctx
+            .sysmd()
+            .list_all_replicas()
+            .await?
+            .iter()
+            .any(|replica| replica.node_id == node_id)
+    {
+        return Ok(true);
+    }
+    Ok(ctx
+        .sysmd()
+        .read_all_kv_server_instances()
+        .await?
+        .into_iter()
+        .any(|(_, instance)| {
+            instance
+                .extra
+                .and_then(|extra| extra.kv_server)
+                .and_then(|server| server.node_id)
+                == Some(node_id)
+        }))
+}
+
+async fn node_removal_confirmed(
+    ctx: &OpContext,
+    rack_path: &str,
+    node_path: &str,
+    node_id: u64,
+) -> Result<bool> {
+    let rack = ctx
+        .kv()
+        .get(0, 0, rack_path.as_bytes(), ReadMode::Linearizable, None)
+        .await?;
+    let node = ctx
+        .kv()
+        .get(0, 0, node_path.as_bytes(), ReadMode::Linearizable, None)
+        .await?;
+    let (GetOutcome::Found { value, .. }, GetOutcome::NotFound) = (rack, node) else {
+        return Ok(false);
+    };
+    let rack: RackValue = serde_json::from_slice(&value).map_err(|error| Error::Config(error.to_string()))?;
+    Ok(!rack.node_ids.contains(&node_id))
+}

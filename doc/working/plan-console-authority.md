@@ -124,8 +124,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   rack; shared and real CLI regressions cover child conflict and absence.
   Bare-metal Web now exposes authenticated Group 0 rack creation/removal and
   node creation, with public confirmed rack/node reads. Two Web instances
-  observe the same records; inline SSH material is rejected. Node deletion,
-  disks and remaining legacy routes still need conversion.
+  observe the same records; inline SSH material is rejected. Registry CLI and
+  bare-metal Web now remove only unused nodes through one conditional Group 0
+  rack-membership/node deletion; occupied nodes and unauthenticated Web writes
+  fail. Disk groups, disks and remaining legacy routes still need conversion.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
