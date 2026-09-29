@@ -68,9 +68,11 @@ not block R187 completion.
    confirmed Group 0 state. If nonmember KV processes were launched before
    Group 0 exists, propagate usable Group 0 seed hints after initialization
    before treating their registration as live; seed hints are not topology.
-7. Audit the S3 mini-cluster's local `console.toml` and restart path under the
+7. Replace the S3 mini-cluster's local `console.toml` and restart path under the
    same authority boundary. Retain only launch inputs and bootstrap seeds
-   locally after Group 0 cutover; do not replay a local topology copy.
+   locally after Group 0 cutover; do not replay a local topology copy. This
+   configuration has not been released, so no migration or compatibility path
+   is needed.
 8. Publish the verified bare-metal deployment and operations material under
    `/nv/cpp/crowdb-web/site/docs/`, organized by KV cluster, chunk layer, and
    data access servers. State that bare-metal is not yet production-ready.
@@ -88,10 +90,12 @@ not block R187 completion.
    Optionally ship exact-build debug symbols as a separate GitHub Release asset
    generated from the same staged runtime as the image, indexed by version and
    source revision. Omit this large asset by default so its upload cannot block
-   image publication. The release preparation script in `tools/` runs manually, shows a
-   dry-run plan, updates versions, creates the tag and GitHub Release, then
-   dispatches the existing verified DockerHub publication workflow. Host
-   acceptance remains open; no host configuration change is assumed.
+   image publication. The release preparation script in `tools/` runs manually,
+   shows a dry-run plan, updates versions, creates the tag and GitHub Release,
+   then dispatches the existing verified DockerHub publication workflow. Its
+   actual use is deferred to the operator's later release; no release execution
+   is required for this requirement. Host crash acceptance remains open; no
+   host configuration change is assumed.
 
 ## Dependencies
 
@@ -142,9 +146,10 @@ not block R187 completion.
   Group 0 is created and seed hints are propagated, assert each process
   registers exactly one live node identity before logical operations use it.
   Invariant: registration readiness. E2E test.
-- Given a persisted S3 mini-cluster and a Group 0 outage, when it restarts or
-  tears down, assert local launch data cannot recreate or mask old cluster
-  topology. Invariant: no secondary authority. Integration test.
+- Given an S3 mini-cluster started with the new launch-only configuration and
+  a Group 0 outage, when it restarts or tears down, assert local launch data
+  cannot recreate or mask cluster topology. Invariant: no secondary authority.
+  Integration test.
 - Given the two deployment guides and a reader following bare-metal steps,
   when the reader deploys KV, chunk services, and Iceberg or S3 access servers,
   assert each layer has a verified setup and health check, the non-production
@@ -161,14 +166,6 @@ not block R187 completion.
   locates the dump or explicitly reports unsupported collection, without
   claiming an absent data-volume core. Invariant: truthful collector boundary.
   Integration test.
-- Given a clean main checkout and a version bump, when the release tool runs in
-  dry-run mode, assert it shows every version change and no file or remote is
-  modified. When run for a release, assert the tag and GitHub Release identify
-  the same verified revision and image publication succeeds without symbol
-  upload. When symbols are requested, assert the asset contains source-line
-  information and GNU debuglink CRCs and SHA-256 hashes match the image's
-  stripped binaries. Invariant: optional released symbols come from the image
-  build and remain available after a build host changes. E2E test.
 
 Required gates:
 
@@ -181,9 +178,13 @@ Required gates:
 
 ## Open Issues
 
-- This host routes `core_pattern` to Apport, so a container-local directory and
-  core ulimit cannot guarantee a dump in `/opt/crowdb/data`. End-to-end
-  acceptance needs a disposable host with file-based collection or a verified
-  host-collector export workflow. Private one-core retention has passed local
-  tests, while collection and source-line symbolization on a real dump remain
-  unverified.
+- This host routes `core_pattern` to Apport. A disposable container KV child
+  aborted and the monitor recovered it, but Apport did not create a CROWDB
+  report: its log says `/opt/crowdb/bin/crowdb-kv-server` does not exist on the
+  host. A packaged host program did produce an exportable `CoreDump`, proving
+  the extraction procedure without proving CROWDB collection. Exact-image
+  hashes, GNU debuglinks and source-line symbolization passed with a
+  debugger-generated CROWDB monitor core. Private one-core retention passed
+  local tests. File-based collection, real crash-core symbolization and
+  retention still need a disposable host with a relative `core_pattern`; no
+  change to this host's collector is assumed.

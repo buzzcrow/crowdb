@@ -72,10 +72,22 @@ make some stack frames unavailable. Core collection can also be suppressed by
 the host's dumpability policy, including for executables with file capabilities.
 The container never changes `core_pattern` or the host's dumpability policy.
 
-- On a systemd-coredump host, use `coredumpctl list` and `coredumpctl dump`
-  on the host to locate and export a captured dump.
-- On an Ubuntu Apport host, use the host's Apport report and core extraction
-  workflow. A pipe pattern does not create a volume file.
+- On a systemd-coredump host, use `coredumpctl list crowdb-kv-server` to find
+  the host report, then `coredumpctl --output=/private/core dump
+  crowdb-kv-server` as an authorized host user to export it. Check that the
+  result is readable and nonempty before symbolization.
+- On an Ubuntu Apport host, find the matching report in `/var/crash` on the
+  Docker host. Create a private directory, then run `sudo apport-unpack
+  /var/crash/REPORT.crash /private/crowdb-core/unpacked`. The extracted
+  `CoreDump` is the file to pass to the symbolizer. Apport reports may be
+  readable only by the host administrator; preserve the private permissions
+  when granting the debugging user access. A pipe pattern does not create a
+  volume file. Apport may fail to resolve a CROWDB executable because its
+  `/opt/crowdb/bin` path exists only inside the container; it may also ignore
+  executables outside host distribution packages. Check the host's Apport log
+  when no report appears.
+  If the report or `CoreDump` is absent, collection is unavailable for that
+  crash; do not substitute a log or an unrelated dump.
 - On Docker Desktop, inspect the Linux VM's collector. The desktop host's
   native crash directory is not the container's core directory.
 

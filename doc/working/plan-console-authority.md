@@ -90,11 +90,12 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   Three-service lifecycle regressions and the complete CLI suite, fmt and
   clippy pass. Logs: `/tmp/crowdb-chunk-launch-*.log`. Removal of legacy
   startup/restore paths remains coupled to bootstrap cutover below.
-- [~] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
+- [ ] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
   parser/writer, inline SSH secrets, topology restoration and fixtures after
   the launch lifecycle and replay-safe bootstrap paths are wired. Preserve
   bootstrap intent independently until verified cutover. Update CLI commands,
-  Web persistence and S3 mini-cluster callers together; no compatibility reader.
+  Web persistence and S3 mini-cluster callers together; no compatibility reader
+  or migration path because the old configuration was never released.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware
@@ -138,7 +139,8 @@ configuration, documentation and crash-diagnostics tasks below are pending.
 - [ ] **Replay-safe bootstrap cutover**: persist bootstrap identity, verify
   committed records, write only safely missing content, reject conflicts and
   delete topology intent after verified transfer. Clean/destroy use confirmed
-  authority. Audit S3 mini-cluster persistence against the same contract.
+  authority. Replace S3 mini-cluster persistence against the same contract,
+  without a migration path for its unreleased mixed configuration.
   System initialization now confirms an existing replica's identity after a
   conflict or lost response, preserves groups for retry after peer failures,
   and requires every peer endpoint and remote-wiring request to succeed before
@@ -198,16 +200,14 @@ requirement.
   core ulimit example bounds each dump. Focused retention and monitor suites
   pass. The complete container release, image and E2E gate passes, including
   startup, crash and hang recovery, persisted-volume restart, exhausted restart
-  budget and monitor death. Rust fmt and clippy pass. The host's Apport pipe
-  still prevents file-based end-to-end acceptance.
-- [ ] **Manual release and optional symbols**: the `tools/` release script now
-  has a read-only dry run, consistent version updates, tag and GitHub Release
-  creation, and workflow dispatch. Optional `--symbols` extracts debug symbols
-  from the same staged ELF files as the image and uploads the named archive;
-  the default release skips that large asset. Local symbol identity checks pass.
-  A real release and source-line lookup remain to verify. Files:
-  `tools/release.py`, `container/single-node-container/{build.sh,collect-libs.sh}`,
-  `.github/workflows/release-container.yml`.
+  budget and monitor death. Rust fmt and clippy pass. This host's Apport pipe
+  can export a packaged program's real dump, but a CROWDB KV child abort left
+  no report because Apport cannot resolve its container-only executable path.
+  The monitor recovered the child. A symbols-enabled image and archive for the
+  same revision passed hashes, debuglink CRCs and `.debug_line` checks; the
+  symbolizer resolved a debugger-generated CROWDB monitor core to
+  `container/crowdb-monitor/src/main.rs:55`. File-based collection and
+  retention of a real CROWDB crash remain for a disposable file-collector host.
 ## Documentation and completion
 
 - [ ] **Bare-metal documentation**: publish verified KV, chunk and access
