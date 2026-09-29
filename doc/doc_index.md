@@ -47,9 +47,10 @@ Temporary plans live under `doc/working/`; flow analyses live under
 
 | Doc                          | When to read                                                           |
 | ---------------------------- | ---------------------------------------------------------------------- |
+| `doc/dev/crash_debugging.md` | Core collection, host setup, GDB, and exact-build symbols.             |
 | `doc/dev/env_setup.md`       | Benchmark commands, sentinels, prerequisites, and perf-counter setup.  |
 | `doc/dev/hyper_fork.md`      | Hyper fork branches, submodule, build, sync, validation, and recovery. |
-| `tools/README.md`           | Tool directories, Pixi task entry points, CI checks, and suite timing. |
+| `tools/README.md`            | Tool directories, Pixi task entry points, CI checks, and suite timing. |
 
 ## Project Files (repo root)
 

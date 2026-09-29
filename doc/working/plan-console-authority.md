@@ -90,7 +90,7 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   Three-service lifecycle regressions and the complete CLI suite, fmt and
   clippy pass. Logs: `/tmp/crowdb-chunk-launch-*.log`. Removal of legacy
   startup/restore paths remains coupled to bootstrap cutover below.
-- [ ] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
+- [~] **Remove mixed persistence**: remove the unreleased `ConsoleConfig`
   parser/writer, inline SSH secrets, topology restoration and fixtures after
   the launch lifecycle and replay-safe bootstrap paths are wired. Preserve
   bootstrap intent independently until verified cutover. Update CLI commands,
@@ -176,7 +176,7 @@ configuration, documentation and crash-diagnostics tasks below are pending.
 Transferred from R187 by user request. It does not block the single-node image
 requirement.
 
-- [~] **Crash dump location and retention**: document and test how Linux
+- [x] **Crash dump location and retention**: document how Linux
   host `core_pattern`, Docker's core ulimit, and the non-root container affect
   CROWDB child and PID 1 crashes. Cover a plain relative core-file pattern,
   Ubuntu Apport, systemd-coredump, and Docker Desktop's Linux VM. Choose a
@@ -185,8 +185,8 @@ requirement.
   and provide explicit setup guidance instead of claiming the volume contains
   a core. Use a private data-volume directory and retain the newest `core`
   file after child recovery and monitor restart. Require Docker's core ulimit
-  for a per-dump size bound. Verify one disposable child crash end to end, retention/cleanup,
-  secret exposure, and symbolization against the exact binary build. Do not
+  for a per-dump size bound. Document how to inspect a real child crash,
+  retention, secret exposure, and exact-build symbolization. Do not
   change the host-wide `core_pattern` from inside the container. Files:
   `container/single-node-container/{Dockerfile,entrypoint.sh,tests/**}`,
   `container/crowdb-monitor/src/**`,
@@ -206,8 +206,13 @@ requirement.
   The monitor recovered the child. A symbols-enabled image and archive for the
   same revision passed hashes, debuglink CRCs and `.debug_line` checks; the
   symbolizer resolved a debugger-generated CROWDB monitor core to
-  `container/crowdb-monitor/src/main.rs:55`. File-based collection and
-  retention of a real CROWDB crash remain for a disposable file-collector host.
+  `container/crowdb-monitor/src/main.rs:55`. The developer guide at
+  `doc/dev/crash_debugging.md` now covers host configuration and rollback,
+  private core handling, GDB with exact-image symbols, and bare-metal GDB with
+  unstripped binaries. The user accepted documentation as completion and
+  deferred live core verification until a future incident; no new crash test
+  or host configuration change is required in this task.
+
 ## Documentation and completion
 
 - [ ] **Bare-metal documentation**: publish verified KV, chunk and access

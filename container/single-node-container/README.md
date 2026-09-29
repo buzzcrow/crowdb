@@ -50,6 +50,10 @@ remains available and the workflow reports a warning.
 
 ## Crash collection boundary
 
+For host configuration, restoring its collector, and GDB commands for both
+container and bare-metal cores, see the
+[crash debugging guide](../../doc/dev/crash_debugging.md).
+
 The image does not configure the host's Linux core collector. Inspect
 `/proc/sys/kernel/core_pattern` on the Docker host before expecting a dump in
 the mounted data volume. A leading `|` sends a crash to a host-side collector;
@@ -108,8 +112,8 @@ directory, verifies source revision, version and SHA-256 hashes, then runs
 `gdb` without printing frame arguments. Use the crashed child binary instead
 of `crowdb-monitor` for a child core. The temporary binaries are removed after
 the stack is shown; the core stays at the path supplied by the operator.
-The exact-build source-line check on a supported file-based collector remains
-tracked by R188.
+The operator will validate collection and source-line output when a real
+crash is available. No host collector change is required by the image build.
 
 Collector behavior follows the [Linux core pattern documentation](https://docs.kernel.org/admin-guide/sysctl/kernel.html),
 [systemd-coredump manual](https://www.freedesktop.org/software/systemd/man/250/systemd-coredump.socket.html),

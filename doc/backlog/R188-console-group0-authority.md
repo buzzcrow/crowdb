@@ -94,8 +94,10 @@ not block R187 completion.
    shows a dry-run plan, updates versions, creates the tag and GitHub Release,
    then dispatches the existing verified DockerHub publication workflow. Its
    actual use is deferred to the operator's later release; no release execution
-   is required for this requirement. Host crash acceptance remains open; no
-   host configuration change is assumed.
+   is required for this requirement. Document host crash collection, GDB and
+   exact-build symbols in `doc/dev/crash_debugging.md`. The user will validate
+   a real core when a future crash occurs; this requirement does not change
+   the host collector or require a new crash test.
 
 ## Dependencies
 
@@ -155,17 +157,11 @@ not block R187 completion.
   assert each layer has a verified setup and health check, the non-production
   boundary is explicit, and no link targets the removed combined guide.
   Invariant: deployment guidance follows its implementation. E2E test.
-- Given a disposable container on a supported file-based core collector, when
-  a child or PID 1 crashes, assert the dump has private ownership, one-core
-  retention and size bounds, and resolves to source lines using exact-build symbols.
-  Assert ordinary logs disclose no dump contents or credentials and the
-  container does not change host-wide collector policy. Invariant: private,
-  bounded and reproducible crash diagnostics. E2E test.
-- Given Apport, systemd-coredump or Docker Desktop collector policies, when
-  crash collection is attempted, assert the documented host export workflow
-  locates the dump or explicitly reports unsupported collection, without
-  claiming an absent data-volume core. Invariant: truthful collector boundary.
-  Integration test.
+- Crash debugging documentation is complete when `doc/dev/crash_debugging.md`
+  explains host collector selection and rollback, private core location and
+  limits, exact-image symbols and GDB, and direct GDB use for unstripped
+  bare-metal binaries. The user will verify a real core during a future
+  incident; no crash test or host configuration change is required now.
 
 Required gates:
 
@@ -181,10 +177,7 @@ Required gates:
 - This host routes `core_pattern` to Apport. A disposable container KV child
   aborted and the monitor recovered it, but Apport did not create a CROWDB
   report: its log says `/opt/crowdb/bin/crowdb-kv-server` does not exist on the
-  host. A packaged host program did produce an exportable `CoreDump`, proving
-  the extraction procedure without proving CROWDB collection. Exact-image
-  hashes, GNU debuglinks and source-line symbolization passed with a
-  debugger-generated CROWDB monitor core. Private one-core retention passed
-  local tests. File-based collection, real crash-core symbolization and
-  retention still need a disposable host with a relative `core_pattern`; no
-  change to this host's collector is assumed.
+  host. Exact-build symbolization passed with a debugger-generated monitor
+  core. The user accepted the crash debugging guide as completion and will
+  validate file collection and source lines when a future real crash occurs.
+  The host collector was not changed.
