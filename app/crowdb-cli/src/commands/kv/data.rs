@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use clap::Subcommand;
 use crowdb_kv_client::GetOutcome;
 
-use crate::commands::op_context;
+use crate::commands::authority_context;
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]
@@ -90,7 +90,7 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
                 Ok(ids) => ids,
                 Err(c) => return c,
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -119,7 +119,7 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
                 Ok(ids) => ids,
                 Err(c) => return c,
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -147,7 +147,7 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
                 Ok(ids) => ids,
                 Err(c) => return c,
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -174,7 +174,7 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
                 Ok(ids) => ids,
                 Err(c) => return c,
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -211,7 +211,7 @@ async fn run_snapshot_verb(cli: &Cli, verb: SnapshotVerb) -> ExitCode {
                 Ok(ids) => ids,
                 Err(c) => return c,
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -231,7 +231,7 @@ async fn run_snapshot_verb(cli: &Cli, verb: SnapshotVerb) -> ExitCode {
                 Ok(ids) => ids,
                 Err(c) => return c,
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -260,7 +260,7 @@ async fn run_snapshot_verb(cli: &Cli, verb: SnapshotVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };

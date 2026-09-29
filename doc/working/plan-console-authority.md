@@ -147,6 +147,8 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   locates the topology endpoint; a management read supplies only the initial
   RPC connection hint. The logical round-trip and status/topology tests pass
   with a deliberately invalid legacy file, and the complete CLI suite passes.
+  CLI KV data commands also use this context; the put/get/delete/scan
+  round-trip passes with an invalid legacy file.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
