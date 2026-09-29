@@ -179,13 +179,20 @@ pub struct CleanResult {
 /// # Errors
 /// Returns an error if no servers are configured.
 pub async fn clean(ctx: &OpContext, store_id: u64, group_id: u64) -> Result<CleanResult> {
-    let cfg = ctx.config().clone();
-    let mut mgmt_urls: Vec<String> = cfg
-        .servers
-        .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
-        .map(|server| server.url.clone())
-        .collect();
+    // The confirmed replica set determines which nodes must be wiped. A local
+    // launch registry may contain stopped or unrelated processes, and cannot
+    // substitute for Group 0 membership after bootstrap.
+    let replicas = ctx.sysmd().list_replicas_in_group(store_id, group_id).await?;
+    if replicas.is_empty() {
+        return Err(Error::NotFound {
+            kind: "group replicas".into(),
+            id: format!("{store_id}/{group_id}"),
+        });
+    }
+    let mut mgmt_urls = Vec::with_capacity(replicas.len());
+    for replica in replicas {
+        mgmt_urls.push(ctx.live_node_mgmt_url(replica.node_id).await?);
+    }
     mgmt_urls.sort();
     mgmt_urls.dedup();
     if mgmt_urls.is_empty() {

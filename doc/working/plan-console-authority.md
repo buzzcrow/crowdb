@@ -191,7 +191,11 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   S3 now canonicalizes a relative root before creating child launch paths;
   the interrupted CLI test covers a relative root. The S3 CLI mock fixture
   supplies the required launch-only state; its three previously failing cases
-  now pass. The complete Console gate needs rerun.
+  now pass. The complete Console gate passes after the S3 fixture update.
+  `cluster clean` now derives its target nodes from confirmed Group 0 replica
+  membership and resolves each live management registration; local launch
+  entries cannot justify a wipe. A real Group 0 regression rejects a group
+  absent from authority even when the console has a local server entry.
 - [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
   records, accept matching content without rewriting revisions, reject conflicts,
   and conditionally create missing records. Reconcile uncertain writes with
