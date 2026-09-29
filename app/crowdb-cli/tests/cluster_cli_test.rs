@@ -82,6 +82,7 @@ async fn cluster_status_topology_via_direct_group0() {
     );
     assert_eq!(code, 0, "cluster init stderr={stderr}");
     assert!(!g0.config_path.with_extension("bootstrap.toml").exists());
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
 
     // status — lists stores from group-0 sysdata.
     let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "status"]);

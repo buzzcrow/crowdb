@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{commit_config, config_path, op_context};
+use crate::commands::{authority_context, commit_config, config_path, op_context};
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]
@@ -609,7 +609,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             }
         }
         ClusterVerb::Status => {
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -641,7 +641,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             }
         }
         ClusterVerb::Topology { node } => {
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };

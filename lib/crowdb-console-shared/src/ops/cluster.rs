@@ -50,7 +50,8 @@ pub async fn status(ctx: &OpContext) -> Result<Vec<crowdb_protocol::common::Stor
 /// # Errors
 /// Returns [`Error::NotFound`] if no server is deployed on the node.
 pub async fn topology(ctx: &OpContext, node_id: u64) -> Result<Vec<crate::snapshot::StoreView>> {
-    let client = server_client(ctx, node_id)?;
+    let url = ctx.live_node_mgmt_url(node_id).await?;
+    let client = ServerClient::new(&url)?;
     client.topology().await
 }
 

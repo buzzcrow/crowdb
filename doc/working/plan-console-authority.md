@@ -142,6 +142,11 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   context, including when `--registry` is omitted. A malformed legacy file
   cannot alter or block rack/node reads. The complete CLI suite passes;
   remaining mixed CLI operations are outside hardware.
+  CLI logical store/group/replica mutations and reads, plus cluster status
+  and node topology, now also ignore the old file. Live node registration
+  locates the topology endpoint; a management read supplies only the initial
+  RPC connection hint. The logical round-trip and status/topology tests pass
+  with a deliberately invalid legacy file, and the complete CLI suite passes.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.
