@@ -97,3 +97,20 @@ async fn kv_server_controls_require_launch_registry() {
     assert_eq!(code, 2, "stdout={stdout} stderr={stderr}");
     assert!(stderr.contains("--registry"), "stderr={stderr}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incremental_local_deploy_reads_group_zero_instead_of_legacy_file() {
+    let Some(g0) = spawn_group0().await else {
+        return;
+    };
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    let (code, _, stderr) = run(
+        &crowdb_cli_bin(),
+        g0.mgmt_port,
+        &g0.config_path,
+        &["cluster", "local-deploy", "-t", "diskdb", "--data-groups", "99"],
+    );
+    assert_eq!(code, 2, "stderr={stderr}");
+    assert!(stderr.contains("99"), "stderr={stderr}");
+    assert!(!stderr.contains("load config"), "stderr={stderr}");
+}

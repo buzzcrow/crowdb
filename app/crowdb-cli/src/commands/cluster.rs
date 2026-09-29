@@ -18,6 +18,51 @@ use clap::Subcommand;
 use crate::commands::{authority_context, commit_config, op_context};
 use crate::Cli;
 
+async fn local_deploy_context(
+    cli: &Cli,
+    existing_cluster: bool,
+) -> Result<crowdb_console_shared::ops::OpContext, ExitCode> {
+    if !existing_cluster {
+        let mgmt = format!("http://{}:{}", cli.system_ip, cli.system_port);
+        let rpc_hint = format!("{}:{}", cli.system_ip, cli.system_port);
+        return Ok(crowdb_console_shared::ops::OpContext::new(
+            rpc_hint,
+            vec![mgmt],
+            crowdb_console_shared::ConsoleConfig::default(),
+        ));
+    }
+    let ctx = authority_context(cli).await?;
+    {
+        let racks = crowdb_console_shared::ops::hardware::list_racks_from_group0(&ctx)
+            .await
+            .map_err(|error| {
+                eprintln!("error: read Group 0 racks: {error}");
+                ExitCode::from(2)
+            })?;
+        let nodes = crowdb_console_shared::ops::hardware::list_nodes_from_group0(&ctx, None)
+            .await
+            .map_err(|error| {
+                eprintln!("error: read Group 0 nodes: {error}");
+                ExitCode::from(2)
+            })?;
+        let mut servers = Vec::with_capacity(nodes.len());
+        for node in &nodes {
+            let url = ctx.live_node_mgmt_url(node.id).await.map_err(|error| {
+                eprintln!("error: resolve live KV node {}: {error}", node.id);
+                ExitCode::from(2)
+            })?;
+            let mut server = crowdb_console_shared::config::ServerEntry::new(node.id.to_string(), url);
+            server.node_id = Some(node.id);
+            servers.push(server);
+        }
+        let mut config = ctx.config_mut();
+        config.racks = racks;
+        config.nodes = nodes;
+        config.servers = servers;
+    }
+    Ok(ctx)
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ClusterVerb {
     /// Initialize the cluster by bootstrapping group 0 on the listed nodes.
@@ -276,7 +321,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             allow_unsafe_ec,
         } => match service_type.as_str() {
             "combined" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, false).await {
                     Ok(context) => context,
                     Err(code) => return code,
                 };
@@ -329,9 +374,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 .await
                 {
                     Ok(summary) => {
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
-                        }
                         println!(
                             "local-deploy combined: {} KV nodes, {} racks, {} DiskDB, {} ChunkDB, {} DiskIO",
                             summary.kv_nodes,
@@ -343,16 +385,13 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                         ExitCode::SUCCESS
                     }
                     Err(error) => {
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
-                        }
                         eprintln!("error: local-deploy combined: {error}");
                         ExitCode::from(2)
                     }
                 }
             }
             "kv" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, false).await {
                     Ok(c) => c,
                     Err(c) => return c,
                 };
@@ -386,9 +425,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 .await
                 {
                     Ok(summary) => {
-                        if let Err(c) = commit_config(cli, &ctx) {
-                            return c;
-                        }
                         println!(
                             "local-deploy complete: {} nodes (rack {}, nodes [{}]), group 0 bootstrapped",
                             summary.node_count,
@@ -409,7 +445,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
             "rpc" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, false).await {
                     Ok(c) => c,
                     Err(c) => return c,
                 };
@@ -429,9 +465,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 .await
                 {
                     Ok(summary) => {
-                        if let Err(c) = commit_config(cli, &ctx) {
-                            return c;
-                        }
                         println!(
                             "local-deploy rpc: port={}, pid={}, io_engines={}, io_workers={}, nagle={}",
                             summary.port, summary.pid, summary.io_engines, summary.io_workers, summary.nagle
@@ -445,7 +478,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
             "diskdb" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, true).await {
                     Ok(c) => c,
                     Err(c) => return c,
                 };
@@ -468,9 +501,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     .await
                 {
                     Ok(summary) => {
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
-                        }
                         println!(
                             "local-deploy diskdb: {} instances, {} disk-groups, {} disks, data-groups {:?}",
                             summary.instance_count,
@@ -487,7 +517,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
             "chunkdb" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, true).await {
                     Ok(context) => context,
                     Err(code) => return code,
                 };
@@ -508,9 +538,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     .await
                 {
                     Ok(summary) => {
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
-                        }
                         println!("local-deploy chunkdb: {} instances", summary.instance_count);
                         ExitCode::SUCCESS
                     }

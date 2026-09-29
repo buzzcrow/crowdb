@@ -109,6 +109,11 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   `cluster init` now requires the registry and independent versioned bootstrap
   input; it cannot seal or publish from the old mixed file. The registry
   bootstrap test passes, and a no-registry CLI test verifies the rejection.
+  `cluster local-deploy` uses a fresh in-memory context for new loopback
+  clusters and reconstructs incremental DiskDB/ChunkDB inputs from confirmed
+  Group 0 hardware and live KV registrations. It no longer reads or writes
+  the old topology file. A real CLI regression reaches Group 0 validation
+  with a deliberately invalid legacy file.
   CLI `cluster clean` now obtains replica membership and live endpoints from
   Group 0. Optional storage process restarts use the validated launch registry
   in DiskIO, DiskDB, ChunkDB order; without one the command rejects the
