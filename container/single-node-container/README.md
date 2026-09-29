@@ -25,41 +25,32 @@ pixi run test-single-node-container
   `CROWDB_CONTAINER_IMAGE` to build and test a separate candidate tag.
 
 `pixi run stage-single-node-container` produces the runtime directory without
-building a Docker image. To prepare a release from a clean, current `main`
-checkout, preview the patch bump and then run it explicitly:
+building a Docker image. Work on a `release/<version>` branch whose `VERSION`
+matches the branch name, such as `release/0.1.0`. After pushing each candidate
+commit, select that branch in the GitHub Actions manual run form, or dispatch
+it from a clean checkout that matches the remote branch:
 
 ```sh
 pixi run -- python tools/release.py --dry-run
 pixi run -- python tools/release.py --execute
 ```
 
-`--bump minor` and `--bump major` select larger version changes. The script
-updates every version manifest, commits and pushes the candidate to `main`,
-then dispatches the release workflow. It does not create a tag or GitHub
-Release. You can also run the workflow manually on `main`; it derives the tag
-from `VERSION`, so no tag input is needed. Add `--symbols` to either command
-to include the large exact-build symbol archive; the default release skips it.
-Execution requires authenticated `gh` and GitHub permission to push `main`;
-the dry run changes no files or remote state.
-The script passes its candidate commit SHA to the workflow so a later push to
-`main` cannot silently change which commit gets published.
+The script only dispatches the workflow; it does not change files or push.
+`--symbols` archives the optional exact-build symbol files as a workflow
+artifact. The dry run does not contact GitHub.
 
-The workflow checks that CI passed for the exact candidate commit, builds and
-tests the container, then waits for DockerHub environment approval. Only after
-verification does it create the Git tag and publish the signed Docker image
-and GitHub Release. A failed verification leaves no tag or draft release. Fix
-the candidate and run the workflow again; if code changes after a tag was
-created, use the next patch version. A publication retry for the same commit
-reuses an existing image only when both registry tags have the same digest and
-the image labels match the release version, commit, and verified runtime archive.
+The workflow checks that CI passed for the selected release branch commit,
+builds and tests the container, then waits for DockerHub environment approval.
+Before publishing, it checks that the remote branch still points to the same
+commit. A newer branch commit requires a new run. Each successful run replaces
+`crowdb/crowdb-iceberg:<version>` and signs the new image digest. It does not
+create a Git tag or GitHub Release. Fix a failed candidate on the release
+branch and run the workflow again.
 
 The workflow archives the verified runtime, then packages those same files in
 its publish job without recompiling them. With `--symbols`, it also archives
-exact-build symbols from that build and attaches
-`crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst` to the GitHub
-Release. The workflow publishes the GitHub Release after the Docker image and
-signature succeed. If the optional symbol upload fails, the published release
-remains available and the workflow reports a warning.
+exact-build symbols from that build as a workflow artifact named
+`crowdb-symbols-<version>-git-<revision>-linux-amd64.tar.zst`.
 
 ## Crash collection boundary
 

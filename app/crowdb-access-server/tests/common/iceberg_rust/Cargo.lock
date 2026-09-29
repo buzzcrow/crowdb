@@ -583,7 +583,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "crowdb-iceberg-rust-client-fixture"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "iceberg",
  "iceberg-catalog-rest",

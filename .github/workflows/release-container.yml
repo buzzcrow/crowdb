@@ -3,10 +3,6 @@ name: Publish crowdb-iceberge docker container
 on:
   workflow_dispatch:
     inputs:
-      candidate_sha:
-        description: Expected main commit (optional when started manually)
-        required: false
-        type: string
       include_symbols:
         description: Build and attach the large exact-build symbol archive
         required: false
@@ -14,7 +10,7 @@ on:
         type: boolean
 
 concurrency:
-  group: crowdb-iceberg-single-node-preview-release
+  group: crowdb-iceberg-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -31,7 +27,7 @@ jobs:
     outputs:
       version: ${{ steps.source.outputs.version }}
       revision: ${{ steps.source.outputs.revision }}
-      tag: ${{ steps.source.outputs.tag }}
+      image_tag: ${{ steps.source.outputs.image_tag }}
       runtime_sha256: ${{ steps.runtime_digest.outputs.sha256 }}
     steps:
     - uses: actions/checkout@v4
@@ -46,18 +42,19 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Verify release source
       id: source
-      env:
-        CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       run: |
         pixi run bash -euc '
           [[ "$GITHUB_REPOSITORY" == buzzcrow/crowdb ]]
-          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$GITHUB_REF" =~ ^refs/heads/release/([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          branch_version=${BASH_REMATCH[1]}
           version=$(cat VERSION)
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$version" != "$branch_version" ]]; then
+            echo "::error::VERSION is $version but release branch requires $branch_version" >&2
+            exit 1
+          fi
           revision=$(git rev-parse HEAD)
           [[ "$revision" == "$GITHUB_SHA" ]]
-          [[ -z "$CANDIDATE_SHA" || "$revision" == "$CANDIDATE_SHA" ]]
-          printf "version=%s\nrevision=%s\ntag=v%s\n" "$version" "$revision" "$version" >> "$GITHUB_OUTPUT"
+          printf "version=%s\nrevision=%s\nimage_tag=%s\n" "$version" "$revision" "$version" >> "$GITHUB_OUTPUT"
         '
     - name: Free disk space
       run: |
@@ -68,16 +65,17 @@ jobs:
       env:
         CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
       run: pixi run test-single-node-container
-    - name: Require CI success for the release commit
+    - name: Require CI success for the release branch commit
       timeout-minutes: 90
       env:
         GH_TOKEN: ${{ github.token }}
         REVISION: ${{ steps.source.outputs.revision }}
+        RELEASE_BRANCH: ${{ github.ref_name }}
       run: |
         pixi run bash -euc '
           for attempt in {1..180}; do
-            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$REVISION&branch=main&event=push&per_page=20" \
-              --jq ".workflow_runs | map(select(.head_sha == \"$REVISION\" and .head_branch == \"main\" and .event == \"push\")) | sort_by(.run_number, .run_attempt) | last | if . == null then \"pending\" else .status + \"/\" + (.conclusion // \"pending\") end")
+            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$REVISION&branch=$RELEASE_BRANCH&event=push&per_page=20" \
+              --jq ".workflow_runs | map(select(.head_sha == \"$REVISION\" and .head_branch == \"$RELEASE_BRANCH\" and .event == \"push\")) | sort_by(.run_number, .run_attempt) | last | if . == null then \"pending\" else .status + \"/\" + (.conclusion // \"pending\") end")
             case "$state" in
               completed/success) exit 0 ;;
               completed/*) echo "CI failed for $REVISION: $state" >&2; exit 1 ;;
@@ -98,7 +96,7 @@ jobs:
       id: runtime_digest
     - name: Archive exact-build symbols
       if: inputs.include_symbols
-      run: pixi run tar -C target/container-symbols -I zstd -cf "target/crowdb-symbols-${{ steps.source.outputs.tag }}-git-${{ steps.source.outputs.revision }}-linux-amd64.tar.zst" .
+      run: pixi run tar -C target/container-symbols -I zstd -cf "target/crowdb-symbols-${{ steps.source.outputs.image_tag }}-git-${{ steps.source.outputs.revision }}-linux-amd64.tar.zst" .
     - uses: actions/upload-artifact@v4
       with:
         name: verified-container-runtime
@@ -128,7 +126,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: DockerHub
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
     - uses: actions/checkout@v4
@@ -139,30 +137,24 @@ jobs:
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
         pixi-version: latest
-    - name: Require publication credentials and current release source
+    - name: Require publication credentials and current release branch head
       env:
-        RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+        IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
         REVISION: ${{ needs.verify.outputs.revision }}
+        RELEASE_BRANCH: ${{ github.ref_name }}
         DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
       run: |
         pixi run bash -euc '
           [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]
           [[ "$(git rev-parse HEAD)" == "$REVISION" ]]
-          [[ "$(git ls-remote origin refs/heads/main | cut -f1)" == "$REVISION" ]]
-          [[ "$RELEASE_TAG" == "v$(cat VERSION)" ]]
+          [[ "$(git ls-remote origin "refs/heads/$RELEASE_BRANCH" | cut -f1)" == "$REVISION" ]]
+          [[ "$IMAGE_TAG" == "$(cat VERSION)" ]]
         '
     - uses: docker/setup-buildx-action@v4
     - uses: actions/download-artifact@v4
       with:
         name: verified-container-runtime
-        path: target
-    - uses: actions/download-artifact@v4
-      id: symbols_download
-      if: inputs.include_symbols
-      continue-on-error: true
-      with:
-        name: verified-container-symbols
         path: target
     - name: Extract verified runtime files
       env:
@@ -175,60 +167,13 @@ jobs:
       with:
         username: ${{ vars.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
-    - name: Check immutable registry tags for safe retry
-      id: registry
+    - name: Confirm release branch head before image push
       env:
-        RELEASE_TAG: ${{ needs.verify.outputs.tag }}
         REVISION: ${{ needs.verify.outputs.revision }}
-        VERSION: ${{ needs.verify.outputs.version }}
-        RUNTIME_SHA256: ${{ needs.verify.outputs.runtime_sha256 }}
-      run: |
-        pixi run bash -euc '
-          for tag in "$RELEASE_TAG" "git-$REVISION"; do
-            status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" \
-              "https://hub.docker.com/v2/namespaces/crowdb/repositories/crowdb-iceberg/tags/$tag")
-            case "$status" in
-              200|404) printf "%s=%s\n" "$tag" "$status" ;;
-              *) echo "Registry check failed for $tag (HTTP $status)" >&2; exit 1 ;;
-            esac
-            if [[ "$tag" == "$RELEASE_TAG" ]]; then version_status=$status; else revision_status=$status; fi
-          done
-          if [[ "$version_status" == 404 && "$revision_status" == 404 ]]; then
-            echo "reuse=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          [[ "$version_status" == 200 && "$revision_status" == 200 ]] || {
-            echo "Only one immutable registry tag exists" >&2; exit 1;
-          }
-          image=docker.io/crowdb/crowdb-iceberg
-          version_digest=$(docker buildx imagetools inspect "$image:$RELEASE_TAG" --format "{{json .Manifest}}" | jq -er .digest)
-          revision_digest=$(docker buildx imagetools inspect "$image:git-$REVISION" --format "{{json .Manifest}}" | jq -er .digest)
-          [[ "$version_digest" == "$revision_digest" ]]
-          docker pull --platform linux/amd64 "$image:$RELEASE_TAG"
-          [[ "$(docker image inspect --format "{{index .Config.Labels \"org.opencontainers.image.revision\"}}" "$image:$RELEASE_TAG")" == "$REVISION" ]]
-          [[ "$(docker image inspect --format "{{index .Config.Labels \"org.opencontainers.image.version\"}}" "$image:$RELEASE_TAG")" == "$VERSION" ]]
-          [[ "$(docker image inspect --format "{{index .Config.Labels \"org.crowdb.runtime.sha256\"}}" "$image:$RELEASE_TAG")" == "$RUNTIME_SHA256" ]]
-          printf "reuse=true\ndigest=%s\n" "$version_digest" >> "$GITHUB_OUTPUT"
-        '
-    - name: Create release tag after verification
-      env:
-        RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-        REVISION: ${{ needs.verify.outputs.revision }}
-      run: |
-        pixi run bash -euc '
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          if git ls-remote --exit-code origin "refs/tags/$RELEASE_TAG" >/dev/null; then
-            git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-            [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$REVISION" ]]
-          else
-            git tag -a "$RELEASE_TAG" -m "$RELEASE_TAG" "$REVISION"
-            git push origin "refs/tags/$RELEASE_TAG"
-          fi
-        '
-    - name: Build and publish signed-source image with attestations
+        RELEASE_BRANCH: ${{ github.ref_name }}
+      run: pixi run bash -euc '[[ "$(git ls-remote origin "refs/heads/$RELEASE_BRANCH" | cut -f1)" == "$REVISION" ]]'
+    - name: Build and replace release branch image with attestations
       id: build
-      if: steps.registry.outputs.reuse != 'true'
       uses: docker/build-push-action@v7
       with:
         context: target/container-runtime
@@ -241,36 +186,9 @@ jobs:
           SOURCE_REVISION=${{ needs.verify.outputs.revision }}
           PREVIEW_VERSION=${{ needs.verify.outputs.version }}
           RUNTIME_SHA256=${{ needs.verify.outputs.runtime_sha256 }}
-        tags: |
-          docker.io/crowdb/crowdb-iceberg:${{ needs.verify.outputs.tag }}
-          docker.io/crowdb/crowdb-iceberg:git-${{ needs.verify.outputs.revision }}
+        tags: docker.io/crowdb/crowdb-iceberg:${{ needs.verify.outputs.image_tag }}
     - uses: sigstore/cosign-installer@v4.1.2
     - name: Sign published digest
       env:
-        DIGEST: ${{ steps.registry.outputs.reuse == 'true' && steps.registry.outputs.digest || steps.build.outputs.digest }}
+        DIGEST: ${{ steps.build.outputs.digest }}
       run: pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"
-    - name: Publish verified GitHub Release
-      env:
-        GH_TOKEN: ${{ github.token }}
-        RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-      run: |
-        pixi run bash -euc '
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft >/dev/null 2>&1; then
-            [[ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]
-          else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --draft
-          fi
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
-        '
-    - name: Attach exact-build symbols to GitHub Release
-      id: symbol_upload
-      if: inputs.include_symbols && steps.symbols_download.outcome == 'success'
-      continue-on-error: true
-      env:
-        GH_TOKEN: ${{ github.token }}
-        RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-        REVISION: ${{ needs.verify.outputs.revision }}
-      run: pixi run gh release upload "$RELEASE_TAG" "target/crowdb-symbols-$RELEASE_TAG-git-$REVISION-linux-amd64.tar.zst" --repo "$GITHUB_REPOSITORY"
-    - name: Report optional symbol upload failure
-      if: inputs.include_symbols && (steps.symbols_download.outcome == 'failure' || steps.symbol_upload.outcome == 'failure')
-      run: echo '::warning::The image and release were published, but the optional symbol archive could not be uploaded.'
