@@ -24,6 +24,9 @@ pub enum ClusterVerb {
     Init {
         #[arg(short = 'n', long, value_delimiter = ',')]
         nodes: Vec<String>,
+        /// Versioned bootstrap topology input for the first registry-mode init.
+        #[arg(long, value_name = "PATH")]
+        bootstrap_file: Option<std::path::PathBuf>,
     },
     /// Deploy a local N-node KV cluster on 127.0.0.1 (forks
     /// `crowdb-kv-server` on each node, bootstraps group 0).
@@ -180,7 +183,10 @@ pub enum ClusterVerb {
 #[allow(clippy::too_many_lines)]
 pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
     match verb {
-        ClusterVerb::Init { nodes } => {
+        ClusterVerb::Init {
+            nodes,
+            bootstrap_file,
+        } => {
             let ctx = match op_context(cli) {
                 Ok(c) => c,
                 Err(c) => return c,
@@ -192,16 +198,44 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let result = if cli.registry.is_some() {
-                crowdb_console_shared::ops::cluster::init(&ctx, &node_ids).await
+            let result = if let Some(registry) = &cli.registry {
+                let sealed_path = registry.with_extension("bootstrap-intent.toml");
+                if let Some(source) = bootstrap_file {
+                    let intent = match crowdb_console_shared::bootstrap_intent::BootstrapIntent::load(&source)
+                    {
+                        Ok(intent) => intent,
+                        Err(error) => {
+                            eprintln!("error: load bootstrap file: {error}");
+                            return ExitCode::from(2);
+                        }
+                    };
+                    if intent.members() != node_ids.as_slice() {
+                        eprintln!("error: bootstrap file members differ from --nodes");
+                        return ExitCode::from(1);
+                    }
+                    if let Err(error) = intent.seal(&sealed_path) {
+                        eprintln!("error: seal bootstrap intent: {error}");
+                        return ExitCode::from(2);
+                    }
+                } else if !sealed_path.exists() {
+                    eprintln!("error: --bootstrap-file is required for the first registry-mode init");
+                    return ExitCode::from(1);
+                }
+                crowdb_console_shared::ops::cluster::init_with_intent(&ctx, &node_ids, &sealed_path).await
             } else {
+                if bootstrap_file.is_some() {
+                    eprintln!("error: --bootstrap-file requires --registry");
+                    return ExitCode::from(1);
+                }
                 let intent_path = config_path().with_extension("bootstrap.toml");
                 crowdb_console_shared::ops::cluster::init_with_intent(&ctx, &node_ids, &intent_path).await
             };
             match result {
                 Ok(summary) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
+                    if cli.registry.is_none() {
+                        if let Err(c) = commit_config(cli, &ctx) {
+                            return c;
+                        }
                     }
                     println!(
                         "cluster initialized: store {}, group {}, {} nodes",

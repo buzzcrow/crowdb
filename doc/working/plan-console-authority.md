@@ -154,9 +154,11 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   now use this path. Real Web and CLI regressions confirm the intent is removed
   after successful Group 0 publication. The versioned Web handler is prepared
   to use the intent, but its managed router does not expose cluster init yet.
-  The old mixed console file is still written afterward; the launch-registry
-  bootstrap path and S3 mini-cluster caller still need cutover before that
-  file can be removed.
+  Registry CLI now accepts a versioned bootstrap input, seals an immutable
+  retry copy beside the launch registry, runs the same confirmation path and
+  deletes that copy after success. It does not write the mixed console file.
+  The legacy CLI/Web path still writes that file; S3 mini-cluster and
+  versioned Web bootstrap still need cutover before it can be removed.
 - [x] **Confirmed bootstrap metadata**: preflight existing hardware and logical
   records, accept matching content without rewriting revisions, reject conflicts,
   and conditionally create missing records. Reconcile uncertain writes with
