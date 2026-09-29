@@ -105,18 +105,33 @@ impl MultipartRepository {
         &self,
         identity: &MultipartSessionRecord,
     ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
-        let key = self.session_key(identity);
+        self.load_identity(identity.bucket_id, &identity.object_key, &identity.upload_id)
+            .await
+    }
+
+    /// Reads one session through its bucket, object and upload identity.
+    ///
+    /// # Errors
+    /// Rejects corrupt or foreign values and storage failures.
+    pub async fn load_identity(
+        &self,
+        bucket: super::BucketId,
+        object: &[u8],
+        upload_id: &[u8; 16],
+    ) -> Result<Option<MultipartSessionRecord>, MultipartRepositoryError> {
+        let key = MetadataKey::multipart_upload_index(&self.tenant, bucket, object, upload_id)?;
+        let Some(index) = self.store.get(key).await? else {
+            return Ok(None);
+        };
+        let expected = MetadataKey::multipart_session(&self.tenant, bucket, upload_id);
+        if index.value != expected {
+            return Err(MultipartRepositoryError::Conflict);
+        }
         self.store
-            .get(key)
+            .get(expected)
             .await?
             .map(|value| {
-                MultipartSessionRecord::decode(
-                    &value.value,
-                    identity.bucket_id,
-                    &identity.object_key,
-                    &identity.upload_id,
-                )
-                .map_err(Into::into)
+                MultipartSessionRecord::decode(&value.value, bucket, object, upload_id).map_err(Into::into)
             })
             .transpose()
     }
@@ -239,10 +254,7 @@ impl MultipartRepository {
         }
         let before = self.part(&current, part.number).await?;
         if let Some(existing) = &before {
-            if existing.length == part.length
-                && existing.raw_md5 == part.raw_md5
-                && existing.locations == part.locations
-            {
+            if existing.length == part.length && existing.raw_md5 == part.raw_md5 {
                 return Ok(Some(existing.clone()));
             }
         }

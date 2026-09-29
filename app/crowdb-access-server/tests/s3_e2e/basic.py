@@ -236,6 +236,70 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         self.assertEqual(absent.exception.response["ResponseMetadata"]["HTTPStatusCode"], 404)
         second.delete_bucket(Bucket=bucket)
 
+    def test_multipart_replaces_parts_and_publishes_selected_bytes(self):
+        bucket = f"{self.bucket}-multipart"
+        key = "parts/object.bin"
+        first = b"a" * (5 * 1024 * 1024)
+        replacement = b"b" * len(first)
+        tail = b"final-part"
+        self.client.create_bucket(Bucket=bucket)
+        try:
+            upload_id = self.client.create_multipart_upload(Bucket=bucket, Key=key)["UploadId"]
+            self.assertIn(upload_id, [item["UploadId"] for item in
+                                  self.client.list_multipart_uploads(Bucket=bucket)["Uploads"]])
+            tail_etag = self.client.upload_part(
+                Bucket=bucket, Key=key, UploadId=upload_id, PartNumber=2, Body=tail,
+            )["ETag"]
+            self.assertEqual(self.client.upload_part(
+                Bucket=bucket, Key=key, UploadId=upload_id, PartNumber=2, Body=tail,
+            )["ETag"], tail_etag)
+            self.client.upload_part(Bucket=bucket, Key=key, UploadId=upload_id,
+                                    PartNumber=1, Body=first)
+            first_etag = self.client.upload_part(
+                Bucket=bucket, Key=key, UploadId=upload_id, PartNumber=1, Body=replacement,
+            )["ETag"]
+            listed = self.client.list_parts(Bucket=bucket, Key=key, UploadId=upload_id)
+            self.assertEqual([part["PartNumber"] for part in listed["Parts"]], [1, 2])
+            self.assertEqual(listed["Parts"][0]["ETag"], first_etag)
+            completed = self.client.complete_multipart_upload(
+                Bucket=bucket, Key=key, UploadId=upload_id,
+                MultipartUpload={"Parts": [
+                    {"PartNumber": 1, "ETag": first_etag},
+                    {"PartNumber": 2, "ETag": tail_etag},
+                ]},
+            )
+            expected_etag = md5(md5(replacement).digest() + md5(tail).digest()).hexdigest() + "-2"
+            self.assertEqual(completed["ETag"], f'"{expected_etag}"')
+            replayed = self.client.complete_multipart_upload(
+                Bucket=bucket, Key=key, UploadId=upload_id,
+                MultipartUpload={"Parts": [
+                    {"PartNumber": 1, "ETag": first_etag},
+                    {"PartNumber": 2, "ETag": tail_etag},
+                ]},
+            )
+            self.assertEqual(replayed["ETag"], completed["ETag"])
+            self.assertEqual(self.client.get_object(Bucket=bucket, Key=key)["Body"].read(), replacement + tail)
+            self.client.delete_object(Bucket=bucket, Key=key)
+
+            aborted = self.client.create_multipart_upload(Bucket=bucket, Key=key)["UploadId"]
+            self.client.upload_part(Bucket=bucket, Key=key, UploadId=aborted, PartNumber=1, Body=tail)
+            self.client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=aborted)
+            self.client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=aborted)
+            self.assertNotIn(aborted, [item["UploadId"] for item in
+                                       self.client.list_multipart_uploads(Bucket=bucket).get("Uploads", [])])
+
+            invalid = self.client.create_multipart_upload(Bucket=bucket, Key=key)["UploadId"]
+            self.client.upload_part(Bucket=bucket, Key=key, UploadId=invalid, PartNumber=1, Body=tail)
+            with self.assertRaises(ClientError) as mismatch:
+                self.client.complete_multipart_upload(
+                    Bucket=bucket, Key=key, UploadId=invalid,
+                    MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": '"' + "00" * 16 + '"'}]},
+                )
+            self.assertEqual(mismatch.exception.response["Error"]["Code"], "InvalidPart")
+            self.client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=invalid)
+        finally:
+            self.client.delete_bucket(Bucket=bucket)
+
     def test_slow_signed_upload_releases_native_buffers(self):
         bucket = f"{self.bucket}-slow"
         path = f"/{bucket}/slow.bin"

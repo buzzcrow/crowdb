@@ -302,8 +302,18 @@ async fn session_cas_and_independent_part_replacement_obey_the_freeze() {
         .unwrap()
         .unwrap();
     assert_eq!(replay, first);
+    let mut relocated_retry = part();
+    relocated_retry.locations[0].offset += 10;
+    assert_eq!(
+        repository
+            .put_stream_part(&session, &relocated_retry, 111)
+            .await
+            .unwrap(),
+        Some(first.clone())
+    );
     let mut replacement = part();
     replacement.locations[0].offset += 39;
+    replacement.raw_md5 = [8; 16];
     let second = repository
         .put_stream_part(&session, &replacement, 112)
         .await
@@ -480,6 +490,7 @@ async fn frozen_part_generation_survives_a_late_pointer_change() {
     repository.put_stream_part(&session, &part(), 110).await.unwrap();
     let mut replacement = part();
     replacement.locations[0].offset += 39;
+    replacement.raw_md5 = [8; 16];
     let selected = repository
         .put_stream_part(&session, &replacement, 111)
         .await
@@ -487,7 +498,7 @@ async fn frozen_part_generation_survives_a_late_pointer_change() {
         .unwrap();
     let request = [CompletionPart {
         number: 1,
-        etag: "09".repeat(16),
+        etag: "08".repeat(16),
     }];
     let frozen = repository
         .freeze_completion(&session, &request, 120)
@@ -557,6 +568,7 @@ async fn part_listing_paginates_current_generations_in_number_order() {
     let mut replacement = part();
     replacement.number = 2;
     replacement.locations[0].offset += 39;
+    replacement.raw_md5 = [8; 16];
     repository
         .put_stream_part(&session, &replacement, 111)
         .await
@@ -581,9 +593,22 @@ async fn upload_prefix_retains_session_and_replaced_part_generations() {
     let (repository, _, store) = repository().await;
     let session = session();
     repository.begin(&session).await.unwrap();
+    assert_eq!(
+        repository
+            .load_identity(session.bucket_id, &session.object_key, &session.upload_id)
+            .await
+            .unwrap(),
+        Some(session.clone())
+    );
+    assert!(repository
+        .load_identity(session.bucket_id, b"another", &session.upload_id)
+        .await
+        .unwrap()
+        .is_none());
     repository.put_stream_part(&session, &part(), 110).await.unwrap();
     let mut replacement = part();
     replacement.locations[0].offset += 39;
+    replacement.raw_md5 = [8; 16];
     repository
         .put_stream_part(&session, &replacement, 111)
         .await

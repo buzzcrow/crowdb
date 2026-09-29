@@ -46,7 +46,7 @@ Iceberg multipart path.
   Preserve SigV4 authentication and existing basic routes. The repository now
   provides bounded, ordered ListParts pagination over current generations;
   multipart query shapes now enter the authenticated dispatcher with distinct
-  metrics, but production operations still return `NotImplemented`. Bounded
+  metrics. Bounded
   upload listing now
   paginates active sessions by key and upload ID, skipping terminal/expired
   records and failing on scan-budget exhaustion; HTTP dispatch remains pending.
@@ -54,16 +54,24 @@ Iceberg multipart path.
   codes and the create, complete, ListParts, and ListMultipartUploads XML
   response builders have focused tests. The bounded completion
   XML parser now has one implementation in access-server and is exposed by both
-  the Iceberg and S3 protocol modules. The S3 HTTP operations still need wiring.
+  the Iceberg and S3 protocol modules. The six S3 HTTP operations are wired.
+  Full boto3 stack acceptance passes Create, UploadPart, ListParts, Complete,
+  Abort and ListUploads, including replay, replacement and invalid ETag cases.
 - [ ] **Part ingestion**: reuse the bounded streaming writer and admission
   budget, persist part location/integrity before success, reconcile lost replies.
+  Production UploadPart now uses the basic streaming writer and saves raw MD5
+  with locations. A byte-identical retry keeps the selected generation even
+  when a new write produced different chunk locations; R95 can reclaim those
+  unreachable chunks. Full stack ingestion passes 5 MiB and small parts; real
+  response-loss and restart acceptance remain.
 - [ ] **Atomic completion**: fence selected part generations, validate order,
   count, size and checksum, compose locations through the shared core, and
   publish one immutable object generation without reading part bytes. The S3
   adapter now freezes selection under session CAS, validates it again before
   object-key CAS, and confirms exact publication after response loss. An
   immutable generation records preserve selected bytes across a concurrent
-  part-number replacement. The HTTP path and end-to-end publication test remain.
+  part-number replacement. Metadata-only completion and byte-exact GET pass
+  the full boto3 stack, including a repeated Complete request.
 - [ ] **Abort and expiry**: make terminal states idempotent and preserve the
   part generations that R95's chunk-centered scanner needs for reference checks.
   The S3 adapter now has an idempotent, response-loss-safe logical abort; the
@@ -73,7 +81,9 @@ Iceberg multipart path.
 
 - [ ] **Focused and E2E tests**: known MD5 vectors, out-of-order/replaced parts,
   invalid completion, response loss and restart, abort/expiry metadata, and
-  ordinary single-part compatibility.
+  ordinary single-part compatibility. The complete S3 library and access-server
+  suites plus 19 full-stack boto3/restart cases pass. Multipart response-loss,
+  expiry and restart cases remain.
 - [ ] **Gates and docs**: run both access crate suites, access-server E2E,
   Rust fmt and clippy separately; update S3 design and remove R167 plus this
   plan only after all acceptance criteria pass.

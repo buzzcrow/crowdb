@@ -32,9 +32,10 @@ use hyper::body::Bytes;
 use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const TEST_COUNT: usize = 18;
+const TEST_COUNT: usize = 19;
 const BOTO3_CASES: &[&str] = &[
     "test_signed_raw_http_wire_contract",
+    "test_multipart_replaces_parts_and_publishes_selected_bytes",
     "test_independent_frontends_share_one_namespace",
     "test_slow_signed_upload_releases_native_buffers",
     "test_truncated_signed_upload_does_not_publish_and_releases_credit",
