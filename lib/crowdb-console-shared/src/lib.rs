@@ -30,10 +30,7 @@ pub mod snapshot;
 pub mod ssh;
 pub mod topology;
 
-pub use config::{
-    ConsoleConfig, ConsoleConfigEngine, DiskEntry, DiskGroupEntry, NodeEntry, RackEntry, ServerEntry,
-    TomlFileEngine,
-};
+pub use config::{ConsoleConfig, DiskEntry, DiskGroupEntry, NodeEntry, RackEntry, ServerEntry};
 pub use snapshot::{
     ClusterSnapshot, CrowdbTreeStatsSnapshot, ElectionStateSnapshot, GroupView, HealthInfo, KvStoreView,
     LocalReplicaView, MetricFieldView, MetricPointView, MetricsResponse, ReadStateSnapshot, RemoteMetrics,

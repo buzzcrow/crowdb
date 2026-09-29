@@ -122,6 +122,12 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   topology file. KV benchmark metrics resolve confirmed replica hosts and
   their live management registrations. The direct CLI fixture keeps bootstrap
   input only in memory. The complete CLI suite and workspace clippy pass.
+  The `ConsoleConfigEngine`/`TomlFileEngine` parser and writer are removed;
+  `ConsoleConfig` remains an ephemeral operation/intent input. CLI `destroy`
+  requires a launch registry, removes confirmed logical metadata before Group
+  0, then stops configured local processes. CLI `reset` verifies live confirmed
+  hosts without deleting stopped nodes as presumed orphans. Real one-node
+  CLI regressions cover both commands with an invalid legacy file.
 - [ ] **Confirmed hardware operations**: route CLI and bare-metal Web through
   shared Group 0 hardware operations; preserve conflicts and uncertain writes
   without local-first commits. Docker keeps its hardware restrictions. Hardware

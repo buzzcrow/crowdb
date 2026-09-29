@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{authority_context, commit_config, op_context};
+use crate::commands::authority_context;
 use crate::Cli;
 
 async fn local_deploy_context(
@@ -179,7 +179,7 @@ pub enum ClusterVerb {
     },
     /// Tear down the entire cluster (all groups, stores, servers, sysdata).
     Destroy,
-    /// Remove orphaned sysdata entries without stopping running servers.
+    /// Verify confirmed store hosts have live registrations and healthy servers.
     Reset,
     /// Wipe user data on every node + wait for re-election. Preserves
     /// group-0 sysdata + topology — servers stay running. Use --store/--group
@@ -555,14 +555,38 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             }
         },
         ClusterVerb::Destroy => {
-            let ctx = match op_context(cli) {
+            let Some(path) = &cli.registry else {
+                eprintln!("error: cluster destroy requires --registry to stop local processes");
+                return ExitCode::from(2);
+            };
+            let registry = match crowdb_console_shared::config::web::LaunchRegistry::load(path) {
+                Ok(registry) => registry,
+                Err(error) => {
+                    eprintln!("error: load launch registry: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let runtime = match crowdb_console_shared::launch::LaunchRuntime::for_registry(path) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("error: launch runtime: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
             match crowdb_console_shared::ops::cluster::destroy(&ctx).await {
                 Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
+                    for launch in &registry.launches {
+                        if let Err(error) = runtime.stop(launch).await {
+                            eprintln!(
+                                "error: stop {} on node {}: {error}",
+                                launch.service_id, launch.node_id
+                            );
+                            return ExitCode::from(2);
+                        }
                     }
                     println!("cluster destroy complete");
                     ExitCode::SUCCESS
@@ -574,13 +598,13 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             }
         }
         ClusterVerb::Reset => {
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
             match crowdb_console_shared::ops::cluster::reset(&ctx).await {
                 Ok(()) => {
-                    println!("cluster reset complete");
+                    println!("cluster membership verified");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {

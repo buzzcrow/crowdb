@@ -29,12 +29,11 @@ use crate::ops::OpContext;
 mod bootstrap;
 pub use bootstrap::{init, init_with_intent, InitSummary};
 
+// Bootstrap runs before Group 0 registration exists, so its sealed intent
+// supplies the initial management endpoint for each selected node.
 fn server_client(ctx: &OpContext, node_id: u64) -> Result<ServerClient> {
     let url = ctx.node_mgmt_url(node_id)?;
-    ServerClient::new(&url).map_err(|e| Error::UpstreamRpc {
-        node_id: url,
-        status: format!("client build: {e}"),
-    })
+    ServerClient::new(&url)
 }
 
 /// Get cluster status: list all stores from group-0 sysdata.
@@ -55,111 +54,61 @@ pub async fn topology(ctx: &OpContext, node_id: u64) -> Result<Vec<crate::snapsh
     client.topology().await
 }
 
-/// Reset the cluster: tear down all groups, stores, and sysdata in
-/// dependency order. Stops all running servers first.
+/// Destroy the confirmed cluster in dependency order. Process shutdown is
+/// handled by the caller's local launch runtime after metadata teardown.
 ///
 /// # Errors
-/// Returns an error if any teardown step fails (best-effort: continues
-/// on partial failures and returns the first error).
+/// Returns an error on the first failed or unconfirmed teardown step.
 pub async fn destroy(ctx: &OpContext) -> Result<()> {
-    let cfg = ctx.config().clone();
-
-    // Phase 1: remove all non-system groups while the KV management APIs are
-    // still reachable.
-    for server in &cfg.servers {
-        if server.service_type != crate::config::ServiceType::Kv {
-            continue;
-        }
-        if let Some(node_id) = server.node_id {
-            if let Ok(client) = server_client(ctx, node_id) {
-                if let Ok(stores) = client.topology().await {
-                    for s in &stores {
-                        if s.store_id == 0 {
-                            continue;
-                        }
-                        let _ = client.remove_store(s.store_id).await;
-                    }
-                }
-            }
-        }
+    let stores = ctx.sysmd().list_stores().await?;
+    let system = stores
+        .iter()
+        .find(|store| store.store_id == 0)
+        .ok_or_else(|| Error::NotFound {
+            kind: "system store".into(),
+            id: "0".into(),
+        })?;
+    let system_nodes = system.node_ids.clone();
+    let mut system_clients = Vec::with_capacity(system_nodes.len());
+    for node_id in system_nodes {
+        let url = ctx.live_node_mgmt_url(node_id).await?;
+        system_clients.push(ServerClient::new(&url)?);
     }
-
-    // Phase 2: clear sysdata, then remove group 0 last (best-effort).
-    let sysmd = ctx.sysmd();
-    let stores = sysmd.list_stores().await.unwrap_or_default();
-    for s in &stores {
-        let _ = sysmd.remove_store(s.store_id).await;
+    if system_clients.is_empty() {
+        return Err(Error::Validation {
+            field: "system store".into(),
+            message: "Group 0 has no live hosts".into(),
+        });
     }
-    for server in &cfg.servers {
-        if server.service_type != crate::config::ServiceType::Kv {
-            continue;
-        }
-        if let Some(node_id) = server.node_id {
-            if let Ok(client) = server_client(ctx, node_id) {
-                let _ = client.remove_group(0, 0).await;
-            }
+    for store in stores.iter().filter(|store| store.store_id != 0) {
+        super::kv_logical::remove_store(ctx, store.store_id).await?;
+    }
+    for group in ctx.sysmd().list_groups_in_store(0).await? {
+        if group.group_id != 0 {
+            super::kv_logical::remove_group(ctx, 0, group.group_id).await?;
         }
     }
-
-    // Phase 3: stop all running services concurrently. A graceful stop may
-    // consume the full per-process timeout, so serial waits can exceed the
-    // CLI lifecycle bound and leave the persisted config pointing at dead
-    // processes.
-    let mut stop_handles = Vec::with_capacity(cfg.servers.len());
-    for pid in cfg.servers.iter().filter_map(|server| server.pid) {
-        stop_handles.push(tokio::task::spawn_blocking(move || {
-            let _ = crate::lifecycle::stop_pid(pid);
-        }));
+    // Keep the system group available until all other metadata is gone.
+    // Resolve every endpoint before removing any member.
+    for client in &system_clients {
+        client.remove_group(0, 0).await?;
+        client.remove_store(0).await?;
     }
-    for handle in stop_handles {
-        let _ = handle.await;
-    }
-
-    // Phase 4: clear local config.
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.stores.clear();
-        cfg.groups.clear();
-        cfg.servers.clear();
-        cfg.local_launches.clear();
-        cfg.disks.clear();
-        cfg.disk_groups.clear();
-        cfg.nodes.clear();
-        cfg.racks.clear();
-    }
-
     Ok(())
 }
 
-/// Remove orphaned sysdata entries (stores/groups/replicas that have
-/// no corresponding running server). Does not stop any running
-/// servers.
+/// Verify that every confirmed store host has one live registration. A
+/// stopped or unreachable node is not evidence that its metadata is orphaned.
 ///
 /// # Errors
-/// Returns an error if the sysdata scan fails.
+/// Returns an error if any confirmed host cannot be verified.
 pub async fn reset(ctx: &OpContext) -> Result<()> {
-    let sysmd = ctx.sysmd();
-    let stores = sysmd.list_stores().await?;
-
-    // For each store, check if any hosting node has a running server.
-    let cfg = ctx.config().clone();
-    for store in &stores {
-        let mut any_alive = false;
-        for node_id in &store.node_ids {
-            if cfg.server_for_node(*node_id).is_some() {
-                if let Ok(client) = server_client(ctx, *node_id) {
-                    if client.health().await.is_ok() {
-                        any_alive = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if !any_alive {
-            let _ = sysmd.remove_store(store.store_id).await;
+    for store in ctx.sysmd().list_stores().await? {
+        for node_id in store.node_ids {
+            let url = ctx.live_node_mgmt_url(node_id).await?;
+            ServerClient::new(&url)?.health().await?;
         }
     }
-
     Ok(())
 }
 

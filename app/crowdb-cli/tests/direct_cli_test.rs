@@ -114,3 +114,65 @@ async fn incremental_local_deploy_reads_group_zero_instead_of_legacy_file() {
     assert!(stderr.contains("99"), "stderr={stderr}");
     assert!(!stderr.contains("load config"), "stderr={stderr}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reset_verifies_confirmed_hosts_without_legacy_file() {
+    let Some(g0) = spawn_group0().await else {
+        return;
+    };
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    let (code, stdout, stderr) = run(
+        &crowdb_cli_bin(),
+        g0.mgmt_port,
+        &g0.config_path,
+        &["cluster", "reset"],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(stdout.contains("membership verified"), "stdout={stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn destroy_reads_group_zero_and_requires_launch_registry() {
+    let Some(g0) = spawn_group0().await else {
+        return;
+    };
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    let (code, _, stderr) = run(
+        &crowdb_cli_bin(),
+        g0.mgmt_port,
+        &g0.config_path,
+        &["cluster", "destroy"],
+    );
+    assert_eq!(code, 2, "stderr={stderr}");
+    assert!(stderr.contains("--registry"), "stderr={stderr}");
+
+    let context = crowdb_console_shared::ops::OpContext::new(
+        g0.rpc_url.trim_start_matches("http://").to_string(),
+        vec![g0.mgmt_url.clone()],
+        g0.bootstrap_config.clone(),
+    );
+    crowdb_console_shared::ops::cluster::init(&context, &[1])
+        .await
+        .expect("publish confirmed bootstrap metadata");
+
+    let registry_path = g0.config_path.with_file_name("launches.toml");
+    crowdb_console_shared::config::web::LaunchRegistry {
+        version: 1,
+        launches: Vec::new(),
+    }
+    .save(&registry_path)
+    .unwrap();
+    let output = std::process::Command::new(crowdb_cli_bin())
+        .args(["--registry", registry_path.to_str().unwrap(), "--system-port"])
+        .arg(g0.mgmt_port.to_string())
+        .args(["cluster", "destroy"])
+        .env("CROWDB_CLI_STATE", &g0.config_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
