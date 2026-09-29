@@ -206,6 +206,15 @@ fn validate_services(profile: &DeploymentProfile) -> Result<(), ProfileError> {
             }
         }
         validate_probe(service)?;
+        for probe in &service.additional_probes {
+            validate_probe_profile(&service.id, probe)?;
+            if probe.failure_threshold != service.probe.failure_threshold {
+                return invalid(format!(
+                    "service {} probes must share a failure threshold",
+                    service.id
+                ));
+            }
+        }
         let restart = &service.restart;
         if restart.max_attempts == 0
             || restart.backoff_base_ms == 0
@@ -219,9 +228,12 @@ fn validate_services(profile: &DeploymentProfile) -> Result<(), ProfileError> {
 }
 
 fn validate_probe(service: &ServiceProfile) -> Result<(), ProfileError> {
-    let probe = &service.probe;
+    validate_probe_profile(&service.id, &service.probe)
+}
+
+fn validate_probe_profile(service_id: &str, probe: &super::ProbeProfile) -> Result<(), ProfileError> {
     if probe.timeout_ms == 0 || probe.failure_threshold == 0 {
-        return invalid(format!("service {} has invalid probe bounds", service.id));
+        return invalid(format!("service {service_id} has invalid probe bounds"));
     }
     if let Some(name) = &probe.bearer_env {
         if probe.kind != ProbeKind::Http
@@ -231,17 +243,16 @@ fn validate_probe(service: &ServiceProfile) -> Result<(), ProfileError> {
                 .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
         {
             return invalid(format!(
-                "service {} has an invalid probe credential reference",
-                service.id
+                "service {service_id} has an invalid probe credential reference"
             ));
         }
     }
     match probe.kind {
         ProbeKind::Http if !(probe.target.starts_with("http://") || probe.target.starts_with("https://")) => {
-            invalid(format!("service {} has invalid HTTP probe", service.id))
+            invalid(format!("service {service_id} has invalid HTTP probe"))
         }
         ProbeKind::Tcp | ProbeKind::RpcPing if probe.target.parse::<SocketAddr>().is_err() => {
-            invalid(format!("service {} has invalid socket probe", service.id))
+            invalid(format!("service {service_id} has invalid socket probe"))
         }
         ProbeKind::Http | ProbeKind::Tcp | ProbeKind::RpcPing => Ok(()),
     }

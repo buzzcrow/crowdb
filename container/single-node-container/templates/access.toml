@@ -1,4 +1,4 @@
-# Access configuration shared by S3 and Iceberg processes.
+# Access configuration shared by the S3 and Iceberg listeners.
 # Secrets stay in /opt/crowdb/data/secrets/server.env.
 
 [common]

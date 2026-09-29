@@ -20,7 +20,7 @@ async function main() {
     await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only', { timeout: 3000 });
     await expect(page.getByRole('region', { name: 'Preview summary' })).toBeVisible({ timeout: 3000 });
     await expect(page.getByTestId('managed-monitor-phase')).toContainText('Phase: ready', { timeout: 3000 });
-    for (const service of ['kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 's3', 'iceberg', 'web']) {
+    for (const service of ['kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access', 'web']) {
       await expect(page.getByTestId(`managed-process-${service}`)).toContainText(/PID \d+ · generation \d+/, { timeout: 3000 });
     }
     await expect(page.getByTestId('managed-unavailable')).toHaveCount(0, { timeout: 3000 });

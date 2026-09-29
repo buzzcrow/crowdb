@@ -30,4 +30,5 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
+crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["kv-client"] }

@@ -9,8 +9,9 @@ fn writer_configuration_fails_before_backend_connection() {
         Some("m".repeat(32)),
         Some("c".repeat(32)),
     ] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-iceberg"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"));
         command
+            .arg("iceberg")
             .env("CROWDB_MANAGEMENT_SEEDS", "127.0.0.1:1")
             .env("CROWDB_ICEBERG_READ_TOKEN", "r".repeat(32))
             .env("CROWDB_ICEBERG_MANAGE_TOKEN", "m".repeat(32))

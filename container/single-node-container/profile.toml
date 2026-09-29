@@ -171,35 +171,22 @@ backoff_base_ms = 250
 backoff_max_ms = 5000
 
 [[services]]
-id = "s3"
+id = "access"
 program = "/opt/crowdb/bin/crowdb-access-server"
 args = ["--config", "/opt/crowdb/run/config/access.toml"]
-env = { CROWDB_S3_PUBLIC_URI = "http://localhost:81", CROWDB_S3_REGION = "us-east-1", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000" }
+env = { CROWDB_S3_PUBLIC_URI = "http://localhost:81", CROWDB_S3_REGION = "us-east-1", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost", CROWDB_ICEBERG_GC_ENABLED = "0", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ACCESS_LOG_DIR = "/opt/crowdb/data/log/access" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
-fence_listeners = ["127.0.0.1:81"]
-config_template = "/opt/crowdb/etc/templates/access.toml"
-[services.probe]
-kind = "http"
-target = "http://127.0.0.1:81/_crowdb/health/ready"
-timeout_ms = 1000
-failure_threshold = 5
-[services.restart]
-max_attempts = 5
-backoff_base_ms = 250
-backoff_max_ms = 5000
-
-[[services]]
-id = "iceberg"
-program = "/opt/crowdb/bin/crowdb-iceberg"
-args = ["serve", "--config", "/opt/crowdb/run/config/access.toml"]
-env = { CROWDB_ICEBERG_PUBLIC_URI = "http://localhost", CROWDB_ICEBERG_GC_ENABLED = "0", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000" }
-dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
-fence_listeners = ["127.0.0.1:80"]
+fence_listeners = ["127.0.0.1:80", "127.0.0.1:81"]
 config_template = "/opt/crowdb/etc/templates/access.toml"
 [services.probe]
 kind = "http"
 target = "http://127.0.0.1:80/v1/config"
 bearer_env = "CROWDB_ICEBERG_READ_TOKEN"
+timeout_ms = 1000
+failure_threshold = 5
+[[services.additional_probes]]
+kind = "http"
+target = "http://127.0.0.1:81/_crowdb/health/ready"
 timeout_ms = 1000
 failure_threshold = 5
 [services.restart]
@@ -211,7 +198,7 @@ backoff_max_ms = 5000
 id = "web"
 program = "/opt/crowdb/bin/crowdb-web"
 args = ["--config", "/opt/crowdb/run/config/crowdb-web.toml"]
-dependencies = ["s3", "iceberg"]
+dependencies = ["access"]
 fence_listeners = ["127.0.0.1:8080"]
 config_template = "/opt/crowdb/etc/templates/crowdb-web.toml"
 [services.probe]

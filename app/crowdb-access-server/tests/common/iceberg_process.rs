@@ -82,8 +82,9 @@ impl TestIcebergProcess {
 }
 
 pub fn command(seeds: &[String]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-iceberg"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"));
     command
+        .arg("iceberg")
         .env("CROWDB_MANAGEMENT_SEEDS", seeds.join(","))
         .env("CROWDB_ICEBERG_READ_TOKEN", "r".repeat(32))
         .env("CROWDB_ICEBERG_WRITE_TOKEN", "w".repeat(32))

@@ -24,6 +24,7 @@ fn service(kind: ProbeKind, target: String) -> ServiceProfile {
             timeout_ms: 1000,
             failure_threshold: 1,
         },
+        additional_probes: Vec::new(),
         restart: RestartProfile {
             max_attempts: 1,
             backoff_base_ms: 1,
@@ -47,6 +48,24 @@ async fn tcp_probe_requires_a_listener() {
         .probe_service(&service(ProbeKind::Tcp, target), &BTreeMap::new())
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn all_service_probes_must_pass() {
+    let probes = ProbeExecutor::new(false).unwrap();
+    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut service = service(ProbeKind::Tcp, first.local_addr().unwrap().to_string());
+    service.additional_probes.push(ProbeProfile {
+        kind: ProbeKind::Tcp,
+        target: second.local_addr().unwrap().to_string(),
+        bearer_env: None,
+        timeout_ms: 1000,
+        failure_threshold: 1,
+    });
+    assert!(probes.probe_service(&service, &BTreeMap::new()).await.is_ok());
+    drop(second);
+    assert!(probes.probe_service(&service, &BTreeMap::new()).await.is_err());
 }
 
 #[tokio::test]

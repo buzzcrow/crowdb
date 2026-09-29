@@ -531,6 +531,7 @@ fn start_access_server(
     let log_path = service_root.join("log").join("access-server.log");
     let log = std::fs::File::create(&log_path).expect("create access-server log");
     let child = Command::new(access_binary)
+        .arg("s3")
         .env("CROWDB_S3_LISTEN", &listen)
         .env("CROWDB_MANAGEMENT_SEEDS", seeds)
         .env("CROWDB_S3_TENANT", "boto3-e2e")

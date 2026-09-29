@@ -294,11 +294,11 @@ echo "checking S3 and Iceberg client writes"
 verify_clients write
 echo "checking Web logical writes"
 verify_web_logical
-for service in kv diskdb diskio chunkdb chunk-kv s3 iceberg web; do
+for service in kv diskdb diskio chunkdb chunk-kv access web; do
     echo "checking $service crash recovery"
     verify_child_recovery "$service" KILL child_exited
 done
-for service in kv diskdb diskio chunkdb chunk-kv s3 iceberg web; do
+for service in kv diskdb diskio chunkdb chunk-kv access web; do
     echo "checking $service hang recovery"
     verify_child_recovery "$service" STOP probe_failed
 done

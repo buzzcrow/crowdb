@@ -8,7 +8,7 @@ mkdir -p "$output/bin" "$output/lib"
 for binary in \
     crowdb-monitor crowdb-kv-server crowdb-diskdb crowdb-diskio \
     crowdb-chunkdb crowdb-chunk-kv-server crowdb-access-server \
-    crowdb-iceberg crowdb-web; do
+    crowdb-web; do
     if [[ "$binary" == crowdb-diskio ]]; then
         source="$build_root/app/crowdb-diskio/build/crowdb-diskio"
     else

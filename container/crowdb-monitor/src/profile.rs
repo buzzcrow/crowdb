@@ -155,6 +155,8 @@ pub struct ServiceProfile {
     pub fence_listeners: Vec<String>,
     pub config_template: Option<PathBuf>,
     pub probe: ProbeProfile,
+    #[serde(default)]
+    pub additional_probes: Vec<ProbeProfile>,
     pub restart: RestartProfile,
 }
 

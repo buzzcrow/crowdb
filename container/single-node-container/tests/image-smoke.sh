@@ -37,12 +37,10 @@ docker run --rm --network none --entrypoint /bin/sh "$image" -ec '
         fi
     done
 '
-for binary in crowdb-iceberg crowdb-access-server; do
-    capability=$(docker run --rm --network none --entrypoint /sbin/getcap "$image" "/opt/crowdb/bin/$binary")
-    [[ "$capability" == *'cap_net_bind_service=ep' ]]
-done
+capability=$(docker run --rm --network none --entrypoint /sbin/getcap "$image" /opt/crowdb/bin/crowdb-access-server)
+[[ "$capability" == *'cap_net_bind_service=ep' ]]
 
-iceberg_output=$(docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-iceberg "$image" 2>&1) && {
+iceberg_output=$(docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-access-server "$image" iceberg 2>&1) && {
     echo "Iceberg started without required configuration" >&2
     exit 1
 }

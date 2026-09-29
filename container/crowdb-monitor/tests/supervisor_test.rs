@@ -172,11 +172,7 @@ async fn repeated_exits_exhaust_budget_and_leave_unready() {
 async fn stable_health_resets_crash_loop_budget() {
     let roots = TestRoots::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut profile = roots.profile(
-        "sleep 0.3; exit 1".into(),
-        listener.local_addr().unwrap().port(),
-        1,
-    );
+    let mut profile = roots.profile("exec sleep 30".into(), listener.local_addr().unwrap().port(), 1);
     profile.services[0].restart.stable_after_ms = 50;
     let mut supervisor = Supervisor::new(
         profile,
@@ -188,14 +184,30 @@ async fn stable_health_resets_crash_loop_budget() {
     .unwrap();
     supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
     supervisor.mark_ready().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(350)).await;
-    supervisor.poll_once().await.unwrap();
-    assert_eq!(supervisor.status().services["kv"].restart_attempts, 1);
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    supervisor.poll_once().await.unwrap();
-    assert_eq!(supervisor.status().services["kv"].restart_attempts, 0);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    supervisor.poll_once().await.unwrap();
+    for generation in 1..=2 {
+        let pid = supervisor.status().services["kv"].pid.unwrap();
+        let pid = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
+        rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let status = fs::read_to_string(format!("/proc/{}/status", pid.as_raw_pid())).unwrap();
+            if status
+                .lines()
+                .any(|line| line.starts_with("State:") && line.contains('Z'))
+            {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        supervisor.poll_once().await.unwrap();
+        if generation == 1 {
+            assert_eq!(supervisor.status().services["kv"].restart_attempts, 1);
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            supervisor.poll_once().await.unwrap();
+            assert_eq!(supervisor.status().services["kv"].restart_attempts, 0);
+        }
+    }
     assert_eq!(supervisor.status().services["kv"].generation, 3);
     supervisor.shutdown().await.unwrap();
     let body = fs::read_to_string(roots.0.join("data/log/monitor/monitor.log")).unwrap();

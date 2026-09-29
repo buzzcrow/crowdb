@@ -110,6 +110,11 @@ authentication policy, admission budget, metrics, and lifecycle. Shared
 utilities may manage buffers, credentials, errors, and shutdown, but cannot
 reinterpret model semantics.
 
+The `crowdb-access-server` executable starts the S3 and Iceberg listeners
+together by default. The container supervises one access process for both
+ports. Explicit `s3` and `iceberg` commands are reserved for focused tests
+and management operations.
+
 ## 5. Data paths
 
 The ordinary path streams bounded data through the Access Server over HTTP. It

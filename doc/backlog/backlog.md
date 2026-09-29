@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R191** — Bump this line in the same commit when adding a new item.
+**Next R number: R192** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -40,6 +40,10 @@ R152–R166 delivered the limited basic S3 service, including the restart
 acceptance baseline. Multipart upload is available; R168–R169 defer
 shared-storage GC without blocking basic large-object deletion. R170 adds
 optional cuObject/RDMA acceleration after the TCP baseline is correct and measured.
+- **[R191](R191-access-storage-isolation.md)** — protocol-owned chunk storage —
+  Area: access server / S3 / Iceberg / chunk IO / chunkdb — Give S3 and Iceberg
+  distinct chunk types, independent small-write pools and EC/prefetch settings,
+  and move protocol storage wiring into their access libraries.
 - **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
   reclamation — Area: access server / S3 / chunkdb — **Deferred on R95.** Turn
   exact pending shared ranges into qualified, restart-safe physical deletion.

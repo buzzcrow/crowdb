@@ -112,8 +112,12 @@ endif()
 # against. Set before find_package(folly) so folly's internal Boost lookup
 # inherits these.
 cmake_policy(SET CMP0167 OLD)
+cmake_policy(SET CMP0144 NEW)
 set(BOOST_ROOT $ENV{CONDA_PREFIX})
 set(Boost_NO_BOOST_CMAKE ON)
+# The pinned pixi Boost can be newer than FindBoost's dependency table; Folly
+# links the required components explicitly, so this version warning adds noise.
+set(Boost_NO_WARN_NEW_VERSIONS ON)
 list(APPEND CMAKE_IGNORE_PATH /opt/boost)
 
 # ── folly (ConcurrentHashMap for pending map) ─────────────────────

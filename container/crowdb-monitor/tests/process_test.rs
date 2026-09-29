@@ -53,6 +53,7 @@ fn service(script: &str) -> ServiceProfile {
             timeout_ms: 100,
             failure_threshold: 1,
         },
+        additional_probes: Vec::new(),
         restart: RestartProfile {
             max_attempts: 1,
             backoff_base_ms: 1,

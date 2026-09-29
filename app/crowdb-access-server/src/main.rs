@@ -37,9 +37,23 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "iceberg") {
+        args.remove(0);
+        init_access_logging()?;
+        return crowdb_access_server::iceberg::run(args)
+            .await
+            .map_err(|error| -> Box<dyn std::error::Error> { error });
+    }
+    let s3_only = args.first().is_some_and(|arg| arg == "s3");
+    if s3_only {
+        args.remove(0);
+    }
+    init_access_logging()?;
     #[cfg(feature = "s3")]
-    let (access_config, remaining_args) = load_args(std::env::args().skip(1).collect())?;
+    let (access_config, remaining_args) = load_args(args.clone())?;
+    #[cfg(not(feature = "s3"))]
+    let _ = args;
     #[cfg(feature = "s3")]
     if matches!(
         remaining_args.first().map(String::as_str),
@@ -52,7 +66,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unexpected S3 server arguments".into());
     }
     #[cfg(feature = "s3")]
-    run_s3(&access_config).await?;
+    if !s3_only && access_config.s3.listen.is_none() && std::env::var_os("CROWDB_S3_LISTEN").is_none() {
+        return Err("S3 listen address is required when starting both access listeners".into());
+    }
+    #[cfg(feature = "s3")]
+    if s3_only {
+        run_s3(&access_config).await?;
+    } else {
+        tokio::try_join!(run_s3(&access_config), async {
+            crowdb_access_server::iceberg::run(args)
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error> { error })
+        })?;
+    }
+    #[cfg(not(feature = "s3"))]
+    crowdb_access_server::iceberg::run(args)
+        .await
+        .map_err(|error| -> Box<dyn std::error::Error> { error })?;
+    Ok(())
+}
+
+fn init_access_logging() -> Result<(), std::io::Error> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
+    let log_dir = std::env::var("CROWDB_ACCESS_LOG_DIR").unwrap_or_default();
+    if !log_dir.is_empty() {
+        std::fs::create_dir_all(&log_dir)?;
+    }
+    crowdb_rpc_ffi::init_logging(
+        &log_dir,
+        if log_dir.is_empty() { "warn" } else { "info" },
+        30,
+        5,
+        "crowdb-access-rpc",
+    );
+    if !log_dir.is_empty() {
+        crowdb_rpc_ffi::add_log_stderr("warn");
+    }
     Ok(())
 }
 
@@ -82,7 +137,7 @@ async fn run_s3(access_config: &AccessConfig) -> Result<(), Box<dyn std::error::
             management_seeds,
             access_config.common.diskio_connections_per_endpoint,
             access_config.common.diskio_rpc_workers,
-            small_write.clone(),
+            small_write,
             access_config.read.policy(),
         )
         .await?;

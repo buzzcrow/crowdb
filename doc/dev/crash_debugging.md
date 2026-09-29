@@ -61,9 +61,9 @@ cat /proc/sys/kernel/core_pattern
 does not keep the file pattern after a restart. Verify `core_pattern` again
 after reboot. `fs.suid_dumpable=0` permits an ordinary process to write a
 relative core; executables with file capabilities may still be excluded.
-The container currently gives file capabilities to `crowdb-iceberg` and
-`crowdb-access-server` for low ports, so do not assume those two will produce
-cores under this setting. Verify the particular crashed service.
+The container currently gives file capabilities to `crowdb-access-server` for
+low ports, so do not assume it will produce cores under this setting. Verify
+the particular crashed service.
 
 For a one-time investigation, stop Apport and apply the two `sysctl -w`
 commands without creating the sysctl file or disabling the service. Restart

@@ -82,8 +82,8 @@ impl IcebergRuntimeConfig {
 
 /// # Errors
 /// Returns configuration, authentication, storage, management or listener failures.
-pub async fn run() -> Result<(), BoxError> {
-    let (access_config, arguments) = load_args(std::env::args().skip(1).collect())?;
+pub async fn run(arguments: Vec<String>) -> Result<(), BoxError> {
+    let (access_config, arguments) = load_args(arguments)?;
     let config = IcebergRuntimeConfig::from_config(&access_config)?;
     if arguments.len() > 7 {
         return Err("too many Iceberg command arguments".into());
@@ -133,15 +133,7 @@ async fn connect(
     diskio_rpc_workers: u32,
 ) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>, ChunkIoClient), BoxError> {
     let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
-    let client_config = ClientConfig::default();
-    let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
-    let transport = Arc::new(ChunkKvRpcTransport::new(
-        client_config.max_owner_connections,
-        1,
-        2,
-    ));
-    let client = Arc::new(ChunkKvClient::new(client_config, source, transport)?);
-    client.refresh_catalog().await?;
+    let (repository, store) = connect_catalog(Arc::clone(&control)).await?;
     let chunks = ChunkIoClient::connect_with_kv_read_policy(
         ChunkIoClientConfig {
             management_seeds: seeds,
@@ -153,6 +145,21 @@ async fn connect(
         read_policy,
     )
     .await?;
+    Ok((repository, store, chunks))
+}
+
+async fn connect_catalog(
+    control: Arc<CrowdbKvClient>,
+) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>), BoxError> {
+    let client_config = ClientConfig::default();
+    let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
+    let transport = Arc::new(ChunkKvRpcTransport::new(
+        client_config.max_owner_connections,
+        1,
+        2,
+    ));
+    let client = Arc::new(ChunkKvClient::new(client_config, source, transport)?);
+    client.refresh_catalog().await?;
     let store = Arc::new(RoutedCatalogStore::new(client));
     let repository = Arc::new(CatalogRepository::new(
         store.clone(),
@@ -162,7 +169,7 @@ async fn connect(
             ..ClearBounds::default()
         },
     )?);
-    Ok((repository, store, chunks))
+    Ok((repository, store))
 }
 
 async fn start_listener(
@@ -310,7 +317,7 @@ async fn manage(
         Some("rename") if arguments.len() == 4 => ManagementAction::Rename,
         Some("clear") if arguments.len() == 5 => ManagementAction::Clear,
         Some("activate") if arguments.len() == 5 => ManagementAction::Activate,
-        _ => return Err("usage: crowdb-iceberg initialize UUIDv7 NAME | rename UUIDv7 NAME EPOCH | clear UUIDv7 NAME EPOCH CONFIRM_CATALOG_ID | activate UUIDv7 NAME EPOCH CAPABILITY_BITS_HEX | status | inspect | serve".into()),
+        _ => return Err("usage: crowdb-access-server iceberg initialize UUIDv7 NAME | rename UUIDv7 NAME EPOCH | clear UUIDv7 NAME EPOCH CONFIRM_CATALOG_ID | activate UUIDv7 NAME EPOCH CAPABILITY_BITS_HEX | status | inspect | serve".into()),
     };
     let request = ManagementRequest {
         identity: RequestIdentity::parse(&arguments[1], now_ms()?)?,

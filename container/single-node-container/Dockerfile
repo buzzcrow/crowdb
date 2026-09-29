@@ -5,7 +5,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN --mount=type=bind,source=.,target=/staged,ro \
     mkdir -p /opt/crowdb \
     && cp -a /staged/bin /staged/lib /opt/crowdb/ \
-    && setcap cap_net_bind_service=+ep /opt/crowdb/bin/crowdb-iceberg \
     && setcap cap_net_bind_service=+ep /opt/crowdb/bin/crowdb-access-server \
     && mkdir -p /opt/crowdb/data /opt/crowdb/run \
     && chown -R crowdb:crowdb /opt/crowdb/data /opt/crowdb/run

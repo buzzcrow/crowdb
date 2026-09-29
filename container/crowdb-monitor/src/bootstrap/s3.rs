@@ -78,8 +78,8 @@ impl S3Bootstrap {
         let service = profile
             .services
             .iter()
-            .find(|service| service.id == "s3")
-            .ok_or(S3BootstrapError::Profile("S3 service is missing"))?;
+            .find(|service| service.id == "access")
+            .ok_or(S3BootstrapError::Profile("Access service is missing"))?;
         let seeds = service
             .env
             .get("CROWDB_MANAGEMENT_SEEDS")
@@ -89,11 +89,9 @@ impl S3Bootstrap {
             .get("CROWDB_S3_PUBLIC_URI")
             .cloned()
             .ok_or(S3BootstrapError::Profile("S3 public URI is missing"))?;
-        let iceberg_endpoint = profile
-            .services
-            .iter()
-            .find(|service| service.id == "iceberg")
-            .and_then(|service| service.env.get("CROWDB_ICEBERG_PUBLIC_URI"))
+        let iceberg_endpoint = service
+            .env
+            .get("CROWDB_ICEBERG_PUBLIC_URI")
             .cloned()
             .ok_or(S3BootstrapError::Profile("Iceberg public URI is missing"))?;
         let user = format!("preview-{}", session.manifest().deployment_id());
@@ -101,6 +99,7 @@ impl S3Bootstrap {
         let output = tokio::time::timeout(
             COMMAND_TIMEOUT,
             Command::new(&service.program)
+                .arg("s3")
                 .args([action, &user])
                 .env("CROWDB_MANAGEMENT_SEEDS", seeds)
                 .env("CROWDB_S3_MASTER_KEY", credentials.s3_master_key())

@@ -38,6 +38,7 @@ fn profile(root: &TestRoot) -> DeploymentProfile {
         r#"#!/bin/sh
 set -eu
 root='{}'
+shift
 printf '%s\n' "$1" >> "$root/calls"
 if [ "$1" = inspect ]; then
   if [ ! -f "$root/initialized" ]; then
@@ -70,7 +71,7 @@ exit 2
     profile
         .services
         .iter_mut()
-        .find(|service| service.id == "iceberg")
+        .find(|service| service.id == "access")
         .unwrap()
         .program = program;
     profile
