@@ -70,7 +70,7 @@ async fn run_service(cli: &Cli, service: &str, verb: ServiceVerb) -> ExitCode {
 }
 
 async fn run_list(cli: &Cli, service: &str) -> ExitCode {
-    let ctx = match crate::commands::op_context(cli) {
+    let ctx = match crate::commands::authority_context(cli).await {
         Ok(ctx) => ctx,
         Err(code) => return code,
     };

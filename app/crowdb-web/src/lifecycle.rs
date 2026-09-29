@@ -113,6 +113,7 @@ pub async fn http_add_rack(
             let value = crowdb_protocol::common::RackValue {
                 status: crowdb_protocol::common::HwStatus::Up as i32,
                 node_ids: Vec::new(),
+                name: entry.name.clone(),
             };
             let _ = ctx.sysmd().add_rack(body.id, &value).await;
         }
@@ -193,6 +194,10 @@ pub async fn http_add_node(
                 disk_group_ids: Vec::new(),
                 status_changed_at_ms: 0,
                 temp_failure_since_ms: None,
+                management_host: entry.host.clone(),
+                ssh_port: entry.ssh_port,
+                ssh_user: entry.ssh_user.clone(),
+                ssh_credential_ref: entry.ssh_credential_ref.clone(),
             };
             let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
         }
@@ -468,6 +473,10 @@ pub async fn http_add_rack_node(
                 disk_group_ids: Vec::new(),
                 status_changed_at_ms: 0,
                 temp_failure_since_ms: None,
+                management_host: entry.host.clone(),
+                ssh_port: entry.ssh_port,
+                ssh_user: entry.ssh_user.clone(),
+                ssh_credential_ref: entry.ssh_credential_ref.clone(),
             };
             let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
         }
@@ -1036,22 +1045,6 @@ pub async fn http_cluster_clean(
         .await
         .map(Json)
         .map_err(|e| err_502(format!("{e}")))
-}
-
-/// `POST /api/cluster/reset`. Remove orphaned sysdata entries
-/// (stores/groups/replicas that have no corresponding running server).
-/// Does not stop any running servers.
-///
-/// # Errors
-/// Returns `502` if the sysdata scan fails.
-pub async fn http_cluster_reset(
-    State(state): State<AppState>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorBody>)> {
-    let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    ops::cluster::reset(&ctx)
-        .await
-        .map_err(|e| err_502(format!("{e}")))?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/cluster/destroy` (alias: `/internal/reset`). Tear down

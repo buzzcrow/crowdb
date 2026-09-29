@@ -32,7 +32,7 @@ impl Record {
             GetOutcome::Found { value, .. } => {
                 let actual: serde_json::Value =
                     serde_json::from_slice(&value).map_err(|error| Error::Config(error.to_string()))?;
-                if actual == self.value {
+                if self.same_identity(ctx, &actual)? {
                     Ok(true)
                 } else {
                     Err(Error::Conflict {
@@ -42,6 +42,38 @@ impl Record {
                 }
             }
         }
+    }
+
+    fn same_identity(&self, ctx: &OpContext, actual: &serde_json::Value) -> Result<bool> {
+        if self.key.starts_with("/hw/rack/") {
+            let intended: RackValue = serde_json::from_value(self.value.clone())
+                .map_err(|error| Error::Config(error.to_string()))?;
+            let actual: RackValue =
+                serde_json::from_value(actual.clone()).map_err(|error| Error::Config(error.to_string()))?;
+            let rack_id = RackKey::from_path(&self.key)
+                .map_err(|error| Error::Config(error.to_string()))?
+                .rack_id;
+            let expected_nodes: Vec<_> = ctx
+                .config()
+                .nodes
+                .iter()
+                .filter(|node| node.rack_id == rack_id)
+                .map(|node| node.id)
+                .collect();
+            return Ok(actual.name == intended.name
+                && actual.node_ids.iter().all(|node| expected_nodes.contains(node)));
+        }
+        if self.key.starts_with("/hw/node/") {
+            let intended: NodeValue = serde_json::from_value(self.value.clone())
+                .map_err(|error| Error::Config(error.to_string()))?;
+            let actual: NodeValue =
+                serde_json::from_value(actual.clone()).map_err(|error| Error::Config(error.to_string()))?;
+            return Ok(actual.management_host == intended.management_host
+                && actual.ssh_port == intended.ssh_port
+                && actual.ssh_user == intended.ssh_user
+                && actual.ssh_credential_ref == intended.ssh_credential_ref);
+        }
+        Ok(actual == &self.value)
     }
 
     async fn create(&self, ctx: &OpContext) -> Result<()> {
@@ -97,6 +129,7 @@ fn intended_records(ctx: &OpContext, store_nodes: &[u64], members: &[(u64, u64)]
             RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: Vec::new(),
+                name: rack.name.clone(),
             },
         )?);
     }
@@ -108,6 +141,10 @@ fn intended_records(ctx: &OpContext, store_nodes: &[u64], members: &[(u64, u64)]
             },
             NodeValue {
                 status: HwStatus::Up as i32,
+                management_host: node.host.clone(),
+                ssh_port: node.ssh_port,
+                ssh_user: node.ssh_user.clone(),
+                ssh_credential_ref: node.ssh_credential_ref.clone(),
                 ..Default::default()
             },
         )?);

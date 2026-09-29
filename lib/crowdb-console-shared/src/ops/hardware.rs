@@ -15,6 +15,125 @@ use crate::config::{DiskEntry, DiskGroupEntry, NodeEntry, RackEntry};
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
+mod authority;
+mod authority_storage;
+
+pub use authority_storage::{
+    add_disk_group_to_group0, add_disk_to_group0, list_disk_groups_from_group0, list_disks_from_group0,
+    remove_disk_from_group0, remove_disk_group_from_group0,
+};
+
+/// Create a rack only after Group 0 confirms the exact record.
+///
+/// # Errors
+/// Returns a conflict for a different existing record, or the authority error.
+pub async fn add_rack_to_group0(ctx: &OpContext, rack_id: u64, name: &str) -> Result<RackEntry> {
+    let entry = RackEntry {
+        id: rack_id,
+        name: name.to_owned(),
+    };
+    let created = authority::create(
+        ctx,
+        crowdb_protocol::key::RackKey { rack_id },
+        &RackValue {
+            status: HwStatus::Up as i32,
+            node_ids: Vec::new(),
+            name: name.to_owned(),
+        },
+    )
+    .await;
+    if let Err(Error::Conflict { .. }) = &created {
+        if ctx
+            .sysmd()
+            .get_rack(rack_id)
+            .await?
+            .is_some_and(|rack| rack.name == name)
+        {
+            return Ok(entry);
+        }
+    }
+    created?;
+    Ok(entry)
+}
+
+/// Create a node only after its rack and exact record are confirmed in Group 0.
+///
+/// # Errors
+/// Returns a missing rack, conflicting node, or authority error.
+pub async fn add_node_to_group0(ctx: &OpContext, entry: NodeEntry) -> Result<NodeEntry> {
+    let value = NodeValue {
+        status: HwStatus::Up as i32,
+        management_host: entry.host.clone(),
+        ssh_port: entry.ssh_port,
+        ssh_user: entry.ssh_user.clone(),
+        ssh_credential_ref: entry.ssh_credential_ref.clone(),
+        ..Default::default()
+    };
+    authority::create_node(ctx, entry.rack_id, entry.id, &value).await?;
+    Ok(entry)
+}
+
+/// Read rack names from confirmed Group 0 state.
+///
+/// # Errors
+/// Returns an authority error; a local topology file is never consulted.
+pub async fn list_racks_from_group0(ctx: &OpContext) -> Result<Vec<RackEntry>> {
+    authority::ready(ctx).await?;
+    let mut racks: Vec<_> = ctx
+        .sysmd()
+        .list_racks()
+        .await?
+        .into_iter()
+        .map(|(id, value)| RackEntry { id, name: value.name })
+        .collect();
+    racks.sort_unstable_by_key(|rack| rack.id);
+    Ok(racks)
+}
+
+/// Read node connection identity from confirmed Group 0 state.
+///
+/// # Errors
+/// Returns an authority error; private SSH material is never returned.
+pub async fn list_nodes_from_group0(ctx: &OpContext, rack_id: Option<u64>) -> Result<Vec<NodeEntry>> {
+    authority::ready(ctx).await?;
+    let mut nodes: Vec<_> = ctx
+        .sysmd()
+        .list_nodes()
+        .await?
+        .into_iter()
+        .filter(|(rack, _, _)| rack_id.is_none() || rack_id == Some(*rack))
+        .map(|(rack_id, id, value)| NodeEntry {
+            id,
+            rack_id,
+            host: value.management_host,
+            ssh_port: value.ssh_port,
+            ssh_user: value.ssh_user,
+            ssh_key: None,
+            ssh_password: None,
+            ssh_credential_ref: value.ssh_credential_ref,
+        })
+        .collect();
+    nodes.sort_unstable_by_key(|node| node.id);
+    Ok(nodes)
+}
+
+/// Remove an empty rack after Group 0 confirms no node belongs to it.
+///
+/// # Errors
+/// Returns a conflict if children remain, or the authority error.
+pub async fn remove_rack_from_group0(ctx: &OpContext, rack_id: u64) -> Result<()> {
+    authority::remove_empty_rack(ctx, rack_id).await
+}
+
+/// Remove an unused node and its rack membership in one confirmed Group 0 write.
+///
+/// # Errors
+/// Rejects a node with disk groups or KV replicas, a missing node, or an
+/// uncertain authority result.
+pub async fn remove_node_from_group0(ctx: &OpContext, node_id: u64) -> Result<()> {
+    authority::remove_empty_node(ctx, node_id).await
+}
+
 // ── rack ────────────────────────────────────────────────────────
 
 /// Add a rack to the local config and group-0 sysdata.
@@ -35,6 +154,7 @@ pub async fn add_rack(ctx: &OpContext, rack_id: u64, name: &str) -> Result<RackE
         let value = RackValue {
             status: HwStatus::Up as i32,
             node_ids: Vec::new(),
+            name: name.to_owned(),
         };
         let _ = ctx.sysmd().add_rack(rack_id, &value).await;
     }
@@ -81,6 +201,10 @@ pub async fn add_node(ctx: &OpContext, entry: NodeEntry) -> Result<NodeEntry> {
             disk_group_ids: Vec::new(),
             status_changed_at_ms: 0,
             temp_failure_since_ms: None,
+            management_host: entry.host.clone(),
+            ssh_port: entry.ssh_port,
+            ssh_user: entry.ssh_user.clone(),
+            ssh_credential_ref: entry.ssh_credential_ref.clone(),
         };
         let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
     }
@@ -153,6 +277,7 @@ pub async fn add_disk_group(ctx: &OpContext, node_id: u64, dg_id: u64, name: &st
         let value = crowdb_protocol::diskdb::rpc::DiskGroupValue {
             status: HwStatus::Up as i32,
             disk_ids: Vec::new(),
+            name: String::new(),
         };
         let _ = ctx.sysmd().add_disk_group(rack_id, node_id, dg_id, &value).await;
     }
@@ -219,7 +344,7 @@ pub fn list_disk_groups(ctx: &OpContext, node_id: u64) -> Vec<DiskGroupEntry> {
 // ── disk ────────────────────────────────────────────────────────
 
 /// Input for adding a disk. Mirrors the web handler's `AddDiskBody`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct AddDiskInput {
     pub disk_id: String,
     pub disk_type: String,
@@ -565,6 +690,7 @@ mod tests {
                 ssh_user: String::new(),
                 ssh_key: None,
                 ssh_password: None,
+                ssh_credential_ref: None,
             })
             .unwrap();
         config

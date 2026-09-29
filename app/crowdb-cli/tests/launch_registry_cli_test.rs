@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use crowdb_console_shared::bootstrap_intent::BootstrapIntent;
 use crowdb_console_shared::config::web::{LaunchRecord, LaunchRegistry};
 use crowdb_console_shared::launch::LaunchRuntime;
 use crowdb_console_shared::lifecycle;
@@ -168,4 +169,98 @@ async fn chunk_commands_and_generic_launch_controls_share_process_identity() {
         assert!(runtime.status(record).await.unwrap().is_none());
     }
     assert_eq!(LaunchRegistry::load(&path).unwrap().launches, records);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_hardware_uses_group_zero_across_cli_invocations() {
+    let g0 = common::direct::spawn_group0()
+        .await
+        .expect("KV server binary must be built");
+    let dir = tempdir_in_test_data("cli-registry-hardware");
+    let path = dir.path().join("launches.toml");
+    LaunchRegistry {
+        version: 1,
+        launches: Vec::new(),
+    }
+    .save(&path)
+    .unwrap();
+
+    run_command(
+        &path,
+        g0.mgmt_port,
+        &["cluster", "rack", "add", "--id", "2", "--name", "rack-two"],
+    );
+    assert!(run_command(&path, g0.mgmt_port, &["cluster", "rack", "list"]).contains("rack-two"));
+    run_command(
+        &path,
+        g0.mgmt_port,
+        &[
+            "cluster",
+            "node",
+            "add",
+            "--id",
+            "2",
+            "--rack",
+            "2",
+            "--host",
+            "10.0.0.2",
+            "--ssh-credential-ref",
+            "ops-key",
+        ],
+    );
+    assert!(run_command(&path, g0.mgmt_port, &["cluster", "node", "list"]).contains("10.0.0.2"));
+    run_command(
+        &path,
+        g0.mgmt_port,
+        &["cluster", "rack", "add", "--id", "3", "--name", "empty"],
+    );
+    run_command(&path, g0.mgmt_port, &["cluster", "rack", "remove", "--id", "3"]);
+    assert!(!run_command(&path, g0.mgmt_port, &["cluster", "rack", "list"]).contains("empty"));
+    run_command(&path, g0.mgmt_port, &["cluster", "node", "remove", "--id", "2"]);
+    assert!(!run_command(&path, g0.mgmt_port, &["cluster", "node", "list"]).contains("10.0.0.2"));
+    run_command(&path, g0.mgmt_port, &["cluster", "rack", "remove", "--id", "2"]);
+    assert!(!dir.path().join("invalid-legacy.toml").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_bootstrap_uses_sealed_intent_without_legacy_topology_file() {
+    let g0 = common::direct::spawn_group0()
+        .await
+        .expect("KV server binary must be built");
+    let dir = tempdir_in_test_data("cli-registry-bootstrap");
+    let path = dir.path().join("launches.toml");
+    LaunchRegistry {
+        version: 1,
+        launches: Vec::new(),
+    }
+    .save(&path)
+    .unwrap();
+    let source = dir.path().join("bootstrap-source.toml");
+    let intent = BootstrapIntent::capture(&g0.bootstrap_config, &[1]).unwrap();
+    intent.seal(&source).unwrap();
+    std::fs::write(dir.path().join("invalid-legacy.toml"), "invalid legacy config").unwrap();
+
+    run_command(
+        &path,
+        g0.mgmt_port,
+        &[
+            "cluster",
+            "init",
+            "--nodes",
+            "1",
+            "--bootstrap-file",
+            source.to_str().unwrap(),
+        ],
+    );
+    assert!(!path.with_extension("bootstrap-intent.toml").exists());
+    intent
+        .seal(&path.with_extension("bootstrap-intent.toml"))
+        .unwrap();
+    run_command(&path, g0.mgmt_port, &["cluster", "init", "--nodes", "1"]);
+    assert!(!path.with_extension("bootstrap-intent.toml").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("invalid-legacy.toml")).unwrap(),
+        "invalid legacy config"
+    );
+    assert!(run_command(&path, g0.mgmt_port, &["cluster", "rack", "list"]).contains("rack-1"));
 }

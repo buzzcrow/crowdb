@@ -239,6 +239,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
             &RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: vec![1],
+                ..Default::default()
             },
         )
         .await
@@ -369,7 +370,16 @@ fn old_mixed_config_is_rejected_before_startup() {
 }
 
 #[test]
-fn malformed_bare_metal_registry_fails_before_listener_bind() {
+fn production_web_requires_versioned_process_config() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_crowdb-web"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires a versioned --config"));
+}
+
+#[test]
+fn legacy_mixed_registry_is_not_loaded_without_versioned_config() {
     let root = std::env::temp_dir().join(format!(
         "crowdb-web-malformed-registry-{}-{}",
         std::process::id(),
@@ -389,10 +399,7 @@ fn malformed_bare_metal_registry_fails_before_listener_bind() {
     std::fs::remove_dir_all(root).unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Error: Config(") && stderr.contains("invalid table header"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("requires a versioned --config"), "{stderr}");
 }
 
 #[test]

@@ -40,7 +40,7 @@ pub async fn run(cli: &Cli, verb: ChunkdbBenchVerb) -> ExitCode {
     if !valid_args(&args) {
         return ExitCode::from(2);
     }
-    let kv = match build_kv_client(cli, ReadEndpointPolicy::Leader, &KvClientTunables::default()) {
+    let kv = match build_kv_client(cli, ReadEndpointPolicy::Leader, &KvClientTunables::default()).await {
         Ok(client) => Arc::new(client),
         Err(code) => return code,
     };

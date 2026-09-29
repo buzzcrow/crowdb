@@ -19,6 +19,9 @@ pub(crate) struct ClusterInitBody {
     /// Must be non-empty. For a single node, group 0 self-elects.
     /// For multiple nodes, remotes are wired and election starts after.
     pub nodes: Vec<u64>,
+    /// Optional versioned bootstrap topology file for a first bare-metal init.
+    #[serde(default)]
+    pub bootstrap_file: Option<std::path::PathBuf>,
 }
 
 /// `POST /api/cluster/init` — initialize the cluster by bootstrapping
@@ -38,9 +41,31 @@ pub(crate) async fn http_cluster_init(
     Json(body): Json<ClusterInitBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let summary = ops::cluster::init(&ctx, &body.nodes)
-        .await
-        .map_err(map_config_err)?;
+    let summary = if state.web_mode.is_some() {
+        let path = state.runtime_root.join("bootstrap-intent.toml");
+        if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
+            if let Some(source) = &body.bootstrap_file {
+                let intent = crowdb_console_shared::bootstrap_intent::BootstrapIntent::load(source)
+                    .map_err(map_config_err)?;
+                if intent.members() != body.nodes.as_slice() {
+                    return Err(map_config_err(crowdb_console_shared::error::Error::Validation {
+                        field: "nodes".into(),
+                        message: "bootstrap file members differ from requested nodes".into(),
+                    }));
+                }
+                intent.seal(&path).map_err(map_config_err)?;
+            } else if !path.exists() {
+                return Err(map_config_err(crowdb_console_shared::error::Error::Validation {
+                    field: "bootstrap_file".into(),
+                    message: "required for the first bare-metal cluster init".into(),
+                }));
+            }
+        }
+        ops::cluster::init_with_intent(&ctx, &body.nodes, &path).await
+    } else {
+        ops::cluster::init(&ctx, &body.nodes).await
+    }
+    .map_err(map_config_err)?;
     state.commit_op_context(&ctx).map_err(map_persist_err)?;
 
     // The cluster is now live — re-seed the shared kv_client with the

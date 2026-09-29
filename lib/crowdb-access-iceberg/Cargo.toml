@@ -26,6 +26,7 @@ lz4_flex = { version = "0.11", default-features = false, features = ["std", "saf
 md-5 = "0.10"
 crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
 crowdb-chunk-client = { path = "../crowdb-chunk-client" }
+crowdb-access-multipart = { path = "../crowdb-access-multipart" }
 crowdb-common = { workspace = true }
 crowdb-protocol = { path = "../crowdb-protocol" }
 flatbuffers = { workspace = true }

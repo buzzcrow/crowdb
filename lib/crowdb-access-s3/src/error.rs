@@ -13,8 +13,12 @@ pub enum S3ErrorCode {
     NotImplemented,
     NoSuchBucket,
     NoSuchKey,
+    NoSuchUpload,
     BucketNotEmpty,
     InvalidRequest,
+    InvalidPart,
+    InvalidPartOrder,
+    EntityTooSmall,
     InvalidRange,
     PreconditionFailed,
     SlowDown,
@@ -35,8 +39,12 @@ impl S3ErrorCode {
             Self::NotImplemented => "NotImplemented",
             Self::NoSuchBucket => "NoSuchBucket",
             Self::NoSuchKey => "NoSuchKey",
+            Self::NoSuchUpload => "NoSuchUpload",
             Self::BucketNotEmpty => "BucketNotEmpty",
             Self::InvalidRequest => "InvalidRequest",
+            Self::InvalidPart => "InvalidPart",
+            Self::InvalidPartOrder => "InvalidPartOrder",
+            Self::EntityTooSmall => "EntityTooSmall",
             Self::InvalidRange => "InvalidRange",
             Self::PreconditionFailed => "PreconditionFailed",
             Self::SlowDown => "SlowDown",
@@ -57,8 +65,12 @@ impl S3ErrorCode {
             Self::NotImplemented => NOT_IMPLEMENTED_MESSAGE,
             Self::NoSuchBucket => "The specified bucket does not exist.",
             Self::NoSuchKey => "The specified key does not exist.",
+            Self::NoSuchUpload => "The specified multipart upload does not exist.",
             Self::BucketNotEmpty => "The bucket you tried to delete is not empty.",
             Self::InvalidRequest => "The request is not valid for this service.",
+            Self::InvalidPart => "One or more of the specified parts could not be found or matched.",
+            Self::InvalidPartOrder => "The list of parts was not in ascending order.",
+            Self::EntityTooSmall => "A nonfinal multipart part is smaller than the minimum size.",
             Self::InvalidRange => "The requested range is not satisfiable.",
             Self::PreconditionFailed => "At least one precondition failed.",
             Self::SlowDown => "Please reduce your request rate.",
@@ -83,9 +95,12 @@ impl S3ErrorCode {
     const fn status(self) -> StatusCode {
         match self {
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
-            Self::NoSuchBucket | Self::NoSuchKey => StatusCode::NOT_FOUND,
+            Self::NoSuchBucket | Self::NoSuchKey | Self::NoSuchUpload => StatusCode::NOT_FOUND,
             Self::BucketNotEmpty => StatusCode::CONFLICT,
             Self::InvalidRequest
+            | Self::InvalidPart
+            | Self::InvalidPartOrder
+            | Self::EntityTooSmall
             | Self::RequestTimeTooSkewed
             | Self::InvalidDigest
             | Self::BadDigest

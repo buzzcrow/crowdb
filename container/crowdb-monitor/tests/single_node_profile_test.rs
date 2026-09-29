@@ -48,18 +48,27 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         iceberg.env.get("CROWDB_ICEBERG_PUBLIC_URI"),
         Some(&"http://localhost".to_owned())
     );
-    assert_eq!(
-        iceberg.env.get("CROWDB_ICEBERG_LISTEN"),
-        Some(&"0.0.0.0:80".to_owned())
-    );
     assert_eq!(iceberg.probe.target, "http://127.0.0.1:80/v1/config");
+    assert_eq!(
+        iceberg.env.get("CROWDB_MANAGEMENT_SEEDS"),
+        Some(&"http://127.0.0.1:10000".to_owned())
+    );
     let s3 = profile
         .services
         .iter()
         .find(|service| service.id == "s3")
         .unwrap();
-    assert_eq!(s3.env.get("CROWDB_S3_LISTEN"), Some(&"0.0.0.0:81".to_owned()));
     assert_eq!(s3.probe.target, "http://127.0.0.1:81/_crowdb/health/ready");
+    assert_eq!(s3.args[1], "/opt/crowdb/run/config/access.toml");
+    assert_eq!(iceberg.args[2], s3.args[1]);
+    assert_eq!(iceberg.config_template, s3.config_template);
+    let access = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates/access.toml"),
+    )
+    .unwrap();
+    let access: toml::Value = toml::from_str(&access).unwrap();
+    assert_eq!(access["iceberg"]["listen"].as_str(), Some("0.0.0.0:80"));
+    assert_eq!(access["s3"]["listen"].as_str(), Some("0.0.0.0:81"));
     let web = profile
         .services
         .iter()

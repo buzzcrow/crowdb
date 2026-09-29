@@ -403,6 +403,7 @@ fn expected(profile: &DeploymentProfile) -> Result<ExpectedHardware, HardwareBoo
         rack: RackValue {
             status: HwStatus::Up as i32,
             node_ids: vec![node.node_id],
+            ..Default::default()
         },
         node: NodeValue {
             status: HwStatus::Up as i32,
@@ -410,10 +411,12 @@ fn expected(profile: &DeploymentProfile) -> Result<ExpectedHardware, HardwareBoo
             disk_group_ids: vec![first_disk.disk_group_id],
             status_changed_at_ms: 0,
             temp_failure_since_ms: None,
+            ..Default::default()
         },
         group: DiskGroupValue {
             status: HwStatus::Up as i32,
             disk_ids,
+            name: String::new(),
         },
         disks,
     })

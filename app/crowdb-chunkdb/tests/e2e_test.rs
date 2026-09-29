@@ -41,6 +41,7 @@ fn build_test_topology() -> TopologyCache {
             value: DiskGroupValue {
                 status: HwStatus::Up as i32,
                 disk_ids: vec![],
+                name: String::new(),
             },
         });
     }

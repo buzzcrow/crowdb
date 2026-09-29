@@ -39,6 +39,8 @@ use crate::storage::S3StorageClients;
 use super::{error_response, full_body, install_body_receive_provider, BoxError, ResponseBody};
 use crowdb_access_s3::wire;
 
+mod multipart;
+
 const DEFAULT_LIST_LIMIT: usize = 1_000;
 const DEFAULT_LIST_SCAN_BYTES: usize = 4 * 1024 * 1024;
 
@@ -143,6 +145,12 @@ impl ProductionS3Operations {
             S3Operation::GetObject => self.get_object(route, &request, &request_id).await,
             S3Operation::ListObjectsV2 => self.list_objects(route, &request).await,
             S3Operation::DeleteObject => self.delete_object(route).await,
+            S3Operation::CreateMultipartUpload => self.create_multipart_upload(route, &request).await,
+            S3Operation::UploadPart => self.upload_part(route, request).await,
+            S3Operation::ListParts => self.list_parts(route, &request).await,
+            S3Operation::CompleteMultipartUpload => self.complete_multipart_upload(route, request).await,
+            S3Operation::AbortMultipartUpload => self.abort_multipart_upload(route).await,
+            S3Operation::ListMultipartUploads => self.list_multipart_uploads(route, &request).await,
         };
         self.record_dependency_outcome(operation, &result);
         result.unwrap_or_else(|code| {
@@ -159,7 +167,10 @@ impl ProductionS3Operations {
         let Some(health) = &self.health else {
             return;
         };
-        let uses_chunks = matches!(operation, S3Operation::PutObject | S3Operation::GetObject);
+        let uses_chunks = matches!(
+            operation,
+            S3Operation::PutObject | S3Operation::GetObject | S3Operation::UploadPart
+        );
         match result {
             Ok(_) => {
                 health.set_metadata(DependencyHealth::Ready);

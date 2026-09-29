@@ -14,4 +14,5 @@ pixi run test-chunk-kv
 pixi run test-chunk-stream
 pixi run test-chunk-kv-client
 pixi run test-chunk-kv-server
+pixi run test-access-multipart
 pixi run test-access-iceberg

@@ -6,11 +6,21 @@ use crate::file::{
 };
 use crate::operation::PayloadStore;
 use crate::record::StorageRecord;
-use crowdb_protocol::chunkdb::rpc::Location;
-use md5::{Digest, Md5};
-use std::fmt::Write;
+use crowdb_access_multipart::MultipartComposer;
 
 use super::{check_live, increment, MultipartRepository};
+
+fn raw_md5(etag: &str) -> Result<[u8; 16], ValidationError> {
+    let mut raw = [0_u8; 16];
+    if etag.len() != 32 {
+        return Err(ValidationError::Record);
+    }
+    for (byte, pair) in raw.iter_mut().zip(etag.as_bytes().chunks_exact(2)) {
+        let pair = std::str::from_utf8(pair).map_err(|_| ValidationError::Record)?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| ValidationError::Record)?;
+    }
+    Ok(raw)
+}
 
 impl MultipartRepository {
     /// Publishes selected durable part locations without reading or rewriting part bytes.
@@ -37,41 +47,24 @@ impl MultipartRepository {
             .get(&completion.selection)
             .await?;
         let selection = MultipartSelection::decode(&bytes)?;
-        let mut locations = Vec::<Location>::new();
-        let mut length = 0_u64;
-        let mut md5 = Md5::new();
+        let mut composer = MultipartComposer::new(session.limits.max_file_bytes);
         for (index, selected) in selection.parts().iter().enumerate() {
             let snapshot = selection.snapshots().and_then(|snapshots| snapshots.get(index));
             let Some(stream) = self.selected_stream(session, selected, snapshot).await? else {
                 return Ok(None);
             };
             let etag = stream.content.etag().ok_or(ValidationError::Record)?;
-            for pair in etag.as_bytes().chunks_exact(2) {
-                let pair = std::str::from_utf8(pair).map_err(|_| ValidationError::Record)?;
-                md5.update([u8::from_str_radix(pair, 16).map_err(|_| ValidationError::Record)?]);
-            }
-            for mut location in stream
+            let raw_md5 = raw_md5(etag)?;
+            let locations = stream
                 .content
                 .locations(stream.length)?
-                .ok_or(ValidationError::Record)?
-            {
-                location.logical_offset = location
-                    .logical_offset
-                    .checked_add(length)
-                    .ok_or(ValidationError::Record)?;
-                locations.push(location);
-            }
-            length = length
-                .checked_add(stream.length)
-                .filter(|length| *length <= session.limits.max_file_bytes)
                 .ok_or(ValidationError::Record)?;
+            composer
+                .push(stream.length, raw_md5, &locations)
+                .map_err(|_| ValidationError::Record)?;
         }
-        let mut etag = String::with_capacity(40);
-        for byte in md5.finalize() {
-            write!(&mut etag, "{byte:02x}").expect("string write cannot fail");
-        }
-        write!(&mut etag, "-{}", selection.count()).expect("string write cannot fail");
-        let content = FileContent::from_locations(&locations, length, etag)?;
+        let assembled = composer.finish().map_err(|_| ValidationError::Record)?;
+        let content = FileContent::from_locations(&assembled.locations, assembled.length, assembled.etag)?;
         let path = session.location.relative_key();
         let extension = std::path::Path::new(path).extension();
         let has_extension = |wanted: &str| extension.is_some_and(|value| value.eq_ignore_ascii_case(wanted));
@@ -93,7 +86,7 @@ impl MultipartRepository {
             location: session.location.clone(),
             kind,
             format,
-            length,
+            length: assembled.length,
             digest: [0; 32],
             content,
             hint: None,
@@ -107,7 +100,7 @@ impl MultipartRepository {
         next.phase = MultipartPhase::Publishing;
         let completion = next.completion.as_mut().ok_or(ValidationError::Record)?;
         completion.progress.next_part = selection.count();
-        completion.progress.completed_bytes = length;
+        completion.progress.completed_bytes = assembled.length;
         completion.publication = Some(publication);
         Ok(Some(self.exchange(session, &next).await?))
     }

@@ -43,7 +43,9 @@ pub async fn run(cli: &Cli, args: ScanArgs) -> ExitCode {
             pool_size: args.connections,
             ..Default::default()
         },
-    ) {
+    )
+    .await
+    {
         Ok(c) => Arc::new(c),
         Err(c) => return c,
     };

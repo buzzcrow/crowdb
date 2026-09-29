@@ -26,7 +26,7 @@ fn tempdir(tag: &str) -> PathBuf {
 async fn spawn_web(cfg_path: PathBuf) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
-    let cfg = ConsoleConfig::load(&cfg_path).unwrap_or_default();
+    let cfg = ConsoleConfig::default();
     let state = AppState::with_config(cfg, Some(cfg_path));
     tokio::spawn(async move {
         let _ = axum::serve(listener, router(state)).await;

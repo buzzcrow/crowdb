@@ -26,6 +26,28 @@ fn incomplete_marker_fails_closed() {
     assert!(error.to_string().contains("config error"));
 }
 
+#[test]
+fn local_launch_state_rejects_topology_and_legacy_console_file() {
+    let dir = TestDir::new("s3-mini-local-only").expect("create test directory");
+    std::fs::write(
+        dir.path().join("s3-mini-cluster.json"),
+        r#"{"version":1,"endpoint":"http://127.0.0.1:16000","tenant":"local"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("console.toml"), "[[rack]]\nid = 1\n").unwrap();
+    assert!(
+        s3::status(dir.path()).is_err(),
+        "legacy topology must not be loaded"
+    );
+    std::fs::write(
+        dir.path().join("s3-local-state.toml"),
+        "version = 1\ngroup0_seeds = ['http://127.0.0.1:10000']\n[[rack]]\nid = 1\n",
+    )
+    .unwrap();
+    let error = s3::status(dir.path()).expect_err("local state cannot contain topology");
+    assert!(error.to_string().contains("unknown field"), "{error}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "starts the complete local storage and S3 process stack"]
 async fn persistent_cluster_survives_stop_restart_and_range_read() {
@@ -36,13 +58,13 @@ async fn persistent_cluster_survives_stop_restart_and_range_read() {
         .await
         .expect("web health request");
     assert!(health.status().is_success());
-    let servers = reqwest::get(format!("{}/api/servers", started.web_endpoint))
+    let preview = reqwest::get(format!("{}/api/preview", started.web_endpoint))
         .await
-        .expect("web server-list request")
+        .expect("web preview request")
         .text()
         .await
-        .expect("web server-list body");
-    assert!(servers.contains("access-server-1"));
+        .expect("web preview body");
+    assert!(preview.contains("group0"));
     let client = s3::S3HttpClient::from_data_dir(dir.path()).expect("S3 client");
     client
         .request(Method::PUT, Some("durable-bucket"), None, &[], None, None)
@@ -60,9 +82,13 @@ async fn persistent_cluster_survives_stop_restart_and_range_read() {
         .await
         .expect("put object");
     let marker = std::fs::read_to_string(dir.path().join("s3-mini-cluster.json")).expect("marker");
-    let config = std::fs::read_to_string(dir.path().join("console.toml")).expect("config");
+    let config = std::fs::read_to_string(dir.path().join("s3-local-state.toml")).expect("local state");
     assert!(!marker.contains("1111111111111111"));
     assert!(!config.contains("1111111111111111"));
+    assert!(!config.contains("[[rack]]"));
+    assert!(!config.contains("[[node]]"));
+    assert!(!config.contains("[[store]]"));
+    assert!(!dir.path().join("console.toml").exists());
 
     let stopped = s3::stop(dir.path()).expect("stop cluster");
     assert_eq!(stopped.running_services, 0);

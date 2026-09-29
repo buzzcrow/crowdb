@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Shared helper for building a [`CrowdbKvClient`] from the CLI's config
+//! Shared helper for building a [`CrowdbKvClient`] from the CLI endpoint
 //! with a bench-specific [`ReadEndpointPolicy`]. The standard `op_context`
 //! helper always uses the default `Leader` policy; bench read/scan
 //! commands need `AnyReplica` for distributed `MinSlot` reads.
@@ -38,39 +38,32 @@ impl Default for KvClientTunables {
     }
 }
 
-/// Build a `CrowdbKvClient` from private CLI state plus `--system-*`
-/// with the given `read_endpoint_policy`. Seeds the system-group hint
-/// from the first config server's RPC URL (same logic as `op_context`).
+/// Build a `CrowdbKvClient` from `--system-*` with the given
+/// `read_endpoint_policy`.
 ///
 /// # Errors
-/// Returns `ExitCode::from(2)` if the config cannot be loaded.
-pub(crate) fn build_kv_client(
+/// Returns `ExitCode::from(2)` if the management endpoint is unavailable.
+pub(crate) async fn build_kv_client(
     cli: &Cli,
     read_endpoint_policy: ReadEndpointPolicy,
     tunables: &KvClientTunables,
 ) -> Result<CrowdbKvClient, ExitCode> {
-    let config = crate::commands::load_config(cli)?;
-    let mgmt_url = format!("http://{}:{}", cli.system_ip, cli.system_port);
-    let group0_endpoint = format!("{}:{}", cli.system_ip, cli.system_port);
-
-    let mut seeds = vec![mgmt_url];
-    for server in &config.servers {
-        if !seeds.contains(&server.url) {
-            seeds.push(server.url.clone());
-        }
-    }
-
-    let effective_g0 =
-        config
-            .servers
-            .first()
-            .and_then(|s| s.rpc_url.as_ref())
-            .map_or(group0_endpoint, |url| {
-                url.strip_prefix("http://")
-                    .or_else(|| url.strip_prefix("https://"))
-                    .unwrap_or(url)
-                    .to_string()
-            });
+    let seed = format!("http://{}:{}", cli.system_ip, cli.system_port);
+    let server = crowdb_console_shared::clients::http::ServerClient::new(&seed).map_err(|error| {
+        eprintln!("bench kv client: {error}");
+        ExitCode::from(2)
+    })?;
+    let effective_g0 = server
+        .topology()
+        .await
+        .ok()
+        .and_then(|stores| stores.into_iter().find(|store| store.store_id == 0))
+        .and_then(|store| store.listen_addr)
+        .ok_or_else(|| {
+            eprintln!("bench kv client: Group 0 endpoint unavailable at {seed}");
+            ExitCode::from(2)
+        })?;
+    let seeds = vec![seed];
 
     let mut client_config = ClientConfig::new(seeds);
     client_config.read_endpoint_policy = read_endpoint_policy;

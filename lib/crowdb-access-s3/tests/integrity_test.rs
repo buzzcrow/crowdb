@@ -5,6 +5,22 @@ use crowdb_access_s3::integrity::{IntegrityError, SinglePartIntegrity};
 use hyper::body::Bytes;
 
 #[test]
+fn multipart_marker_binds_composite_digest_and_part_count() {
+    use crowdb_access_s3::integrity::{is_multipart_checksum, multipart_checksum_marker};
+
+    let etag = "b4ab393b73e0e71830bf2bf0e63c4d91-2";
+    let marker = multipart_checksum_marker(etag).unwrap();
+    assert_eq!(marker.len(), 18);
+    assert_eq!(&marker[16..], &[0, 2]);
+    assert!(is_multipart_checksum(&marker, etag));
+    assert!(!is_multipart_checksum(
+        &marker,
+        "b4ab393b73e0e71830bf2bf0e63c4d91-3"
+    ));
+    assert!(multipart_checksum_marker("b4ab393b73e0e71830bf2bf0e63c4d91-0").is_none());
+}
+
+#[test]
 fn single_part_etag_is_independent_of_body_frame_boundaries() {
     let mut fragmented = SinglePartIntegrity::default();
     fragmented.update(&Bytes::from_static(b"hel"));

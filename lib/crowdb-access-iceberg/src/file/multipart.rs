@@ -2,6 +2,7 @@ use crate::catalog::CatalogContext;
 use crate::error::ValidationError;
 use crate::key::{CatalogScope, FileId, IcebergKey, OperationId};
 use crate::operation::PayloadReference;
+use crowdb_access_multipart::MultipartBounds;
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
@@ -20,11 +21,13 @@ impl MultipartLimits {
     /// # Errors
     /// Rejects missing or incoherent independent multipart limits.
     pub fn validate(self) -> Result<(), ValidationError> {
-        if self.max_parts == 0
-            || self.max_parts > 10_000
-            || self.max_part_bytes == 0
-            || self.max_part_bytes > self.max_file_bytes
-            || self.max_file_bytes > self.max_staged_bytes
+        if !(MultipartBounds {
+            max_parts: self.max_parts,
+            max_part_bytes: self.max_part_bytes,
+            max_object_bytes: self.max_file_bytes,
+            max_staged_bytes: self.max_staged_bytes,
+        })
+        .valid()
             || self.max_staged_bytes > u64::MAX / 8
             || self.ttl_ms == 0
             || self.ttl_ms > 7 * 24 * 60 * 60 * 1000
@@ -35,15 +38,7 @@ impl MultipartLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MultipartPhase {
-    Open,
-    Completing,
-    Publishing,
-    Published,
-    Aborted,
-    Conflicted,
-}
+pub use crowdb_access_multipart::MultipartPhase;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultipartCompletion {

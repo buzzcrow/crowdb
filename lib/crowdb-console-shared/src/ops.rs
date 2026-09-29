@@ -5,8 +5,8 @@
 //!
 //! Each submodule wraps a domain area (hardware, KV logical, KV server,
 //! KV data-plane, cluster, chunk/diskdb, bench) as free functions that
-//! take an [`OpContext`] — the shared connection to group-0 sysdata +
-//! the local TOML config. The CLI command handlers are thin wrappers
+//! take an [`OpContext`] — the shared connection to Group 0 and
+//! ephemeral bootstrap inputs. The CLI command handlers are thin wrappers
 //! that parse args, call these functions, and render the result.
 
 pub mod bench;

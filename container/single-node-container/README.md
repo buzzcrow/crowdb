@@ -25,7 +25,109 @@ pixi run test-single-node-container
   `CROWDB_CONTAINER_IMAGE` to build and test a separate candidate tag.
 
 `pixi run stage-single-node-container` produces the runtime directory without
-building a Docker image. The release workflow archives the verified directory
-and packages those same files in its publish job, without recompiling them.
-Docker Hub publication is manual; actual publication verification is deferred
-until administrator preparation is complete.
+building a Docker image. To prepare a release from a clean, current `main`
+checkout, preview the patch bump and then run it explicitly:
+
+```sh
+pixi run -- python tools/release.py --dry-run
+pixi run -- python tools/release.py --execute
+```
+
+`--bump minor` and `--bump major` select larger version changes. The script
+updates every version manifest, commits and pushes the candidate to `main`,
+then dispatches the release workflow. It does not create a tag or GitHub
+Release. You can also run the workflow manually on `main`; it derives the tag
+from `VERSION`, so no tag input is needed. Add `--symbols` to either command
+to include the large exact-build symbol archive; the default release skips it.
+Execution requires authenticated `gh` and GitHub permission to push `main`;
+the dry run changes no files or remote state.
+The script passes its candidate commit SHA to the workflow so a later push to
+`main` cannot silently change which commit gets published.
+
+The workflow checks that CI passed for the exact candidate commit, builds and
+tests the container, then waits for DockerHub environment approval. Only after
+verification does it create the Git tag and publish the signed Docker image
+and GitHub Release. A failed verification leaves no tag or draft release. Fix
+the candidate and run the workflow again; if code changes after a tag was
+created, use the next patch version. A publication retry for the same commit
+reuses an existing image only when both registry tags have the same digest and
+the image labels match the release version, commit, and verified runtime archive.
+
+The workflow archives the verified runtime, then packages those same files in
+its publish job without recompiling them. With `--symbols`, it also archives
+exact-build symbols from that build and attaches
+`crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst` to the GitHub
+Release. The workflow publishes the GitHub Release after the Docker image and
+signature succeed. If the optional symbol upload fails, the published release
+remains available and the workflow reports a warning.
+
+## Crash collection boundary
+
+For host configuration, restoring its collector, and GDB commands for both
+container and bare-metal cores, see the
+[crash debugging guide](../../doc/dev/crash_debugging.md).
+
+The image does not configure the host's Linux core collector. Inspect
+`/proc/sys/kernel/core_pattern` on the Docker host before expecting a dump in
+the mounted data volume. A leading `|` sends a crash to a host-side collector;
+relative `core` or `core.*` patterns write in the crashing process's working
+directory. The container runs the monitor and managed children from the private
+`/opt/crowdb/data/crash` directory. On monitor startup and after a child is
+reaped, it removes older regular `core` files and keeps the newest one.
+The directory has mode `0700`; symlinks named `core.*` are not followed or
+deleted. This is one-core retention, not a promise that the host creates a
+volume file. Other relative filename patterns are outside this retention rule.
+
+For a host with a relative `core` pattern, add a size bound to `docker run`:
+
+```sh
+--ulimit core=1073741824:1073741824
+```
+
+The example bounds each core to 1 GiB. A small bound may truncate a dump and
+make some stack frames unavailable. Core collection can also be suppressed by
+the host's dumpability policy, including for executables with file capabilities.
+The container never changes `core_pattern` or the host's dumpability policy.
+
+- On a systemd-coredump host, use `coredumpctl list crowdb-kv-server` to find
+  the host report, then `coredumpctl --output=/private/core dump
+  crowdb-kv-server` as an authorized host user to export it. Check that the
+  result is readable and nonempty before symbolization.
+- On an Ubuntu Apport host, find the matching report in `/var/crash` on the
+  Docker host. Create a private directory, then run `sudo apport-unpack
+  /var/crash/REPORT.crash /private/crowdb-core/unpacked`. The extracted
+  `CoreDump` is the file to pass to the symbolizer. Apport reports may be
+  readable only by the host administrator; preserve the private permissions
+  when granting the debugging user access. A pipe pattern does not create a
+  volume file. Apport may fail to resolve a CROWDB executable because its
+  `/opt/crowdb/bin` path exists only inside the container; it may also ignore
+  executables outside host distribution packages. Check the host's Apport log
+  when no report appears.
+  If the report or `CoreDump` is absent, collection is unavailable for that
+  crash; do not substitute a log or an unrelated dump.
+- On Docker Desktop, inspect the Linux VM's collector. The desktop host's
+  native crash directory is not the container's core directory.
+
+Core dumps can contain credentials and user data. Keep exports in a private
+directory and do not attach them to ordinary logs or issues. If the release
+included the optional symbol archive, use the exact image and matching archive
+to show source-line stacks:
+
+```sh
+pixi run -- python tools/symbolize-container-core.py \
+  --image 'docker.io/crowdb/crowdb-iceberg:<tag>' \
+  --symbols '/private/path/crowdb-symbols-<tag>-git-<revision>-linux-amd64.tar.zst' \
+  --binary crowdb-monitor --core /private/path/core
+```
+
+The tool copies binaries from a stopped container into a temporary private
+directory, verifies source revision, version and SHA-256 hashes, then runs
+`gdb` without printing frame arguments. Use the crashed child binary instead
+of `crowdb-monitor` for a child core. The temporary binaries are removed after
+the stack is shown; the core stays at the path supplied by the operator.
+The operator will validate collection and source-line output when a real
+crash is available. No host collector change is required by the image build.
+
+Collector behavior follows the [Linux core pattern documentation](https://docs.kernel.org/admin-guide/sysctl/kernel.html),
+[systemd-coredump manual](https://www.freedesktop.org/software/systemd/man/250/systemd-coredump.socket.html),
+and [Ubuntu Apport documentation](https://ubuntu.com/project/docs/contributors/debugging/apport/).

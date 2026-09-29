@@ -23,6 +23,7 @@ async fn startup_does_not_replay_local_diskdb_launch_policy_without_group0() {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         })
         .unwrap();
     config

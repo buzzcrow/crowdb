@@ -95,6 +95,7 @@ async fn spawn_upstream(node_id: u64, workspace: &std::path::Path) -> Option<Ups
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     };
     let mgmt_port = pick_free_port();
     let mut rpc_port = pick_free_port();
@@ -142,6 +143,7 @@ async fn spawn_web(upstreams: &BTreeMap<u64, Upstream>) -> SocketAddr {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         });
         cfg.add_server(ServerEntry {
             id: u.node_id.to_string(),

@@ -1,16 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `kv server` command handlers — deploy/restart/stop/delete/list.
+//! `kv server` process controls backed by a launch-only registry.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Subcommand;
-use crowdb_console_shared::lifecycle::DeployRequest;
-use crowdb_protocol::NodeId;
 
-use crate::commands::{commit_config, op_context};
 use crate::Cli;
 
 mod registry;
@@ -20,12 +16,6 @@ pub enum KvServerVerb {
     Deploy {
         #[arg(short = 'n', long)]
         node: String,
-        #[arg(short = 'r', long)]
-        rest_port: Option<u16>,
-        #[arg(short = 'R', long)]
-        rpc_port: Option<u16>,
-        #[arg(short = 'b', long)]
-        binary: Option<String>,
     },
     Start {
         #[arg(short = 'n', long)]
@@ -46,163 +36,10 @@ pub enum KvServerVerb {
     List,
 }
 
-#[allow(clippy::too_many_lines)]
 pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
-    if let Some(path) = &cli.registry {
-        return registry::run(cli, path, verb).await;
-    }
-    match verb {
-        KvServerVerb::Deploy {
-            node,
-            rest_port,
-            rpc_port,
-            binary,
-        } => {
-            let (Some(rest_port), Some(rpc_port)) = (rest_port, rpc_port) else {
-                eprintln!("error: deploy requires management and RPC ports without --registry");
-                return ExitCode::from(2);
-            };
-            let node_id: NodeId = match node.parse() {
-                Ok(n) => n,
-                Err(e) => {
-                    eprintln!("error: invalid node id: {e}");
-                    return ExitCode::from(1);
-                }
-            };
-            let ctx = match op_context(cli) {
-                Ok(c) => c,
-                Err(c) => return c,
-            };
-            let req = DeployRequest {
-                server_id: node_id.to_string(),
-                rest_port,
-                rpc_port,
-                binary: binary.map(PathBuf::from),
-                ..Default::default()
-            };
-            match crowdb_console_shared::ops::kv_server::deploy(&ctx, &req, None).await {
-                Ok(d) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
-                    println!(
-                        "deployed server on node {} -> {} (pid {}, rpc {})",
-                        node_id, d.mgmt_url, d.pid, d.rpc_url
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("error: deploy on node {node_id}: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        }
-        KvServerVerb::Restart { node } | KvServerVerb::Start { node } => {
-            let node_id: NodeId = match node.parse() {
-                Ok(n) => n,
-                Err(e) => {
-                    eprintln!("error: invalid node id: {e}");
-                    return ExitCode::from(1);
-                }
-            };
-            let ctx = match op_context(cli) {
-                Ok(c) => c,
-                Err(c) => return c,
-            };
-            match crowdb_console_shared::ops::kv_server::restart(&ctx, node_id, None, None, &[]).await {
-                Ok(d) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
-                    println!(
-                        "restarted server on node {} -> {} (pid {}, rpc {})",
-                        node_id, d.mgmt_url, d.pid, d.rpc_url
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("error: restart on node {node_id}: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        }
-        KvServerVerb::Stop { node } => {
-            let node_id: NodeId = match node.parse() {
-                Ok(n) => n,
-                Err(e) => {
-                    eprintln!("error: invalid node id: {e}");
-                    return ExitCode::from(1);
-                }
-            };
-            let ctx = match op_context(cli) {
-                Ok(c) => c,
-                Err(c) => return c,
-            };
-            match crowdb_console_shared::ops::kv_server::stop(&ctx, node_id, None).await {
-                Ok(sent) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
-                    if sent {
-                        println!("sent SIGTERM to server on node {node_id}");
-                    } else {
-                        println!("server on node {node_id} was already gone");
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("error: stop on node {node_id}: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        }
-        KvServerVerb::Delete { node } => {
-            let node_id: NodeId = match node.parse() {
-                Ok(n) => n,
-                Err(e) => {
-                    eprintln!("error: invalid node id: {e}");
-                    return ExitCode::from(1);
-                }
-            };
-            let ctx = match op_context(cli) {
-                Ok(c) => c,
-                Err(c) => return c,
-            };
-            match crowdb_console_shared::ops::kv_server::delete(&ctx, node_id).await {
-                Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
-                    println!("deleted server on node {node_id}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("error: delete on node {node_id}: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        }
-        KvServerVerb::List => {
-            let ctx = match op_context(cli) {
-                Ok(c) => c,
-                Err(c) => return c,
-            };
-            let servers = crowdb_console_shared::ops::kv_server::list(&ctx);
-            if servers.is_empty() {
-                println!("(no servers deployed)");
-                return ExitCode::SUCCESS;
-            }
-            println!("{:<12}  {:<26}  {:<26}  {:<8}", "NODE", "MGMT", "RPC", "PID");
-            for s in &servers {
-                println!(
-                    "{:<12}  {:<26}  {:<26}  {:<8}",
-                    s.node_id.map_or_else(|| "-".into(), |n| n.to_string()),
-                    s.url,
-                    s.rpc_url.as_deref().unwrap_or("-"),
-                    s.pid.map_or_else(|| "-".into(), |p| p.to_string()),
-                );
-            }
-            ExitCode::SUCCESS
-        }
-    }
+    let Some(path) = &cli.registry else {
+        eprintln!("error: kv server controls require --registry");
+        return ExitCode::from(2);
+    };
+    registry::run(cli, path, verb).await
 }

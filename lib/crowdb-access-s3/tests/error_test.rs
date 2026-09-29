@@ -52,6 +52,18 @@ fn every_public_error_class_has_a_stable_status_and_code() {
         ),
         (S3ErrorCode::NoSuchBucket, StatusCode::NOT_FOUND, "NoSuchBucket"),
         (S3ErrorCode::NoSuchKey, StatusCode::NOT_FOUND, "NoSuchKey"),
+        (S3ErrorCode::NoSuchUpload, StatusCode::NOT_FOUND, "NoSuchUpload"),
+        (S3ErrorCode::InvalidPart, StatusCode::BAD_REQUEST, "InvalidPart"),
+        (
+            S3ErrorCode::InvalidPartOrder,
+            StatusCode::BAD_REQUEST,
+            "InvalidPartOrder",
+        ),
+        (
+            S3ErrorCode::EntityTooSmall,
+            StatusCode::BAD_REQUEST,
+            "EntityTooSmall",
+        ),
         (
             S3ErrorCode::BucketNotEmpty,
             StatusCode::CONFLICT,

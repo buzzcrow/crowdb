@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 mod bootstrap;
+mod crash;
 mod credentials;
 mod layout;
 mod liveness;
@@ -22,6 +23,7 @@ pub use bootstrap::{
     KvBootstrap, KvBootstrapError, LogicalBootstrap, LogicalBootstrapError, S3Bootstrap, S3BootstrapError,
     StorageProbeError,
 };
+pub use crash::CrashRetention;
 pub use credentials::{show_client_credentials, ClientCredentials, CredentialError, ServerCredentials};
 pub use liveness::{probe_liveness, LivenessError, LivenessServer};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};

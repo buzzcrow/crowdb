@@ -1,0 +1,17 @@
+[package]
+name = "crowdb-access-multipart"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Protocol-neutral multipart data composition for CROWDB access services."
+
+[lints]
+workspace = true
+
+[dependencies]
+crowdb-protocol = { path = "../crowdb-protocol" }
+md-5 = "0.10"
+serde = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }

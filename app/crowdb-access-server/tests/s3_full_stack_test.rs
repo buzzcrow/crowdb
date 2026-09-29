@@ -32,9 +32,10 @@ use hyper::body::Bytes;
 use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const TEST_COUNT: usize = 18;
+const TEST_COUNT: usize = 19;
 const BOTO3_CASES: &[&str] = &[
     "test_signed_raw_http_wire_contract",
+    "test_multipart_replaces_parts_and_publishes_selected_bytes",
     "test_independent_frontends_share_one_namespace",
     "test_slow_signed_upload_releases_native_buffers",
     "test_truncated_signed_upload_does_not_publish_and_releases_credit",
@@ -152,7 +153,7 @@ impl FullStackSetup {
             run_boto3_case(method, &context);
             case.pass();
         }
-        let case = TestCase::start("boto3::lost_put_reply_is_idempotent");
+        let case = TestCase::start("boto3::lost_put_and_multipart_replies_are_idempotent");
         run_restart_phase("lost-reply", &self.listen, &self.access_key, &self.secret_key);
         assert_native_write_metrics(&self.listen);
         case.pass();
@@ -759,6 +760,7 @@ async fn seed_compact_hardware(hardware: &HardwareClient) -> Vec<DiskioGroup0Ide
             &RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: node_ids.clone(),
+                ..Default::default()
             },
         )
         .await
@@ -789,6 +791,7 @@ async fn seed_compact_hardware(hardware: &HardwareClient) -> Vec<DiskioGroup0Ide
                     disk_group_ids: vec![disk_group_id],
                     status_changed_at_ms: 0,
                     temp_failure_since_ms: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -801,6 +804,7 @@ async fn seed_compact_hardware(hardware: &HardwareClient) -> Vec<DiskioGroup0Ide
                 &DiskGroupValue {
                     status: HwStatus::Up as i32,
                     disk_ids: vec![disk_id],
+                    name: String::new(),
                 },
             )
             .await

@@ -37,7 +37,7 @@ async fn spawn_web_with_path(path: std::path::PathBuf) -> SocketAddr {
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
-    let cfg = ConsoleConfig::load(&path).unwrap_or_default();
+    let cfg = ConsoleConfig::default();
     let state = AppState::with_config(cfg, Some(path)).with_test_mode(true);
     tokio::spawn(async move {
         axum::serve(listener, router(state)).await.unwrap();
@@ -220,13 +220,7 @@ async fn rack_node_crud_through_web_routes() {
     let s = delete_status(&client, &format!("{base}/api/racks/1")).await;
     assert_eq!(s.as_u16(), 204);
 
-    // Persisted file reflects the empty state.
-    let on_disk = std::fs::read_to_string(&cfg_path).unwrap_or_default();
-    assert!(
-        !on_disk.contains("[[rack]]"),
-        "rack should be gone from {cfg_path:?}: {on_disk}"
-    );
-    assert!(!on_disk.contains("[[node]]"));
+    assert!(!cfg_path.exists(), "Web must not write local topology");
 }
 
 #[tokio::test]

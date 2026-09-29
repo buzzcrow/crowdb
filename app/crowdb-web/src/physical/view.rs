@@ -371,6 +371,7 @@ mod tests {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         })
         .unwrap();
 
@@ -505,6 +506,7 @@ mod tests {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         })
         .unwrap();
         let snap = BTreeMap::new();

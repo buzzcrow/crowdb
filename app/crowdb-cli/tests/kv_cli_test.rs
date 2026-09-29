@@ -22,6 +22,7 @@ async fn kv_put_get_delete_round_trip() {
         eprintln!("skipping: crowdb-cli binary not built ({})", cli.display());
         return;
     }
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
 
     // put on group 0 (system store).
     let (code, stdout, stderr) = run(

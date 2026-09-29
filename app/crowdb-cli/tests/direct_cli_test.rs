@@ -10,6 +10,16 @@ mod common;
 
 use common::direct::{crowdb_cli_bin, run, spawn_group0};
 
+#[test]
+fn clean_rejects_service_restart_without_launch_registry() {
+    let output = std::process::Command::new(crowdb_cli_bin())
+        .args(["cluster", "clean", "--restart-services"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--registry"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cluster_status_via_direct_group0() {
     let Some(g0) = spawn_group0().await else {
@@ -33,7 +43,7 @@ async fn cluster_status_via_direct_group0() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cluster_rack_list_via_direct_config() {
+async fn cluster_rack_list_ignores_legacy_local_state() {
     let Some(g0) = spawn_group0().await else {
         eprintln!("skipping: crowdb-kv-server binary not built");
         return;
@@ -44,14 +54,15 @@ async fn cluster_rack_list_via_direct_config() {
         return;
     }
 
-    // `cluster rack list` should list rack 1 (from the config).
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    // `cluster rack list` reads rack 1 from Group 0 despite the old file.
     let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "rack", "list"]);
     assert_eq!(code, 0, "cluster rack list stderr={stderr}");
     assert!(stdout.contains('1'), "cluster rack list stdout={stdout}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cluster_node_list_via_direct_config() {
+async fn cluster_node_list_ignores_legacy_local_state() {
     let Some(g0) = spawn_group0().await else {
         eprintln!("skipping: crowdb-kv-server binary not built");
         return;
@@ -62,14 +73,15 @@ async fn cluster_node_list_via_direct_config() {
         return;
     }
 
-    // `cluster node list` should list node 1 (from the config).
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    // `cluster node list` reads node 1 from Group 0 despite the old file.
     let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "node", "list"]);
     assert_eq!(code, 0, "cluster node list stderr={stderr}");
     assert!(stdout.contains('1'), "cluster node list stdout={stdout}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kv_server_list_via_direct_config() {
+async fn kv_server_controls_require_launch_registry() {
     let Some(g0) = spawn_group0().await else {
         eprintln!("skipping: crowdb-kv-server binary not built");
         return;
@@ -80,8 +92,71 @@ async fn kv_server_list_via_direct_config() {
         return;
     }
 
-    // `kv server list` should list the server on node 1.
+    // A legacy topology file cannot supply process launch policy.
     let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["kv", "server", "list"]);
-    assert_eq!(code, 0, "kv server list stderr={stderr}");
-    assert!(stdout.contains('1'), "kv server list stdout={stdout}");
+    assert_eq!(code, 2, "stdout={stdout} stderr={stderr}");
+    assert!(stderr.contains("--registry"), "stderr={stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incremental_local_deploy_reads_group_zero_instead_of_legacy_file() {
+    let Some(g0) = spawn_group0().await else {
+        return;
+    };
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    let (code, _, stderr) = run(
+        &crowdb_cli_bin(),
+        g0.mgmt_port,
+        &g0.config_path,
+        &["cluster", "local-deploy", "-t", "diskdb", "--data-groups", "99"],
+    );
+    assert_eq!(code, 2, "stderr={stderr}");
+    assert!(stderr.contains("99"), "stderr={stderr}");
+    assert!(!stderr.contains("load config"), "stderr={stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn destroy_reads_group_zero_and_requires_launch_registry() {
+    let Some(g0) = spawn_group0().await else {
+        return;
+    };
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    let (code, _, stderr) = run(
+        &crowdb_cli_bin(),
+        g0.mgmt_port,
+        &g0.config_path,
+        &["cluster", "destroy"],
+    );
+    assert_eq!(code, 2, "stderr={stderr}");
+    assert!(stderr.contains("--registry"), "stderr={stderr}");
+
+    let context = crowdb_console_shared::ops::OpContext::new(
+        g0.rpc_url.trim_start_matches("http://").to_string(),
+        vec![g0.mgmt_url.clone()],
+        g0.bootstrap_config.clone(),
+    );
+    crowdb_console_shared::ops::cluster::init(&context, &[1])
+        .await
+        .expect("publish confirmed bootstrap metadata");
+
+    let registry_path = g0.config_path.with_file_name("launches.toml");
+    crowdb_console_shared::config::web::LaunchRegistry {
+        version: 1,
+        launches: Vec::new(),
+    }
+    .save(&registry_path)
+    .unwrap();
+    let output = std::process::Command::new(crowdb_cli_bin())
+        .args(["--registry", registry_path.to_str().unwrap(), "--system-port"])
+        .arg(g0.mgmt_port.to_string())
+        .args(["cluster", "destroy"])
+        .env("CROWDB_CLI_STATE", &g0.config_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

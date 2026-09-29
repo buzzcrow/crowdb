@@ -82,6 +82,7 @@ async fn spawn_upstream(node_id: u64, workspace: &std::path::Path) -> Option<Ups
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     };
     let req = DeployRequest {
         server_id: node_id.to_string(),
@@ -124,6 +125,7 @@ async fn spawn_web(upstreams: &[Upstream]) -> SocketAddr {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         });
         cfg.add_server(ServerEntry {
             id: u.node_id.to_string(),

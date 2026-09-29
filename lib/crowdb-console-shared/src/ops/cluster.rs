@@ -1,13 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Cluster-level operations: status, topology, init, reset, clean.
+//! Cluster-level operations: status, topology, init, destroy, clean.
 //!
 //! `init` bootstraps group 0 (store 0, group 0) on the selected nodes,
 //! wires remotes, and writes the hardware + KV-cluster topology into
-//! group-0 sysdata. `reset` tears down the cluster in dependency order.
-//! `clean` removes orphaned sysdata entries without touching running
-//! servers.
+//! group-0 sysdata. `destroy` tears down confirmed membership in
+//! dependency order. `clean` wipes data on confirmed replicas.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -27,14 +26,13 @@ use crate::ops::hardware::{self, AddDiskInput};
 use crate::ops::OpContext;
 
 mod bootstrap;
-pub use bootstrap::{init, InitSummary};
+pub use bootstrap::{init, init_with_intent, InitSummary};
 
+// Bootstrap runs before Group 0 registration exists, so its sealed intent
+// supplies the initial management endpoint for each selected node.
 fn server_client(ctx: &OpContext, node_id: u64) -> Result<ServerClient> {
     let url = ctx.node_mgmt_url(node_id)?;
-    ServerClient::new(&url).map_err(|e| Error::UpstreamRpc {
-        node_id: url,
-        status: format!("client build: {e}"),
-    })
+    ServerClient::new(&url)
 }
 
 /// Get cluster status: list all stores from group-0 sysdata.
@@ -50,115 +48,51 @@ pub async fn status(ctx: &OpContext) -> Result<Vec<crowdb_protocol::common::Stor
 /// # Errors
 /// Returns [`Error::NotFound`] if no server is deployed on the node.
 pub async fn topology(ctx: &OpContext, node_id: u64) -> Result<Vec<crate::snapshot::StoreView>> {
-    let client = server_client(ctx, node_id)?;
+    let url = ctx.live_node_mgmt_url(node_id).await?;
+    let client = ServerClient::new(&url)?;
     client.topology().await
 }
 
-/// Reset the cluster: tear down all groups, stores, and sysdata in
-/// dependency order. Stops all running servers first.
+/// Destroy the confirmed cluster in dependency order. Process shutdown is
+/// handled by the caller's local launch runtime after metadata teardown.
 ///
 /// # Errors
-/// Returns an error if any teardown step fails (best-effort: continues
-/// on partial failures and returns the first error).
+/// Returns an error on the first failed or unconfirmed teardown step.
 pub async fn destroy(ctx: &OpContext) -> Result<()> {
-    let cfg = ctx.config().clone();
-
-    // Phase 1: remove all non-system groups while the KV management APIs are
-    // still reachable.
-    for server in &cfg.servers {
-        if server.service_type != crate::config::ServiceType::Kv {
-            continue;
-        }
-        if let Some(node_id) = server.node_id {
-            if let Ok(client) = server_client(ctx, node_id) {
-                if let Ok(stores) = client.topology().await {
-                    for s in &stores {
-                        if s.store_id == 0 {
-                            continue;
-                        }
-                        let _ = client.remove_store(s.store_id).await;
-                    }
-                }
-            }
-        }
+    let stores = ctx.sysmd().list_stores().await?;
+    let system = stores
+        .iter()
+        .find(|store| store.store_id == 0)
+        .ok_or_else(|| Error::NotFound {
+            kind: "system store".into(),
+            id: "0".into(),
+        })?;
+    let system_nodes = system.node_ids.clone();
+    let mut system_clients = Vec::with_capacity(system_nodes.len());
+    for node_id in system_nodes {
+        let url = ctx.live_node_mgmt_url(node_id).await?;
+        system_clients.push(ServerClient::new(&url)?);
     }
-
-    // Phase 2: clear sysdata, then remove group 0 last (best-effort).
-    let sysmd = ctx.sysmd();
-    let stores = sysmd.list_stores().await.unwrap_or_default();
-    for s in &stores {
-        let _ = sysmd.remove_store(s.store_id).await;
+    if system_clients.is_empty() {
+        return Err(Error::Validation {
+            field: "system store".into(),
+            message: "Group 0 has no live hosts".into(),
+        });
     }
-    for server in &cfg.servers {
-        if server.service_type != crate::config::ServiceType::Kv {
-            continue;
-        }
-        if let Some(node_id) = server.node_id {
-            if let Ok(client) = server_client(ctx, node_id) {
-                let _ = client.remove_group(0, 0).await;
-            }
+    for store in stores.iter().filter(|store| store.store_id != 0) {
+        super::kv_logical::remove_store(ctx, store.store_id).await?;
+    }
+    for group in ctx.sysmd().list_groups_in_store(0).await? {
+        if group.group_id != 0 {
+            super::kv_logical::remove_group(ctx, 0, group.group_id).await?;
         }
     }
-
-    // Phase 3: stop all running services concurrently. A graceful stop may
-    // consume the full per-process timeout, so serial waits can exceed the
-    // CLI lifecycle bound and leave the persisted config pointing at dead
-    // processes.
-    let mut stop_handles = Vec::with_capacity(cfg.servers.len());
-    for pid in cfg.servers.iter().filter_map(|server| server.pid) {
-        stop_handles.push(tokio::task::spawn_blocking(move || {
-            let _ = crate::lifecycle::stop_pid(pid);
-        }));
+    // Keep the system group available until all other metadata is gone.
+    // Resolve every endpoint before removing any member.
+    for client in &system_clients {
+        client.remove_group(0, 0).await?;
+        client.remove_store(0).await?;
     }
-    for handle in stop_handles {
-        let _ = handle.await;
-    }
-
-    // Phase 4: clear local config.
-    {
-        let mut cfg = ctx.config_mut();
-        cfg.stores.clear();
-        cfg.groups.clear();
-        cfg.servers.clear();
-        cfg.local_launches.clear();
-        cfg.disks.clear();
-        cfg.disk_groups.clear();
-        cfg.nodes.clear();
-        cfg.racks.clear();
-    }
-
-    Ok(())
-}
-
-/// Remove orphaned sysdata entries (stores/groups/replicas that have
-/// no corresponding running server). Does not stop any running
-/// servers.
-///
-/// # Errors
-/// Returns an error if the sysdata scan fails.
-pub async fn reset(ctx: &OpContext) -> Result<()> {
-    let sysmd = ctx.sysmd();
-    let stores = sysmd.list_stores().await?;
-
-    // For each store, check if any hosting node has a running server.
-    let cfg = ctx.config().clone();
-    for store in &stores {
-        let mut any_alive = false;
-        for node_id in &store.node_ids {
-            if cfg.server_for_node(*node_id).is_some() {
-                if let Ok(client) = server_client(ctx, *node_id) {
-                    if client.health().await.is_ok() {
-                        any_alive = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if !any_alive {
-            let _ = sysmd.remove_store(store.store_id).await;
-        }
-    }
-
     Ok(())
 }
 
@@ -179,13 +113,20 @@ pub struct CleanResult {
 /// # Errors
 /// Returns an error if no servers are configured.
 pub async fn clean(ctx: &OpContext, store_id: u64, group_id: u64) -> Result<CleanResult> {
-    let cfg = ctx.config().clone();
-    let mut mgmt_urls: Vec<String> = cfg
-        .servers
-        .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
-        .map(|server| server.url.clone())
-        .collect();
+    // The confirmed replica set determines which nodes must be wiped. A local
+    // launch registry may contain stopped or unrelated processes, and cannot
+    // substitute for Group 0 membership after bootstrap.
+    let replicas = ctx.sysmd().list_replicas_in_group(store_id, group_id).await?;
+    if replicas.is_empty() {
+        return Err(Error::NotFound {
+            kind: "group replicas".into(),
+            id: format!("{store_id}/{group_id}"),
+        });
+    }
+    let mut mgmt_urls = Vec::with_capacity(replicas.len());
+    for replica in replicas {
+        mgmt_urls.push(ctx.live_node_mgmt_url(replica.node_id).await?);
+    }
     mgmt_urls.sort();
     mgmt_urls.dedup();
     if mgmt_urls.is_empty() {
@@ -477,8 +418,22 @@ pub async fn local_deploy_combined(
     diskio_dummy_disk_type: &str,
 ) -> Result<LocalCombinedDeploySummary> {
     local_deploy(ctx, 3, Some(workspace), tunables).await?;
+    local_deploy_combined_after_kv(ctx, workspace, disk, chunk, diskio_dummy_disk_type).await
+}
+
+/// Complete the local storage stack after a verified KV bootstrap.
+///
+/// # Errors
+/// Returns a provisioning or readiness error.
+pub async fn local_deploy_combined_after_kv(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+    diskio_dummy_disk_type: &str,
+) -> Result<LocalCombinedDeploySummary> {
     for group_id in &disk.data_groups {
-        crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
+        ensure_local_data_group(ctx, *group_id).await?;
     }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
     let diskio = local_deploy_diskio(
@@ -514,8 +469,21 @@ pub async fn local_deploy_combined_file_backed(
     chunk: &LocalChunkdbDeployConfig,
 ) -> Result<LocalCombinedDeploySummary> {
     local_deploy(ctx, 3, Some(workspace), tunables).await?;
+    local_deploy_combined_file_backed_after_kv(ctx, workspace, disk, chunk).await
+}
+
+/// Complete the file-backed storage stack after a verified KV bootstrap.
+///
+/// # Errors
+/// Returns a provisioning or readiness error.
+pub async fn local_deploy_combined_file_backed_after_kv(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+) -> Result<LocalCombinedDeploySummary> {
     for group_id in &disk.data_groups {
-        crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
+        ensure_local_data_group(ctx, *group_id).await?;
     }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
     let diskio = local_deploy_diskio(
@@ -535,6 +503,28 @@ pub async fn local_deploy_combined_file_backed(
         chunkdb_instances: chunkdb.instance_count,
         diskio_instances: diskio,
     })
+}
+
+async fn ensure_local_data_group(ctx: &OpContext, group_id: u64) -> Result<()> {
+    let group = ctx.sysmd().get_group(0, group_id).await?;
+    let replicas = ctx.sysmd().list_replicas_in_group(0, group_id).await?;
+    if group.is_none() && replicas.is_empty() {
+        return crate::ops::kv_logical::add_group(ctx, 0, group_id, 100 + group_id, &[1, 2, 3]).await;
+    }
+    let mut actual: Vec<_> = replicas
+        .iter()
+        .map(|replica| (replica.replica_id, replica.node_id))
+        .collect();
+    actual.sort_unstable();
+    let expected = vec![(100 + group_id, 1), (101 + group_id, 2), (102 + group_id, 3)];
+    if group.is_some() && actual == expected {
+        Ok(())
+    } else {
+        Err(Error::Conflict {
+            kind: "local data group".into(),
+            id: format!("0/{group_id}"),
+        })
+    }
 }
 
 async fn local_deploy_diskio(
@@ -874,7 +864,7 @@ pub async fn local_deploy_diskdb(
     workspace: &std::path::Path,
     cfg: &LocalDiskdbDeployConfig,
 ) -> Result<LocalDiskdbDeploySummary> {
-    let nodes = validate_diskdb_deploy(ctx, cfg)?;
+    let nodes = validate_diskdb_deploy(ctx, cfg).await?;
     ensure_diskdb_hardware(ctx, &nodes).await?;
     let (disk_group_count, disk_count) = provision_diskdb_topology(ctx, &nodes, cfg).await?;
     let ports = alloc_diskdb_ports(workspace, nodes.len())?;
@@ -891,12 +881,20 @@ pub async fn local_deploy_diskdb(
 async fn ensure_diskdb_hardware(ctx: &OpContext, nodes: &[NodeEntry]) -> Result<()> {
     for node in nodes {
         if ctx.sysmd().get_rack(node.rack_id).await?.is_none() {
+            let name = ctx
+                .config()
+                .racks
+                .iter()
+                .find(|rack| rack.id == node.rack_id)
+                .map(|rack| rack.name.clone())
+                .unwrap_or_default();
             ctx.sysmd()
                 .add_rack(
                     node.rack_id,
                     &RackValue {
                         status: HwStatus::Up as i32,
                         node_ids: Vec::new(),
+                        name,
                     },
                 )
                 .await?;
@@ -912,6 +910,10 @@ async fn ensure_diskdb_hardware(ctx: &OpContext, nodes: &[NodeEntry]) -> Result<
                         disk_group_ids: Vec::new(),
                         status_changed_at_ms: 0,
                         temp_failure_since_ms: None,
+                        management_host: node.host.clone(),
+                        ssh_port: node.ssh_port,
+                        ssh_user: node.ssh_user.clone(),
+                        ssh_credential_ref: node.ssh_credential_ref.clone(),
                     },
                 )
                 .await?;
@@ -920,7 +922,7 @@ async fn ensure_diskdb_hardware(ctx: &OpContext, nodes: &[NodeEntry]) -> Result<
     Ok(())
 }
 
-fn validate_diskdb_deploy(ctx: &OpContext, cfg: &LocalDiskdbDeployConfig) -> Result<Vec<NodeEntry>> {
+async fn validate_diskdb_deploy(ctx: &OpContext, cfg: &LocalDiskdbDeployConfig) -> Result<Vec<NodeEntry>> {
     if cfg.disk_groups_per_node == 0 || cfg.disks_per_group == 0 || cfg.data_groups.is_empty() {
         return Err(Error::Validation {
             field: "diskdb_topology".into(),
@@ -935,12 +937,9 @@ fn validate_diskdb_deploy(ctx: &OpContext, cfg: &LocalDiskdbDeployConfig) -> Res
             message: "deploy the KV cluster before DiskDB".into(),
         });
     }
-    let configured_groups = ctx.config().groups.clone();
+    ctx.kv().refresh_topology().await?;
     for group_id in &cfg.data_groups {
-        if !configured_groups
-            .iter()
-            .any(|group| group.store_id == 0 && group.group_id == *group_id)
-        {
+        if ctx.sysmd().get_group(0, *group_id).await?.is_none() {
             return Err(Error::NotFound {
                 kind: "kv_group".into(),
                 id: format!("0:{group_id}"),
@@ -966,8 +965,13 @@ async fn provision_diskdb_topology(
     for node in nodes {
         for local_group in 0..cfg.disk_groups_per_node {
             let disk_group_id = node.id * 100 + u64::try_from(local_group).unwrap_or(u64::MAX) + 1;
-            hardware::add_disk_group(ctx, node.id, disk_group_id, &format!("bench-dg-{disk_group_id}"))
-                .await?;
+            hardware::add_disk_group_to_group0(
+                ctx,
+                node.id,
+                disk_group_id,
+                &format!("bench-dg-{disk_group_id}"),
+            )
+            .await?;
             let disks = (0..cfg.disks_per_group)
                 .map(|disk| AddDiskInput {
                     disk_id: format!("{:016x}{:016x}", disk_group_id, disk + 1),
@@ -978,15 +982,26 @@ async fn provision_diskdb_topology(
                     device_path: String::new(),
                 })
                 .collect::<Vec<_>>();
-            hardware::add_disks_batch(ctx, node.id, disk_group_id, &disks).await?;
+            for disk in &disks {
+                hardware::add_disk_to_group0(ctx, node.id, disk_group_id, disk).await?;
+            }
             let instance_id = 10_000 + node.id;
             ctx.sysmd()
                 .set_owner(node.rack_id, node.id, disk_group_id, instance_id, lease_expiry_ms)
                 .await?;
             let data_group = cfg.data_groups[disk_group_count % cfg.data_groups.len()];
-            ctx.sysmd()
-                .set_bind(node.rack_id, node.id, disk_group_id, 0, data_group)
-                .await?;
+            if let Some(binding) = ctx.sysmd().get_bind(node.rack_id, node.id, disk_group_id).await? {
+                if binding.store_id != 0 || binding.group_id != data_group {
+                    return Err(Error::Conflict {
+                        kind: "disk group binding".into(),
+                        id: disk_group_id.to_string(),
+                    });
+                }
+            } else {
+                ctx.sysmd()
+                    .set_bind(node.rack_id, node.id, disk_group_id, 0, data_group)
+                    .await?;
+            }
             disk_group_count += 1;
             disk_count += disks.len();
         }
@@ -1153,6 +1168,26 @@ pub async fn local_deploy(
     workspace_dir: Option<&std::path::Path>,
     tunables: Option<&KvDeployTunables>,
 ) -> Result<LocalDeploySummary> {
+    let (rack_id, node_ids) = prepare_local_deploy(ctx, node_count, workspace_dir, tunables).await?;
+    let init_summary = init(ctx, &node_ids).await?;
+    Ok(LocalDeploySummary {
+        node_count,
+        rack_id,
+        node_ids,
+        init_summary,
+    })
+}
+
+/// Start local KV processes and retain their bootstrap inputs without writing Group 0.
+///
+/// # Errors
+/// Returns a validation, binary, spawn, or readiness error.
+pub async fn prepare_local_deploy(
+    ctx: &OpContext,
+    node_count: usize,
+    workspace_dir: Option<&std::path::Path>,
+    tunables: Option<&KvDeployTunables>,
+) -> Result<(u64, Vec<u64>)> {
     if node_count == 0 {
         return Err(Error::Validation {
             field: "node_count".into(),
@@ -1193,14 +1228,7 @@ pub async fn local_deploy(
         }
     }
 
-    let init_summary = init(ctx, &node_ids).await?;
-
-    Ok(LocalDeploySummary {
-        node_count,
-        rack_id,
-        node_ids,
-        init_summary,
-    })
+    Ok((rack_id, node_ids))
 }
 
 /// Default workspace path for `local_deploy` when no explicit
@@ -1269,6 +1297,7 @@ fn write_rack_and_nodes(ctx: &OpContext, rack_id: u64, node_ids: &[u64]) {
                 ssh_user: String::new(),
                 ssh_key: None,
                 ssh_password: None,
+                ssh_credential_ref: None,
             });
         }
     }
@@ -1325,6 +1354,7 @@ async fn deploy_servers(
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         };
         // Every process owns a stable server directory. WAL and btree data
         // remain direct children of that directory as waldata/ and ctdata/.

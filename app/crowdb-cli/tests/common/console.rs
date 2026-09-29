@@ -136,6 +136,7 @@ pub fn local_node(id: u64, rack: u64) -> NodeEntry {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     }
 }
 

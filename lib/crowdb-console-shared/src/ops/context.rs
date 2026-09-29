@@ -17,9 +17,8 @@ use crate::error::{Error, Result};
 ///   (hardware hierarchy, KV-cluster topology, service registry).
 /// - **`kv`** — a [`CrowdbKvClient`] for the KV data-plane (put/get/
 ///   delete/scan on user stores/groups).
-/// - **`config`** — the local TOML [`ConsoleConfig`] (rack/node/server
-///   entries, bootstrap state). Mutated under an `RwLock` and persisted
-///   by the caller via the engine.
+/// - **`config`** — ephemeral [`ConsoleConfig`] inputs for bootstrap and
+///   local benchmark deployment. Group 0 remains the topology authority.
 /// - **`discovery`** — an optional [`ServiceDiscoveryClient`] for
 ///   discovering living service instances (diskdb, chunkdb, etc.) via
 ///   the group-0 service registry. `None` when the caller (e.g. a unit

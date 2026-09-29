@@ -16,7 +16,7 @@ For test strategy, layer scope, and coverage details, see [`design/kv/design-cro
 
 ## Current CI Test Design
 
-CI uses ten parallel jobs, grouped by runtime requirements. Component tasks in
+Regular CI uses nine parallel jobs, grouped by runtime requirements. Component tasks in
 `pixi.toml` select library, binary, and integration test targets with
 `--tests`; benchmark targets are excluded. Group scripts under
 `tools/pixi-tasks/` define execution order. GitHub Actions calls those group
@@ -24,16 +24,15 @@ tasks. See [tools/README.md](../../tools/README.md) for the tooling map.
 
 | Job           | Group task                              | Coverage                                         |
 | ------------- | --------------------------------------- | ------------------------------------------------ |
-| Lint          | `test-task-coverage`, fmt, clippy       | Package assignments and reachable CI tasks       |
+| Lint          | `check-ci-test-tasks`, fmt, clippy       | Package assignments and reachable CI tasks       |
 | CppTests      | `test-cpp`                              | C++ and Rust FFI                                 |
 | UnitTests     | `test-unit`                             | Rust libraries, including `test-access-iceberg`  |
 | ServerTests   | `test-server`                           | Native services, access server and monitor       |
 | S3E2E         | `-e s3-e2e test-boto3-e2e`              | Access S3, access server and 17 boto3 cases      |
 | IcebergE2E    | `-e iceberg-e2e test-iceberg-e2e`       | PyIceberg, native storage, GC and crash recovery |
-| IcebergSDK    | `-e iceberg-e2e test-iceberg-sdk`       | Official Java/Rust SDKs and pinned Apache RCK    |
+| IcebergSDK    | `-e iceberg-e2e test-iceberg-sdk`       | Official Java SDK and pinned Apache RCK          |
 | ConsoleTests  | `test-console`                          | Shared operations, CLI and Web                   |
 | UITests       | `test-console-ui`                       | Vitest and real-backend Playwright               |
-| DockerPreview | `test-single-node-container`            | Linux amd64 image smoke and container E2E        |
 
 Subprocess suites run sequentially inside each job and clean disposable runtime
 state. Iceberg jobs use the pinned `iceberg-e2e` Pixi environment for Python,
@@ -41,18 +40,27 @@ Maven and Java; Rust/native builds use the default environment. The RCK task
 fetches and verifies its exact Apache Iceberg source revision. Test-only child
 listener functions remain ignored and are invoked by their parent crash tests.
 
-`test-suite` runs the host groups, including both Iceberg groups. Docker is a
-separate explicit `test-single-node-container` task requiring a Linux amd64
-Docker host. It is always included in the DockerPreview CI job.
+`test-suite` runs the host groups, including both Iceberg groups and the Rust
+SDK task. The Rust SDK task is available through
+`pixi run -e iceberg-e2e test-rust-iceberg-e2e` and the manual-only
+`IcebergRustSDK` workflow. It does not run on regular pushes or pull requests.
+DockerPreview is a manual-only workflow that runs
+`pixi run test-single-node-container` on a Linux amd64 Docker host. The release
+workflow also runs this image test before publication.
 
-### Coverage guard
+IcebergE2E uses the release profile for PyIceberg and native acceptance. The
+access-server component suite runs in ServerTests, so IcebergE2E does not run it
+again.
 
-`pixi run test-task-coverage` validates every workspace package against
-`TASK_PACKAGES` in `tools/ci-checks/check-test-task-coverage.py`, including the
+### CI test-task check
+
+`pixi run check-ci-test-tasks` validates every workspace package against
+`TASK_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`, including the
 test harness's own runtime-namespace tests.
-The guard follows Pixi group calls and checked-in shell scripts from CI, so an
-existing component task disconnected from its job fails validation. It also
-requires explicit CI reachability for the container and client acceptance tasks.
+The guard follows Pixi group calls and checked-in shell scripts from CI, so a
+required component task disconnected from its job fails validation. It also
+checks that DockerPreview and IcebergRustSDK are reachable from their manual
+workflows and absent from regular CI.
 
 ### Adding tests
 
@@ -62,7 +70,7 @@ requires explicit CI reachability for the container and client acceptance tasks.
 3. Add the component to the group script matching its runtime requirements.
 4. Feature-gated or ignored tests require explicit task selectors. Do not count
    compiling an ignored test as executing it; exclude subprocess helper entries.
-5. Run `pixi run test-task-coverage`, the affected suites, and workflow validation.
+5. Run `pixi run check-ci-test-tasks`, the affected suites, and workflow validation.
 6. Measure changed suites with `pixi run bash tools/test-metrics/measure.sh TASK...`
    and update the timing table. Environment selection is automatic.
 
@@ -75,9 +83,9 @@ reported test counts and exit codes are saved under
 `.crowdb-runtime/artifacts/measure-tests/`. Timing includes incremental builds
 and subprocess startup/shutdown, so feature changes and cold builds affect it.
 Counts are runner-reported cases, not assertions; ignored cases are excluded.
-Native Iceberg and Java/Rust/RCK SDK acceptance use release binaries, matching
-the published container profile. Component suites retain their default test
-profile. The focused debug native 100 MiB multipart upload, completion,
+IcebergE2E and Java/Rust/RCK SDK acceptance use release binaries, matching
+the published container profile. Other component suites retain their default
+test profile. The focused debug native 100 MiB multipart upload, completion,
 restart, replay, and full read passed on 2026-09-29 in 54.40 s. Its previous
 10 s completion deadline failure did not recur after the streaming I/O changes.
 
@@ -146,7 +154,6 @@ All individual tests or test binaries with wall-clock time >= 7 s.
 | `test-chunk-client`   | 18.33 s | `small_object_writer_e2e` — small-write E2E with real ChunkDB + DiskIO (14) |
 | `test-console-server` | 18.07 s | `cluster_deployer_test` — deployer lifecycle (3 tests)                      |
 | `test-console-shared` | 15.12 s | `lifecycle_e2e_test` — lifecycle E2E (1 test)                               |
-| `test-console-server` | 13.53 s | `rolling_upgrade_test` — rolling upgrade (1 test)                           |
 | `test-console-ui`     | 10.8 s  | `50-chunk-capacity-disk-group:428` — assign disk-group to diskdb via UI     |
 | `test-chunk-client`   | 10.39 s | `chunk_reader_e2e` — chunk reader E2E with failure injection (6 tests)      |
 | `test-console-server` | 9.93 s  | `cluster_restart_incremental_test` — restart cycles (5 tests)               |

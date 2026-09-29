@@ -177,6 +177,8 @@ pub struct ErrorInfo {
 pub struct RackValue {
     pub status: i32,
     pub node_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -186,6 +188,18 @@ pub struct NodeValue {
     pub disk_group_ids: Vec<u64>,
     pub status_changed_at_ms: u64,
     pub temp_failure_since_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub management_host: String,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub ssh_port: u16,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ssh_user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_credential_ref: Option<String>,
+}
+
+fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

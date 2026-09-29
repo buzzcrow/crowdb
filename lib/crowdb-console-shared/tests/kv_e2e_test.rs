@@ -36,6 +36,7 @@ async fn spawn_server() -> Option<(u32, String)> {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     };
     let req = DeployRequest {
         server_id: "s1".into(),

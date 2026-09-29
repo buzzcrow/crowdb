@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::op_context;
+use crate::commands::authority_context;
 use crate::Cli;
 
 // ── store ────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ pub async fn run_store_verb(cli: &Cli, verb: StoreVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -75,7 +75,7 @@ pub async fn run_store_verb(cli: &Cli, verb: StoreVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -91,7 +91,7 @@ pub async fn run_store_verb(cli: &Cli, verb: StoreVerb) -> ExitCode {
             }
         }
         StoreVerb::List => {
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -187,7 +187,7 @@ pub async fn run_group_verb(cli: &Cli, verb: GroupVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -221,7 +221,7 @@ pub async fn run_group_verb(cli: &Cli, verb: GroupVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -244,7 +244,7 @@ pub async fn run_group_verb(cli: &Cli, verb: GroupVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -333,7 +333,7 @@ pub async fn run_replica_verb(cli: &Cli, verb: ReplicaVerb) -> ExitCode {
                 },
                 None => None,
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -376,7 +376,7 @@ pub async fn run_replica_verb(cli: &Cli, verb: ReplicaVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };

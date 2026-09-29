@@ -10,7 +10,7 @@ use clap::Subcommand;
 use crowdb_console_shared::config::NodeEntry;
 use crowdb_protocol::{NodeId, RackId};
 
-use crate::commands::{commit_config, op_context};
+use crate::commands::authority_context;
 use crate::Cli;
 
 // ── rack ─────────────────────────────────────────────────────────
@@ -40,15 +40,13 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            match crowdb_console_shared::ops::hardware::add_rack(&ctx, rack_id, &name).await {
+            let result = crowdb_console_shared::ops::hardware::add_rack_to_group0(&ctx, rack_id, &name).await;
+            match result {
                 Ok(entry) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("added rack {}", entry.id);
                     ExitCode::SUCCESS
                 }
@@ -66,15 +64,13 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            match crowdb_console_shared::ops::hardware::remove_rack(&ctx, rack_id).await {
+            let result = crowdb_console_shared::ops::hardware::remove_rack_from_group0(&ctx, rack_id).await;
+            match result {
                 Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("removed rack {id}");
                     ExitCode::SUCCESS
                 }
@@ -85,11 +81,17 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
             }
         }
         RackVerb::List => {
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            let racks = crowdb_console_shared::ops::hardware::list_racks(&ctx);
+            let racks = match crowdb_console_shared::ops::hardware::list_racks_from_group0(&ctx).await {
+                Ok(racks) => racks,
+                Err(error) => {
+                    eprintln!("error: list racks: {error}");
+                    return ExitCode::from(2);
+                }
+            };
             if racks.is_empty() {
                 println!("(no racks)");
                 return ExitCode::SUCCESS;
@@ -120,6 +122,8 @@ pub enum NodeVerb {
         ssh_user: String,
         #[arg(short = 'k', long)]
         ssh_key: Option<String>,
+        #[arg(long)]
+        ssh_credential_ref: Option<String>,
     },
     Remove {
         #[arg(short = 'I', long)]
@@ -143,7 +147,12 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
             ssh_port,
             ssh_user,
             ssh_key,
+            ssh_credential_ref,
         } => {
+            if ssh_key.is_some() {
+                eprintln!("error: --ssh-key is local secret material; use --ssh-credential-ref");
+                return ExitCode::from(1);
+            }
             let node_id: NodeId = match id.parse() {
                 Ok(n) => n,
                 Err(e) => {
@@ -166,16 +175,15 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                 ssh_user,
                 ssh_key,
                 ssh_password: None,
+                ssh_credential_ref,
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            match crowdb_console_shared::ops::hardware::add_node(&ctx, entry.clone()).await {
+            let result = crowdb_console_shared::ops::hardware::add_node_to_group0(&ctx, entry.clone()).await;
+            match result {
                 Ok(e) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("added node {} (rack {})", e.id, e.rack_id);
                     ExitCode::SUCCESS
                 }
@@ -193,15 +201,13 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            match crowdb_console_shared::ops::hardware::remove_node(&ctx, node_id).await {
+            let result = crowdb_console_shared::ops::hardware::remove_node_from_group0(&ctx, node_id).await;
+            match result {
                 Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
-                    }
                     println!("removed node {id}");
                     ExitCode::SUCCESS
                 }
@@ -212,11 +218,17 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
             }
         }
         NodeVerb::List => {
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            let nodes = crowdb_console_shared::ops::hardware::list_nodes(&ctx, None);
+            let nodes = match crowdb_console_shared::ops::hardware::list_nodes_from_group0(&ctx, None).await {
+                Ok(nodes) => nodes,
+                Err(error) => {
+                    eprintln!("error: list nodes: {error}");
+                    return ExitCode::from(2);
+                }
+            };
             print_node_table(&nodes)
         }
         NodeVerb::ListRack { rack } => {
@@ -227,11 +239,19 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
-            let nodes = crowdb_console_shared::ops::hardware::list_nodes(&ctx, Some(rack_id));
+            let nodes =
+                match crowdb_console_shared::ops::hardware::list_nodes_from_group0(&ctx, Some(rack_id)).await
+                {
+                    Ok(nodes) => nodes,
+                    Err(error) => {
+                        eprintln!("error: list nodes: {error}");
+                        return ExitCode::from(2);
+                    }
+                };
             print_node_table(&nodes)
         }
     }
@@ -274,9 +294,83 @@ pub enum DiskGroupVerb {
 }
 
 pub async fn run_disk_group_verb(cli: &Cli, verb: DiskGroupVerb) -> ExitCode {
-    let _ = (cli, verb);
-    eprintln!("disk-group commands not yet wired to ops (Phase 3)");
-    ExitCode::from(1)
+    use crowdb_console_shared::ops::hardware;
+    let ctx = match authority_context(cli).await {
+        Ok(ctx) => ctx,
+        Err(code) => return code,
+    };
+    let result = match verb {
+        DiskGroupVerb::Add { id, rack, node, name } => {
+            let (Ok(id), Ok(rack), Ok(node)) = (id.parse::<u64>(), rack.parse::<u64>(), node.parse::<u64>())
+            else {
+                eprintln!("error: disk-group, rack and node IDs must be integers");
+                return ExitCode::from(1);
+            };
+            match hardware::list_nodes_from_group0(&ctx, Some(rack)).await {
+                Ok(nodes) if nodes.iter().any(|entry| entry.id == node) => {}
+                Ok(_) => {
+                    eprintln!("error: node {node} is not in rack {rack}");
+                    return ExitCode::from(2);
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            }
+            hardware::add_disk_group_to_group0(&ctx, node, id, &name)
+                .await
+                .map(|entry| {
+                    println!("added disk group {} on node {}", entry.id, node);
+                })
+        }
+        DiskGroupVerb::Remove { id } => {
+            let id = match id.parse::<u64>() {
+                Ok(id) => id,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            };
+            let groups = match ctx.sysmd().list_disk_groups().await {
+                Ok(groups) => groups,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let matches: Vec<_> = groups.into_iter().filter(|group| group.dg_id == id).collect();
+            if matches.len() != 1 {
+                eprintln!(
+                    "error: disk group {id} has {} matches; specify a unique ID",
+                    matches.len()
+                );
+                return ExitCode::from(2);
+            }
+            hardware::remove_disk_group_from_group0(&ctx, matches[0].node_id, id)
+                .await
+                .map(|()| println!("removed disk group {id}"))
+        }
+        DiskGroupVerb::List => match ctx.sysmd().list_disk_groups().await {
+            Ok(mut groups) => {
+                groups.sort_unstable_by_key(|group| (group.rack_id, group.node_id, group.dg_id));
+                for group in groups {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        group.rack_id, group.node_id, group.dg_id, group.value.name
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        },
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 // ── disk ─────────────────────────────────────────────────────────
@@ -310,8 +404,117 @@ pub enum DiskVerb {
     List,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run_disk_verb(cli: &Cli, verb: DiskVerb) -> ExitCode {
-    let _ = (cli, verb);
-    eprintln!("disk commands not yet wired to ops (Phase 3)");
-    ExitCode::from(1)
+    use crowdb_console_shared::ops::hardware::{self, AddDiskInput};
+    use crowdb_protocol::DiskIdExt;
+    let ctx = match authority_context(cli).await {
+        Ok(ctx) => ctx,
+        Err(code) => return code,
+    };
+    let result = match verb {
+        DiskVerb::Add {
+            id,
+            rack,
+            node,
+            group,
+            disk_type,
+            capacity,
+            zone_size,
+            unit_size,
+            device_path,
+        } => {
+            let (Ok(rack), Ok(node), Ok(group), Ok(capacity_bytes), Ok(zone_size_bytes), Ok(unit_size_bytes)) = (
+                rack.parse::<u64>(),
+                node.parse::<u64>(),
+                group.parse::<u64>(),
+                capacity.parse::<u64>(),
+                zone_size.parse::<u64>(),
+                unit_size.parse::<u32>(),
+            ) else {
+                eprintln!("error: rack, node, group and size arguments must be integers");
+                return ExitCode::from(1);
+            };
+            let nodes = match hardware::list_nodes_from_group0(&ctx, Some(rack)).await {
+                Ok(nodes) => nodes,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            if !nodes.iter().any(|entry| entry.id == node) {
+                eprintln!("error: node {node} is not in rack {rack}");
+                return ExitCode::from(2);
+            }
+            let input = AddDiskInput {
+                disk_id: id,
+                disk_type,
+                capacity_bytes,
+                zone_size_bytes,
+                unit_size_bytes,
+                device_path,
+            };
+            hardware::add_disk_to_group0(&ctx, node, group, &input)
+                .await
+                .map(|entry| println!("added disk {}", entry.disk_id))
+        }
+        DiskVerb::Remove { id } => {
+            let disk_id = match crowdb_protocol::common::DiskId::from_display_string(&id) {
+                Ok(id) => id,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            };
+            let disks = match ctx.sysmd().list_all_disks().await {
+                Ok(disks) => disks,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let matches: Vec<_> = disks.into_iter().filter(|disk| disk.disk_id == disk_id).collect();
+            if matches.len() != 1 {
+                eprintln!(
+                    "error: disk {id} has {} matches; specify a unique ID",
+                    matches.len()
+                );
+                return ExitCode::from(2);
+            }
+            hardware::remove_disk_from_group0(&ctx, matches[0].node_id, matches[0].disk_group_id, &id)
+                .await
+                .map(|_| println!("removed disk {id}"))
+        }
+        DiskVerb::List => match ctx.sysmd().list_all_disks().await {
+            Ok(mut disks) => {
+                disks.sort_unstable_by_key(|disk| {
+                    (
+                        disk.rack_id,
+                        disk.node_id,
+                        disk.disk_group_id,
+                        disk.disk_id.high,
+                        disk.disk_id.low,
+                    )
+                });
+                for disk in disks {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        disk.rack_id,
+                        disk.node_id,
+                        disk.disk_group_id,
+                        disk.disk_id.to_display_string()
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        },
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(2)
+        }
+    }
 }

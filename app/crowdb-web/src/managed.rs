@@ -164,8 +164,8 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
         }
         Ok(ManagedSnapshot {
             source: "group0",
-            racks: racks.into_iter().map(|(id, value)| json!({"id": id, "status": value.status, "node_ids": value.node_ids})).collect(),
-            nodes: nodes.into_iter().map(|(rack_id, id, value)| json!({"rack_id": rack_id, "id": id, "status": value.status, "disk_group_ids": value.disk_group_ids})).collect(),
+            racks: racks.into_iter().map(|(id, value)| json!({"id": id, "name": value.name, "status": value.status, "node_ids": value.node_ids})).collect(),
+            nodes: nodes.into_iter().map(|(rack_id, id, value)| json!({"rack_id": rack_id, "id": id, "status": value.status, "disk_group_ids": value.disk_group_ids, "management_host": value.management_host, "ssh_port": value.ssh_port, "ssh_user": value.ssh_user, "ssh_credential_ref": value.ssh_credential_ref})).collect(),
             disk_groups: disk_groups.into_iter().map(|group| json!(group)).collect(),
             disks: disks.into_iter().map(|disk| json!({"rack_id": disk.rack_id, "node_id": disk.node_id, "disk_group_id": disk.disk_group_id, "disk_id": disk.disk_id, "value": disk.value})).collect(),
             stores: stores.into_iter().map(|store| json!(store)).collect(),

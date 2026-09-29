@@ -19,6 +19,7 @@ pub mod kv;
 mod launch;
 pub mod lifecycle;
 mod managed;
+mod managed_hardware;
 mod managed_logical;
 pub mod mgmt;
 pub mod owner_assignment;
@@ -75,7 +76,59 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/*path", any(health::managed_api_unavailable))
             .fallback(spa::spa_fallback);
         let managed = if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
-            managed.merge(launch::routes().route_layer(authorization))
+            let hardware = axum::Router::new()
+                .route(
+                    "/api/cluster/init",
+                    post(mgmt::http_cluster_init).route_layer(authorization.clone()),
+                )
+                .route(
+                    "/api/racks",
+                    get(managed_hardware::list_racks)
+                        .merge(post(managed_hardware::add_rack).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/racks/:rack_id",
+                    get(managed_hardware::get_rack)
+                        .merge(delete(managed_hardware::remove_rack).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/racks/:rack_id/nodes",
+                    get(managed_hardware::list_rack_nodes),
+                )
+                .route(
+                    "/api/nodes",
+                    get(managed_hardware::list_nodes)
+                        .merge(post(managed_hardware::add_node).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/nodes/:id",
+                    get(managed_hardware::get_node)
+                        .merge(delete(managed_hardware::remove_node).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/nodes/:id/disk-groups",
+                    get(managed_hardware::list_disk_groups)
+                        .merge(post(managed_hardware::add_disk_group).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/nodes/:id/disk-groups/:dg_id",
+                    get(managed_hardware::get_disk_group).merge(
+                        delete(managed_hardware::remove_disk_group).route_layer(authorization.clone()),
+                    ),
+                )
+                .route(
+                    "/api/nodes/:id/disk-groups/:dg_id/disks",
+                    get(managed_hardware::list_disks)
+                        .merge(post(managed_hardware::add_disk).route_layer(authorization.clone())),
+                )
+                .route(
+                    "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id",
+                    get(managed_hardware::get_disk)
+                        .merge(delete(managed_hardware::remove_disk).route_layer(authorization.clone())),
+                );
+            managed
+                .merge(hardware)
+                .merge(launch::routes().route_layer(authorization))
         } else {
             managed
         };
@@ -254,7 +307,6 @@ pub fn router(state: AppState) -> axum::Router {
         // ── Cluster init (R2): system group bootstrap ────────────────
         .route("/api/cluster/init", post(mgmt::http_cluster_init))
         .route("/api/cluster/destroy", post(lifecycle::http_internal_reset))
-        .route("/api/cluster/reset", post(lifecycle::http_cluster_reset))
         .route("/api/cluster/clean", post(lifecycle::http_cluster_clean))
         // ── Internal: E2E test reset (alias for destroy) ─────────────
         .route("/internal/reset", post(lifecycle::http_internal_reset))

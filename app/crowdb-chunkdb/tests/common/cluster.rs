@@ -466,6 +466,7 @@ pub async fn seed_hardware_layout_from_disk_group(
             &RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: node_ids.clone(),
+                ..Default::default()
             },
         )
         .await
@@ -482,6 +483,7 @@ pub async fn seed_hardware_layout_from_disk_group(
                     disk_group_ids: vec![dg_id],
                     status_changed_at_ms: 0,
                     temp_failure_since_ms: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -499,6 +501,7 @@ pub async fn seed_hardware_layout_from_disk_group(
                 &DiskGroupValue {
                     status: HwStatus::Up as i32,
                     disk_ids: disk_ids.clone(),
+                    name: String::new(),
                 },
             )
             .await

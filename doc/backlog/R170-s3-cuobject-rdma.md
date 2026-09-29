@@ -91,8 +91,8 @@ Client/GPU       AccessServer          Chunk plan            DiskIO A..D
   publication, range, integrity, or error contracts.
 - Uses `crowdb-chunk-client`, `crowdb-diskio`, internal authenticated RPC, and
   native ownership/completion support from `crowdb-rpc-ffi`.
-- Accelerated multipart upload additionally depends on R167 and remains
-  disabled until both requirements land.
+- Accelerated multipart upload builds on the existing S3 multipart authority
+  and remains disabled until this acceleration requirement lands.
 - NVIDIA cuObject server libraries, compatible drivers, and ConnectX-5-or-newer
   hardware are optional deployment dependencies. Unsupported deployments keep
   the basic TCP service unchanged.

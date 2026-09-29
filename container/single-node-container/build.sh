@@ -10,13 +10,22 @@ cd "$(git rev-parse --show-toplevel)"
 for tool in patchelf strip ldd; do
     command -v "$tool" >/dev/null || { echo "Missing packaging tool: $tool" >&2; exit 1; }
 done
+if [[ "${CROWDB_PACKAGE_SYMBOLS:-0}" == 1 ]]; then
+    for tool in objcopy readelf; do
+        command -v "$tool" >/dev/null || { echo "Missing packaging tool: $tool" >&2; exit 1; }
+    done
+    export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
+    cmake_build_type=RelWithDebInfo
+else
+    cmake_build_type=Release
+fi
 if [[ "$mode" == image ]]; then
     docker info >/dev/null
 fi
 
 # Build on the host, reusing the existing Cargo, CMake and npm artifacts.
 cargo build --locked --release -p crowdb-kv-client --features ffi
-cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release
+cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE="$cmake_build_type"
 cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
 cargo build --locked --release \
     -p crowdb-monitor -p crowdb-kv-server -p crowdb-diskdb \
@@ -33,6 +42,13 @@ cp -a container/single-node-container/templates "$staging/templates"
 cp container/single-node-container/{Dockerfile,profile.toml,entrypoint.sh} "$staging/"
 git rev-parse HEAD > "$staging/SOURCE_REVISION"
 cp VERSION "$staging/VERSION"
+if [[ "${CROWDB_PACKAGE_SYMBOLS:-0}" == 1 ]]; then
+    cp VERSION "$staging/symbols/VERSION"
+    git rev-parse HEAD > "$staging/symbols/SOURCE_REVISION"
+    (cd "$staging" && sha256sum bin/* lib/libcrowdb*.so) > "$staging/symbols/RUNTIME_SHA256SUMS"
+    rm -rf target/container-symbols
+    mv "$staging/symbols" target/container-symbols
+fi
 rm -rf target/container-runtime
 mv "$staging" target/container-runtime
 trap - EXIT

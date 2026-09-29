@@ -72,7 +72,9 @@ pub fn context(first: &TestNode, second: &TestNode) -> OpContext {
             serde_json::from_value(json!({"id": (i + 1).to_string(), "node_id": i + 1, "url": url})).unwrap()
         })
         .collect();
-    let mut config = ConsoleConfig::default();
-    config.servers = servers;
+    let config = ConsoleConfig {
+        servers,
+        ..Default::default()
+    };
     OpContext::new("127.0.0.1:9".into(), Vec::new(), config)
 }

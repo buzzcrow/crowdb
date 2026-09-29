@@ -5,6 +5,7 @@ use crate::error::ValidationError;
 use crate::key::{CatalogScope, IcebergKey, OperationId};
 use crate::operation::mutation_identity;
 use crate::record::StorageRecord;
+use crowdb_access_multipart::{live_at, next_revision};
 
 use super::{MultipartPhase, MultipartSession};
 
@@ -131,7 +132,7 @@ impl MultipartRepository {
 }
 
 fn check_live(session: &MultipartSession, now_ms: u64) -> Result<(), CatalogError> {
-    if now_ms < session.created_ms || now_ms >= session.expires_ms {
+    if !live_at(session.created_ms, session.expires_ms, now_ms) {
         return Err(CatalogError::Conflict);
     }
     Ok(())
@@ -139,7 +140,7 @@ fn check_live(session: &MultipartSession, now_ms: u64) -> Result<(), CatalogErro
 
 fn increment(session: &MultipartSession) -> Result<MultipartSession, CatalogError> {
     let mut next = session.clone();
-    next.revision = session.revision.checked_add(1).ok_or(ValidationError::Record)?;
+    next.revision = next_revision(session.revision).ok_or(ValidationError::Record)?;
     Ok(next)
 }
 

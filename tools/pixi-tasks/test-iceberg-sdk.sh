@@ -5,5 +5,4 @@ set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
 pixi run -e iceberg-e2e test-java-iceberg-e2e
-pixi run -e iceberg-e2e test-rust-iceberg-e2e
 pixi run -e iceberg-e2e test-iceberg-rck

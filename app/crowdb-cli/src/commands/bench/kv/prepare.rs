@@ -23,7 +23,9 @@ pub async fn run(cli: &Cli, args: PrepareArgs) -> ExitCode {
         cli,
         crowdb_kv_client::ReadEndpointPolicy::Leader,
         &KvClientTunables::default(),
-    ) {
+    )
+    .await
+    {
         Ok(c) => Arc::new(c),
         Err(c) => return c,
     };

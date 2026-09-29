@@ -53,6 +53,7 @@ async fn remove_rack_with_nodes_conflict() {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         },
     )
     .await
@@ -75,6 +76,7 @@ async fn add_node_and_list() {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         },
     )
     .await
@@ -101,6 +103,7 @@ async fn add_node_unknown_rack_validation() {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         },
     )
     .await
@@ -129,6 +132,7 @@ async fn remove_node_with_server_conflict() {
             ssh_user: String::new(),
             ssh_key: None,
             ssh_password: None,
+            ssh_credential_ref: None,
         },
     )
     .await

@@ -17,7 +17,7 @@ use std::time::Duration;
 use crowdb_console_shared::clients::http::ServerClient;
 use crowdb_console_shared::config::{NodeEntry, RackEntry, ServerEntry, ServiceType};
 use crowdb_console_shared::lifecycle::{self, crowdb_kv_server_bin, DeployRequest};
-use crowdb_console_shared::{ConsoleConfig, ConsoleConfigEngine};
+use crowdb_console_shared::ConsoleConfig;
 use crowdb_test_harness::test_dirs;
 
 /// Allocate a free mgmt port for a kv-server.
@@ -61,6 +61,7 @@ pub struct Group0 {
     pub mgmt_port: u16,
     pub rpc_port: u16,
     pub config_path: PathBuf,
+    pub bootstrap_config: ConsoleConfig,
     workspace: std::path::PathBuf,
 }
 
@@ -85,11 +86,12 @@ pub fn local_node(id: u64, rack: u64) -> NodeEntry {
         ssh_user: String::new(),
         ssh_key: None,
         ssh_password: None,
+        ssh_credential_ref: None,
     }
 }
 
 /// Fork a real `crowdb-kv-server` for node 1, initialize group 0 on it,
-/// and write a console config with the rack/node/server entries. Returns
+/// and prepare in-memory bootstrap entries. Returns
 /// `None` when the server binary has not been built.
 pub async fn spawn_group0() -> Option<Group0> {
     let bin = crowdb_kv_server_bin()?;
@@ -122,7 +124,7 @@ pub async fn spawn_group0() -> Option<Group0> {
         .await
         .expect("deploy_local_in_dir");
 
-    // Write console config with rack/node/server entries.
+    // Prepare bootstrap input without persisting a topology copy.
     let mut cfg = ConsoleConfig::default();
     cfg.racks.push(RackEntry {
         id: 1,
@@ -147,8 +149,6 @@ pub async fn spawn_group0() -> Option<Group0> {
     .unwrap();
 
     let config_path = workspace.join("console.toml");
-    let engine = crowdb_console_shared::TomlFileEngine::new(config_path.clone());
-    engine.save(&cfg).expect("save config");
 
     // Initialize group 0 on the server (single-node, self-elect).
     let client = ServerClient::new(deployed.mgmt_url.clone()).unwrap();
@@ -165,7 +165,7 @@ pub async fn spawn_group0() -> Option<Group0> {
     let context = crowdb_console_shared::ops::OpContext::new(
         deployed.rpc_url.trim_start_matches("http://").to_string(),
         vec![deployed.mgmt_url.clone()],
-        cfg,
+        cfg.clone(),
     );
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -178,6 +178,12 @@ pub async fn spawn_group0() -> Option<Group0> {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    crowdb_console_shared::ops::hardware::add_rack_to_group0(&context, 1, "rack-1")
+        .await
+        .expect("publish rack to Group 0");
+    crowdb_console_shared::ops::hardware::add_node_to_group0(&context, local_node(1, 1))
+        .await
+        .expect("publish node to Group 0");
 
     Some(Group0 {
         pid: deployed.pid,
@@ -186,6 +192,7 @@ pub async fn spawn_group0() -> Option<Group0> {
         mgmt_port: rest_port,
         rpc_port,
         config_path,
+        bootstrap_config: cfg,
         workspace,
     })
 }

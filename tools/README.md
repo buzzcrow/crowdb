@@ -27,7 +27,7 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
 Common entry points:
 
 ```sh
-pixi run test-task-coverage
+pixi run check-ci-test-tasks
 pixi run check-version
 pixi run clean-env
 pixi run bash tools/test-metrics/measure.sh test-access-iceberg test-monitor
@@ -35,7 +35,7 @@ pixi run bash tools/test-metrics/measure.sh test-access-iceberg test-monitor
 
 For test ownership and timings, read
 [`doc/working/test.md`](../doc/working/test.md). CI calls Pixi group tasks;
-update the group script when adding a component, then run `test-task-coverage`.
+update the group script when adding a component, then run `check-ci-test-tasks`.
 Feature-gated or ignored client tests need explicit task selection.
 
 Container packaging and its acceptance scripts live under

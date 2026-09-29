@@ -202,9 +202,7 @@ pub(crate) async fn http_remove_store(
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorBody {
-                error:
-                    "store 0 is the system store; use POST /api/cluster/reset to tear down the entire cluster"
-                        .into(),
+                error: "store 0 is the system store; destroy and recreate the cluster to remove it".into(),
             }),
         ));
     }

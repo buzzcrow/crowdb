@@ -21,6 +21,7 @@ RUN chmod 0755 /opt/crowdb/bin/entrypoint \
 
 ARG SOURCE_REVISION
 ARG PREVIEW_VERSION
+ARG RUNTIME_SHA256
 RUN --mount=type=bind,source=.,target=/staged,ro \
     test -n "$SOURCE_REVISION" && test -n "$PREVIEW_VERSION" \
     && test "$(cat /staged/SOURCE_REVISION)" = "$SOURCE_REVISION" \
@@ -32,7 +33,8 @@ LABEL org.opencontainers.image.title="CROWDB Iceberg" \
       org.opencontainers.image.authors="Gian <crow.db@outlook.com>" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="$SOURCE_REVISION" \
-      org.opencontainers.image.version="$PREVIEW_VERSION"
+      org.opencontainers.image.version="$PREVIEW_VERSION" \
+      org.crowdb.runtime.sha256="$RUNTIME_SHA256"
 ENV PATH="/opt/crowdb/bin:${PATH}" \
     LD_LIBRARY_PATH="/opt/crowdb/lib" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"

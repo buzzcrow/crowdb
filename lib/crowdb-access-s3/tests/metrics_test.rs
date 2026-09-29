@@ -93,7 +93,7 @@ fn exported_request_series_have_fixed_cardinality_and_no_namespace_labels() {
             .lines()
             .filter(|line| line.starts_with("crowdb_s3_requests_total{"))
             .count(),
-        9 * 6
+        15 * 6
     );
     assert!(!rendered.contains("bucket="));
     assert!(!rendered.contains("key="));

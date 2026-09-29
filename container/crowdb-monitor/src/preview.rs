@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::future::Future;
 use std::path::Path;
@@ -10,11 +10,11 @@ use tokio::time::{sleep, Instant};
 use crate::{
     disk_step_names, ensure_disk_files, hardware_step_names, iceberg_step_names, kv_step_names,
     logical_step_names, render_configs, s3_step_names, verify_chunk_services, verify_diskio_disks,
-    BootstrapSession, ChunkBootstrapError, CredentialError, DeploymentProfile, DiskBootstrapError,
-    HardwareBootstrap, HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError, KvBootstrap,
-    KvBootstrapError, LivenessError, LivenessServer, LogicalBootstrap, LogicalBootstrapError, ManifestError,
-    ManifestState, MonitorEvent, MonitorEventKind, MonitorLogError, ProfileError, RenderError, S3Bootstrap,
-    S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
+    BootstrapSession, ChunkBootstrapError, CrashRetention, CredentialError, DeploymentProfile,
+    DiskBootstrapError, HardwareBootstrap, HardwareBootstrapError, IcebergBootstrap, IcebergBootstrapError,
+    KvBootstrap, KvBootstrapError, LivenessError, LivenessServer, LogicalBootstrap, LogicalBootstrapError,
+    ManifestError, ManifestState, MonitorEvent, MonitorEventKind, MonitorLogError, ProfileError, RenderError,
+    S3Bootstrap, S3BootstrapError, ServerCredentials, StorageProbeError, Supervisor, SupervisorError,
 };
 
 const PROFILE_NAME: &str = "single-node-container";
@@ -83,6 +83,10 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
         &config_bytes,
         &step_refs,
     )?;
+    if let Some(root) = std::env::var_os("CROWDB_CORE_DIR") {
+        let crashes = CrashRetention::open(root.into())?;
+        std::env::set_current_dir(crashes.root())?;
+    }
     let credentials = if session.manifest().state() == ManifestState::Ready
         || session.manifest().step_complete("s3-user") == Some(true)
     {
@@ -478,20 +482,23 @@ fn kv_root(profile: &DeploymentProfile) -> Result<std::path::PathBuf, PreviewErr
 }
 
 fn config_digest_input(profile: &DeploymentProfile) -> Result<Vec<u8>, PreviewError> {
-    let mut files = BTreeSet::new();
+    let mut files = BTreeMap::new();
     for service in &profile.services {
         if let Some(path) = &service.config_template {
             let name = path
                 .file_name()
                 .ok_or(PreviewError::Invalid("template has no name"))?;
-            if !files.insert(name.to_os_string()) {
+            if files
+                .insert(name.to_os_string(), path)
+                .is_some_and(|existing| existing != path)
+            {
                 return Err(PreviewError::Invalid("template name is duplicated"));
             }
         }
     }
     let mut input = Vec::new();
-    for name in files {
-        let path = profile.paths.template_root.join(&name);
+    for name in files.keys() {
+        let path = profile.paths.template_root.join(name);
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.file_type().is_file() || metadata.len() > MAX_TEMPLATE_BYTES {
             return Err(PreviewError::Invalid("template is not a bounded regular file"));

@@ -284,6 +284,10 @@ client_env=$(docker exec "$name" crowdb-monitor credentials show --format env)
 [[ $(docker exec "$name" stat -c %a /opt/crowdb/data/secrets/server.env) == 600 ]]
 [[ $(docker exec "$name" stat -c %a /opt/crowdb/data/secrets/client.env) == 600 ]]
 docker exec "$name" cat /opt/crowdb/data/bootstrap/manifest.json | jq -e '.state == "ready"' >/dev/null
+[[ $(docker exec "$name" stat -c %a /opt/crowdb/data/crash) == 700 ]]
+[[ $(docker exec "$name" readlink /proc/1/cwd) == /opt/crowdb/data/crash ]]
+kv_pid=$(docker exec "$name" cat /opt/crowdb/run/status/monitor.json | jq -er '.services.kv.pid')
+[[ $(docker exec "$name" readlink "/proc/$kv_pid/cwd") == /opt/crowdb/data/crash ]]
 verify_public_services
 node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 8080)" "$name"
 echo "checking S3 and Iceberg client writes"

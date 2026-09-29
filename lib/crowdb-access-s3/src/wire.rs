@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crate::metadata::{BucketNameRecord, ObjectRecord};
+use crate::metadata::{BucketNameRecord, MultipartPartPage, MultipartUploadPage, ObjectRecord};
 use crate::object::ListObjectsV2Page;
 
 #[must_use]
@@ -20,6 +20,129 @@ pub fn list_buckets(tenant: &[u8], buckets: &[BucketNameRecord]) -> String {
     }
     output.push_str("</Buckets></ListAllMyBucketsResult>");
     output
+}
+
+#[must_use]
+pub fn create_multipart_upload(bucket: &[u8], key: &[u8], upload_id: &[u8; 16]) -> String {
+    let mut output = xml_start("InitiateMultipartUploadResult");
+    element(&mut output, "Bucket", &String::from_utf8_lossy(bucket));
+    element(&mut output, "Key", &String::from_utf8_lossy(key));
+    element(&mut output, "UploadId", &hex_upload_id(upload_id));
+    output.push_str("</InitiateMultipartUploadResult>");
+    output
+}
+
+#[must_use]
+pub fn complete_multipart_upload(location: &str, bucket: &[u8], key: &[u8], etag: &str) -> String {
+    let mut output = xml_start("CompleteMultipartUploadResult");
+    element(&mut output, "Location", location);
+    element(&mut output, "Bucket", &String::from_utf8_lossy(bucket));
+    element(&mut output, "Key", &String::from_utf8_lossy(key));
+    element(&mut output, "ETag", &format!("\"{etag}\""));
+    output.push_str("</CompleteMultipartUploadResult>");
+    output
+}
+
+#[must_use]
+pub fn list_multipart_parts(
+    bucket: &[u8],
+    key: &[u8],
+    upload_id: &[u8; 16],
+    marker: u16,
+    max_parts: usize,
+    page: &MultipartPartPage,
+) -> String {
+    let mut output = xml_start("ListPartsResult");
+    element(&mut output, "Bucket", &String::from_utf8_lossy(bucket));
+    element(&mut output, "Key", &String::from_utf8_lossy(key));
+    element(&mut output, "UploadId", &hex_upload_id(upload_id));
+    element(&mut output, "PartNumberMarker", &marker.to_string());
+    if let Some(next) = page.next_part_number_marker {
+        element(&mut output, "NextPartNumberMarker", &next.to_string());
+    }
+    element(&mut output, "MaxParts", &max_parts.to_string());
+    element(
+        &mut output,
+        "IsTruncated",
+        if page.next_part_number_marker.is_some() {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    for part in &page.parts {
+        output.push_str("<Part>");
+        element(&mut output, "PartNumber", &part.number.to_string());
+        element(&mut output, "LastModified", &iso8601(part.modified_ms));
+        element(
+            &mut output,
+            "ETag",
+            &format!("\"{:x}\"", md5::Digest(part.raw_md5)),
+        );
+        element(&mut output, "Size", &part.length.to_string());
+        output.push_str("</Part>");
+    }
+    output.push_str("</ListPartsResult>");
+    output
+}
+
+#[must_use]
+pub fn list_multipart_uploads(
+    bucket: &[u8],
+    prefix: &[u8],
+    key_marker: Option<&[u8]>,
+    upload_marker: Option<&[u8; 16]>,
+    max_uploads: usize,
+    owner_id: &str,
+    page: &MultipartUploadPage,
+) -> String {
+    let mut output = xml_start("ListMultipartUploadsResult");
+    element(&mut output, "Bucket", &String::from_utf8_lossy(bucket));
+    element(
+        &mut output,
+        "KeyMarker",
+        &String::from_utf8_lossy(key_marker.unwrap_or_default()),
+    );
+    element(
+        &mut output,
+        "UploadIdMarker",
+        &upload_marker.map(hex_upload_id).unwrap_or_default(),
+    );
+    if let Some((key, id)) = &page.next {
+        element(&mut output, "NextKeyMarker", &String::from_utf8_lossy(key));
+        element(&mut output, "NextUploadIdMarker", &hex_upload_id(id));
+    }
+    element(&mut output, "Prefix", &String::from_utf8_lossy(prefix));
+    element(&mut output, "MaxUploads", &max_uploads.to_string());
+    element(
+        &mut output,
+        "IsTruncated",
+        if page.next.is_some() { "true" } else { "false" },
+    );
+    for session in &page.uploads {
+        output.push_str("<Upload>");
+        element(&mut output, "Key", &String::from_utf8_lossy(&session.object_key));
+        element(&mut output, "UploadId", &hex_upload_id(&session.upload_id));
+        output.push_str("<Initiator>");
+        element(&mut output, "ID", owner_id);
+        output.push_str("</Initiator><Owner>");
+        element(&mut output, "ID", owner_id);
+        output.push_str("</Owner>");
+        element(&mut output, "StorageClass", "STANDARD");
+        element(&mut output, "Initiated", &iso8601(session.created_ms));
+        output.push_str("</Upload>");
+    }
+    output.push_str("</ListMultipartUploadsResult>");
+    output
+}
+
+fn hex_upload_id(upload_id: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    let mut result = String::with_capacity(32);
+    for byte in upload_id {
+        write!(&mut result, "{byte:02x}").expect("string write cannot fail");
+    }
+    result
 }
 
 #[must_use]

@@ -18,13 +18,13 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use super::client::{build_kv_client, KvClientTunables};
+use crate::commands::authority_context;
 use crate::commands::bench::loader::{run_workload, BenchRecorder};
 use crate::commands::bench::metrics::BenchMetrics;
 use crate::commands::bench::result::{
     BenchOps, BenchResult, ReplicaStats, ServerMetrics, ServerRpcLatency, SnapshotStats, TransportStats,
 };
 use crate::commands::bench::verb::WriteArgs;
-use crate::commands::load_config;
 use crate::Cli;
 
 #[allow(clippy::too_many_lines)]
@@ -45,7 +45,9 @@ pub async fn run(cli: &Cli, args: WriteArgs) -> ExitCode {
             pool_size: args.connections,
             ..Default::default()
         },
-    ) {
+    )
+    .await
+    {
         Ok(c) => Arc::new(c),
         Err(c) => return c,
     };
@@ -173,16 +175,24 @@ fn build_value(id: u64, size: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Fetch `/metrics` from every server in the config and aggregate into
+/// Fetch `/metrics` from confirmed replica hosts and aggregate into
 /// `ServerMetrics`. Metrics are summed across nodes except for averages
 /// (which are averaged across nodes that report them).
 #[allow(clippy::too_many_lines)]
 async fn fetch_server_metrics(cli: &Cli, store_id: u64, group_id: u64) -> Option<ServerMetrics> {
-    let config = load_config(cli).ok()?;
+    let ctx = authority_context(cli).await.ok()?;
+    let replicas = ctx
+        .sysmd()
+        .list_replicas_in_group(store_id, group_id)
+        .await
+        .ok()?;
     let group_prefix = format!("s.{store_id}.g.{group_id}.");
     let store_prefix = format!("s.{store_id}.rpc.");
 
-    let mut mgmt_urls: Vec<String> = config.servers.iter().map(|s| s.url.clone()).collect();
+    let mut mgmt_urls = Vec::with_capacity(replicas.len());
+    for replica in replicas {
+        mgmt_urls.push(ctx.live_node_mgmt_url(replica.node_id).await.ok()?);
+    }
     mgmt_urls.sort();
     mgmt_urls.dedup();
     if mgmt_urls.is_empty() {

@@ -9,8 +9,8 @@ use clap::Subcommand;
 
 use crowdb_console_shared::ops::chunk;
 
+use crate::commands::authority_context;
 use crate::commands::launch::{self, LaunchVerb};
-use crate::commands::op_context;
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]
@@ -93,7 +93,7 @@ pub async fn run_chunk_diskdb_verb(cli: &Cli, verb: ChunkDiskdbVerb) -> ExitCode
 }
 
 async fn run_list(cli: &Cli, explicit_endpoint: Option<&str>) -> ExitCode {
-    let ctx = match op_context(cli) {
+    let ctx = match authority_context(cli).await {
         Ok(ctx) => ctx,
         Err(code) => return code,
     };

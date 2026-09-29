@@ -423,6 +423,7 @@ mod tests {
             ssh_user: user.into(),
             ssh_key: key.map(Into::into),
             ssh_password: password.map(Into::into),
+            ssh_credential_ref: None,
         }
     }
 

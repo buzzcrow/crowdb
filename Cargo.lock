@@ -628,6 +628,7 @@ dependencies = [
  "chrono",
  "crc32fast",
  "crowdb-access-iceberg",
+ "crowdb-access-multipart",
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-common",
@@ -651,6 +652,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdb-access-multipart"
+version = "0.1.0-dev"
+dependencies = [
+ "crowdb-protocol",
+ "md-5",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "crowdb-access-s3"
 version = "0.1.0-dev"
 dependencies = [
@@ -661,6 +672,7 @@ dependencies = [
  "base64",
  "bincode",
  "chrono",
+ "crowdb-access-multipart",
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-protocol",
@@ -672,6 +684,7 @@ dependencies = [
  "md5",
  "percent-encoding",
  "rand 0.8.6",
+ "serde",
  "sha2",
  "subtle",
  "thiserror 2.0.18",

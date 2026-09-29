@@ -12,15 +12,17 @@ use crowdb_protocol::port::namespace::{assign_process_ports, RuntimeNamespace};
 use crowdb_protocol::ServicePort;
 use serde::Serialize;
 
-use crate::config::{ConsoleConfig, LocalLaunchSpec, ServerEntry, ServiceType};
+use crate::config::{ConsoleConfig, LocalLaunchSpec, NodeEntry, RackEntry, ServerEntry, ServiceType};
 use crate::error::{Error, Result};
 use crate::lifecycle;
 use crate::ops::cluster::{self, KvDeployTunables, LocalChunkdbDeployConfig, LocalDiskdbDeployConfig};
 use crate::ops::OpContext;
 
-const CONFIG_FILE: &str = "console.toml";
+mod local_state;
+
 const MARKER_FILE: &str = "s3-mini-cluster.json";
 const INITIALIZING_FILE: &str = "s3-mini-cluster.initializing.json";
+const BOOTSTRAP_INTENT_FILE: &str = "bootstrap-intent.toml";
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const NAMESPACE_ID: &str = "s3-mini-cluster";
 const BODY_PREVIEW_LIMIT: usize = 64 * 1024;
@@ -58,10 +60,10 @@ pub struct MiniClusterStatus {
 
 #[must_use]
 pub fn config_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(CONFIG_FILE)
+    local_state::path(data_dir)
 }
 
-/// Load a persisted mini-cluster record and console configuration.
+/// Load a persisted mini-cluster record and local process state.
 ///
 /// # Errors
 /// Returns an error for an unrecognized directory or invalid persisted data.
@@ -71,7 +73,8 @@ pub fn load(data_dir: &Path) -> Result<(ConsoleConfig, MiniClusterRecord)> {
         message: format!("{} is not a CROWDB S3 mini-cluster: {error}", data_dir.display()),
     })?;
     let record = serde_json::from_slice(&marker).map_err(|error| Error::Config(error.to_string()))?;
-    Ok((ConsoleConfig::load(&config_path(data_dir))?, record))
+    let (config, _) = local_state::load(data_dir)?;
+    Ok((config, record))
 }
 
 /// Create or restart a persistent local S3 mini-cluster.
@@ -105,6 +108,9 @@ async fn start_with_profile(
 ) -> Result<MiniClusterStatus> {
     archive_incomplete_attempt(data_dir)?;
     validate_location(data_dir)?;
+    std::fs::create_dir_all(data_dir)?;
+    let canonical_root = std::fs::canonicalize(data_dir)?;
+    let data_dir = canonical_root.as_path();
     let marker_path = data_dir.join(MARKER_FILE);
     if marker_path.exists() {
         let (_, record) = load(data_dir)?;
@@ -126,7 +132,6 @@ async fn start_with_profile(
         return restart(data_dir).await;
     }
 
-    std::fs::create_dir_all(data_dir)?;
     if storage_profile == StorageProfile::Persistent {
         RuntimeNamespace::persistent(data_dir, NAMESPACE_ID).map_err(namespace_error)?;
     }
@@ -173,6 +178,9 @@ async fn start_with_profile(
         diskdb_client_rpc_workers: None,
         metrics_interval: None,
     };
+    if let Some(status) = resume_if_interrupted(data_dir, &disk, &chunk, storage_profile).await? {
+        return Ok(status);
+    }
     let mut record = MiniClusterRecord {
         version: 1,
         endpoint: String::new(),
@@ -187,7 +195,7 @@ async fn start_with_profile(
         Ok(endpoints) => endpoints,
         Err(error) => {
             stop_config_processes(&mut ctx.config_mut());
-            let _ = ctx.config().save(&config_path(data_dir));
+            let _ = local_state::save(data_dir, &ctx.config());
             return Err(error);
         }
     };
@@ -200,8 +208,31 @@ async fn start_with_profile(
     Ok(status)
 }
 
+async fn resume_if_interrupted(
+    data_dir: &Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+    storage_profile: StorageProfile,
+) -> Result<Option<MiniClusterStatus>> {
+    if !data_dir.join(INITIALIZING_FILE).exists() || !local_state::path(data_dir).exists() {
+        return Ok(None);
+    }
+    let record: MiniClusterRecord = serde_json::from_slice(&std::fs::read(data_dir.join(INITIALIZING_FILE))?)
+        .map_err(|error| Error::Config(error.to_string()))?;
+    if record.version != 1 || record.storage_profile != storage_profile {
+        return Err(Error::Conflict {
+            kind: "S3 bootstrap profile".into(),
+            id: data_dir.display().to_string(),
+        });
+    }
+    resume_incomplete(data_dir, disk, chunk, record).await.map(Some)
+}
+
 fn archive_incomplete_attempt(data_dir: &Path) -> Result<()> {
     if !data_dir.join(INITIALIZING_FILE).exists() || data_dir.join(MARKER_FILE).exists() {
+        return Ok(());
+    }
+    if local_state::path(data_dir).exists() || data_dir.join(BOOTSTRAP_INTENT_FILE).exists() {
         return Ok(());
     }
     let name = data_dir
@@ -238,23 +269,69 @@ async fn initialize_new(
         no_fsync: (storage_profile == StorageProfile::Memory).then_some(true),
         ..KvDeployTunables::default()
     };
-    match storage_profile {
-        StorageProfile::Persistent => {
-            cluster::local_deploy_combined_file_backed(ctx, data_dir, Some(&tunables), disk, chunk).await?;
+    let (_, nodes) = cluster::prepare_local_deploy(ctx, 3, Some(data_dir), Some(&tunables)).await?;
+    local_state::save(data_dir, &ctx.config())?;
+    cluster::init_with_intent(ctx, &nodes, &data_dir.join(BOOTSTRAP_INTENT_FILE)).await?;
+    initialize_after_kv(ctx, data_dir, disk, chunk, storage_profile).await
+}
+
+async fn initialize_after_kv(
+    ctx: &OpContext,
+    data_dir: &Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+    storage_profile: StorageProfile,
+) -> Result<StartedEndpoints> {
+    let storage_services = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| {
+            matches!(
+                server.service_type,
+                ServiceType::Diskdb | ServiceType::Diskio | ServiceType::Chunkdb
+            )
+        })
+        .count();
+    if storage_services == 9 {
+        for group in &disk.data_groups {
+            if ctx.sysmd().get_group(0, *group).await?.is_none() {
+                return Err(Error::NotFound {
+                    kind: "S3 data group".into(),
+                    id: group.to_string(),
+                });
+            }
         }
-        StorageProfile::Memory => {
-            cluster::local_deploy_combined(ctx, data_dir, Some(&tunables), disk, chunk, "mem").await?;
+        cluster::restart_storage_services(ctx).await?;
+    } else if storage_services == 0 {
+        match storage_profile {
+            StorageProfile::Persistent => {
+                cluster::local_deploy_combined_file_backed_after_kv(ctx, data_dir, disk, chunk).await?;
+            }
+            StorageProfile::Memory => {
+                cluster::local_deploy_combined_after_kv(ctx, data_dir, disk, chunk, "mem").await?;
+            }
+        }
+    } else {
+        clear_partial_storage_launches(ctx, data_dir)?;
+        match storage_profile {
+            StorageProfile::Persistent => {
+                cluster::local_deploy_combined_file_backed_after_kv(ctx, data_dir, disk, chunk).await?;
+            }
+            StorageProfile::Memory => {
+                cluster::local_deploy_combined_after_kv(ctx, data_dir, disk, chunk, "mem").await?;
+            }
         }
     }
     let seeds = management_seeds(&ctx.config());
-    ctx.config().save(&config_path(data_dir))?;
+    local_state::save(data_dir, &ctx.config())?;
     let chunk_kv = spawn_chunk_kv(data_dir, &seeds).await?;
     add_service(ctx, chunk_kv)?;
-    ctx.config().save(&config_path(data_dir))?;
+    local_state::save(data_dir, &ctx.config())?;
     let access = spawn_access(data_dir, &seeds).await?;
     let endpoint = access.entry.url.clone();
     add_service(ctx, access)?;
-    ctx.config().save(&config_path(data_dir))?;
+    local_state::save(data_dir, &ctx.config())?;
     let (web_endpoint, web_pid) = spawn_web(data_dir).await?;
     Ok(StartedEndpoints {
         s3: endpoint,
@@ -263,8 +340,91 @@ async fn initialize_new(
     })
 }
 
+fn clear_partial_storage_launches(ctx: &OpContext, data_dir: &Path) -> Result<()> {
+    let partial = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| {
+            matches!(
+                server.service_type,
+                ServiceType::Diskdb | ServiceType::Diskio | ServiceType::Chunkdb
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for server in &partial {
+        if let Some(pid) = server.pid.filter(|pid| lifecycle::process_is_alive(*pid)) {
+            let launch = ctx
+                .config()
+                .local_launches
+                .get(&server.id)
+                .cloned()
+                .ok_or_else(|| Error::Config(format!("{} has no launch specification", server.id)))?;
+            let actual_cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))?;
+            if actual_cwd != Path::new(&launch.workdir) {
+                return Err(Error::Conflict {
+                    kind: "S3 process identity".into(),
+                    id: server.id.clone(),
+                });
+            }
+            lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(5))?;
+            if lifecycle::process_is_alive(pid) {
+                return Err(Error::Conflict {
+                    kind: "S3 process still running".into(),
+                    id: server.id.clone(),
+                });
+            }
+        }
+    }
+    let ids = partial.into_iter().map(|server| server.id).collect::<Vec<_>>();
+    let mut config = ctx.config_mut();
+    config.servers.retain(|server| !ids.contains(&server.id));
+    for id in ids {
+        config.local_launches.remove(&id);
+    }
+    local_state::save(data_dir, &config)
+}
+
+async fn resume_incomplete(
+    data_dir: &Path,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+    mut record: MiniClusterRecord,
+) -> Result<MiniClusterStatus> {
+    let (mut config, seeds) = local_state::load(data_dir)?;
+    restore_launch_nodes(&mut config)?;
+    let group0 = config
+        .servers
+        .iter()
+        .find(|server| server.service_type == ServiceType::Kv)
+        .and_then(|server| server.rpc_url.as_deref())
+        .ok_or_else(|| Error::Config("S3 bootstrap has no KV RPC seed".into()))?
+        .trim_start_matches("http://")
+        .to_owned();
+    let ctx = OpContext::new(group0, seeds.clone(), config);
+    for node_id in 1..=3 {
+        let server_dir = data_dir
+            .join("rack1")
+            .join(format!("node{node_id}"))
+            .join(format!("kv-server-{node_id}"));
+        crate::ops::kv_server::restart(&ctx, node_id, Some(&server_dir), None, &seeds).await?;
+    }
+    local_state::save(data_dir, &ctx.config())?;
+    cluster::init_with_intent(&ctx, &[1, 2, 3], &data_dir.join(BOOTSTRAP_INTENT_FILE)).await?;
+    let endpoints = initialize_after_kv(&ctx, data_dir, disk, chunk, record.storage_profile).await?;
+    record.endpoint = endpoints.s3;
+    record.web_endpoint = endpoints.web;
+    record.web_pid = Some(endpoints.web_pid);
+    save_record(&data_dir.join(MARKER_FILE), &record)?;
+    std::fs::remove_file(data_dir.join(INITIALIZING_FILE))?;
+    let status = status_from(data_dir, false, &ctx.config(), &record);
+    Ok(status)
+}
+
 async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
-    let (config, mut record) = load(data_dir)?;
+    let (mut config, mut record) = load(data_dir)?;
+    restore_launch_nodes(&mut config)?;
     if let Some(pid) = record.web_pid.take() {
         let _ = lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(5));
         save_record(&data_dir.join(MARKER_FILE), &record)?;
@@ -288,7 +448,7 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
         crate::ops::kv_server::restart(&ctx, node_id, Some(&server_dir), None, &seeds).await?;
     }
     cluster::restart_storage_services(&ctx).await?;
-    ctx.config().save(&config_path(data_dir))?;
+    local_state::save(data_dir, &ctx.config())?;
     for kind in [ServiceType::ChunkKv, ServiceType::AccessServer] {
         let server = ctx
             .config()
@@ -306,7 +466,7 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
                 record.endpoint.clone_from(&spawned.entry.url);
             }
             add_service(&ctx, spawned)?;
-            ctx.config().save(&config_path(data_dir))?;
+            local_state::save(data_dir, &ctx.config())?;
             continue;
         };
         let mut launch = ctx
@@ -329,9 +489,9 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
         {
             entry.pid = Some(pid);
         }
-        ctx.config().save(&config_path(data_dir))?;
+        local_state::save(data_dir, &ctx.config())?;
     }
-    ctx.config().save(&config_path(data_dir))?;
+    local_state::save(data_dir, &ctx.config())?;
     let (web_endpoint, web_pid) = spawn_web(data_dir).await?;
     record.web_endpoint = web_endpoint;
     record.web_pid = Some(web_pid);
@@ -367,7 +527,7 @@ pub fn stop(data_dir: &Path) -> Result<MiniClusterStatus> {
         let _ = lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(5));
     }
     stop_config_processes(&mut config);
-    config.save(&config_path(data_dir))?;
+    local_state::save(data_dir, &config)?;
     save_record(&data_dir.join(MARKER_FILE), &record)?;
     Ok(status_from(data_dir, false, &config, &record))
 }
@@ -392,7 +552,10 @@ fn validate_location(data_dir: &Path) -> Result<()> {
         return Ok(());
     }
     let mut entries = std::fs::read_dir(data_dir)?;
-    if entries.next().transpose()?.is_none() || data_dir.join(MARKER_FILE).exists() {
+    if entries.next().transpose()?.is_none()
+        || data_dir.join(MARKER_FILE).exists()
+        || (data_dir.join(INITIALIZING_FILE).exists() && local_state::path(data_dir).exists())
+    {
         return Ok(());
     }
     Err(Error::Validation {
@@ -419,6 +582,36 @@ fn management_seeds(config: &ConsoleConfig) -> Vec<String> {
         .filter(|server| server.service_type == ServiceType::Kv)
         .map(|server| server.url.clone())
         .collect()
+}
+
+fn restore_launch_nodes(config: &mut ConsoleConfig) -> Result<()> {
+    config.add_rack(RackEntry {
+        id: 1,
+        name: "rack-1".into(),
+    })?;
+    let node_ids: Vec<_> = config
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .map(|server| {
+            server
+                .node_id
+                .ok_or_else(|| Error::Config("S3 KV launch has no node id".into()))
+        })
+        .collect::<Result<_>>()?;
+    for id in node_ids {
+        config.add_node(NodeEntry {
+            id,
+            rack_id: 1,
+            host: "127.0.0.1".into(),
+            ssh_port: 22,
+            ssh_user: String::new(),
+            ssh_key: None,
+            ssh_password: None,
+            ssh_credential_ref: None,
+        })?;
+    }
+    Ok(())
 }
 
 struct SpawnedService {
@@ -508,31 +701,83 @@ async fn spawn_access(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServic
 }
 
 async fn spawn_web(data_dir: &Path) -> Result<(String, u32)> {
+    use crate::config::web::{WebMode, WebProcessConfig};
+
     let binary = find_binary("CROWDB_WEB_BIN", "crowdb-web")?;
     let port = assign_cluster_port(data_dir, ServicePort::Web, "web-1")?;
-    let workdir = data_dir.join("services/web-1");
+    let root = std::fs::canonicalize(data_dir)?;
+    let workdir = root.join("services/web-1");
     let log_dir = workdir.join("log");
     std::fs::create_dir_all(&log_dir)?;
+    let ui_root = root.join("ui");
+    std::fs::create_dir_all(&ui_root)?;
     let endpoint = format!("http://127.0.0.1:{port}");
+    let (_, seeds) = local_state::load(data_dir)?;
+    let config = WebProcessConfig {
+        version: 1,
+        mode: WebMode::BareMetal,
+        bind: "127.0.0.1".into(),
+        port,
+        group0_management_seeds: seeds,
+        ui_root,
+        monitor_status: None,
+        log_dir,
+        log_max_file_mb: 30,
+        log_max_files: 5,
+        request_timeout_ms: Some(5_000),
+    };
+    config.validate()?;
+    let config_path = root.join("s3-web.toml");
+    std::fs::write(
+        &config_path,
+        toml::to_string_pretty(&config).map_err(|error| Error::Config(error.to_string()))?,
+    )?;
+    let mut env = BTreeMap::new();
+    env.insert("CROWDB_ICEBERG_MANAGE_TOKEN".into(), web_token(&root)?);
     let launch = LocalLaunchSpec {
         program: binary.to_string_lossy().into_owned(),
-        args: vec![
-            "--bind".into(),
-            "127.0.0.1".into(),
-            "--port".into(),
-            port.to_string(),
-            "--config".into(),
-            config_path(data_dir).to_string_lossy().into_owned(),
-            "--skip-startup-restore".into(),
-            "--log-dir".into(),
-            log_dir.to_string_lossy().into_owned(),
-        ],
+        args: vec!["--config".into(), config_path.to_string_lossy().into_owned()],
         workdir: workdir.to_string_lossy().into_owned(),
-        env: BTreeMap::new(),
+        env,
         readiness_url: Some(format!("{endpoint}/healthz")),
     };
     let pid = spawn(&launch, "web-1").await?;
     Ok((endpoint, pid))
+}
+
+fn web_token(root: &Path) -> Result<String> {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let path = root.join("s3-web-manage.token");
+    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+        if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o077 != 0 {
+            return Err(Error::Config(
+                "S3 Web management token file is not private".into(),
+            ));
+        }
+        let token = std::fs::read_to_string(path)?;
+        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::Config("S3 Web management token is invalid".into()));
+        }
+        return Ok(token);
+    }
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let mut token = String::with_capacity(64);
+    for byte in bytes {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(token.as_bytes())?;
+    file.sync_all()?;
+    Ok(token)
 }
 
 fn assign_cluster_port(data_dir: &Path, service: ServicePort, identity: &str) -> Result<u16> {

@@ -35,17 +35,7 @@ async fn connect(
     diskio_connections_per_endpoint: usize,
     diskio_rpc_workers: u32,
 ) -> Result<ChunkIoClient, ExitCode> {
-    let config = crate::commands::load_config(cli)?;
-    let mut seeds = vec![format!("http://{}:{}", cli.system_ip, cli.system_port)];
-    for server in config
-        .servers
-        .iter()
-        .filter(|server| server.service_type == crowdb_console_shared::config::ServiceType::Kv)
-    {
-        if !seeds.contains(&server.url) {
-            seeds.push(server.url.clone());
-        }
-    }
+    let seeds = vec![format!("http://{}:{}", cli.system_ip, cli.system_port)];
     ChunkIoClient::connect(ChunkIoClientConfig {
         management_seeds: seeds,
         diskio_connections_per_endpoint,

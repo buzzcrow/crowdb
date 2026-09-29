@@ -149,6 +149,7 @@ async fn disk_io_e2e_group0_sync() {
         &DiskGroupValue {
             status: HwStatus::Up as i32,
             disk_ids: all_disk_ids,
+            name: String::new(),
         },
     )
     .await

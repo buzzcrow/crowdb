@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `cluster` domain — cluster-level ops: init, reset, clean, status,
+//! `cluster` domain — cluster-level ops: init, destroy, clean, status,
 //! topology, plus hardware subcommands (rack/node/disk-group/disk).
 
 pub mod hardware;
@@ -15,8 +15,53 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{commit_config, op_context};
+use crate::commands::authority_context;
 use crate::Cli;
+
+async fn local_deploy_context(
+    cli: &Cli,
+    existing_cluster: bool,
+) -> Result<crowdb_console_shared::ops::OpContext, ExitCode> {
+    if !existing_cluster {
+        let mgmt = format!("http://{}:{}", cli.system_ip, cli.system_port);
+        let rpc_hint = format!("{}:{}", cli.system_ip, cli.system_port);
+        return Ok(crowdb_console_shared::ops::OpContext::new(
+            rpc_hint,
+            vec![mgmt],
+            crowdb_console_shared::ConsoleConfig::default(),
+        ));
+    }
+    let ctx = authority_context(cli).await?;
+    {
+        let racks = crowdb_console_shared::ops::hardware::list_racks_from_group0(&ctx)
+            .await
+            .map_err(|error| {
+                eprintln!("error: read Group 0 racks: {error}");
+                ExitCode::from(2)
+            })?;
+        let nodes = crowdb_console_shared::ops::hardware::list_nodes_from_group0(&ctx, None)
+            .await
+            .map_err(|error| {
+                eprintln!("error: read Group 0 nodes: {error}");
+                ExitCode::from(2)
+            })?;
+        let mut servers = Vec::with_capacity(nodes.len());
+        for node in &nodes {
+            let url = ctx.live_node_mgmt_url(node.id).await.map_err(|error| {
+                eprintln!("error: resolve live KV node {}: {error}", node.id);
+                ExitCode::from(2)
+            })?;
+            let mut server = crowdb_console_shared::config::ServerEntry::new(node.id.to_string(), url);
+            server.node_id = Some(node.id);
+            servers.push(server);
+        }
+        let mut config = ctx.config_mut();
+        config.racks = racks;
+        config.nodes = nodes;
+        config.servers = servers;
+    }
+    Ok(ctx)
+}
 
 #[derive(Subcommand, Debug)]
 pub enum ClusterVerb {
@@ -24,6 +69,9 @@ pub enum ClusterVerb {
     Init {
         #[arg(short = 'n', long, value_delimiter = ',')]
         nodes: Vec<String>,
+        /// Versioned bootstrap topology input for the first registry-mode init.
+        #[arg(long, value_name = "PATH")]
+        bootstrap_file: Option<std::path::PathBuf>,
     },
     /// Deploy a local N-node KV cluster on 127.0.0.1 (forks
     /// `crowdb-kv-server` on each node, bootstraps group 0).
@@ -131,8 +179,6 @@ pub enum ClusterVerb {
     },
     /// Tear down the entire cluster (all groups, stores, servers, sysdata).
     Destroy,
-    /// Remove orphaned sysdata entries without stopping running servers.
-    Reset,
     /// Wipe user data on every node + wait for re-election. Preserves
     /// group-0 sysdata + topology — servers stay running. Use --store/--group
     /// to target a non-system group (recommended for benchmarks).
@@ -180,8 +226,15 @@ pub enum ClusterVerb {
 #[allow(clippy::too_many_lines)]
 pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
     match verb {
-        ClusterVerb::Init { nodes } => {
-            let ctx = match op_context(cli) {
+        ClusterVerb::Init {
+            nodes,
+            bootstrap_file,
+        } => {
+            let Some(registry) = &cli.registry else {
+                eprintln!("error: cluster init requires --registry and a versioned bootstrap file");
+                return ExitCode::from(2);
+            };
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -192,11 +245,31 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            match crowdb_console_shared::ops::cluster::init(&ctx, &node_ids).await {
-                Ok(summary) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
+            let sealed_path = registry.with_extension("bootstrap-intent.toml");
+            if let Some(source) = bootstrap_file {
+                let intent = match crowdb_console_shared::bootstrap_intent::BootstrapIntent::load(&source) {
+                    Ok(intent) => intent,
+                    Err(error) => {
+                        eprintln!("error: load bootstrap file: {error}");
+                        return ExitCode::from(2);
                     }
+                };
+                if intent.members() != node_ids.as_slice() {
+                    eprintln!("error: bootstrap file members differ from --nodes");
+                    return ExitCode::from(1);
+                }
+                if let Err(error) = intent.seal(&sealed_path) {
+                    eprintln!("error: seal bootstrap intent: {error}");
+                    return ExitCode::from(2);
+                }
+            } else if !sealed_path.exists() {
+                eprintln!("error: --bootstrap-file is required for the first init");
+                return ExitCode::from(1);
+            }
+            let result =
+                crowdb_console_shared::ops::cluster::init_with_intent(&ctx, &node_ids, &sealed_path).await;
+            match result {
+                Ok(summary) => {
                     println!(
                         "cluster initialized: store {}, group {}, {} nodes",
                         summary.store_id,
@@ -246,7 +319,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             allow_unsafe_ec,
         } => match service_type.as_str() {
             "combined" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, false).await {
                     Ok(context) => context,
                     Err(code) => return code,
                 };
@@ -299,9 +372,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 .await
                 {
                     Ok(summary) => {
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
-                        }
                         println!(
                             "local-deploy combined: {} KV nodes, {} racks, {} DiskDB, {} ChunkDB, {} DiskIO",
                             summary.kv_nodes,
@@ -310,19 +380,19 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                             summary.chunkdb_instances,
                             summary.diskio_instances
                         );
+                        if let Some(seed) = ctx.config().servers.first() {
+                            println!("Group 0 management seed: {}", seed.url);
+                        }
                         ExitCode::SUCCESS
                     }
                     Err(error) => {
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
-                        }
                         eprintln!("error: local-deploy combined: {error}");
                         ExitCode::from(2)
                     }
                 }
             }
             "kv" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, false).await {
                     Ok(c) => c,
                     Err(c) => return c,
                 };
@@ -356,9 +426,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 .await
                 {
                     Ok(summary) => {
-                        if let Err(c) = commit_config(cli, &ctx) {
-                            return c;
-                        }
                         println!(
                             "local-deploy complete: {} nodes (rack {}, nodes [{}]), group 0 bootstrapped",
                             summary.node_count,
@@ -370,6 +437,9 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         );
+                        if let Some(seed) = ctx.config().servers.first() {
+                            println!("Group 0 management seed: {}", seed.url);
+                        }
                         ExitCode::SUCCESS
                     }
                     Err(e) => {
@@ -379,7 +449,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
             "rpc" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, false).await {
                     Ok(c) => c,
                     Err(c) => return c,
                 };
@@ -399,9 +469,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 .await
                 {
                     Ok(summary) => {
-                        if let Err(c) = commit_config(cli, &ctx) {
-                            return c;
-                        }
                         println!(
                             "local-deploy rpc: port={}, pid={}, io_engines={}, io_workers={}, nagle={}",
                             summary.port, summary.pid, summary.io_engines, summary.io_workers, summary.nagle
@@ -415,7 +482,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
             "diskdb" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, true).await {
                     Ok(c) => c,
                     Err(c) => return c,
                 };
@@ -438,9 +505,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     .await
                 {
                     Ok(summary) => {
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
-                        }
                         println!(
                             "local-deploy diskdb: {} instances, {} disk-groups, {} disks, data-groups {:?}",
                             summary.instance_count,
@@ -457,7 +521,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
             "chunkdb" => {
-                let ctx = match op_context(cli) {
+                let ctx = match local_deploy_context(cli, true).await {
                     Ok(context) => context,
                     Err(code) => return code,
                 };
@@ -478,9 +542,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     .await
                 {
                     Ok(summary) => {
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
-                        }
                         println!("local-deploy chunkdb: {} instances", summary.instance_count);
                         ExitCode::SUCCESS
                     }
@@ -498,14 +559,38 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             }
         },
         ClusterVerb::Destroy => {
-            let ctx = match op_context(cli) {
+            let Some(path) = &cli.registry else {
+                eprintln!("error: cluster destroy requires --registry to stop local processes");
+                return ExitCode::from(2);
+            };
+            let registry = match crowdb_console_shared::config::web::LaunchRegistry::load(path) {
+                Ok(registry) => registry,
+                Err(error) => {
+                    eprintln!("error: load launch registry: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let runtime = match crowdb_console_shared::launch::LaunchRuntime::for_registry(path) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("error: launch runtime: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
             match crowdb_console_shared::ops::cluster::destroy(&ctx).await {
                 Ok(()) => {
-                    if let Err(c) = commit_config(cli, &ctx) {
-                        return c;
+                    for launch in &registry.launches {
+                        if let Err(error) = runtime.stop(launch).await {
+                            eprintln!(
+                                "error: stop {} on node {}: {error}",
+                                launch.service_id, launch.node_id
+                            );
+                            return ExitCode::from(2);
+                        }
                     }
                     println!("cluster destroy complete");
                     ExitCode::SUCCESS
@@ -516,44 +601,53 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
         }
-        ClusterVerb::Reset => {
-            let ctx = match op_context(cli) {
-                Ok(c) => c,
-                Err(c) => return c,
-            };
-            match crowdb_console_shared::ops::cluster::reset(&ctx).await {
-                Ok(()) => {
-                    println!("cluster reset complete");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("error: cluster reset: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        }
         ClusterVerb::Clean {
             store,
             group,
             restart_services,
         } => {
-            let ctx = match op_context(cli) {
+            let restart = if restart_services {
+                let Some(path) = &cli.registry else {
+                    eprintln!("error: --restart-services requires --registry");
+                    return ExitCode::from(2);
+                };
+                let registry = match crowdb_console_shared::config::web::LaunchRegistry::load(path) {
+                    Ok(registry) => registry,
+                    Err(error) => {
+                        eprintln!("error: load launch registry: {error}");
+                        return ExitCode::from(2);
+                    }
+                };
+                let runtime = match crowdb_console_shared::launch::LaunchRuntime::for_registry(path) {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        eprintln!("error: launch runtime: {error}");
+                        return ExitCode::from(2);
+                    }
+                };
+                Some((registry, runtime))
+            } else {
+                None
+            };
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
             match crowdb_console_shared::ops::cluster::clean(&ctx, store, group).await {
                 Ok(mut result) => {
-                    if restart_services {
-                        match crowdb_console_shared::ops::cluster::restart_storage_services(&ctx).await {
-                            Ok(count) => result.restarted_services = count,
-                            Err(error) => {
-                                let _ = commit_config(cli, &ctx);
-                                eprintln!("error: cluster clean service restart: {error}");
-                                return ExitCode::from(2);
+                    if let Some((registry, runtime)) = restart {
+                        for kind in ["diskio", "diskdb", "chunkdb"] {
+                            for launch in registry
+                                .launches
+                                .iter()
+                                .filter(|launch| launch.service_id == kind)
+                            {
+                                if let Err(error) = runtime.restart(launch).await {
+                                    eprintln!("error: restart {kind} on node {}: {error}", launch.node_id);
+                                    return ExitCode::from(2);
+                                }
+                                result.restarted_services += 1;
                             }
-                        }
-                        if let Err(code) = commit_config(cli, &ctx) {
-                            return code;
                         }
                     }
                     println!(
@@ -569,7 +663,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             }
         }
         ClusterVerb::Status => {
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -601,7 +695,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             }
         }
         ClusterVerb::Topology { node } => {
-            let ctx = match op_context(cli) {
+            let ctx = match authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };

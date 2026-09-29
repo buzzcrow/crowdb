@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_test_harness::test_dirs::TestDir;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,90 @@ use std::sync::mpsc;
 
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_crowdb-cli"))
+}
+
+#[test]
+#[ignore = "starts the complete local storage stack twice"]
+fn interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file() {
+    let directory = TestDir::new("s3-bootstrap-replay-cli").expect("test directory");
+    let root = directory.path();
+    let workspace = crowdb_test_harness::test_dirs::workspace_root();
+    let relative_root = root
+        .strip_prefix(&workspace)
+        .expect("test root is below workspace");
+    let failed = cli()
+        .current_dir(&workspace)
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(relative_root)
+        .env("CROWDB_CHUNK_KV_SERVER_BIN", "/bin/false")
+        .output()
+        .expect("run interrupted launch");
+    assert!(!failed.status.success(), "failure injection must stop launch");
+    assert!(root.join("s3-mini-cluster.initializing.json").exists());
+    assert!(root.join("s3-local-state.toml").exists());
+    assert!(!root.join("console.toml").exists());
+    let restarted = cli()
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(root)
+        .env_remove("CROWDB_CHUNK_KV_SERVER_BIN")
+        .output()
+        .expect("resume interrupted launch");
+    assert!(
+        restarted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+    assert!(!root.join("bootstrap-intent.toml").exists());
+    assert!(!root.join("s3-mini-cluster.initializing.json").exists());
+    let deleted = cli()
+        .args(["s3", "cluster", "delete", "--root"])
+        .arg(root)
+        .output()
+        .expect("delete test cluster");
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+}
+
+#[test]
+#[ignore = "starts the complete local storage stack twice"]
+fn interrupted_s3_storage_launch_replays_without_local_topology() {
+    let directory = TestDir::new("s3-storage-replay-cli").expect("test directory");
+    let root = directory.path();
+    let failed = cli()
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(root)
+        .env("CROWDB_DISKIO_BIN", "/bin/false")
+        .output()
+        .expect("run interrupted storage launch");
+    assert!(!failed.status.success(), "failure injection must stop launch");
+    let local = std::fs::read_to_string(root.join("s3-local-state.toml")).unwrap();
+    assert!(local.contains("diskdb-1"), "{local}");
+    assert!(!local.contains("[[rack]]"));
+    let restarted = cli()
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(root)
+        .env_remove("CROWDB_DISKIO_BIN")
+        .output()
+        .expect("resume interrupted storage launch");
+    assert!(
+        restarted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+    assert!(!root.join("s3-mini-cluster.initializing.json").exists());
+    let deleted = cli()
+        .args(["s3", "cluster", "delete", "--root"])
+        .arg(root)
+        .output()
+        .expect("delete test cluster");
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
 }
 
 fn tempdir(tag: &str) -> PathBuf {
@@ -34,6 +119,11 @@ fn write_cluster_record(root: &Path, endpoint: &str) {
         serde_json::to_vec_pretty(&record).expect("record json"),
     )
     .expect("write record");
+    std::fs::write(
+        root.join("s3-local-state.toml"),
+        "version = 1\ngroup0_seeds = ['http://127.0.0.1:10000']\n[[service]]\nid = 'kv-1'\nurl = 'http://127.0.0.1:10000'\nnode_id = 1\n",
+    )
+    .expect("write launch-only state");
 }
 
 fn mock_http_once(response_content_type: &str, response_body: &[u8]) -> (String, mpsc::Receiver<Vec<u8>>) {

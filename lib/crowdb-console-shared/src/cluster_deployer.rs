@@ -336,6 +336,7 @@ impl CrowdbClusterDeployer {
                         ssh_user: String::new(),
                         ssh_key: None,
                         ssh_password: None,
+                        ssh_credential_ref: None,
                     },
                 )
                 .await?;

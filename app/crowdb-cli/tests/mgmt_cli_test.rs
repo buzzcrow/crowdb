@@ -22,6 +22,7 @@ async fn store_group_replica_round_trip() {
         eprintln!("skipping: crowdb-cli binary not built ({})", cli.display());
         return;
     }
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
 
     let store_id = "9";
     let group_id = "90";

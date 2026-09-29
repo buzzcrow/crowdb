@@ -121,6 +121,7 @@ async fn conflicting_group_zero_record_rejects_without_creating_hardware() {
             &RackValue {
                 status: HwStatus::Up as i32,
                 node_ids: vec![99],
+                ..Default::default()
             },
         )
         .await

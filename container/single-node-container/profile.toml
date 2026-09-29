@@ -173,8 +173,8 @@ backoff_max_ms = 5000
 [[services]]
 id = "s3"
 program = "/opt/crowdb/bin/crowdb-access-server"
-args = ["--config", "/opt/crowdb/run/config/s3.toml"]
-env = { CROWDB_S3_PUBLIC_URI = "http://localhost:81", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000" }
+args = ["--config", "/opt/crowdb/run/config/access.toml"]
+env = { CROWDB_S3_PUBLIC_URI = "http://localhost:81", CROWDB_S3_REGION = "us-east-1", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
 fence_listeners = ["127.0.0.1:81"]
 config_template = "/opt/crowdb/etc/templates/access.toml"
@@ -191,8 +191,8 @@ backoff_max_ms = 5000
 [[services]]
 id = "iceberg"
 program = "/opt/crowdb/bin/crowdb-iceberg"
-args = ["serve", "--config", "/opt/crowdb/run/config/iceberg.toml"]
-env = { CROWDB_ICEBERG_PUBLIC_URI = "http://localhost", CROWDB_ICEBERG_GC_ENABLED = "0" }
+args = ["serve", "--config", "/opt/crowdb/run/config/access.toml"]
+env = { CROWDB_ICEBERG_PUBLIC_URI = "http://localhost", CROWDB_ICEBERG_GC_ENABLED = "0", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
 fence_listeners = ["127.0.0.1:80"]
 config_template = "/opt/crowdb/etc/templates/access.toml"
