@@ -313,10 +313,15 @@ async fn initialize_after_kv(
             }
         }
     } else {
-        return Err(Error::Conflict {
-            kind: "partial S3 storage launch state".into(),
-            id: format!("{storage_services} of 9 services"),
-        });
+        clear_partial_storage_launches(ctx, data_dir)?;
+        match storage_profile {
+            StorageProfile::Persistent => {
+                cluster::local_deploy_combined_file_backed_after_kv(ctx, data_dir, disk, chunk).await?;
+            }
+            StorageProfile::Memory => {
+                cluster::local_deploy_combined_after_kv(ctx, data_dir, disk, chunk, "mem").await?;
+            }
+        }
     }
     let seeds = management_seeds(&ctx.config());
     local_state::save(data_dir, &ctx.config())?;
@@ -333,6 +338,52 @@ async fn initialize_after_kv(
         web: web_endpoint,
         web_pid,
     })
+}
+
+fn clear_partial_storage_launches(ctx: &OpContext, data_dir: &Path) -> Result<()> {
+    let partial = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| {
+            matches!(
+                server.service_type,
+                ServiceType::Diskdb | ServiceType::Diskio | ServiceType::Chunkdb
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for server in &partial {
+        if let Some(pid) = server.pid.filter(|pid| lifecycle::process_is_alive(*pid)) {
+            let launch = ctx
+                .config()
+                .local_launches
+                .get(&server.id)
+                .cloned()
+                .ok_or_else(|| Error::Config(format!("{} has no launch specification", server.id)))?;
+            let actual_cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))?;
+            if actual_cwd != Path::new(&launch.workdir) {
+                return Err(Error::Conflict {
+                    kind: "S3 process identity".into(),
+                    id: server.id.clone(),
+                });
+            }
+            lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(5))?;
+            if lifecycle::process_is_alive(pid) {
+                return Err(Error::Conflict {
+                    kind: "S3 process still running".into(),
+                    id: server.id.clone(),
+                });
+            }
+        }
+    }
+    let ids = partial.into_iter().map(|server| server.id).collect::<Vec<_>>();
+    let mut config = ctx.config_mut();
+    config.servers.retain(|server| !ids.contains(&server.id));
+    for id in ids {
+        config.local_launches.remove(&id);
+    }
+    local_state::save(data_dir, &config)
 }
 
 async fn resume_incomplete(

@@ -186,8 +186,11 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   committed cluster. A real failure injected at Chunk KV startup recovers on
   the next CLI invocation, with all 15 services ready and no topology file.
   The CLI integration test reproduces this interruption and recovery. Partial
-  storage-service launch sets still fail closed and need completion or an
-  explicit operator recovery path; mixed CLI/Web config remains to remove.
+  storage-service launch sets now clear only the incomplete local process
+  entries after checking a still-live process's work directory, then replay
+  provisioning from confirmed Group 0 metadata. A DiskIO startup failure
+  after DiskDB launch recovers on the next CLI invocation with no local
+  topology copy. Mixed CLI/Web config remains to remove.
   S3 now canonicalizes a relative root before creating child launch paths;
   the interrupted CLI test covers a relative root. The S3 CLI mock fixture
   supplies the required launch-only state; its three previously failing cases

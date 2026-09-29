@@ -57,6 +57,45 @@ fn interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file() {
     );
 }
 
+#[test]
+#[ignore = "starts the complete local storage stack twice"]
+fn interrupted_s3_storage_launch_replays_without_local_topology() {
+    let directory = TestDir::new("s3-storage-replay-cli").expect("test directory");
+    let root = directory.path();
+    let failed = cli()
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(root)
+        .env("CROWDB_DISKIO_BIN", "/bin/false")
+        .output()
+        .expect("run interrupted storage launch");
+    assert!(!failed.status.success(), "failure injection must stop launch");
+    let local = std::fs::read_to_string(root.join("s3-local-state.toml")).unwrap();
+    assert!(local.contains("diskdb-1"), "{local}");
+    assert!(!local.contains("[[rack]]"));
+    let restarted = cli()
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(root)
+        .env_remove("CROWDB_DISKIO_BIN")
+        .output()
+        .expect("resume interrupted storage launch");
+    assert!(
+        restarted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+    assert!(!root.join("s3-mini-cluster.initializing.json").exists());
+    let deleted = cli()
+        .args(["s3", "cluster", "delete", "--root"])
+        .arg(root)
+        .output()
+        .expect("delete test cluster");
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+}
+
 fn tempdir(tag: &str) -> PathBuf {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
