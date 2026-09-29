@@ -138,6 +138,10 @@ configuration, documentation and crash-diagnostics tasks below are pending.
   Web; tests cover two consoles, conflicts, occupied deletion, private Web
   writes and a lost committed write response. Legacy Web routes and CLI
   mixed-config paths still need removal.
+  Every CLI rack/node/disk-group/disk command now builds a Group 0-only
+  context, including when `--registry` is omitted. A malformed legacy file
+  cannot alter or block rack/node reads. The complete CLI suite passes;
+  remaining mixed CLI operations are outside hardware.
 - [ ] **Authority-only reads**: replace local monitor/config topology and
   endpoint fallbacks with Group 0 and live registrations. Missing, ambiguous or
   expired registrations remain unavailable.

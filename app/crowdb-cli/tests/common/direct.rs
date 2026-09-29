@@ -179,6 +179,12 @@ pub async fn spawn_group0() -> Option<Group0> {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    crowdb_console_shared::ops::hardware::add_rack_to_group0(&context, 1, "rack-1")
+        .await
+        .expect("publish rack to Group 0");
+    crowdb_console_shared::ops::hardware::add_node_to_group0(&context, local_node(1, 1))
+        .await
+        .expect("publish node to Group 0");
 
     Some(Group0 {
         pid: deployed.pid,

@@ -33,7 +33,7 @@ async fn cluster_status_via_direct_group0() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cluster_rack_list_via_direct_config() {
+async fn cluster_rack_list_ignores_legacy_local_state() {
     let Some(g0) = spawn_group0().await else {
         eprintln!("skipping: crowdb-kv-server binary not built");
         return;
@@ -44,14 +44,15 @@ async fn cluster_rack_list_via_direct_config() {
         return;
     }
 
-    // `cluster rack list` should list rack 1 (from the config).
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    // `cluster rack list` reads rack 1 from Group 0 despite the old file.
     let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "rack", "list"]);
     assert_eq!(code, 0, "cluster rack list stderr={stderr}");
     assert!(stdout.contains('1'), "cluster rack list stdout={stdout}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cluster_node_list_via_direct_config() {
+async fn cluster_node_list_ignores_legacy_local_state() {
     let Some(g0) = spawn_group0().await else {
         eprintln!("skipping: crowdb-kv-server binary not built");
         return;
@@ -62,7 +63,8 @@ async fn cluster_node_list_via_direct_config() {
         return;
     }
 
-    // `cluster node list` should list node 1 (from the config).
+    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
+    // `cluster node list` reads node 1 from Group 0 despite the old file.
     let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "node", "list"]);
     assert_eq!(code, 0, "cluster node list stderr={stderr}");
     assert!(stdout.contains('1'), "cluster node list stdout={stdout}");

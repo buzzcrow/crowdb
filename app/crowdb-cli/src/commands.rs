@@ -72,6 +72,25 @@ pub(crate) fn op_context(cli: &Cli) -> Result<OpContext, ExitCode> {
     Ok(OpContext::new(effective_g0, seeds, config))
 }
 
+/// Build a Group 0 context for hardware operations without reading the old
+/// local console state. The CLI endpoint is a discovery seed, while the
+/// optional launch registry is validated only as local process policy.
+pub(crate) fn authority_context(cli: &Cli) -> Result<OpContext, ExitCode> {
+    if let Some(path) = &cli.registry {
+        crowdb_console_shared::config::web::LaunchRegistry::load(path).map_err(|error| {
+            eprintln!("error: load launch registry: {error}");
+            ExitCode::from(2)
+        })?;
+    }
+    let mgmt_url = format!("http://{}:{}", cli.system_ip, cli.system_port);
+    let group0_endpoint = format!("{}:{}", cli.system_ip, cli.system_port);
+    Ok(OpContext::new(
+        group0_endpoint,
+        vec![mgmt_url],
+        crowdb_console_shared::ConsoleConfig::default(),
+    ))
+}
+
 /// Load the CLI's internal persisted state from its fixed runtime location.
 pub(crate) fn load_config(cli: &Cli) -> Result<crowdb_console_shared::ConsoleConfig, ExitCode> {
     if let Some(path) = &cli.registry {
