@@ -211,16 +211,22 @@ async fn start_listener(
     };
     let gc_client = gc_chunks.clone().unwrap_or_else(|| chunks.clone());
     let gc = super::gc_runtime::run(repository.clone(), gc_store, gc_client, gc_config);
-    tokio::select! {
-        result = serving => result?,
-        () = super::recovery::run(repository, crowdb_access_iceberg::namespace::NamespaceRecovery::new(store)) => {}
-        () = multipart => {}
-        () = tables => {}
-        () = gc => {}
-    }
-    if let Some(gc_chunks) = gc_chunks {
-        gc_chunks.shutdown_small_writes().await?;
-    }
+    let result: Result<(), BoxError> = tokio::select! {
+        result = serving => result.map_err(Into::into),
+        () = super::recovery::run(repository, crowdb_access_iceberg::namespace::NamespaceRecovery::new(store)) => {
+            Err("Iceberg namespace recovery stopped unexpectedly".into())
+        }
+        () = multipart => Err("Iceberg multipart recovery stopped unexpectedly".into()),
+        () = tables => Err("Iceberg table recovery stopped unexpectedly".into()),
+        () = gc => Err("Iceberg GC stopped unexpectedly".into()),
+    };
+    let gc_shutdown = if let Some(gc_chunks) = gc_chunks {
+        gc_chunks.shutdown_small_writes().await
+    } else {
+        Ok(())
+    };
+    result?;
+    gc_shutdown?;
     tracing::info!("Iceberg listener drained");
     Ok(())
 }
