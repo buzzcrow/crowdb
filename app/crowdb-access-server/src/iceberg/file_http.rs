@@ -9,6 +9,7 @@ use crowdb_access_iceberg::file::{
     RangeError,
 };
 use crowdb_access_iceberg::key::OperationId;
+use crowdb_access_iceberg::storage::own_large_write;
 use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
 use crowdb_access_s3::native_buffer::{NativeBodyAllocator, NativeBodyReceiver};
 use crowdb_chunk_client::{ChunkClientConfig, LargeWritePolicy};
@@ -72,6 +73,11 @@ impl FileHttp {
         {
             return Err(FileGrantError::Invalid);
         }
+        let mut large_write = LargeWritePolicy {
+            ec_scheme: EcScheme::new(8, 4),
+            client: Arc::new(ChunkClientConfig::default()),
+        };
+        own_large_write(&mut large_write);
         Ok(Self {
             repository: FileRepository::new(store.clone()),
             multipart: MultipartRepository::new(store.clone()),
@@ -82,10 +88,7 @@ impl FileHttp {
             responses: FileResponseBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             uploads: FileUploadBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             small_threshold_exclusive: crate::config::SmallWriteConfig::default().threshold_exclusive(),
-            large_write: LargeWritePolicy {
-                ec_scheme: EcScheme::new(8, 4),
-                client: Arc::new(ChunkClientConfig::default()),
-            },
+            large_write,
             native_allocator,
             region,
             limits: FileServiceLimits {
@@ -105,13 +108,14 @@ impl FileHttp {
         Ok(())
     }
 
-    pub(super) fn set_large_write(&mut self, policy: LargeWritePolicy) -> Result<(), FileGrantError> {
+    pub(super) fn set_large_write(&mut self, mut policy: LargeWritePolicy) -> Result<(), FileGrantError> {
         if policy.ec_scheme.data_num == 0
             || policy.ec_scheme.code_num == 0
             || policy.client.read_buffer_size == 0
         {
             return Err(FileGrantError::Invalid);
         }
+        own_large_write(&mut policy);
         self.large_write = policy;
         Ok(())
     }
