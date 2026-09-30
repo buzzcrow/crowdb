@@ -956,6 +956,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "crowdb-chunkdb-client",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",

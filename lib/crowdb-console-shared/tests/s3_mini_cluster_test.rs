@@ -1,9 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_console_shared::ops::s3;
 use crowdb_console_shared::{lifecycle, ops::OpContext};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, RangeBindingClient, ServiceRegistryClient};
+use crowdb_protocol::chunkdb::rpc::{ChunkType, ListChunksRequest, QueryChunkRequest, Strip, StripType};
 use crowdb_protocol::common::HwStatus;
 use crowdb_test_harness::test_dirs::TestDir;
 use reqwest::Method;
@@ -351,6 +353,44 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
         .expect("read new object with one node stopped");
     assert_eq!(read_back, new_body);
     if failed_node == 2 {
+        let (outage_config, _) = s3::load(dir.path()).expect("load outage cluster");
+        let surviving_chunkdb = outage_config
+            .servers
+            .iter()
+            .find(|server| {
+                server.service_type == crowdb_console_shared::config::ServiceType::Chunkdb
+                    && server.node_id != Some(failed_node)
+            })
+            .and_then(|server| server.rpc_url.as_deref())
+            .expect("surviving ChunkDB RPC");
+        let chunk_transport = Arc::new(ChunkdbRpcTransport::new());
+        let chunks = chunk_transport
+            .send_list_chunks(
+                surviving_chunkdb,
+                &ListChunksRequest {
+                    max_keys: 1_024,
+                    ..ListChunksRequest::default()
+                },
+            )
+            .await
+            .expect("list chunks written during outage");
+        let degraded_chunks = chunks
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.chunk_type == ChunkType::S3 as i32)
+            .filter(|chunk| {
+                chunk.strips.iter().any(|strip| {
+                    strip.strip_type == StripType::Ec as i32
+                        && matches!(strip.strip.as_ref(), Some(Strip::EcStrip(_)))
+                        && strip.placement_repair_required
+                })
+            })
+            .filter_map(|chunk| chunk.id)
+            .collect::<Vec<_>>();
+        assert!(
+            !degraded_chunks.is_empty(),
+            "outage write did not persist degraded S3 EC placement"
+        );
         ctx.sysmd()
             .set_node_status(failed_node, failed_node, HwStatus::Up)
             .await
@@ -372,6 +412,56 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
             .await
             .expect("read outage write after all processes restart");
         assert_eq!(recovered, new_body);
+        let (restarted_config, _) = s3::load(dir.path()).expect("load restarted cluster");
+        let seeds = restarted_config
+            .servers
+            .iter()
+            .filter(|server| server.service_type == crowdb_console_shared::config::ServiceType::Kv)
+            .map(|server| server.url.clone())
+            .collect();
+        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds)));
+        let chunkdb = ChunkdbClient::new(
+            ServiceRegistryClient::from_shared(Arc::clone(&kv)),
+            Arc::new(ChunkdbRpcTransport::new()),
+        )
+        .with_range_binding(RangeBindingClient::from_shared(kv));
+        chunkdb
+            .refresh_routes()
+            .await
+            .expect("refresh restarted ChunkDB routes");
+        tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                let mut repaired = true;
+                for chunk_id in &degraded_chunks {
+                    let chunk = chunkdb
+                        .query_chunk(QueryChunkRequest {
+                            chunk_id: Some(*chunk_id),
+                        })
+                        .await
+                        .expect("query outage chunk after restart")
+                        .chunk
+                        .expect("outage chunk exists after restart");
+                    repaired &= chunk
+                        .strips
+                        .iter()
+                        .filter(|strip| strip.strip_type == StripType::Ec as i32)
+                        .all(|strip| {
+                            !strip.placement_repair_required
+                                && strip.placement_assessment.as_ref().is_some_and(|assessment| {
+                                    assessment.rack_protected
+                                        && assessment.node_protected
+                                        && assessment.disk_protected
+                                })
+                        });
+                }
+                if repaired {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .expect("placement repair did not complete after ChunkDB restart");
     }
     s3::delete(dir.path()).expect("delete protected cluster");
 }
