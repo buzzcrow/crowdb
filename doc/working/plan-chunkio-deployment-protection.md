@@ -27,7 +27,7 @@ Goal: make production a protected cluster of at least three nodes, retain writes
 ## Failure and recovery
 
 - [~] **Three-node degraded operation**: retain three-voter KV membership after one node fails. New EC and mirrored small-write allocations now select two protected mirror copies when exactly two storage nodes remain. Verify real node loss, preserve existing committed writes, reject single-copy fallback, and repair/rebalance degraded strips when the third node returns. Files: KV deployment configuration, `app/crowdb-chunkdb/src/selector/`, `app/crowdb-chunkdb/src/lifecycle/`.
-- [ ] **Failure acceptance**: exercise loss of each node independently, read prior committed data, write/read new data on survivors, and verify repair after recovery. Files: integration tests and container/cluster E2E.
+- [~] **Failure acceptance**: a simulated three-rack production cluster now starts all KV/storage/access processes, writes an S3 object, restarts, and reads it. Exercise loss of each node independently, read prior committed data, write/read new data on survivors, and verify repair after recovery. Files: `lib/crowdb-console-shared/tests/s3_mini_cluster_test.rs` and cluster E2E.
 
 ## Verification and cleanup
 

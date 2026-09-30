@@ -38,6 +38,8 @@ pub enum StorageProfile {
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct MiniClusterRecord {
     pub version: u32,
+    #[serde(default)]
+    pub protected_test: bool,
     pub endpoint: String,
     #[serde(default)]
     pub web_endpoint: String,
@@ -83,7 +85,28 @@ pub fn load(data_dir: &Path) -> Result<(ConsoleConfig, MiniClusterRecord)> {
 /// Returns an error for an unsafe directory, missing binary, failed service,
 /// or failed readiness condition.
 pub async fn start(data_dir: &Path) -> Result<MiniClusterStatus> {
-    start_with_profile(data_dir, StorageProfile::Persistent, 16 * 1024 * 1024 * 1024).await
+    start_with_profile(
+        data_dir,
+        StorageProfile::Persistent,
+        16 * 1024 * 1024 * 1024,
+        false,
+    )
+    .await
+}
+
+/// Start a simulated three-rack cluster for protected-placement tests.
+///
+/// # Errors
+/// Returns an error for an unsafe directory, missing binary, failed service,
+/// or failed readiness condition.
+pub async fn start_protected_test_cluster(data_dir: &Path) -> Result<MiniClusterStatus> {
+    start_with_profile(
+        data_dir,
+        StorageProfile::Persistent,
+        16 * 1024 * 1024 * 1024,
+        true,
+    )
+    .await
 }
 
 /// Create a fresh memory-backed cluster for an S3 benchmark.
@@ -98,13 +121,14 @@ pub async fn start_memory(data_dir: &Path, memory_budget_bytes: u64) -> Result<M
             message: "must be at least 64 MiB".into(),
         });
     }
-    start_with_profile(data_dir, StorageProfile::Memory, memory_budget_bytes).await
+    start_with_profile(data_dir, StorageProfile::Memory, memory_budget_bytes, false).await
 }
 
 async fn start_with_profile(
     data_dir: &Path,
     storage_profile: StorageProfile,
     capacity_bytes: u64,
+    protected_test: bool,
 ) -> Result<MiniClusterStatus> {
     archive_incomplete_attempt(data_dir)?;
     validate_location(data_dir)?;
@@ -121,6 +145,12 @@ async fn start_with_profile(
                     "existing cluster uses {:?}, requested {:?}",
                     record.storage_profile, storage_profile
                 ),
+            });
+        }
+        if record.protected_test != protected_test {
+            return Err(Error::Validation {
+                field: "protected_test".into(),
+                message: "existing cluster uses a different rack layout".into(),
             });
         }
         if storage_profile == StorageProfile::Memory {
@@ -141,6 +171,45 @@ async fn start_with_profile(
         vec!["http://127.0.0.1:10000".into()],
         config,
     );
+    let (disk, chunk) = storage_configs(storage_profile, capacity_bytes, protected_test);
+    if let Some(status) =
+        resume_if_interrupted(data_dir, &disk, &chunk, storage_profile, protected_test).await?
+    {
+        return Ok(status);
+    }
+    let mut record = MiniClusterRecord {
+        version: 1,
+        protected_test,
+        endpoint: String::new(),
+        web_endpoint: String::new(),
+        web_pid: None,
+        tenant: "local".into(),
+        storage_profile,
+    };
+    save_record(&data_dir.join(INITIALIZING_FILE), &record)?;
+    let initialized = initialize_new(&ctx, data_dir, &disk, &chunk, storage_profile, protected_test).await;
+    let endpoints = match initialized {
+        Ok(endpoints) => endpoints,
+        Err(error) => {
+            stop_config_processes(&mut ctx.config_mut());
+            let _ = local_state::save(data_dir, &ctx.config());
+            return Err(error);
+        }
+    };
+    record.endpoint = endpoints.s3;
+    record.web_endpoint = endpoints.web;
+    record.web_pid = Some(endpoints.web_pid);
+    save_record(&marker_path, &record)?;
+    let _ = std::fs::remove_file(data_dir.join(INITIALIZING_FILE));
+    let status = status_from(data_dir, true, &ctx.config(), &record);
+    Ok(status)
+}
+
+fn storage_configs(
+    storage_profile: StorageProfile,
+    capacity_bytes: u64,
+    protected_test: bool,
+) -> (LocalDiskdbDeployConfig, LocalChunkdbDeployConfig) {
     let logical_capacity = if storage_profile == StorageProfile::Memory {
         16 * 1024 * 1024 * 1024
     } else {
@@ -167,9 +236,7 @@ async fn start_with_profile(
     };
     let chunk = LocalChunkdbDeployConfig {
         instance_count: 3,
-        // This loopback fixture colocates its simulated nodes in one rack.
-        // Production planning still requires distinct failure domains.
-        allow_unsafe_ec: true,
+        allow_unsafe_ec: !protected_test,
         rpc_workers: None,
         diskio_rpc_workers: None,
         kv_connections: None,
@@ -178,34 +245,7 @@ async fn start_with_profile(
         diskdb_client_rpc_workers: None,
         metrics_interval: None,
     };
-    if let Some(status) = resume_if_interrupted(data_dir, &disk, &chunk, storage_profile).await? {
-        return Ok(status);
-    }
-    let mut record = MiniClusterRecord {
-        version: 1,
-        endpoint: String::new(),
-        web_endpoint: String::new(),
-        web_pid: None,
-        tenant: "local".into(),
-        storage_profile,
-    };
-    save_record(&data_dir.join(INITIALIZING_FILE), &record)?;
-    let initialized = initialize_new(&ctx, data_dir, &disk, &chunk, storage_profile).await;
-    let endpoints = match initialized {
-        Ok(endpoints) => endpoints,
-        Err(error) => {
-            stop_config_processes(&mut ctx.config_mut());
-            let _ = local_state::save(data_dir, &ctx.config());
-            return Err(error);
-        }
-    };
-    record.endpoint = endpoints.s3;
-    record.web_endpoint = endpoints.web;
-    record.web_pid = Some(endpoints.web_pid);
-    save_record(&marker_path, &record)?;
-    let _ = std::fs::remove_file(data_dir.join(INITIALIZING_FILE));
-    let status = status_from(data_dir, true, &ctx.config(), &record);
-    Ok(status)
+    (disk, chunk)
 }
 
 async fn resume_if_interrupted(
@@ -213,13 +253,17 @@ async fn resume_if_interrupted(
     disk: &LocalDiskdbDeployConfig,
     chunk: &LocalChunkdbDeployConfig,
     storage_profile: StorageProfile,
+    protected_test: bool,
 ) -> Result<Option<MiniClusterStatus>> {
     if !data_dir.join(INITIALIZING_FILE).exists() || !local_state::path(data_dir).exists() {
         return Ok(None);
     }
     let record: MiniClusterRecord = serde_json::from_slice(&std::fs::read(data_dir.join(INITIALIZING_FILE))?)
         .map_err(|error| Error::Config(error.to_string()))?;
-    if record.version != 1 || record.storage_profile != storage_profile {
+    if record.version != 1
+        || record.storage_profile != storage_profile
+        || record.protected_test != protected_test
+    {
         return Err(Error::Conflict {
             kind: "S3 bootstrap profile".into(),
             id: data_dir.display().to_string(),
@@ -262,6 +306,7 @@ async fn initialize_new(
     disk: &LocalDiskdbDeployConfig,
     chunk: &LocalChunkdbDeployConfig,
     storage_profile: StorageProfile,
+    protected_test: bool,
 ) -> Result<StartedEndpoints> {
     let tunables = KvDeployTunables {
         kv_backend: (storage_profile == StorageProfile::Memory).then(|| "mem-block".into()),
@@ -269,10 +314,14 @@ async fn initialize_new(
         no_fsync: (storage_profile == StorageProfile::Memory).then_some(true),
         ..KvDeployTunables::default()
     };
-    let (_, nodes) = cluster::prepare_local_deploy(ctx, 3, Some(data_dir), Some(&tunables)).await?;
+    let (_, nodes) = if protected_test {
+        cluster::prepare_local_deploy_distinct_racks(ctx, 3, Some(data_dir), Some(&tunables)).await?
+    } else {
+        cluster::prepare_local_deploy(ctx, 3, Some(data_dir), Some(&tunables)).await?
+    };
     local_state::save(data_dir, &ctx.config())?;
     cluster::init_with_intent(ctx, &nodes, &data_dir.join(BOOTSTRAP_INTENT_FILE)).await?;
-    initialize_after_kv(ctx, data_dir, disk, chunk, storage_profile).await
+    initialize_after_kv(ctx, data_dir, disk, chunk, storage_profile, protected_test).await
 }
 
 async fn initialize_after_kv(
@@ -281,6 +330,7 @@ async fn initialize_after_kv(
     disk: &LocalDiskdbDeployConfig,
     chunk: &LocalChunkdbDeployConfig,
     storage_profile: StorageProfile,
+    protected_test: bool,
 ) -> Result<StartedEndpoints> {
     let storage_services = ctx
         .config()
@@ -325,7 +375,7 @@ async fn initialize_after_kv(
     }
     let seeds = management_seeds(&ctx.config());
     local_state::save(data_dir, &ctx.config())?;
-    let chunk_kv = spawn_chunk_kv(data_dir, &seeds).await?;
+    let chunk_kv = spawn_chunk_kv(data_dir, &seeds, protected_test).await?;
     add_service(ctx, chunk_kv)?;
     local_state::save(data_dir, &ctx.config())?;
     let access = spawn_access(data_dir, &seeds).await?;
@@ -393,7 +443,7 @@ async fn resume_incomplete(
     mut record: MiniClusterRecord,
 ) -> Result<MiniClusterStatus> {
     let (mut config, seeds) = local_state::load(data_dir)?;
-    restore_launch_nodes(&mut config)?;
+    restore_launch_nodes(&mut config, record.protected_test)?;
     let group0 = config
         .servers
         .iter()
@@ -404,15 +454,24 @@ async fn resume_incomplete(
         .to_owned();
     let ctx = OpContext::new(group0, seeds.clone(), config);
     for node_id in 1..=3 {
+        let rack_id = if record.protected_test { node_id } else { 1 };
         let server_dir = data_dir
-            .join("rack1")
+            .join(format!("rack{rack_id}"))
             .join(format!("node{node_id}"))
             .join(format!("kv-server-{node_id}"));
         crate::ops::kv_server::restart(&ctx, node_id, Some(&server_dir), None, &seeds).await?;
     }
     local_state::save(data_dir, &ctx.config())?;
     cluster::init_with_intent(&ctx, &[1, 2, 3], &data_dir.join(BOOTSTRAP_INTENT_FILE)).await?;
-    let endpoints = initialize_after_kv(&ctx, data_dir, disk, chunk, record.storage_profile).await?;
+    let endpoints = initialize_after_kv(
+        &ctx,
+        data_dir,
+        disk,
+        chunk,
+        record.storage_profile,
+        record.protected_test,
+    )
+    .await?;
     record.endpoint = endpoints.s3;
     record.web_endpoint = endpoints.web;
     record.web_pid = Some(endpoints.web_pid);
@@ -424,7 +483,7 @@ async fn resume_incomplete(
 
 async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
     let (mut config, mut record) = load(data_dir)?;
-    restore_launch_nodes(&mut config)?;
+    restore_launch_nodes(&mut config, record.protected_test)?;
     if let Some(pid) = record.web_pid.take() {
         let _ = lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(5));
         save_record(&data_dir.join(MARKER_FILE), &record)?;
@@ -441,8 +500,9 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
     let ctx = OpContext::new(group0, seeds.clone(), config);
     let node_ids = ctx.config().nodes.iter().map(|node| node.id).collect::<Vec<_>>();
     for node_id in node_ids {
+        let rack_id = if record.protected_test { node_id } else { 1 };
         let server_dir = data_dir
-            .join("rack1")
+            .join(format!("rack{rack_id}"))
             .join(format!("node{node_id}"))
             .join(format!("kv-server-{node_id}"));
         crate::ops::kv_server::restart(&ctx, node_id, Some(&server_dir), None, &seeds).await?;
@@ -458,7 +518,7 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
             .cloned();
         let Some(server) = server else {
             let spawned = match kind {
-                ServiceType::ChunkKv => spawn_chunk_kv(data_dir, &seeds).await?,
+                ServiceType::ChunkKv => spawn_chunk_kv(data_dir, &seeds, record.protected_test).await?,
                 ServiceType::AccessServer => spawn_access(data_dir, &seeds).await?,
                 _ => unreachable!(),
             };
@@ -584,11 +644,7 @@ fn management_seeds(config: &ConsoleConfig) -> Vec<String> {
         .collect()
 }
 
-fn restore_launch_nodes(config: &mut ConsoleConfig) -> Result<()> {
-    config.add_rack(RackEntry {
-        id: 1,
-        name: "rack-1".into(),
-    })?;
+fn restore_launch_nodes(config: &mut ConsoleConfig, protected_test: bool) -> Result<()> {
     let node_ids: Vec<_> = config
         .servers
         .iter()
@@ -600,9 +656,16 @@ fn restore_launch_nodes(config: &mut ConsoleConfig) -> Result<()> {
         })
         .collect::<Result<_>>()?;
     for id in node_ids {
+        let rack_id = if protected_test { id } else { 1 };
+        if config.racks.iter().all(|rack| rack.id != rack_id) {
+            config.add_rack(RackEntry {
+                id: rack_id,
+                name: format!("rack-{rack_id}"),
+            })?;
+        }
         config.add_node(NodeEntry {
             id,
-            rack_id: 1,
+            rack_id,
             host: "127.0.0.1".into(),
             ssh_port: 22,
             ssh_user: String::new(),
@@ -632,7 +695,7 @@ fn add_service(ctx: &OpContext, service: SpawnedService) -> Result<()> {
     ctx.config_mut().add_server(service.entry)
 }
 
-async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String]) -> Result<SpawnedService> {
+async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String], protected_test: bool) -> Result<SpawnedService> {
     let binary = find_binary("CROWDB_CHUNK_KV_SERVER_BIN", "crowdb-chunk-kv-server")?;
     let rpc_port = assign_cluster_port(data_dir, ServicePort::ChunkKvRpc, "chunk-kv-1-rpc")?;
     let http_port = assign_cluster_port(data_dir, ServicePort::ChunkKvHttp, "chunk-kv-1-http")?;
@@ -644,11 +707,12 @@ async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServ
         .map(|s| format!("{s:?}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let stream_mirror_copies = if protected_test { 3 } else { 1 };
     let config_path = workdir.join("chunk-kv.toml");
     std::fs::write(
         &config_path,
         format!(
-            "instance_id = 10000\nrpc_listen_addr = \"127.0.0.1:{rpc_port}\"\nrpc_advertise_addr = \"127.0.0.1:{rpc_port}\"\nhttp_listen_addr = \"127.0.0.1:{http_port}\"\ngroup0_mgmt_seeds = [{seed_toml}]\ncatalog_refresh_interval_ms = 200\n\n[balance]\nenabled = true\ntarget_partitions_per_owner = 1\ntarget_partition_bytes = 9223372036854775807\nminimum_weighted_improvement_percent = 100\ncooldown_ms = 9223372036854775807\nmax_owner_request_rate = 0\n\n[storage]\nmetadata_store_id = 0\nstream_mirror_copies = 1\n\n[bootstrap_partition]\npartition_id = {{ high = 1, low = 1 }}\ntree_id = 1\nstream_name = {{ high = 2, low = 1 }}\nowner_epoch = 1\nmetadata_group_id = 1\n"
+            "instance_id = 10000\nrpc_listen_addr = \"127.0.0.1:{rpc_port}\"\nrpc_advertise_addr = \"127.0.0.1:{rpc_port}\"\nhttp_listen_addr = \"127.0.0.1:{http_port}\"\ngroup0_mgmt_seeds = [{seed_toml}]\ncatalog_refresh_interval_ms = 200\n\n[balance]\nenabled = true\ntarget_partitions_per_owner = 1\ntarget_partition_bytes = 9223372036854775807\nminimum_weighted_improvement_percent = 100\ncooldown_ms = 9223372036854775807\nmax_owner_request_rate = 0\n\n[storage]\nmetadata_store_id = 0\nstream_mirror_copies = {stream_mirror_copies}\n\n[bootstrap_partition]\npartition_id = {{ high = 1, low = 1 }}\ntree_id = 1\nstream_name = {{ high = 2, low = 1 }}\nowner_epoch = 1\nmetadata_group_id = 1\n"
         ),
     )?;
     let launch = LocalLaunchSpec {

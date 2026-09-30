@@ -122,3 +122,57 @@ async fn persistent_cluster_survives_stop_restart_and_range_read() {
     s3::delete(dir.path()).expect("delete cluster");
     assert!(!dir.path().exists());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "starts a complete simulated three-rack process stack"]
+async fn protected_cluster_starts_and_reads_after_restart() {
+    let dir = TestDir::new("s3-mini-protected-e2e").expect("create test directory");
+    let started = s3::start_protected_test_cluster(dir.path())
+        .await
+        .expect("start protected cluster");
+    let (_, record) = s3::load(dir.path()).expect("load protected cluster");
+    assert!(record.protected_test);
+    for node_id in 1..=3 {
+        assert!(dir.path().join(format!("rack{node_id}/node{node_id}")).is_dir());
+    }
+    let client = s3::S3HttpClient::from_data_dir(dir.path()).expect("S3 client");
+    client
+        .request(Method::PUT, Some("protected-bucket"), None, &[], None, None)
+        .await
+        .expect("create bucket");
+    client
+        .request(
+            Method::PUT,
+            Some("protected-bucket"),
+            Some("protected-object"),
+            &[],
+            Some(b"protected-object-bytes".to_vec()),
+            None,
+        )
+        .await
+        .expect("put protected object");
+    assert_eq!(
+        s3::stop(dir.path())
+            .expect("stop protected cluster")
+            .running_services,
+        0
+    );
+    let restarted = s3::start_protected_test_cluster(dir.path())
+        .await
+        .expect("restart protected cluster");
+    assert_eq!(restarted.endpoint, started.endpoint);
+    let client = s3::S3HttpClient::from_data_dir(dir.path()).expect("restarted S3 client");
+    let (_, body) = client
+        .request(
+            Method::GET,
+            Some("protected-bucket"),
+            Some("protected-object"),
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("read protected object");
+    assert_eq!(body, b"protected-object-bytes");
+    s3::delete(dir.path()).expect("delete protected cluster");
+}
