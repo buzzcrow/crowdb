@@ -207,10 +207,11 @@ The flow, step by step:
 ### 3.1 Partial Last Strip
 
 Partial strips occur only at EOF, never mid-chunk. When EOF arrives
-before all `data_num` blocks of the current strip are filled, the main
-write task writes only the filled data blocks, releases the empty ones,
-hands the partial set off to parity for partial EC (§5), and records
-`sealed_length` for `seal_chunk`.
+before the current strip is full, the writer persists only the filled
+data. EC strips also release empty blocks and hand the partial set to
+parity (§5). At chunk seal, ChunkDB records the durable `sealed_length`
+of every written strip, whether mirror or EC, so a reader can cross
+strip boundaries and read the partial final strip.
 
 ## 4. Backpressure and Memory Budget
 

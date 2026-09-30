@@ -967,7 +967,7 @@ impl LifecycleHandler {
                 self.store.delete_reservation_group(chunk_id, &group_id).await?;
             }
         }
-        seal_written_ec_strips(&mut chunk, seal_length, now_ms);
+        seal_written_strips(&mut chunk, seal_length, now_ms);
         close_acknowledged_strips(&mut chunk, now_ms);
 
         self.store.put_chunk(&chunk).await?;
@@ -2143,19 +2143,18 @@ fn close_acknowledged_strips(chunk: &mut Chunk, now_ms: u64) {
     chunk.closed_strip_sequence = last_closed;
 }
 
-fn seal_written_ec_strips(chunk: &mut Chunk, seal_length: u32, now_ms: u64) {
+fn seal_written_strips(chunk: &mut Chunk, seal_length: u32, now_ms: u64) {
     let mut remaining = seal_length;
     for strip in &mut chunk.strips {
         let written = remaining.min(strip.capacity);
         if written == 0 {
             break;
         }
-        let Some(crowdb_protocol::chunkdb::rpc::Strip::EcStrip(ec)) = strip.strip.as_mut() else {
-            continue;
-        };
         strip.sealed_length = written;
         strip.sealed_ts_ms = now_ms;
-        ec.ec_state = crowdb_protocol::chunkdb::rpc::EcState::Parity as i32;
+        if let Some(crowdb_protocol::chunkdb::rpc::Strip::EcStrip(ec)) = strip.strip.as_mut() {
+            ec.ec_state = crowdb_protocol::chunkdb::rpc::EcState::Parity as i32;
+        }
         remaining -= written;
     }
 }

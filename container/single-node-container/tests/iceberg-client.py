@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sys
 
@@ -11,6 +12,8 @@ from pyiceberg.types import LongType, NestedField
 NAMESPACE = ("crowdb-preview-e2e",)
 TABLE = NAMESPACE + ("events",)
 ORDERS = NAMESPACE + ("orders",)
+LARGE = NAMESPACE + ("large",)
+LARGE_PAYLOAD = hashlib.shake_256(b"crowdb-single-node-large-file").digest(9 * 1024 * 1024)
 
 
 def main():
@@ -41,11 +44,16 @@ def main():
         arrow_orders = pa.Table.from_pandas(orders, preserve_index=False)
         table = catalog.create_table(ORDERS, schema=arrow_orders.schema)
         table.append(arrow_orders)
+        large_schema = pa.schema([pa.field("payload", pa.binary())])
+        large = catalog.create_table(LARGE, schema=large_schema)
+        large.append(pa.Table.from_pylist([{"payload": LARGE_PAYLOAD}], schema=large_schema))
     assert catalog.namespace_exists(NAMESPACE)
     assert NAMESPACE in catalog.list_namespaces()
     assert catalog.load_namespace_properties(NAMESPACE) == {"preview": "persisted"}
     assert TABLE in catalog.list_tables(NAMESPACE)
+    assert LARGE in catalog.list_tables(NAMESPACE)
     assert catalog.load_table(TABLE).properties["preview"] == "persisted"
+    assert catalog.load_table(LARGE).scan().to_arrow().column("payload")[0].as_py() == LARGE_PAYLOAD
     saved = catalog.load_table(ORDERS).scan().to_pandas()
     revenue = (
         saved[saved["status"] == "paid"]

@@ -229,6 +229,48 @@ async fn large_write_multi_strip_persists_data_metadata_and_parity() {
 }
 
 #[tokio::test]
+async fn large_one_copy_mirror_reads_across_strips() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let data = make_test_data(9 * MIB);
+    let mut configured = policy(16 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+    let result = stack
+        .client
+        .prepare_large_write(Some(data.len() as u64), configured)
+        .write_stream(data.as_slice())
+        .await
+        .unwrap();
+    let chunk = stack.query_chunk(&result.locations[0]).await;
+    assert!(chunk.strips.len() >= 9);
+    let Strip::MirrorStrip(mirror) = chunk.strips[0].strip.as_ref().unwrap() else {
+        panic!("large mirror policy allocated a different strip");
+    };
+    assert_eq!(mirror.segments.len(), 1);
+    assert!(chunk.strips.iter().take(9).all(|strip| strip.sealed_length > 0));
+    assert_eq!(
+        stack
+            .client
+            .read_object(&result.locations)
+            .await
+            .unwrap()
+            .concat(),
+        data
+    );
+    assert_eq!(
+        stack
+            .client
+            .read_range(&result.locations, MIB as u64 - 100, MIB as u64 + 100)
+            .await
+            .unwrap()
+            .concat(),
+        data[MIB - 100..MIB + 100]
+    );
+}
+
+#[tokio::test]
 async fn large_write_rotates_chunks_without_losing_data() {
     if !all_binaries_available() {
         return;
