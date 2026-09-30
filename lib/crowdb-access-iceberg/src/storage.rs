@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use crowdb_chunk_client::{
-    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, LargeWritePolicy,
-    SmallWritePolicy,
+    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, ChunkIoWriter, ChunkReadPolicy, IoError,
+    LargeWritePolicy, SmallWritePolicy,
 };
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
@@ -15,6 +15,7 @@ use crowdb_chunk_kv_client::{
 use crowdb_common::ec::EcScheme;
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
 use crowdb_protocol::chunkdb::rpc::ChunkType;
+use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 
 use crate::catalog::{CatalogRepository, ClearBounds, RoutedCatalogStore};
 
@@ -22,6 +23,36 @@ pub type IcebergStorageError = Box<dyn std::error::Error + Send + Sync>;
 
 pub fn own_large_write(policy: &mut LargeWritePolicy) {
     Arc::make_mut(&mut policy.client).chunk_type = ChunkType::IcebergTable;
+}
+
+/// Prepares the chunk writer for one foreground Iceberg file upload.
+///
+/// # Errors
+/// Returns a chunk admission or preparation failure.
+pub async fn prepare_file_writer(
+    chunks: &ChunkIoClient,
+    location_key: &str,
+    small_length: Option<usize>,
+    declared_length: Option<u64>,
+    large_write: &LargeWritePolicy,
+) -> Result<Box<dyn ChunkIoWriter>, IoError> {
+    if let Some(length) = small_length {
+        if length <= MAX_FRAME_PAYLOAD_BYTES {
+            let mut writer = chunks
+                .prepare_small_write_for_key(length, location_key.as_bytes())
+                .await?;
+            writer.require_durable_completion();
+            return Ok(Box::new(writer));
+        }
+        return Ok(Box::new(
+            chunks
+                .prepare_shared_object_write_for_key(length, location_key.as_bytes())
+                .await?,
+        ));
+    }
+    let mut writer = chunks.prepare_large_write(declared_length, large_write.clone());
+    writer.wait_until_prepared().await?;
+    Ok(Box::new(writer))
 }
 
 pub struct IcebergLargeWriteSettings {

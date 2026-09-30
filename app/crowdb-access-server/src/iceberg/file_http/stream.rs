@@ -3,9 +3,9 @@ use std::fmt::Write;
 use crowdb_access_iceberg::file::{
     ContentFormat, FileContent, FileIdentity, FileKind, FileLocation, FileRecord,
 };
+use crowdb_access_iceberg::storage::prepare_file_writer;
 use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter, LargeWritePolicy};
-use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
 use hyper::body::Incoming;
@@ -34,31 +34,10 @@ pub(super) async fn upload(
         .and_then(|length| usize::try_from(length).ok())
         .filter(|length| *length < small_threshold_exclusive);
     let handoff = native_receiver.filter(|_| small.is_none() && body.native_handoff_eligible());
-    let mut writer: Box<dyn ChunkIoWriter> = if let Some(length) = small {
-        let key = location.to_string();
-        if length <= MAX_FRAME_PAYLOAD_BYTES {
-            let mut small = client
-                .prepare_small_write_for_key(length, key.as_bytes())
-                .await
-                .map_err(|_| FileS3ErrorCode::SlowDown)?;
-            small.require_durable_completion();
-            Box::new(small)
-        } else {
-            Box::new(
-                client
-                    .prepare_shared_object_write_for_key(length, key.as_bytes())
-                    .await
-                    .map_err(|_| FileS3ErrorCode::SlowDown)?,
-            )
-        }
-    } else {
-        let mut large = client.prepare_large_write(declared_length, large_write.clone());
-        large
-            .wait_until_prepared()
+    let mut writer: Box<dyn ChunkIoWriter> =
+        prepare_file_writer(client, &location.to_string(), small, declared_length, large_write)
             .await
             .map_err(|_| FileS3ErrorCode::SlowDown)?;
-        Box::new(large)
-    };
     if let Some(receiver) = handoff {
         receiver.enable_owner_handoff();
     }
