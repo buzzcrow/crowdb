@@ -16,5 +16,6 @@ pub use repository::{CatalogError, CatalogRepository, ManagementPrivilege};
 pub use root::{ActiveCatalogRecord, RootState};
 pub use state::{CatalogAuthority, CatalogContext, CatalogLifecycle, ClearTransition};
 pub use storage::{
-    CasOutcome, CatalogStore, CatalogStoreOperationCounts, RoutedCatalogStore, StoreError, StoredValue,
+    CasOutcome, CatalogStore, CatalogStoreOperationCounts, CatalogStoreOperationMeter, RoutedCatalogStore,
+    StoreError, StoredValue,
 };

@@ -173,6 +173,21 @@ fn path(table: TableLocation, key: &str) -> String {
     format!("/{}/{}", table.bucket(), table.file(key).unwrap().object_key())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_multipart_creates_share_admission() {
+    let (_stack, _process, client, table) = setup().await;
+    let mut requests = tokio::task::JoinSet::new();
+    for index in 0..24 {
+        let object = path(table, &format!("data/concurrent-{index}.parquet"));
+        let request = client.request(Method::POST, &object, "uploads=", b"", false, None);
+        requests.spawn(async move { request.send().await.unwrap() });
+    }
+    while let Some(result) = requests.join_next().await {
+        let response = result.unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    }
+}
+
 fn fixture_config() -> AccessConfig {
     load_from_file(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/common/iceberg_single_node.toml"),
@@ -207,6 +222,24 @@ fn catalog_delta(before: (u64, u64, u64, u64), after: (u64, u64, u64, u64)) -> S
         after.1 - before.1,
         after.2 - before.2,
         after.3 - before.3
+    )
+}
+
+async fn file_request_counts(client: &TestFileClient) -> (u64, u64) {
+    let response: serde_json::Value = client
+        .client
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let catalog = &response["routes"][6][0]["catalog"];
+    (
+        catalog["get"].as_u64().unwrap(),
+        catalog["compare_exchange"].as_u64().unwrap(),
     )
 }
 
@@ -321,8 +354,22 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
     let medium_bytes = (0..1_200_000)
         .map(|index| u8::try_from(index % 251).unwrap())
         .collect::<Vec<_>>();
+    let before = file_request_counts(&client).await;
+    let started = Instant::now();
     let response = client.send(Method::PUT, &medium, "", &medium_bytes, true).await;
+    let elapsed = started.elapsed();
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let after = file_request_counts(&client).await;
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "1.2 MiB PUT took {elapsed:?}"
+    );
+    assert!(
+        after.0 - before.0 <= 15 && after.1 - before.1 <= 2,
+        "1.2 MiB PUT used {} gets and {} CAS operations",
+        after.0 - before.0,
+        after.1 - before.1
+    );
     let stored = repository
         .load(
             client.credentials.grant().context,

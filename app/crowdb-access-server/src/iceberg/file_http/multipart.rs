@@ -130,26 +130,45 @@ impl FileHttp {
             pending: None,
             credit: None,
         };
-        let policy = self
-            .admission
-            .initialize(
-                session.context,
-                MultipartAdmissionLimits {
-                    max_sessions: 1024,
-                    max_reserved_bytes: 64 * 1024 * 1024 * 1024 * 1024,
-                },
-            )
-            .await
-            .map_err(catalog_error)?;
-        admission
-            .check_create(&session, &policy)
-            .map_err(admission_error)?;
-        if !self
-            .admission
-            .reserve(&policy, &session, now_ms)
-            .await
-            .map_err(catalog_error)?
-        {
+        let mut reserved = false;
+        for attempt in 0..256_u64 {
+            let policy = match self
+                .admission
+                .initialize(
+                    session.context,
+                    MultipartAdmissionLimits {
+                        max_sessions: 1024,
+                        max_reserved_bytes: 64 * 1024 * 1024 * 1024 * 1024,
+                    },
+                )
+                .await
+            {
+                Ok(policy) => policy,
+                Err(CatalogError::Busy) => {
+                    tokio::time::sleep(std::time::Duration::from_millis((attempt + 1).min(16))).await;
+                    continue;
+                }
+                Err(error) => return Err(catalog_error(error)),
+            };
+            if policy.pending.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis((attempt + 1).min(16))).await;
+                continue;
+            }
+            admission
+                .check_create(&session, &policy)
+                .map_err(admission_error)?;
+            match self.admission.reserve(&policy, &session, now_ms).await {
+                Ok(true) => {
+                    reserved = true;
+                    break;
+                }
+                Ok(false) | Err(CatalogError::Busy) => {
+                    tokio::time::sleep(std::time::Duration::from_millis((attempt + 1).min(16))).await;
+                }
+                Err(error) => return Err(catalog_error(error)),
+            }
+        }
+        if !reserved {
             return Err(FileS3ErrorCode::SlowDown);
         }
         let durable = self

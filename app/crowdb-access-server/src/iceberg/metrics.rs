@@ -8,6 +8,7 @@ use std::{
 };
 
 use super::routes::Route;
+use crowdb_access_iceberg::catalog::{CatalogStoreOperationCounts, CatalogStoreOperationMeter};
 
 const ROUTE_COUNT: usize = 9;
 const OUTCOME_COUNT: usize = 7;
@@ -40,6 +41,7 @@ pub struct MetricCounts {
     pub response_bytes: u64,
     pub dispatch_latency_ns: u64,
     pub lifetime_ns: u64,
+    pub catalog: CatalogStoreOperationCounts,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -60,6 +62,10 @@ struct Counters {
     response_bytes: AtomicU64,
     dispatch_latency_ns: AtomicU64,
     lifetime_ns: AtomicU64,
+    catalog_get: AtomicU64,
+    catalog_compare_exchange: AtomicU64,
+    catalog_scan: AtomicU64,
+    catalog_conditional_delete: AtomicU64,
 }
 
 impl Counters {
@@ -70,6 +76,10 @@ impl Counters {
             response_bytes: AtomicU64::new(0),
             dispatch_latency_ns: AtomicU64::new(0),
             lifetime_ns: AtomicU64::new(0),
+            catalog_get: AtomicU64::new(0),
+            catalog_compare_exchange: AtomicU64::new(0),
+            catalog_scan: AtomicU64::new(0),
+            catalog_conditional_delete: AtomicU64::new(0),
         }
     }
 
@@ -80,6 +90,12 @@ impl Counters {
             response_bytes: self.response_bytes.load(Ordering::Relaxed),
             dispatch_latency_ns: self.dispatch_latency_ns.load(Ordering::Relaxed),
             lifetime_ns: self.lifetime_ns.load(Ordering::Relaxed),
+            catalog: CatalogStoreOperationCounts {
+                get: self.catalog_get.load(Ordering::Relaxed),
+                compare_exchange: self.catalog_compare_exchange.load(Ordering::Relaxed),
+                scan: self.catalog_scan.load(Ordering::Relaxed),
+                conditional_delete: self.catalog_conditional_delete.load(Ordering::Relaxed),
+            },
         }
     }
 }
@@ -125,6 +141,7 @@ pub(super) struct RequestObservation {
     status: AtomicU16,
     retry: AtomicU8,
     version: AtomicU8,
+    catalog: CatalogStoreOperationMeter,
 }
 
 impl RequestObservation {
@@ -139,6 +156,7 @@ impl RequestObservation {
             status: AtomicU16::new(0),
             retry: AtomicU8::new(0),
             version: AtomicU8::new(0),
+            catalog: CatalogStoreOperationMeter::default(),
         })
     }
 
@@ -150,6 +168,10 @@ impl RequestObservation {
 
     pub(super) fn response_bytes(&self, length: usize) {
         self.response_bytes.fetch_add(length as u64, Ordering::Relaxed);
+    }
+
+    pub(super) fn catalog_meter(&self) -> &CatalogStoreOperationMeter {
+        &self.catalog
     }
 }
 
@@ -179,6 +201,15 @@ impl Drop for RequestObservation {
         counters
             .lifetime_ns
             .fetch_add(elapsed_ns(self.started), Ordering::Relaxed);
+        let catalog = self.catalog.snapshot();
+        counters.catalog_get.fetch_add(catalog.get, Ordering::Relaxed);
+        counters
+            .catalog_compare_exchange
+            .fetch_add(catalog.compare_exchange, Ordering::Relaxed);
+        counters.catalog_scan.fetch_add(catalog.scan, Ordering::Relaxed);
+        counters
+            .catalog_conditional_delete
+            .fetch_add(catalog.conditional_delete, Ordering::Relaxed);
         let retry = self.retry.load(Ordering::Relaxed);
         if retry != 0 {
             self.metrics.retry[usize::from(retry - 1)].fetch_add(1, Ordering::Relaxed);
@@ -199,7 +230,8 @@ tokio::task_local! {
 }
 
 pub(super) async fn observe<F: std::future::Future>(span: Arc<RequestObservation>, future: F) -> F::Output {
-    REQUEST_OBSERVATION.scope(span, future).await
+    let meter = span.catalog_meter().clone();
+    meter.observe(REQUEST_OBSERVATION.scope(span, future)).await
 }
 
 pub(super) fn record_request_bytes(length: usize) {

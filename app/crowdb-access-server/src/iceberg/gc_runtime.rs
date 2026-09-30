@@ -72,7 +72,7 @@ impl GcRuntimeConfig {
         if limits.minimum_retention_ms < GcLimits::default().minimum_retention_ms {
             return Err("GC retention must be at least seven days".into());
         }
-        let interval_ms = setting_or("CROWDB_ICEBERG_GC_INTERVAL_MS", file.interval_ms, 1000_u64)?;
+        let interval_ms = setting_or("CROWDB_ICEBERG_GC_INTERVAL_MS", file.interval_ms, 60_000_u64)?;
         if !(100..=60_000).contains(&interval_ms) {
             return Err("GC interval must be between 100 and 60000 milliseconds".into());
         }

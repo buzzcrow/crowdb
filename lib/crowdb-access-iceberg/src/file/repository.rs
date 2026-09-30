@@ -86,13 +86,6 @@ impl FileRepository {
     async fn stage(&self, candidate: &FileRecord) -> Result<(), CatalogError> {
         let key = file_key(candidate.location.table().catalog, candidate.file).encode()?;
         let bytes = StorageRecord::File(Box::new(candidate.clone())).encode()?;
-        if let Some(existing) = self.store.get(&key).await? {
-            return if existing.bytes == bytes {
-                Ok(())
-            } else {
-                Err(CatalogError::Conflict)
-            };
-        }
         match self
             .store
             .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
