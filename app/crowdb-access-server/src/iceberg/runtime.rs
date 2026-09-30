@@ -200,7 +200,7 @@ async fn start_listener(
         let (_, gc_store, gc_chunks) = connect(
             management_seeds,
             access_config.read.policy(),
-            access_config.small_write.policy(),
+            access_config.iceberg_small_write().policy(),
             access_config.common.diskio_connections_per_endpoint,
             access_config.common.diskio_rpc_workers,
         )
