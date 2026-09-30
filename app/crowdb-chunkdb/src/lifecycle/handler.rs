@@ -271,7 +271,7 @@ impl LifecycleHandler {
                     ));
                 }
             }
-            Some(DeploymentMode::Production) if strip_type == ProtoStripType::Mirror && copy_count == 1 => {
+            Some(DeploymentMode::Production) if strip_type == ProtoStripType::Mirror && copy_count < 2 => {
                 return Err(LifecycleError::InvalidRequest(
                     "production mirror strips require at least two copies".into(),
                 ));

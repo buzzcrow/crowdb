@@ -929,6 +929,28 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
     ));
 }
 
+async fn assert_invalid_production_mirror_copies(handler: &LifecycleHandler) {
+    for copies in [0, 1] {
+        assert!(matches!(
+            handler
+                .allocate_chunk(
+                    None,
+                    1024,
+                    1,
+                    StripType::Mirror,
+                    0,
+                    0,
+                    copies,
+                    ChunkType::S3,
+                    0,
+                    0
+                )
+                .await,
+            Err(LifecycleError::InvalidRequest(_))
+        ));
+    }
+}
+
 #[tokio::test]
 async fn production_ec_stays_degraded_ec_and_mirrors_use_two_copies_after_one_node_loss() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
@@ -958,12 +980,7 @@ async fn production_ec_stays_degraded_ec_and_mirrors_use_two_copies_after_one_no
         harness.topology.clone(),
     )
     .with_deployment_mode(DeploymentMode::Production);
-    assert!(matches!(
-        handler
-            .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 1, ChunkType::S3, 0, 0)
-            .await,
-        Err(LifecycleError::InvalidRequest(_))
-    ));
+    assert_invalid_production_mirror_copies(&handler).await;
     let degraded = handler
         .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
         .await
