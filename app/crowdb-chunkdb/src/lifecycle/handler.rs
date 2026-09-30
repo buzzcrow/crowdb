@@ -278,6 +278,33 @@ impl LifecycleHandler {
         Ok(())
     }
 
+    fn validate_replacement_layouts(&self, strips: &[ChunkStrip]) -> Result<(), LifecycleError> {
+        for strip in strips {
+            match strip.strip.as_ref() {
+                Some(Strip::MirrorStrip(mirror)) => self.validate_strip_layout(
+                    ProtoStripType::Mirror,
+                    0,
+                    0,
+                    u32::try_from(mirror.segments.len()).unwrap_or(u32::MAX),
+                    strip.capacity,
+                )?,
+                Some(Strip::EcStrip(ec)) => self.validate_strip_layout(
+                    ProtoStripType::Ec,
+                    ec.data_num,
+                    ec.code_num,
+                    0,
+                    strip.capacity,
+                )?,
+                None => {
+                    return Err(LifecycleError::InvalidRequest(
+                        "replacement strip has no body".into(),
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn protected_degraded_layout(
         &self,
         strip_type: ProtoStripType,
@@ -1195,6 +1222,7 @@ impl LifecycleHandler {
                 "strip replacement ranges must be non-empty".into(),
             ));
         }
+        self.validate_replacement_layouts(replacement_strips)?;
         let mut guard = if let Some(locks) = &self.locks {
             Some(
                 locks
@@ -1536,6 +1564,11 @@ impl LifecycleHandler {
         data_num: u32,
         code_num: u32,
     ) -> Result<ChunkStrip, LifecycleError> {
+        if self.deployment_mode == Some(crate::chunkdb_config::DeploymentMode::TestSingleNode) {
+            return Err(LifecycleError::InvalidRequest(
+                "test_single_node disables mirror-to-EC conversion".into(),
+            ));
+        }
         self.check_range(chunk_id)?;
         let first = old_strips
             .first()

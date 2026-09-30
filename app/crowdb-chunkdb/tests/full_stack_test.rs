@@ -872,6 +872,30 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         .unwrap();
     assert_eq!(chunk.strips[0].capacity, 1024);
     assert!(matches!(chunk.strips[0].strip, Some(Strip::MirrorStrip(_))));
+    let id = chunk.id.unwrap();
+    assert!(matches!(
+        handler.allocate_conversion_strip(&id, &chunk.strips, 1, 1).await,
+        Err(LifecycleError::InvalidRequest(_))
+    ));
+    let mut invalid_replacement = chunk.strips[0].clone();
+    let Some(Strip::MirrorStrip(mirror)) = invalid_replacement.strip.as_mut() else {
+        panic!("single-node strip must be a mirror");
+    };
+    mirror.segments.push(mirror.segments[0]);
+    let operation = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    assert!(matches!(
+        handler
+            .replace_chunk_strip_range(
+                &id,
+                chunk.modify_ts,
+                0,
+                &chunk.strips,
+                &[invalid_replacement],
+                operation,
+            )
+            .await,
+        Err(LifecycleError::InvalidRequest(_))
+    ));
 }
 
 #[tokio::test]
