@@ -174,7 +174,12 @@ async fn combined_http_listeners_keep_protocol_chunk_policies_separate() {
     initialize_iceberg(seeds.clone()).await;
 
     let s3_addr = free_address();
-    let iceberg_addr = free_address();
+    let iceberg_addr = loop {
+        let address = free_address();
+        if address != s3_addr {
+            break address;
+        }
+    };
     let config = dir.path().join("combined-access.toml");
     std::fs::write(
         &config,
@@ -193,7 +198,11 @@ async fn write_s3(s3_addr: SocketAddr) {
         .request(Method::PUT, Some("policy"), None, &[], None, None)
         .await
         .unwrap();
-    for (name, bytes) in [("small", vec![0x31; 128]), ("large", vec![0x32; 2 * 1024 * 1024])] {
+    for (name, bytes) in [
+        ("small-a", vec![0x31; 60 * 1024]),
+        ("small-b", vec![0x33; 20 * 1024]),
+        ("large", vec![0x32; 2 * 1024 * 1024]),
+    ] {
         s3_client
             .request(
                 Method::PUT,
@@ -273,7 +282,11 @@ async fn write_iceberg(iceberg_addr: SocketAddr, seeds: &[String]) {
         credentials,
         address: iceberg_addr,
     };
-    for (name, bytes) in [("small", vec![0x41; 128]), ("large", vec![0x42; 4 * 1024 * 1024])] {
+    for (name, bytes) in [
+        ("small-a", vec![0x41; 800 * 1024]),
+        ("small-b", vec![0x43; 200 * 1024]),
+        ("large", vec![0x42; 4 * 1024 * 1024]),
+    ] {
         let path = format!(
             "/{}/{}",
             table.bucket(),
