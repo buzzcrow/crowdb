@@ -29,7 +29,7 @@ Current checkpoint: a three-rack protected-storage integration test concurrently
 
 - [~] **Unit and integration**: focused protocol, chunk client, ChunkDB, S3, Iceberg, GC isolation, and independent pool-scaling tests pass. Run the remaining package and monitor gates before cleanup.
 - [~] **Container acceptance**: single-node container E2E passes with both listeners, protocol writes, startup listener bind-failure propagation, crash and hang recovery, and persisted-volume restart. The protected three-rack client and combined HTTP integrations verify chunk types and differing EC policies. Add container chunk-type assertions.
-- [ ] **Gates and docs**: run `pixi run rs-fmt-check`, `pixi run rs-lint`, affected Rust tests, `pixi run tree-lint`, `pixi run test-cpp` for C++ changes, then update permanent access/chunkdb design.
+- [~] **Gates and docs**: the permanent access design now describes protocol-owned storage policy and file authority. Run `pixi run rs-fmt-check`, `pixi run rs-lint`, affected Rust tests, `pixi run tree-lint`, and `pixi run test-cpp` for C++ changes after final acceptance; reconcile any remaining permanent access/chunkdb design detail.
 - [ ] **Final cleanup**: delete R191, its backlog index entry, and this plan in a final cleanup commit after all acceptance cases pass.
 
 ## Files

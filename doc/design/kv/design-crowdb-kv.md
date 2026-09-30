@@ -148,6 +148,12 @@ btree can replay the WAL on crash. A write is acknowledged to the
 client only after a quorum of acceptors have durably flushed. Multi-
 disk WAL segments are tagged by slot index for parallelism.
 
+The protected three-node deployment keeps three voting replicas in each KV
+group, so one unavailable node leaves a two-voter quorum. The explicit
+single-node test deployment uses one voting replica and has no node-failure
+protection. ChunkDB checks the voting topology at startup before accepting
+either deployment profile; it never switches profiles after a node failure.
+
 ### 3.9 Plaintext transport, TLS hooks reserved
 
 Node-to-node and client-to-node channels are plaintext initially. The

@@ -121,8 +121,11 @@ before exiting.
 The listeners own separate `ChunkIoClient` instances and small-write pools.
 New S3 chunks use type `S3`; new Iceberg file chunks use type `IcebergTable`.
 Each protocol may override the legacy common small-write policy and select
-its own large-write EC, memory, prefetch, and mirror settings. Historical
-`Repo` locations remain readable through the layout recorded in ChunkDB.
+its own large-write EC, memory, prefetch, and mirror settings. Each protocol
+library constructs its own storage clients and chooses foreground writers;
+the executable handles HTTP framing, listener startup, and process shutdown.
+Iceberg file-record construction also lives in the Iceberg library, including
+the format rule shared by ordinary uploads and multipart completion.
 Iceberg GC uses a separate chunk client from foreground writes.
 Each small-write policy also chooses its chunk capacity; each protocol's
 large-write policy chooses its own maximum chunk size. The deployment profile
@@ -198,6 +201,9 @@ table, or dataset size.
   descriptors are not capabilities by themselves.
 - **AS-I9 — Completion lifetime:** every buffer and registration outlives all
   socket, RPC, storage, NIC, and GPU operations that reference it.
+- **AS-I10 — Protocol storage ownership:** S3 and Iceberg use distinct chunk
+  types and independently admitted foreground write pools; each library owns
+  its file or object authority and storage policy.
 
 ## 9. Direction and risks
 
