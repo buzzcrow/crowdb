@@ -165,7 +165,13 @@ impl MirrorChunkWriter {
                         "stream chunk does not contain a mirror strip".into(),
                     ));
                 };
-                if mirror.segments.len() != copy_count as usize || strip.unit_kb == 0 || strip.capacity == 0 {
+                let actual_copies = mirror.segments.len();
+                let protected = if copy_count == 1 {
+                    actual_copies == 1
+                } else {
+                    (2..=copy_count as usize).contains(&actual_copies)
+                };
+                if !protected || strip.unit_kb == 0 || strip.capacity == 0 {
                     return Err(IoError::MetadataConflict(
                         "stream chunk mirror geometry is invalid".into(),
                     ));

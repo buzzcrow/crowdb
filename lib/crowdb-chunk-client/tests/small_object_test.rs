@@ -1126,3 +1126,40 @@ async fn direct_mirror_chunk_writer_replicates_advances_and_seals() {
     writer.seal().await.unwrap();
     assert_eq!(allocator.snapshot().3, 1);
 }
+
+#[tokio::test]
+async fn direct_mirror_chunk_writer_accepts_protected_degraded_layout() {
+    let allocator: Arc<dyn ChunkAllocator> = Arc::new(MockAllocator::default());
+    let disk: Arc<dyn DiskWriter> = Arc::new(RecordingDiskWriter::default());
+    let stream = crowdb_protocol::chunk_stream::StreamName { high: 1, low: 3 };
+    let healthy = MirrorChunkWriter::allocate_with_copy_count(
+        Arc::clone(&allocator),
+        Arc::clone(&disk),
+        stream,
+        44,
+        30_000,
+        3,
+    )
+    .await
+    .unwrap();
+    let mut chunk = healthy.chunk().clone();
+    let Some(Strip::MirrorStrip(mirror)) = &mut chunk.strips[0].strip else {
+        panic!("allocated stream chunk must use mirrors");
+    };
+    mirror.segments.pop();
+    assert!(MirrorChunkWriter::open_with_copy_count(
+        Arc::clone(&allocator),
+        Arc::clone(&disk),
+        chunk.clone(),
+        stream,
+        44,
+        30_000,
+        3,
+    )
+    .is_ok());
+    let Some(Strip::MirrorStrip(mirror)) = &mut chunk.strips[0].strip else {
+        panic!("allocated stream chunk must use mirrors");
+    };
+    mirror.segments.pop();
+    assert!(MirrorChunkWriter::open_with_copy_count(allocator, disk, chunk, stream, 44, 30_000, 3).is_err());
+}

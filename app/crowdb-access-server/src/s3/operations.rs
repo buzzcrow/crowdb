@@ -297,10 +297,10 @@ impl ProductionS3Operations {
                 return Err(map_put_outcome(&outcome));
             }
         };
-        let locations = writer
-            .on_finish()
-            .await
-            .map_err(|_| S3ErrorCode::ServiceUnavailable)?;
+        let locations = writer.on_finish().await.map_err(|error| {
+            tracing::warn!(%error, "S3 PUT chunk finalization failed");
+            S3ErrorCode::ServiceUnavailable
+        })?;
         let logical_length = locations.iter().map(|location| location.logical_length).sum();
         if content_length.is_some_and(|expected| expected != logical_length) {
             return Err(S3ErrorCode::InvalidRequest);
@@ -494,10 +494,10 @@ impl ProductionS3Operations {
             .storage
             .chunks
             .prepare_large_write(content_length, self.config.large_write.clone());
-        prepared
-            .wait_until_prepared()
-            .await
-            .map_err(|_| S3ErrorCode::ServiceUnavailable)?;
+        prepared.wait_until_prepared().await.map_err(|error| {
+            tracing::warn!(%error, "S3 large write preparation failed");
+            S3ErrorCode::ServiceUnavailable
+        })?;
         Ok(ObjectWriter::Large(Box::new(prepared)))
     }
 }
@@ -661,6 +661,19 @@ fn map_object_error(error: &ObjectMetadataError) -> S3ErrorCode {
 }
 
 fn map_put_outcome(outcome: &PutOutcome) -> S3ErrorCode {
+    if matches!(
+        outcome,
+        PutOutcome::Timeout
+            | PutOutcome::Error {
+                code: PutErrorCode::ChunkWrite
+                    | PutErrorCode::LocationEncoding
+                    | PutErrorCode::MetadataEncoding
+                    | PutErrorCode::KvRejected,
+                ..
+            }
+    ) {
+        tracing::warn!(?outcome, "S3 PUT failed");
+    }
     match outcome {
         PutOutcome::Success => S3ErrorCode::InternalError,
         PutOutcome::Timeout => S3ErrorCode::ServiceUnavailable,

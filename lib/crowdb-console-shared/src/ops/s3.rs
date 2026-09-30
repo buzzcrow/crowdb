@@ -235,7 +235,7 @@ fn storage_configs(
         free_flush_max_batch: None,
     };
     let chunk = LocalChunkdbDeployConfig {
-        instance_count: 3,
+        instance_count: if protected_test { 1 } else { 3 },
         allow_unsafe_ec: !protected_test,
         rpc_workers: None,
         diskio_rpc_workers: None,
@@ -343,7 +343,7 @@ async fn initialize_after_kv(
             )
         })
         .count();
-    if storage_services == 9 {
+    if storage_services == 6 + chunk.instance_count {
         for group in &disk.data_groups {
             if ctx.sysmd().get_group(0, *group).await?.is_none() {
                 return Err(Error::NotFound {

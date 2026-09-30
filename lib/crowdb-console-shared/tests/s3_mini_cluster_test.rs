@@ -2,8 +2,20 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_console_shared::ops::s3;
+use crowdb_console_shared::{lifecycle, ops::OpContext};
+use crowdb_protocol::common::HwStatus;
 use crowdb_test_harness::test_dirs::TestDir;
 use reqwest::Method;
+use std::path::Path;
+use std::time::Duration;
+
+struct StopClusterOnDrop<'a>(&'a Path);
+
+impl Drop for StopClusterOnDrop<'_> {
+    fn drop(&mut self) {
+        let _ = s3::stop(self.0);
+    }
+}
 
 #[test]
 fn foreign_nonempty_directory_is_not_a_cluster() {
@@ -174,5 +186,106 @@ async fn protected_cluster_starts_and_reads_after_restart() {
         .await
         .expect("read protected object");
     assert_eq!(body, b"protected-object-bytes");
+    s3::delete(dir.path()).expect("delete protected cluster");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "stops one node in a complete simulated three-rack process stack"]
+async fn protected_cluster_reads_and_writes_after_node_three_stops() {
+    let dir = TestDir::new("s3-mini-protected-outage").expect("create test directory");
+    s3::start_protected_test_cluster(dir.path())
+        .await
+        .expect("start protected cluster");
+    let _cleanup = StopClusterOnDrop(dir.path());
+    let client = s3::S3HttpClient::from_data_dir(dir.path()).expect("S3 client");
+    client
+        .request(Method::PUT, Some("outage-bucket"), None, &[], None, None)
+        .await
+        .expect("create bucket");
+    client
+        .request(
+            Method::PUT,
+            Some("outage-bucket"),
+            Some("before-outage"),
+            &[],
+            Some(b"before-outage-bytes".to_vec()),
+            None,
+        )
+        .await
+        .expect("write before outage");
+
+    let (config, _) = s3::load(dir.path()).expect("load process identities");
+    for kind in [
+        crowdb_console_shared::config::ServiceType::Diskdb,
+        crowdb_console_shared::config::ServiceType::Diskio,
+        crowdb_console_shared::config::ServiceType::Kv,
+    ] {
+        let server = config
+            .servers
+            .iter()
+            .find(|server| server.node_id == Some(3) && server.service_type == kind)
+            .expect("node-three process");
+        lifecycle::stop_pid_with_timeout(server.pid.expect("process pid"), Duration::from_secs(5))
+            .expect("stop node-three process");
+    }
+    let seeds = config
+        .servers
+        .iter()
+        .filter(|server| server.service_type == crowdb_console_shared::config::ServiceType::Kv)
+        .map(|server| server.url.clone())
+        .collect::<Vec<_>>();
+    let surviving_rpc = config
+        .servers
+        .iter()
+        .find(|server| {
+            server.service_type == crowdb_console_shared::config::ServiceType::Kv && server.node_id == Some(1)
+        })
+        .and_then(|server| server.rpc_url.as_deref())
+        .expect("surviving KV RPC")
+        .trim_start_matches("http://")
+        .to_owned();
+    let ctx = OpContext::new(surviving_rpc, seeds, config);
+    ctx.sysmd()
+        .set_node_status(3, 3, HwStatus::Offline)
+        .await
+        .expect("mark unavailable node offline");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let (_, old_body) = client
+        .request(
+            Method::GET,
+            Some("outage-bucket"),
+            Some("before-outage"),
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("read existing object with one node stopped");
+    assert_eq!(old_body, b"before-outage-bytes");
+    let new_body = vec![0x5a; 2 * 1024 * 1024];
+    client
+        .request(
+            Method::PUT,
+            Some("outage-bucket"),
+            Some("during-outage"),
+            &[],
+            Some(new_body.clone()),
+            None,
+        )
+        .await
+        .expect("write new object with one node stopped");
+    let (_, read_back) = client
+        .request(
+            Method::GET,
+            Some("outage-bucket"),
+            Some("during-outage"),
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("read new object with one node stopped");
+    assert_eq!(read_back, new_body);
     s3::delete(dir.path()).expect("delete protected cluster");
 }

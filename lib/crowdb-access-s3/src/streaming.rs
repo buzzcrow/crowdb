@@ -474,9 +474,12 @@ pub async fn cleanup_after_definite_error(
 
 fn classify_publication_error(error: PublicationError) -> PutOutcome {
     match error {
-        PublicationError::Store(MetadataStoreError::Client(
+        timeout @ PublicationError::Store(MetadataStoreError::Client(
             ClientError::Deadline | ClientError::Transport(_),
-        )) => PutOutcome::Timeout,
+        )) => {
+            tracing::warn!(%timeout, "S3 object publication outcome is uncertain");
+            PutOutcome::Timeout
+        }
         PublicationError::Metadata(error) => PutOutcome::Error {
             code: PutErrorCode::MetadataEncoding,
             message: error.to_string(),
