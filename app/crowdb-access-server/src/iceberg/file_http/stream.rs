@@ -1,8 +1,6 @@
 use std::fmt::Write;
 
-use crowdb_access_iceberg::file::{
-    ContentFormat, FileContent, FileIdentity, FileKind, FileLocation, FileRecord,
-};
+use crowdb_access_iceberg::file::{FileIdentity, FileLocation, FileRecord};
 use crowdb_access_iceberg::storage::prepare_file_writer;
 use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter, LargeWritePolicy};
@@ -131,38 +129,6 @@ pub(super) async fn upload(
     for byte in body.md5() {
         write!(&mut etag, "{byte:02x}").expect("string write cannot fail");
     }
-    let content =
-        FileContent::from_locations(&locations, length, etag).map_err(|_| FileS3ErrorCode::InternalError)?;
-    let (kind, format) = format_for_location(&location);
-    let record = FileRecord {
-        file: owner.file,
-        location,
-        kind,
-        format,
-        length,
-        digest: [0; 32],
-        content,
-        hint: None,
-    };
-    record.validate().map_err(|_| FileS3ErrorCode::InternalError)?;
-    Ok(record)
-}
-
-fn format_for_location(location: &FileLocation) -> (FileKind, ContentFormat) {
-    let path = location.relative_key();
-    let extension = std::path::Path::new(path).extension();
-    let has_extension = |wanted: &str| extension.is_some_and(|value| value.eq_ignore_ascii_case(wanted));
-    if has_extension("json") {
-        (FileKind::Metadata, ContentFormat::Json)
-    } else if has_extension("avro") {
-        (FileKind::Unbound, ContentFormat::Avro)
-    } else if has_extension("parquet") {
-        (FileKind::Unbound, ContentFormat::Parquet)
-    } else if has_extension("orc") {
-        (FileKind::Unbound, ContentFormat::Orc)
-    } else if has_extension("puffin") {
-        (FileKind::Unbound, ContentFormat::Puffin)
-    } else {
-        (FileKind::Unbound, ContentFormat::Opaque)
-    }
+    FileRecord::from_uploaded_locations(owner.file, location, &locations, length, etag)
+        .map_err(|_| FileS3ErrorCode::InternalError)
 }

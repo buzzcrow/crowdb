@@ -1,8 +1,8 @@
 use crate::catalog::CatalogError;
 use crate::error::ValidationError;
 use crate::file::{
-    file_key, ContentFormat, FileContent, FileKind, FileRecord, FileRepository, FileTree, MultipartPhase,
-    MultipartSelection, MultipartSession, MultipartStreamPart, SelectedPart, SelectedStreamPart,
+    file_key, FileContent, FileRecord, FileRepository, FileTree, MultipartPhase, MultipartSelection,
+    MultipartSession, MultipartStreamPart, SelectedPart, SelectedStreamPart,
 };
 use crate::operation::PayloadStore;
 use crate::record::StorageRecord;
@@ -64,34 +64,13 @@ impl MultipartRepository {
                 .map_err(|_| ValidationError::Record)?;
         }
         let assembled = composer.finish().map_err(|_| ValidationError::Record)?;
-        let content = FileContent::from_locations(&assembled.locations, assembled.length, assembled.etag)?;
-        let path = session.location.relative_key();
-        let extension = std::path::Path::new(path).extension();
-        let has_extension = |wanted: &str| extension.is_some_and(|value| value.eq_ignore_ascii_case(wanted));
-        let (kind, format) = if has_extension("json") {
-            (FileKind::Metadata, ContentFormat::Json)
-        } else if has_extension("avro") {
-            (FileKind::Unbound, ContentFormat::Avro)
-        } else if has_extension("parquet") {
-            (FileKind::Unbound, ContentFormat::Parquet)
-        } else if has_extension("orc") {
-            (FileKind::Unbound, ContentFormat::Orc)
-        } else if has_extension("puffin") {
-            (FileKind::Unbound, ContentFormat::Puffin)
-        } else {
-            (FileKind::Unbound, ContentFormat::Opaque)
-        };
-        let record = FileRecord {
-            file: session.owner.file,
-            location: session.location.clone(),
-            kind,
-            format,
-            length: assembled.length,
-            digest: [0; 32],
-            content,
-            hint: None,
-        };
-        record.validate()?;
+        let record = FileRecord::from_uploaded_locations(
+            session.owner.file,
+            session.location.clone(),
+            &assembled.locations,
+            assembled.length,
+            assembled.etag,
+        )?;
         let value = StorageRecord::File(Box::new(record)).encode()?;
         let publication = PayloadStore::new(self.store.clone())
             .put(session.context.catalog, session.upload, &value)
