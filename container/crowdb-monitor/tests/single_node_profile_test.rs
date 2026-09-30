@@ -49,6 +49,15 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         Some(&"http://localhost".to_owned())
     );
     assert_eq!(access_service.probe.target, "http://127.0.0.1:80/v1/config");
+    assert_eq!(access_service.additional_probes.len(), 1);
+    assert_eq!(
+        access_service.additional_probes[0].target,
+        "http://127.0.0.1:81/_crowdb/health/ready"
+    );
+    assert_eq!(
+        access_service.additional_probes[0].failure_threshold,
+        access_service.probe.failure_threshold
+    );
     assert_eq!(
         access_service.env.get("CROWDB_MANAGEMENT_SEEDS"),
         Some(&"http://127.0.0.1:10000".to_owned())
