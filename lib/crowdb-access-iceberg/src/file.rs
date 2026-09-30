@@ -39,7 +39,8 @@ pub use avro::{
     AvroRecordArray, AvroRecords, AvroScalar, AvroScalarType, AvroSchema, AvroTuple, AvroTupleField,
 };
 pub use blocks::{
-    FileBlockStore, FileIoError, NativeFileBlocks, MAX_FILE_BLOCK_BYTES, NATIVE_FILE_BLOCK_BYTES,
+    FileBlockStore, FileIoError, FileLocationStream, NativeFileBlocks, MAX_FILE_BLOCK_BYTES,
+    NATIVE_FILE_BLOCK_BYTES,
 };
 pub use content::{ChunkRoot, FileContent, InlineCodec, MAX_COMPRESSION_INPUT_BYTES, MAX_INLINE_BYTES};
 pub use credentials::{
