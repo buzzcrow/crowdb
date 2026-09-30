@@ -686,7 +686,7 @@ async fn spawn_access(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServic
     env.insert("CROWDB_S3_EC_CODE".into(), "1".into());
     let runtime_launch = LocalLaunchSpec {
         program: binary.to_string_lossy().into_owned(),
-        args: Vec::new(),
+        args: vec!["s3".into()],
         workdir: workdir.to_string_lossy().into_owned(),
         env,
         readiness_url: Some(format!("http://127.0.0.1:{port}/_crowdb/health/ready")),
