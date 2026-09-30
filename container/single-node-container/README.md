@@ -41,7 +41,7 @@ pixi run test-single-node-container
 
 `pixi run stage-single-node-container` produces the runtime directory without
 building a Docker image. Work on a `release/<version>` branch whose `VERSION`
-matches the branch name, such as `release/0.1.0`. After pushing each candidate
+matches the branch name, such as `release/0.2.0`. After pushing each candidate
 commit, select that branch in the GitHub Actions manual run form, or dispatch
 it from a clean checkout that matches the remote branch:
 
@@ -49,6 +49,11 @@ it from a clean checkout that matches the remote branch:
 pixi run -- python tools/release.py --dry-run
 pixi run -- python tools/release.py --execute
 ```
+
+After the image passes container verification, publication updates both
+`crowdb/crowdb-iceberg:<version>` and `crowdb/crowdb-iceberg:latest` to the
+same image digest. Rerunning publication from an older release branch also
+updates `latest`, so use the newest release branch for the blog's moving tag.
 
 The script only dispatches the workflow; it does not change files or push.
 The dry run does not contact GitHub.

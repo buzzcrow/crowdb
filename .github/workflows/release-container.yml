@@ -143,7 +143,9 @@ jobs:
           SOURCE_REVISION=${{ needs.verify.outputs.revision }}
           PREVIEW_VERSION=${{ needs.verify.outputs.version }}
           RUNTIME_SHA256=${{ needs.verify.outputs.runtime_sha256 }}
-        tags: docker.io/crowdb/crowdb-iceberg:${{ needs.verify.outputs.image_tag }}
+        tags: |
+          docker.io/crowdb/crowdb-iceberg:${{ needs.verify.outputs.image_tag }}
+          docker.io/crowdb/crowdb-iceberg:latest
     - uses: sigstore/cosign-installer@v4.1.2
     - name: Sign published digest
       env:
