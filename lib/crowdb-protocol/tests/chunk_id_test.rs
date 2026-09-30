@@ -12,6 +12,22 @@ use crowdb_protocol::chunk_id::{
 use crowdb_protocol::common::ChunkId;
 
 #[test]
+fn chunk_type_prefix_values_preserve_legacy_ids() {
+    assert_eq!(
+        [
+            CHUNK_TYPE_REPO,
+            CHUNK_TYPE_WAL,
+            CHUNK_TYPE_BTREE_PAGE,
+            CHUNK_TYPE_PAGE_INDEX,
+            CHUNK_TYPE_STREAM,
+            CHUNK_TYPE_S3,
+            CHUNK_TYPE_ICEBERG_TABLE,
+        ],
+        [0, 1, 2, 3, 4, 5, 6]
+    );
+}
+
+#[test]
 fn generate_sets_chunk_type() {
     for ct in [
         CHUNK_TYPE_REPO,

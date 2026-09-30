@@ -676,6 +676,7 @@ dependencies = [
  "crowdb-access-multipart",
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
+ "crowdb-common",
  "crowdb-kv-client",
  "crowdb-protocol",
  "flatbuffers",

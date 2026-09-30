@@ -6,11 +6,10 @@ use crowdb_access_iceberg::catalog::{
     RoutedCatalogStore,
 };
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
-use crowdb_access_iceberg::storage::connect;
+use crowdb_access_iceberg::storage::{connect, IcebergLargeWriteSettings};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
-use crowdb_chunk_client::{ChunkClientConfig, ChunkIoClient, LargeWritePolicy};
-use crowdb_common::ec::EcScheme;
+use crowdb_chunk_client::ChunkIoClient;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
@@ -167,7 +166,7 @@ async fn start_listener(
         .native_budget_bytes
         .unwrap_or(256 * 1024 * 1024);
     let native_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
-    let large_write = iceberg_large_write(&access_config);
+    let large_write = iceberg_large_write(&access_config)?;
     let mut service = IcebergHttpService::new(repository.clone(), authentication, timeout)
         .with_namespaces(store.clone())?
         .with_fileio_native(
@@ -226,30 +225,21 @@ async fn start_listener(
     Ok(())
 }
 
-fn iceberg_large_write(access_config: &AccessConfig) -> LargeWritePolicy {
-    let mut large_write = LargeWritePolicy {
-        ec_scheme: EcScheme::new(
-            access_config
-                .iceberg
-                .ec_data
-                .unwrap_or(access_config.iceberg_small_write().ec_data),
-            access_config
-                .iceberg
-                .ec_code
-                .unwrap_or(access_config.iceberg_small_write().ec_code),
-        ),
-        client: Arc::new(ChunkClientConfig {
-            large_mirror_copies: access_config.iceberg.large_mirror_copies,
-            read_buffer_size: access_config.iceberg_small_write().disk_block_bytes,
-            max_chunk_size: access_config.iceberg.max_chunk_size.unwrap_or(1024 * 1024 * 1024),
-            memory_budget: access_config.iceberg.large_memory_budget_bytes.unwrap_or(0),
-            prefetch_strips_per_chunk: access_config.iceberg.large_prefetch_strips_per_chunk.unwrap_or(1),
-            chunk_preparation_depth: access_config.iceberg.large_chunk_preparation_depth.unwrap_or(1),
-            ..ChunkClientConfig::default()
-        }),
-    };
-    crowdb_access_iceberg::storage::own_large_write(&mut large_write);
-    large_write
+fn iceberg_large_write(
+    access_config: &AccessConfig,
+) -> Result<crowdb_chunk_client::LargeWritePolicy, BoxError> {
+    let small = access_config.iceberg_small_write();
+    Ok(IcebergLargeWriteSettings {
+        ec_data: access_config.iceberg.ec_data.unwrap_or(small.ec_data),
+        ec_code: access_config.iceberg.ec_code.unwrap_or(small.ec_code),
+        disk_block_bytes: small.disk_block_bytes,
+        mirror_copies: access_config.iceberg.large_mirror_copies,
+        max_chunk_size: access_config.iceberg.max_chunk_size,
+        memory_budget_bytes: access_config.iceberg.large_memory_budget_bytes,
+        prefetch_strips_per_chunk: access_config.iceberg.large_prefetch_strips_per_chunk,
+        chunk_preparation_depth: access_config.iceberg.large_chunk_preparation_depth,
+    }
+    .policy()?)
 }
 
 async fn wait_for_shutdown(mut shutdown: Option<watch::Receiver<bool>>) {

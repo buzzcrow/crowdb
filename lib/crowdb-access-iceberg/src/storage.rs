@@ -6,11 +6,13 @@
 use std::sync::Arc;
 
 use crowdb_chunk_client::{
-    ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, LargeWritePolicy, SmallWritePolicy,
+    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, LargeWritePolicy,
+    SmallWritePolicy,
 };
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
+use crowdb_common::ec::EcScheme;
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
 use crowdb_protocol::chunkdb::rpc::ChunkType;
 
@@ -20,6 +22,50 @@ pub type IcebergStorageError = Box<dyn std::error::Error + Send + Sync>;
 
 pub fn own_large_write(policy: &mut LargeWritePolicy) {
     Arc::make_mut(&mut policy.client).chunk_type = ChunkType::IcebergTable;
+}
+
+pub struct IcebergLargeWriteSettings {
+    pub ec_data: usize,
+    pub ec_code: usize,
+    pub disk_block_bytes: usize,
+    pub mirror_copies: Option<u32>,
+    pub max_chunk_size: Option<u64>,
+    pub memory_budget_bytes: Option<usize>,
+    pub prefetch_strips_per_chunk: Option<usize>,
+    pub chunk_preparation_depth: Option<usize>,
+}
+
+impl IcebergLargeWriteSettings {
+    /// # Errors
+    /// Rejects invalid Iceberg large-write geometry before connecting storage.
+    pub fn policy(self) -> Result<LargeWritePolicy, String> {
+        if self.ec_data == 0 || self.ec_data > 32 || self.ec_code == 0 {
+            return Err("Iceberg EC data and code counts are invalid".into());
+        }
+        let mut client = ChunkClientConfig {
+            chunk_type: ChunkType::IcebergTable,
+            large_mirror_copies: self.mirror_copies,
+            read_buffer_size: self.disk_block_bytes,
+            ..ChunkClientConfig::default()
+        };
+        if let Some(value) = self.max_chunk_size {
+            client.max_chunk_size = value;
+        }
+        if let Some(value) = self.memory_budget_bytes {
+            client.memory_budget = value;
+        }
+        if let Some(value) = self.prefetch_strips_per_chunk {
+            client.prefetch_strips_per_chunk = value;
+        }
+        if let Some(value) = self.chunk_preparation_depth {
+            client.chunk_preparation_depth = value;
+        }
+        client.validate().map_err(|error| error.to_string())?;
+        Ok(LargeWritePolicy {
+            ec_scheme: EcScheme::new(self.ec_data, self.ec_code),
+            client: Arc::new(client),
+        })
+    }
 }
 
 /// Connects Iceberg metadata and a separately budgeted foreground chunk pool.
