@@ -13,6 +13,11 @@ kv_rpc_workers = 1
 diskdb_pool_size = 1
 diskdb_rpc_workers = 1
 
+[conversion_io]
+normal_connections_per_endpoint = 1
+priority_connections_per_endpoint = 1
+rpc_workers = 1
+
 [topology]
 refresh_interval_secs = 1
 

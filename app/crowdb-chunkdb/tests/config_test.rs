@@ -9,6 +9,7 @@ use crowdb_common::config::BaseConfig;
 fn rpc_workers_defaults_and_validates() {
     let config: ChunkdbConfig = toml::from_str("[server]\n").expect("partial config parses");
     assert_eq!(config.server.rpc_workers, 2);
+    assert_eq!(config.conversion_io.rpc_workers, 2);
     config.validate().expect("default workers validate");
 
     let mut invalid = config;
@@ -26,6 +27,7 @@ fn tracked_config_file_loads_and_validates() {
         .join("crowdb_chunkdb_config.toml");
     let config = crowdb_common::config::load_from_file::<ChunkdbConfig>(&path).expect("load tracked config");
     assert_eq!(config.server.rpc_workers, 2);
+    assert_eq!(config.conversion_io.normal_connections_per_endpoint, 1);
     assert_eq!(
         config.placement.failure_domain_priority,
         FailureDomainPriority::RackFirst
@@ -40,6 +42,17 @@ fn single_node_container_declares_test_only_deployment() {
     let config = crowdb_common::config::load_from_file::<ChunkdbConfig>(&path).unwrap();
     assert_eq!(config.deployment.mode, DeploymentMode::TestSingleNode);
     assert_eq!(config.placement.mode, PlacementMode::UnsafeColocated);
+    assert_eq!(config.conversion_io.rpc_workers, 1);
+}
+
+#[test]
+fn conversion_io_transport_rejects_zero_resources() {
+    let mut config = ChunkdbConfig::default();
+    config.conversion_io.priority_connections_per_endpoint = 0;
+    assert_eq!(
+        config.validate(),
+        Err("conversion_io connections and RPC workers must be > 0".to_string())
+    );
 }
 
 #[test]

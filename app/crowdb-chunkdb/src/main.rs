@@ -597,9 +597,10 @@ async fn main() {
         Arc::clone(&workflow_metrics.repair),
     ));
     let (task_scanner_handle, conversion_route_refresh_handle, ad_hoc_manager) =
-        match ConversionDiskIo::connect(
+        match ConversionDiskIo::connect_with_config(
             &ServiceRegistryClient::from_shared(Arc::clone(&kv)),
             &HardwareClient::from_shared(Arc::clone(&kv)),
+            &config.conversion_io,
         )
         .await
         {

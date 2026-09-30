@@ -10,6 +10,8 @@ use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, Durability,
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::diskdb::rpc::Segment;
 
+use crate::chunkdb_config::ConversionIoConfig;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConversionIoError {
     #[error("conversion DiskIO topology error: {0}")]
@@ -34,12 +36,21 @@ impl ConversionDiskIo {
         service: &ServiceRegistryClient,
         hardware: &HardwareClient,
     ) -> Result<Self, ConversionIoError> {
+        Self::connect_with_config(service, hardware, &ConversionIoConfig::default()).await
+    }
+
+    pub async fn connect_with_config(
+        service: &ServiceRegistryClient,
+        hardware: &HardwareClient,
+        config: &ConversionIoConfig,
+    ) -> Result<Self, ConversionIoError> {
         let client = DiskioClient::connect_with_clients(
             service.clone(),
             hardware.clone(),
             DiskioClientConfig {
-                normal_connections_per_endpoint: 1,
-                priority_connections_per_endpoint: 1,
+                normal_connections_per_endpoint: config.normal_connections_per_endpoint,
+                priority_connections_per_endpoint: config.priority_connections_per_endpoint,
+                rpc_workers: config.rpc_workers,
                 ..DiskioClientConfig::default()
             },
         )

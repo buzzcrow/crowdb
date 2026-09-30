@@ -60,6 +60,27 @@ pub struct ChunkdbConfig {
     pub placement_rebalance: PlacementRebalanceConfig,
     #[serde(default)]
     pub reservation: ReservationConfig,
+    #[serde(default)]
+    pub conversion_io: ConversionIoConfig,
+}
+
+/// DiskIO transport used by background conversion and repair.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversionIoConfig {
+    pub normal_connections_per_endpoint: usize,
+    pub priority_connections_per_endpoint: usize,
+    pub rpc_workers: u32,
+}
+
+impl Default for ConversionIoConfig {
+    fn default() -> Self {
+        Self {
+            normal_connections_per_endpoint: 1,
+            priority_connections_per_endpoint: 1,
+            rpc_workers: 2,
+        }
+    }
 }
 
 /// Placement safety policy.
@@ -135,6 +156,12 @@ impl BaseConfig for ChunkdbConfig {
         self.placement_repair.validate()?;
         self.placement_rebalance.validate()?;
         self.reservation.validate()?;
+        if self.conversion_io.normal_connections_per_endpoint == 0
+            || self.conversion_io.priority_connections_per_endpoint == 0
+            || self.conversion_io.rpc_workers == 0
+        {
+            return Err("conversion_io connections and RPC workers must be > 0".into());
+        }
         Ok(())
     }
 }
