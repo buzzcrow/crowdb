@@ -31,7 +31,7 @@ Goal: make production a protected cluster of at least three nodes, retain writes
 
 ## Verification and cleanup
 
-- [ ] **Focused tests**: mode validation, allocation guards, mirror/EC strip boundaries, data error, and degraded placement. Files: relevant crate `tests/`.
+- [~] **Focused tests**: mode validation, allocation guards, mirror/EC strip boundaries, single-copy write error propagation, and degraded placement have focused cases. Add real DiskIO read/write faults and full-node outage cases. Files: relevant crate `tests/`.
 - [~] **Gates and permanent design**: `tree-lint`, `test-cpp`, single-node container E2E, `rs-fmt-check`, `rs-lint`, and focused affected-crate tests passed after the configuration changes. Complete the three-node outage acceptance and update KV design before final cleanup.
 - [~] **Full-stack test stability**: `cross_domain_rebalance_hands_one_safe_move_to_target_diskdb` timed out waiting for an Accepted journal once in a concurrent 36-test run and once alone, then passed six isolated runs and a full concurrent rerun. The first divergence inside DiskDB's asynchronous relocation worker remains unconfirmed; keep the acceptance result separate from the one-node outage work.
 - [ ] **Final cleanup**: remove R192, its backlog entry, and this plan in the final cleanup commit after acceptance passes.

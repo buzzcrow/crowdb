@@ -53,6 +53,30 @@ struct ConcurrentDiskWriter {
     max_inflight: AtomicUsize,
 }
 
+#[derive(Default)]
+struct RejectingDiskWriter {
+    attempts: AtomicUsize,
+}
+
+#[async_trait]
+impl DiskWriter for RejectingDiskWriter {
+    async fn write(&self, _seg: &Segment, _unit_bytes: u64, _data: Bytes) -> Result<()> {
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        Err(IoError::WriteFailed("injected single-copy failure".into()))
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        _seg: &Segment,
+        _unit_bytes: u64,
+        _byte_offset: u64,
+        _data: Bytes,
+    ) -> Result<()> {
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        Err(IoError::WriteFailed("injected single-copy failure".into()))
+    }
+}
+
 #[async_trait]
 impl DiskWriter for ConcurrentDiskWriter {
     async fn write(&self, _seg: &Segment, _unit_bytes: u64, _data: Bytes) -> Result<()> {
@@ -446,6 +470,40 @@ async fn chunk_writer_crosses_mirror_and_ec_strip_boundaries() {
             .concat(),
         vec![5; 12 * 1024]
     );
+}
+
+#[tokio::test]
+async fn single_copy_mirror_write_returns_its_disk_error() {
+    let chunk_id = ChunkId { high: 1, low: 10 };
+    let mut offset = 0;
+    let strip = ChunkStrip {
+        unit_kb: 4,
+        capacity: 4,
+        strip_type: StripType::Mirror as i32,
+        strip: Some(StripOneof::MirrorStrip(MirrorStrip {
+            segments: make_segments(chunk_id, 1, &mut offset),
+        })),
+        ..ChunkStrip::default()
+    };
+    let chunk = Chunk {
+        id: Some(chunk_id),
+        strips: vec![strip],
+        capacity: 4,
+        ..Chunk::default()
+    };
+    let disk = Arc::new(RejectingDiskWriter::default());
+    let mut writer = ChunkWriter::new(
+        Arc::new(MockChunkAllocator::new()),
+        disk.clone(),
+        EcScheme::new(2, 1),
+        test_config(4 * 1024),
+    );
+    writer.open(chunk, Some(1024)).unwrap();
+    assert!(matches!(
+        writer.push(Bytes::from(vec![7; 1024])).await,
+        Err(IoError::WriteFailed(_))
+    ));
+    assert_eq!(disk.attempts.load(Ordering::Relaxed), 1);
 }
 
 fn ec_4_1() -> EcScheme {
