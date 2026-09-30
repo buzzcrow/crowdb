@@ -40,22 +40,13 @@ R152–R166 delivered the limited basic S3 service, including the restart
 acceptance baseline. Multipart upload is available; R168–R169 defer
 shared-storage GC without blocking basic large-object deletion. R170 adds
 optional cuObject/RDMA acceleration after the TCP baseline is correct and measured.
-- **[R191](R191-access-storage-isolation.md)** — protocol-owned chunk storage —
-  Area: access server / S3 / Iceberg / chunk IO / chunkdb — Give S3 and Iceberg
-  distinct chunk types, independent small-write pools and EC/prefetch settings,
-  and move protocol storage wiring into their access libraries.
-- **[R192](R192-chunkio-deployment-protection.md)** — explicit protection and
-  strip I/O — Area: KV / chunk IO / chunkdb / deployment — Require at least
-  three nodes for production with `max_node_failures = 1`, two-copy mirror
-  strips, and degraded EC placement after one node fails. Keep single-node
-  as an explicit, unprotected test mode with `max_node_failures = 0` and
-  one-copy 1 MiB mirror strips. No dedicated two-node deployment mode.
 - **[R193](R193-chunkdb-node-failure-budget.md)** — configurable node failure
   budget and EC placement — Area: KV / chunkdb / chunk IO / deployment —
-  Generalize R192's fixed profiles to larger clusters. Validate mirror copies
-  and EC against the worst configured set of failed nodes; six nodes with a
-  two-node budget admit `4+2` and `8+4` EC, but reject `2+1`. Persist degraded
-  placement and restore full protection after capacity returns.
+  Generalize the fixed one-node and three-node profiles to larger clusters.
+  Validate mirror copies and EC against the worst configured set of failed
+  nodes. A six-node cluster with a two-node budget admits `4+2` and `8+4` EC,
+  but rejects `2+1`. Persist degraded placement and restore full protection
+  after capacity returns.
 - **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
   reclamation — Area: access server / S3 / chunkdb — **Deferred on R95.** Turn
   exact pending shared ranges into qualified, restart-safe physical deletion.
