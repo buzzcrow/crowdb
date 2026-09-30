@@ -188,8 +188,7 @@ impl SmallPoolRuntime {
             }
             let routes = self.routes.load_full();
             if routes.is_empty() {
-                tokio::task::yield_now().await;
-                continue;
+                return Err(IoError::WriteFailed("small-write pipelines unavailable".into()));
             }
             let route = Arc::clone(&object.route);
             route.accepted(object.len);
