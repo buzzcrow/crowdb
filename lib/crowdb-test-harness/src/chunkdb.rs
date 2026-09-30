@@ -86,7 +86,7 @@ fn prepare_runtime(runtime: &mut crate::test_dirs::TestRuntime) -> ChunkdbRuntim
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkdbPlacementMode {
     #[default]
     Protected,
@@ -99,6 +99,18 @@ impl ChunkdbPlacementMode {
             Self::Protected => "protected",
             Self::UnsafeColocated => "unsafe_colocated",
         }
+    }
+}
+
+fn deployment_mode(options: ChunkdbStartOptions) -> &'static str {
+    if options.placement_mode == ChunkdbPlacementMode::UnsafeColocated
+        || options.allow_unsafe_ec
+        || options.allow_degraded_failure_domains
+        || options.repair_allow_unsafe_placement
+    {
+        "test_unsafe_placement"
+    } else {
+        "production"
     }
 }
 
@@ -193,8 +205,12 @@ impl ChunkdbProcess {
         let rpc_port = paths.rpc_port;
         let http_port = paths.http_port;
 
+        let deployment_mode = deployment_mode(options);
         let config_content = format!(
-            r#"[server]
+            r#"[deployment]
+mode = "{deployment_mode}"
+
+[server]
 rpc_workers = 2
 listen_addr = "127.0.0.1:{listen_port}"
 rpc_listen_addr = "127.0.0.1:{rpc_port}"

@@ -153,6 +153,8 @@ using ct_chunk_page_store_options = struct
     uint32_t iu_size;                        // 0 => 64 KiB page framing
     size_t   max_concurrent_packs;           // 0 => 8
     uint64_t materialization_bytes_per_pass; // 0 => 64 MiB; clamped to one pack
+    uint64_t max_chunk_bytes;                // 0 => 256 MiB
+    uint32_t mirror_copies;                  // 0 => 3
 };
 
 using ct_chunk_page_store_stats = struct
@@ -212,6 +214,7 @@ struct ct_chunk_rpc_transport_options
     uint64_t                       writer_lease_ms;
     uint64_t                       rpc_timeout_ms; // 0 => 30 seconds
     uint32_t                       completion_capacity;
+    uint32_t                       mirror_copies; // 0 => 3
 };
 
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out);

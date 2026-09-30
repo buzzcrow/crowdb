@@ -12,11 +12,26 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AccessConfig {
+    pub deployment: DeploymentConfig,
     pub common: CommonConfig,
     pub read: ReadConfig,
     pub small_write: SmallWriteConfig,
     pub s3: S3Config,
     pub iceberg: IcebergConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentMode {
+    #[default]
+    Production,
+    TestSingleNode,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DeploymentConfig {
+    pub mode: DeploymentMode,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -77,6 +92,7 @@ pub struct SmallWriteConfig {
     /// Data bytes per strip block used for the small-object routing boundary.
     pub disk_block_bytes: usize,
     pub conversion_enabled: bool,
+    pub mirror_copies: Option<u32>,
     pub ec_data: usize,
     pub ec_code: usize,
     pub memory_budget_bytes: usize,
@@ -84,6 +100,7 @@ pub struct SmallWriteConfig {
     pub min_pipelines: usize,
     pub max_pipelines: usize,
     pub max_batch_bytes: usize,
+    pub chunk_capacity_bytes: u64,
 }
 
 impl Default for SmallWriteConfig {
@@ -93,6 +110,7 @@ impl Default for SmallWriteConfig {
             threshold_ratio: 0.9,
             disk_block_bytes: 1024 * 1024,
             conversion_enabled: policy.conversion_enabled,
+            mirror_copies: None,
             ec_data: policy.conversion_data_num,
             ec_code: policy.conversion_code_num,
             memory_budget_bytes: policy.memory_budget,
@@ -100,6 +118,7 @@ impl Default for SmallWriteConfig {
             min_pipelines: policy.min_pipelines,
             max_pipelines: policy.max_pipelines,
             max_batch_bytes: policy.max_batch_bytes,
+            chunk_capacity_bytes: policy.chunk_capacity,
         }
     }
 }
@@ -120,6 +139,9 @@ impl SmallWriteConfig {
     pub fn policy(&self) -> SmallWritePolicy {
         SmallWritePolicy {
             conversion_enabled: self.conversion_enabled,
+            mirror_copies: self
+                .mirror_copies
+                .unwrap_or(SmallWritePolicy::default().mirror_copies),
             conversion_data_num: self.ec_data,
             conversion_code_num: self.ec_code,
             memory_budget: self.memory_budget_bytes,
@@ -127,6 +149,7 @@ impl SmallWriteConfig {
             min_pipelines: self.min_pipelines,
             max_pipelines: self.max_pipelines,
             max_batch_bytes: self.max_batch_bytes,
+            chunk_capacity: self.chunk_capacity_bytes,
             ..SmallWritePolicy::default()
         }
     }
@@ -135,6 +158,8 @@ impl SmallWriteConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct S3Config {
+    /// Overrides the legacy shared small-write policy for S3 only.
+    pub small_write: Option<SmallWriteConfig>,
     pub listen: Option<String>,
     pub tenant: Option<String>,
     pub region: Option<String>,
@@ -148,14 +173,39 @@ pub struct S3Config {
     pub ec_data: Option<usize>,
     pub ec_code: Option<usize>,
     pub max_chunk_size: Option<u64>,
+    pub large_memory_budget_bytes: Option<usize>,
+    pub large_prefetch_strips_per_chunk: Option<usize>,
+    pub large_chunk_preparation_depth: Option<usize>,
+    pub large_mirror_copies: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IcebergConfig {
+    /// Overrides the legacy shared small-write policy for Iceberg only.
+    pub small_write: Option<SmallWriteConfig>,
     pub listen: Option<String>,
     pub native_budget_bytes: Option<usize>,
+    pub ec_data: Option<usize>,
+    pub ec_code: Option<usize>,
+    pub max_chunk_size: Option<u64>,
+    pub large_memory_budget_bytes: Option<usize>,
+    pub large_prefetch_strips_per_chunk: Option<usize>,
+    pub large_chunk_preparation_depth: Option<usize>,
+    pub large_mirror_copies: Option<u32>,
     pub gc: IcebergGcConfig,
+}
+
+impl AccessConfig {
+    #[must_use]
+    pub fn s3_small_write(&self) -> &SmallWriteConfig {
+        self.s3.small_write.as_ref().unwrap_or(&self.small_write)
+    }
+
+    #[must_use]
+    pub fn iceberg_small_write(&self) -> &SmallWriteConfig {
+        self.iceberg.small_write.as_ref().unwrap_or(&self.small_write)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -198,22 +248,7 @@ impl BaseConfig for AccessConfig {
         {
             return Err("read.recovery_memory_bytes must be between 1 MiB and 4 GiB".into());
         }
-        self.small_write
-            .policy()
-            .validate()
-            .map_err(|error| format!("invalid small_write config: {error}"))?;
-        if !self.small_write.threshold_ratio.is_finite()
-            || self.small_write.threshold_ratio <= 0.0
-            || self.small_write.threshold_ratio > 1.0
-            || self.small_write.disk_block_bytes < 128 * 1024
-            || self.small_write.disk_block_bytes > 1024 * 1024
-            || !self.small_write.disk_block_bytes.is_power_of_two()
-            || self.small_write.ec_data == 0
-            || self.small_write.ec_data > 32
-            || self.small_write.threshold_exclusive() > self.small_write.policy().object_limit
-        {
-            return Err("small_write strip capacity or threshold is invalid".into());
-        }
+        self.validate_small_writes()?;
         if self.s3.ec_data == Some(0) || self.s3.ec_code == Some(0) {
             return Err("S3 EC data and code counts must be nonzero".into());
         }
@@ -222,6 +257,44 @@ impl BaseConfig for AccessConfig {
         }
         if self.iceberg.native_budget_bytes == Some(0) {
             return Err("Iceberg native budget must be nonzero".into());
+        }
+        if self.iceberg.ec_data == Some(0)
+            || self.iceberg.ec_code == Some(0)
+            || self.iceberg.max_chunk_size == Some(0)
+            || self.s3.large_memory_budget_bytes == Some(0)
+            || self.s3.large_prefetch_strips_per_chunk == Some(0)
+            || self.s3.large_chunk_preparation_depth == Some(0)
+            || self.iceberg.large_memory_budget_bytes == Some(0)
+            || self.iceberg.large_prefetch_strips_per_chunk == Some(0)
+            || self.iceberg.large_chunk_preparation_depth == Some(0)
+            || self.s3.large_mirror_copies == Some(0)
+            || self.iceberg.large_mirror_copies == Some(0)
+        {
+            return Err("protocol large-write settings must be nonzero".into());
+        }
+        match self.deployment.mode {
+            DeploymentMode::Production => {
+                if self.s3_small_write().policy().mirror_copies < 2
+                    || self.iceberg_small_write().policy().mirror_copies < 2
+                    || self.s3.large_mirror_copies == Some(1)
+                    || self.iceberg.large_mirror_copies == Some(1)
+                {
+                    return Err("production access writes require protected strips".into());
+                }
+            }
+            DeploymentMode::TestSingleNode => {
+                for config in [self.s3_small_write(), self.iceberg_small_write()] {
+                    if config.conversion_enabled
+                        || config.policy().mirror_copies != 1
+                        || config.disk_block_bytes != 1024 * 1024
+                    {
+                        return Err("test_single_node requires one-copy 1 MiB mirror writes".into());
+                    }
+                }
+                if self.s3.large_mirror_copies != Some(1) || self.iceberg.large_mirror_copies != Some(1) {
+                    return Err("test_single_node requires one-copy large mirror strips".into());
+                }
+            }
         }
         if self.s3.small_object_limit == Some(0)
             || self.s3.list_scan_items == Some(0)
@@ -237,6 +310,34 @@ impl BaseConfig for AccessConfig {
             listen
                 .parse::<std::net::SocketAddr>()
                 .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+impl AccessConfig {
+    fn validate_small_writes(&self) -> Result<(), String> {
+        for config in [
+            &self.small_write,
+            self.s3_small_write(),
+            self.iceberg_small_write(),
+        ] {
+            config
+                .policy()
+                .validate()
+                .map_err(|error| format!("invalid small_write config: {error}"))?;
+            if !config.threshold_ratio.is_finite()
+                || config.threshold_ratio <= 0.0
+                || config.threshold_ratio > 1.0
+                || config.disk_block_bytes < 128 * 1024
+                || config.disk_block_bytes > 1024 * 1024
+                || !config.disk_block_bytes.is_power_of_two()
+                || config.ec_data == 0
+                || config.ec_data > 32
+                || config.threshold_exclusive() > config.policy().object_limit
+            {
+                return Err("small_write strip capacity or threshold is invalid".into());
+            }
         }
         Ok(())
     }

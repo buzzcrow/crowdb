@@ -54,9 +54,12 @@ impl ChunkAllocator for Allocator {
         request: AllocateChunkRequest,
     ) -> crowdb_chunk_client::Result<AllocateChunkResponse> {
         let chunk_id = ChunkId { high: 7, low: 8 };
-        let segments = (1..=3)
+        let segments = (1..=request.copy_count)
             .map(|disk| Segment {
-                disk_id: Some(DiskId { high: disk, low: 0 }),
+                disk_id: Some(DiskId {
+                    high: u64::from(disk),
+                    low: 0,
+                }),
                 owner_chunk: Some(chunk_id),
                 unit_offset: 0,
                 zone_index: 0,
@@ -467,6 +470,38 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
         store.read(active.chunk_id, offset, 5).await.unwrap(),
         Bytes::from_static(b"split")
     );
+}
+
+#[tokio::test]
+async fn configured_stream_chunk_capacity_limits_growth_without_changing_strip_size() {
+    let allocator = Arc::new(Allocator::new());
+    let disks = Arc::new(Disks::default());
+    let store = ProductionStreamChunkStore::new_with_mirror_copies_and_capacity(
+        allocator,
+        disks,
+        30_000,
+        ChunkReadPolicy::default(),
+        1,
+        2 * 1024 * 1024,
+    )
+    .unwrap();
+    let name = StreamName { high: 19, low: 20 };
+    let active = store.allocate_mirrored(name, 9).await.unwrap();
+    assert_eq!(active.capacity, 1024 * 1024);
+    assert_eq!(
+        store
+            .grow_mirrored(name, 9, active.chunk_id, 2 * 1024 * 1024)
+            .await
+            .unwrap()
+            .unwrap()
+            .capacity,
+        2 * 1024 * 1024
+    );
+    assert!(store
+        .grow_mirrored(name, 9, active.chunk_id, 2 * 1024 * 1024 + 1)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

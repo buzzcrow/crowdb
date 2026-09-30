@@ -30,7 +30,8 @@ The access executable owns process configuration, listener startup, logging, hea
 - Given Iceberg small and large file writes, allocate, rotate, read, and reclaim chunks; every new chunk ID prefix and stored type is Iceberg table, including the on-demand and conversion paths. Integration test.
 - Given mismatched prefix and stored type, submit an allocation; it fails without a durable chunk. Integration test.
 - Given S3 load while Iceberg is idle, scale S3's small-write pipelines out and back in; Iceberg's pool count and admission budget remain independent, and the reverse holds. Integration test.
-- Given different S3 and Iceberg EC, prefetch, and memory settings, start both listeners and write/read both small and large objects; each allocation uses its own settings. E2E test.
+- Given a protected production deployment with different S3 and Iceberg EC, prefetch, and memory settings, start both listeners and write/read both small and large objects; each allocation uses its own settings. E2E test.
+- Given the explicit single-node test deployment, start both listeners and write/read both small and large objects; both protocols use one-copy mirror strips while retaining separate pools and chunk types. E2E test.
 - Given one listener or storage path fails, the combined process exits, drains both owned pools, and the monitor reports the service unhealthy. E2E test.
 - Given an Iceberg GC run while foreground S3 and Iceberg writes continue, GC retains its separately budgeted client and cannot consume their pool admission. Integration test.
 

@@ -4,6 +4,7 @@ rpc_advertise_addr = "127.0.0.1:15200"
 http_listen_addr = "127.0.0.1:15100"
 group0_mgmt_seeds = ["http://127.0.0.1:10000"]
 catalog_refresh_interval_ms = 200
+rpc_workers = 1
 
 [balance]
 enabled = false
@@ -16,6 +17,10 @@ max_owner_request_rate = 0
 [storage]
 metadata_store_id = 0
 stream_mirror_copies = 1
+tree_chunk_capacity_bytes = 16777216
+stream_chunk_capacity_bytes = 16777216
+diskio_connections_per_endpoint = 1
+diskio_rpc_workers = 1
 
 [bootstrap_partition]
 partition_id = { high = 1, low = 1 }

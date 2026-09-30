@@ -238,11 +238,14 @@ definition; Rust code works with proto types directly.
 
 ### 3.9 Chunk types for different use cases
 
-Four chunk types are defined for CROWDB's storage hierarchy:
-- **Repo chunk**: User data storage.
+Seven chunk types are defined for CROWDB's storage hierarchy:
+- **Repo chunk**: Historical general user data storage.
 - **WAL chunk**: Write-ahead log entries.
 - **BTree page chunk**: B-tree page storage for the crowdb-tree engine.
 - **Page index chunk**: Page index metadata.
+- **Stream chunk**: Native chunk stream data.
+- **S3 chunk**: S3 object data.
+- **Iceberg table chunk**: Iceberg immutable file data.
 
 **Rationale:** Different storage components have different redundancy and
 performance requirements. Chunk types allow optimization for each component's
@@ -346,9 +349,9 @@ Each strip tracks:
 A **chunk** is a container for strips. Chunk properties:
 - **128-bit ID**: Chunk type (8 bits) + Timestamp (48 bits) + Randomness (72 bits).
 - **State**: `Init` → `Active` → `Sealed` → `Deleted`.
-- **Type**: Repo, WAL, B-tree page, or page index. Shared versus
-  dedicated is a client-side packing and ownership policy for Repo
-  chunks, not a wire-level chunk type.
+- **Type**: Repo, WAL, B-tree page, page index, stream, S3, or Iceberg table.
+  The ID's high-byte prefix and the stored type must agree. Historical Repo
+  references remain readable by both access protocols.
 - **Capacity**: Total data capacity across all strips.
 - **Write granularity**: Minimum write alignment (e.g., 4 KB).
 - **Strips**: Ordered list of strips (mirror or EC).
@@ -536,12 +539,15 @@ BucketMigrationState:
 ### 5.5 Chunk types
 
 | Type          | Chunk Type Value | Description                          |
-|---------------|------------------|--------------------------------------|
-| Repo          | 0                | User data storage                    |
+| ------------- | ---------------- | ------------------------------------ |
+| Repo          | 0                | Historical general user data         |
 | WAL           | 1                | Write-ahead log entries              |
 | BTree page    | 2                | B-tree page storage                  |
 | Page index    | 3                | Page index metadata                  |
-| Reserved      | 4-255            | Reserved for future use              |
+| Stream        | 4                | Native chunk streams                 |
+| S3            | 5                | S3 object data                       |
+| Iceberg table | 6                | Iceberg immutable file data          |
+| Reserved      | 7-255            | Reserved for future use              |
 
 **Note:** Chunk type is independent of strip type. Any chunk type can use
 either mirror or EC strips based on configuration and requirements.
@@ -611,6 +617,18 @@ projected usable utilization, `(used + in_flight + planned) / capacity`, only
 among candidates that meet that safety constraint. Equal scores use stable
 topology identifiers, making retries deterministic.
 
+`deployment.mode` is `production` or `test_single_node` in release builds. Production startup
+requires at least three distinct voting nodes for every KV group and protected
+placement. Test-single-node startup requires one voting node per group and
+explicit colocated placement. The mode never changes in response to topology
+loss. In test-single-node mode, new strips must be one-copy 1 MiB mirrors;
+EC, extra copies, and mirror-to-EC conversion are rejected. Production rejects
+new one-copy mirror strips.
+
+Debug builds also accept `test_unsafe_placement` for legacy colocated EC
+integration fixtures. Release builds reject it during configuration loading;
+it is separate from the single-node deployment profile.
+
 `placement.mode` selects one placement strategy at process construction. The
 allocator depends on the `ChunkPlacementStrategy` interface and does not branch
 on the mode while allocating, converting, repairing, or deciding whether a
@@ -618,18 +636,16 @@ degraded disk result may be published. Each mode is a separate strategy type:
 
 - `protected` uses failure-domain-aware mirror and EC selectors. The granular
   degraded-placement settings below remain available only within this mode.
-- `unsafe_colocated` deliberately selects one healthy disk group and may place
-  every mirror copy or EC fragment in that same group, on the same physical
-  disk, and in the same zone. This mode supports the minimum container topology
-  of one rack, one node, one disk group, one disk, and one zone. It preserves
-  strip geometry and encoding but provides no node-, disk-, or zone-failure
-  durability; losing the colocated resource may lose every fragment.
+- `unsafe_colocated` selects one healthy disk group for the explicit
+  test-single-node deployment. This deployment uses one mirror copy and has
+  no data protection; a read or write error reaches the caller.
 
 The mode is an explicit deployment property, not an automatic fallback. A
 protected deployment never changes to `unsafe_colocated` because topology is
-small or unavailable. New placement policies are added as strategy
-implementations and selected at the composition root, keeping policy branches
-out of the allocation hot path.
+small or unavailable. With two healthy nodes remaining, an EC request is
+allocated as a two-copy mirror strip across the survivors. New placement
+policies are added as strategy implementations and selected at the composition
+root, keeping policy branches out of the allocation hot path.
 
 For an EC `data_num + code_num` strip, a protected rack, node, or physical
 disk contains at most `code_num` fragments. For a mirror strip, losing a

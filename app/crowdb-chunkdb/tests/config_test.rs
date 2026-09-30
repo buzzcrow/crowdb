@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_chunkdb::chunkdb_config::{ChunkdbConfig, PlacementMode};
+use crowdb_chunkdb::chunkdb_config::{ChunkdbConfig, DeploymentMode, PlacementMode};
 use crowdb_chunkdb::selector::FailureDomainPriority;
 use crowdb_common::config::BaseConfig;
 
@@ -34,6 +34,25 @@ fn tracked_config_file_loads_and_validates() {
 }
 
 #[test]
+fn single_node_container_declares_test_only_deployment() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../container/single-node-container/templates/chunkdb.toml");
+    let config = crowdb_common::config::load_from_file::<ChunkdbConfig>(&path).unwrap();
+    assert_eq!(config.deployment.mode, DeploymentMode::TestSingleNode);
+    assert_eq!(config.placement.mode, PlacementMode::UnsafeColocated);
+}
+
+#[test]
+fn unsafe_fixture_mode_is_explicit_and_only_available_to_debug_builds() {
+    let config: ChunkdbConfig = toml::from_str(
+        "[deployment]\nmode = \"test_unsafe_placement\"\n[placement]\nmode = \"unsafe_colocated\"\nallow_unsafe_ec = true\n",
+    )
+    .unwrap();
+    assert_eq!(config.deployment.mode, DeploymentMode::TestUnsafePlacement);
+    assert_eq!(config.validate().is_ok(), cfg!(debug_assertions));
+}
+
+#[test]
 fn placement_policy_parses_both_priorities() {
     let rack: ChunkdbConfig = toml::from_str(
         "[placement]\nfailure_domain_priority = \"rack_first\"\nallow_degraded_failure_domains = true\n",
@@ -62,6 +81,18 @@ fn unsafe_colocated_placement_mode_is_explicit() {
     let colocated: ChunkdbConfig =
         toml::from_str("[placement]\nmode = \"unsafe_colocated\"\n").expect("mode parses");
     assert_eq!(colocated.placement.mode, PlacementMode::UnsafeColocated);
+    assert!(colocated.validate().is_err());
+
+    let single: ChunkdbConfig = toml::from_str(
+        "[deployment]\nmode = \"test_single_node\"\n[placement]\nmode = \"unsafe_colocated\"\n",
+    )
+    .expect("explicit test mode parses");
+    assert_eq!(single.deployment.mode, DeploymentMode::TestSingleNode);
+    single.validate().expect("explicit test mode validates");
+
+    let mut unsafe_production = protected;
+    unsafe_production.placement.allow_unsafe_ec = true;
+    assert!(unsafe_production.validate().is_err());
 }
 
 #[test]

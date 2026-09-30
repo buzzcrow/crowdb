@@ -20,13 +20,17 @@ use crowdb_test_harness::test_dirs;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_client::{ChunkAllocator, ChunkClientConfig, ChunkWriter, DiskWriter, IoError, Result};
+use crowdb_chunk_client::{
+    ChunkAllocator, ChunkClientConfig, ChunkReadPolicy, ChunkReader, ChunkWriter, DiskWriter, IoError, Result,
+};
 use crowdb_common::ec::EcScheme;
+use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkStrip,
-    ChunkType, DeleteChunkRequest, DeleteChunkResponse, EcStrip, QueryChunkRequest, QueryChunkResponse,
-    SealChunkRequest, SealChunkResponse, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState,
+    ChunkStrip, ChunkType, DeleteChunkRequest, DeleteChunkResponse, EcStrip, MirrorStrip, QueryChunkRequest,
+    QueryChunkResponse, SealChunkRequest, SealChunkResponse, StripType, UpdateChunkStripRequest,
+    UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::{ChunkId, DiskId as ProtoDiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -217,7 +221,7 @@ impl ChunkAllocator for MockChunkAllocator {
             capacity: strips.iter().map(|strip| strip.capacity).sum(),
             sealed_length: 0,
             strips: strips.clone(),
-            chunk_type: ChunkType::Repo as i32,
+            chunk_type: req.chunk_type,
             writer_epoch: req.writer_epoch,
             acknowledged_cursor: 0,
             closed_strip_sequence: None,
@@ -297,10 +301,29 @@ impl ChunkAllocator for MockChunkAllocator {
         Ok(UpdateChunkStripResponse { chunk: None })
     }
 
-    async fn query_chunk(&self, _req: QueryChunkRequest) -> Result<QueryChunkResponse> {
+    async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
+        let chunk_id = req.chunk_id.unwrap();
+        let state = self.state.lock().unwrap();
+        let (strips, length, deleted) = state
+            .chunks
+            .get(&(chunk_id.high, chunk_id.low))
+            .ok_or_else(|| IoError::MetadataConflict("chunk is missing".into()))?;
+        let chunk = Chunk {
+            id: Some(chunk_id),
+            strips: strips.clone(),
+            capacity: strips.iter().map(|strip| strip.capacity).sum(),
+            state: if *deleted {
+                ChunkState::Deleted as i32
+            } else {
+                ChunkState::Sealed as i32
+            },
+            sealed_length: *length,
+            acknowledged_cursor: u64::from(*length) * 1024,
+            ..Chunk::default()
+        };
         Ok(QueryChunkResponse {
-            chunk: None,
-            layout_validity_ms: 0,
+            chunk: Some(chunk),
+            layout_validity_ms: 30_000,
         })
     }
 }
@@ -309,6 +332,8 @@ impl ChunkAllocator for MockChunkAllocator {
 
 fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
     Arc::new(ChunkClientConfig {
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
+        large_mirror_copies: None,
         max_chunk_size,
         prefetch_strips_per_chunk: 2,
         parity_depth: 2,
@@ -318,6 +343,109 @@ fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
         max_cached_buffer: 8 * 4096,
         memory_budget: 0,
     })
+}
+
+#[tokio::test]
+async fn large_chunk_prefetch_preserves_type_in_id_and_metadata() {
+    let prefetch = crowdb_chunk_client::ChunkPrefetch::new(
+        Arc::new(MockChunkAllocator::new()),
+        ec_4_1(),
+        test_config(1024 * 1024),
+        crowdb_protocol::CHUNK_TYPE_S3,
+    );
+    let chunk = prefetch.on_demand().await.unwrap();
+    assert_eq!(
+        chunk.id.unwrap().high >> 56,
+        u64::from(crowdb_protocol::CHUNK_TYPE_S3)
+    );
+    assert_eq!(chunk.chunk_type, ChunkType::S3 as i32);
+}
+
+#[tokio::test]
+async fn chunk_writer_crosses_mirror_and_ec_strip_boundaries() {
+    let allocator = Arc::new(MockChunkAllocator::new());
+    let temp = test_dirs::tempdir_in_test_data("chunk-client");
+    let disk = Arc::new(LocalFileDiskWriter::new(temp.path()));
+    let chunk_id = ChunkId { high: 1, low: 9 };
+    let mut offset = 0;
+    let mut mirror_segments = make_segments(chunk_id, 1, &mut offset);
+    mirror_segments[0].unit_count = 2;
+    let mirror = ChunkStrip {
+        unit_kb: 4,
+        capacity: 8,
+        strip_sequence: 0,
+        strip_type: StripType::Mirror as i32,
+        strip: Some(StripOneof::MirrorStrip(MirrorStrip {
+            segments: mirror_segments.clone(),
+        })),
+        ..ChunkStrip::default()
+    };
+    let ec_segments = make_segments(chunk_id, 2, &mut offset);
+    let mut ec = make_strip(1, 1, 1, ec_segments.clone());
+    ec.chunk_offset = 8;
+    ec.capacity = 4;
+    let strips = vec![mirror, ec];
+    allocator
+        .state
+        .lock()
+        .unwrap()
+        .chunks
+        .insert((chunk_id.high, chunk_id.low), (strips.clone(), 0, false));
+    let chunk = Chunk {
+        id: Some(chunk_id),
+        strips,
+        capacity: 12,
+        modify_ts: 1,
+        ..Chunk::default()
+    };
+    let mut config = (*test_config(16 * 1024)).clone();
+    config.read_buffer_size = 4 * 1024;
+    let mut writer = ChunkWriter::new(
+        allocator.clone(),
+        disk.clone(),
+        EcScheme::new(1, 1),
+        Arc::new(config),
+    );
+    writer.open(chunk, Some(12 * 1024)).unwrap();
+    writer.push(Bytes::from(vec![5; 12 * 1024])).await.unwrap();
+    let location = writer.seal().await.unwrap();
+    assert_eq!(location.length, 12 * 1024);
+    assert_eq!(
+        disk.read_block(
+            DiskId::new(
+                mirror_segments[0].disk_id.unwrap().high,
+                mirror_segments[0].disk_id.unwrap().low
+            ),
+            0,
+            8 * 1024,
+        )
+        .unwrap(),
+        vec![5; 8 * 1024]
+    );
+    assert_eq!(
+        disk.read_block(
+            DiskId::new(
+                ec_segments[0].disk_id.unwrap().high,
+                ec_segments[0].disk_id.unwrap().low
+            ),
+            4 * 1024,
+            4 * 1024,
+        )
+        .unwrap(),
+        vec![5; 4 * 1024]
+    );
+    drop(writer);
+    drop(disk);
+    let reopened_disk = Arc::new(LocalFileDiskWriter::new(temp.path()));
+    let reader = ChunkReader::new(allocator, reopened_disk, ChunkReadPolicy::default()).unwrap();
+    assert_eq!(
+        reader
+            .read_object(std::slice::from_ref(&location))
+            .await
+            .unwrap()
+            .concat(),
+        vec![5; 12 * 1024]
+    );
 }
 
 fn ec_4_1() -> EcScheme {

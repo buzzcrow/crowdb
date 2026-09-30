@@ -20,7 +20,7 @@ use common::cluster::{
     DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID,
 };
 use crowdb_chunkdb::allocator::StripAllocType;
-use crowdb_chunkdb::chunkdb_config::PlacementRebalanceConfig;
+use crowdb_chunkdb::chunkdb_config::{DeploymentMode, PlacementRebalanceConfig};
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::finalize::FinalizeChunkTaskHandler;
@@ -41,6 +41,7 @@ use crowdb_chunkdb::task::{
     RelocateSegmentTaskHandler, SegmentOwnerResolver, TaskAdmission, TaskClaim, TaskExecutor, TaskHandler,
     TaskManager, TaskOutcome, TaskScanner, TaskStore,
 };
+use crowdb_chunkdb::topology::build_snapshot;
 use crowdb_chunkdb_client::ChunkdbRpcTransport;
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
@@ -53,7 +54,7 @@ use crowdb_protocol::chunkdb::rpc::{
     QuerySegmentOwnerRequest, RelocateSegmentHandoffRequest, RelocationHandoffDisposition,
     SegmentOwnerDisposition, Strip, StripReservationAction, StripReservationState, StripType,
 };
-use crowdb_protocol::common::{ChunkId, DiskGroupUsageSummary};
+use crowdb_protocol::common::{ChunkId, DiskGroupUsageSummary, HwStatus};
 use crowdb_protocol::diskdb::rpc::RelocationJournalPhase;
 use crowdb_protocol::{port::alloc as port_alloc, ServicePort};
 use crowdb_test_harness::diskio::{DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
@@ -836,6 +837,90 @@ fn task_value() -> ChunkTaskValue {
 }
 
 struct CompleteTaskHandler;
+
+#[tokio::test]
+async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let handler = LifecycleHandler::new(
+        Arc::clone(&harness.store),
+        Arc::clone(&harness.allocator),
+        harness.topology.clone(),
+    )
+    .with_deployment_mode(DeploymentMode::TestSingleNode);
+    for (strip_type, copies, size_kb) in [
+        (StripType::Ec, 0, 1024),
+        (StripType::Mirror, 2, 1024),
+        (StripType::Mirror, 1, 512),
+    ] {
+        assert!(matches!(
+            handler
+                .allocate_chunk(None, size_kb, 1, strip_type, 0, 0, copies, ChunkType::Repo, 0, 0)
+                .await,
+            Err(LifecycleError::InvalidRequest(_))
+        ));
+    }
+    let chunk = handler
+        .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 1, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    assert_eq!(chunk.strips[0].capacity, 1024);
+    assert!(matches!(chunk.strips[0].strip, Some(Strip::MirrorStrip(_))));
+}
+
+#[tokio::test]
+async fn production_ec_falls_back_to_two_protected_mirrors_after_one_node_loss() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hardware = cluster.make_hardware_client();
+    let groups = seed_hardware_layout_with_zones(
+        &hardware,
+        &[(100, vec![10]), (101, vec![11]), (102, vec![12])],
+        32,
+    )
+    .await;
+    let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &groups, 32).await;
+    let harness = ChunkdbHarness::start_with_disk_group_count(&cluster, Duration::from_secs(30), 3).await;
+    hardware
+        .set_node_status(102, 12, HwStatus::Offline)
+        .await
+        .unwrap();
+    harness
+        .topology
+        .replace(build_snapshot(&hardware).await.expect("refreshed hardware"));
+    let handler = LifecycleHandler::new(
+        Arc::clone(&harness.store),
+        Arc::clone(&harness.allocator),
+        harness.topology.clone(),
+    )
+    .with_deployment_mode(DeploymentMode::Production);
+    let degraded = handler
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let Some(Strip::MirrorStrip(mirror)) = &degraded.strips[0].strip else {
+        panic!("degraded allocation must use protected mirrors");
+    };
+    assert_eq!(mirror.segments.len(), 2);
+    hardware.set_node_status(102, 12, HwStatus::Up).await.unwrap();
+    harness
+        .topology
+        .replace(build_snapshot(&hardware).await.expect("recovered hardware"));
+    let healthy = handler
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    assert!(matches!(healthy.strips[0].strip, Some(Strip::EcStrip(_))));
+}
 
 #[tokio::test]
 async fn active_chunk_creates_one_deadline_indexed_finalizer() {

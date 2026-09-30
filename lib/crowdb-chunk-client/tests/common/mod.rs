@@ -116,4 +116,16 @@ impl DiskWriter for LocalFileDiskWriter {
             "byte-offset writes not supported by this writer".into(),
         ))
     }
+
+    async fn read(&self, seg: &Segment, unit_bytes: u64, offset: u64, length: u32) -> Result<Bytes> {
+        let disk_id = seg
+            .disk_id
+            .ok_or_else(|| IoError::ReadFailed("segment missing disk_id".into()))?;
+        let bytes = self.read_block(
+            DiskId::new(disk_id.high, disk_id.low),
+            seg.unit_offset * unit_bytes + offset,
+            usize::try_from(length).unwrap(),
+        )?;
+        Ok(Bytes::from(bytes))
+    }
 }

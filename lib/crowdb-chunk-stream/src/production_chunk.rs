@@ -45,6 +45,7 @@ pub struct ProductionStreamChunkStore {
     reader: ChunkReader,
     writer_lease_ms: u64,
     mirror_copies: u32,
+    chunk_capacity_bytes: u64,
     failed_disks: Arc<FailedDiskList>,
     chunks: SkipMap<(u64, u64), Arc<ChunkStateView>>,
 }
@@ -76,9 +77,34 @@ impl ProductionStreamChunkStore {
         read_policy: ChunkReadPolicy,
         mirror_copies: u32,
     ) -> Result<Self> {
-        if writer_lease_ms == 0 || mirror_copies == 0 {
+        Self::new_with_mirror_copies_and_capacity(
+            allocator,
+            disk_writer,
+            writer_lease_ms,
+            read_policy,
+            mirror_copies,
+            crowdb_chunk_client::STREAM_CHUNK_BYTES,
+        )
+    }
+
+    /// Creates a stream adapter with an explicit chunk capacity and mirror count.
+    ///
+    /// # Errors
+    /// Returns an error for invalid lease, capacity, mirror count, or read policy.
+    pub fn new_with_mirror_copies_and_capacity(
+        allocator: Arc<dyn ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        writer_lease_ms: u64,
+        read_policy: ChunkReadPolicy,
+        mirror_copies: u32,
+        chunk_capacity_bytes: u64,
+    ) -> Result<Self> {
+        if writer_lease_ms == 0
+            || mirror_copies == 0
+            || !(1024 * 1024..=crowdb_chunk_client::STREAM_CHUNK_BYTES).contains(&chunk_capacity_bytes)
+        {
             return Err(StreamError::InvalidRequest(
-                "stream chunk writer lease must be nonzero".into(),
+                "stream chunk writer lease, mirror count, or capacity is invalid".into(),
             ));
         }
         let reader = ChunkReader::new(Arc::clone(&allocator), Arc::clone(&disk_writer), read_policy)
@@ -89,6 +115,7 @@ impl ProductionStreamChunkStore {
             reader,
             writer_lease_ms,
             mirror_copies,
+            chunk_capacity_bytes,
             failed_disks: Arc::new(FailedDiskList::new(Duration::from_secs(60))),
             chunks: SkipMap::new(),
         })
@@ -192,7 +219,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         chunk_id: ChunkId,
         required_capacity: u64,
     ) -> Result<Option<ActiveChunkDescriptor>> {
-        if required_capacity > crowdb_chunk_client::STREAM_CHUNK_BYTES {
+        if required_capacity > self.chunk_capacity_bytes {
             return Ok(None);
         }
         let state = self.state(chunk_id).await?;

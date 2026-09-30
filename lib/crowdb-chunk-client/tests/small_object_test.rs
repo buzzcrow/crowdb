@@ -15,7 +15,7 @@ use crowdb_chunk_client::{
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
-    AppendChunkResponse, Chunk, ChunkState, ChunkStrip, DeleteChunkRequest, DeleteChunkResponse,
+    AppendChunkResponse, Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest, DeleteChunkResponse,
     DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, MirrorStrip,
     MutateStripReservationRequest, MutateStripReservationResponse, QueryChunkRequest, QueryChunkResponse,
     ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, ReserveStripGroupRequest,
@@ -100,7 +100,10 @@ impl ChunkAllocator for MockAllocator {
         if self.fail_on_attempt.load(Ordering::Relaxed) == low {
             return Err(IoError::AllocationFailed("injected allocation failure".into()));
         }
-        let chunk_id = req.chunk_id.unwrap_or(ChunkId { high: 7, low });
+        let chunk_id = req.chunk_id.unwrap_or(ChunkId {
+            high: u64::try_from(req.chunk_type).unwrap() << 56,
+            low,
+        });
         let strips: Vec<_> = (0..req.strip_count.max(1))
             .map(|sequence| make_strip(chunk_id, sequence, req.copy_count.max(1)))
             .collect();
@@ -523,6 +526,7 @@ impl DiskWriter for SelectiveFailureDiskWriter {
 
 fn policy() -> SmallWritePolicy {
     SmallWritePolicy {
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
         object_limit: 1024 * 1024,
         memory_budget: 4 * 1024 * 1024,
         queue_capacity: 128,
@@ -563,6 +567,25 @@ fn client(policy: SmallWritePolicy) -> (ChunkIoClient, Arc<MockAllocator>, Arc<R
     let client = ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk.clone(), policy)
         .expect("valid policy");
     (client, allocator, disk)
+}
+
+#[tokio::test]
+async fn small_object_uses_owning_chunk_type() {
+    let mut iceberg_policy = policy();
+    iceberg_policy.chunk_type = ChunkType::IcebergTable;
+    let (client, allocator, _) = client(iceberg_policy);
+    let mut writer = client.prepare_small_write(32).await.unwrap();
+    writer.on_data(Bytes::from_static(&[7; 32])).await.unwrap();
+    writer.on_finish().await.unwrap();
+    let chunks: Vec<_> = allocator.state.lock().unwrap().chunks.values().cloned().collect();
+    assert!(!chunks.is_empty());
+    assert!(chunks
+        .iter()
+        .all(|chunk| chunk.chunk_type == ChunkType::IcebergTable as i32));
+    assert!(chunks
+        .iter()
+        .all(|chunk| chunk.id.unwrap().high >> 56 == ChunkType::IcebergTable as u64));
+    client.shutdown_small_writes().await.unwrap();
 }
 
 #[tokio::test]

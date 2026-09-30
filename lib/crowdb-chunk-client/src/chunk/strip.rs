@@ -29,8 +29,7 @@ pub struct StripResult {
 }
 
 /// Strip writer enum — Rust enum (not trait object) for monomorphic
-/// dispatch. `Ec` variant is used by the large-write flow; `Mirror`
-/// is a placeholder stub.
+/// dispatch for the persisted strip layout.
 #[allow(clippy::large_enum_variant)] // avoid one allocation and indirection per hot-path EC strip
 pub enum StripWriter {
     Ec(crate::chunk::ec_strip_writer::EcStripWriter),
@@ -61,7 +60,7 @@ impl StripWriter {
     pub async fn abort(&mut self) -> Result<StripResult> {
         match self {
             Self::Ec(w) => w.abort().await,
-            Self::Mirror(w) => w.abort().await,
+            Self::Mirror(w) => w.abort(),
         }
     }
 
@@ -85,15 +84,14 @@ impl StripWriter {
     pub fn remaining_capacity(&self) -> u64 {
         match self {
             Self::Ec(w) => w.remaining_capacity(),
-            // Mirror strips are not a large-object write target yet.
-            Self::Mirror(_) => 0,
+            Self::Mirror(w) => w.remaining_capacity(),
         }
     }
 
     pub fn accepted_bytes(&self) -> u64 {
         match self {
             Self::Ec(w) => w.accepted_bytes(),
-            Self::Mirror(_) => 0,
+            Self::Mirror(w) => w.accepted_bytes(),
         }
     }
 }

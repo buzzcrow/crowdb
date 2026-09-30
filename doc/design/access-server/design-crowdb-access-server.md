@@ -114,6 +114,19 @@ The `crowdb-access-server` executable starts the S3 and Iceberg listeners
 together by default. The container supervises one access process for both
 ports. Explicit `s3` and `iceberg` commands are reserved for focused tests
 and management operations.
+The combined entry point signals the other listener when either service
+returns, then waits for both services to drain their owned small-write pools
+before exiting.
+
+The listeners own separate `ChunkIoClient` instances and small-write pools.
+New S3 chunks use type `S3`; new Iceberg file chunks use type `IcebergTable`.
+Each protocol may override the legacy common small-write policy and select
+its own large-write EC, memory, prefetch, and mirror settings. Historical
+`Repo` locations remain readable through the layout recorded in ChunkDB.
+Iceberg GC uses a separate chunk client from foreground writes.
+Each small-write policy also chooses its chunk capacity; each protocol's
+large-write policy chooses its own maximum chunk size. The deployment profile
+sets RPC workers and DiskIO connections independently of these data limits.
 
 ## 5. Data paths
 

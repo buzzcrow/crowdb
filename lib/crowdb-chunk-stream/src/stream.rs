@@ -25,6 +25,7 @@ use crate::{Result, StreamError};
 
 #[derive(Clone, Debug)]
 pub struct StreamConfig {
+    pub chunk_capacity_bytes: u64,
     pub queue_requests: usize,
     pub queue_bytes: u64,
     pub batch_requests: usize,
@@ -42,6 +43,7 @@ pub struct StreamConfig {
 impl Default for StreamConfig {
     fn default() -> Self {
         Self {
+            chunk_capacity_bytes: crowdb_chunk_client::STREAM_CHUNK_BYTES,
             queue_requests: 1_024,
             queue_bytes: 64 * 1024 * 1024,
             batch_requests: 64,
@@ -61,6 +63,7 @@ impl Default for StreamConfig {
 impl StreamConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.queue_requests == 0
+            || !(1024 * 1024..=crowdb_chunk_client::STREAM_CHUNK_BYTES).contains(&self.chunk_capacity_bytes)
             || self.queue_bytes == 0
             || self.batch_requests == 0
             || self.batch_bytes == 0

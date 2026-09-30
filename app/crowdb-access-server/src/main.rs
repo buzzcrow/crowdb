@@ -34,6 +34,8 @@ use crowdb_common::ec::EcScheme;
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
 #[cfg(feature = "s3")]
 use tokio::net::TcpListener;
+#[cfg(feature = "s3")]
+use tokio::sync::watch;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -71,13 +73,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(feature = "s3")]
     if s3_only {
-        run_s3(&access_config).await?;
+        run_s3(&access_config, None).await?;
     } else {
-        tokio::try_join!(run_s3(&access_config), async {
-            crowdb_access_server::iceberg::run(args)
-                .await
-                .map_err(|error| -> Box<dyn std::error::Error> { error })
-        })?;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let s3 = run_s3(&access_config, Some(shutdown_rx.clone()));
+        let iceberg = crowdb_access_server::iceberg::run_with_shutdown(args, Some(shutdown_rx));
+        tokio::pin!(s3, iceberg);
+        tokio::select! {
+            result = &mut s3 => {
+                let _ = shutdown_tx.send(true);
+                let other = iceberg.await;
+                result?;
+                other.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+            }
+            result = &mut iceberg => {
+                let _ = shutdown_tx.send(true);
+                let other = s3.await;
+                result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+                other?;
+            }
+        }
     }
     #[cfg(not(feature = "s3"))]
     crowdb_access_server::iceberg::run(args)
@@ -112,7 +127,10 @@ fn init_access_logging() -> Result<(), std::io::Error> {
 }
 
 #[cfg(feature = "s3")]
-async fn run_s3(access_config: &AccessConfig) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_s3(
+    access_config: &AccessConfig,
+    shutdown: Option<watch::Receiver<bool>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(address) = access_config
         .s3
         .listen
@@ -192,10 +210,7 @@ async fn run_s3(access_config: &AccessConfig) -> Result<(), Box<dyn std::error::
         );
         let listener = TcpListener::bind(address).await?;
         health.set_listener(DependencyHealth::Ready);
-        let serve_result = serve(listener, handler, async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await;
+        let serve_result = serve(listener, handler, wait_for_shutdown(shutdown)).await;
         health.stop();
         expiry_task.abort();
         let shutdown_result = chunks.shutdown_small_writes().await;
@@ -206,6 +221,24 @@ async fn run_s3(access_config: &AccessConfig) -> Result<(), Box<dyn std::error::
         shutdown_result?;
     }
     Ok(())
+}
+
+#[cfg(feature = "s3")]
+async fn wait_for_shutdown(mut shutdown: Option<watch::Receiver<bool>>) {
+    if let Some(receiver) = shutdown.as_mut() {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            () = async {
+                loop {
+                    if *receiver.borrow() || receiver.changed().await.is_err() {
+                        break;
+                    }
+                }
+            } => {}
+        }
+    } else {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[cfg(feature = "s3")]
@@ -303,7 +336,19 @@ fn configure_large_write(
     config: &mut S3ServiceConfig,
     access: &AccessConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    Arc::make_mut(&mut config.large_write.client).read_buffer_size = access.small_write.disk_block_bytes;
+    crowdb_access_s3::storage::own_large_write(&mut config.large_write);
+    let client = Arc::make_mut(&mut config.large_write.client);
+    client.read_buffer_size = access.s3_small_write().disk_block_bytes;
+    client.large_mirror_copies = access.s3.large_mirror_copies;
+    if let Some(budget) = access.s3.large_memory_budget_bytes {
+        client.memory_budget = budget;
+    }
+    if let Some(count) = access.s3.large_prefetch_strips_per_chunk {
+        client.prefetch_strips_per_chunk = count;
+    }
+    if let Some(depth) = access.s3.large_chunk_preparation_depth {
+        client.chunk_preparation_depth = depth;
+    }
     if let Some(max_chunk_size) = configured_u64(access.s3.max_chunk_size, "CROWDB_S3_MAX_CHUNK_SIZE")? {
         if max_chunk_size == 0 {
             return Err("CROWDB S3 max chunk size must be nonzero".into());
@@ -316,9 +361,9 @@ fn configure_large_write(
 #[cfg(feature = "s3")]
 fn s3_ec_scheme(access: &AccessConfig) -> Result<EcScheme, Box<dyn std::error::Error>> {
     let ec_data =
-        configured_usize(access.s3.ec_data, "CROWDB_S3_EC_DATA")?.unwrap_or(access.small_write.ec_data);
+        configured_usize(access.s3.ec_data, "CROWDB_S3_EC_DATA")?.unwrap_or(access.s3_small_write().ec_data);
     let ec_code =
-        configured_usize(access.s3.ec_code, "CROWDB_S3_EC_CODE")?.unwrap_or(access.small_write.ec_code);
+        configured_usize(access.s3.ec_code, "CROWDB_S3_EC_CODE")?.unwrap_or(access.s3_small_write().ec_code);
     if ec_data == 0 || ec_data > 32 || ec_code == 0 {
         return Err("CROWDB S3 EC data and code counts are invalid".into());
     }
@@ -330,7 +375,7 @@ fn s3_write_routing(
     access: &AccessConfig,
 ) -> Result<(EcScheme, SmallWritePolicy, usize), Box<dyn std::error::Error>> {
     let ec_scheme = s3_ec_scheme(access)?;
-    let mut config = access.small_write.clone();
+    let mut config = access.s3_small_write().clone();
     config.ec_data = ec_scheme.data_num;
     config.ec_code = ec_scheme.code_num;
     let policy = config.policy();

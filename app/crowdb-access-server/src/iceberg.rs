@@ -40,7 +40,7 @@ pub use file_selection::{CompletePart, CompleteRequestError, CompleteResolveErro
 pub use file_upload::{FileUploadBudget, FileUploadConstraints, FileUploadError};
 pub use http::{serve, IcebergHttpService};
 pub use metrics::{IcebergMetricsSnapshot, MetricCounts, ICEBERG_OUTCOME_NAMES, ICEBERG_ROUTE_NAMES};
-pub use runtime::{run, IcebergRuntimeConfig};
+pub use runtime::{run, run_with_shutdown, IcebergRuntimeConfig};
 
 #[cfg(feature = "test-util")]
 pub use connection::active_io_for_tests;

@@ -22,6 +22,8 @@ pub struct ChunkPageStoreOptions {
     pub iu_size: u32,
     pub max_concurrent_packs: usize,
     pub materialization_bytes_per_pass: u64,
+    pub max_chunk_bytes: u64,
+    pub mirror_copies: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -435,6 +437,7 @@ pub struct ChunkRpcTransportOptions<'a> {
     pub writer_lease_ms: u64,
     pub rpc_timeout_ms: u64,
     pub completion_capacity: u32,
+    pub mirror_copies: u32,
 }
 
 #[cfg(feature = "chunk-rpc")]
@@ -453,6 +456,7 @@ pub struct OwnedChunkRpcTransportOptions {
     pub writer_lease_ms: u64,
     pub rpc_timeout_ms: u64,
     pub completion_capacity: u32,
+    pub mirror_copies: u32,
 }
 
 #[cfg(feature = "chunk-rpc")]
@@ -493,6 +497,7 @@ impl ChunkTransport {
             writer_lease_ms: options.writer_lease_ms,
             rpc_timeout_ms: options.rpc_timeout_ms,
             completion_capacity: options.completion_capacity,
+            mirror_copies: options.mirror_copies,
         };
         let mut out = std::ptr::null_mut();
         check(unsafe { sys::ct_rpc_chunk_transport_open(&raw, &mut out) })?;
@@ -522,6 +527,7 @@ impl ChunkTransport {
             writer_lease_ms: options.writer_lease_ms,
             rpc_timeout_ms: options.rpc_timeout_ms,
             completion_capacity: options.completion_capacity,
+            mirror_copies: options.mirror_copies,
         };
         let mut transport = unsafe { Self::open_rpc(&raw_options) }?;
         transport._routes = Some(OwnedTransportRoutes {
@@ -579,6 +585,8 @@ impl PageStore {
             iu_size: options.iu_size,
             max_concurrent_packs: options.max_concurrent_packs,
             materialization_bytes_per_pass: options.materialization_bytes_per_pass,
+            max_chunk_bytes: options.max_chunk_bytes,
+            mirror_copies: options.mirror_copies,
         };
         let mut out = std::ptr::null_mut();
         let status = match transport {

@@ -11,12 +11,15 @@
 use std::time::Duration;
 
 use crowdb_common::ec::EcScheme;
+use crowdb_protocol::chunkdb::rpc::ChunkType;
 
 use crate::IoError;
 
 /// Bounded aggregation and elasticity policy for shared small writes.
 #[derive(Debug, Clone)]
 pub struct SmallWritePolicy {
+    /// Type assigned to every chunk owned by this pool.
+    pub chunk_type: ChunkType,
     pub object_limit: usize,
     pub memory_budget: usize,
     pub queue_capacity: usize,
@@ -50,6 +53,7 @@ impl Default for SmallWritePolicy {
     fn default() -> Self {
         const MIB: usize = 1024 * 1024;
         Self {
+            chunk_type: ChunkType::Repo,
             object_limit: 8 * MIB,
             // 1,000 concurrent 1 MiB objects are a normal S3 small-object
             // workload.  3,000 and 5,000 require roughly 3.25 GiB and 5.25
@@ -155,6 +159,10 @@ impl SmallWritePolicy {
 /// Configuration for the chunk data path. Shared by all writers.
 #[derive(Debug, Clone)]
 pub struct ChunkClientConfig {
+    /// Type assigned to every chunk prepared by a large-write session.
+    pub chunk_type: ChunkType,
+    /// Mirror copies for large-write strips; `None` selects EC.
+    pub large_mirror_copies: Option<u32>,
     // ── write path ──────────────────────────────────────────────
     /// Fetch read granularity / block size (bytes). Default 1 MB.
     pub read_buffer_size: usize,
@@ -184,6 +192,8 @@ impl Default for ChunkClientConfig {
         const MB: usize = 1024 * 1024;
         const GB: usize = 1024 * 1024 * 1024;
         Self {
+            chunk_type: ChunkType::Repo,
+            large_mirror_copies: None,
             read_buffer_size: MB,
             max_cached_buffer: 4 * MB,
             max_chunk_size: GB as u64,
@@ -222,6 +232,11 @@ impl ChunkClientConfig {
         if self.large_write_repair_attempts == 0 {
             return Err(IoError::Internal(
                 "large_write_repair_attempts must be > 0".into(),
+            ));
+        }
+        if self.large_mirror_copies == Some(0) {
+            return Err(IoError::Internal(
+                "large mirror copy count must be nonzero".into(),
             ));
         }
         Ok(())

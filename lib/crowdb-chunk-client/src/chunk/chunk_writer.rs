@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::chunk::ec_strip_writer::EcStripWriter;
+use crate::chunk::mirror_strip_writer::MirrorStripWriter;
 use crate::chunk::segment_writer::{FailedSegmentWrite, SegmentRepair};
 use crate::chunk::strip::{StripResult, StripWriter};
 use crate::config::ChunkClientConfig;
@@ -29,7 +30,8 @@ use crate::traits::ChunkAllocator;
 use crate::{IoError, Result};
 use crowdb_common::ec::EcScheme;
 use crowdb_protocol::chunkdb::rpc::{
-    AppendChunkRequest, Chunk, DeleteChunkRequest, Location as ProtoLocation, SealChunkRequest, StripType,
+    AppendChunkRequest, Chunk, DeleteChunkRequest, Location as ProtoLocation, SealChunkRequest, Strip,
+    StripType,
 };
 use crowdb_protocol::common::ChunkId;
 
@@ -126,14 +128,13 @@ impl ChunkWriter {
             return Err(IoError::AllocationFailed("open: chunk has no strips".into()));
         }
         self.object_size = object_size;
-        self.strips_remaining =
-            compute_strips_remaining(object_size, chunk.strips.len(), &self.ec_scheme, &self.config);
+        self.strips_remaining = compute_strips_remaining(object_size, &chunk);
         let chunk = Arc::new(chunk);
-        let strip = EcStripWriter::new(Arc::clone(&chunk), 0, self.disk_writer.clone(), self.ec_scheme);
+        let strip = self.make_strip_writer(Arc::clone(&chunk), 0)?;
         self.chunk = Some(chunk);
         self.write_cursor = 0;
         self.bytes_in_chunk = 0;
-        self.current_strip = Some(StripWriter::Ec(strip));
+        self.current_strip = Some(strip);
         // Start the internal strip-prefetch task.
         self.start_strip_prefetch();
         Ok(())
@@ -153,15 +154,10 @@ impl ChunkWriter {
         }
         let next_index = self.write_cursor + 1;
         let chunk = Arc::new(chunk);
-        let strip = EcStripWriter::new(
-            Arc::clone(&chunk),
-            next_index,
-            self.disk_writer.clone(),
-            self.ec_scheme,
-        );
+        let strip = self.make_strip_writer(Arc::clone(&chunk), next_index)?;
         self.chunk = Some(chunk);
         self.write_cursor = next_index;
-        self.current_strip = Some(StripWriter::Ec(strip));
+        self.current_strip = Some(strip);
         Ok(())
     }
 
@@ -230,14 +226,9 @@ impl ChunkWriter {
                     .chunk
                     .as_ref()
                     .ok_or_else(|| IoError::Internal("open_next_strip with no chunk".into()))?;
-                let strip = EcStripWriter::new(
-                    Arc::clone(chunk),
-                    next_index,
-                    self.disk_writer.clone(),
-                    self.ec_scheme,
-                );
+                let strip = self.make_strip_writer(Arc::clone(chunk), next_index)?;
                 self.write_cursor = next_index;
-                self.current_strip = Some(StripWriter::Ec(strip));
+                self.current_strip = Some(strip);
                 return Ok(());
             }
             // Next strip not ready — wait for the prefetch task to
@@ -318,7 +309,13 @@ impl ChunkWriter {
         let config = Arc::clone(&self.config);
         let max_chunk_size = config.max_chunk_size;
         let unit_bytes = u64::from((config.read_buffer_size / 1024) as u32) * 1024;
-        let strip_data_bytes = ec_scheme.data_num as u64 * unit_bytes;
+        let strip_data_bytes = chunk
+            .strips
+            .first()
+            .map_or(ec_scheme.data_num as u64 * unit_bytes, |strip| {
+                u64::from(strip.capacity) * 1024
+            })
+            .max(1);
         let strips_per_chunk = (max_chunk_size / strip_data_bytes) as u32;
         let mut strips_remaining = self.strips_remaining;
         let mut next_strip_index = chunk.strips.len() as u32;
@@ -352,7 +349,7 @@ impl ChunkWriter {
                 if strip_count == 0 {
                     break;
                 }
-                let result = append_strips(&*allocator, chunk, ec_scheme, strip_count).await;
+                let result = append_strips(&*allocator, chunk, strip_count).await;
                 match result {
                     Ok(new_chunk) => {
                         chunk = new_chunk.clone();
@@ -446,7 +443,7 @@ impl ChunkWriter {
             .as_deref()
             .cloned()
             .ok_or_else(|| IoError::Internal("append_strip with no open chunk".into()))?;
-        append_strips(&*self.allocator, chunk, self.ec_scheme, 1).await
+        append_strips(&*self.allocator, chunk, 1).await
     }
 
     /// Seal the chunk: finish the current strip (if open with data),
@@ -592,6 +589,30 @@ impl ChunkWriter {
         self.chunk.as_ref().and_then(|c| c.id)
     }
 
+    fn make_strip_writer(&self, chunk: Arc<Chunk>, index: u32) -> Result<StripWriter> {
+        let strip = chunk
+            .strips
+            .get(index as usize)
+            .ok_or_else(|| IoError::AllocationFailed("strip index is absent".into()))?;
+        match &strip.strip {
+            Some(Strip::MirrorStrip(_)) => Ok(StripWriter::Mirror(MirrorStripWriter::new(
+                chunk,
+                index,
+                Arc::clone(&self.disk_writer),
+            ))),
+            Some(Strip::EcStrip(ec)) if ec.data_num > 0 && ec.code_num > 0 => {
+                let scheme = EcScheme::new(ec.data_num as usize, ec.code_num as usize);
+                Ok(StripWriter::Ec(EcStripWriter::new(
+                    chunk,
+                    index,
+                    Arc::clone(&self.disk_writer),
+                    scheme,
+                )))
+            }
+            _ => Err(IoError::AllocationFailed("unsupported strip layout".into())),
+        }
+    }
+
     /// Strips opened in the current chunk so far (= write_cursor + 1
     /// when a chunk is open).
     pub fn strips_in_chunk(&self) -> u32 {
@@ -606,28 +627,17 @@ impl ChunkWriter {
 /// Compute the number of strips not yet allocated for a known-size
 /// object. Returns `None` for unknown-size objects. Used by the
 /// internal strip prefetch task for planning.
-fn compute_strips_remaining(
-    object_size: Option<u64>,
-    allocated_strips: usize,
-    ec_scheme: &EcScheme,
-    config: &ChunkClientConfig,
-) -> Option<usize> {
+fn compute_strips_remaining(object_size: Option<u64>, chunk: &Chunk) -> Option<usize> {
     let total = object_size?;
-    let unit_bytes = u64::from((config.read_buffer_size / 1024) as u32) * 1024;
-    let strip_data_capacity = ec_scheme.data_num as u64 * unit_bytes;
-    let total_strips = total.div_ceil(strip_data_capacity) as usize;
-    Some(total_strips.saturating_sub(allocated_strips))
+    let strip_data_capacity = u64::from(chunk.strips.first()?.capacity) * 1024;
+    let total_strips = total.div_ceil(strip_data_capacity.max(1)) as usize;
+    Some(total_strips.saturating_sub(chunk.strips.len()))
 }
 
 /// Append one strip and merge the incremental response into the local chunk.
 /// A stale revision response carries the current full chunk; retry once with
 /// that revision so concurrent metadata changes do not duplicate an append.
-async fn append_strips(
-    chunkdb: &dyn ChunkAllocator,
-    mut chunk: Chunk,
-    ec_scheme: EcScheme,
-    strip_count: u32,
-) -> Result<Chunk> {
+async fn append_strips(chunkdb: &dyn ChunkAllocator, mut chunk: Chunk, strip_count: u32) -> Result<Chunk> {
     let chunk_id = chunk
         .id
         .ok_or_else(|| IoError::AllocationFailed("append_chunk: chunk missing id".into()))?;
@@ -644,6 +654,21 @@ async fn append_strips(
         .ok_or_else(|| {
             IoError::AllocationFailed("append_chunk: existing strip has no segment geometry".into())
         })?;
+    let (strip_type, data_num, code_num, copy_count) =
+        match chunk.strips.last().and_then(|strip| strip.strip.as_ref()) {
+            Some(Strip::MirrorStrip(mirror)) => (
+                StripType::Mirror as i32,
+                0,
+                0,
+                u32::try_from(mirror.segments.len()).unwrap_or(u32::MAX),
+            ),
+            Some(Strip::EcStrip(ec)) => (StripType::Ec as i32, ec.data_num, ec.code_num, 0),
+            None => {
+                return Err(IoError::AllocationFailed(
+                    "append_chunk: missing strip layout".into(),
+                ))
+            }
+        };
     for attempt in 0..2 {
         let resp = chunkdb
             .append_chunk(AppendChunkRequest {
@@ -651,10 +676,10 @@ async fn append_strips(
                 modify_ts: chunk.modify_ts,
                 strip_size: unit_count,
                 strip_count,
-                strip_type: StripType::Ec as i32,
-                data_num: ec_scheme.data_num as u32,
-                code_num: ec_scheme.code_num as u32,
-                copy_count: 0,
+                strip_type,
+                data_num,
+                code_num,
+                copy_count,
             })
             .await?;
         if let Some(current) = resp.chunk {

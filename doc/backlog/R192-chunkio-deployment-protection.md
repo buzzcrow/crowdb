@@ -13,6 +13,15 @@ Production deployment requires at least three voting nodes, with KV and chunk pl
 
 Single-node is an explicit test-only mode. It has one KV server and one voting copy per KV group. Every new chunk strip has 1 MiB logical data capacity and one mirror copy; EC, multiple mirror copies, and mirror-to-EC conversion are disabled. A data error is returned to the caller. This mode provides no data protection and cannot be entered automatically because of missing nodes, failed placement, or quorum loss.
 
+Existing colocated EC integration fixtures use a separate explicit
+`test_unsafe_placement` mode, accepted only by debug builds. It is not the
+single-node deployment profile and cannot be used by release binaries.
+
+Chunk capacity is independent of strip capacity. A single-node chunk may
+contain multiple 1 MiB strips. Each chunk type's writer exposes its chunk
+capacity in its component configuration; the single-node profile also selects
+its RPC worker and connection counts explicitly.
+
 1. Make the deployment protection mode explicit in startup configuration. Validate the KV replica topology and chunk placement policy against it before serving writes. Reject a production configuration with fewer than three voting nodes, and reject test-only single-node configuration that requests multiple copies or EC.
 2. Treat a chunk as a sequence of strips, each with its own logical data capacity and protection layout. The chunk write path advances through strips and delegates block alignment, cross-block writes, mirror duplication or EC encoding, durability, and repair to the selected strip writer. A mirror strip writer must handle the single-copy test layout and protected mirrored layouts. The read path dispatches to the matching strip reader, whose error recovery is layout-specific.
 3. Keep foreground write policy in each access library and physical strip I/O in chunk-client. S3 and Iceberg may choose separate policies; neither decides placement or performs EC encoding itself. Existing small-write admission remains independent of the large-write path while sharing strip-level semantics where appropriate.

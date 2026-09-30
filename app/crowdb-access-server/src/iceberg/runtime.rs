@@ -2,22 +2,17 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crowdb_access_iceberg::catalog::{
-    Capabilities, CatalogError, CatalogLifecycle, CatalogRepository, ClearBounds, ManagementPrivilege,
-    RootState, RoutedCatalogStore,
+    Capabilities, CatalogError, CatalogLifecycle, CatalogRepository, ManagementPrivilege, RootState,
+    RoutedCatalogStore,
 };
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
+use crowdb_access_iceberg::storage::connect;
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
-use crowdb_chunk_client::{
-    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, LargeWritePolicy,
-    SmallWritePolicy,
-};
-use crowdb_chunk_kv_client::{
-    ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
-};
+use crowdb_chunk_client::{ChunkClientConfig, ChunkIoClient, LargeWritePolicy};
 use crowdb_common::ec::EcScheme;
-use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 
 use super::{serve, IcebergHttpService};
 use crate::config::{load_args, AccessConfig};
@@ -83,6 +78,17 @@ impl IcebergRuntimeConfig {
 /// # Errors
 /// Returns configuration, authentication, storage, management or listener failures.
 pub async fn run(arguments: Vec<String>) -> Result<(), BoxError> {
+    run_with_shutdown(arguments, None).await
+}
+
+/// Runs Iceberg with an optional coordinated process shutdown signal.
+///
+/// # Errors
+/// Returns configuration, authentication, storage, management or listener failures.
+pub async fn run_with_shutdown(
+    arguments: Vec<String>,
+    shutdown: Option<watch::Receiver<bool>>,
+) -> Result<(), BoxError> {
     let (access_config, arguments) = load_args(arguments)?;
     let config = IcebergRuntimeConfig::from_config(&access_config)?;
     if arguments.len() > 7 {
@@ -91,20 +97,19 @@ pub async fn run(arguments: Vec<String>) -> Result<(), BoxError> {
     let (repository, store, chunks) = connect(
         config.management_seeds.clone(),
         access_config.read.policy(),
-        access_config.small_write.policy(),
+        access_config.iceberg_small_write().policy(),
         access_config.common.diskio_connections_per_endpoint,
         access_config.common.diskio_rpc_workers,
     )
     .await?;
     let result = if arguments.is_empty() || arguments == ["serve"] {
         Box::pin(start_listener(
-            &config.listen,
+            config,
             repository,
             store,
-            config.authentication,
             chunks.clone(),
-            config.management_seeds,
             access_config,
+            shutdown,
         ))
         .await
     } else if arguments.first().is_some_and(|argument| argument == "gc") {
@@ -125,62 +130,19 @@ pub async fn run(arguments: Vec<String>) -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn connect(
-    seeds: Vec<String>,
-    read_policy: ChunkReadPolicy,
-    small_write: SmallWritePolicy,
-    diskio_connections_per_endpoint: usize,
-    diskio_rpc_workers: u32,
-) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>, ChunkIoClient), BoxError> {
-    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
-    let (repository, store) = connect_catalog(Arc::clone(&control)).await?;
-    let chunks = ChunkIoClient::connect_with_kv_read_policy(
-        ChunkIoClientConfig {
-            management_seeds: seeds,
-            diskio_connections_per_endpoint,
-            diskio_rpc_workers,
-            small_write,
-        },
-        control,
-        read_policy,
-    )
-    .await?;
-    Ok((repository, store, chunks))
-}
-
-async fn connect_catalog(
-    control: Arc<CrowdbKvClient>,
-) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>), BoxError> {
-    let client_config = ClientConfig::default();
-    let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
-    let transport = Arc::new(ChunkKvRpcTransport::new(
-        client_config.max_owner_connections,
-        1,
-        2,
-    ));
-    let client = Arc::new(ChunkKvClient::new(client_config, source, transport)?);
-    client.refresh_catalog().await?;
-    let store = Arc::new(RoutedCatalogStore::new(client));
-    let repository = Arc::new(CatalogRepository::new(
-        store.clone(),
-        ClearBounds {
-            request_ms: 300_000,
-            delegated_access_ms: 900_000,
-            ..ClearBounds::default()
-        },
-    )?);
-    Ok((repository, store))
-}
-
 async fn start_listener(
-    address: &str,
+    runtime: IcebergRuntimeConfig,
     repository: Arc<CatalogRepository>,
     store: Arc<RoutedCatalogStore>,
-    authentication: BearerAuthenticator,
     chunks: ChunkIoClient,
-    management_seeds: Vec<String>,
     access_config: AccessConfig,
+    shutdown: Option<watch::Receiver<bool>>,
 ) -> Result<(), BoxError> {
+    let IcebergRuntimeConfig {
+        listen: address,
+        management_seeds,
+        authentication,
+    } = runtime;
     let gc_config = super::gc_runtime::GcRuntimeConfig::from_config(&access_config.iceberg.gc)?;
     for _ in 0..600 {
         match repository.recover(now_ms()?).await {
@@ -205,16 +167,7 @@ async fn start_listener(
         .native_budget_bytes
         .unwrap_or(256 * 1024 * 1024);
     let native_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
-    let large_write = LargeWritePolicy {
-        ec_scheme: EcScheme::new(
-            access_config.small_write.ec_data,
-            access_config.small_write.ec_code,
-        ),
-        client: Arc::new(ChunkClientConfig {
-            read_buffer_size: access_config.small_write.disk_block_bytes,
-            ..ChunkClientConfig::default()
-        }),
-    };
+    let large_write = iceberg_large_write(&access_config);
     let mut service = IcebergHttpService::new(repository.clone(), authentication, timeout)
         .with_namespaces(store.clone())?
         .with_fileio_native(
@@ -223,7 +176,7 @@ async fn start_listener(
             "us-east-1".into(),
             Some(native_allocator),
         )?
-        .with_small_object_threshold(access_config.small_write.threshold_exclusive())?
+        .with_small_object_threshold(access_config.iceberg_small_write().threshold_exclusive())?
         .with_large_write_policy(large_write)?;
     if authority.admission_bounds.delegated_access_ms >= 900_000 {
         let endpoint =
@@ -235,11 +188,9 @@ async fn start_listener(
         tracing::warn!("table routes disabled: persisted catalog delegation bound is below fifteen minutes");
     }
     let service = Arc::new(service);
-    let listener = TcpListener::bind(address).await?;
+    let listener = TcpListener::bind(&address).await?;
     tracing::info!(%address, "Iceberg listener ready");
-    let serving = serve(listener, service, async {
-        let _ = tokio::signal::ctrl_c().await;
-    });
+    let serving = serve(listener, service, wait_for_shutdown(shutdown));
     let multipart = Box::pin(super::file_recovery::run(
         repository.clone(),
         store.clone(),
@@ -273,6 +224,49 @@ async fn start_listener(
     }
     tracing::info!("Iceberg listener drained");
     Ok(())
+}
+
+fn iceberg_large_write(access_config: &AccessConfig) -> LargeWritePolicy {
+    let mut large_write = LargeWritePolicy {
+        ec_scheme: EcScheme::new(
+            access_config
+                .iceberg
+                .ec_data
+                .unwrap_or(access_config.iceberg_small_write().ec_data),
+            access_config
+                .iceberg
+                .ec_code
+                .unwrap_or(access_config.iceberg_small_write().ec_code),
+        ),
+        client: Arc::new(ChunkClientConfig {
+            large_mirror_copies: access_config.iceberg.large_mirror_copies,
+            read_buffer_size: access_config.iceberg_small_write().disk_block_bytes,
+            max_chunk_size: access_config.iceberg.max_chunk_size.unwrap_or(1024 * 1024 * 1024),
+            memory_budget: access_config.iceberg.large_memory_budget_bytes.unwrap_or(0),
+            prefetch_strips_per_chunk: access_config.iceberg.large_prefetch_strips_per_chunk.unwrap_or(1),
+            chunk_preparation_depth: access_config.iceberg.large_chunk_preparation_depth.unwrap_or(1),
+            ..ChunkClientConfig::default()
+        }),
+    };
+    crowdb_access_iceberg::storage::own_large_write(&mut large_write);
+    large_write
+}
+
+async fn wait_for_shutdown(mut shutdown: Option<watch::Receiver<bool>>) {
+    if let Some(receiver) = shutdown.as_mut() {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            () = async {
+                loop {
+                    if *receiver.borrow() || receiver.changed().await.is_err() {
+                        break;
+                    }
+                }
+            } => {}
+        }
+    } else {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 async fn manage(

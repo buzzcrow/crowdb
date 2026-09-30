@@ -51,6 +51,7 @@ struct MirrorWriteSource
     void                           *operation         = nullptr;
     uint32_t                        attempt           = 0;
     uint64_t                        started_at_ns     = 0;
+    bool                            disabled          = false;
 
     static void submit(void *context, CallbackComplete complete_fn, void *operation_context)
     {
@@ -58,6 +59,10 @@ struct MirrorWriteSource
         self->complete  = complete_fn;
         self->operation = operation_context;
         self->attempt   = 0;
+        if (self->disabled) {
+            complete_fn(operation_context, CallbackSignal::kValue, Status::Ok());
+            return;
+        }
         self->submit_attempt();
     }
 
@@ -417,6 +422,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                 .stop_requested    = &stop_requested,
                 .diskio_operations = &store->diskio_operations_,
                 .diskio_latency_ns = &store->diskio_latency_ns_,
+                .disabled          = mirror >= store->config_.mirror_copies,
             };
         }
         auto sender = stdexec::when_all(CallbackSender(job.mirrors.data(), &MirrorWriteSource::submit),

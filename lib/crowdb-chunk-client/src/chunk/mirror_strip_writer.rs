@@ -1,65 +1,162 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#![allow(clippy::unused_async)]
+//! Durable writes for one persisted mirror strip.
 
-//! `MirrorStripWriter` — placeholder stub for mirror strips.
-//!
-//! Declared so the `StripWriter` enum shape is fixed. The large-write
-//! flow never constructs it. Filled in by R93 (mirror-to-EC
-//! conversion) and R106. Mirror strips have no parity, so a
-//! `MirrorStripWriter` owns no `EcWorker`.
+use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
+use crowdb_protocol::chunkdb::rpc::{Chunk, Strip};
+use crowdb_protocol::diskdb::rpc::Segment;
+use tokio::task::JoinSet;
 
 use crate::chunk::strip::StripResult;
+use crate::disk_io::DiskWriter;
 use crate::io::FeedStatus;
 use crate::{IoError, Result};
 
-/// Mirror strip writer — placeholder. Methods return
-/// `IoError::Internal` until R93/R106 fills in the impl.
 pub struct MirrorStripWriter {
-    _placeholder: (),
+    chunk: Arc<Chunk>,
+    strip_index: u32,
+    disk_writer: Arc<dyn DiskWriter>,
+    accepted: u64,
+    finished: bool,
 }
 
 impl MirrorStripWriter {
-    /// Construct a new mirror strip writer (placeholder).
     #[must_use]
-    pub fn new() -> Self {
-        Self { _placeholder: () }
+    pub fn new(chunk: Arc<Chunk>, strip_index: u32, disk_writer: Arc<dyn DiskWriter>) -> Self {
+        Self {
+            chunk,
+            strip_index,
+            disk_writer,
+            accepted: 0,
+            finished: false,
+        }
     }
 
-    /// Push a data block to the strip.
-    #[allow(clippy::unused_async_trait_impl)]
-    pub async fn push(&mut self, _buffer: Bytes) -> Result<FeedStatus> {
-        Err(IoError::Internal("MirrorStripWriter not yet implemented".into()))
+    fn geometry(&self) -> Result<(u64, u64, u32, Vec<Segment>)> {
+        let strip = self
+            .chunk
+            .strips
+            .get(self.strip_index as usize)
+            .ok_or_else(|| IoError::Internal("mirror strip index is missing".into()))?;
+        let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
+            return Err(IoError::Internal("expected persisted mirror strip".into()));
+        };
+        let unit_bytes = u64::from(strip.unit_kb) * 1024;
+        let capacity = u64::from(strip.capacity) * 1024;
+        if mirror.segments.is_empty() || unit_bytes == 0 || capacity == 0 {
+            return Err(IoError::Internal("invalid mirror strip geometry".into()));
+        }
+        Ok((
+            unit_bytes,
+            capacity,
+            strip.strip_sequence,
+            mirror.segments.clone(),
+        ))
     }
 
-    /// End of strip: return the strip result.
-    #[allow(clippy::unused_async_trait_impl)]
+    pub async fn push(&mut self, buffer: Bytes) -> Result<FeedStatus> {
+        if self.finished {
+            return Err(IoError::Finished);
+        }
+        let (unit_bytes, capacity, _, segments) = self.geometry()?;
+        let length = u64::try_from(buffer.len())
+            .map_err(|_| IoError::WriteFailed("mirror write is too large".into()))?;
+        if length > capacity.saturating_sub(self.accepted) {
+            return Err(IoError::WriteFailed("mirror strip capacity exceeded".into()));
+        }
+        let mut writes = JoinSet::new();
+        for segment in segments {
+            let disk_io = Arc::clone(&self.disk_writer);
+            let bytes = buffer.clone();
+            let offset = self.accepted;
+            writes.spawn(async move {
+                disk_io
+                    .write_at_byte_offset(&segment, unit_bytes, offset, bytes)
+                    .await
+            });
+        }
+        let mut failure = None;
+        while let Some(result) = writes.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => failure = Some(error),
+                Err(error) => failure = Some(IoError::WriteFailed(error.to_string())),
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        self.accepted += length;
+        Ok(if self.accepted == capacity {
+            FeedStatus::Pause
+        } else {
+            FeedStatus::Continue
+        })
+    }
+
     pub async fn finish(&mut self) -> Result<StripResult> {
-        Err(IoError::Internal("MirrorStripWriter not yet implemented".into()))
+        if self.finished {
+            return Err(IoError::Finished);
+        }
+        let (unit_bytes, _, _, segments) = self.geometry()?;
+        self.finished = true;
+        let mut syncs = JoinSet::new();
+        for segment in segments {
+            let writer = Arc::clone(&self.disk_writer);
+            syncs.spawn(async move { writer.fsync(&segment).await });
+        }
+        while let Some(result) = syncs.join_next().await {
+            result.map_err(|error| IoError::WriteFailed(error.to_string()))??;
+        }
+        Ok(StripResult {
+            chunk_id: self.chunk.id.unwrap_or_default(),
+            strip_index_in_chunk: self.strip_index,
+            data_blocks_written: u32::try_from(self.accepted.div_ceil(unit_bytes)).unwrap_or(u32::MAX),
+            bytes_written: self.accepted,
+            partial: self.accepted % unit_bytes != 0,
+            ec_encode_time: Duration::ZERO,
+            completion_handles: Vec::new(),
+        })
     }
 
-    /// Abort: return already-durable state.
-    #[allow(clippy::unused_async_trait_impl)]
-    pub async fn abort(&mut self) -> Result<StripResult> {
-        Err(IoError::Internal("MirrorStripWriter not yet implemented".into()))
+    pub fn abort(&mut self) -> Result<StripResult> {
+        self.finished = true;
+        Ok(StripResult {
+            chunk_id: self.chunk.id.unwrap_or_default(),
+            strip_index_in_chunk: self.strip_index,
+            data_blocks_written: 0,
+            bytes_written: self.accepted,
+            partial: false,
+            ec_encode_time: Duration::ZERO,
+            completion_handles: Vec::new(),
+        })
     }
 
-    /// Non-async capacity hint.
+    #[must_use]
     pub fn ready(&self) -> bool {
-        false
+        !self.finished && self.remaining_capacity() > 0
     }
 
-    /// True if the strip has any data blocks written.
+    #[must_use]
     pub fn has_data(&self) -> bool {
-        false
+        self.accepted > 0
     }
-}
 
-impl Default for MirrorStripWriter {
-    fn default() -> Self {
-        Self::new()
+    #[must_use]
+    pub fn remaining_capacity(&self) -> u64 {
+        self.chunk
+            .strips
+            .get(self.strip_index as usize)
+            .map_or(0, |strip| u64::from(strip.capacity) * 1024)
+            .saturating_sub(self.accepted)
+    }
+
+    #[must_use]
+    pub fn accepted_bytes(&self) -> u64 {
+        self.accepted
     }
 }

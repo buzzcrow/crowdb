@@ -226,7 +226,17 @@ impl E2eStack {
         )));
         let service = ServiceRegistryClient::from_shared(kv);
         let chunkdb = ChunkdbClient::new(service, Arc::new(ChunkdbRpcTransport::new()));
-        chunkdb.refresh_endpoints().await.unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match chunkdb.refresh_endpoints().await {
+                Ok(()) => break,
+                Err(error) if tokio::time::Instant::now() < deadline => {
+                    eprintln!("waiting for ChunkDB discovery after KV recovery: {error}");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(error) => panic!("ChunkDB discovery did not recover: {error}"),
+            }
+        }
         let response = chunkdb
             .query_chunk(QueryChunkRequest {
                 chunk_id: location.chunk_id,

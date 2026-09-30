@@ -6,6 +6,21 @@
 This page describes building and running CROWDB from source on a Linux amd64
 development or CI host.
 
+This profile explicitly selects `test_single_node`. KV groups have one voter;
+chunk writes use one 1 MiB mirror copy with no EC or conversion. The profile
+provides no data protection, and a failed copy returns an I/O error. Production
+requires at least three voting nodes and protected placement.
+
+The profile keeps chunk capacity separate from strip size. Tree chunks use
+`storage.tree_chunk_capacity_bytes` in `chunk-kv.toml`; a 16 MiB tree chunk
+contains multiple 1 MiB mirror strips. Stream chunks use
+`storage.stream_chunk_capacity_bytes`. S3 and Iceberg each accept their own
+`s3.small_write.chunk_capacity_bytes` or
+`iceberg.small_write.chunk_capacity_bytes` and large `max_chunk_size` values
+in `access.toml`. The shared `small_write` section remains a fallback. The
+profile also sets RPC worker and client connection counts explicitly so local
+resource use can be tuned without changing production defaults.
+
 ```sh
 pixi run build-single-node-container
 pixi run test-single-node-container

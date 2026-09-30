@@ -107,7 +107,7 @@ impl LargeObjectWriter {
             self.allocator.clone(),
             self.ec_scheme,
             self.config.clone(),
-            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+            self.config.chunk_type as u8,
         );
         let (rx, handle) = prefetch.spawn(object_size);
         self.chunk_prefetch_rx = Some(rx);
@@ -131,7 +131,7 @@ impl LargeObjectWriter {
             self.allocator.clone(),
             self.ec_scheme,
             self.config.clone(),
-            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+            self.config.chunk_type as u8,
         );
         let chunk = pf.on_demand().await?;
         Ok(Some(chunk))

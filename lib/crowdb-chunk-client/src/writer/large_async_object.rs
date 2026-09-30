@@ -152,7 +152,7 @@ impl LargeAsyncObjectWriter {
             self.allocator.clone(),
             self.ec_scheme,
             self.config.clone(),
-            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+            self.config.chunk_type as u8,
         );
         let (chunk_rx, prefetch_handle) = prefetch.spawn(object_size);
         self.chunk_prefetch_rx = Some(chunk_rx);
@@ -243,7 +243,7 @@ impl LargeAsyncObjectWriter {
             self.allocator.clone(),
             self.ec_scheme,
             self.config.clone(),
-            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+            self.config.chunk_type as u8,
         );
         let started = Instant::now();
         self.preparation_stalls += 1;
@@ -409,7 +409,7 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
                 self.allocator.clone(),
                 self.ec_scheme,
                 self.config.clone(),
-                crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+                self.config.chunk_type as u8,
             );
             let (rx, handle) = prefetch.spawn(None);
             self.chunk_prefetch_rx = Some(rx);

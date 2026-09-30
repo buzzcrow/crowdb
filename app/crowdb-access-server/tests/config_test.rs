@@ -14,7 +14,7 @@ fn tracked_access_configs_load_and_set_bounded_read_resources() {
     let container: AccessConfig =
         load_from_file(&root.join("../../container/single-node-container/templates/access.toml")).unwrap();
     for (config, expected_ec, expected_threshold) in
-        [(canonical, (8, 4), 7_549_748), (container, (2, 1), 1_887_437)]
+        [(canonical, (8, 4), 7_549_748), (container, (2, 1), 943_719)]
     {
         assert_eq!(config.read.stream_slots, 3);
         assert_eq!(config.read.stream_window_bytes, 1024 * 1024);
@@ -92,4 +92,29 @@ fn unsupported_disk_block_size_is_rejected_before_routing() {
     assert!(config.validate().is_err());
     config.small_write.disk_block_bytes = 768 * 1024;
     assert!(config.validate().is_err());
+}
+
+#[test]
+fn protocol_small_write_overrides_are_independent() {
+    let mut config = AccessConfig::default();
+    config.s3.small_write = Some(SmallWriteConfig {
+        ec_data: 4,
+        ec_code: 2,
+        ..SmallWriteConfig::default()
+    });
+    config.iceberg.small_write = Some(SmallWriteConfig {
+        ec_data: 2,
+        ec_code: 1,
+        ..SmallWriteConfig::default()
+    });
+    assert!(config.validate().is_ok());
+    assert_eq!(config.s3_small_write().ec_data, 4);
+    assert_eq!(config.iceberg_small_write().ec_data, 2);
+    config.s3.small_write.as_mut().unwrap().chunk_capacity_bytes = 32 * 1024 * 1024;
+    assert_eq!(config.s3_small_write().policy().chunk_capacity, 32 * 1024 * 1024);
+    assert_eq!(
+        config.iceberg_small_write().policy().chunk_capacity,
+        1024 * 1024 * 1024
+    );
+    assert_eq!(config.small_write.ec_data, 8);
 }

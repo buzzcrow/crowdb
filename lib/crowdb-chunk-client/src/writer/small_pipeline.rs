@@ -12,16 +12,15 @@ use bytes::{Bytes, BytesMut};
 use crowdb_common::ec::{EcScheme, IncrementalParity};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AllocateChunkRequest, AppendChunkRequest, Chunk, ChunkState, ChunkStrip,
-    ChunkType, DeleteChunkRequest, Location, MutateStripReservationRequest,
-    PrepareMirrorToEcConversionRequest, QueryChunkRequest, ReserveStripGroupRequest, SealChunkRequest, Strip,
-    StripReservationAction, StripType,
+    DeleteChunkRequest, Location, MutateStripReservationRequest, PrepareMirrorToEcConversionRequest,
+    QueryChunkRequest, ReserveStripGroupRequest, SealChunkRequest, Strip, StripReservationAction, StripType,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::frame::{
     encode_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_PAYLOAD_BYTES,
 };
-use crowdb_protocol::{generate_chunk_id, CHUNK_TYPE_REPO};
+use crowdb_protocol::generate_chunk_id;
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit};
 
 use crate::chunk::mirror_flow::MirrorStripFlow;
@@ -797,7 +796,7 @@ impl OwnedChunk {
                 data_num: 0,
                 code_num: 0,
                 copy_count: runtime.policy.mirror_copies,
-                chunk_type: ChunkType::Repo as i32,
+                chunk_type: runtime.policy.chunk_type as i32,
                 writer_epoch,
                 writer_lease_ms: lease_ms,
                 owner_key: Vec::new(),
@@ -1006,7 +1005,7 @@ impl OwnedChunk {
             .chunk
             .id
             .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
-        let group_id = generate_chunk_id(CHUNK_TYPE_REPO).to_proto();
+        let group_id = generate_chunk_id(self.policy.chunk_type as u8).to_proto();
         let unit_count = last.map_or(1, |strip| {
             u32::try_from(strip_kb)
                 .unwrap_or(u32::MAX)

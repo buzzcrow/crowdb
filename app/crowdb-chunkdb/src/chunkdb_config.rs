@@ -19,9 +19,27 @@ pub enum PlacementMode {
     UnsafeColocated,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentMode {
+    #[default]
+    Production,
+    TestSingleNode,
+    /// Legacy colocated EC fixtures; rejected by release builds.
+    TestUnsafePlacement,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeploymentConfig {
+    pub mode: DeploymentMode,
+}
+
 /// Top-level configuration for a chunkdb instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkdbConfig {
+    #[serde(default)]
+    pub deployment: DeploymentConfig,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -60,6 +78,29 @@ pub struct PlacementConfig {
 
 impl BaseConfig for ChunkdbConfig {
     fn validate(&self) -> Result<(), String> {
+        match self.deployment.mode {
+            DeploymentMode::Production => {
+                if self.placement.mode != PlacementMode::Protected
+                    || self.placement.allow_unsafe_ec
+                    || self.placement.allow_degraded_failure_domains
+                {
+                    return Err("production deployment requires protected placement".into());
+                }
+            }
+            DeploymentMode::TestSingleNode => {
+                if self.placement.mode != PlacementMode::UnsafeColocated {
+                    return Err("test_single_node requires explicit unsafe_colocated placement".into());
+                }
+                if self.conversion.enabled {
+                    return Err("test_single_node must disable mirror-to-EC conversion".into());
+                }
+            }
+            DeploymentMode::TestUnsafePlacement => {
+                if !cfg!(debug_assertions) {
+                    return Err("test_unsafe_placement is unavailable in release builds".into());
+                }
+            }
+        }
         if self.server.rpc_workers == 0 {
             return Err("server.rpc_workers must be > 0".into());
         }

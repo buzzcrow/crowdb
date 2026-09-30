@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::Parser;
 use crowdb_chunkdb::ad_hoc::{AdHocRecoveryManager, AdHocRecoveryShared};
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
-use crowdb_chunkdb::chunkdb_config::{ChunkdbConfig, PlacementMode};
+use crowdb_chunkdb::chunkdb_config::{ChunkdbConfig, DeploymentMode, PlacementMode};
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::finalize::FinalizeChunkTaskHandler;
@@ -36,8 +36,8 @@ use crowdb_chunkdb::topology::{
 };
 use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
 use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, RangeBindingClient,
-    ServiceRegistryClient, WatchNotifyClient,
+    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, KVClusterMetaClient,
+    RangeBindingClient, ServiceRegistryClient, WatchNotifyClient,
 };
 use tracing::{error, info, warn};
 
@@ -196,6 +196,10 @@ async fn main() {
         error!("initial topology refresh failed; refusing readiness");
         return;
     };
+    if let Err(error) = validate_voting_topology(&kv, config.deployment.mode).await {
+        error!(%error, "KV voting topology does not satisfy deployment mode; refusing readiness");
+        return;
+    }
     let monitor_request = crowdb_protocol::chunk_kv::EnsureDomainMonitorRequest {
         descriptor: crowdb_protocol::chunk_kv::DomainMonitorDescriptor {
             domain: "chunkdb".into(),
@@ -367,6 +371,7 @@ async fn main() {
     // Lifecycle handler.
     let handler = Arc::new(
         LifecycleHandler::new(Arc::clone(&store), allocator, cache)
+            .with_deployment_mode(config.deployment.mode)
             .with_placement_tasks(Arc::clone(&task_store))
             .with_range_guard(Arc::clone(&range_guard))
             .with_locks(Arc::clone(&lock_map))
@@ -409,6 +414,7 @@ async fn main() {
     let relocation = Arc::new(RelocationCoordinator::new(Arc::clone(&task_manager)));
     let conversion = Arc::new(
         ConversionCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
+            .with_enabled(config.deployment.mode != DeploymentMode::TestSingleNode)
             .with_wake(task_manager.wake_handle())
             .with_policy(
                 config.conversion.data_num,
@@ -625,12 +631,11 @@ async fn main() {
                     Arc::clone(&io),
                     Arc::clone(&workflow_metrics.placement),
                 ));
-                let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
+                let mut task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
                     Arc::new(FinalizeChunkTaskHandler::new(
                         Arc::clone(&handler),
                         Arc::clone(&io),
                     )),
-                    conversion_task_handler,
                     repair_task_handler,
                     placement_repair_task_handler,
                     Arc::new(RelocateSegmentTaskHandler::new(
@@ -638,6 +643,9 @@ async fn main() {
                         Arc::clone(&task_manager),
                     )),
                 ];
+                if config.deployment.mode != DeploymentMode::TestSingleNode {
+                    task_handlers.push(conversion_task_handler);
+                }
                 let executor = Arc::new(
                     TaskExecutor::new(
                         Arc::clone(&task_manager),
@@ -1046,6 +1054,53 @@ fn load_config(args: &Cli) -> ChunkdbConfig {
         .unwrap_or_else(|e| panic!("invalid config after CLI overrides: {e}"));
 
     config
+}
+
+async fn validate_voting_topology(kv: &Arc<CrowdbKvClient>, mode: DeploymentMode) -> Result<(), String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if mode == DeploymentMode::TestUnsafePlacement {
+        return Ok(());
+    }
+
+    let metadata = KVClusterMetaClient::from_shared(Arc::clone(kv));
+    let groups = metadata
+        .list_all_groups()
+        .await
+        .map_err(|error| format!("cannot read KV groups: {error}"))?;
+    let replicas = metadata
+        .list_all_replicas()
+        .await
+        .map_err(|error| format!("cannot read KV replicas: {error}"))?;
+    let mut voters: BTreeMap<(u64, u64), BTreeSet<u64>> = BTreeMap::new();
+    for replica in replicas.into_iter().filter(|replica| replica.voting) {
+        voters
+            .entry((replica.store_id, replica.group_id))
+            .or_default()
+            .insert(replica.node_id);
+    }
+    if groups.is_empty() {
+        return Err("KV voting topology is empty".into());
+    }
+    for group in groups {
+        let store_id = group.store_id;
+        let group_id = group.group_id;
+        let nodes = voters.remove(&(store_id, group_id)).unwrap_or_default();
+        let valid = match mode {
+            DeploymentMode::Production => nodes.len() >= 3,
+            DeploymentMode::TestSingleNode => nodes.len() == 1,
+            DeploymentMode::TestUnsafePlacement => {
+                unreachable!("test fixtures bypass voting topology validation")
+            }
+        };
+        if !valid {
+            return Err(format!(
+                "KV group {store_id}/{group_id} has {} voting nodes, incompatible with {mode:?}",
+                nodes.len()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Replace the port portion of a `host:port` address string.

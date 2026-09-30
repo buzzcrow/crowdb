@@ -229,7 +229,7 @@ impl ChunkAllocator for MockChunkAllocator {
             let capacity = req.write_granularity;
             (capacity, StripOneof::MirrorStrip(MirrorStrip { segments }))
         } else {
-            let capacity = data_num as u32;
+            let capacity = req.data_num.saturating_mul(4);
             (
                 capacity,
                 StripOneof::EcStrip(EcStrip {
@@ -320,7 +320,7 @@ impl ChunkAllocator for MockChunkAllocator {
             let capacity = req.strip_size.saturating_mul(4);
             (capacity, StripOneof::MirrorStrip(MirrorStrip { segments }))
         } else {
-            let capacity = data_num as u32;
+            let capacity = req.data_num.saturating_mul(4);
             (
                 capacity,
                 StripOneof::EcStrip(EcStrip {
@@ -434,6 +434,8 @@ impl ChunkAllocator for FailingChunkAllocator {
 
 fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
     Arc::new(ChunkClientConfig {
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
+        large_mirror_copies: None,
         max_chunk_size,
         prefetch_strips_per_chunk: 2,
         parity_depth: 2,
@@ -981,6 +983,8 @@ async fn push_mode_backpressure() {
     let diskio = LocalFileDiskWriter::new(tmp.path());
     let ec = ec_4_1();
     let config = Arc::new(ChunkClientConfig {
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
+        large_mirror_copies: None,
         max_chunk_size: 1024 * 1024,
         prefetch_strips_per_chunk: 2,
         parity_depth: 2,
@@ -1071,6 +1075,8 @@ async fn write_stream_bounded_prealloc() {
     let diskio = LocalFileDiskWriter::new(tmp.path());
     let ec = ec_4_1();
     let config = Arc::new(ChunkClientConfig {
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
+        large_mirror_copies: None,
         max_chunk_size: 1024 * 1024 * 1024,
         prefetch_strips_per_chunk: 2,
         parity_depth: 2,
@@ -1128,6 +1134,8 @@ async fn writer_pool_budget_rejects_over_budget() {
     let diskio = LocalFileDiskWriter::new(tmp.path());
     let ec = ec_4_1();
     let config = Arc::new(ChunkClientConfig {
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
+        large_mirror_copies: None,
         max_chunk_size: 1024 * 1024 * 1024,
         prefetch_strips_per_chunk: 2,
         parity_depth: 2,
@@ -1158,6 +1166,8 @@ async fn writer_pool_per_writer_memory() {
     let diskio = LocalFileDiskWriter::new(tmp.path());
     let ec = ec_4_1();
     let config = Arc::new(ChunkClientConfig {
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
+        large_mirror_copies: None,
         max_chunk_size: 1024 * 1024 * 1024,
         prefetch_strips_per_chunk: 2,
         parity_depth: 2,

@@ -220,10 +220,10 @@ struct RpcChunkTransport::Impl
 
     struct Strip
     {
-        uint64_t               chunk_offset = 0;
-        uint64_t               capacity     = 0;
-        uint32_t               unit_kb      = 0;
-        std::array<Segment, 3> mirrors;
+        uint64_t             chunk_offset = 0;
+        uint64_t             capacity     = 0;
+        uint32_t             unit_kb      = 0;
+        std::vector<Segment> mirrors;
     };
 
     struct RemoteChunk
@@ -275,7 +275,7 @@ struct RpcChunkTransport::Impl
 
     [[nodiscard]] bool valid() const
     {
-        return options.chunkdb.client != nullptr && options.chunkdb.server != nullptr &&
+        return options.mirror_copies <= 3 && options.chunkdb.client != nullptr && options.chunkdb.server != nullptr &&
                options.chunkdb.connection != nullptr && !disk_routes.empty();
     }
 
@@ -314,21 +314,22 @@ struct RpcChunkTransport::Impl
         for (const auto *wire_strip : *chunk->strips()) {
             const auto *mirror = wire_strip == nullptr ? nullptr : wire_strip->strip_body_as_FBMirrorStrip();
             if (wire_strip == nullptr || wire_strip->strip_type() != FBStripType_Mirror || mirror == nullptr ||
-                mirror->segments() == nullptr || mirror->segments()->size() != 3 || wire_strip->unit_kb() == 0) {
+                mirror->segments() == nullptr || mirror->segments()->empty() || wire_strip->unit_kb() == 0) {
                 return Status::corruption("ChunkDB returned a non-mirror tree chunk layout");
             }
             Strip strip{.chunk_offset = static_cast<uint64_t>(wire_strip->chunk_offset()) * 1024,
                         .capacity     = static_cast<uint64_t>(wire_strip->capacity()) * 1024,
                         .unit_kb      = wire_strip->unit_kb(),
                         .mirrors      = {}};
-            for (size_t index = 0; index < strip.mirrors.size(); ++index) {
-                const auto *segment  = mirror->segments()->Get(index);
-                strip.mirrors[index] = {
+            strip.mirrors.reserve(mirror->segments()->size());
+            for (size_t index = 0; index < mirror->segments()->size(); ++index) {
+                const auto *segment = mirror->segments()->Get(index);
+                strip.mirrors.push_back({
                     .disk_high   = segment->disk_id().high(),
                     .disk_low    = segment->disk_id().low(),
                     .unit_offset = segment->unit_offset(),
                     .zone_index  = segment->zone_index(),
-                };
+                });
             }
             parsed.strips.push_back(strip);
         }
@@ -532,6 +533,10 @@ struct RpcChunkTransport::Impl::AsyncWrite
             finish(this, Status::resource_exhausted("tree chunk RPC write exceeds allocated strips"));
             return;
         }
+        if (mirror_index >= strip->mirrors.size()) {
+            finish(this, Status::invalid_argument("tree chunk mirror index exceeds layout"));
+            return;
+        }
         const size_t       part = std::min<uint64_t>(length - consumed, strip->chunk_offset + strip->capacity - cursor);
         const auto        &segment = strip->mirrors[mirror_index];
         ct_chunk_rpc_route route{};
@@ -612,12 +617,16 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
         logical_capacity > std::numeric_limits<uint32_t>::max()) {
         return Status::invalid_argument("tree chunk RPC allocation arguments are invalid");
     }
-    const uint64_t                 request_id     = impl_->next_request_id();
-    const auto                     granularity_kb = static_cast<uint32_t>((logical_capacity + 1023) / 1024);
+    constexpr uint64_t kMiB           = 1024U * 1024U;
+    const uint64_t     request_id     = impl_->next_request_id();
+    const bool         single_copy    = impl_->options.mirror_copies == 1;
+    const auto         granularity_kb = single_copy ? 1024U : static_cast<uint32_t>((logical_capacity + 1023) / 1024);
+    const auto         strip_count    = single_copy ? static_cast<uint32_t>((logical_capacity + kMiB - 1) / kMiB) : 1U;
     flatbuffers::FlatBufferBuilder builder;
     auto                           request = crowdb::chunkdb::proto::CreateFBAllocateChunkRequest(
-        builder, request_id, monotonic_nanos(), nullptr, granularity_kb, 1, FBStripType_Mirror, 0, 0, 3,
-        FBChunkType_BtreePage, owner_epoch, impl_->options.writer_lease_ms);
+        builder, request_id, monotonic_nanos(), nullptr, granularity_kb, strip_count, FBStripType_Mirror, 0, 0,
+        impl_->options.mirror_copies == 0 ? 3 : impl_->options.mirror_copies, FBChunkType_BtreePage, owner_epoch,
+        impl_->options.writer_lease_ms);
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;
@@ -650,7 +659,7 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
 Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
                                        size_t length)
 {
-    if (mirror_index >= 3 || (data == nullptr && length != 0)) {
+    if ((data == nullptr && length != 0)) {
         return Status::invalid_argument("tree chunk RPC mirror write arguments are invalid");
     }
     Impl::RemoteChunk chunk;
@@ -668,6 +677,9 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
         });
         if (strip == chunk.strips.end()) {
             return Status::resource_exhausted("tree chunk RPC write exceeds allocated strips");
+        }
+        if (mirror_index >= strip->mirrors.size()) {
+            return Status::invalid_argument("tree chunk mirror index exceeds layout");
         }
         const size_t       part = std::min<uint64_t>(length - consumed, strip->chunk_offset + strip->capacity - cursor);
         const auto        &segment = strip->mirrors[mirror_index];
@@ -708,7 +720,7 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
 void RpcChunkTransport::submit_write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset,
                                             const uint8_t *data, size_t length, ChunkTransportCompletion completion)
 {
-    if (mirror_index >= 3 || (data == nullptr && length != 0)) {
+    if ((data == nullptr && length != 0)) {
         completion.complete(Status::invalid_argument("tree chunk RPC mirror write arguments are invalid"));
         return;
     }
@@ -773,7 +785,7 @@ Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_byte
 Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, uint8_t *data,
                                       size_t length) const
 {
-    if (mirror_index >= 3 || (data == nullptr && length != 0)) {
+    if ((data == nullptr && length != 0)) {
         return Status::invalid_argument("tree chunk RPC mirror read arguments are invalid");
     }
     Impl::RemoteChunk chunk;
@@ -795,6 +807,9 @@ Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, u
         });
         if (strip == chunk.strips.end()) {
             return Status::corruption("tree chunk RPC read has a layout gap");
+        }
+        if (mirror_index >= strip->mirrors.size()) {
+            return Status::invalid_argument("tree chunk mirror index exceeds layout");
         }
         const size_t       part = std::min<uint64_t>(length - consumed, strip->chunk_offset + strip->capacity - cursor);
         const auto        &segment = strip->mirrors[mirror_index];

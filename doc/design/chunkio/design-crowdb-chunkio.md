@@ -4,7 +4,7 @@
 # CROWDB - Design: Chunk IO Data Path (Overview)
 
 The chunk IO data path is the client-side layer that writes and reads
-large-object data as EC-encoded strips across diskio servers, using chunkdb
+large-object data as mirror or EC strips across diskio servers, using chunkdb
 for chunk lifecycle management (allocate, append, seal, delete). It
 lives in the `crowdb-chunk-client` crate and is consumed by object store
 layers and application upload handlers. The chunkdb server design
@@ -18,6 +18,14 @@ model, and the design choices that make a 1 TB upload cost the same
 ~15 MB of RAM as a 50 MB one. The shared mirrored path for small objects is
 specified in the
 [small-object writer design](design-crowdb-chunkio-small-object-writer.md).
+
+`ChunkWriter` selects a mirror or EC strip writer from each persisted strip,
+so consecutive strips in one chunk can have different layouts and capacities.
+The mirror writer sends each write to every mirror segment and synchronizes
+them before strip completion; any failed copy returns a write error. The EC
+writer derives its shard scheme from that strip's metadata and retains its
+separate parity and repair flow. `ChunkReader` likewise dispatches each strip
+to mirror or EC recovery based on stored geometry.
 
 ## Table of Contents
 
@@ -370,6 +378,15 @@ Edge cases:
   `Chunk`, `Location` (`ProtoLocation`) message.
 
 ## 9. Tunables and Defaults
+
+Chunk capacity is a write-policy limit, while each persisted strip records its
+own size and protection layout. A single-node test chunk may contain many
+1 MiB one-copy mirror strips. The S3 and Iceberg access policies can select
+different small and large chunk capacities in their configuration. Tree page
+storage separately uses `storage.tree_chunk_capacity_bytes` from the chunk KV
+server configuration and splits a single-copy tree chunk into 1 MiB strips.
+Chunk KV stream storage uses `storage.stream_chunk_capacity_bytes` for the
+`Stream` chunk type, also independently of its 1 MiB strip geometry.
 
 | Knob | Default | Role |
 | --- | --- | --- |

@@ -282,6 +282,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
         uint64_t open_generation                = 0;
         size_t   pack_bytes                     = 64U * 1024U - 34U;
         uint64_t max_chunk_bytes                = 256U * 1024U * 1024U;
+        uint32_t mirror_copies                  = 3;
         uint32_t page_alignment                 = 64U * 1024U;
         uint32_t iu_size                        = 64U * 1024U;
         uint32_t mirror_retry_limit             = 2;

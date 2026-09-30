@@ -67,7 +67,11 @@ impl ChunkPrefetch {
     async fn run(self, object_size: Option<u64>, tx: &mpsc::Sender<Result<Chunk>>) -> Result<()> {
         let write_granularity_kb = (self.config.read_buffer_size / 1024) as u32;
         let unit_bytes = u64::from(write_granularity_kb) * 1024;
-        let strip_data_capacity = self.ec_scheme.data_num as u64 * unit_bytes;
+        let strip_data_capacity = if self.config.large_mirror_copies.is_some() {
+            unit_bytes
+        } else {
+            self.ec_scheme.data_num as u64 * unit_bytes
+        };
         let strips_per_chunk = (self.config.max_chunk_size / strip_data_capacity).max(1) as u32;
         let chunk_data_capacity = strip_data_capacity * u64::from(strips_per_chunk);
 
@@ -93,6 +97,7 @@ impl ChunkPrefetch {
                 write_granularity_kb,
                 self.chunk_type_byte,
                 self.config.prefetch_strips_per_chunk,
+                self.config.large_mirror_copies,
             )
             .await?;
 
@@ -112,6 +117,7 @@ impl ChunkPrefetch {
             write_granularity_kb,
             self.chunk_type_byte,
             self.config.prefetch_strips_per_chunk,
+            self.config.large_mirror_copies,
         )
         .await
     }
@@ -124,17 +130,31 @@ pub(crate) async fn allocate_new_chunk(
     write_granularity_kb: u32,
     chunk_type_byte: u8,
     prefetch_strips_per_chunk: usize,
+    mirror_copies: Option<u32>,
 ) -> Result<Chunk> {
     let chunk_id = crowdb_protocol::generate_chunk_id(chunk_type_byte).to_proto();
     let req = AllocateChunkRequest {
         chunk_id: Some(chunk_id),
         write_granularity: write_granularity_kb,
         strip_count: u32::try_from(prefetch_strips_per_chunk).unwrap_or(u32::MAX),
-        strip_type: StripType::Ec as i32,
-        data_num: ec_scheme.data_num as u32,
-        code_num: ec_scheme.code_num as u32,
-        copy_count: 0,
-        chunk_type: ChunkType::Repo as i32,
+        strip_type: if mirror_copies.is_some() {
+            StripType::Mirror as i32
+        } else {
+            StripType::Ec as i32
+        },
+        data_num: if mirror_copies.is_some() {
+            0
+        } else {
+            ec_scheme.data_num as u32
+        },
+        code_num: if mirror_copies.is_some() {
+            0
+        } else {
+            ec_scheme.code_num as u32
+        },
+        copy_count: mirror_copies.unwrap_or(0),
+        chunk_type: ChunkType::try_from(i32::from(chunk_type_byte))
+            .map_err(|()| IoError::Internal("invalid chunk type".into()))? as i32,
         writer_epoch: 0,
         writer_lease_ms: 0,
         owner_key: Vec::new(),

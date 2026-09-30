@@ -1777,6 +1777,8 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
         .iu_size                        = 1,
         .max_concurrent_packs           = 2,
         .materialization_bytes_per_pass = 4096,
+        .max_chunk_bytes                = 256U * 1024U * 1024U,
+        .mirror_copies                  = 3,
     };
     ct_page_store *store = nullptr;
     ASSERT_EQ(ct_chunk_page_store_open(&store_options, catalog, &store), 0);
