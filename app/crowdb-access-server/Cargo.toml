@@ -12,7 +12,7 @@ workspace = true
 
 [features]
 default = ["s3"]
-test-util = []
+test-util = ["crowdb-chunk-client/test-util"]
 s3-e2e = ["s3"]
 iceberg-e2e = []
 s3 = [

@@ -209,6 +209,8 @@ async fn run_s3(
         );
         let listener = TcpListener::bind(address).await?;
         health.set_listener(DependencyHealth::Ready);
+        #[cfg(feature = "test-util")]
+        install_test_small_manager_failure(Arc::clone(&chunks));
         let serve_result: Result<(), Box<dyn std::error::Error>> = tokio::select! {
             result = serve(listener, handler, wait_for_shutdown(shutdown)) => result.map_err(Into::into),
             () = chunks.wait_for_small_write_manager_failure() => {
@@ -225,6 +227,18 @@ async fn run_s3(
         shutdown_result?;
     }
     Ok(())
+}
+
+#[cfg(all(feature = "s3", feature = "test-util"))]
+fn install_test_small_manager_failure(chunks: Arc<crowdb_chunk_client::ChunkIoClient>) {
+    if let Some(path) = std::env::var_os("CROWDB_TEST_STOP_S3_MANAGER_FILE") {
+        tokio::spawn(async move {
+            while !std::path::Path::new(&path).exists() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let _ = chunks.stop_small_write_manager_for_test().await;
+        });
+    }
 }
 
 #[cfg(feature = "s3")]

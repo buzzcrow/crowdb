@@ -111,7 +111,18 @@ async fn start_access(
     s3_addr: SocketAddr,
     iceberg_addr: SocketAddr,
 ) -> RunningAccess {
-    let child = Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"))
+    start_access_with_fault(config, seeds, s3_addr, iceberg_addr, None).await
+}
+
+async fn start_access_with_fault(
+    config: &Path,
+    seeds: &[String],
+    s3_addr: SocketAddr,
+    iceberg_addr: SocketAddr,
+    stop_s3_manager_file: Option<&Path>,
+) -> RunningAccess {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"));
+    command
         .args(["--config", config.to_str().unwrap()])
         .env("CROWDB_MANAGEMENT_SEEDS", seeds.join(","))
         .env("CROWDB_S3_LISTEN", s3_addr.to_string())
@@ -129,9 +140,11 @@ async fn start_access(
         .env("CROWDB_ICEBERG_CLEAR_TOKEN", "c".repeat(32))
         .env("CROWDB_ICEBERG_GC_ENABLED", "0")
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::inherit());
+    if let Some(path) = stop_s3_manager_file {
+        command.env("CROWDB_TEST_STOP_S3_MANAGER_FILE", path);
+    }
+    let child = command.spawn().unwrap();
     let mut process = RunningAccess(child);
     let client = Client::new();
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -193,6 +206,67 @@ async fn combined_http_listeners_keep_protocol_chunk_policies_separate() {
     write_s3(s3_addr).await;
     write_iceberg(iceberg_addr, &seeds).await;
     assert_chunk_layouts(&cluster).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "starts a complete simulated three-rack production storage stack"]
+async fn terminal_s3_storage_failure_stops_both_access_listeners() {
+    let dir = TestDir::new("access-storage-failure").unwrap();
+    s3::start_protected_test_cluster(dir.path()).await.unwrap();
+    let _cleanup = StopClusterOnDrop(dir.path());
+    let (cluster, _) = s3::load(dir.path()).unwrap();
+    let seeds = cluster
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .map(|server| server.url.clone())
+        .collect::<Vec<_>>();
+    initialize_iceberg(seeds.clone()).await;
+    let s3_addr = free_address();
+    let iceberg_addr = loop {
+        let address = free_address();
+        if address != s3_addr {
+            break address;
+        }
+    };
+    let config = dir.path().join("combined-access.toml");
+    std::fs::write(
+        &config,
+        "[s3.small_write]\nmirror_copies = 2\n[iceberg.small_write]\nmirror_copies = 2\n",
+    )
+    .unwrap();
+    let sentinel = dir.path().join("stop-s3-manager");
+    let mut access = start_access_with_fault(&config, &seeds, s3_addr, iceberg_addr, Some(&sentinel)).await;
+    let s3_client = s3::S3HttpClient::new(format!("http://{s3_addr}")).unwrap();
+    s3_client
+        .request(Method::PUT, Some("failure"), None, &[], None, None)
+        .await
+        .unwrap();
+    s3_client
+        .request(
+            Method::PUT,
+            Some("failure"),
+            Some("small"),
+            &[],
+            Some(vec![0x42; 1024]),
+            None,
+        )
+        .await
+        .unwrap();
+    std::fs::write(&sentinel, b"stop").unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(status) = access.0.try_wait().unwrap() {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("combined access process must stop after storage manager failure");
+    assert!(!status.success());
+    assert!(tokio::net::TcpStream::connect(s3_addr).await.is_err());
+    assert!(tokio::net::TcpStream::connect(iceberg_addr).await.is_err());
 }
 
 async fn write_s3(s3_addr: SocketAddr) {
