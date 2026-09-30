@@ -9,11 +9,10 @@ use crowdb_access_iceberg::file::{
     RangeError,
 };
 use crowdb_access_iceberg::key::OperationId;
-use crowdb_access_iceberg::storage::own_large_write;
+use crowdb_access_iceberg::storage::{default_large_write, own_large_write};
 use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
 use crowdb_access_s3::native_buffer::{NativeBodyAllocator, NativeBodyReceiver};
-use crowdb_chunk_client::{ChunkClientConfig, LargeWritePolicy};
-use crowdb_common::ec::EcScheme;
+use crowdb_chunk_client::LargeWritePolicy;
 use hyper::body::Incoming;
 use hyper::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
 use hyper::{Method, Request, Response, StatusCode};
@@ -73,11 +72,6 @@ impl FileHttp {
         {
             return Err(FileGrantError::Invalid);
         }
-        let mut large_write = LargeWritePolicy {
-            ec_scheme: EcScheme::new(8, 4),
-            client: Arc::new(ChunkClientConfig::default()),
-        };
-        own_large_write(&mut large_write);
         Ok(Self {
             repository: FileRepository::new(store.clone()),
             multipart: MultipartRepository::new(store.clone()),
@@ -88,7 +82,7 @@ impl FileHttp {
             responses: FileResponseBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             uploads: FileUploadBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             small_threshold_exclusive: crate::config::SmallWriteConfig::default().threshold_exclusive(),
-            large_write,
+            large_write: default_large_write(),
             native_allocator,
             region,
             limits: FileServiceLimits {

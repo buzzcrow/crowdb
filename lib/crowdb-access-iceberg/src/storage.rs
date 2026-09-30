@@ -25,6 +25,16 @@ pub fn own_large_write(policy: &mut LargeWritePolicy) {
     Arc::make_mut(&mut policy.client).chunk_type = ChunkType::IcebergTable;
 }
 
+#[must_use]
+pub fn default_large_write() -> LargeWritePolicy {
+    let mut policy = LargeWritePolicy {
+        ec_scheme: EcScheme::new(8, 4),
+        client: Arc::new(ChunkClientConfig::default()),
+    };
+    own_large_write(&mut policy);
+    policy
+}
+
 /// Prepares the chunk writer for one foreground Iceberg file upload.
 ///
 /// # Errors
