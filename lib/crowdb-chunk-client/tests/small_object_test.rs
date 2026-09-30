@@ -872,6 +872,52 @@ async fn two_copy_small_object_replaces_one_failed_replica_without_rotation() {
 }
 
 #[tokio::test]
+async fn two_copy_small_write_crosses_mirror_block_boundary() {
+    let mut configured = policy();
+    configured.mirror_copies = 2;
+    let (client, allocator, disk) = client(configured);
+    let mut first = client.prepare_small_write(4000).await.unwrap();
+    first.on_data(Bytes::from(vec![0x31; 4000])).await.unwrap();
+    let first = first.on_finish().await.unwrap().remove(0);
+    let mut second = client.prepare_small_write(100).await.unwrap();
+    second.on_data(Bytes::from(vec![0x32; 100])).await.unwrap();
+    let second = second.on_finish().await.unwrap().remove(0);
+
+    assert_eq!(first.chunk_id, second.chunk_id);
+    assert_eq!(second.offset, frame_bytes(4000));
+    assert!(second.offset < 4096 && second.offset + second.length > 4096);
+    let chunk_id = second.chunk_id.unwrap();
+    let base = chunk_id.low * 4096 * 4096;
+    let mut copies = HashMap::<u64, Vec<u8>>::new();
+    {
+        let writes = disk.writes.lock().unwrap();
+        for (disk_id, offset, data) in writes.iter() {
+            let relative = usize::try_from(offset - base).unwrap();
+            let copy = copies.entry(*disk_id).or_default();
+            copy.resize(copy.len().max(relative + data.len()), 0);
+            copy[relative..relative + data.len()].copy_from_slice(data);
+        }
+    }
+    assert_eq!(copies.len(), 2);
+    for copy in copies.values() {
+        let first_end = usize::try_from(second.offset).unwrap();
+        let second_end = usize::try_from(second.offset + second.length).unwrap();
+        assert_eq!(
+            parse_frame(&copy[..first_end], chunk_id).unwrap().payload,
+            vec![0x31; 4000]
+        );
+        assert_eq!(
+            parse_frame(&copy[first_end..second_end], chunk_id)
+                .unwrap()
+                .payload,
+            vec![0x32; 100]
+        );
+    }
+    assert_eq!(allocator.snapshot().2, 2);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
 async fn two_copy_small_object_rotates_once_after_repair_exhaustion() {
     let mut configured = policy();
     configured.mirror_copies = 2;
