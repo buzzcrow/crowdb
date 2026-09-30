@@ -116,7 +116,8 @@ ports. Explicit `s3` and `iceberg` commands are reserved for focused tests
 and management operations.
 The combined entry point signals the other listener when either service
 returns, then waits for both services to drain their owned small-write pools
-before exiting.
+before exiting. An unexpected Iceberg recovery or GC worker exit fails the
+Iceberg listener, so the combined process also stops the S3 listener.
 
 The listeners own separate `ChunkIoClient` instances and small-write pools.
 New S3 chunks use type `S3`; new Iceberg file chunks use type `IcebergTable`.
@@ -126,7 +127,7 @@ library constructs its own storage clients and chooses foreground writers;
 the executable handles HTTP framing, listener startup, and process shutdown.
 Iceberg file-record construction also lives in the Iceberg library, including
 the format rule shared by ordinary uploads and multipart completion.
-Iceberg GC uses a separate chunk client from foreground writes.
+Iceberg GC uses a separate chunk client with Iceberg's small-write policy.
 Each small-write policy also chooses its chunk capacity; each protocol's
 large-write policy chooses its own maximum chunk size. The deployment profile
 sets RPC workers and DiskIO connections independently of these data limits.

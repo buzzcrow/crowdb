@@ -115,9 +115,10 @@ reservations and removes attached strips beyond the written length. Objects
 and batches never straddle a strip or chunk.
 
 When automatic conversion is enabled and at least eight strips remain, one
-special reservation allocates eight three-copy mirror sets and four parity
-segments from a joint placement plan. Each completed strip updates the four
-incremental parity accumulators and releases its input image. After strip eight,
+special reservation allocates eight mirror sets with the configured copy
+count and four parity segments from a joint placement plan. Each completed
+strip updates the four incremental parity accumulators and releases its input
+image. After strip eight,
 the client writes and fsyncs only the parity segments. ChunkDB then reselects
 one healthy survivor per mirror set against current topology and atomically
 publishes the 8+4 EC strip. If optimal publication is unavailable, mirrors stay

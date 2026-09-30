@@ -323,13 +323,13 @@ zone_offset, size, tag }` (from diskdb proto).
 
 A **strip** is the atomic redundancy unit. Two strip types:
 
-**Mirror Strip**: One disk block capacity, replicated across N nodes
-(configurable copy count, default 3). Each replica is a full copy on a
-different node. Data capacity = 1 × disk_block_size.
+**Mirror Strip**: A configured number of disk allocation units replicated
+across N nodes (configurable copy count, production default 2). Each segment
+is a full copy on a different node. Data capacity = unit_count × unit_size.
 
-**EC Strip**: `data_num` data blocks + `code_num` parity blocks,
-distributed across different nodes. Data capacity = `data_num ×
-disk_block_size`. For example:
+**EC Strip**: `data_num` data segments + `code_num` parity segments,
+distributed across nodes under the failure-domain placement rule. Data
+capacity = `data_num × unit_count × unit_size`. For example:
 - 6+3 EC with 1 MB blocks → 6 MB data capacity, 9 MB total.
 - 8+4 EC with 1 MB blocks → 8 MB data capacity, 12 MB total.
 
@@ -624,8 +624,9 @@ requires one voting node per group and `deployment.max_node_failures = 0`, with
 explicit colocated placement. The mode never changes in response to topology
 loss. In test-single-node mode, new strips must be one-copy 1 MiB mirrors;
 EC, extra copies, and mirror-to-EC conversion are rejected. Production rejects
-new one-copy mirror strips. The production profile normally places two mirror
-copies on distinct nodes, including for journal and tree-page data.
+new mirror strips with fewer than two copies. The production profile normally
+places two mirror copies on distinct nodes, including for journal and tree-page
+data.
 
 Debug builds also accept `test_unsafe_placement` for legacy colocated EC
 integration fixtures. Release builds reject it during configuration loading;
