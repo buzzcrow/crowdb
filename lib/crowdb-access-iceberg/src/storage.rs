@@ -5,16 +5,17 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use crowdb_chunk_client::{
-    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, ChunkIoWriter, ChunkReadPolicy, IoError,
-    LargeWritePolicy, SmallWritePolicy,
+    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, ChunkIoWriter, ChunkReadPolicy, FramedWriteBuffer,
+    IoError, LargeWritePolicy, SmallWritePolicy,
 };
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_common::ec::EcScheme;
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
-use crowdb_protocol::chunkdb::rpc::ChunkType;
+use crowdb_protocol::chunkdb::rpc::{ChunkType, Location};
 use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 
 use crate::catalog::{CatalogRepository, ClearBounds, RoutedCatalogStore};
@@ -41,6 +42,50 @@ pub fn foreground_blocks(chunks: ChunkIoClient, store: Arc<RoutedCatalogStore>) 
     Arc::new(NativeFileBlocks::new(chunks, store))
 }
 
+pub struct IcebergFileWriter {
+    inner: Box<dyn ChunkIoWriter>,
+}
+
+impl IcebergFileWriter {
+    #[must_use]
+    pub fn require_data(&self) -> bool {
+        self.inner.require_data()
+    }
+
+    #[must_use]
+    pub fn input_complete(&self) -> bool {
+        self.inner.input_complete()
+    }
+
+    pub async fn wait_for_capacity(&mut self) {
+        self.inner.wait_for_capacity().await;
+    }
+
+    /// # Errors
+    /// Returns a chunk write failure.
+    pub async fn on_data(&mut self, bytes: Bytes) -> Result<(), IoError> {
+        self.inner.on_data(bytes).await.map(|_| ())
+    }
+
+    /// # Errors
+    /// Returns a chunk write failure.
+    pub async fn on_framed_data(&mut self, buffer: Box<dyn FramedWriteBuffer>) -> Result<(), IoError> {
+        self.inner.on_framed_data(buffer).await.map(|_| ())
+    }
+
+    /// # Errors
+    /// Returns a chunk seal failure.
+    pub async fn on_finish(&mut self) -> Result<Vec<Location>, IoError> {
+        self.inner.on_finish().await
+    }
+
+    /// # Errors
+    /// Returns a chunk cleanup failure.
+    pub async fn on_error(&mut self) -> Result<(), IoError> {
+        self.inner.on_error().await.map(|_| ())
+    }
+}
+
 /// Prepares the chunk writer for one foreground Iceberg file upload.
 ///
 /// # Errors
@@ -51,24 +96,30 @@ pub async fn prepare_file_writer(
     small_length: Option<usize>,
     declared_length: Option<u64>,
     large_write: &LargeWritePolicy,
-) -> Result<Box<dyn ChunkIoWriter>, IoError> {
+) -> Result<IcebergFileWriter, IoError> {
     if let Some(length) = small_length {
         if length <= MAX_FRAME_PAYLOAD_BYTES {
             let mut writer = chunks
                 .prepare_small_write_for_key(length, location_key.as_bytes())
                 .await?;
             writer.require_durable_completion();
-            return Ok(Box::new(writer));
+            return Ok(IcebergFileWriter {
+                inner: Box::new(writer),
+            });
         }
-        return Ok(Box::new(
-            chunks
-                .prepare_shared_object_write_for_key(length, location_key.as_bytes())
-                .await?,
-        ));
+        return Ok(IcebergFileWriter {
+            inner: Box::new(
+                chunks
+                    .prepare_shared_object_write_for_key(length, location_key.as_bytes())
+                    .await?,
+            ),
+        });
     }
     let mut writer = chunks.prepare_large_write(declared_length, large_write.clone());
     writer.wait_until_prepared().await?;
-    Ok(Box::new(writer))
+    Ok(IcebergFileWriter {
+        inner: Box::new(writer),
+    })
 }
 
 pub struct IcebergLargeWriteSettings {

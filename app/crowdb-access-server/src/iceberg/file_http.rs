@@ -52,9 +52,7 @@ impl FileHttp {
         crowdb_chunk_client::ReadFlowMetricsSnapshot,
         crowdb_chunk_client::SmallWriteMetricsSnapshot,
     )> {
-        self.blocks
-            .stream_client()
-            .map(|client| (client.read_flow_metrics(), client.small_write_metrics()))
+        self.blocks.chunk_metrics()
     }
 
     pub(super) fn new<Store: MultipartPartStore + 'static>(
@@ -233,9 +231,9 @@ impl FileHttp {
             table: file_request.location.table(),
             file: crowdb_access_iceberg::key::FileId::random(),
         };
-        if let Some(client) = self.blocks.stream_client() {
+        if self.blocks.supports_stream_io() {
             let sealed = stream::upload(
-                client,
+                self.blocks.as_ref(),
                 &self.uploads,
                 admission,
                 &mut body,

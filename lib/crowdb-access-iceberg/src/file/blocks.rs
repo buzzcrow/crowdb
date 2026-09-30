@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter, ChunkReadStream};
+use crowdb_chunk_client::{
+    ChunkIoClient, ChunkIoWriter, ChunkReadStream, LargeWritePolicy, ReadFlowMetricsSnapshot,
+    SmallWriteMetricsSnapshot,
+};
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 use sha2::{Digest, Sha256};
@@ -46,6 +49,41 @@ impl FileLocationStream {
 pub trait FileBlockStore: Send + Sync {
     fn stream_client(&self) -> Option<&ChunkIoClient> {
         None
+    }
+
+    fn supports_stream_io(&self) -> bool {
+        self.stream_client().is_some()
+    }
+
+    fn chunk_metrics(&self) -> Option<(ReadFlowMetricsSnapshot, SmallWriteMetricsSnapshot)> {
+        self.stream_client()
+            .map(|client| (client.read_flow_metrics(), client.small_write_metrics()))
+    }
+
+    /// Prepares an upload writer when this store owns native chunk storage.
+    ///
+    /// # Errors
+    /// Returns a chunk write admission or preparation error.
+    async fn prepare_upload_writer(
+        &self,
+        location_key: &str,
+        small_length: Option<usize>,
+        declared_length: Option<u64>,
+        large_write: &LargeWritePolicy,
+    ) -> Result<Option<crate::storage::IcebergFileWriter>, FileIoError> {
+        let Some(chunks) = self.stream_client() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            crate::storage::prepare_file_writer(
+                chunks,
+                location_key,
+                small_length,
+                declared_length,
+                large_write,
+            )
+            .await?,
+        ))
     }
 
     /// Opens a native pull stream when this store owns chunk locations.

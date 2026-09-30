@@ -1,9 +1,8 @@
 use std::fmt::Write;
 
-use crowdb_access_iceberg::file::{FileIdentity, FileLocation, FileRecord};
-use crowdb_access_iceberg::storage::prepare_file_writer;
+use crowdb_access_iceberg::file::{FileBlockStore, FileIdentity, FileLocation, FileRecord};
 use crowdb_access_s3::native_buffer::NativeBodyReceiver;
-use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter, LargeWritePolicy};
+use crowdb_chunk_client::LargeWritePolicy;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
 use hyper::body::Incoming;
@@ -15,7 +14,7 @@ use super::{
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(super) async fn upload(
-    client: &ChunkIoClient,
+    blocks: &dyn FileBlockStore,
     budget: &FileUploadBudget,
     admission: &FileTransferAdmission,
     body: &mut FileUploadBody<Incoming>,
@@ -32,10 +31,11 @@ pub(super) async fn upload(
         .and_then(|length| usize::try_from(length).ok())
         .filter(|length| *length < small_threshold_exclusive);
     let handoff = native_receiver.filter(|_| small.is_none() && body.native_handoff_eligible());
-    let mut writer: Box<dyn ChunkIoWriter> =
-        prepare_file_writer(client, &location.to_string(), small, declared_length, large_write)
-            .await
-            .map_err(|_| FileS3ErrorCode::SlowDown)?;
+    let mut writer = blocks
+        .prepare_upload_writer(&location.to_string(), small, declared_length, large_write)
+        .await
+        .map_err(|_| FileS3ErrorCode::SlowDown)?
+        .ok_or(FileS3ErrorCode::SlowDown)?;
     if let Some(receiver) = handoff {
         receiver.enable_owner_handoff();
     }

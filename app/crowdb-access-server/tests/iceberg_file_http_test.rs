@@ -274,6 +274,7 @@ async fn native_file_5_mib_profile() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
 async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
     let (stack, _process, client, table) = setup().await;
     let parquet = b"PAR1datafoot\x04\0\0\0PAR1";
@@ -310,7 +311,7 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
 
     let medium = path(table, "data/medium.parquet");
     let medium_bytes = (0..1_200_000)
-        .map(|index| (index % 251) as u8)
+        .map(|index| u8::try_from(index % 251).unwrap())
         .collect::<Vec<_>>();
     let response = client.send(Method::PUT, &medium, "", &medium_bytes, true).await;
     assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
@@ -336,7 +337,7 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
     assert_eq!(range.status(), 206);
     assert_eq!(
         range.bytes().await.unwrap().as_ref(),
-        &medium_bytes[1048550..1048601]
+        &medium_bytes[1_048_550..1_048_601]
     );
     let metrics: serde_json::Value = Client::new()
         .get(format!("http://{}/_crowdb/metrics", client.address))
@@ -401,12 +402,11 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
     let mut composite = Md5::new();
     composite.update(Md5::digest(first));
     composite.update(Md5::digest(second));
-    let expected_etag = composite
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
-        + "-2";
+    let mut expected_etag = String::with_capacity(34);
+    for byte in composite.finalize() {
+        write!(&mut expected_etag, "{byte:02x}").unwrap();
+    }
+    expected_etag.push_str("-2");
     let published = repository
         .load(
             client.credentials.grant().context,
@@ -449,6 +449,7 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
 async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
     let (stack, _process, client, table) = setup_with_bounds_and_file_limit(
         ClearBounds {
+            request_ms: 120_000,
             delegated_access_ms: 900_000,
             ..ClearBounds::default()
         },
@@ -460,7 +461,9 @@ async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
     for size in [10 * 1024, 1024 * 1024, 12 * 1024 * 1024, 100 * 1024 * 1024] {
         let key = format!("data/size-{size}.parquet");
         let object = path(table, &key);
-        let bytes = (0..size).map(|offset| (offset % 256) as u8).collect::<Vec<_>>();
+        let bytes = (0..size)
+            .map(|offset| u8::try_from(offset % 256).unwrap())
+            .collect::<Vec<_>>();
         let expected = Md5::digest(&bytes);
         let started = Instant::now();
         let put = client.send(Method::PUT, &object, "", &bytes, true).await;

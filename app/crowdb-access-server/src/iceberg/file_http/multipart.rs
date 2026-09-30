@@ -190,9 +190,9 @@ impl FileHttp {
             table: session.owner.table,
             file: FileId::random(),
         };
-        let (tree, stream) = if let Some(client) = self.blocks.stream_client() {
+        let (tree, stream) = if self.blocks.supports_stream_io() {
             let record = super::stream::upload(
-                client,
+                self.blocks.as_ref(),
                 &self.uploads,
                 admission,
                 &mut body,
