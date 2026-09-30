@@ -283,20 +283,22 @@ impl ChunkdbClient {
         let mut backoff = self.retry.initial_backoff;
         loop {
             let endpoints = self.endpoints_for_chunk(chunk_id.as_ref()).await?;
-            let mut not_my_range = None;
+            let mut safe_retry = None;
             for endpoint in endpoints {
                 // Allocation is not idempotent at the DiskDB layer. Trying the
-                // transition fallback is safe only after NotMyRange, which is
-                // rejected before mutation.
+                // transition fallback is safe only when the server rejected
+                // the range or the connection failed before request submission.
                 match self.rpc_transport.send_allocate_chunk(&endpoint, &req).await {
                     Ok(response) => return Ok(response),
-                    Err(error @ ChunkdbClientError::NotMyRange(_)) => {
-                        not_my_range = Some(error);
+                    Err(
+                        error @ (ChunkdbClientError::NotMyRange(_) | ChunkdbClientError::ConnectFailed(_)),
+                    ) => {
+                        safe_retry = Some(error);
                     }
                     Err(error) => return Err(error),
                 }
             }
-            let Some(error) = not_my_range else {
+            let Some(error) = safe_retry else {
                 return Err(ChunkdbClientError::Unreachable(
                     "range routing supplied no endpoint".into(),
                 ));

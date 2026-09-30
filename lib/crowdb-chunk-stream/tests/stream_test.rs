@@ -615,7 +615,12 @@ async fn higher_epoch_reopens_same_bytes_and_fences_old_writer() {
     let store = Arc::new(MemoryStreamStore::new(32));
     let old = create_stream(&store, 32, StreamConfig::default()).await;
     let name = StreamName { high: 1, low: 32 };
-    old.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    let old_chunk = old
+        .append(&[Bytes::from_static(b"old")])
+        .await
+        .unwrap()
+        .chunk_id
+        .unwrap();
 
     let registry: Arc<dyn StreamRegistry> = store.clone();
     let metadata: Arc<dyn StreamMetadataStore> = store.clone();
@@ -624,11 +629,14 @@ async fn higher_epoch_reopens_same_bytes_and_fences_old_writer() {
         .await
         .unwrap();
     assert_eq!(new.tail(), 3);
+    assert!(store.durable_cursor(old_chunk, 10).await.unwrap().sealed);
     assert_eq!(
         old.append(&[Bytes::from_static(b"stale")]).await,
         Err(StreamError::StaleWriter)
     );
-    assert_eq!(new.append(&[Bytes::from_static(b"new")]).await.unwrap().begin, 3);
+    let appended = new.append(&[Bytes::from_static(b"new")]).await.unwrap();
+    assert_eq!(appended.begin, 3);
+    assert_ne!(appended.chunk_id, Some(old_chunk));
     assert_eq!(new.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
 }
 

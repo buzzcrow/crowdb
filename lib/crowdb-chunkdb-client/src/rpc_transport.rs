@@ -197,7 +197,7 @@ impl ChunkdbRpcTransport {
         self.connections
             .get_or_try_install(&normalized, || {
                 let conn = self.server.connect(&host, port).map_err(|error| {
-                    ChunkdbClientError::Unreachable(format!("rpc connect to {host}:{port}: {error:?}"))
+                    ChunkdbClientError::ConnectFailed(format!("rpc connect to {host}:{port}: {error:?}"))
                 })?;
                 self.rpc.attach(&conn);
                 Ok(conn)

@@ -26,6 +26,8 @@ use thiserror::Error;
 /// Error type for chunkdb client operations.
 #[derive(Debug, Error)]
 pub enum ChunkdbClientError {
+    #[error("chunkdb connection failed before request submission: {0}")]
+    ConnectFailed(String),
     #[error("chunkdb server unreachable: {0}")]
     Unreachable(String),
     #[error("chunkdb server unavailable (transient): {0}")]
@@ -57,7 +59,11 @@ impl ChunkdbClientError {
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
-            Self::Unavailable(_) | Self::DeadlineExceeded(_) | Self::Unreachable(_) | Self::NotMyRange(_)
+            Self::ConnectFailed(_)
+                | Self::Unavailable(_)
+                | Self::DeadlineExceeded(_)
+                | Self::Unreachable(_)
+                | Self::NotMyRange(_)
         )
     }
 }

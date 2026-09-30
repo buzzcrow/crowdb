@@ -235,7 +235,7 @@ fn storage_configs(
         free_flush_max_batch: None,
     };
     let chunk = LocalChunkdbDeployConfig {
-        instance_count: if protected_test { 1 } else { 3 },
+        instance_count: 3,
         allow_unsafe_ec: !protected_test,
         rpc_workers: None,
         diskio_rpc_workers: None,

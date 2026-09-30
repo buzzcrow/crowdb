@@ -42,6 +42,12 @@ fn is_transient_unreachable() {
 }
 
 #[test]
+fn is_transient_connection_failure_before_submission() {
+    let err = ChunkdbClientError::ConnectFailed("test".into());
+    assert!(err.is_transient());
+}
+
+#[test]
 fn is_not_transient_not_found() {
     let err = ChunkdbClientError::NotFound("test".into());
     assert!(!err.is_transient());

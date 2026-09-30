@@ -3,10 +3,12 @@
 
 use crowdb_console_shared::ops::s3;
 use crowdb_console_shared::{lifecycle, ops::OpContext};
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::common::HwStatus;
 use crowdb_test_harness::test_dirs::TestDir;
 use reqwest::Method;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 struct StopClusterOnDrop<'a>(&'a Path);
@@ -142,10 +144,20 @@ async fn protected_cluster_starts_and_reads_after_restart() {
     let started = s3::start_protected_test_cluster(dir.path())
         .await
         .expect("start protected cluster");
-    let (_, record) = s3::load(dir.path()).expect("load protected cluster");
+    let (config, record) = s3::load(dir.path()).expect("load protected cluster");
     assert!(record.protected_test);
     for node_id in 1..=3 {
         assert!(dir.path().join(format!("rack{node_id}/node{node_id}")).is_dir());
+        for kind in [
+            crowdb_console_shared::config::ServiceType::Chunkdb,
+            crowdb_console_shared::config::ServiceType::Diskdb,
+            crowdb_console_shared::config::ServiceType::Diskio,
+        ] {
+            assert!(config
+                .servers
+                .iter()
+                .any(|server| { server.node_id == Some(node_id) && server.service_type == kind }));
+        }
     }
     let client = s3::S3HttpClient::from_data_dir(dir.path()).expect("S3 client");
     client
@@ -191,6 +203,12 @@ async fn protected_cluster_starts_and_reads_after_restart() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "stops one node in a complete simulated three-rack process stack"]
+async fn protected_cluster_reads_and_writes_after_node_one_stops() {
+    protected_cluster_reads_and_writes_after_node_stops(1).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "stops one node in a complete simulated three-rack process stack"]
 async fn protected_cluster_reads_and_writes_after_node_three_stops() {
     protected_cluster_reads_and_writes_after_node_stops(3).await;
 }
@@ -228,6 +246,7 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
 
     let (config, _) = s3::load(dir.path()).expect("load process identities");
     for kind in [
+        crowdb_console_shared::config::ServiceType::Chunkdb,
         crowdb_console_shared::config::ServiceType::Diskdb,
         crowdb_console_shared::config::ServiceType::Diskio,
         crowdb_console_shared::config::ServiceType::Kv,
@@ -250,18 +269,50 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
         .servers
         .iter()
         .find(|server| {
-            server.service_type == crowdb_console_shared::config::ServiceType::Kv && server.node_id == Some(1)
+            server.service_type == crowdb_console_shared::config::ServiceType::Kv
+                && server.node_id != Some(failed_node)
         })
         .and_then(|server| server.rpc_url.as_deref())
         .expect("surviving KV RPC")
         .trim_start_matches("http://")
         .to_owned();
-    let ctx = OpContext::new(surviving_rpc, seeds, config);
+    let ctx = OpContext::new(surviving_rpc, seeds.clone(), config);
     ctx.sysmd()
         .set_node_status(failed_node, failed_node, HwStatus::Offline)
         .await
         .expect("mark unavailable node offline");
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds)));
+    let bindings = RangeBindingClient::from_shared(Arc::clone(&kv));
+    let failed_instance = 20_000 + failed_node - 1;
+    let reassigned = tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            if bindings.refresh().await.is_ok()
+                && bindings.snapshot().len() == 1_024
+                && bindings
+                    .snapshot()
+                    .iter()
+                    .all(|binding| binding.instance_id != failed_instance)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    if reassigned.is_err() {
+        let snapshot = bindings.snapshot();
+        let stale = snapshot
+            .iter()
+            .filter(|binding| binding.instance_id == failed_instance)
+            .count();
+        let instances = ServiceRegistryClient::from_shared(kv)
+            .read_all_instance_observations("chunkdb")
+            .await;
+        panic!(
+            "ChunkDB ranges did not move: bindings={}, stale={stale}, instances={instances:?}",
+            snapshot.len()
+        );
+    }
 
     let (_, old_body) = client
         .request(
