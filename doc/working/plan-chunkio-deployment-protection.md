@@ -17,7 +17,7 @@ Goal: make the three-node production profile tolerate one node failure with two-
 
 ## Prerequisite
 
-- [ ] **Finish protocol ownership**: complete R191's typed S3/Iceberg allocation and separate write policies before changing the shared strip engine; retain its separate working plan and current in-progress diff. Files: `doc/working/plan-access-storage-isolation.md`, protocol, chunk-client, access libraries.
+- [~] **Finish protocol ownership**: R191's typed S3/Iceberg allocation, separate write policies, and S3 storage boundary are complete. Iceberg file orchestration and combined runtime failure propagation remain in its separate working plan. Files: `doc/working/plan-access-storage-isolation.md`, protocol, chunk-client, access libraries.
 
 ## Protection contract
 
