@@ -1,8 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#include "dio_config.h"
 #include "crowdb-common/runtime_path.h"
+#include "dio_config.h"
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -33,7 +33,7 @@ class TempConfig
         std::filesystem::remove(path_, error);
     }
 
-    const std::filesystem::path &path() const
+    [[nodiscard]] const std::filesystem::path &path() const
     {
         return path_;
     }

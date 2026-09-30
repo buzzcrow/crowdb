@@ -33,22 +33,22 @@ class NullDisk : public Disk
              std::optional<DiskProperties> props = std::nullopt);
     ~NullDisk() override;
 
-    DiskType type() const override
+    [[nodiscard]] DiskType type() const override
     {
         return DiskType::Null;
     }
 
-    int fd() const override
+    [[nodiscard]] int fd() const override
     {
         return fd_;
     }
 
-    bool is_o_direct() const override
+    [[nodiscard]] bool is_o_direct() const override
     {
         return false;
     }
 
-    size_t block_size() const override
+    [[nodiscard]] size_t block_size() const override
     {
         return 1;
     }
@@ -58,7 +58,7 @@ class NullDisk : public Disk
         return wrapper_.get();
     }
 
-    DiskId id() const override
+    [[nodiscard]] DiskId id() const override
     {
         return id_;
     }

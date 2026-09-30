@@ -65,22 +65,22 @@ class TestDisk : public crowdb::diskio::Disk
         }
     }
 
-    crowdb::diskio::DiskType type() const override
+    [[nodiscard]] crowdb::diskio::DiskType type() const override
     {
         return crowdb::diskio::DiskType::Block;
     }
 
-    int fd() const override
+    [[nodiscard]] int fd() const override
     {
         return fd_;
     }
 
-    bool is_o_direct() const override
+    [[nodiscard]] bool is_o_direct() const override
     {
         return false;
     }
 
-    size_t block_size() const override
+    [[nodiscard]] size_t block_size() const override
     {
         return 1;
     }
@@ -90,7 +90,7 @@ class TestDisk : public crowdb::diskio::Disk
         return engine_;
     }
 
-    crowdb::diskio::DiskId id() const override
+    [[nodiscard]] crowdb::diskio::DiskId id() const override
     {
         return id_;
     }
