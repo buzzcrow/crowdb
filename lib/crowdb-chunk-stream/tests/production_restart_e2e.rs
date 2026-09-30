@@ -305,3 +305,70 @@ async fn production_stream_recovers_exact_bytes_after_service_restarts() {
         Bytes::from_static(b"before-restart|after-restart")
     );
 }
+
+#[tokio::test]
+async fn production_stream_write_returns_after_diskio_failure() {
+    if !all_binaries_available() {
+        return;
+    }
+
+    let disk_root = TestDir::new("chunk-stream-diskio-failure").expect("create test disk root");
+    let disks = create_disks(&disk_root);
+    let cluster = KvCluster::start().await;
+    seed_restart_hardware(&cluster.make_hardware_client()).await;
+    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
+    diskdb.wait_for_ready().await;
+    let mut diskio = start_diskio(&disks);
+    register_diskio(&cluster, &diskio).await;
+    let chunkdb = start_chunkdb(&cluster);
+    chunkdb.wait_for_ready().await;
+
+    let chunk_io = connect_chunk_io(&cluster).await;
+    let runtime = ProductionStreamRuntime::new(
+        kv_client(&cluster),
+        &chunk_io,
+        30_000,
+        ChunkReadPolicy::default(),
+        StreamConfig::default(),
+    )
+    .expect("assemble production runtime");
+    let stream_name = StreamName {
+        high: u64::from(std::process::id()),
+        low: 142,
+    };
+    runtime
+        .registry()
+        .create(StreamBinding {
+            stream_name,
+            metadata_group_id: 1,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("diskio-failure-e2e".into()),
+        })
+        .await
+        .expect("publish stream binding");
+    let stream = runtime
+        .create_registered(stream_name, 0, 1)
+        .await
+        .expect("create stream");
+    stream
+        .append(&[Bytes::from_static(b"durable|")])
+        .await
+        .expect("append before DiskIO failure");
+    diskio.child.kill().expect("kill diskio");
+    diskio.child.wait().expect("reap diskio");
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        stream.append(&[Bytes::from_static(b"unavailable")]),
+    )
+    .await
+    .expect("journal append exceeded the 15-second fault budget");
+    assert!(result.is_err(), "journal append succeeded without DiskIO");
+    assert_eq!(stream.tail(), 8, "failed append advanced the journal tail");
+    assert_eq!(
+        stream.metrics().rollovers,
+        1,
+        "failed mirror write did not rotate once"
+    );
+}
