@@ -267,7 +267,7 @@ impl LifecycleHandler {
                     || capacity_kb != 1024
                 {
                     return Err(LifecycleError::InvalidRequest(
-                        "test_single_node requires one 1 MiB mirror strip with one copy".into(),
+                        "test_single_node requires 1 MiB mirror strips with one copy each".into(),
                     ));
                 }
             }

@@ -878,6 +878,32 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
     assert_eq!(chunk.strips[0].capacity, 1024);
     assert!(matches!(chunk.strips[0].strip, Some(Strip::MirrorStrip(_))));
     let id = chunk.id.unwrap();
+    let fence = ReservationFence {
+        expected_modify_ts: chunk.modify_ts,
+        writer_epoch: 0,
+        lease_generation: 1,
+        lease_ms: 30_000,
+    };
+    for copies in [0, 2] {
+        let group = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+        assert!(matches!(
+            handler
+                .reserve_strip_group(
+                    &id,
+                    &group,
+                    fence,
+                    ReserveGroupSpec {
+                        strip_size: 1,
+                        strip_count: 1,
+                        copy_count: copies,
+                        conversion_data_num: 0,
+                        conversion_code_num: 0,
+                    },
+                )
+                .await,
+            Err(LifecycleError::InvalidRequest(_))
+        ));
+    }
     assert!(matches!(
         handler.allocate_conversion_strip(&id, &chunk.strips, 1, 1).await,
         Err(LifecycleError::InvalidRequest(_))
