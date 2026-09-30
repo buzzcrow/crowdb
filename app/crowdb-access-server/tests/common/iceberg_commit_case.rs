@@ -115,7 +115,10 @@ impl TestCommitCase {
             .await
             .unwrap();
         assert_eq!(replay.status(), 200);
-        assert_eq!(replay.bytes().await.unwrap(), bytes);
+        assert_eq!(
+            durable_response(&replay.bytes().await.unwrap()),
+            durable_response(&bytes)
+        );
         let changed = post(endpoint, &self.path, &self.identity, &format!("{} ", self.body))
             .await
             .unwrap();
@@ -141,6 +144,26 @@ impl TestCommitCase {
         }
         serde_json::from_slice(&bytes).unwrap()
     }
+}
+
+fn durable_response(bytes: &[u8]) -> Value {
+    let mut response: Value = serde_json::from_slice(bytes).unwrap();
+    if let Some(config) = response.get_mut("config").and_then(Value::as_object_mut) {
+        // File grants are issued per response; the catalog result is the replayed state.
+        let credentials = [
+            "s3.access-key-id",
+            "s3.secret-access-key",
+            "s3.session-token",
+            "s3.session-token-expires-at-ms",
+        ];
+        if credentials.iter().any(|key| config.contains_key(*key)) {
+            for key in credentials {
+                let value = config.remove(key).expect("incomplete S3 credentials");
+                assert!(value.as_str().is_some_and(|text| !text.is_empty()));
+            }
+        }
+    }
+    response
 }
 
 fn properties() -> Value {

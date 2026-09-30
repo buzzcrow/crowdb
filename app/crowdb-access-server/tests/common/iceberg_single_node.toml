@@ -1,0 +1,13 @@
+[deployment]
+mode = "test_single_node"
+max_node_failures = 0
+
+[small_write]
+conversion_enabled = false
+mirror_copies = 1
+
+[s3]
+large_mirror_copies = 1
+
+[iceberg]
+large_mirror_copies = 1

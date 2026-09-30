@@ -6,7 +6,8 @@ use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_diskio_client::{DiskId as DiskIoDiskId, TestWireDiskioClient};
-use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
+use crowdb_kv_client::{ClientConfig as KvClientConfig, CrowdbKvClient, KVClusterMetaClient};
+use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue, ReplicaValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 use crowdb_rpc_ffi::RpcServer;
 use crowdb_test_harness::chunk_kv::ChunkKvProcess;
@@ -123,8 +124,8 @@ impl TestIcebergStack {
             cluster.runtime_mut(),
             &seeds,
             ChunkdbStartOptions {
+                test_single_node: true,
                 placement_mode: ChunkdbPlacementMode::UnsafeColocated,
-                repair_allow_unsafe_placement: true,
                 ..ChunkdbStartOptions::default()
             },
         );
@@ -160,6 +161,28 @@ impl TestIcebergStack {
 
 async fn seed(cluster: &KvCluster) {
     let hardware = cluster.make_hardware_client();
+    let kv = CrowdbKvClient::new(KvClientConfig::new(cluster.mgmt_endpoints.clone()));
+    kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
+    let metadata = KVClusterMetaClient::new(kv);
+    metadata.add_store(0, &[0]).await.unwrap();
+    for (group_id, endpoint) in [
+        (0, &cluster.group0_leader_endpoint),
+        (1, &cluster.group1_leader_endpoint),
+    ] {
+        metadata.add_group(0, group_id).await.unwrap();
+        metadata
+            .add_replica(&ReplicaValue {
+                store_id: 0,
+                group_id,
+                replica_id: 1,
+                node_id: 0,
+                role: String::new(),
+                voting: true,
+                endpoint: endpoint.clone(),
+            })
+            .await
+            .unwrap();
+    }
     hardware
         .add_rack(
             1,
