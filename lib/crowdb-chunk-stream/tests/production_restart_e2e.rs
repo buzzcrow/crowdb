@@ -15,7 +15,9 @@ use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 use crowdb_test_harness::chunkdb::{self as chunkdb_harness, ChunkdbProcess, ChunkdbStartOptions};
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::{self as diskdb_harness, DiskdbProcess};
-use crowdb_test_harness::diskio::{self as diskio_harness, DiskArg, DiskioProcess, DiskioStartOpts};
+use crowdb_test_harness::diskio::{
+    self as diskio_harness, DiskArg, DiskioGroup0Identity, DiskioProcess, DiskioStartOpts,
+};
 use crowdb_test_harness::hardware::INSTANCE_ID;
 use crowdb_test_harness::test_dirs::TestDir;
 
@@ -371,4 +373,84 @@ async fn production_stream_write_returns_after_diskio_failure() {
         1,
         "failed mirror write did not rotate once"
     );
+}
+
+#[tokio::test]
+async fn production_stream_write_returns_after_live_diskio_errors() {
+    if !all_binaries_available() {
+        return;
+    }
+
+    let cluster = KvCluster::start().await;
+    seed_restart_hardware(&cluster.make_hardware_client()).await;
+    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
+    diskdb.wait_for_ready().await;
+    let mut diskios = Vec::new();
+    for index in 0..3_u64 {
+        let diskio = DiskioProcess::start_for_group(
+            &DiskioStartOpts {
+                dummy_disk: "mem",
+                kv_seeds: &cluster.mgmt_endpoints,
+                disks: &[],
+                fault_error_rate: 1.0,
+                fault_latency_ms: None,
+                no_o_direct: false,
+            },
+            DiskioGroup0Identity {
+                instance_id: INSTANCE_ID + index,
+                rack_id: index + 1,
+                node_id: index + 10,
+                disk_group_id: index + 100,
+            },
+        );
+        diskios.push(diskio);
+    }
+    let chunkdb = start_chunkdb(&cluster);
+    chunkdb.wait_for_ready().await;
+    let chunk_io = connect_chunk_io(&cluster).await;
+    let runtime = ProductionStreamRuntime::new(
+        kv_client(&cluster),
+        &chunk_io,
+        30_000,
+        ChunkReadPolicy::default(),
+        StreamConfig::default(),
+    )
+    .expect("assemble production runtime");
+    let stream_name = StreamName {
+        high: u64::from(std::process::id()),
+        low: 143,
+    };
+    runtime
+        .registry()
+        .create(StreamBinding {
+            stream_name,
+            metadata_group_id: 1,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("live-diskio-error-e2e".into()),
+        })
+        .await
+        .expect("publish stream binding");
+    let stream = runtime
+        .create_registered(stream_name, 0, 1)
+        .await
+        .expect("create stream");
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        stream.append(&[Bytes::from_static(b"record")]),
+    )
+    .await
+    .expect("journal append exceeded the 15-second fault budget");
+    assert!(
+        result.is_err(),
+        "journal append succeeded with all DiskIO writes failing"
+    );
+    assert_eq!(stream.tail(), 0);
+    assert_eq!(stream.metrics().rollovers, 1);
+    for diskio in &mut diskios {
+        assert!(
+            diskio.child.try_wait().unwrap().is_none(),
+            "faulted DiskIO exited"
+        );
+    }
 }
