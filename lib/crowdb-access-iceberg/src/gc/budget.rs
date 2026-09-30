@@ -1,21 +1,22 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering},
     Arc,
 };
 
-use async_trait::async_trait;
-use crowdb_access_iceberg::{
+use crate::{
     catalog::{CasOutcome, CatalogStore, StoreError, StoredValue},
-    file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError},
+    file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError, NativeFileBlocks},
     gc::{GcScan, GcStore, GcSystemScan},
     key::{CatalogScope, IcebergKey},
     record::MAX_RECORD_BYTES,
 };
-use crowdb_chunk_client::ReclaimOutcome;
+use async_trait::async_trait;
+use crowdb_chunk_client::{ChunkIoClient, ReclaimOutcome};
 use crowdb_chunk_kv_client::MultiScanPage;
 use crowdb_protocol::chunk_kv::ClientRequestId;
-
-use super::GcRuntimeConfig;
 
 pub struct GcIoBudget {
     kv_bytes: AtomicU64,
@@ -31,24 +32,8 @@ pub struct GcIoBudget {
 }
 
 impl GcIoBudget {
-    pub(super) fn new(config: &GcRuntimeConfig) -> Self {
-        Self {
-            kv_bytes: AtomicU64::new(0),
-            kv_requests: AtomicU32::new(0),
-            chunk_bytes: AtomicU64::new(0),
-            chunk_requests: AtomicU32::new(0),
-            recovery_bytes: AtomicU64::new(0),
-            recovery_requests: AtomicU32::new(0),
-            max_kv_bytes: config.kv_bytes,
-            max_kv_requests: config.kv_requests,
-            max_chunk_bytes: config.chunk_bytes,
-            max_chunk_requests: config.chunk_requests,
-        }
-    }
-
-    #[cfg(feature = "test-util")]
     #[must_use]
-    pub fn for_tests(kv_bytes: u64, kv_requests: u32, chunk_bytes: u64, chunk_requests: u32) -> Self {
+    pub fn new(kv_bytes: u64, kv_requests: u32, chunk_bytes: u64, chunk_requests: u32) -> Self {
         Self {
             kv_bytes: AtomicU64::new(0),
             kv_requests: AtomicU32::new(0),
@@ -205,6 +190,11 @@ pub struct BudgetedGcBlocks {
 impl BudgetedGcBlocks {
     pub fn new(inner: Arc<dyn FileBlockStore>, budget: Arc<GcIoBudget>) -> Self {
         Self { inner, budget }
+    }
+
+    #[must_use]
+    pub fn native(client: ChunkIoClient, store: Arc<dyn CatalogStore>, budget: Arc<GcIoBudget>) -> Self {
+        Self::new(Arc::new(NativeFileBlocks::new(client, store)), budget)
     }
 }
 

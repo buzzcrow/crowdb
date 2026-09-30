@@ -18,6 +18,7 @@ use crowdb_protocol::chunkdb::rpc::ChunkType;
 use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 
 use crate::catalog::{CatalogRepository, ClearBounds, RoutedCatalogStore};
+use crate::file::{FileBlockStore, NativeFileBlocks};
 
 pub type IcebergStorageError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -33,6 +34,11 @@ pub fn default_large_write() -> LargeWritePolicy {
     };
     own_large_write(&mut policy);
     policy
+}
+
+#[must_use]
+pub fn foreground_blocks(chunks: ChunkIoClient, store: Arc<RoutedCatalogStore>) -> Arc<dyn FileBlockStore> {
+    Arc::new(NativeFileBlocks::new(chunks, store))
 }
 
 /// Prepares the chunk writer for one foreground Iceberg file upload.

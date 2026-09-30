@@ -4,14 +4,15 @@ use crate::config::IcebergGcConfig;
 use crowdb_access_iceberg::{
     catalog::{CatalogContext, CatalogRepository, RootState, RoutedCatalogStore},
     file::FileBlockStore,
-    gc::{GcLimits, GcPhase, GcRepository, GcScan, GcStore, GcSystemScan, GcTaskKind, GcWorker},
+    gc::{
+        BudgetedGcBlocks, BudgetedGcStore, GcIoBudget, GcLimits, GcPhase, GcRepository, GcScan, GcStore,
+        GcSystemScan, GcTaskKind, GcWorker,
+    },
     key::{CatalogId, CatalogScope, IcebergKey, SystemScope},
     operation::{ManagementAction, ManagementPhase},
     record::StorageRecord,
 };
 use crowdb_chunk_client::ChunkIoClient;
-
-pub(super) mod budget;
 
 #[derive(Clone, Default)]
 struct ScanPosition {
@@ -168,13 +169,18 @@ pub(super) async fn run(
     if !config.enabled {
         return std::future::pending().await;
     }
-    let budget = Arc::new(budget::GcIoBudget::new(&config));
-    let metered_store = Arc::new(budget::BudgetedGcStore::new(store.clone(), budget.clone()));
-    let native = Arc::new(crowdb_access_iceberg::file::NativeFileBlocks::new(
+    let budget = Arc::new(GcIoBudget::new(
+        config.kv_bytes,
+        config.kv_requests,
+        config.chunk_bytes,
+        config.chunk_requests,
+    ));
+    let metered_store = Arc::new(BudgetedGcStore::new(store.clone(), budget.clone()));
+    let blocks: Arc<dyn FileBlockStore> = Arc::new(BudgetedGcBlocks::native(
         chunks,
         metered_store.clone(),
+        budget.clone(),
     ));
-    let blocks: Arc<dyn FileBlockStore> = Arc::new(budget::BudgetedGcBlocks::new(native, budget.clone()));
     let repository = GcRepository::new(metered_store.clone());
     let worker = match GcWorker::new(repository, blocks, config.limits) {
         Ok(worker) => worker,
@@ -243,9 +249,9 @@ pub(super) async fn run(
 }
 
 async fn scan_and_advance(
-    store: Arc<budget::BudgetedGcStore>,
+    store: Arc<BudgetedGcStore>,
     worker: &GcWorker,
-    budget: &budget::GcIoBudget,
+    budget: &GcIoBudget,
     catalog: CatalogId,
     after: ScanPosition,
     active: Option<CatalogContext>,
@@ -323,7 +329,7 @@ async fn scan_and_advance(
 }
 
 async fn scan_retired(
-    store: Arc<budget::BudgetedGcStore>,
+    store: Arc<BudgetedGcStore>,
     worker: &GcWorker,
     after: Vec<u8>,
     limits: GcLimits,
@@ -368,7 +374,7 @@ async fn scan_retired(
 }
 
 async fn scan_purge(
-    store: Arc<budget::BudgetedGcStore>,
+    store: Arc<BudgetedGcStore>,
     context: CatalogContext,
     after: Vec<u8>,
     limits: GcLimits,

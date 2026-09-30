@@ -130,6 +130,7 @@ the executable handles HTTP framing, listener startup, and process shutdown.
 Iceberg file-record construction also lives in the Iceberg library, including
 the format rule shared by ordinary uploads and multipart completion.
 Iceberg GC uses a separate chunk client with Iceberg's small-write policy.
+The Iceberg library owns its GC storage budget and file-block adapters.
 Each small-write policy also chooses its chunk capacity; each protocol's
 large-write policy chooses its own maximum chunk size. The deployment profile
 sets RPC workers and DiskIO connections independently of these data limits.

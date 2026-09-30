@@ -6,7 +6,7 @@ use crowdb_access_iceberg::catalog::{
     RoutedCatalogStore,
 };
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
-use crowdb_access_iceberg::storage::{connect, IcebergLargeWriteSettings};
+use crowdb_access_iceberg::storage::{connect, foreground_blocks, IcebergLargeWriteSettings};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_chunk_client::ChunkIoClient;
@@ -158,9 +158,7 @@ async fn start_listener(
     if timeout.is_zero() || timeout > Duration::from_secs(300) {
         return Err("catalog request timeout is outside server bounds".into());
     }
-    let blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore> = Arc::new(
-        crowdb_access_iceberg::file::NativeFileBlocks::new(chunks.clone(), store.clone()),
-    );
+    let blocks = foreground_blocks(chunks.clone(), store.clone());
     let native_budget = access_config
         .iceberg
         .native_budget_bytes

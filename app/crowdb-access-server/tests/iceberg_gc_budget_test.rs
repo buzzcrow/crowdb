@@ -7,10 +7,9 @@ use async_trait::async_trait;
 use crowdb_access_iceberg::file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError};
 use crowdb_access_iceberg::{
     catalog::{CasOutcome, CatalogStore, StoreError, StoredValue},
-    gc::{GcScan, GcStore, GcSystemScan},
+    gc::{BudgetedGcBlocks, BudgetedGcStore, GcIoBudget, GcScan, GcStore, GcSystemScan},
     record::MAX_RECORD_BYTES,
 };
-use crowdb_access_server::iceberg::{BudgetedGcBlocks, BudgetedGcStore, GcIoBudget};
 use crowdb_chunk_client::ReclaimOutcome;
 use crowdb_chunk_kv_client::MultiScanPage;
 use crowdb_protocol::chunk_kv::ClientRequestId;
@@ -92,7 +91,7 @@ impl FileBlockStore for TestBlocks {
 
 #[tokio::test]
 async fn chunk_io_budget_rejects_work_before_dispatch_and_resets_per_step() {
-    let budget = Arc::new(GcIoBudget::for_tests(1024, 8, 24, 2));
+    let budget = Arc::new(GcIoBudget::new(1024, 8, 24, 2));
     let inner = Arc::new(TestBlocks::default());
     let blocks = BudgetedGcBlocks::new(inner.clone(), budget.clone());
     let root = ChunkRoot {
@@ -116,7 +115,7 @@ async fn chunk_io_budget_rejects_work_before_dispatch_and_resets_per_step() {
 
 #[tokio::test]
 async fn kv_budget_rejects_work_before_dispatch_and_resets_per_step() {
-    let budget = Arc::new(GcIoBudget::for_tests(
+    let budget = Arc::new(GcIoBudget::new(
         u64::try_from(MAX_RECORD_BYTES).unwrap() + 1,
         1,
         24,
