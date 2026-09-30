@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R194** — Bump this line in the same commit when adding a new item.
+**Next R number: R195** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -83,6 +83,12 @@ Caches, selected ORC and container engine workflows remain separate.
   container verification.** Verify Python dataframe, local SQL, distributed
   engine and optional ingest scenarios against the single-node image; publish
   only tested compatibility recipes.
+- **[R194](R194-access-iceberg-object-listing.md)** — native object listing and
+  S3-style address semantics — Area: Iceberg / native FileIO / clients —
+  **Deferred pending client and address-model research.** Determine which clients
+  need intentional prefix listing, whether the bucket field should identify a
+  catalog, table, or opaque scope, and implement a bounded authorized listing
+  contract only if that evidence warrants it.
 
 ### High Priority
 
