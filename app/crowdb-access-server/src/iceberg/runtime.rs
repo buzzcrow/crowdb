@@ -196,23 +196,19 @@ async fn start_listener(
         blocks.clone(),
     ));
     let tables = super::table_recovery::run(repository.clone(), store.clone(), blocks.clone());
-    let (gc_store, gc_chunks) = if gc_config.enabled {
-        let (_, gc_store, gc_chunks) = connect(
-            management_seeds,
-            access_config.read.policy(),
-            access_config.iceberg_small_write().policy(),
-            access_config.common.diskio_connections_per_endpoint,
-            access_config.common.diskio_rpc_workers,
-        )
-        .await?;
-        (gc_store, Some(gc_chunks))
-    } else {
-        (store.clone(), None)
-    };
+    let (gc_store, gc_chunks) =
+        connect_gc_pool(&access_config, management_seeds, store.clone(), gc_config.enabled).await?;
     let gc_client = gc_chunks.clone().unwrap_or_else(|| chunks.clone());
+    let gc_failure_client = gc_client.clone();
     let gc = super::gc_runtime::run(repository.clone(), gc_store, gc_client, gc_config);
     let result: Result<(), BoxError> = tokio::select! {
         result = serving => result.map_err(Into::into),
+        () = chunks.wait_for_small_write_manager_failure() => {
+            Err("Iceberg small-write manager stopped unexpectedly".into())
+        }
+        () = gc_failure_client.wait_for_small_write_manager_failure(), if gc_chunks.is_some() => {
+            Err("Iceberg GC small-write manager stopped unexpectedly".into())
+        }
         () = super::recovery::run(repository, crowdb_access_iceberg::namespace::NamespaceRecovery::new(store)) => {
             Err("Iceberg namespace recovery stopped unexpectedly".into())
         }
@@ -229,6 +225,26 @@ async fn start_listener(
     gc_shutdown?;
     tracing::info!("Iceberg listener drained");
     Ok(())
+}
+
+async fn connect_gc_pool(
+    access_config: &AccessConfig,
+    management_seeds: Vec<String>,
+    store: Arc<RoutedCatalogStore>,
+    enabled: bool,
+) -> Result<(Arc<RoutedCatalogStore>, Option<ChunkIoClient>), BoxError> {
+    if !enabled {
+        return Ok((store, None));
+    }
+    let (_, gc_store, gc_chunks) = connect(
+        management_seeds,
+        access_config.read.policy(),
+        access_config.iceberg_small_write().policy(),
+        access_config.common.diskio_connections_per_endpoint,
+        access_config.common.diskio_rpc_workers,
+    )
+    .await?;
+    Ok((gc_store, Some(gc_chunks)))
 }
 
 fn iceberg_large_write(

@@ -209,7 +209,12 @@ async fn run_s3(
         );
         let listener = TcpListener::bind(address).await?;
         health.set_listener(DependencyHealth::Ready);
-        let serve_result = serve(listener, handler, wait_for_shutdown(shutdown)).await;
+        let serve_result: Result<(), Box<dyn std::error::Error>> = tokio::select! {
+            result = serve(listener, handler, wait_for_shutdown(shutdown)) => result.map_err(Into::into),
+            () = chunks.wait_for_small_write_manager_failure() => {
+                Err("S3 small-write manager stopped unexpectedly".into())
+            }
+        };
         health.stop();
         expiry_task.abort();
         let shutdown_result = chunks.shutdown_small_writes().await;

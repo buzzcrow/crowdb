@@ -596,6 +596,18 @@ fn client(policy: SmallWritePolicy) -> (ChunkIoClient, Arc<MockAllocator>, Arc<R
 }
 
 #[tokio::test]
+async fn stopped_small_write_manager_reports_terminal_failure() {
+    let (client, _, _) = client(policy());
+    client.stop_small_write_manager_for_test().await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        client.wait_for_small_write_manager_failure(),
+    )
+    .await
+    .expect("manager termination must become visible");
+}
+
+#[tokio::test]
 async fn small_object_uses_owning_chunk_type() {
     let mut iceberg_policy = policy();
     iceberg_policy.chunk_type = ChunkType::IcebergTable;

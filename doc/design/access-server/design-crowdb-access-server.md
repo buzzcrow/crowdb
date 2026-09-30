@@ -117,7 +117,9 @@ and management operations.
 The combined entry point signals the other listener when either service
 returns, then waits for both services to drain their owned small-write pools
 before exiting. An unexpected Iceberg recovery or GC worker exit fails the
-Iceberg listener, so the combined process also stops the S3 listener.
+Iceberg listener, so the combined process also stops the S3 listener. A
+terminated small-write manager fails its owning listener; an empty pipeline
+route set remains recoverable while the manager continues restarting pipelines.
 
 The listeners own separate `ChunkIoClient` instances and small-write pools.
 New S3 chunks use type `S3`; new Iceberg file chunks use type `IcebergTable`.
