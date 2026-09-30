@@ -43,7 +43,7 @@ pub struct E2eStack {
     _permit: OwnedSemaphorePermit,
     pub cluster: KvCluster,
     _diskdb: DiskdbProcess,
-    _diskio: DiskioProcess,
+    diskio: DiskioProcess,
     #[allow(dead_code)]
     chunkdb: Option<ChunkdbProcess>,
     #[allow(dead_code)]
@@ -176,7 +176,7 @@ impl E2eStack {
             _permit: permit,
             cluster,
             _diskdb: diskdb,
-            _diskio: diskio,
+            diskio,
             chunkdb: Some(chunkdb),
             chunkdb_options,
             client,
@@ -221,6 +221,12 @@ impl E2eStack {
     pub async fn crash_and_restart_chunkdb(&mut self) {
         self.crash_and_restart_chunkdb_with_options(self.chunkdb_options)
             .await;
+    }
+
+    #[allow(dead_code)]
+    pub fn crash_diskio(&mut self) {
+        self.diskio.child.kill().expect("kill DiskIO process");
+        self.diskio.child.wait().expect("reap DiskIO process");
     }
 
     #[allow(dead_code)]

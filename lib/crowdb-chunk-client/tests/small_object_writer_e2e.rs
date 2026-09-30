@@ -932,6 +932,38 @@ async fn single_copy_small_write_reports_real_diskio_write_failure() {
 }
 
 #[tokio::test]
+async fn single_copy_read_reports_diskio_process_failure() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut stack = E2eStack::start(policy()).await;
+    let data = Bytes::from_static(b"diskio-read-failure");
+    let location = write_object(&stack.client, data.clone()).await;
+    stack.client.shutdown_small_writes().await.unwrap();
+    assert_eq!(
+        stack
+            .client
+            .read_object(std::slice::from_ref(&location))
+            .await
+            .unwrap()
+            .concat()
+            .as_slice(),
+        data.as_ref()
+    );
+    stack.crash_diskio();
+    let read = tokio::time::timeout(
+        Duration::from_secs(15),
+        stack.client.read_object(std::slice::from_ref(&location)),
+    )
+    .await
+    .expect("read did not return after DiskIO exited");
+    assert!(
+        read.is_err(),
+        "single-copy read succeeded after its DiskIO process exited"
+    );
+}
+
+#[tokio::test]
 async fn small_write_repair_preserves_acknowledged_prefix_in_open_block() {
     if !all_binaries_available() {
         return;
