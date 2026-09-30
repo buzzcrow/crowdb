@@ -16,7 +16,11 @@ use crowdb_access_iceberg::{
     record::StorageRecord,
     table::{head_key, TableHead, TableLifecycle, TablePurgeTask},
 };
+use crowdb_access_s3::storage::S3StorageClients;
+use crowdb_chunk_client::{ChunkIoWriter, ChunkReadPolicy, SmallWritePolicy};
+use hyper::body::Bytes;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 fn command(stack: &common::TestIcebergStack, token: char, arguments: &[&str]) -> std::process::Output {
@@ -410,6 +414,31 @@ assert not catalog.namespace_exists(namespace)
     }
 }
 
+async fn write_s3_during_gc(seeds: Vec<String>, progress: Arc<AtomicUsize>) {
+    let s3 = S3StorageClients::connect_with_read_policy(
+        seeds,
+        2,
+        1,
+        SmallWritePolicy {
+            conversion_enabled: false,
+            mirror_copies: 1,
+            ..SmallWritePolicy::default()
+        },
+        ChunkReadPolicy::default(),
+    )
+    .await
+    .unwrap();
+    for index in 0..64 {
+        let data = Bytes::from(vec![u8::try_from(index).unwrap(); 128]);
+        let mut writer = s3.chunks.prepare_small_write(data.len()).await.unwrap();
+        writer.on_data(data).await.unwrap();
+        writer.on_finish().await.unwrap();
+        progress.fetch_add(1, Ordering::Release);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    s3.chunks.shutdown_small_writes().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the pinned PyIceberg environment"]
 async fn official_sdk_foreground_progresses_under_gc_backlog() {
@@ -463,6 +492,11 @@ with ThreadPoolExecutor(max_workers=4) as executor:
         .arg(format!("http://{}", server.address))
         .spawn()
         .unwrap();
+    let s3_progress = Arc::new(AtomicUsize::new(0));
+    let s3_writes = tokio::spawn(write_s3_during_gc(
+        stack.cluster.mgmt_endpoints.clone(),
+        Arc::clone(&s3_progress),
+    ));
     let repository = GcRepository::new(store);
     let identity = OperationId::from_bytes(table.as_bytes()).unwrap();
     let overlapped = tokio::time::timeout(std::time::Duration::from_secs(90), async {
@@ -475,6 +509,7 @@ with ThreadPoolExecutor(max_workers=4) as executor:
                 .await
                 .unwrap()
                 .is_some_and(|task| task.revision > 1)
+                && s3_progress.load(Ordering::Acquire) > 0
             {
                 break true;
             }
@@ -494,6 +529,8 @@ with ThreadPoolExecutor(max_workers=4) as executor:
     .await
     .unwrap();
     assert!(status.success(), "official SDK foreground operations failed");
+    s3_writes.await.unwrap();
+    assert_eq!(s3_progress.load(Ordering::Acquire), 64);
     assert!(
         overlapped,
         "GC did not advance while the SDK requests were active"
