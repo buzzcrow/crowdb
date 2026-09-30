@@ -5,7 +5,7 @@
 
 Upstream: [R192](../backlog/R192-chunkio-deployment-protection.md), [chunk IO](../design/chunkio/design-crowdb-chunkio.md), [chunk placement](../design/chunkdb/design-crowdb-chunkdb.md), [KV](../design/kv/design-crowdb-kv.md).
 
-Goal: make production a protected cluster of at least three nodes, retain writes and reads after one node fails, and expose single-node only as an explicit unprotected test profile using one 1 MiB mirror strip.
+Goal: make production a protected cluster of at least three nodes, retain writes and reads after one node fails, and expose single-node only as an explicit unprotected test profile using 1 MiB one-copy mirror strips. A chunk may contain several strips.
 
 ## Prerequisite
 
@@ -26,7 +26,7 @@ Goal: make production a protected cluster of at least three nodes, retain writes
 
 ## Failure and recovery
 
-- [ ] **Three-node degraded operation**: retain three-voter KV membership after one node fails. Select a protected two-node degraded write layout, reject single-copy fallback, and repair/rebalance when the third node returns. Files: KV deployment configuration, `app/crowdb-chunkdb/src/selector/`, `app/crowdb-chunkdb/src/lifecycle/`.
+- [~] **Three-node degraded operation**: retain three-voter KV membership after one node fails. New EC and mirrored small-write allocations now select two protected mirror copies when exactly two storage nodes remain. Verify real node loss, preserve existing committed writes, reject single-copy fallback, and repair/rebalance degraded strips when the third node returns. Files: KV deployment configuration, `app/crowdb-chunkdb/src/selector/`, `app/crowdb-chunkdb/src/lifecycle/`.
 - [ ] **Failure acceptance**: exercise loss of each node independently, read prior committed data, write/read new data on survivors, and verify repair after recovery. Files: integration tests and container/cluster E2E.
 
 ## Verification and cleanup

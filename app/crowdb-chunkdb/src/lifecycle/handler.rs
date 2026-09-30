@@ -285,9 +285,10 @@ impl LifecycleHandler {
     ) -> Option<StripAllocType> {
         use std::collections::HashSet;
 
-        if self.deployment_mode != Some(crate::chunkdb_config::DeploymentMode::Production)
-            || strip_type != ProtoStripType::Ec
-        {
+        if self.deployment_mode != Some(crate::chunkdb_config::DeploymentMode::Production) {
+            return None;
+        }
+        if strip_type != ProtoStripType::Ec && strip_type != ProtoStripType::Mirror {
             return None;
         }
         let healthy_nodes: HashSet<_> = snapshot

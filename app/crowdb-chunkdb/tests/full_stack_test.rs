@@ -875,7 +875,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
 }
 
 #[tokio::test]
-async fn production_ec_falls_back_to_two_protected_mirrors_after_one_node_loss() {
+async fn production_ec_and_mirror_writes_use_two_protected_copies_after_one_node_loss() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: crowdb-kv-server binary is unavailable");
         return;
@@ -903,6 +903,12 @@ async fn production_ec_falls_back_to_two_protected_mirrors_after_one_node_loss()
         harness.topology.clone(),
     )
     .with_deployment_mode(DeploymentMode::Production);
+    assert!(matches!(
+        handler
+            .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 1, ChunkType::S3, 0, 0)
+            .await,
+        Err(LifecycleError::InvalidRequest(_))
+    ));
     let degraded = handler
         .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
         .await
@@ -911,6 +917,31 @@ async fn production_ec_falls_back_to_two_protected_mirrors_after_one_node_loss()
         panic!("degraded allocation must use protected mirrors");
     };
     assert_eq!(mirror.segments.len(), 2);
+    let degraded_small = handler
+        .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
+        .await
+        .unwrap();
+    let Some(Strip::MirrorStrip(small_mirror)) = &degraded_small.strips[0].strip else {
+        panic!("degraded small allocation must use protected mirrors");
+    };
+    assert_eq!(small_mirror.segments.len(), 2);
+    let appended = handler
+        .append_chunk(
+            &degraded_small.id.unwrap(),
+            degraded_small.modify_ts,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            1,
+        )
+        .await
+        .unwrap();
+    let Some(Strip::MirrorStrip(appended_mirror)) = &appended.strips[0].strip else {
+        panic!("degraded append must use protected mirrors");
+    };
+    assert_eq!(appended_mirror.segments.len(), 2);
     hardware.set_node_status(102, 12, HwStatus::Up).await.unwrap();
     harness
         .topology
