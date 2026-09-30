@@ -858,7 +858,12 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         Arc::clone(&harness.allocator),
         harness.topology.clone(),
     )
-    .with_deployment_mode(DeploymentMode::TestSingleNode);
+    .with_deployment_mode(DeploymentMode::TestSingleNode)
+    .with_locks(Arc::new(ChunkLockMap::new(
+        10_000,
+        Arc::new(LifecycleMetrics::new()),
+        Duration::from_secs(60),
+    )));
     for (strip_type, copies, size_kb) in [
         (StripType::Ec, 0, 1024),
         (StripType::Mirror, 2, 1024),
@@ -872,7 +877,18 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         ));
     }
     let chunk = handler
-        .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 1, ChunkType::Repo, 0, 0)
+        .allocate_chunk(
+            None,
+            1024,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            1,
+            ChunkType::Repo,
+            71,
+            30_000,
+        )
         .await
         .unwrap();
     assert_eq!(chunk.strips[0].capacity, 1024);
@@ -880,7 +896,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
     let id = chunk.id.unwrap();
     let fence = ReservationFence {
         expected_modify_ts: chunk.modify_ts,
-        writer_epoch: 0,
+        writer_epoch: 71,
         lease_generation: 1,
         lease_ms: 30_000,
     };
@@ -924,6 +940,40 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
                 &[invalid_replacement],
                 operation,
             )
+            .await,
+        Err(LifecycleError::InvalidRequest(_))
+    ));
+    assert_single_node_reservation(&handler, &id, fence).await;
+}
+
+async fn assert_single_node_reservation(handler: &LifecycleHandler, id: &ChunkId, fence: ReservationFence) {
+    let group = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    let reserved = handler
+        .reserve_strip_group(
+            id,
+            &group,
+            fence,
+            ReserveGroupSpec {
+                strip_size: 1,
+                strip_count: 1,
+                copy_count: 1,
+                conversion_data_num: 0,
+                conversion_code_num: 0,
+            },
+        )
+        .await
+        .expect("one-copy single-node reservation");
+    let strip = reserved.group.unwrap().strips[0].clone();
+    assert_eq!(strip.capacity, 1024);
+    let mut invalid = strip.clone();
+    let Some(Strip::MirrorStrip(mirror)) = invalid.strip.as_mut() else {
+        panic!("reserved strip must be a mirror");
+    };
+    mirror.segments.push(mirror.segments[0]);
+    let operation = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    assert!(matches!(
+        handler
+            .replace_chunk_strip_range(id, reserved.chunk.modify_ts, 1, &[strip], &[invalid], operation,)
             .await,
         Err(LifecycleError::InvalidRequest(_))
     ));
