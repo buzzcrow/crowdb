@@ -497,6 +497,32 @@ struct SelectiveFailureDiskWriter {
     writes: Mutex<Vec<(u64, Bytes)>>,
 }
 
+struct FailFirstChunkDiskWriter {
+    inner: Arc<RecordingDiskWriter>,
+}
+
+#[async_trait]
+impl DiskWriter for FailFirstChunkDiskWriter {
+    async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
+        self.write_at_byte_offset(seg, unit_bytes, 0, data).await
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if seg.owner_chunk.is_some_and(|chunk| chunk.low == 1) {
+            return Err(IoError::WriteFailed("first chunk disk failure".into()));
+        }
+        self.inner
+            .write_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await
+    }
+}
+
 #[async_trait]
 impl DiskWriter for SelectiveFailureDiskWriter {
     async fn write(&self, seg: &Segment, _unit_bytes: u64, data: Bytes) -> Result<()> {
@@ -677,7 +703,7 @@ async fn small_object_mirror_failure_fails_every_object_without_cursor_commit() 
     assert_eq!(client.small_write_metrics().completed, 0);
     assert_eq!(client.small_write_metrics().failed, 4);
     let (replacement_allocations, replacements, discards, _, _) = allocator.repair_snapshot();
-    assert_eq!((replacement_allocations, replacements, discards), (3, 0, 3));
+    assert_eq!((replacement_allocations, replacements, discards), (6, 0, 6));
     disk.fail.store(false, Ordering::Relaxed);
     let recovered = tokio::time::timeout(Duration::from_secs(1), async {
         let mut writer = client.prepare_small_write(4096).await.unwrap();
@@ -712,8 +738,8 @@ async fn small_object_replacement_allocation_exhaustion_publishes_no_location() 
     let metrics = client.small_write_metrics();
     assert_eq!(metrics.completed, 0);
     assert_eq!(metrics.failed, 1);
-    assert_eq!(metrics.repair_attempts, 3);
-    assert_eq!(metrics.exhausted_repairs, 1);
+    assert_eq!(metrics.repair_attempts, 6);
+    assert_eq!(metrics.exhausted_repairs, 2);
     allocator
         .fail_replacement_allocations
         .store(false, Ordering::Relaxed);
@@ -740,13 +766,13 @@ async fn small_object_metadata_exhaustion_publishes_no_location() {
     writer.on_data(Bytes::from(vec![8; 4096])).await.unwrap();
     assert!(matches!(writer.on_finish().await, Err(IoError::WriteFailed(_))));
     let (allocations, replacements, discards, _, chunks) = allocator.repair_snapshot();
-    assert_eq!((allocations, replacements, discards), (1, 0, 0));
-    assert_eq!(chunks[0].acknowledged_cursor, 0);
+    assert_eq!((allocations, replacements, discards), (2, 0, 0));
+    assert!(chunks.iter().all(|chunk| chunk.acknowledged_cursor == 0));
     let metrics = client.small_write_metrics();
     assert_eq!(metrics.completed, 0);
     assert_eq!(metrics.failed, 1);
-    assert_eq!(metrics.repair_attempts, 3);
-    assert_eq!(metrics.exhausted_repairs, 1);
+    assert_eq!(metrics.repair_attempts, 6);
+    assert_eq!(metrics.exhausted_repairs, 2);
     allocator.fail_replacements.store(false, Ordering::Relaxed);
     tokio::time::timeout(Duration::from_secs(1), async {
         while client.small_write_metrics().pipeline_replacements == 0 {
@@ -842,6 +868,61 @@ async fn two_copy_small_object_replaces_one_failed_replica_without_rotation() {
     assert_eq!(allocator.snapshot().0, 1);
     assert_eq!(client.small_write_metrics().repairs_avoiding_rotation, 1);
     assert_eq!(client.small_write_metrics().repaired_replicas, 1);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn two_copy_small_object_rotates_once_after_repair_exhaustion() {
+    let mut configured = policy();
+    configured.mirror_copies = 2;
+    let (client, allocator, disk) = client(configured);
+    disk.fail.store(true, Ordering::Relaxed);
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![0x5a; 4096])).await.unwrap();
+    assert!(matches!(writer.on_finish().await, Err(IoError::WriteFailed(_))));
+    let metrics = client.small_write_metrics();
+    assert_eq!(metrics.completed, 0);
+    assert_eq!(metrics.failed, 1);
+    assert_eq!(metrics.exhausted_repairs, 2);
+    assert_eq!(metrics.repairs_avoiding_rotation, 0);
+    let snapshot = allocator.snapshot();
+    assert!(snapshot.0 >= 2, "the failed write must rotate to a new chunk");
+    assert!(snapshot.4 >= 2, "both failed chunks must be deleted");
+    let _ = client.shutdown_small_writes().await;
+}
+
+#[tokio::test]
+async fn two_copy_small_object_succeeds_after_one_chunk_rotation() {
+    let mut configured = policy();
+    configured.mirror_copies = 2;
+    let allocator = Arc::new(MockAllocator::default());
+    let recorded = Arc::new(RecordingDiskWriter::default());
+    let disk = Arc::new(FailFirstChunkDiskWriter {
+        inner: Arc::clone(&recorded),
+    });
+    let client = ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk, configured).unwrap();
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![0x5a; 4096])).await.unwrap();
+    let locations = writer.on_finish().await.unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].chunk_id.unwrap().low, 2);
+    assert_eq!(client.small_write_metrics().exhausted_repairs, 1);
+    assert_eq!(client.small_write_metrics().completed, 1);
+    {
+        let state = allocator.state.lock().unwrap();
+        let chunks = &state.chunks;
+        let high = locations[0].chunk_id.unwrap().high;
+        assert_eq!(chunks[&(high, 1)].state, ChunkState::Deleted as i32);
+        assert_eq!(chunks[&(high, 2)].state, ChunkState::Active as i32);
+    }
+    {
+        let recorded_images = recorded.writes.lock().unwrap();
+        assert_eq!(recorded_images.len(), 2);
+        for (_, _, image) in recorded_images.iter() {
+            let frame = parse_frame(image, locations[0].chunk_id.unwrap()).unwrap();
+            assert_eq!(frame.payload, vec![0x5a; 4096]);
+        }
+    }
     client.shutdown_small_writes().await.unwrap();
 }
 

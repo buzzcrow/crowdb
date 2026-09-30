@@ -12,10 +12,13 @@ use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::storage;
 use crowdb_access_iceberg::wire::BearerAuthenticator;
-use crowdb_chunk_client::{ChunkReadPolicy, SmallWritePolicy};
+use crowdb_chunk_client::{
+    ChunkIoClient, ChunkIoClientConfig, ChunkIoWriter, ChunkReadPolicy, IoError, SmallWritePolicy,
+};
 use crowdb_chunkdb_client::ChunkdbRpcTransport;
 use crowdb_console_shared::{
     config::{ConsoleConfig, ServiceType},
+    lifecycle,
     ops::s3,
 };
 use crowdb_protocol::chunkdb::rpc::{ChunkType, ListChunksRequest, Strip};
@@ -347,4 +350,54 @@ async fn assert_chunk_layouts(cluster: &ConsoleConfig) {
         saw.into_iter().all(|seen| seen),
         "both protocols must write small mirror and large EC strips"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "stops all real DiskIO processes in a simulated three-rack production cluster"]
+async fn protected_two_copy_write_stops_after_repair_and_chunk_rotation_fail() {
+    let dir = TestDir::new("access-protected-mirror-failure").unwrap();
+    s3::start_protected_test_cluster(dir.path()).await.unwrap();
+    let _cleanup = StopClusterOnDrop(dir.path());
+    let (cluster, _) = s3::load(dir.path()).unwrap();
+    let seeds = cluster
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .map(|server| server.url.clone())
+        .collect();
+    let client = ChunkIoClient::connect(ChunkIoClientConfig {
+        management_seeds: seeds,
+        diskio_connections_per_endpoint: 2,
+        diskio_rpc_workers: 1,
+        small_write: SmallWritePolicy {
+            chunk_type: ChunkType::S3,
+            conversion_enabled: false,
+            mirror_copies: 2,
+            ..SmallWritePolicy::default()
+        },
+    })
+    .await
+    .unwrap();
+    for server in cluster
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Diskio)
+    {
+        lifecycle::stop_pid_with_timeout(server.pid.unwrap(), Duration::from_secs(5)).unwrap();
+    }
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let data = hyper::body::Bytes::from_static(b"failed-protected-write");
+        let mut writer = client.prepare_small_write(data.len()).await?;
+        writer.on_data(data).await?;
+        writer.on_finish().await.map(|_| ())
+    })
+    .await
+    .expect("failed DiskIO write exceeded the 15-second fault budget");
+    assert!(matches!(result, Err(IoError::WriteFailed(_))), "{result:?}");
+    let metrics = client.small_write_metrics();
+    assert_eq!(metrics.completed, 0);
+    assert_eq!(metrics.failed, 1);
+    assert_eq!(metrics.exhausted_repairs, 2);
+    assert_eq!(metrics.repairs_avoiding_rotation, 0);
+    let _ = client.shutdown_small_writes().await;
 }

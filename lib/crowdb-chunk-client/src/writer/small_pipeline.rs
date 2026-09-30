@@ -174,7 +174,7 @@ impl PipelineWorker {
         let logical_bytes: usize = batch.iter().map(|object| object.len).sum();
         let watchdog = self.runtime.policy.batch_watchdog;
         let metrics = Arc::clone(&self.runtime.metrics);
-        let write = self.chunk.write_batch(batch, &metrics);
+        let write = self.chunk.write_batch(batch, &metrics, &self.runtime);
         tokio::pin!(write);
         let mut elapsed = Duration::ZERO;
         loop {
@@ -1116,13 +1116,50 @@ impl OwnedChunk {
         &mut self,
         mut batch: Vec<PendingObject>,
         metrics: &SmallWriteMetrics,
+        runtime: &SmallPoolRuntime,
     ) -> Result<()> {
-        let result = if batch.len() == 1 && batch[0].len > MAX_FRAME_PAYLOAD_BYTES {
+        let stream_object = batch.len() == 1 && batch[0].len > MAX_FRAME_PAYLOAD_BYTES;
+        let first = if stream_object {
             self.try_write_stream_object(&mut batch[0], metrics)
                 .await
                 .map(|location| vec![location])
         } else {
             self.try_write_batch(&batch, metrics).await
+        };
+        // Stream sources cannot be replayed, and durable intents already name an exact location.
+        let can_relocate = !stream_object && batch.iter().all(|object| object.intent.is_none());
+        let result = if can_relocate && matches!(first, Err(IoError::ReplicaRepairExhausted(_))) {
+            let prior = first.unwrap_err();
+            match self.finish().await {
+                Ok(()) => match Self::allocate(runtime, Arc::clone(&self.conversion_active)).await {
+                    Ok(next) => {
+                        *self = next;
+                        self.try_write_batch(&batch, metrics).await.map_err(|error| {
+                            if let IoError::ReplicaRepairExhausted(message) = error {
+                                IoError::WriteFailed(format!(
+                                    "mirror replica repair exhausted after chunk rotation: {message}"
+                                ))
+                            } else {
+                                error
+                            }
+                        })
+                    }
+                    Err(error) => Err(IoError::WriteFailed(format!(
+                        "{prior}; chunk rotation allocation failed: {error}"
+                    ))),
+                },
+                Err(error) => Err(IoError::WriteFailed(format!(
+                    "{prior}; failed to seal previous chunk: {error}"
+                ))),
+            }
+        } else {
+            first.map_err(|error| {
+                if let IoError::ReplicaRepairExhausted(message) = error {
+                    IoError::WriteFailed(format!("mirror replica repair exhausted: {message}"))
+                } else {
+                    error
+                }
+            })
         };
         match result {
             Ok(locations) => {
