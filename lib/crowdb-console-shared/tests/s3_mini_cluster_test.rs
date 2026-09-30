@@ -192,7 +192,19 @@ async fn protected_cluster_starts_and_reads_after_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "stops one node in a complete simulated three-rack process stack"]
 async fn protected_cluster_reads_and_writes_after_node_three_stops() {
-    let dir = TestDir::new("s3-mini-protected-outage").expect("create test directory");
+    protected_cluster_reads_and_writes_after_node_stops(3).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "stops one node in a complete simulated three-rack process stack"]
+async fn protected_cluster_reads_and_writes_after_node_two_stops() {
+    protected_cluster_reads_and_writes_after_node_stops(2).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
+    let dir =
+        TestDir::new(&format!("s3-mini-protected-outage-{failed_node}")).expect("create test directory");
     s3::start_protected_test_cluster(dir.path())
         .await
         .expect("start protected cluster");
@@ -223,10 +235,10 @@ async fn protected_cluster_reads_and_writes_after_node_three_stops() {
         let server = config
             .servers
             .iter()
-            .find(|server| server.node_id == Some(3) && server.service_type == kind)
-            .expect("node-three process");
+            .find(|server| server.node_id == Some(failed_node) && server.service_type == kind)
+            .expect("failed-node process");
         lifecycle::stop_pid_with_timeout(server.pid.expect("process pid"), Duration::from_secs(5))
-            .expect("stop node-three process");
+            .expect("stop failed-node process");
     }
     let seeds = config
         .servers
@@ -246,7 +258,7 @@ async fn protected_cluster_reads_and_writes_after_node_three_stops() {
         .to_owned();
     let ctx = OpContext::new(surviving_rpc, seeds, config);
     ctx.sysmd()
-        .set_node_status(3, 3, HwStatus::Offline)
+        .set_node_status(failed_node, failed_node, HwStatus::Offline)
         .await
         .expect("mark unavailable node offline");
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -287,5 +299,28 @@ async fn protected_cluster_reads_and_writes_after_node_three_stops() {
         .await
         .expect("read new object with one node stopped");
     assert_eq!(read_back, new_body);
+    if failed_node == 2 {
+        ctx.sysmd()
+            .set_node_status(failed_node, failed_node, HwStatus::Up)
+            .await
+            .expect("restore recovered node status");
+        s3::stop(dir.path()).expect("stop protected cluster after outage");
+        s3::start_protected_test_cluster(dir.path())
+            .await
+            .expect("restart protected cluster after outage");
+        let restarted = s3::S3HttpClient::from_data_dir(dir.path()).expect("restarted S3 client");
+        let (_, recovered) = restarted
+            .request(
+                Method::GET,
+                Some("outage-bucket"),
+                Some("during-outage"),
+                &[],
+                None,
+                None,
+            )
+            .await
+            .expect("read outage write after all processes restart");
+        assert_eq!(recovered, new_body);
+    }
     s3::delete(dir.path()).expect("delete protected cluster");
 }

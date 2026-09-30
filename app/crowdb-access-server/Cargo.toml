@@ -50,6 +50,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 crowdb-access-server = { path = ".", default-features = false, features = ["test-util"] }
+crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 hmac = "0.12"
 arc-swap = "1.9"
 async-trait = "0.1"

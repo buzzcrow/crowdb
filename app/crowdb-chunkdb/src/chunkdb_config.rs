@@ -29,10 +29,20 @@ pub enum DeploymentMode {
     TestUnsafePlacement,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeploymentConfig {
     pub mode: DeploymentMode,
+    pub max_node_failures: u32,
+}
+
+impl Default for DeploymentConfig {
+    fn default() -> Self {
+        Self {
+            mode: DeploymentMode::Production,
+            max_node_failures: 1,
+        }
+    }
 }
 
 /// Top-level configuration for a chunkdb instance.
@@ -101,6 +111,9 @@ impl BaseConfig for ChunkdbConfig {
     fn validate(&self) -> Result<(), String> {
         match self.deployment.mode {
             DeploymentMode::Production => {
+                if self.deployment.max_node_failures != 1 {
+                    return Err("production requires max_node_failures = 1".into());
+                }
                 if self.placement.mode != PlacementMode::Protected
                     || self.placement.allow_unsafe_ec
                     || self.placement.allow_degraded_failure_domains
@@ -109,6 +122,9 @@ impl BaseConfig for ChunkdbConfig {
                 }
             }
             DeploymentMode::TestSingleNode => {
+                if self.deployment.max_node_failures != 0 {
+                    return Err("test_single_node requires max_node_failures = 0".into());
+                }
                 if self.placement.mode != PlacementMode::UnsafeColocated {
                     return Err("test_single_node requires explicit unsafe_colocated placement".into());
                 }

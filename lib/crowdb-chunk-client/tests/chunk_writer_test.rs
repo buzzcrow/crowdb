@@ -383,6 +383,19 @@ async fn large_chunk_prefetch_preserves_type_in_id_and_metadata() {
         u64::from(crowdb_protocol::CHUNK_TYPE_S3)
     );
     assert_eq!(chunk.chunk_type, ChunkType::S3 as i32);
+
+    let (mut prepared, task) = prefetch.spawn(Some(2 * 1024 * 1024));
+    let first = prepared.recv().await.unwrap().unwrap();
+    let second = prepared.recv().await.unwrap().unwrap();
+    assert_ne!(first.id, second.id);
+    for prepared_chunk in [first, second] {
+        assert_eq!(
+            prepared_chunk.id.unwrap().high >> 56,
+            u64::from(crowdb_protocol::CHUNK_TYPE_S3)
+        );
+        assert_eq!(prepared_chunk.chunk_type, ChunkType::S3 as i32);
+    }
+    task.await.unwrap();
 }
 
 #[tokio::test]

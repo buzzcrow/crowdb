@@ -707,7 +707,7 @@ async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String], protected_test: bool)
         .map(|s| format!("{s:?}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let stream_mirror_copies = if protected_test { 3 } else { 1 };
+    let stream_mirror_copies = if protected_test { 2 } else { 1 };
     let config_path = workdir.join("chunk-kv.toml");
     std::fs::write(
         &config_path,

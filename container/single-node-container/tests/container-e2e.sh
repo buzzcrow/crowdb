@@ -98,6 +98,41 @@ verify_clients() {
     pixi run -e iceberg-e2e python container/single-node-container/tests/iceberg-client.py "$operation"
 }
 
+verify_listener_failure_propagation() {
+    local failed=$1 output status
+    if output=$(timeout 30 docker exec "$name" /bin/sh -ec '
+        failed=$1
+        config=/tmp/crowdb-access-listener-failure.toml
+        case "$failed" in
+            s3)
+                sed "s/0.0.0.0:80/127.0.0.1:18080/" /opt/crowdb/run/config/access.toml > "$config"
+                ;;
+            iceberg)
+                sed "s/0.0.0.0:81/127.0.0.1:18181/" /opt/crowdb/run/config/access.toml > "$config"
+                ;;
+            *) exit 2 ;;
+        esac
+        set -a
+        . /opt/crowdb/data/secrets/server.env
+        set +a
+        export CROWDB_ACCESS_LOG_DIR=/tmp/crowdb-access-listener-failure-log
+        export CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:80
+        export CROWDB_S3_PUBLIC_URI=http://127.0.0.1:81
+        exec /opt/crowdb/bin/crowdb-access-server --config "$config"
+    ' _ "$failed" 2>&1); then
+        echo "combined access process accepted an occupied $failed listener" >&2
+        return 1
+    else
+        status=$?
+    fi
+    if (( status == 124 )) || [[ "$output" != *'Address already in use'* ]]; then
+        echo "combined access $failed failure did not terminate as expected: status=$status" >&2
+        printf '%s\n' "$output" >&2
+        return 1
+    fi
+    docker exec "$name" crowdb-monitor readiness
+}
+
 verify_web_logical() {
     local web_port manage_token status
     web_port=$(port 8080)
@@ -292,6 +327,9 @@ verify_public_services
 node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 8080)" "$name"
 echo "checking S3 and Iceberg client writes"
 verify_clients write
+echo "checking combined access listener failure propagation"
+verify_listener_failure_propagation s3
+verify_listener_failure_propagation iceberg
 echo "checking Web logical writes"
 verify_web_logical
 for service in kv diskdb diskio chunkdb chunk-kv access web; do

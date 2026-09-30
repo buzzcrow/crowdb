@@ -250,8 +250,8 @@ Status MemoryChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, ui
 Status MemoryChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
                                           size_t length)
 {
-    if (mirror_index >= 3 || (data == nullptr && length != 0) || offset > std::numeric_limits<size_t>::max() ||
-        length > std::numeric_limits<size_t>::max() - offset) {
+    if (mirror_index >= kMaxMirrorCopies || (data == nullptr && length != 0) ||
+        offset > std::numeric_limits<size_t>::max() || length > std::numeric_limits<size_t>::max() - offset) {
         return Status::invalid_argument("chunk mirror write arguments are invalid");
     }
     return mutate(chunk_id, [mirror_index, offset, data, length](Chunk &chunk) {
@@ -291,7 +291,7 @@ Status MemoryChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index
     if (unavailable_.load(std::memory_order_acquire)) {
         return Status::unavailable("chunk transport is unavailable");
     }
-    if (mirror_index >= 3 || (data == nullptr && length != 0)) {
+    if (mirror_index >= kMaxMirrorCopies || (data == nullptr && length != 0)) {
         return Status::invalid_argument("chunk mirror read arguments are invalid");
     }
     auto chunks = chunks_.load(std::memory_order_acquire);
@@ -345,7 +345,7 @@ Status MemoryChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, 
 
 void MemoryChunkTransport::corrupt_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset)
 {
-    if (mirror_index >= 3) {
+    if (mirror_index >= kMaxMirrorCopies) {
         return;
     }
     static_cast<void>(mutate(chunk_id, [mirror_index, offset](Chunk &chunk) {

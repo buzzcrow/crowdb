@@ -41,6 +41,7 @@ fn single_node_container_declares_test_only_deployment() {
         .join("../../container/single-node-container/templates/chunkdb.toml");
     let config = crowdb_common::config::load_from_file::<ChunkdbConfig>(&path).unwrap();
     assert_eq!(config.deployment.mode, DeploymentMode::TestSingleNode);
+    assert_eq!(config.deployment.max_node_failures, 0);
     assert_eq!(config.placement.mode, PlacementMode::UnsafeColocated);
     assert_eq!(config.conversion_io.rpc_workers, 1);
 }
@@ -97,11 +98,25 @@ fn unsafe_colocated_placement_mode_is_explicit() {
     assert!(colocated.validate().is_err());
 
     let single: ChunkdbConfig = toml::from_str(
-        "[deployment]\nmode = \"test_single_node\"\n[placement]\nmode = \"unsafe_colocated\"\n",
+        "[deployment]\nmode = \"test_single_node\"\nmax_node_failures = 0\n[placement]\nmode = \"unsafe_colocated\"\n",
     )
     .expect("explicit test mode parses");
     assert_eq!(single.deployment.mode, DeploymentMode::TestSingleNode);
     single.validate().expect("explicit test mode validates");
+
+    let mut bad_budget = single;
+    bad_budget.deployment.max_node_failures = 1;
+    assert_eq!(
+        bad_budget.validate(),
+        Err("test_single_node requires max_node_failures = 0".to_string())
+    );
+
+    let mut bad_production_budget = ChunkdbConfig::default();
+    bad_production_budget.deployment.max_node_failures = 0;
+    assert_eq!(
+        bad_production_budget.validate(),
+        Err("production requires max_node_failures = 1".to_string())
+    );
 
     let mut unsafe_production = protected;
     unsafe_production.placement.allow_unsafe_ec = true;

@@ -1239,6 +1239,7 @@ async fn write_with_recovery(
     requests: &[AppendRequest],
     bytes: usize,
 ) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
+    let mut rotated = false;
     loop {
         match write_batch_with_watchdog(state, requests, bytes).await {
             Err(BatchFailure::MirrorWrite(
@@ -1250,6 +1251,9 @@ async fn write_with_recovery(
                 BatchFailure::MirrorWrite(error)
                 | BatchFailure::Other(error @ StreamError::DefinitelyNotCommitted(_)),
             ) => {
+                if rotated {
+                    return Err(BatchFailure::Other(error));
+                }
                 tracing::warn!(
                     stream_high = state.stream_name.high,
                     stream_low = state.stream_name.low,
@@ -1257,24 +1261,8 @@ async fn write_with_recovery(
                     %error,
                     "chunk-stream append will rotate after an uncommitted write"
                 );
-                loop {
-                    match rollover(state).await {
-                        Ok(()) => break,
-                        Err(
-                            error @ (StreamError::StaleWriter
-                            | StreamError::Corruption(_)
-                            | StreamError::InvalidRequest(_)),
-                        ) => {
-                            state.stalled = true;
-                            return Err(BatchFailure::Other(error));
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "chunk-stream rollover remains unavailable");
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                rollover(state).await.map_err(BatchFailure::Other)?;
+                rotated = true;
             }
             Err(BatchFailure::Other(error)) => {
                 if matches!(rotate_externally_sealed_active(state).await, Ok(true)) {

@@ -375,20 +375,12 @@ async fn ambiguous_cursor_is_resolved_without_resubmission() {
 }
 
 #[tokio::test]
-async fn repeated_mirror_failures_rotate_until_the_same_append_commits() {
+async fn repeated_mirror_failures_return_after_one_rotation() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let stream = create_stream(&store, 64, StreamConfig::default()).await;
-    store.fail_next_writes(3);
-    assert_eq!(
-        stream
-            .append(&[Bytes::from_static(b"record")])
-            .await
-            .unwrap()
-            .begin,
-        0
-    );
-    assert_eq!(store.chunk_write_count(), 4);
-    assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"record"));
+    store.fail_next_writes(2);
+    assert!(stream.append(&[Bytes::from_static(b"record")]).await.is_err());
+    assert_eq!(store.chunk_write_count(), 2);
 }
 
 #[tokio::test]

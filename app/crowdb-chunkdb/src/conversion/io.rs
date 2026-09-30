@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, Durability, SegmentTarget};
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
@@ -22,14 +23,22 @@ pub enum ConversionIoError {
 
 /// Conversion-specific policy adapter over the shared semantic client.
 pub struct ConversionDiskIo {
-    client: Option<Arc<DiskioClient>>,
+    client: ArcSwapOption<DiskioClient>,
+    config: ConversionIoConfig,
 }
 
 impl ConversionDiskIo {
+    pub fn deferred(config: ConversionIoConfig) -> Self {
+        Self {
+            client: ArcSwapOption::empty(),
+            config,
+        }
+    }
+
     #[cfg(feature = "test-util")]
     #[must_use]
     pub fn empty_for_tests() -> Self {
-        Self { client: None }
+        Self::deferred(ConversionIoConfig::default())
     }
 
     pub async fn connect(
@@ -44,41 +53,46 @@ impl ConversionDiskIo {
         hardware: &HardwareClient,
         config: &ConversionIoConfig,
     ) -> Result<Self, ConversionIoError> {
+        let io = Self::deferred(config.clone());
+        io.refresh(service, hardware).await?;
+        Ok(io)
+    }
+
+    pub async fn refresh(
+        &self,
+        service: &ServiceRegistryClient,
+        hardware: &HardwareClient,
+    ) -> Result<(), ConversionIoError> {
+        if let Some(client) = self.client.load_full() {
+            return client
+                .refresh()
+                .await
+                .map(|_| ())
+                .map_err(|error| ConversionIoError::Topology(error.to_string()));
+        }
         let client = DiskioClient::connect_with_clients(
             service.clone(),
             hardware.clone(),
             DiskioClientConfig {
-                normal_connections_per_endpoint: config.normal_connections_per_endpoint,
-                priority_connections_per_endpoint: config.priority_connections_per_endpoint,
-                rpc_workers: config.rpc_workers,
+                normal_connections_per_endpoint: self.config.normal_connections_per_endpoint,
+                priority_connections_per_endpoint: self.config.priority_connections_per_endpoint,
+                rpc_workers: self.config.rpc_workers,
                 ..DiskioClientConfig::default()
             },
         )
         .await
         .map_err(|error| ConversionIoError::Topology(error.to_string()))?;
-        Ok(Self {
-            client: Some(Arc::new(client)),
-        })
-    }
-
-    pub async fn refresh(
-        &self,
-        _service: &ServiceRegistryClient,
-        _hardware: &HardwareClient,
-    ) -> Result<(), ConversionIoError> {
-        self.client()?
-            .refresh()
-            .await
-            .map(|_| ())
-            .map_err(|error| ConversionIoError::Topology(error.to_string()))
+        self.client.store(Some(Arc::new(client)));
+        Ok(())
     }
 
     pub async fn read_segment(&self, segment: &Segment, unit_bytes: u64) -> Result<Bytes, ConversionIoError> {
         let target = target(segment, unit_bytes)?;
         let length = u32::try_from(target.capacity())
             .map_err(|_| ConversionIoError::Io("segment read size exceeds u32".into()))?;
-        self.client()?
-            .read(target, 0, length, self.client()?.normal_options().priority())
+        let client = self.client()?;
+        client
+            .read(target, 0, length, client.normal_options().priority())
             .await
             .map_err(|error| ConversionIoError::Io(error.to_string()))
     }
@@ -93,15 +107,16 @@ impl ConversionDiskIo {
         length: u32,
     ) -> Result<Bytes, ConversionIoError> {
         #[cfg(feature = "test-util")]
-        if self.client.is_none() {
+        if self.client.load().is_none() {
             return Ok(Bytes::from(vec![
                 0;
                 usize::try_from(length).expect("u32 fits usize")
             ]));
         }
         let target = target(segment, unit_bytes)?;
-        self.client()?
-            .read(target, offset, length, self.client()?.normal_options().priority())
+        let client = self.client()?;
+        client
+            .read(target, offset, length, client.normal_options().priority())
             .await
             .map_err(|error| ConversionIoError::Io(error.to_string()))
     }
@@ -113,13 +128,14 @@ impl ConversionDiskIo {
         data: Bytes,
     ) -> Result<(), ConversionIoError> {
         let target = target(segment, unit_bytes)?;
-        self.client()?
+        let client = self.client()?;
+        client
             .write(
                 target,
                 0,
                 data,
                 Durability::Buffered,
-                self.client()?.normal_options().priority(),
+                client.normal_options().priority(),
             )
             .await
             .map_err(|error| ConversionIoError::Io(error.to_string()))
@@ -127,16 +143,17 @@ impl ConversionDiskIo {
 
     pub async fn fsync_segment(&self, segment: &Segment) -> Result<(), ConversionIoError> {
         let disk_id = disk_id(segment)?;
-        self.client()?
-            .fsync(disk_id, self.client()?.normal_options().priority())
+        let client = self.client()?;
+        client
+            .fsync(disk_id, client.normal_options().priority())
             .await
             .map_err(|error| ConversionIoError::Io(error.to_string()))
     }
 
-    fn client(&self) -> Result<&DiskioClient, ConversionIoError> {
+    fn client(&self) -> Result<Arc<DiskioClient>, ConversionIoError> {
         self.client
-            .as_deref()
-            .ok_or_else(|| ConversionIoError::Topology("test DiskIO client is not connected".into()))
+            .load_full()
+            .ok_or_else(|| ConversionIoError::Topology("background DiskIO client is not connected".into()))
     }
 }
 

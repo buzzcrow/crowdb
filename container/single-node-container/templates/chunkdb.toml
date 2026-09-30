@@ -1,5 +1,6 @@
 [deployment]
 mode = "test_single_node"
+max_node_failures = 0
 
 [server]
 rpc_workers = 1

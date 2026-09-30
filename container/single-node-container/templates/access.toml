@@ -3,6 +3,7 @@
 
 [deployment]
 mode = "test_single_node"
+max_node_failures = 0
 
 [common]
 management_seeds = ["http://127.0.0.1:10000"]

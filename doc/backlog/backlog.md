@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R193** — Bump this line in the same commit when adding a new item.
+**Next R number: R194** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -46,9 +46,16 @@ optional cuObject/RDMA acceleration after the TCP baseline is correct and measur
   and move protocol storage wiring into their access libraries.
 - **[R192](R192-chunkio-deployment-protection.md)** — explicit protection and
   strip I/O — Area: KV / chunk IO / chunkdb / deployment — Require at least
-  three nodes for production and preserve service after one node fails. Keep
-  single-node as an explicit, unprotected test mode with one 1 MiB mirror
-  strip. No dedicated two-node deployment mode.
+  three nodes for production with `max_node_failures = 1`, two-copy mirror
+  strips, and degraded EC placement after one node fails. Keep single-node
+  as an explicit, unprotected test mode with `max_node_failures = 0` and
+  one-copy 1 MiB mirror strips. No dedicated two-node deployment mode.
+- **[R193](R193-chunkdb-node-failure-budget.md)** — configurable node failure
+  budget and EC placement — Area: KV / chunkdb / chunk IO / deployment —
+  Generalize R192's fixed profiles to larger clusters. Validate mirror copies
+  and EC against the worst configured set of failed nodes; six nodes with a
+  two-node budget admit `4+2` and `8+4` EC, but reject `2+1`. Persist degraded
+  placement and restore full protection after capacity returns.
 - **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
   reclamation — Area: access server / S3 / chunkdb — **Deferred on R95.** Turn
   exact pending shared ranges into qualified, restart-safe physical deletion.

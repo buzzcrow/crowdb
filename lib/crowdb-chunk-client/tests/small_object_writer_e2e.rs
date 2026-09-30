@@ -19,7 +19,7 @@ use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::{decode, encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
-    Chunk, ChunkState, ConversionFilter, Location, Strip, TriggerConversionBatchRequest,
+    Chunk, ChunkState, ChunkType, ConversionFilter, Location, Strip, TriggerConversionBatchRequest,
     TriggerConversionRequest,
 };
 use crowdb_protocol::common::DiskId;
@@ -555,6 +555,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     let mut configured = policy();
     configured.chunk_capacity = 16 * MIB as u64;
     configured.conversion_enabled = false;
+    configured.chunk_type = ChunkType::S3;
     let stack = E2eStack::start(configured).await;
     let mut object_groups = Vec::new();
     for value in 11_u8..19 {
@@ -577,6 +578,8 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     .await
     .expect("background close checkpoint did not reach strip 7");
     assert_eq!(before.state, ChunkState::Active as i32);
+    assert_eq!(before.chunk_type, ChunkType::S3 as i32);
+    assert_eq!(before.id.unwrap().high >> 56, ChunkType::S3 as u64);
     assert_eq!(before.closed_strip_sequence, Some(7));
     assert_eq!(before.strips.len(), 8);
     assert!(before
@@ -609,6 +612,8 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     .await
     .expect("manual conversion task did not finish");
     let strip = &converted.strips[0];
+    assert_eq!(converted.id, before.id);
+    assert_eq!(converted.chunk_type, ChunkType::S3 as i32);
     let Some(Strip::EcStrip(ec)) = &strip.strip else {
         unreachable!();
     };
@@ -972,7 +977,9 @@ async fn small_write_rotates_strips_and_chunks_without_splitting_objects() {
     if !all_binaries_available() {
         return;
     }
-    let stack = E2eStack::start(policy()).await;
+    let mut configured = policy();
+    configured.chunk_type = ChunkType::IcebergTable;
+    let stack = E2eStack::start(configured).await;
     let first_group = write_full_small_strip(&stack.client, 3).await;
     let second_group = write_full_small_strip(&stack.client, 5).await;
     let third_group = write_full_small_strip(&stack.client, 7).await;
@@ -986,6 +993,8 @@ async fn small_write_rotates_strips_and_chunks_without_splitting_objects() {
     assert_ne!(second.chunk_id, third.chunk_id);
     assert_eq!(third.offset, 0);
     let first_chunk = stack.query_chunk(&first).await;
+    assert_eq!(first_chunk.chunk_type, ChunkType::IcebergTable as i32);
+    assert_eq!(first_chunk.id.unwrap().high >> 56, ChunkType::IcebergTable as u64);
     assert_eq!(first_chunk.state, ChunkState::Sealed as i32);
     assert_eq!(first_chunk.strips.len(), 2);
     assert_eq!(first_chunk.acknowledged_cursor, 2 * MIB as u64);
@@ -997,6 +1006,8 @@ async fn small_write_rotates_strips_and_chunks_without_splitting_objects() {
         assert_mirror_data(&stack, &first_chunk, location, data).await;
     }
     let third_chunk = stack.query_chunk(&third).await;
+    assert_eq!(third_chunk.chunk_type, ChunkType::IcebergTable as i32);
+    assert_eq!(third_chunk.id.unwrap().high >> 56, ChunkType::IcebergTable as u64);
     for (data, location) in &third_group {
         assert_mirror_data(&stack, &third_chunk, location, data).await;
     }

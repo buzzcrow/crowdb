@@ -73,7 +73,7 @@ impl Default for SmallWritePolicy {
             cooldown: Duration::from_millis(100),
             chunk_capacity: 1024 * 1024 * 1024,
             small_strip_prefetch_count: 4,
-            mirror_copies: 3,
+            mirror_copies: 2,
             conversion_enabled: true,
             conversion_data_num: 8,
             conversion_code_num: 4,
@@ -122,7 +122,7 @@ impl SmallWritePolicy {
             || self.scale_out_queue_objects > self.queue_capacity
             || self.chunk_capacity < self.object_limit as u64
             || self.small_strip_prefetch_count == 0
-            || self.mirror_copies == 0
+            || !(1..=5).contains(&self.mirror_copies)
             || self.conversion_data_num == 0
             || self.conversion_code_num == 0
             || self.batch_watchdog.is_zero()
@@ -234,9 +234,12 @@ impl ChunkClientConfig {
                 "large_write_repair_attempts must be > 0".into(),
             ));
         }
-        if self.large_mirror_copies == Some(0) {
+        if self
+            .large_mirror_copies
+            .is_some_and(|copies| !(1..=5).contains(&copies))
+        {
             return Err(IoError::Internal(
-                "large mirror copy count must be nonzero".into(),
+                "large mirror copy count must be between one and five".into(),
             ));
         }
         Ok(())

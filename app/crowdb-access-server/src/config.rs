@@ -28,10 +28,20 @@ pub enum DeploymentMode {
     TestSingleNode,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DeploymentConfig {
     pub mode: DeploymentMode,
+    pub max_node_failures: u32,
+}
+
+impl Default for DeploymentConfig {
+    fn default() -> Self {
+        Self {
+            mode: DeploymentMode::Production,
+            max_node_failures: 1,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -274,6 +284,9 @@ impl BaseConfig for AccessConfig {
         }
         match self.deployment.mode {
             DeploymentMode::Production => {
+                if self.deployment.max_node_failures != 1 {
+                    return Err("production requires max_node_failures = 1".into());
+                }
                 if self.s3_small_write().policy().mirror_copies < 2
                     || self.iceberg_small_write().policy().mirror_copies < 2
                     || self.s3.large_mirror_copies == Some(1)
@@ -283,6 +296,9 @@ impl BaseConfig for AccessConfig {
                 }
             }
             DeploymentMode::TestSingleNode => {
+                if self.deployment.max_node_failures != 0 {
+                    return Err("test_single_node requires max_node_failures = 0".into());
+                }
                 for config in [self.s3_small_write(), self.iceberg_small_write()] {
                     if config.conversion_enabled
                         || config.policy().mirror_copies != 1

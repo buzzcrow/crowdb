@@ -596,116 +596,108 @@ async fn main() {
         config.repair.memory_bytes,
         Arc::clone(&workflow_metrics.repair),
     ));
-    let (task_scanner_handle, conversion_route_refresh_handle, ad_hoc_manager) =
-        match ConversionDiskIo::connect_with_config(
-            &ServiceRegistryClient::from_shared(Arc::clone(&kv)),
-            &HardwareClient::from_shared(Arc::clone(&kv)),
-            &config.conversion_io,
-        )
-        .await
-        {
-            Ok(io) => {
-                let io = Arc::new(io);
-                let conversion_task_handler = Arc::new(MirrorToEcTaskHandler::new(
-                    Arc::clone(&handler),
-                    Arc::clone(&task_store),
-                    Arc::clone(&io),
-                    Arc::clone(&workflow_metrics.conversion),
-                    config.conversion.max_bandwidth_mbps,
-                    config.conversion.max_concurrency,
-                ));
-                let repair_task_handler = Arc::new(
-                    RepairStripTaskHandler::new(
-                        Arc::clone(&handler),
-                        Arc::clone(&task_manager),
-                        Arc::clone(&io),
-                        config.repair.memory_bytes,
-                        config.repair.max_concurrency,
-                        config.repair.allow_unsafe_placement,
-                        Arc::clone(&workflow_metrics.repair),
-                    )
-                    .with_ad_hoc(Arc::clone(&ad_hoc_shared)),
-                );
-                let placement_repair_task_handler = Arc::new(PlacementRepairTaskHandler::new(
-                    Arc::clone(&handler),
-                    Arc::clone(&task_manager),
-                    Arc::clone(&io),
-                    Arc::clone(&workflow_metrics.placement),
-                ));
-                let mut task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
-                    Arc::new(FinalizeChunkTaskHandler::new(
-                        Arc::clone(&handler),
-                        Arc::clone(&io),
-                    )),
-                    repair_task_handler,
-                    placement_repair_task_handler,
-                    Arc::new(RelocateSegmentTaskHandler::new(
-                        Arc::clone(&handler),
-                        Arc::clone(&task_manager),
-                    )),
-                ];
-                if config.deployment.mode != DeploymentMode::TestSingleNode {
-                    task_handlers.push(conversion_task_handler);
-                }
-                let executor = Arc::new(
-                    TaskExecutor::new(
-                        Arc::clone(&task_manager),
-                        config
-                            .conversion
-                            .max_concurrency
-                            .saturating_add(config.repair.max_concurrency)
-                            .saturating_add(config.placement_repair.max_concurrency),
-                        task_handlers,
-                    )
-                    .expect("unique conversion task handler"),
-                );
-                let ad_hoc_manager = Arc::new(AdHocRecoveryManager::new(
-                    Arc::clone(&ad_hoc_shared),
-                    Arc::clone(&handler),
-                    Arc::clone(&pool),
-                    Arc::clone(&repair),
-                    Arc::clone(&task_store),
-                    Arc::clone(&task_manager),
-                    Arc::clone(&executor),
-                ));
-                let scanner = TaskScanner::new(
-                    Arc::clone(&task_store),
-                    Arc::clone(&task_manager),
-                    Arc::clone(&executor),
-                    256,
-                    Duration::from_secs(1),
-                );
-                let scanner_stop = stop_rx.clone();
-                let scanner_handle = tokio::spawn(async move { scanner.run(scanner_stop).await });
-                let service = ServiceRegistryClient::from_shared(Arc::clone(&kv));
-                let hardware = HardwareClient::from_shared(Arc::clone(&kv));
-                let mut refresh_stop = stop_rx.clone();
-                let refresh_interval = Duration::from_secs(u64::from(config.topology.refresh_interval_secs));
-                let refresh_handle = tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(refresh_interval);
-                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    loop {
-                        tokio::select! {
-                            _ = ticker.tick() => {
-                                if let Err(error) = io.refresh(&service, &hardware).await {
-                                    warn!(%error, "background conversion DiskIO route refresh failed");
-                                }
-                            }
-                            changed = refresh_stop.changed() => {
-                                if changed.is_err() || *refresh_stop.borrow() {
-                                    return;
-                                }
-                            }
+    let io = Arc::new(ConversionDiskIo::deferred(config.conversion_io.clone()));
+    let service = ServiceRegistryClient::from_shared(Arc::clone(&kv));
+    let hardware = HardwareClient::from_shared(Arc::clone(&kv));
+    if let Err(error) = io.refresh(&service, &hardware).await {
+        warn!(%error, "background DiskIO discovery will retry while task execution remains enabled");
+    }
+    let (task_scanner_handle, conversion_route_refresh_handle, ad_hoc_manager) = {
+        let conversion_task_handler = Arc::new(MirrorToEcTaskHandler::new(
+            Arc::clone(&handler),
+            Arc::clone(&task_store),
+            Arc::clone(&io),
+            Arc::clone(&workflow_metrics.conversion),
+            config.conversion.max_bandwidth_mbps,
+            config.conversion.max_concurrency,
+        ));
+        let repair_task_handler = Arc::new(
+            RepairStripTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&task_manager),
+                Arc::clone(&io),
+                config.repair.memory_bytes,
+                config.repair.max_concurrency,
+                config.repair.allow_unsafe_placement,
+                Arc::clone(&workflow_metrics.repair),
+            )
+            .with_ad_hoc(Arc::clone(&ad_hoc_shared)),
+        );
+        let placement_repair_task_handler = Arc::new(PlacementRepairTaskHandler::new(
+            Arc::clone(&handler),
+            Arc::clone(&task_manager),
+            Arc::clone(&io),
+            Arc::clone(&workflow_metrics.placement),
+        ));
+        let mut task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
+            Arc::new(FinalizeChunkTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&io),
+            )),
+            repair_task_handler,
+            placement_repair_task_handler,
+            Arc::new(RelocateSegmentTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&task_manager),
+            )),
+        ];
+        if config.deployment.mode != DeploymentMode::TestSingleNode {
+            task_handlers.push(conversion_task_handler);
+        }
+        let executor = Arc::new(
+            TaskExecutor::new(
+                Arc::clone(&task_manager),
+                config
+                    .conversion
+                    .max_concurrency
+                    .saturating_add(config.repair.max_concurrency)
+                    .saturating_add(config.placement_repair.max_concurrency),
+                task_handlers,
+            )
+            .expect("unique conversion task handler"),
+        );
+        let ad_hoc_manager = Arc::new(AdHocRecoveryManager::new(
+            Arc::clone(&ad_hoc_shared),
+            Arc::clone(&handler),
+            Arc::clone(&pool),
+            Arc::clone(&repair),
+            Arc::clone(&task_store),
+            Arc::clone(&task_manager),
+            Arc::clone(&executor),
+        ));
+        let scanner = TaskScanner::new(
+            Arc::clone(&task_store),
+            Arc::clone(&task_manager),
+            Arc::clone(&executor),
+            256,
+            Duration::from_secs(1),
+        );
+        let scanner_stop = stop_rx.clone();
+        let scanner_handle = tokio::spawn(async move { scanner.run(scanner_stop).await });
+        let service = ServiceRegistryClient::from_shared(Arc::clone(&kv));
+        let hardware = HardwareClient::from_shared(Arc::clone(&kv));
+        let mut refresh_stop = stop_rx.clone();
+        let refresh_interval = Duration::from_secs(u64::from(config.topology.refresh_interval_secs));
+        let refresh_handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(refresh_interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if let Err(error) = io.refresh(&service, &hardware).await {
+                            warn!(%error, "background conversion DiskIO route refresh failed");
                         }
                     }
-                });
-                (Some(scanner_handle), Some(refresh_handle), Some(ad_hoc_manager))
+                    changed = refresh_stop.changed() => {
+                        if changed.is_err() || *refresh_stop.borrow() {
+                            return;
+                        }
+                    }
+                }
             }
-            Err(error) => {
-                warn!(%error, "background conversion DiskIO is unavailable; client fast path remains enabled");
-                (None, None, None)
-            }
-        };
+        });
+        (Some(scanner_handle), Some(refresh_handle), Some(ad_hoc_manager))
+    };
     let rpc_service = Arc::new(
         ChunkdbRpcService::new(Arc::clone(&handler), Arc::clone(&workflow_metrics), rpc_rt_handle)
             .with_conversion(Arc::clone(&conversion))

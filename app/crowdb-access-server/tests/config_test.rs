@@ -13,9 +13,10 @@ fn tracked_access_configs_load_and_set_bounded_read_resources() {
         load_from_file(&root.join("conf/crowdb_access_server_config.toml")).unwrap();
     let container: AccessConfig =
         load_from_file(&root.join("../../container/single-node-container/templates/access.toml")).unwrap();
-    for (config, expected_ec, expected_threshold) in
-        [(canonical, (8, 4), 7_549_748), (container, (2, 1), 943_719)]
+    for (config, expected_ec, expected_threshold, expected_budget) in
+        [(canonical, (8, 4), 7_549_748, 1), (container, (2, 1), 943_719, 0)]
     {
+        assert_eq!(config.deployment.max_node_failures, expected_budget);
         assert_eq!(config.read.stream_slots, 3);
         assert_eq!(config.read.stream_window_bytes, 1024 * 1024);
         assert_eq!(config.read.global_stream_bytes, 256 * 1024 * 1024);
@@ -39,6 +40,16 @@ fn tracked_access_configs_load_and_set_bounded_read_resources() {
         assert_eq!(config.s3.list_scan_bytes, Some(4 * 1024 * 1024));
         assert_eq!(config.iceberg.gc.kv_bytes, Some(64 * 1024 * 1024));
     }
+}
+
+#[test]
+fn deployment_rejects_mismatched_node_failure_budget() {
+    let mut config = AccessConfig::default();
+    config.deployment.max_node_failures = 0;
+    assert_eq!(
+        config.validate(),
+        Err("production requires max_node_failures = 1".to_string())
+    );
 }
 
 #[test]

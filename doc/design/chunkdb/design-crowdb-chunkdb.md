@@ -619,11 +619,13 @@ topology identifiers, making retries deterministic.
 
 `deployment.mode` is `production` or `test_single_node` in release builds. Production startup
 requires at least three distinct voting nodes for every KV group and protected
-placement. Test-single-node startup requires one voting node per group and
+placement, with `deployment.max_node_failures = 1`. Test-single-node startup
+requires one voting node per group and `deployment.max_node_failures = 0`, with
 explicit colocated placement. The mode never changes in response to topology
 loss. In test-single-node mode, new strips must be one-copy 1 MiB mirrors;
 EC, extra copies, and mirror-to-EC conversion are rejected. Production rejects
-new one-copy mirror strips.
+new one-copy mirror strips. The production profile normally places two mirror
+copies on distinct nodes, including for journal and tree-page data.
 
 Debug builds also accept `test_unsafe_placement` for legacy colocated EC
 integration fixtures. Release builds reject it during configuration loading;
@@ -642,8 +644,10 @@ degraded disk result may be published. Each mode is a separate strategy type:
 
 The mode is an explicit deployment property, not an automatic fallback. A
 protected deployment never changes to `unsafe_colocated` because topology is
-small or unavailable. With two healthy nodes remaining, an EC request is
-allocated as a two-copy mirror strip across the survivors. New placement
+small or unavailable. With two healthy nodes remaining, a new EC strip retains
+its requested data and parity geometry. Its fragments may span both survivors
+with a degraded-placement marker and a durable repair task. A new mirror strip
+still places two copies across the survivors. New placement
 policies are added as strategy implementations and selected at the composition
 root, keeping policy branches out of the allocation hot path.
 
@@ -675,7 +679,7 @@ rack failures:
 **Negative hints**: Nodes can be excluded from placement (e.g., during
 recovery to avoid re-using failed nodes).
 
-**Example**: 3-copy mirror on 3-rack cluster → 3 replicas on 3 distinct racks.
+**Example**: 2-copy mirror on 3-rack cluster → 2 replicas on 2 distinct racks.
 On insufficient topology, normal placement returns a typed failure before any
 DiskDB allocation. An explicitly degraded result identifies the missing
 protection instead of claiming rack safety.
@@ -701,8 +705,10 @@ that exceeds the normal recovery budget when the cluster is too small. It does
 not select colocated placement. Insufficient topology otherwise returns a typed
 placement error without allocating blocks.
 
-**Example**: 8+4 EC on 12-node cluster → 12 blocks across ≥3 racks, max 4
-blocks per node. On 3-node cluster (unsafe mode) → 12 blocks, 4 per node.
+**Example**: 8+4 EC on a healthy 3-node cluster places 12 fragments with at
+most 4 per node, so loss of any one node leaves 8 fragments. If one node is
+already unavailable, the same geometry may span the two survivors and is
+marked for placement repair when the third node returns.
 
 ### 7.3 Physical validation and degraded-placement repair
 
@@ -1251,7 +1257,8 @@ Key configuration parameters:
 | Parameter                                         | Default    | Description                                                   |
 |---------------------------------------------------|------------|---------------------------------------------------------------|
 | disk_block_size                                   | 1 MB       | Size of disk blocks from diskdb                               |
-| mirror_copy_count                                 | 3          | Number of replicas for mirror strips                          |
+| deployment.max_node_failures                      | 1          | Protected production node-failure budget                      |
+| mirror_copy_count                                 | 2          | Production mirror copies on distinct nodes                    |
 | default_ec_scheme                                 | 6+3        | Default EC scheme (data+parity)                               |
 | topology_refresh_interval                         | 30 s       | Topology cache refresh interval                               |
 | placement.mode                                    | protected  | Select `protected` or explicit `unsafe_colocated` strategy    |

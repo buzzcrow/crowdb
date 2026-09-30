@@ -253,6 +253,11 @@ impl LifecycleHandler {
         capacity_kb: u32,
     ) -> Result<(), LifecycleError> {
         use crate::chunkdb_config::DeploymentMode;
+        if strip_type == ProtoStripType::Mirror && copy_count > 5 {
+            return Err(LifecycleError::InvalidRequest(
+                "mirror strips support at most five copies".into(),
+            ));
+        }
         match self.deployment_mode {
             Some(DeploymentMode::TestSingleNode) => {
                 if strip_type != ProtoStripType::Mirror
@@ -315,7 +320,7 @@ impl LifecycleHandler {
         if self.deployment_mode != Some(crate::chunkdb_config::DeploymentMode::Production) {
             return None;
         }
-        if strip_type != ProtoStripType::Ec && strip_type != ProtoStripType::Mirror {
+        if strip_type != ProtoStripType::Mirror {
             return None;
         }
         let healthy_nodes: HashSet<_> = snapshot
@@ -478,7 +483,7 @@ impl LifecycleHandler {
 
         let snap = self.topology.snapshot();
 
-        let mirror_copies = if copy_count == 0 { 3 } else { copy_count as usize };
+        let mirror_copies = if copy_count == 0 { 2 } else { copy_count as usize };
         let strip_alloc_type =
             self.protected_degraded_layout(strip_type, &snap)
                 .unwrap_or(match strip_type {
@@ -491,7 +496,7 @@ impl LifecycleHandler {
                     },
                 });
 
-        let constraints = self.placement_constraints();
+        let constraints = self.allocation_constraints(strip_type, &snap);
         // Convert write_granularity (KB) to unit_count using the unit
         // size from the topology snapshot. Fall back to treating KB as
         // units if unit_size_bytes is unavailable (0).
@@ -805,7 +810,7 @@ impl LifecycleHandler {
         }
 
         let snap = self.topology.snapshot();
-        let mirror_copies = if copy_count == 0 { 3 } else { copy_count as usize };
+        let mirror_copies = if copy_count == 0 { 2 } else { copy_count as usize };
         let strip_alloc_type =
             self.protected_degraded_layout(strip_type, &snap)
                 .unwrap_or(match strip_type {
@@ -818,7 +823,7 @@ impl LifecycleHandler {
                     },
                 });
 
-        let constraints = self.placement_constraints();
+        let constraints = self.allocation_constraints(strip_type, &snap);
         let start_seq = if chunk.next_strip_sequence == 0 {
             chunk
                 .strips
@@ -1895,6 +1900,29 @@ impl LifecycleHandler {
             constraints = constraints.allow_degraded_failure_domains();
         }
         constraints
+    }
+
+    fn allocation_constraints(
+        &self,
+        strip_type: ProtoStripType,
+        snapshot: &crate::topology::TopologySnapshot,
+    ) -> PlacementConstraints {
+        let constraints = self.placement_constraints();
+        if self.deployment_mode != Some(crate::chunkdb_config::DeploymentMode::Production)
+            || strip_type != ProtoStripType::Ec
+        {
+            return constraints;
+        }
+        let healthy_nodes = snapshot
+            .healthy_disk_groups()
+            .into_iter()
+            .map(|group| group.node_id)
+            .collect::<std::collections::HashSet<_>>();
+        if healthy_nodes.len() == 2 {
+            constraints.allow_degraded_ec()
+        } else {
+            constraints
+        }
     }
 
     fn admit_placement_repairs(&self, chunk: &Chunk) {

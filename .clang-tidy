@@ -3,6 +3,9 @@
 # third-party macro noise. See coding SKILL.md § "C++ clang-tidy".
 # These checks can change ownership, ABI, overload resolution, or hot-path
 # behavior through their fix-its; keep them visible only when reviewed locally.
+# nodiscard on every virtual accessor repeats interface annotations without
+# improving call-site enforcement through a base pointer. Enum-size changes
+# can alter public object layout and must be an explicit ABI decision.
 Checks: >-
   -*,
   clang-analyzer-*,
@@ -11,6 +14,7 @@ Checks: >-
   performance-*,
   readability-*,
   -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
   -readability-identifier-length,
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
@@ -19,6 +23,7 @@ Checks: >-
   -bugprone-implicit-widening-of-multiplication-result,
   -performance-unnecessary-value-param,
   -performance-move-const-arg,
+  -performance-enum-size,
   -readability-convert-member-functions-to-static,
   -modernize-use-ranges,
   -modernize-avoid-c-arrays,

@@ -386,7 +386,7 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
         )
         .await
         .unwrap();
-    assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 3);
+    assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 2);
     assert_eq!(
         store
             .advance_cursor(name, 9, active.chunk_id, 0, 6, 17)

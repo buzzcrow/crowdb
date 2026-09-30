@@ -1,6 +1,10 @@
 # Canonical configuration for the S3 and Iceberg access processes.
 # Credentials and bearer tokens are supplied through environment variables.
 
+[deployment]
+mode = "production"
+max_node_failures = 1
+
 [common]
 management_seeds = ["http://127.0.0.1:10000"]
 diskio_connections_per_endpoint = 2

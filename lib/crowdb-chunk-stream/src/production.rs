@@ -36,7 +36,7 @@ impl ProductionStreamRuntime {
         read_policy: ChunkReadPolicy,
         config: StreamConfig,
     ) -> Result<Self> {
-        Self::new_with_mirror_copies(kv, chunk_io, writer_lease_ms, read_policy, config, 3)
+        Self::new_with_mirror_copies(kv, chunk_io, writer_lease_ms, read_policy, config, 2)
     }
 
     /// Builds the stream runtime with an explicit stream mirror count.

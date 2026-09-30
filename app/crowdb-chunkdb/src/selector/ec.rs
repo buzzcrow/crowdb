@@ -70,8 +70,28 @@ impl EcPlacement {
             );
         }
 
-        if !constraints.allow_unsafe_ec {
+        if !constraints.allow_unsafe_ec && !constraints.allow_degraded_ec {
             return Err(PlacementError::UnsafePlacementRequired);
+        }
+
+        if constraints.allow_degraded_ec {
+            if node_count != 2 {
+                return Err(PlacementError::UnsafePlacementRequired);
+            }
+            let balanced_limit = total_blocks.div_ceil(2);
+            let entries = try_distribute(snap, &by_rack, total_blocks, balanced_limit, constraints).ok_or(
+                PlacementError::InsufficientNodes {
+                    needed: total_blocks,
+                    available: node_count,
+                },
+            )?;
+            return finish_plan(
+                snap,
+                entries,
+                u32::try_from(code_num).unwrap_or(u32::MAX),
+                constraints,
+                true,
+            );
         }
 
         // Fall back to unsafe mode: max `total_blocks` per node (i.e.

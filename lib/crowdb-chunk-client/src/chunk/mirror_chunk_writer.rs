@@ -34,7 +34,7 @@ pub struct MirrorChunkWriter {
 }
 
 impl MirrorChunkWriter {
-    /// Allocates one three-copy WAL chunk with a fixed logical capacity.
+    /// Allocates one WAL chunk with the default mirror policy.
     ///
     /// # Errors
     ///
@@ -53,7 +53,7 @@ impl MirrorChunkWriter {
             stream_name,
             writer_epoch,
             writer_lease_ms,
-            3,
+            2,
         )
         .await
     }
@@ -71,7 +71,7 @@ impl MirrorChunkWriter {
         writer_lease_ms: u64,
         copy_count: u32,
     ) -> Result<Self> {
-        if writer_epoch == 0 || writer_lease_ms == 0 || copy_count == 0 {
+        if writer_epoch == 0 || writer_lease_ms == 0 || !(1..=5).contains(&copy_count) {
             return Err(IoError::AllocationFailed(
                 "stream mirror writer requires a nonzero epoch and lease".into(),
             ));
@@ -125,7 +125,7 @@ impl MirrorChunkWriter {
             stream_name,
             writer_epoch,
             writer_lease_ms,
-            3,
+            2,
         )
     }
 

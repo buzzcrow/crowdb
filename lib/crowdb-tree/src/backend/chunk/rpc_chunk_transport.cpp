@@ -275,8 +275,8 @@ struct RpcChunkTransport::Impl
 
     [[nodiscard]] bool valid() const
     {
-        return options.mirror_copies <= 3 && options.chunkdb.client != nullptr && options.chunkdb.server != nullptr &&
-               options.chunkdb.connection != nullptr && !disk_routes.empty();
+        return options.mirror_copies <= kMaxMirrorCopies && options.chunkdb.client != nullptr &&
+               options.chunkdb.server != nullptr && options.chunkdb.connection != nullptr && !disk_routes.empty();
     }
 
     uint64_t next_request_id() const
@@ -625,7 +625,7 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
     flatbuffers::FlatBufferBuilder builder;
     auto                           request = crowdb::chunkdb::proto::CreateFBAllocateChunkRequest(
         builder, request_id, monotonic_nanos(), nullptr, granularity_kb, strip_count, FBStripType_Mirror, 0, 0,
-        impl_->options.mirror_copies == 0 ? 3 : impl_->options.mirror_copies, FBChunkType_BtreePage, owner_epoch,
+        impl_->options.mirror_copies == 0 ? 2 : impl_->options.mirror_copies, FBChunkType_BtreePage, owner_epoch,
         impl_->options.writer_lease_ms);
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());

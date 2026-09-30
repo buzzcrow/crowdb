@@ -235,9 +235,12 @@ async fn large_write_rotates_chunks_without_losing_data() {
     }
     let stack = E2eStack::start(small_policy()).await;
     let data = make_test_data(20 * MIB);
+    let mut configured = policy(8 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().chunk_type =
+        crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable;
     let result = stack
         .client
-        .prepare_large_write(Some(data.len() as u64), policy(8 * MIB as u64))
+        .prepare_large_write(Some(data.len() as u64), configured)
         .write_stream(data.as_slice())
         .await
         .unwrap();
@@ -259,6 +262,14 @@ async fn large_write_rotates_chunks_without_losing_data() {
     let mut read_back = Vec::new();
     for location in &result.locations {
         let chunk = stack.query_chunk(location).await;
+        assert_eq!(
+            chunk.chunk_type,
+            crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable as i32
+        );
+        assert_eq!(
+            chunk.id.unwrap().high >> 56,
+            crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable as u64
+        );
         assert_eq!(chunk.state, ChunkState::Sealed as i32);
         assert_eq!(
             chunk.sealed_length,

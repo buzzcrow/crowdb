@@ -834,7 +834,7 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
         config_.max_chunk_bytes = 256U * 1024U * 1024U;
     }
     if (config_.mirror_copies == 0) {
-        config_.mirror_copies = 3;
+        config_.mirror_copies = 2;
     }
     if (config_.page_alignment == 0) {
         config_.page_alignment = 64U * 1024U;
@@ -2292,7 +2292,7 @@ ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, c
                                    ct_page_store **out)
 {
     if (options == nullptr || catalog == nullptr || catalog->catalog == nullptr || out == nullptr ||
-        options->mirror_copies > 3) {
+        options->mirror_copies > crowdb::tree::detail::kMaxMirrorCopies) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
     }
     auto handle    = std::make_unique<ct_page_store>();
@@ -2324,7 +2324,8 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
                                                   ct_chunk_transport *transport, ct_page_store **out)
 {
     if (options == nullptr || catalog == nullptr || catalog->catalog == nullptr || transport == nullptr ||
-        transport->transport == nullptr || out == nullptr || options->mirror_copies > 3) {
+        transport->transport == nullptr || out == nullptr ||
+        options->mirror_copies > crowdb::tree::detail::kMaxMirrorCopies) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
     }
     auto handle    = std::make_unique<ct_page_store>();

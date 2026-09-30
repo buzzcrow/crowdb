@@ -36,7 +36,7 @@ struct ChunkStateView {
     has_checksum: AtomicBool,
 }
 
-/// Production `StreamChunkStore` using direct three-copy mirror writes and the
+/// Production `StreamChunkStore` using direct mirrored writes and the
 /// unified chunk reader. Per-chunk mutable metadata is atomic; the stream's
 /// single-owner worker remains the only operation sequencer.
 pub struct ProductionStreamChunkStore {
@@ -62,7 +62,7 @@ impl ProductionStreamChunkStore {
         writer_lease_ms: u64,
         read_policy: ChunkReadPolicy,
     ) -> Result<Self> {
-        Self::new_with_mirror_copies(allocator, disk_writer, writer_lease_ms, read_policy, 3)
+        Self::new_with_mirror_copies(allocator, disk_writer, writer_lease_ms, read_policy, 2)
     }
 
     /// Creates a production adapter with an explicit stream mirror count.
@@ -100,7 +100,7 @@ impl ProductionStreamChunkStore {
         chunk_capacity_bytes: u64,
     ) -> Result<Self> {
         if writer_lease_ms == 0
-            || mirror_copies == 0
+            || !(1..=5).contains(&mirror_copies)
             || !(1024 * 1024..=crowdb_chunk_client::STREAM_CHUNK_BYTES).contains(&chunk_capacity_bytes)
         {
             return Err(StreamError::InvalidRequest(
@@ -359,7 +359,13 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                     "stream chunk strip is not mirrored".into(),
                 ));
             };
-            if mirror.segments.len() != self.mirror_copies as usize {
+            let actual_copies = mirror.segments.len();
+            let protected = if self.mirror_copies == 1 {
+                actual_copies == 1
+            } else {
+                (2..=self.mirror_copies as usize).contains(&actual_copies)
+            };
+            if !protected {
                 return Err(StreamError::Corruption(
                     "stream chunk mirror count differs from configuration".into(),
                 ));
