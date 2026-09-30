@@ -909,6 +909,29 @@ async fn small_write_repairs_failed_replica_through_real_chunkdb_and_diskio() {
 }
 
 #[tokio::test]
+async fn single_copy_small_write_reports_real_diskio_write_failure() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start_with_diskio_fault_rate(policy(), 1.0).await;
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let data = Bytes::from(vec![0x5a; MAX_FRAME_PAYLOAD_BYTES]);
+        let mut writer = stack.client.prepare_small_write(data.len()).await?;
+        writer.on_data(data).await?;
+        writer.on_finish().await.map(|_| ())
+    })
+    .await
+    .expect("real DiskIO write failure did not return within 15 seconds");
+    assert!(
+        matches!(result, Err(IoError::WriteFailed(_))),
+        "unexpected write result: {result:?}"
+    );
+    let metrics = stack.client.small_write_metrics();
+    assert_eq!(metrics.failed, 1);
+    assert_eq!(metrics.repairs_avoiding_rotation, 0);
+}
+
+#[tokio::test]
 async fn small_write_repair_preserves_acknowledged_prefix_in_open_block() {
     if !all_binaries_available() {
         return;

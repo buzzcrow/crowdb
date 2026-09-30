@@ -59,6 +59,23 @@ impl E2eStack {
         Self::start_with_disk_and_chunkdb_options(
             small_write,
             "mem",
+            0.0,
+            ChunkdbStartOptions {
+                allow_unsafe_ec: true,
+                allow_degraded_failure_domains: true,
+                repair_allow_unsafe_placement: true,
+                ..ChunkdbStartOptions::default()
+            },
+        )
+        .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn start_with_diskio_fault_rate(small_write: SmallWritePolicy, fault_error_rate: f64) -> Self {
+        Self::start_with_disk_and_chunkdb_options(
+            small_write,
+            "mem",
+            fault_error_rate,
             ChunkdbStartOptions {
                 allow_unsafe_ec: true,
                 allow_degraded_failure_domains: true,
@@ -74,6 +91,7 @@ impl E2eStack {
         Self::start_with_disk_and_chunkdb_options(
             small_write,
             "null",
+            0.0,
             ChunkdbStartOptions {
                 allow_unsafe_ec: true,
                 allow_degraded_failure_domains: true,
@@ -89,12 +107,13 @@ impl E2eStack {
         small_write: SmallWritePolicy,
         chunkdb_options: ChunkdbStartOptions,
     ) -> Self {
-        Self::start_with_disk_and_chunkdb_options(small_write, "mem", chunkdb_options).await
+        Self::start_with_disk_and_chunkdb_options(small_write, "mem", 0.0, chunkdb_options).await
     }
 
     async fn start_with_disk_and_chunkdb_options(
         small_write: SmallWritePolicy,
         dummy_disk: &str,
+        fault_error_rate: f64,
         chunkdb_options: ChunkdbStartOptions,
     ) -> Self {
         let permit = E2E_STACK_PERMITS
@@ -113,7 +132,7 @@ impl E2eStack {
             dummy_disk,
             kv_seeds: &cluster.mgmt_endpoints,
             disks: &[],
-            fault_error_rate: 0.0,
+            fault_error_rate,
             fault_latency_ms: None,
             no_o_direct: false,
         });
