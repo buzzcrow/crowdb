@@ -22,7 +22,8 @@ use crowdb_access_iceberg::file::{
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
-use crowdb_access_server::config::SmallWriteConfig;
+use crowdb_access_server::config::AccessConfig;
+use crowdb_common::config::load_from_file;
 use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, Strip};
 use crowdb_test_harness::chunkdb::make_client as make_chunkdb_client;
 use md5::{Digest, Md5};
@@ -170,6 +171,13 @@ async fn setup_with_bounds_and_file_limit(
 
 fn path(table: TableLocation, key: &str) -> String {
     format!("/{}/{}", table.bucket(), table.file(key).unwrap().object_key())
+}
+
+fn fixture_config() -> AccessConfig {
+    load_from_file(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/common/iceberg_single_node.toml"),
+    )
+    .unwrap()
 }
 
 async fn catalog_counts(client: &TestFileClient) -> (u64, u64, u64, u64) {
@@ -490,12 +498,14 @@ async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
                 .unwrap()
                 .chunk
                 .unwrap();
-            let ec = chunk.strips.iter().find_map(|strip| match strip.strip.as_ref() {
-                Some(Strip::EcStrip(ec)) => Some(ec),
-                _ => None,
-            });
-            let ec = ec.expect("large Iceberg write has an EC strip");
-            assert_eq!((ec.data_num, ec.code_num), (8, 4));
+            let expected_copies = fixture_config().iceberg.large_mirror_copies.unwrap();
+            assert!(chunk.strips.iter().any(|strip| strip.sealed_length > 0));
+            for strip in &chunk.strips {
+                let Some(Strip::MirrorStrip(mirror)) = strip.strip.as_ref() else {
+                    panic!("single-node large Iceberg write has a mirror strip");
+                };
+                assert_eq!(mirror.segments.len(), usize::try_from(expected_copies).unwrap());
+            }
         }
         let get_started = Instant::now();
         let mut response = client.send(Method::GET, &object, "", b"", false).await;
@@ -525,7 +535,7 @@ async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn small_routing_is_strict_at_the_strip_threshold() {
     let (_stack, _process, client, table) = setup().await;
-    let threshold = SmallWriteConfig::default().threshold_exclusive();
+    let threshold = fixture_config().iceberg_small_write().threshold_exclusive();
     let completed = async || {
         let metrics: serde_json::Value = Client::new()
             .get(format!("http://{}/_crowdb/metrics", client.address))

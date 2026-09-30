@@ -52,13 +52,13 @@ fn profile() -> DeploymentProfile {
 fn renders_profile_paths_and_topology_without_secrets() {
     let dirs = TestDirs::new();
     let outputs = render_configs(&profile(), &dirs.templates(), &dirs.run()).unwrap();
-    assert_eq!(outputs.len(), 8);
+    assert_eq!(outputs.len(), 7);
     assert_eq!(
         outputs
             .iter()
             .filter(|output| output.path == dirs.run().join("config/access.toml"))
             .count(),
-        2
+        1
     );
     let diskio = fs::read_to_string(dirs.run().join("config/diskio.toml")).unwrap();
     assert!(diskio.contains("path = \"/opt/crowdb/data/disks/disk-0004.img\""));
