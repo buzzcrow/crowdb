@@ -11,6 +11,7 @@ use crowdb_protocol::chunkdb::rpc::{Chunk, Strip};
 use crowdb_protocol::diskdb::rpc::Segment;
 use tokio::task::JoinSet;
 
+use crate::chunk::segment_writer::FailedSegmentWrite;
 use crate::chunk::strip::StripResult;
 use crate::disk_io::DiskWriter;
 use crate::io::FeedStatus;
@@ -22,6 +23,8 @@ pub struct MirrorStripWriter {
     disk_writer: Arc<dyn DiskWriter>,
     accepted: u64,
     finished: bool,
+    history: Vec<Bytes>,
+    failed_segments: Vec<(Segment, String)>,
 }
 
 impl MirrorStripWriter {
@@ -33,6 +36,8 @@ impl MirrorStripWriter {
             disk_writer,
             accepted: 0,
             finished: false,
+            history: Vec::new(),
+            failed_segments: Vec::new(),
         }
     }
 
@@ -68,32 +73,42 @@ impl MirrorStripWriter {
         if length > capacity.saturating_sub(self.accepted) {
             return Err(IoError::WriteFailed("mirror strip capacity exceeded".into()));
         }
+        self.history.push(buffer.clone());
         if segments.len() == 1 {
-            self.disk_writer
-                .write_at_byte_offset(&segments[0], unit_bytes, self.accepted, buffer)
-                .await?;
+            let segment = segments[0];
+            if !self.failed_segments.iter().any(|(failed, _)| *failed == segment) {
+                if let Err(error) = self
+                    .disk_writer
+                    .write_at_byte_offset(&segment, unit_bytes, self.accepted, buffer)
+                    .await
+                {
+                    self.failed_segments.push((segment, error.to_string()));
+                }
+            }
         } else {
             let mut writes = JoinSet::new();
             for segment in segments {
+                if self.failed_segments.iter().any(|(failed, _)| *failed == segment) {
+                    continue;
+                }
                 let disk_io = Arc::clone(&self.disk_writer);
                 let bytes = buffer.clone();
                 let offset = self.accepted;
                 writes.spawn(async move {
-                    disk_io
-                        .write_at_byte_offset(&segment, unit_bytes, offset, bytes)
-                        .await
+                    (
+                        segment,
+                        disk_io
+                            .write_at_byte_offset(&segment, unit_bytes, offset, bytes)
+                            .await,
+                    )
                 });
             }
-            let mut failure = None;
             while let Some(result) = writes.join_next().await {
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => failure = Some(error),
-                    Err(error) => failure = Some(IoError::WriteFailed(error.to_string())),
+                let (segment, write) = result
+                    .map_err(|error| IoError::WriteFailed(format!("mirror replica task failed: {error}")))?;
+                if let Err(error) = write {
+                    self.failed_segments.push((segment, error.to_string()));
                 }
-            }
-            if let Some(error) = failure {
-                return Err(error);
             }
         }
         self.accepted += length;
@@ -104,6 +119,24 @@ impl MirrorStripWriter {
         })
     }
 
+    /// Write a complete strip while retaining the failed replica and its data
+    /// for ordered replacement before the chunk can be sealed.
+    pub(crate) async fn write_full_repairable(
+        &mut self,
+        buffer: Bytes,
+    ) -> Result<(StripResult, Vec<FailedSegmentWrite>)> {
+        if self.finished || self.accepted != 0 {
+            return Err(IoError::Finished);
+        }
+        let (_, capacity, _, _) = self.geometry()?;
+        if buffer.len() as u64 != capacity {
+            return Err(IoError::WriteFailed("full mirror strip length mismatch".into()));
+        }
+        self.push(buffer).await?;
+        let result = self.finish().await?;
+        Ok((result, self.take_failures()?))
+    }
+
     pub async fn finish(&mut self) -> Result<StripResult> {
         if self.finished {
             return Err(IoError::Finished);
@@ -112,11 +145,18 @@ impl MirrorStripWriter {
         self.finished = true;
         let mut syncs = JoinSet::new();
         for segment in segments {
+            if self.failed_segments.iter().any(|(failed, _)| *failed == segment) {
+                continue;
+            }
             let writer = Arc::clone(&self.disk_writer);
-            syncs.spawn(async move { writer.fsync(&segment).await });
+            syncs.spawn(async move { (segment, writer.fsync(&segment).await) });
         }
         while let Some(result) = syncs.join_next().await {
-            result.map_err(|error| IoError::WriteFailed(error.to_string()))??;
+            let (segment, sync) =
+                result.map_err(|error| IoError::WriteFailed(format!("mirror sync task failed: {error}")))?;
+            if let Err(error) = sync {
+                self.failed_segments.push((segment, error.to_string()));
+            }
         }
         Ok(StripResult {
             chunk_id: self.chunk.id.unwrap_or_default(),
@@ -127,6 +167,24 @@ impl MirrorStripWriter {
             ec_encode_time: Duration::ZERO,
             completion_handles: Vec::new(),
         })
+    }
+
+    pub(crate) fn take_failures(&mut self) -> Result<Vec<FailedSegmentWrite>> {
+        if !self.finished {
+            return Err(IoError::Internal("mirror repair requested before finish".into()));
+        }
+        let (unit_bytes, _, strip_sequence, _) = self.geometry()?;
+        let data = std::mem::take(&mut self.history);
+        Ok(std::mem::take(&mut self.failed_segments)
+            .into_iter()
+            .map(|(segment, error)| FailedSegmentWrite {
+                strip_sequence,
+                segment,
+                unit_bytes,
+                data: data.clone(),
+                error,
+            })
+            .collect())
     }
 
     pub fn abort(&mut self) -> Result<StripResult> {

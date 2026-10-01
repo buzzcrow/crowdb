@@ -7,6 +7,7 @@ pub mod config;
 mod http_receive;
 pub mod iceberg;
 mod multipart_complete;
+mod upload_flow;
 
 #[cfg(feature = "s3")]
 pub mod credentials;

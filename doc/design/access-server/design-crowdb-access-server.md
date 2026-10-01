@@ -140,6 +140,19 @@ sets RPC workers and DiskIO connections independently of these data limits.
 The ordinary path streams bounded data through the Access Server over HTTP. It
 is the universal path and remains available without specialized hardware.
 
+S3 and Iceberg PUT and multipart part uploads share an object-scoped transfer
+driver. One task polls the protocol's body decoder and a bounded write
+consumer; it can continue receiving while earlier strips are in flight.
+Completed receive owners are offered to the writer before their logical
+payload views enter a separate MD5 and optional SHA-256 worker. The writer
+uses separately bounded held-buffer and in-flight strip windows, and
+processes strip completion in submission order. Small objects use the same
+handoff and digest completion but retain their protocol-owned shared
+small-write pipeline after the handoff. Authentication, checksum declarations,
+metadata publication, multipart authority, and cleanup remain with each
+protocol. The [Iceberg upload-flow design](iceberge/design-crowdb-iceberg-upload-flow.md)
+describes scheduling and stage measurements in detail.
+
 The Dataset native path embeds routing, retry, bounded planning, streaming, and
 buffer ownership in the application. It resolves one immutable dataset
 generation and distributes work directly to responsible CROWDB services. A
@@ -208,6 +221,10 @@ table, or dataset size.
 - **AS-I10 — Protocol storage ownership:** S3 and Iceberg use distinct chunk
   types and independently admitted foreground write pools; each library owns
   its file or object authority and storage policy.
+- **AS-I11 — Shared upload progress:** one body reader and one write consumer
+  own each S3 or Iceberg PUT or multipart part. Socket readiness and write
+  completion can each resume an idle transfer without changing protocol
+  publication authority.
 
 ## 9. Direction and risks
 

@@ -46,6 +46,44 @@ pub struct IcebergFileWriter {
     inner: Box<dyn ChunkIoWriter>,
 }
 
+#[async_trait::async_trait]
+impl ChunkIoWriter for IcebergFileWriter {
+    async fn on_data(&mut self, buffer: Bytes) -> Result<crowdb_chunk_client::FeedStatus, IoError> {
+        self.inner.on_data(buffer).await
+    }
+
+    async fn on_framed_data(
+        &mut self,
+        buffer: Box<dyn FramedWriteBuffer>,
+    ) -> Result<crowdb_chunk_client::FeedStatus, IoError> {
+        self.inner.on_framed_data(buffer).await
+    }
+
+    async fn on_finish(&mut self) -> Result<Vec<Location>, IoError> {
+        self.inner.on_finish().await
+    }
+
+    async fn on_error(&mut self) -> Result<Vec<Location>, IoError> {
+        self.inner.on_error().await
+    }
+
+    fn require_data(&self) -> bool {
+        self.inner.require_data()
+    }
+
+    fn input_complete(&self) -> bool {
+        self.inner.input_complete()
+    }
+
+    fn write_timing(&self) -> Option<ChunkWriteTiming> {
+        self.inner.write_timing()
+    }
+
+    async fn wait_for_capacity(&mut self) {
+        self.inner.wait_for_capacity().await;
+    }
+}
+
 impl IcebergFileWriter {
     #[must_use]
     pub fn require_data(&self) -> bool {

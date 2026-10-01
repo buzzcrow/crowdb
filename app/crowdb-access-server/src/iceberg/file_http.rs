@@ -26,7 +26,6 @@ use super::file_request::{FileRequest, FileRequestError};
 use super::file_response::{FileS3ErrorCode, MultipartResponses};
 use super::file_upload::FileUploadBudget;
 
-mod digest_pipe;
 mod metrics;
 mod multipart;
 mod stream;

@@ -16,10 +16,7 @@ use crowdb_access_s3::object::{self, ListObjectsV2Request, ObjectMetadataError};
 use crowdb_access_s3::publication::PublicationRequest;
 use crowdb_access_s3::retrieval::{self, ObjectHeaders, RetrievalError};
 use crowdb_access_s3::route::{S3Operation, S3Route};
-use crowdb_access_s3::streaming::{
-    publish_completed_locations, write_body_with_checksums_buffered,
-    write_native_body_with_checksums_metered, PutErrorCode, PutOutcome,
-};
+use crowdb_access_s3::streaming::{publish_completed_locations, PutErrorCode, PutOutcome};
 use crowdb_chunk_client::{
     ChunkClientConfig, ChunkIoWriter, IoError, LargeWritePolicy, PreparedLargeWrite, SharedObjectWriter,
 };
@@ -40,6 +37,9 @@ use super::{error_response, full_body, install_body_receive_provider, BoxError, 
 use crowdb_access_s3::wire;
 
 mod multipart;
+mod upload;
+
+use upload::write_object_body;
 
 const DEFAULT_LIST_LIMIT: usize = 1_000;
 const DEFAULT_LIST_SCAN_BYTES: usize = 4 * 1024 * 1024;
@@ -265,31 +265,17 @@ impl ProductionS3Operations {
             receiver.enable_owner_handoff();
         }
         let mut body = request.into_body();
-        let write_result = if let Some(receiver) = native_receiver.as_deref() {
-            write_native_body_with_checksums_metered(
-                &mut body,
-                &mut writer,
-                receiver,
-                content_md5.as_deref(),
-                payload_sha256.as_deref(),
-                self.metrics.as_deref(),
-            )
-            .await
-        } else {
-            let receive_bytes = content_length
-                .and_then(|length| usize::try_from(length).ok())
-                .unwrap_or(1024 * 1024)
-                .clamp(1, 1024 * 1024);
-            write_body_with_checksums_buffered(
-                &mut body,
-                &mut writer,
-                content_md5.as_deref(),
-                payload_sha256.as_deref(),
-                receive_bytes,
-                self.metrics.as_deref(),
-            )
-            .await
-        };
+        let write_result = write_object_body(
+            &mut body,
+            &mut writer,
+            native_receiver.as_deref(),
+            content_length,
+            content_md5.as_deref(),
+            payload_sha256.as_deref(),
+            self.config.large_write.client.large_held_buffers,
+            self.metrics.as_deref(),
+        )
+        .await;
         let (etag, checksum) = match write_result {
             Ok(result) => result,
             Err(outcome) => {

@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 /// One upload's checksum pipeline. Queueing never controls socket backpressure;
 /// the write flow does. Bytes clones retain the received buffer until OpenSSL
 /// has consumed it, while the writer may use the same buffer.
-pub(super) struct DigestPipe {
+pub(crate) struct DigestPipe {
     sender: Option<mpsc::Sender<DigestBatch>>,
     worker: Option<JoinHandle<Result<Digests, ()>>>,
 }
@@ -16,14 +16,14 @@ struct DigestBatch {
     payload: Vec<Bytes>,
 }
 
-pub(super) struct Digests {
+pub(crate) struct Digests {
     pub md5: [u8; 16],
     pub sha256: Option<[u8; 32]>,
     pub process_time: Duration,
 }
 
 impl DigestPipe {
-    pub(super) fn start(check_sha256: bool) -> Self {
+    pub(crate) fn start(check_sha256: bool) -> Self {
         let (sender, mut receiver) = mpsc::channel::<DigestBatch>(1024);
         let worker = tokio::task::spawn_blocking(move || {
             let mut md5 = Hasher::new(MessageDigest::md5()).map_err(|_| ())?;
@@ -68,7 +68,7 @@ impl DigestPipe {
         }
     }
 
-    pub(super) fn enqueue(&self, payload: Vec<Bytes>) -> Result<(), ()> {
+    pub(crate) fn enqueue(&self, payload: Vec<Bytes>) -> Result<(), ()> {
         self.sender
             .as_ref()
             .ok_or(())?
@@ -76,7 +76,7 @@ impl DigestPipe {
             .map_err(|_| ())
     }
 
-    pub(super) async fn finish(&mut self) -> Result<Digests, ()> {
+    pub(crate) async fn finish(&mut self) -> Result<Digests, ()> {
         self.sender.take();
         self.worker.take().ok_or(())?.await.map_err(|_| ())?
     }

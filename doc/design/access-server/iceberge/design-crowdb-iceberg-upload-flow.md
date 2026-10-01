@@ -47,9 +47,11 @@ the large writer. The total logical file size alone does not select the writer.
 
 ## 2. Large write ownership and scheduling
 
-The single-use `WriteObject` owns the request body, bounds, file identity,
-writer, digest pipe, measurements, and final publication action. Its transfer
-coroutine polls the body receiver and write consumer with one task waker. Only
+The single-use Iceberg `WriteObject` owns the request body, bounds, file
+identity, writer, digest pipe, measurements, and final publication action. S3
+PUT and `UploadPart` use the same transfer driver and checksum worker while
+retaining S3 authorization and publication. Its transfer coroutine polls the
+body receiver and write consumer with one task waker. Only
 the receiver fetches the socket body. When it offers a prepared buffer, the
 same task immediately polls the consumer. If both sides are pending, the task
 yields; a Hyper body-read event or a write completion wakes it again. An idle
@@ -62,14 +64,19 @@ field and writes the frame without an object-sized copy. The receiver offers
 the owner to a bounded channel with four held-buffer slots. A full channel
 pauses further body reads until the consumer removes an owner. The digest
 worker receives borrowed payload views after the write offer, so checksum work
-can overlap receive and DiskIO without controlling write backpressure.
+can overlap receive and DiskIO without controlling write backpressure. Small
+objects use this same handoff, then enter the shared small-write pipeline;
+their data path does not submit independent large-write strip tasks.
 
 The large chunk writer prepares strips ahead of demand. For a known object
 size, it batches up to the configured strip-prefetch limit and requests the
 next batch when half of the current one has been consumed. Mirror strips are
 submitted to independent tasks, with at most four strip writes in flight by
 default. Later writes may finish first, but completion is consumed in strip
-order. At a full write window the coroutine awaits the oldest completion;
+order. Each completed task keeps its buffer until every preceding strip has
+committed. A failed mirror segment is replaced and replayed from those retained
+bytes before its strip completes; later completions remain held meanwhile.
+At a full write window the coroutine awaits the oldest completion;
 the completed owner queue can still retain four prepared buffers. The
 `large_parallel_strip_writes` and `large_held_buffers` settings are separate.
 
@@ -79,8 +86,8 @@ The following invariants apply:
 - **I2 — Bounded ownership.** Receive buffers remain owned until the writer and
   digest have consumed their views; the write queue controls backpressure.
 - **I3 — Ordered durability.** A later strip result cannot make an earlier
-  failed strip successful. Chunk sealing waits for every submitted strip and
-  its required fsyncs.
+  failed strip successful or release its replay buffer. Chunk sealing waits
+  for every submitted strip, replacement, and required fsync.
 - **I4 — Event-driven progress.** Socket readiness and write completion wake
   the suspended coroutine. The write path does not spin or poll a timer for
   capacity.

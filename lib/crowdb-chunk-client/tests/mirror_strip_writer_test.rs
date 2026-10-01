@@ -80,14 +80,16 @@ async fn mirror_strip_writes_unaligned_inputs_to_every_copy() {
 }
 
 #[tokio::test]
-async fn mirror_strip_returns_a_failed_copy_write() {
+async fn mirror_strip_keeps_writing_surviving_copies_after_a_failure() {
     let disk = Arc::new(TestDiskWriter {
         fail_disk: Some(12),
         ..TestDiskWriter::default()
     });
-    let mut writer = MirrorStripWriter::new(chunk(), 0, disk);
-    assert!(matches!(
-        writer.push(Bytes::from_static(b"data")).await,
-        Err(IoError::WriteFailed(_))
-    ));
+    let mut writer = MirrorStripWriter::new(chunk(), 0, disk.clone());
+    writer.push(Bytes::from_static(b"data")).await.unwrap();
+    writer.push(Bytes::from_static(b"more")).await.unwrap();
+    assert_eq!(writer.finish().await.unwrap().bytes_written, 8);
+    let copies = disk.data.lock().unwrap();
+    assert_eq!(&copies[&11], b"datamore");
+    assert!(!copies.contains_key(&12));
 }

@@ -53,7 +53,7 @@ pub struct ChunkWriter {
     pub(crate) strips_remaining: Option<usize>,
     pub(crate) current_strip: Option<StripWriter>,
     pub(crate) completion_handles: VecDeque<JoinHandle<Result<Vec<FailedSegmentWrite>>>>,
-    mirror_completions: VecDeque<JoinHandle<Result<(StripResult, Duration)>>>,
+    mirror_completions: VecDeque<JoinHandle<Result<MirrorCompletion>>>,
     pub(crate) prefetch_handle: Option<JoinHandle<()>>,
     pub(crate) prefetch_rx: Option<mpsc::Receiver<Result<Chunk>>>,
     prefetch_plan: Option<StripPrefetchPlan>,
@@ -68,6 +68,14 @@ pub struct ChunkWriter {
     pub(crate) completion_wait_time: Duration,
     pub(crate) failed_disks: Arc<FailedDiskList>,
     pub(crate) repair_metrics: Arc<LargeWriteRepairMetrics>,
+}
+
+struct MirrorCompletion {
+    result: StripResult,
+    elapsed: Duration,
+    failures: Vec<FailedSegmentWrite>,
+    // Later completions retain their data until every preceding strip commits.
+    _buffer: Bytes,
 }
 
 #[derive(Clone, Copy)]
@@ -242,8 +250,17 @@ impl ChunkWriter {
                 let bytes = buffer.slice(offset..end);
                 self.mirror_completions.push_back(tokio::spawn(async move {
                     let started = Instant::now();
-                    strip.push(bytes).await?;
-                    Ok((strip.finish().await?, started.elapsed()))
+                    let StripWriter::Mirror(mirror) = &mut strip else {
+                        return Err(IoError::Internal("mirror dispatch changed strip type".into()));
+                    };
+                    let retained = bytes.clone();
+                    let (result, failures) = mirror.write_full_repairable(bytes).await?;
+                    Ok(MirrorCompletion {
+                        result,
+                        elapsed: started.elapsed(),
+                        failures,
+                        _buffer: retained,
+                    })
                 }));
                 self.bytes_in_chunk += remaining as u64;
                 offset = end;
@@ -283,15 +300,16 @@ impl ChunkWriter {
             .await
             .map_err(|error| IoError::Internal(format!("mirror write task panicked: {error}")))?;
         self.mirror_completions.pop_front();
-        let (result, elapsed) = completion?;
-        if !result.completion_handles.is_empty() {
+        let completion = completion?;
+        if !completion.result.completion_handles.is_empty() {
             return Err(IoError::Internal(
                 "mirror strip returned unexpected completion handles".into(),
             ));
         }
+        self.repair_mirror_failures(completion.failures).await?;
         self.strip_write_successes += 1;
-        self.strip_write_success_time += elapsed;
-        self.strip_write_success_max = self.strip_write_success_max.max(elapsed);
+        self.strip_write_success_time += completion.elapsed;
+        self.strip_write_success_max = self.strip_write_success_max.max(completion.elapsed);
         Ok(())
     }
 
@@ -302,6 +320,23 @@ impl ChunkWriter {
             .is_some_and(JoinHandle::is_finished)
         {
             self.commit_oldest_mirror().await?;
+        }
+        Ok(())
+    }
+
+    async fn repair_mirror_failures(&mut self, failures: Vec<FailedSegmentWrite>) -> Result<()> {
+        let chunk_id = self
+            .current_chunk_id()
+            .ok_or_else(|| IoError::Internal("mirror repair has no active chunk".into()))?;
+        for failure in failures {
+            let repair = SegmentRepair {
+                allocator: &self.allocator,
+                disk_writer: &self.disk_writer,
+                failed_disks: &self.failed_disks,
+                metrics: &self.repair_metrics,
+                attempts: self.config.large_write_repair_attempts,
+            };
+            self.chunk = Some(Arc::new(repair.repair(chunk_id, failure).await?));
         }
         Ok(())
     }
@@ -521,9 +556,16 @@ impl ChunkWriter {
             .current_strip
             .take()
             .ok_or_else(|| IoError::Internal("finish_strip with no open strip".into()))?;
-        let mut strip_result = strip.finish().await?;
+        let (mut strip_result, mirror_failures) = match &mut strip {
+            StripWriter::Mirror(mirror) => {
+                let result = mirror.finish().await?;
+                (result, mirror.take_failures()?)
+            }
+            StripWriter::Ec(_) => (strip.finish().await?, Vec::new()),
+        };
         self.ec_encode_time += strip_result.ec_encode_time;
         self.bytes_in_chunk += strip_result.bytes_written;
+        self.repair_mirror_failures(mirror_failures).await?;
         // One queue entry represents one completed strip. This keeps
         // `parity_depth` expressed in strips instead of accidentally counting
         // every data and parity shard as an independent depth unit.

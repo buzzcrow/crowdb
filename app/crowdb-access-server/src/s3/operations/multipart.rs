@@ -11,9 +11,6 @@ use crowdb_access_s3::metadata::{
     MultipartRepositoryError, MultipartSessionRecord,
 };
 use crowdb_access_s3::route::{S3Operation, S3Route};
-use crowdb_access_s3::streaming::{
-    write_body_with_checksums_buffered, write_native_body_with_checksums_metered,
-};
 use crowdb_access_s3::wire;
 use crowdb_chunk_client::ChunkIoWriter;
 use http_body_util::BodyExt as _;
@@ -24,7 +21,8 @@ use hyper::{Request, Response, StatusCode};
 
 use super::{
     content_length, full_body, install_body_receive_provider, map_put_outcome, required_bucket, required_key,
-    response, strict_header, unix_millis, xml_response, ProductionS3Operations, Query, ResponseBody,
+    response, strict_header, unix_millis, write_object_body, xml_response, ProductionS3Operations, Query,
+    ResponseBody,
 };
 use crate::multipart_complete::{CompleteRequestError, CompleteSelection};
 
@@ -175,30 +173,17 @@ impl ProductionS3Operations {
             receiver.enable_owner_handoff();
         }
         let mut body = request.into_body();
-        let written = if let Some(receiver) = native_receiver.as_deref() {
-            write_native_body_with_checksums_metered(
-                &mut body,
-                &mut writer,
-                receiver,
-                content_md5.as_deref(),
-                payload_sha256.as_deref(),
-                self.metrics.as_deref(),
-            )
-            .await
-        } else {
-            let receive_bytes = usize::try_from(length)
-                .unwrap_or(1024 * 1024)
-                .clamp(1, 1024 * 1024);
-            write_body_with_checksums_buffered(
-                &mut body,
-                &mut writer,
-                content_md5.as_deref(),
-                payload_sha256.as_deref(),
-                receive_bytes,
-                self.metrics.as_deref(),
-            )
-            .await
-        };
+        let written = write_object_body(
+            &mut body,
+            &mut writer,
+            native_receiver.as_deref(),
+            Some(length),
+            content_md5.as_deref(),
+            payload_sha256.as_deref(),
+            self.config.large_write.client.large_held_buffers,
+            self.metrics.as_deref(),
+        )
+        .await;
         let (etag, _) = match written {
             Ok(value) => value,
             Err(outcome) => {

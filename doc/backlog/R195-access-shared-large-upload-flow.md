@@ -42,17 +42,19 @@ durable writer completion before Iceberg publishes a part or file record.
 
 Implement the flow regardless of the baseline timing. Apply further
 optimizations only where supported by the measured stage breakdown.
-If the producer/consumer mechanism is shared with S3, keep it below protocol
-policy so both protocols can use it. R195 does not require refactoring every
-S3 route, S3 performance parity, or multi-node EC throughput work. It must
-preserve existing S3 behavior when a shared chunk writer is changed.
+S3 and Iceberg PUT and multipart UploadPart use one shared producer/consumer
+driver below protocol publication policy. The same writer handoff applies to
+small objects after body receive; their distinct shared small-write pipeline
+remains responsible for durable chunk placement. Multi-node EC throughput and
+small-write performance parity are outside this work.
 
 The following invariants define the work:
 
 - **I1 — Bounded overlap.** Only one task fetches an object's socket body.
   It offers each completed owner to the write flow and immediately drives an
-  idle writer in the same upload task. One queued owner may be received while
-  one owner write is active. The writer's next dequeue resumes paused fetch
+  idle writer in the same upload task. Four completed owners may be held while
+  up to four independent mirror-strip writes are in flight by default; both
+  limits are separately configurable. The writer's next dequeue resumes paused fetch
   without timer polling or a wake on every frame. The global native buffer
   budget bounds retained receive memory, including digest references.
 - **I2 — Correct bytes.** The fetch layer prepares frame headers and CRC32C
@@ -62,7 +64,9 @@ The following invariants define the work:
   frame headers or footers. Partial frames and chunk rotation remain valid
   without an object-sized copy.
 - **I3 — Durable publication.** Accepted buffers stay owned until writer
-  and digest views finish. A part or file becomes visible only after decoded
+  and digest views finish. A completed strip keeps its buffer until every
+  preceding strip commits in order. A failed mirror segment is replaced and
+  replayed before later results can commit. A part or file becomes visible only after decoded
   body length, digest, all required mirror/EC writes, fsyncs, seals, and
   metadata preconditions succeed. Failed or ambiguous publication follows
   the existing authoritative recovery rules.
@@ -76,13 +80,14 @@ The following invariants define the work:
 
 Work items:
 
-1. Consolidate the large Iceberg `file_http` request's write state and
-   completion into an object-scoped owner, preserving direct PUT and multipart
-   publication differences. Leave small/shared write behavior unchanged.
-2. Add bounded receive/digest/write
-   overlap in the Iceberg path and the necessary chunk writer support.
-   Maintain buffer lifetime and frame integrity. Avoid unrelated placement
-   or protocol rewrites.
+1. Consolidate Iceberg `file_http` request write state and completion into an
+   object-scoped owner. Share the body handoff, digest worker, and writer
+   scheduling between S3 and Iceberg PUT and UploadPart, while retaining
+   separate publication and authorization rules.
+2. Add bounded receive/digest/write overlap and ordered concurrent mirror
+   strip completion. Use the same write-consumer handoff for small objects,
+   retaining their separate shared small-write pipeline. Maintain buffer
+   lifetime, frame integrity, and failure fencing.
 3. Use the real TPC loader/FileIO route and R196's benchmark to compare
    client preparation, UploadPart, CompleteMultipart, digest, chunk writes,
    and metadata publication. Record part size, concurrency, topology,
@@ -116,6 +121,16 @@ Work items:
   overlap, memory stays within the native budget, actual waits have counts
   and durations, and no
   referenced buffer is freed early (I1, I4). Integration test.
+- Given a delayed first mirror failure after later writes complete, retain
+  later buffers and their order, replay the failed segment into a replacement,
+  then seal and read back the exact object (I1–I3). Integration test.
+- Given S3 and Iceberg multipart parts and ordinary PUTs, upload equal payloads
+  through the shared handoff, validate their MD5 and optional SHA-256, and
+  assert both protocols publish only their own completed locations (I1–I3).
+  Integration test.
+- Given a small S3 or Iceberg object, feed the same write consumer and finish
+  through its shared small-write pipeline without changing publication or
+  digest behavior (I1–I3). Integration test.
 - Given a wrong digest, truncated body, failed write, or ambiguous part
   publication, stop or drain the upload; assert no invalid part or file
   becomes visible, authoritative metadata is checked before cleanup, and
