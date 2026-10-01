@@ -29,6 +29,7 @@ pub struct UploadFlowSnapshot {
     pub strip_write_success_ns: u64,
     pub strip_write_success_max_ns: u64,
     pub mirror_uncommitted_peak: u64,
+    pub mirror_active_write_peak: u64,
     pub writer_capacity_waits: u64,
     pub writer_capacity_wait_ns: u64,
     pub writer_finish_ns: u64,
@@ -67,6 +68,7 @@ pub(super) struct UploadFlowMetrics {
     strip_write_success_ns: AtomicU64,
     strip_write_success_max_ns: AtomicU64,
     mirror_uncommitted_peak: AtomicU64,
+    mirror_active_write_peak: AtomicU64,
     writer_capacity_waits: AtomicU64,
     writer_capacity_wait_ns: AtomicU64,
     writer_finish_ns: AtomicU64,
@@ -126,6 +128,7 @@ impl UploadFlowMetrics {
             strip_write_success_ns: self.strip_write_success_ns.load(Ordering::Relaxed),
             strip_write_success_max_ns: self.strip_write_success_max_ns.load(Ordering::Relaxed),
             mirror_uncommitted_peak: self.mirror_uncommitted_peak.load(Ordering::Relaxed),
+            mirror_active_write_peak: self.mirror_active_write_peak.load(Ordering::Relaxed),
             writer_capacity_waits: self.writer_capacity_waits.load(Ordering::Relaxed),
             writer_capacity_wait_ns: self.writer_capacity_wait_ns.load(Ordering::Relaxed),
             writer_finish_ns: self.writer_finish_ns.load(Ordering::Relaxed),
@@ -202,6 +205,10 @@ impl UploadObservation {
             .sample
             .mirror_uncommitted_peak
             .max(timing.mirror_uncommitted_peak);
+        self.sample.mirror_active_write_peak = self
+            .sample
+            .mirror_active_write_peak
+            .max(timing.mirror_active_write_peak);
     }
 
     pub(super) fn writer_capacity_waits(&mut self, count: u64, elapsed: Duration) {
@@ -294,6 +301,9 @@ impl Drop for UploadObservation {
         self.metrics
             .mirror_uncommitted_peak
             .fetch_max(self.sample.mirror_uncommitted_peak, Ordering::Relaxed);
+        self.metrics
+            .mirror_active_write_peak
+            .fetch_max(self.sample.mirror_active_write_peak, Ordering::Relaxed);
         self.metrics
             .writer_capacity_waits
             .fetch_add(self.sample.writer_capacity_waits, Ordering::Relaxed);

@@ -18,7 +18,7 @@ use crate::metrics::LargeWriteRepairMetrics;
 use crate::negative_list::FailedDiskList;
 use crate::{ChunkAllocator, DiskWriter, IoError, Result};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct FailedSegmentWrite {
     pub strip_sequence: u32,
     pub segment: Segment,
@@ -162,7 +162,7 @@ impl SegmentRepair<'_> {
             }
         }
         self.metrics.exhausted.inc();
-        Err(IoError::WriteFailed(format!(
+        Err(IoError::ReplicaRepairExhausted(format!(
             "segment repair exhausted after durable write failure: {}",
             failure.error
         )))

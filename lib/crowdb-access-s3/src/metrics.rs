@@ -315,6 +315,7 @@ fn append_request_metrics(output: &mut String, snapshot: &S3MetricsSnapshot) {
 fn append_native_metrics(output: &mut String, native: NativeBufferMetricsSnapshot) {
     for (name, value) in [
         ("crowdb_s3_native_retained_bytes", native.retained_bytes),
+        ("crowdb_s3_native_peak_retained_bytes", native.peak_retained_bytes),
         ("crowdb_s3_native_direct_bytes_total", native.direct_bytes),
         (
             "crowdb_s3_native_prefix_copy_bytes_total",

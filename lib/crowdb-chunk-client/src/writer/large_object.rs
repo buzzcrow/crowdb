@@ -155,6 +155,7 @@ impl LargeObjectWriter {
             Arc::clone(&self.failed_disks),
             Arc::clone(&self.repair_metrics),
         );
+        cw.set_framed_input();
         cw.open(chunk, self.object_size)?;
         self.chunk_writer = Some(cw);
         Ok(())

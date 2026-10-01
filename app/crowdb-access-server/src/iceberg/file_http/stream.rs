@@ -13,7 +13,7 @@ use crowdb_access_iceberg::file::{
 use crowdb_access_iceberg::storage::IcebergFileWriter;
 use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use crowdb_chunk_client::{FramedWriteBuffer, LargeWritePolicy};
-use crowdb_protocol::frame::FrameMagic;
+use crowdb_protocol::frame::{FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
 use http_body_util::BodyExt;
 use hyper::body::{Bytes, Incoming};
 use tokio::sync::mpsc;
@@ -26,7 +26,10 @@ use super::{
 use crate::upload_flow::digest_pipe::{DigestPipe, Digests};
 use crate::upload_flow::{drive_transfer, write_buffers, OfferStatus, UploadBuffer, WriteFlow};
 
-const TARGET_BUFFER_BYTES: usize = 1024 * 1024;
+// Sixteen complete frames occupy one 1-MiB physical mirror strip. A full
+// logical MiB would spill frame overhead into the next strip and serialize
+// otherwise independent writes in the non-native receive path.
+const TARGET_BUFFER_BYTES: usize = 16 * MAX_FRAME_PAYLOAD_BYTES;
 
 struct WriteObject<'a> {
     body: FileUploadBody<Incoming>,

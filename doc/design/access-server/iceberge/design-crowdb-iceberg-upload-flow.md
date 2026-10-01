@@ -76,6 +76,11 @@ default. Later writes may finish first, but completion is consumed in strip
 order. Each completed task keeps its buffer until every preceding strip has
 committed. A failed mirror segment is replaced and replayed from those retained
 bytes before its strip completes; later completions remain held meanwhile.
+If replacement is exhausted, the writer drains submitted IO, reads the
+committed prefix from the old chunk one strip at a time, and replays it with
+the retained suffix into a new chunk. Frame footers receive the new chunk ID;
+the CRC does not cover that field. The old chunk is deleted only after the new
+copy is durable. Rotation attempts are bounded.
 At a full write window the coroutine awaits the oldest completion;
 the completed owner queue can still retain four prepared buffers. The
 `large_parallel_strip_writes` and `large_held_buffers` settings are separate.
@@ -100,6 +105,10 @@ wait count, while writer-capacity and write-flow pause time remain separate.
 queue during one upload. `mirror_uncommitted_peak` counts submitted strip
 writes that have not yet committed in order, including writes whose DiskIO task
 already finished. The counters describe different stages and are not added.
+`mirror_active_write_peak` counts mirror data writes actually inside DiskIO;
+it excludes completed tasks waiting for an earlier strip.
+The native allocator exports current and peak retained bytes. The chunk client
+also counts repair-driven rotations, replayed bytes, and rotation time.
 
 ## 3. Integrity and durable publication
 
@@ -188,3 +197,36 @@ storage, and publication work from this focused direct PUT. A comparable
 FileIO profile must record part size, concurrency, topology, durability,
 software revision, and raw stage samples before attributing its close time
 to a specific server stage.
+
+### Frame-aligned FileIO follow-up
+
+The loader's PyArrow S3 output stream split a 100-MiB file into ten multipart
+parts. On the local single-node container, the first current-tree run took
+4.668 s. Its non-native receive path handed the writer 1 MiB of logical bytes
+at a time, and the writer pushed each 64-KiB physical frame separately.
+Consequently the mirror-strip batch path never ran: the measured peak was one
+active mirror write, zero queued full mirror strips, and 1,610 individual
+strip-push completions. Aligning receive batches to 16 frame payloads alone
+left the run at 4.638 s because the writer still split them into single-frame
+pushes.
+
+After the large async writer grouped those 16 complete frames into one 1-MiB
+physical strip push, the same FileIO path completed in 0.993 s: 0.109 s to
+open, 0.034 s in client write calls, and 0.850 s in close. The server recorded
+ten completed part uploads, 100 MiB of logical data, 110 strip-push
+completions, and peaks of four queued full mirror strips and four active
+DiskIO writes. This is one local sample, not a stable throughput distribution.
+The loader now chooses a single PUT below 256 MiB; one 100-MiB direct loader
+upload took 1.091 s including local SHA-256, and a 256-MiB four-part loader
+upload took 3.042 s. These timings include different client preparation and
+must not be compared as pure server write latency.
+
+The updated loader and image then completed a fresh TPC-H SF1 load in 24.94 s
+and SF10 in 81.30 s. Those wall times include generation, upload, eight table
+snapshot commits, and remote manifest/footer/sample-scan verification. SF10
+uploaded 3,635,609,132 data bytes; all eight tables and 86,586,082 rows were
+verified. The access upload metrics recorded zero failed requests and a peak of
+four active mirror writes. Previous runs on this host took about 50 s and
+232 s, respectively. These single-run totals show a material end-to-end
+improvement, but they do not isolate upload-only wall time or constitute a
+repeatable benchmark distribution.

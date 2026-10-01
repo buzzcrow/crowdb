@@ -27,6 +27,7 @@ async fn native_frame_retains_and_releases_allocator_credit() {
 
     drop(bytes);
     assert_eq!(allocator.retained_bytes(), 0);
+    assert_eq!(allocator.metrics_snapshot().peak_retained_bytes, MAX_FRAME_BYTES);
 }
 
 #[tokio::test]

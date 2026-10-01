@@ -64,6 +64,8 @@ pub struct ChunkWriteTiming {
     pub strip_write_success_max: Duration,
     /// Submitted mirror strips awaiting ordered commit, including completed tasks.
     pub mirror_uncommitted_peak: u64,
+    /// Highest number of mirror data writes actually inside DiskIO.
+    pub mirror_active_write_peak: u64,
 }
 
 /// Caller-side backpressure strategy. Selects how to react when

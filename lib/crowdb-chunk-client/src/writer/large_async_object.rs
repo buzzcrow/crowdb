@@ -61,6 +61,7 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) strip_write_success_time: Duration,
     pub(crate) strip_write_success_max: Duration,
     pub(crate) mirror_uncommitted_peak: u64,
+    pub(crate) mirror_active_write_peak: u64,
     pub(crate) source_reads: u64,
     pub(crate) source_read_time: Duration,
     pub(crate) assembly_copies: u64,
@@ -125,6 +126,7 @@ impl LargeAsyncObjectWriter {
             strip_write_success_time: Duration::ZERO,
             strip_write_success_max: Duration::ZERO,
             mirror_uncommitted_peak: 0,
+            mirror_active_write_peak: 0,
             source_reads: 0,
             source_read_time: Duration::ZERO,
             assembly_copies: 0,
@@ -161,6 +163,7 @@ impl LargeAsyncObjectWriter {
             strip_write_success_time: self.strip_write_success_time,
             strip_write_success_max: self.strip_write_success_max,
             mirror_uncommitted_peak: self.mirror_uncommitted_peak,
+            mirror_active_write_peak: self.mirror_active_write_peak,
         }
     }
 
@@ -226,6 +229,7 @@ impl LargeAsyncObjectWriter {
             self.strip_write_success_time += cw.strip_write_success_time;
             self.strip_write_success_max = self.strip_write_success_max.max(cw.strip_write_success_max);
             self.mirror_uncommitted_peak = self.mirror_uncommitted_peak.max(cw.mirror_uncommitted_peak);
+            self.mirror_active_write_peak = self.mirror_active_write_peak.max(cw.active_mirror_write_peak());
             self.ec_encode_time += cw.ec_encode_time;
             self.completion_wait_time += cw.completion_wait_time;
             if location.length > 0 {
@@ -301,6 +305,7 @@ impl LargeAsyncObjectWriter {
             Arc::clone(&self.failed_disks),
             Arc::clone(&self.repair_metrics),
         );
+        cw.set_framed_input();
         let plan = self.strip_prefetch_plan(&chunk);
         let remaining_size = self
             .object_size
@@ -642,10 +647,72 @@ impl LargeAsyncObjectWriter {
         self.buffer_metrics.payload_copy_bytes.inc_by(buffer.len() as u64);
         self.frame_tail.extend_from_slice(&buffer);
         while self.frame_tail.len() >= MAX_FRAME_PAYLOAD_BYTES {
-            let payload = self.frame_tail.split_to(MAX_FRAME_PAYLOAD_BYTES).freeze();
-            self.push_payload_frame(payload).await?;
+            self.push_full_payload_frames().await?;
         }
         Ok(())
+    }
+
+    async fn push_full_payload_frames(&mut self) -> Result<()> {
+        const FRAMES_PER_BATCH: usize = 16;
+        const FRAME_BYTES: usize = FRAME_HEADER_PREFIX_BYTES + MAX_FRAME_PAYLOAD_BYTES + FRAME_FOOTER_BYTES;
+
+        loop {
+            self.ensure_open().await?;
+            let writer = self
+                .chunk_writer
+                .as_ref()
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?;
+            let remaining = writer.remaining_capacity();
+            let available_frames = usize::try_from(remaining / FRAME_BYTES as u64).unwrap_or(usize::MAX);
+            if available_frames == 0 {
+                if FRAME_BYTES as u64 > self.config.max_chunk_size {
+                    return Err(IoError::WriteFailed("large frame exceeds chunk capacity".into()));
+                }
+                self.rotate_chunk().await?;
+                continue;
+            }
+            let frame_count = (self.frame_tail.len() / MAX_FRAME_PAYLOAD_BYTES)
+                .min(FRAMES_PER_BATCH)
+                .min(available_frames);
+            let chunk_id = writer
+                .current_chunk_id()
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk ID".into()))?;
+            let write_time_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                });
+            let mut framed = Vec::with_capacity(frame_count * FRAME_BYTES);
+            for payload in
+                self.frame_tail[..frame_count * MAX_FRAME_PAYLOAD_BYTES].chunks_exact(MAX_FRAME_PAYLOAD_BYTES)
+            {
+                framed.extend_from_slice(
+                    &encode_frame(FrameMagic::RepoLargeV1, chunk_id, payload, write_time_ms)
+                        .map_err(|error| IoError::WriteFailed(error.to_string()))?,
+                );
+            }
+            self.buffer_metrics
+                .payload_copy_operations
+                .inc_by(u64::try_from(frame_count).unwrap_or(u64::MAX));
+            self.buffer_metrics
+                .payload_copy_bytes
+                .inc_by(u64::try_from(frame_count * MAX_FRAME_PAYLOAD_BYTES).unwrap_or(u64::MAX));
+            let status = self
+                .chunk_writer
+                .as_mut()
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?
+                .push(Bytes::from(framed))
+                .await?;
+            if status == FeedStatus::Pause {
+                self.rotate_chunk().await?;
+                continue;
+            }
+            let _ = self.frame_tail.split_to(frame_count * MAX_FRAME_PAYLOAD_BYTES);
+            self.logical_bytes_in_chunk = self
+                .logical_bytes_in_chunk
+                .saturating_add((frame_count * MAX_FRAME_PAYLOAD_BYTES) as u64);
+            return Ok(());
+        }
     }
 
     async fn push_payload_frame(&mut self, payload: Bytes) -> Result<()> {

@@ -77,6 +77,7 @@ struct AllocatorState {
     budget_bytes: usize,
     owner_bytes: usize,
     retained_bytes: AtomicUsize,
+    peak_retained_bytes: AtomicUsize,
     allocations: AtomicUsize,
     direct_bytes: AtomicUsize,
     prefix_copy_bytes: AtomicUsize,
@@ -90,6 +91,7 @@ pub struct NativeBufferMetricsSnapshot {
     pub budget_bytes: usize,
     pub owner_bytes: usize,
     pub retained_bytes: usize,
+    pub peak_retained_bytes: usize,
     pub allocations: usize,
     pub direct_bytes: usize,
     pub prefix_copy_bytes: usize,
@@ -123,6 +125,7 @@ impl NativeBodyAllocator {
                 budget_bytes,
                 owner_bytes,
                 retained_bytes: AtomicUsize::new(0),
+                peak_retained_bytes: AtomicUsize::new(0),
                 allocations: AtomicUsize::new(0),
                 direct_bytes: AtomicUsize::new(0),
                 prefix_copy_bytes: AtomicUsize::new(0),
@@ -159,6 +162,7 @@ impl NativeBodyAllocator {
             budget_bytes: self.state.budget_bytes,
             owner_bytes: self.state.owner_bytes,
             retained_bytes: self.state.retained_bytes.load(Ordering::Acquire),
+            peak_retained_bytes: self.state.peak_retained_bytes.load(Ordering::Acquire),
             allocations: self.state.allocations.load(Ordering::Relaxed),
             direct_bytes: self.state.direct_bytes.load(Ordering::Relaxed),
             prefix_copy_bytes: self.state.prefix_copy_bytes.load(Ordering::Relaxed),
@@ -200,14 +204,22 @@ impl NativeBodyAllocator {
     }
 
     fn try_reserve(&self, bytes: usize) -> bool {
-        self.state
-            .retained_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current
-                    .checked_add(bytes)
-                    .filter(|next| *next <= self.state.budget_bytes)
-            })
-            .is_ok()
+        let reserved =
+            self.state
+                .retained_bytes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current
+                        .checked_add(bytes)
+                        .filter(|next| *next <= self.state.budget_bytes)
+                });
+        if let Ok(previous) = reserved {
+            self.state
+                .peak_retained_bytes
+                .fetch_max(previous + bytes, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     fn wake_credit_waiters(&self) {

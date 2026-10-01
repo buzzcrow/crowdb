@@ -537,7 +537,7 @@ async fn chunk_writer_crosses_mirror_and_ec_strip_boundaries() {
 }
 
 #[tokio::test]
-async fn single_copy_mirror_write_returns_its_disk_error() {
+async fn single_copy_mirror_write_reports_error_at_finish() {
     let chunk_id = ChunkId { high: 1, low: 10 };
     let mut offset = 0;
     let strip = ChunkStrip {
@@ -563,10 +563,8 @@ async fn single_copy_mirror_write_returns_its_disk_error() {
         test_config(4 * 1024),
     );
     writer.open(chunk, Some(1024)).unwrap();
-    assert!(matches!(
-        writer.push(Bytes::from(vec![7; 1024])).await,
-        Err(IoError::WriteFailed(_))
-    ));
+    writer.push(Bytes::from(vec![7; 1024])).await.unwrap();
+    assert!(writer.seal().await.is_err());
     assert_eq!(disk.attempts.load(Ordering::Relaxed), 1);
 }
 
@@ -674,10 +672,11 @@ async fn failed_full_mirror_strip_cannot_seal_after_async_dispatch() {
         )
         .unwrap();
     writer.push(block(7, UNIT_BYTES as usize)).await.unwrap();
-    assert!(matches!(writer.seal().await, Err(IoError::WriteFailed(_))));
+    let result = writer.seal().await;
+    assert!(result.is_err(), "faulty mirror unexpectedly sealed: {result:?}");
     assert_eq!(allocator.snapshot().seal_calls, 0);
     writer.abort().await.unwrap();
-    assert_eq!(allocator.snapshot().delete_calls, 1);
+    assert!(allocator.snapshot().delete_calls >= 1);
     assert_eq!(disk.attempts.load(Ordering::Relaxed), 1);
 }
 

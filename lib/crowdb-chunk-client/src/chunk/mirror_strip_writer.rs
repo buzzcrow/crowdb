@@ -3,6 +3,7 @@
 
 //! Durable writes for one persisted mirror strip.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,11 +26,47 @@ pub struct MirrorStripWriter {
     finished: bool,
     history: Vec<Bytes>,
     failed_segments: Vec<(Segment, String)>,
+    io_concurrency: Arc<MirrorIoConcurrency>,
+}
+
+#[derive(Default)]
+pub(crate) struct MirrorIoConcurrency {
+    active: AtomicU64,
+    peak: AtomicU64,
+}
+
+impl MirrorIoConcurrency {
+    pub(crate) fn peak(&self) -> u64 {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    fn begin(self: &Arc<Self>) -> MirrorIoGuard {
+        let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+        self.peak.fetch_max(active, Ordering::Relaxed);
+        MirrorIoGuard(Arc::clone(self))
+    }
+}
+
+struct MirrorIoGuard(Arc<MirrorIoConcurrency>);
+
+impl Drop for MirrorIoGuard {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl MirrorStripWriter {
     #[must_use]
     pub fn new(chunk: Arc<Chunk>, strip_index: u32, disk_writer: Arc<dyn DiskWriter>) -> Self {
+        Self::new_with_io_concurrency(chunk, strip_index, disk_writer, Arc::default())
+    }
+
+    pub(crate) fn new_with_io_concurrency(
+        chunk: Arc<Chunk>,
+        strip_index: u32,
+        disk_writer: Arc<dyn DiskWriter>,
+        io_concurrency: Arc<MirrorIoConcurrency>,
+    ) -> Self {
         Self {
             chunk,
             strip_index,
@@ -38,6 +75,7 @@ impl MirrorStripWriter {
             finished: false,
             history: Vec::new(),
             failed_segments: Vec::new(),
+            io_concurrency,
         }
     }
 
@@ -77,6 +115,7 @@ impl MirrorStripWriter {
         if segments.len() == 1 {
             let segment = segments[0];
             if !self.failed_segments.iter().any(|(failed, _)| *failed == segment) {
+                let _active = self.io_concurrency.begin();
                 if let Err(error) = self
                     .disk_writer
                     .write_at_byte_offset(&segment, unit_bytes, self.accepted, buffer)
@@ -92,9 +131,11 @@ impl MirrorStripWriter {
                     continue;
                 }
                 let disk_io = Arc::clone(&self.disk_writer);
+                let io_concurrency = Arc::clone(&self.io_concurrency);
                 let bytes = buffer.clone();
                 let offset = self.accepted;
                 writes.spawn(async move {
+                    let _active = io_concurrency.begin();
                     (
                         segment,
                         disk_io
@@ -185,6 +226,23 @@ impl MirrorStripWriter {
                 error,
             })
             .collect())
+    }
+
+    pub(crate) fn replay_views(&self) -> Vec<Bytes> {
+        self.history.clone()
+    }
+
+    pub(crate) async fn checkpoint(&self) -> Result<()> {
+        let (_, _, _, segments) = self.geometry()?;
+        if !self.failed_segments.is_empty() {
+            return Err(IoError::WriteFailed(
+                "mirror checkpoint has failed replicas".into(),
+            ));
+        }
+        for segment in segments {
+            self.disk_writer.fsync(&segment).await?;
+        }
+        Ok(())
     }
 
     pub fn abort(&mut self) -> Result<StripResult> {

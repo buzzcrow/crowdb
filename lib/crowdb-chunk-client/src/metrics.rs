@@ -355,6 +355,10 @@ pub struct LargeWriteRepairMetrics {
     pub(crate) exhausted: Arc<Counter>,
     pub(crate) negative_list_hits: Arc<Counter>,
     pub(crate) discarded_segments: Arc<Counter>,
+    pub(crate) chunk_rotations: Arc<Counter>,
+    pub(crate) rotated_chunks: Arc<Counter>,
+    pub(crate) replayed_bytes: Arc<Counter>,
+    pub(crate) rotation_ns: Arc<Counter>,
 }
 
 impl Default for LargeWriteRepairMetrics {
@@ -369,6 +373,12 @@ impl Default for LargeWriteRepairMetrics {
             discarded_segments: Arc::new(Counter::new(
                 "chunkio.large_write.repair.discarded_segments.c".into(),
             )),
+            chunk_rotations: Arc::new(Counter::new(
+                "chunkio.large_write.repair.chunk_rotations.c".into(),
+            )),
+            rotated_chunks: Arc::new(Counter::new("chunkio.large_write.repair.rotated_chunks.c".into())),
+            replayed_bytes: Arc::new(Counter::new("chunkio.large_write.repair.replayed_bytes.c".into())),
+            rotation_ns: Arc::new(Counter::new("chunkio.large_write.repair.rotation_ns.c".into())),
         }
     }
 }
@@ -380,6 +390,10 @@ pub struct LargeWriteRepairMetricsSnapshot {
     pub exhausted: u64,
     pub negative_list_hits: u64,
     pub discarded_segments: u64,
+    pub chunk_rotations: u64,
+    pub rotated_chunks: u64,
+    pub replayed_bytes: u64,
+    pub rotation_ns: u64,
 }
 
 impl LargeWriteRepairMetrics {
@@ -390,6 +404,10 @@ impl LargeWriteRepairMetrics {
             exhausted: registry.register_counter("chunkio.large_write.repair.exhausted.c"),
             negative_list_hits: registry.register_counter("chunkio.large_write.repair.negative_list_hits.c"),
             discarded_segments: registry.register_counter("chunkio.large_write.repair.discarded_segments.c"),
+            chunk_rotations: registry.register_counter("chunkio.large_write.repair.chunk_rotations.c"),
+            rotated_chunks: registry.register_counter("chunkio.large_write.repair.rotated_chunks.c"),
+            replayed_bytes: registry.register_counter("chunkio.large_write.repair.replayed_bytes.c"),
+            rotation_ns: registry.register_counter("chunkio.large_write.repair.rotation_ns.c"),
         }
     }
 
@@ -401,6 +419,10 @@ impl LargeWriteRepairMetrics {
             exhausted: self.exhausted.snapshot().total,
             negative_list_hits: self.negative_list_hits.snapshot().total,
             discarded_segments: self.discarded_segments.snapshot().total,
+            chunk_rotations: self.chunk_rotations.snapshot().total,
+            rotated_chunks: self.rotated_chunks.snapshot().total,
+            replayed_bytes: self.replayed_bytes.snapshot().total,
+            rotation_ns: self.rotation_ns.snapshot().total,
         }
     }
 }
