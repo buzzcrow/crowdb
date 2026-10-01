@@ -51,6 +51,10 @@ if [[ ! -f "$output/lib/libcrowdb_kv_client.so" ]]; then
     echo 'DiskIO FFI library was not collected' >&2
     exit 1
 fi
+if [[ ! -f "$output/lib/libcrypto.so.3" ]]; then
+    echo 'the pixi OpenSSL runtime was not collected' >&2
+    exit 1
+fi
 for library in "$output"/lib/*; do
     patchelf --set-rpath '/opt/crowdb/lib' "$library"
 done

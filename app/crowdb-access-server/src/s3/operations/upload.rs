@@ -43,7 +43,8 @@ pub(super) async fn write_object_body(
 ) -> Result<(String, Vec<u8>), PutOutcome> {
     let (sender, receiver) = mpsc::channel(held_buffers);
     let progress = AtomicU64::new(0);
-    let flow = WriteFlow::new(sender, &progress);
+    let queued_peak = AtomicU64::new(0);
+    let flow = WriteFlow::new(sender, &progress, &queued_peak);
     let mut digest = DigestPipe::start(expected_payload_sha256.is_some());
     let receive = receive_body(body, native_receiver, declared_length, flow, &digest, metrics);
     let write = write_buffers(writer, receiver, &progress, |error| {

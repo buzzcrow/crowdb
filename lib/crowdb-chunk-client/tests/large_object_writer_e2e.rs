@@ -352,7 +352,7 @@ async fn large_mirror_replaces_failed_replica_before_ordered_completion() {
     }
     let stack = E2eStack::start(small_policy()).await;
     let (allocator, disk_writer) = real_parts(&stack).await;
-    for fail_on in [1, 3] {
+    for fail_on in [1, 3, 4] {
         let fault = Arc::new(FailWriteCall {
             inner: disk_writer.clone(),
             calls: AtomicUsize::new(0),
@@ -413,7 +413,7 @@ async fn large_mirror_retains_later_framed_buffers_until_failed_first_strip_is_r
         ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
     let mut configured = policy(16 * MIB as u64);
     Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
-    let frames = 64;
+    let frames = 65;
     let expected = vec![0x5a; frames * MAX_FRAME_PAYLOAD_BYTES];
     let mut writer = client.prepare_large_write(Some(expected.len() as u64), configured);
     writer

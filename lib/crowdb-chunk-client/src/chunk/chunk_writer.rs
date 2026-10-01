@@ -64,6 +64,7 @@ pub struct ChunkWriter {
     pub(crate) strip_write_successes: u64,
     pub(crate) strip_write_success_time: Duration,
     pub(crate) strip_write_success_max: Duration,
+    pub(crate) mirror_uncommitted_peak: u64,
     pub(crate) ec_encode_time: Duration,
     pub(crate) completion_wait_time: Duration,
     pub(crate) failed_disks: Arc<FailedDiskList>,
@@ -133,6 +134,7 @@ impl ChunkWriter {
             strip_write_successes: 0,
             strip_write_success_time: Duration::ZERO,
             strip_write_success_max: Duration::ZERO,
+            mirror_uncommitted_peak: 0,
             ec_encode_time: Duration::ZERO,
             completion_wait_time: Duration::ZERO,
             failed_disks,
@@ -262,6 +264,9 @@ impl ChunkWriter {
                         _buffer: retained,
                     })
                 }));
+                self.mirror_uncommitted_peak = self
+                    .mirror_uncommitted_peak
+                    .max(u64::try_from(self.mirror_completions.len()).unwrap_or(u64::MAX));
                 self.bytes_in_chunk += remaining as u64;
                 offset = end;
                 continue;
@@ -552,6 +557,14 @@ impl ChunkWriter {
     /// write completion handles (joined at `seal` time, not here).
     pub async fn finish_strip(&mut self) -> Result<StripResult> {
         self.await_parity_capacity().await?;
+        if matches!(self.current_strip, Some(StripWriter::Mirror(_))) {
+            // A partial mirror strip completes inline. Commit every earlier
+            // detached strip first so its repair and release stay ordered.
+            while !self.mirror_completions.is_empty() {
+                self.commit_oldest_mirror().await?;
+                self.commit_ready_mirrors().await?;
+            }
+        }
         let mut strip = self
             .current_strip
             .take()

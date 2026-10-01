@@ -1,6 +1,8 @@
 use std::fmt::Write;
-use std::sync::atomic::AtomicU64;
+use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Instant;
 
 use crowdb_access_iceberg::catalog::CatalogContext;
@@ -114,7 +116,8 @@ impl WriteObject<'_> {
         // One upload task polls both sides before yielding.
         let (sender, receiver) = mpsc::channel(self.held_buffers);
         let progress = AtomicU64::new(0);
-        let flow = WriteFlow::new(sender, &progress);
+        let queued_peak = AtomicU64::new(0);
+        let flow = WriteFlow::new(sender, &progress, &queued_peak);
         let target_buffer = usize::try_from(self.declared_length.unwrap_or(TARGET_BUFFER_BYTES as u64))
             .unwrap_or(TARGET_BUFFER_BYTES)
             .clamp(1, TARGET_BUFFER_BYTES);
@@ -132,6 +135,8 @@ impl WriteObject<'_> {
             FileS3ErrorCode::SlowDown
         });
         let transfer = drive_transfer(receive, write, &progress).await;
+        self.observation
+            .queued_buffers_peak(queued_peak.load(Ordering::Relaxed));
         let (length, written) = match transfer {
             Ok(result) => result,
             Err(error) => {
@@ -274,7 +279,19 @@ async fn receive_body(
     let mut digest_pending = Vec::with_capacity(16);
     loop {
         let started = Instant::now();
-        let next = body.frame().await;
+        let mut frame = std::pin::pin!(body.frame());
+        let mut waited = None;
+        let next = std::future::poll_fn(|cx| match frame.as_mut().poll(cx) {
+            Poll::Pending => {
+                waited.get_or_insert_with(Instant::now);
+                Poll::Pending
+            }
+            Poll::Ready(value) => Poll::Ready(value),
+        })
+        .await;
+        if let Some(waited) = waited {
+            observation.body_wait(waited.elapsed());
+        }
         observation.body_poll(started.elapsed(), next.is_some());
         let Some(frame) = next else { break };
         let mut bytes = frame

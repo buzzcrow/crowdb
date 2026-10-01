@@ -92,6 +92,15 @@ The following invariants apply:
   the suspended coroutine. The write path does not spin or poll a timer for
   capacity.
 
+The upload metrics distinguish elapsed body-frame polling from actual body
+waits. A body wait is counted only when the body future returns `Pending`; its
+duration ends when that frame or EOF becomes ready. Immediate frames add no
+wait count, while writer-capacity and write-flow pause time remain separate.
+`queued_buffers_peak` is the highest number of owners waiting in the handoff
+queue during one upload. `mirror_uncommitted_peak` counts submitted strip
+writes that have not yet committed in order, including writes whose DiskIO task
+already finished. The counters describe different stages and are not added.
+
 ## 3. Integrity and durable publication
 
 The object-scoped OpenSSL worker computes MD5 over ordered logical payload

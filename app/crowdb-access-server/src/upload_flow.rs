@@ -27,16 +27,29 @@ pub(crate) enum OfferStatus {
 pub(crate) struct WriteFlow<'a> {
     sender: mpsc::Sender<UploadBuffer>,
     progress: &'a AtomicU64,
+    queued_peak: &'a AtomicU64,
 }
 
 impl<'a> WriteFlow<'a> {
-    pub(crate) fn new(sender: mpsc::Sender<UploadBuffer>, progress: &'a AtomicU64) -> Self {
-        Self { sender, progress }
+    pub(crate) fn new(
+        sender: mpsc::Sender<UploadBuffer>,
+        progress: &'a AtomicU64,
+        queued_peak: &'a AtomicU64,
+    ) -> Self {
+        Self {
+            sender,
+            progress,
+            queued_peak,
+        }
     }
 
     pub(crate) async fn offer(&self, buffer: UploadBuffer) -> Result<OfferStatus, ()> {
         self.sender.send(buffer).await.map_err(|_| ())?;
         self.progress.fetch_add(1, Ordering::Relaxed);
+        self.queued_peak.fetch_max(
+            u64::try_from(self.sender.max_capacity() - self.sender.capacity()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         Ok(if self.sender.capacity() == 0 {
             OfferStatus::Pause
         } else {

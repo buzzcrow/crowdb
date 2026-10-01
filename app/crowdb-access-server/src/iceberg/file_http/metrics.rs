@@ -11,6 +11,8 @@ pub struct UploadFlowSnapshot {
     pub logical_bytes: u64,
     pub body_frames: u64,
     pub body_poll_ns: u64,
+    pub body_waits: u64,
+    pub body_wait_ns: u64,
     pub frames_prepared: u64,
     pub frame_prepare_ns: u64,
     pub digest_enqueues: u64,
@@ -18,6 +20,7 @@ pub struct UploadFlowSnapshot {
     pub digest_process_ns: u64,
     pub write_flow_pauses: u64,
     pub write_flow_pause_ns: u64,
+    pub queued_buffers_peak: u64,
     pub writer_feeds: u64,
     pub writer_feed_ns: u64,
     pub strip_prepare_waits: u64,
@@ -25,6 +28,7 @@ pub struct UploadFlowSnapshot {
     pub strip_write_successes: u64,
     pub strip_write_success_ns: u64,
     pub strip_write_success_max_ns: u64,
+    pub mirror_uncommitted_peak: u64,
     pub writer_capacity_waits: u64,
     pub writer_capacity_wait_ns: u64,
     pub writer_finish_ns: u64,
@@ -45,6 +49,8 @@ pub(super) struct UploadFlowMetrics {
     logical_bytes: AtomicU64,
     body_frames: AtomicU64,
     body_poll_ns: AtomicU64,
+    body_waits: AtomicU64,
+    body_wait_ns: AtomicU64,
     frames_prepared: AtomicU64,
     frame_prepare_ns: AtomicU64,
     digest_enqueues: AtomicU64,
@@ -52,6 +58,7 @@ pub(super) struct UploadFlowMetrics {
     digest_process_ns: AtomicU64,
     write_flow_pauses: AtomicU64,
     write_flow_pause_ns: AtomicU64,
+    queued_buffers_peak: AtomicU64,
     writer_feeds: AtomicU64,
     writer_feed_ns: AtomicU64,
     strip_prepare_waits: AtomicU64,
@@ -59,6 +66,7 @@ pub(super) struct UploadFlowMetrics {
     strip_write_successes: AtomicU64,
     strip_write_success_ns: AtomicU64,
     strip_write_success_max_ns: AtomicU64,
+    mirror_uncommitted_peak: AtomicU64,
     writer_capacity_waits: AtomicU64,
     writer_capacity_wait_ns: AtomicU64,
     writer_finish_ns: AtomicU64,
@@ -100,6 +108,8 @@ impl UploadFlowMetrics {
             logical_bytes: self.logical_bytes.load(Ordering::Relaxed),
             body_frames: self.body_frames.load(Ordering::Relaxed),
             body_poll_ns: self.body_poll_ns.load(Ordering::Relaxed),
+            body_waits: self.body_waits.load(Ordering::Relaxed),
+            body_wait_ns: self.body_wait_ns.load(Ordering::Relaxed),
             frames_prepared: self.frames_prepared.load(Ordering::Relaxed),
             frame_prepare_ns: self.frame_prepare_ns.load(Ordering::Relaxed),
             digest_enqueues: self.digest_enqueues.load(Ordering::Relaxed),
@@ -107,6 +117,7 @@ impl UploadFlowMetrics {
             digest_process_ns: self.digest_process_ns.load(Ordering::Relaxed),
             write_flow_pauses: self.write_flow_pauses.load(Ordering::Relaxed),
             write_flow_pause_ns: self.write_flow_pause_ns.load(Ordering::Relaxed),
+            queued_buffers_peak: self.queued_buffers_peak.load(Ordering::Relaxed),
             writer_feeds: self.writer_feeds.load(Ordering::Relaxed),
             writer_feed_ns: self.writer_feed_ns.load(Ordering::Relaxed),
             strip_prepare_waits: self.strip_prepare_waits.load(Ordering::Relaxed),
@@ -114,6 +125,7 @@ impl UploadFlowMetrics {
             strip_write_successes: self.strip_write_successes.load(Ordering::Relaxed),
             strip_write_success_ns: self.strip_write_success_ns.load(Ordering::Relaxed),
             strip_write_success_max_ns: self.strip_write_success_max_ns.load(Ordering::Relaxed),
+            mirror_uncommitted_peak: self.mirror_uncommitted_peak.load(Ordering::Relaxed),
             writer_capacity_waits: self.writer_capacity_waits.load(Ordering::Relaxed),
             writer_capacity_wait_ns: self.writer_capacity_wait_ns.load(Ordering::Relaxed),
             writer_finish_ns: self.writer_finish_ns.load(Ordering::Relaxed),
@@ -140,6 +152,11 @@ impl UploadObservation {
         self.sample.body_frames += u64::from(has_frame);
     }
 
+    pub(super) fn body_wait(&mut self, elapsed: Duration) {
+        self.sample.body_waits += 1;
+        self.sample.body_wait_ns += nanos(elapsed);
+    }
+
     pub(super) fn payload(&mut self, bytes: usize) {
         self.sample.logical_bytes += bytes as u64;
     }
@@ -163,6 +180,10 @@ impl UploadObservation {
         self.sample.write_flow_pause_ns += nanos(elapsed);
     }
 
+    pub(super) fn queued_buffers_peak(&mut self, peak: u64) {
+        self.sample.queued_buffers_peak = self.sample.queued_buffers_peak.max(peak);
+    }
+
     pub(super) fn writer_feeds(&mut self, count: u64, elapsed: Duration) {
         self.sample.writer_feeds += count;
         self.sample.writer_feed_ns += nanos(elapsed);
@@ -177,6 +198,10 @@ impl UploadObservation {
             .sample
             .strip_write_success_max_ns
             .max(nanos(timing.strip_write_success_max));
+        self.sample.mirror_uncommitted_peak = self
+            .sample
+            .mirror_uncommitted_peak
+            .max(timing.mirror_uncommitted_peak);
     }
 
     pub(super) fn writer_capacity_waits(&mut self, count: u64, elapsed: Duration) {
@@ -216,6 +241,12 @@ impl Drop for UploadObservation {
             .body_poll_ns
             .fetch_add(self.sample.body_poll_ns, Ordering::Relaxed);
         self.metrics
+            .body_waits
+            .fetch_add(self.sample.body_waits, Ordering::Relaxed);
+        self.metrics
+            .body_wait_ns
+            .fetch_add(self.sample.body_wait_ns, Ordering::Relaxed);
+        self.metrics
             .frames_prepared
             .fetch_add(self.sample.frames_prepared, Ordering::Relaxed);
         self.metrics
@@ -237,6 +268,9 @@ impl Drop for UploadObservation {
             .write_flow_pause_ns
             .fetch_add(self.sample.write_flow_pause_ns, Ordering::Relaxed);
         self.metrics
+            .queued_buffers_peak
+            .fetch_max(self.sample.queued_buffers_peak, Ordering::Relaxed);
+        self.metrics
             .writer_feeds
             .fetch_add(self.sample.writer_feeds, Ordering::Relaxed);
         self.metrics
@@ -257,6 +291,9 @@ impl Drop for UploadObservation {
         self.metrics
             .strip_write_success_max_ns
             .fetch_max(self.sample.strip_write_success_max_ns, Ordering::Relaxed);
+        self.metrics
+            .mirror_uncommitted_peak
+            .fetch_max(self.sample.mirror_uncommitted_peak, Ordering::Relaxed);
         self.metrics
             .writer_capacity_waits
             .fetch_add(self.sample.writer_capacity_waits, Ordering::Relaxed);

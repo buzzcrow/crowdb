@@ -60,6 +60,7 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) strip_write_successes: u64,
     pub(crate) strip_write_success_time: Duration,
     pub(crate) strip_write_success_max: Duration,
+    pub(crate) mirror_uncommitted_peak: u64,
     pub(crate) source_reads: u64,
     pub(crate) source_read_time: Duration,
     pub(crate) assembly_copies: u64,
@@ -123,6 +124,7 @@ impl LargeAsyncObjectWriter {
             strip_write_successes: 0,
             strip_write_success_time: Duration::ZERO,
             strip_write_success_max: Duration::ZERO,
+            mirror_uncommitted_peak: 0,
             source_reads: 0,
             source_read_time: Duration::ZERO,
             assembly_copies: 0,
@@ -158,6 +160,7 @@ impl LargeAsyncObjectWriter {
             strip_write_successes: self.strip_write_successes,
             strip_write_success_time: self.strip_write_success_time,
             strip_write_success_max: self.strip_write_success_max,
+            mirror_uncommitted_peak: self.mirror_uncommitted_peak,
         }
     }
 
@@ -222,6 +225,7 @@ impl LargeAsyncObjectWriter {
             self.strip_write_successes += cw.strip_write_successes;
             self.strip_write_success_time += cw.strip_write_success_time;
             self.strip_write_success_max = self.strip_write_success_max.max(cw.strip_write_success_max);
+            self.mirror_uncommitted_peak = self.mirror_uncommitted_peak.max(cw.mirror_uncommitted_peak);
             self.ec_encode_time += cw.ec_encode_time;
             self.completion_wait_time += cw.completion_wait_time;
             if location.length > 0 {

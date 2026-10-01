@@ -615,6 +615,17 @@ async fn slow_socket_resumes_upload_after_writer_drains() {
     let get = client.send(Method::GET, &object, "", b"", false).await;
     assert_eq!(get.status(), 200);
     assert_eq!(get.bytes().await.unwrap().len(), 2 * BLOCK_BYTES);
+    let metrics: serde_json::Value = Client::new()
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(metrics["upload_flow"]["body_waits"].as_u64().unwrap() > 0);
+    assert!(metrics["upload_flow"]["body_wait_ns"].as_u64().unwrap() > 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
