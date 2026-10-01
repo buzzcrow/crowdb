@@ -1459,10 +1459,11 @@ async fn resolve_cursor_advance(
                         "committed cursor has an unexpected checksum".into(),
                     ));
                 }
-                Ok(_) => {
-                    return Err(StreamError::Corruption(
-                        "durable cursor is outside the append bounds".into(),
-                    ));
+                Ok(durable) => {
+                    return Err(StreamError::Corruption(format!(
+                        "durable cursor is outside the append bounds: chunk={chunk_id:?} epoch={} expected={expected_cursor} new={new_cursor} durable={}",
+                        state.writer_epoch, durable.offset
+                    )));
                 }
                 Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
                 Err(error) => {

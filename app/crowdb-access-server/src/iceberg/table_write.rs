@@ -154,7 +154,7 @@ impl TableWrites {
         }
         let target = request::parse(&uri);
         let result = match target {
-            Ok(target) => self.mutate(&record, capabilities, target, bytes, now).await,
+            Ok(target) => Box::pin(self.mutate(&record, capabilities, target, bytes, now)).await,
             Err(error) => Err(error),
         };
         let (status, body) = self.outcome_response(result).await?;
