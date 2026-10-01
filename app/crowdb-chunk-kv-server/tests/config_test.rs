@@ -22,6 +22,8 @@ fn defaults_close_the_documented_timing_contract() {
     assert_eq!(config.max_split_catchup_lag_records, 1_024);
     assert_eq!(config.storage.metadata_store_id, 1);
     assert_eq!(config.storage.stream_writer_lease_ms, 30_000);
+    assert_eq!(config.storage.tree_chunk_capacity_bytes, 256 * 1024 * 1024);
+    assert_eq!(config.storage.stream_chunk_capacity_bytes, 256 * 1024 * 1024);
     assert_eq!(config.storage.diskio_connections_per_endpoint, 1);
     assert_eq!(config.storage.diskio_rpc_workers, 2);
     assert_eq!(config.rpc_workers, 2);
@@ -67,5 +69,11 @@ fn invalid_identity_address_and_capacity_fail_closed() {
     config.max_split_catchup_lag_records = 1;
     config.storage.metadata_store_id = 0;
     config.storage.stream_writer_lease_ms = 0;
+    assert!(config.validate().is_err());
+    config.storage.stream_writer_lease_ms = 30_000;
+    config.storage.tree_chunk_capacity_bytes = 257 * 1024 * 1024;
+    assert!(config.validate().is_err());
+    config.storage.tree_chunk_capacity_bytes = 256 * 1024 * 1024;
+    config.storage.stream_chunk_capacity_bytes = 257 * 1024 * 1024;
     assert!(config.validate().is_err());
 }

@@ -153,17 +153,47 @@ impl KvStreamMetadataStore {
             .await
         {
             Ok(_) => Ok(()),
-            Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::OutcomeUnknown) => {
+            Err(
+                error @ (crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::OutcomeUnknown),
+            ) => {
                 match self
                     .kv
                     .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
                     .await
                     .map_err(kv_error)?
                 {
-                    GetOutcome::Found { value, .. } if decode::<StreamExtentPage>(&value)? == *page => Ok(()),
-                    _ => Err(StreamError::Corruption(
-                        "immutable extent-page key contains another value".into(),
-                    )),
+                    GetOutcome::Found { value, .. } => {
+                        let observed: StreamExtentPage = decode(&value)?;
+                        if observed == *page {
+                            Ok(())
+                        } else {
+                            tracing::warn!(
+                                stream_high = page.stream_name.high,
+                                stream_low = page.stream_name.low,
+                                writer_epoch = page.writer_epoch,
+                                generation = page.generation,
+                                page_index = page.page_index,
+                                candidate = ?page,
+                                observed = ?observed,
+                                "immutable extent-page key has conflicting contents"
+                            );
+                            Err(StreamError::Corruption(
+                                "immutable extent-page key contains another value".into(),
+                            ))
+                        }
+                    }
+                    GetOutcome::NotFound => {
+                        tracing::warn!(
+                            stream_high = page.stream_name.high,
+                            stream_low = page.stream_name.low,
+                            writer_epoch = page.writer_epoch,
+                            generation = page.generation,
+                            page_index = page.page_index,
+                            %error,
+                            "immutable extent-page CAS was unresolved and its key is absent"
+                        );
+                        Err(StreamError::WriteStalled)
+                    }
                 }
             }
             Err(crowdb_kv_client::Error::CasBusy) => Err(StreamError::Backpressure),

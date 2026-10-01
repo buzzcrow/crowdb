@@ -36,7 +36,7 @@ impl ProductionStreamRuntime {
         read_policy: ChunkReadPolicy,
         config: StreamConfig,
     ) -> Result<Self> {
-        Self::new_with_mirror_copies(kv, chunk_io, writer_lease_ms, read_policy, config, 3)
+        Self::new_with_mirror_copies(kv, chunk_io, writer_lease_ms, read_policy, config, 2)
     }
 
     /// Builds the stream runtime with an explicit stream mirror count.
@@ -57,12 +57,13 @@ impl ProductionStreamRuntime {
             .liveness_interval
             .min(std::time::Duration::from_millis((writer_lease_ms / 3).max(1)));
         let (allocator, disk_writer) = chunk_io.storage_parts();
-        let chunks = Arc::new(ProductionStreamChunkStore::new_with_mirror_copies(
+        let chunks = Arc::new(ProductionStreamChunkStore::new_with_mirror_copies_and_capacity(
             allocator,
             disk_writer,
             writer_lease_ms,
             read_policy,
             mirror_copies,
+            config.chunk_capacity_bytes,
         )?);
         Ok(Self {
             registry: Arc::new(KvStreamRegistry::new(Arc::clone(&kv))),

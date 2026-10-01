@@ -1,9 +1,10 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogError};
 use crowdb_access_iceberg::file::{
     FileIdentity, FileOperation, FileSealError, FileSealer, MultipartAdmissionLimits, MultipartPart,
-    MultipartPhase, MultipartSession, MultipartStreamPart, MultipartWorkError,
+    MultipartPhase, MultipartSession, MultipartWorkError,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
 use crowdb_access_s3::auth::StreamingPayloadVerifier;
@@ -130,26 +131,45 @@ impl FileHttp {
             pending: None,
             credit: None,
         };
-        let policy = self
-            .admission
-            .initialize(
-                session.context,
-                MultipartAdmissionLimits {
-                    max_sessions: 1024,
-                    max_reserved_bytes: 64 * 1024 * 1024 * 1024 * 1024,
-                },
-            )
-            .await
-            .map_err(catalog_error)?;
-        admission
-            .check_create(&session, &policy)
-            .map_err(admission_error)?;
-        if !self
-            .admission
-            .reserve(&policy, &session, now_ms)
-            .await
-            .map_err(catalog_error)?
-        {
+        let mut reserved = false;
+        for attempt in 0..256_u64 {
+            let policy = match self
+                .admission
+                .initialize(
+                    session.context,
+                    MultipartAdmissionLimits {
+                        max_sessions: 1024,
+                        max_reserved_bytes: 64 * 1024 * 1024 * 1024 * 1024,
+                    },
+                )
+                .await
+            {
+                Ok(policy) => policy,
+                Err(CatalogError::Busy) => {
+                    tokio::time::sleep(std::time::Duration::from_millis((attempt + 1).min(16))).await;
+                    continue;
+                }
+                Err(error) => return Err(catalog_error(error)),
+            };
+            if policy.pending.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis((attempt + 1).min(16))).await;
+                continue;
+            }
+            admission
+                .check_create(&session, &policy)
+                .map_err(admission_error)?;
+            match self.admission.reserve(&policy, &session, now_ms).await {
+                Ok(true) => {
+                    reserved = true;
+                    break;
+                }
+                Ok(false) | Err(CatalogError::Busy) => {
+                    tokio::time::sleep(std::time::Duration::from_millis((attempt + 1).min(16))).await;
+                }
+                Err(error) => return Err(catalog_error(error)),
+            }
+        }
+        if !reserved {
             return Err(FileS3ErrorCode::SlowDown);
         }
         let durable = self
@@ -190,12 +210,12 @@ impl FileHttp {
             table: session.owner.table,
             file: FileId::random(),
         };
-        let (tree, stream) = if let Some(client) = self.blocks.stream_client() {
-            let record = super::stream::upload(
-                client,
+        if self.blocks.supports_stream_io() {
+            let published = super::stream::upload(
+                self.blocks.as_ref(),
                 &self.uploads,
                 admission,
-                &mut body,
+                body,
                 owner,
                 session.location.clone(),
                 length,
@@ -203,69 +223,64 @@ impl FileHttp {
                 native_receiver,
                 self.small_threshold_exclusive,
                 &self.large_write,
+                &self.upload_metrics,
+                super::stream::Publication::Part {
+                    repository: &self.multipart,
+                    session: &session,
+                    number: part_number,
+                    now_ms,
+                },
             )
             .await?;
-            (
-                None,
-                Some(MultipartStreamPart {
-                    length: record.length,
-                    content: record.content,
-                }),
+            let super::stream::UploadedObject::Part(part) = published else {
+                return Err(FileS3ErrorCode::InternalError);
+            };
+            return MultipartResponses::upload_part(&part)
+                .map(|response| response.map(IcebergBody::new))
+                .map_err(|_| FileS3ErrorCode::InternalError);
+        }
+        let tree = admission
+            .receive(
+                &self.uploads,
+                &mut body,
+                self.blocks.clone(),
+                owner,
+                length,
+                digest,
             )
-        } else {
-            let tree = admission
-                .receive(
-                    &self.uploads,
-                    &mut body,
-                    self.blocks.clone(),
-                    owner,
-                    length,
-                    digest,
-                )
-                .await
-                .map_err(|error| {
-                    body.failure()
-                        .map_or_else(|| admission_error(error), encoding_error)
-                })?;
-            (Some(tree), None)
-        };
+            .await
+            .map_err(|error| {
+                body.failure()
+                    .map_or_else(|| admission_error(error), encoding_error)
+            })?;
         let mut part = MultipartPart {
             upload: session.upload,
             number: part_number,
             revision: 1,
             modified_ms: now_ms,
             owner,
-            tree,
-            stream,
+            tree: Some(tree),
+            stream: None,
         };
-        if part.stream.is_some() {
-            part = self
-                .multipart
-                .put_stream_part(&session, &part, now_ms)
-                .await
-                .map_err(catalog_error)?
-                .ok_or(FileS3ErrorCode::SlowDown)?;
-        } else {
-            let before = self
-                .multipart
-                .part_for_upload(&session, part_number)
-                .await
-                .map_err(catalog_error)?;
-            part.revision = before.map_or(1, |part| part.revision.checked_add(1).unwrap_or(0));
-            let pending = self
-                .multipart
-                .reserve_part_state(&session, &part, now_ms)
-                .await
-                .map_err(catalog_error)?
-                .ok_or(FileS3ErrorCode::SlowDown)?;
-            if !self
-                .multipart
-                .settle_part(&pending)
-                .await
-                .map_err(catalog_error)?
-            {
-                return Err(FileS3ErrorCode::SlowDown);
-            }
+        let before = self
+            .multipart
+            .part_for_upload(&session, part_number)
+            .await
+            .map_err(catalog_error)?;
+        part.revision = before.map_or(1, |part| part.revision.checked_add(1).unwrap_or(0));
+        let pending = self
+            .multipart
+            .reserve_part_state(&session, &part, now_ms)
+            .await
+            .map_err(catalog_error)?
+            .ok_or(FileS3ErrorCode::SlowDown)?;
+        if !self
+            .multipart
+            .settle_part(&pending)
+            .await
+            .map_err(catalog_error)?
+        {
+            return Err(FileS3ErrorCode::SlowDown);
         }
         MultipartResponses::upload_part(&part)
             .map(|response| response.map(IcebergBody::new))
@@ -344,10 +359,10 @@ impl FileHttp {
         let resource = session.location.object_key();
         let body = crate::iceberg::FileCompleteBody::new(
             async move {
-                service
-                    .drive_complete(session, expected, now_ms, &url)
-                    .await
-                    .map(Response::into_body)
+                let started = Instant::now();
+                let result = service.drive_complete(session, expected, now_ms, &url).await;
+                service.upload_metrics.multipart_complete(started.elapsed());
+                result.map(Response::into_body)
             },
             &resource,
             std::time::Duration::from_secs(10),

@@ -51,6 +51,7 @@ struct MirrorWriteSource
     void                           *operation         = nullptr;
     uint32_t                        attempt           = 0;
     uint64_t                        started_at_ns     = 0;
+    bool                            disabled          = false;
 
     static void submit(void *context, CallbackComplete complete_fn, void *operation_context)
     {
@@ -58,6 +59,10 @@ struct MirrorWriteSource
         self->complete  = complete_fn;
         self->operation = operation_context;
         self->attempt   = 0;
+        if (self->disabled) {
+            complete_fn(operation_context, CallbackSignal::kValue, Status::Ok());
+            return;
+        }
         self->submit_attempt();
     }
 
@@ -131,17 +136,18 @@ struct PackReceiver
 };
 
 using PackSender    = decltype(stdexec::when_all(std::declval<CallbackSender>(), std::declval<CallbackSender>(),
+                                                 std::declval<CallbackSender>(), std::declval<CallbackSender>(),
                                                  std::declval<CallbackSender>()));
 using PackOperation = decltype(stdexec::connect(std::declval<PackSender>(), std::declval<PackReceiver>()));
 
 struct PackWrite
 {
-    ChunkPagePack                    pack;
-    uint64_t                         physical_length = 0;
-    uint64_t                         source_offset   = 0;
-    std::vector<uint8_t>             framed;
-    std::array<MirrorWriteSource, 3> mirrors;
-    std::unique_ptr<PackOperation>   operation;
+    ChunkPagePack                                   pack;
+    uint64_t                                        physical_length = 0;
+    uint64_t                                        source_offset   = 0;
+    std::vector<uint8_t>                            framed;
+    std::array<MirrorWriteSource, kMaxMirrorCopies> mirrors;
+    std::unique_ptr<PackOperation>                  operation;
 };
 
 class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable_shared_from_this<ChunkPackPipelineImpl>
@@ -234,7 +240,8 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                     (store->config_.max_chunk_bytes + store->config_.pack_bytes - 1) / store->config_.pack_bytes;
                 const uint64_t physical_pack_bytes =
                     crowdb::protocol::framed_physical_length(store->config_.pack_bytes);
-                if (packs_per_chunk > std::numeric_limits<uint64_t>::max() / physical_pack_bytes) {
+                if (physical_pack_bytes == 0 ||
+                    packs_per_chunk > std::numeric_limits<uint64_t>::max() / physical_pack_bytes) {
                     return Status::resource_exhausted("chunk page framing exceeds address space");
                 }
                 Status status = store->transport_->allocate_mirror_chunk(packs_per_chunk * physical_pack_bytes,
@@ -417,11 +424,14 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                 .stop_requested    = &stop_requested,
                 .diskio_operations = &store->diskio_operations_,
                 .diskio_latency_ns = &store->diskio_latency_ns_,
+                .disabled          = mirror >= store->config_.mirror_copies,
             };
         }
         auto sender = stdexec::when_all(CallbackSender(job.mirrors.data(), &MirrorWriteSource::submit),
                                         CallbackSender(&job.mirrors[1], &MirrorWriteSource::submit),
-                                        CallbackSender(&job.mirrors[2], &MirrorWriteSource::submit));
+                                        CallbackSender(&job.mirrors[2], &MirrorWriteSource::submit),
+                                        CallbackSender(&job.mirrors[3], &MirrorWriteSource::submit),
+                                        CallbackSender(&job.mirrors[4], &MirrorWriteSource::submit));
         // PackOperation is immovable (STDEXEC_IMMOVABLE), so make_unique
         // cannot be used; construct directly from the connect() prvalue.
         // std::move(sender) is required: connect() takes Sender&&.

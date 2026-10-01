@@ -14,15 +14,15 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use atomic_waker::AtomicWaker;
 use crowdb_chunk_client::FramedWriteBuffer;
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{
-    encode_frame_regions, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES,
-    MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame_regions, prepare_frame_regions, set_frame_chunk_id, FrameError, FrameMagic,
+    FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
 };
 use hyper::body::{Bytes, Http1BodyReceiveBuffer, Http1BodyReceiveProvider};
 
@@ -46,6 +46,8 @@ pub struct NativeFramedOwner {
     payload_lengths: Box<[u16]>,
     logical_len: u64,
     physical_len: usize,
+    prepared_slots: usize,
+    prepared: bool,
 }
 
 // SAFETY: Hyper invokes one provider serially for one Incoming body. The
@@ -58,6 +60,7 @@ struct ReceiverState {
     next_slot: usize,
     issued: Option<IssuedSlot>,
     completed_slots: usize,
+    prepared_slots: usize,
     payload_lengths: Vec<u16>,
     append_slot: Option<usize>,
     credit_wait_started: Option<Instant>,
@@ -74,6 +77,7 @@ struct AllocatorState {
     budget_bytes: usize,
     owner_bytes: usize,
     retained_bytes: AtomicUsize,
+    peak_retained_bytes: AtomicUsize,
     allocations: AtomicUsize,
     direct_bytes: AtomicUsize,
     prefix_copy_bytes: AtomicUsize,
@@ -87,6 +91,7 @@ pub struct NativeBufferMetricsSnapshot {
     pub budget_bytes: usize,
     pub owner_bytes: usize,
     pub retained_bytes: usize,
+    pub peak_retained_bytes: usize,
     pub allocations: usize,
     pub direct_bytes: usize,
     pub prefix_copy_bytes: usize,
@@ -120,6 +125,7 @@ impl NativeBodyAllocator {
                 budget_bytes,
                 owner_bytes,
                 retained_bytes: AtomicUsize::new(0),
+                peak_retained_bytes: AtomicUsize::new(0),
                 allocations: AtomicUsize::new(0),
                 direct_bytes: AtomicUsize::new(0),
                 prefix_copy_bytes: AtomicUsize::new(0),
@@ -156,6 +162,7 @@ impl NativeBodyAllocator {
             budget_bytes: self.state.budget_bytes,
             owner_bytes: self.state.owner_bytes,
             retained_bytes: self.state.retained_bytes.load(Ordering::Acquire),
+            peak_retained_bytes: self.state.peak_retained_bytes.load(Ordering::Acquire),
             allocations: self.state.allocations.load(Ordering::Relaxed),
             direct_bytes: self.state.direct_bytes.load(Ordering::Relaxed),
             prefix_copy_bytes: self.state.prefix_copy_bytes.load(Ordering::Relaxed),
@@ -185,6 +192,7 @@ impl NativeBodyAllocator {
                 next_slot: 0,
                 issued: None,
                 completed_slots: 0,
+                prepared_slots: 0,
                 payload_lengths: vec![0; self.state.owner_bytes / MAX_FRAME_BYTES],
                 append_slot: None,
                 credit_wait_started: None,
@@ -196,14 +204,22 @@ impl NativeBodyAllocator {
     }
 
     fn try_reserve(&self, bytes: usize) -> bool {
-        self.state
-            .retained_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current
-                    .checked_add(bytes)
-                    .filter(|next| *next <= self.state.budget_bytes)
-            })
-            .is_ok()
+        let reserved =
+            self.state
+                .retained_bytes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current
+                        .checked_add(bytes)
+                        .filter(|next| *next <= self.state.budget_bytes)
+                });
+        if let Ok(previous) = reserved {
+            self.state
+                .peak_retained_bytes
+                .fetch_max(previous + bytes, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     fn wake_credit_waiters(&self) {
@@ -222,6 +238,45 @@ impl AllocatorState {
 }
 
 impl NativeBodyReceiver {
+    fn prepare_full_slot(state: &mut ReceiverState, owner: &NativeOwner, slot: usize) -> io::Result<()> {
+        if state.prepared_slots != slot {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native frames completed out of order",
+            ));
+        }
+        let frame_offset = slot * MAX_FRAME_BYTES;
+        let payload_offset = frame_offset + FRAME_HEADER_PREFIX_BYTES;
+        let write_time_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            });
+        // SAFETY: a full receive slot is initialized and its reserved header
+        // and footer do not overlap the payload or any other slot.
+        unsafe {
+            let header = std::slice::from_raw_parts_mut(
+                owner.pointer.as_ptr().add(frame_offset),
+                FRAME_HEADER_PREFIX_BYTES,
+            );
+            let payload = std::slice::from_raw_parts(
+                owner.pointer.as_ptr().add(payload_offset),
+                MAX_FRAME_PAYLOAD_BYTES,
+            );
+            let footer = std::slice::from_raw_parts_mut(
+                owner
+                    .pointer
+                    .as_ptr()
+                    .add(payload_offset + MAX_FRAME_PAYLOAD_BYTES),
+                FRAME_FOOTER_BYTES,
+            );
+            prepare_frame_regions(FrameMagic::RepoLargeV1, payload, write_time_ms, header, footer)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        }
+        state.prepared_slots += 1;
+        Ok(())
+    }
+
     fn poll_prepare_owner(&self, state: &mut ReceiverState, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if state.owner.is_some() {
             return Poll::Ready(Ok(()));
@@ -289,6 +344,9 @@ impl NativeBodyReceiver {
                 io::Error::new(io::ErrorKind::InvalidData, "native payload length exceeds u16")
             })?;
             state.completed_slots += 1;
+            if payload.len() == MAX_FRAME_PAYLOAD_BYTES {
+                Self::prepare_full_slot(state, &owner, slot)?;
+            }
         }
         state.next_slot = state.completed_slots;
         if let Some(last) = state.completed_slots.checked_sub(1) {
@@ -447,6 +505,8 @@ fn completed_owner(state: &mut ReceiverState, owner: Arc<NativeOwner>) -> io::Re
         + usize::from(last_payload)
         + FRAME_FOOTER_BYTES;
     state.completed_slots = 0;
+    let prepared_slots = std::mem::take(&mut state.prepared_slots);
+    let prepared = prepared_slots == lengths.len();
     state.append_slot = None;
     state.payload_lengths.fill(0);
     Ok(NativeFramedOwner {
@@ -454,6 +514,8 @@ fn completed_owner(state: &mut ReceiverState, owner: Arc<NativeOwner>) -> io::Re
         payload_lengths: lengths,
         logical_len,
         physical_len,
+        prepared_slots,
+        prepared,
     })
 }
 
@@ -478,6 +540,36 @@ impl FramedWriteBuffer for NativeFramedOwner {
 
     fn frame_payload_len(&self, index: usize) -> Option<usize> {
         self.payload_lengths.get(index).copied().map(usize::from)
+    }
+
+    fn prepare_frames(&mut self, magic: FrameMagic, write_time_ms: u64) -> Result<(), FrameError> {
+        if self.prepared {
+            return Ok(());
+        }
+        for index in self.prepared_slots..self.payload_lengths.len() {
+            let payload_len = usize::from(self.payload_lengths[index]);
+            let frame_offset = index
+                .checked_mul(MAX_FRAME_BYTES)
+                .ok_or(FrameError::LengthOverflow)?;
+            let payload_offset = frame_offset + FRAME_HEADER_PREFIX_BYTES;
+            // SAFETY: socket receive has completed this slot. Header and
+            // footer regions are disjoint from immutable payload views.
+            unsafe {
+                let header = std::slice::from_raw_parts_mut(
+                    self.owner.pointer.as_ptr().add(frame_offset),
+                    FRAME_HEADER_PREFIX_BYTES,
+                );
+                let payload =
+                    std::slice::from_raw_parts(self.owner.pointer.as_ptr().add(payload_offset), payload_len);
+                let footer = std::slice::from_raw_parts_mut(
+                    self.owner.pointer.as_ptr().add(payload_offset + payload_len),
+                    FRAME_FOOTER_BYTES,
+                );
+                prepare_frame_regions(magic, payload, write_time_ms, header, footer)?;
+            }
+        }
+        self.prepared = true;
+        Ok(())
     }
 
     fn finalize_frame(
@@ -509,7 +601,11 @@ impl FramedWriteBuffer for NativeFramedOwner {
                 self.owner.pointer.as_ptr().add(payload_offset + payload_len),
                 FRAME_FOOTER_BYTES,
             );
-            encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
+            if self.prepared {
+                set_frame_chunk_id(chunk_id, footer)?;
+            } else {
+                encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
+            }
         }
         Ok(frame_offset..frame_offset + frame_len)
     }
@@ -563,6 +659,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
         if state.owner.is_none() {
             state.next_slot = 0;
             state.completed_slots = 0;
+            state.prepared_slots = 0;
             state.payload_lengths.fill(0);
             state.append_slot = None;
             match self.poll_prepare_owner(state, cx) {
@@ -576,6 +673,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             if state.owner.is_none() {
                 state.next_slot = 0;
                 state.completed_slots = 0;
+                state.prepared_slots = 0;
                 state.payload_lengths.fill(0);
                 state.append_slot = None;
                 match self.poll_prepare_owner(state, cx) {
@@ -661,6 +759,8 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             }
             if payload_len < MAX_FRAME_PAYLOAD_BYTES {
                 state.append_slot = Some(issued.slot);
+            } else {
+                Self::prepare_full_slot(state, &owner, issued.slot)?;
             }
             if state.completed_slots == state.payload_lengths.len() && state.append_slot.is_none() {
                 state.owner = None;

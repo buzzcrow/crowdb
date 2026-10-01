@@ -16,6 +16,8 @@ use super::small_pool::{SmallPoolRuntime, SmallWritePool};
 
 pub(crate) enum ManagerCommand {
     Shutdown(oneshot::Sender<Result<()>>),
+    #[cfg(feature = "test-util")]
+    StopForTest(oneshot::Sender<()>),
 }
 
 pub(crate) async fn start(pool: Arc<SmallWritePool>) -> Result<Arc<SmallPoolRuntime>> {
@@ -70,18 +72,30 @@ async fn run(
     let mut next_id = pipelines.len() as u64;
     loop {
         tokio::select! {
-            command = commands.recv() => {
-                let Some(ManagerCommand::Shutdown(done)) = command else { break; };
-                runtime.publish(&[]);
-                runtime.metrics.draining_pipelines.set(pipelines.len() as u64);
-                for pipeline in &pipelines {
-                    pipeline.begin_retire();
+            command = commands.recv() => match command {
+                Some(ManagerCommand::Shutdown(done)) => {
+                    runtime.publish(&[]);
+                    runtime.metrics.draining_pipelines.set(pipelines.len() as u64);
+                    for pipeline in &pipelines {
+                        pipeline.begin_retire();
+                    }
+                    let result = join_all(pipelines).await;
+                    runtime.metrics.draining_pipelines.set(0);
+                    let _ = done.send(result);
+                    return;
                 }
-                let result = join_all(pipelines).await;
-                runtime.metrics.draining_pipelines.set(0);
-                let _ = done.send(result);
-                return;
-            }
+                #[cfg(feature = "test-util")]
+                Some(ManagerCommand::StopForTest(done)) => {
+                    runtime.publish(&[]);
+                    for pipeline in &pipelines {
+                        pipeline.begin_retire();
+                    }
+                    let _ = join_all(pipelines).await;
+                    let _ = done.send(());
+                    return;
+                }
+                None => break,
+            },
             _ = ticker.tick() => {
                 let mut failed_pipelines = reap_finished(&runtime, &mut pipelines).await;
                 while pipelines.len() < runtime.policy.min_pipelines {

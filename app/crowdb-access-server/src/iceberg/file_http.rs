@@ -9,10 +9,10 @@ use crowdb_access_iceberg::file::{
     RangeError,
 };
 use crowdb_access_iceberg::key::OperationId;
+use crowdb_access_iceberg::storage::{default_large_write, own_large_write};
 use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
 use crowdb_access_s3::native_buffer::{NativeBodyAllocator, NativeBodyReceiver};
-use crowdb_chunk_client::{ChunkClientConfig, LargeWritePolicy};
-use crowdb_common::ec::EcScheme;
+use crowdb_chunk_client::LargeWritePolicy;
 use hyper::body::Incoming;
 use hyper::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
 use hyper::{Method, Request, Response, StatusCode};
@@ -26,8 +26,12 @@ use super::file_request::{FileRequest, FileRequestError};
 use super::file_response::{FileS3ErrorCode, MultipartResponses};
 use super::file_upload::FileUploadBudget;
 
+mod metrics;
 mod multipart;
 mod stream;
+
+use metrics::UploadFlowMetrics;
+pub use metrics::UploadFlowSnapshot;
 
 pub(super) struct FileHttp {
     repository: FileRepository,
@@ -41,20 +45,23 @@ pub(super) struct FileHttp {
     small_threshold_exclusive: usize,
     large_write: LargeWritePolicy,
     native_allocator: Option<Arc<NativeBodyAllocator>>,
+    upload_metrics: Arc<UploadFlowMetrics>,
     region: String,
     limits: FileServiceLimits,
 }
 
 impl FileHttp {
+    pub(super) fn upload_metrics_snapshot(&self) -> UploadFlowSnapshot {
+        self.upload_metrics.snapshot()
+    }
+
     pub(super) fn chunk_metrics(
         &self,
     ) -> Option<(
         crowdb_chunk_client::ReadFlowMetricsSnapshot,
         crowdb_chunk_client::SmallWriteMetricsSnapshot,
     )> {
-        self.blocks
-            .stream_client()
-            .map(|client| (client.read_flow_metrics(), client.small_write_metrics()))
+        self.blocks.chunk_metrics()
     }
 
     pub(super) fn new<Store: MultipartPartStore + 'static>(
@@ -82,11 +89,9 @@ impl FileHttp {
             responses: FileResponseBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             uploads: FileUploadBudget::new(64).map_err(|_| FileGrantError::Invalid)?,
             small_threshold_exclusive: crate::config::SmallWriteConfig::default().threshold_exclusive(),
-            large_write: LargeWritePolicy {
-                ec_scheme: EcScheme::new(8, 4),
-                client: Arc::new(ChunkClientConfig::default()),
-            },
+            large_write: default_large_write(),
             native_allocator,
+            upload_metrics: Arc::new(UploadFlowMetrics::default()),
             region,
             limits: FileServiceLimits {
                 max_request_bytes: 1024 * 1024 * 1024,
@@ -105,13 +110,14 @@ impl FileHttp {
         Ok(())
     }
 
-    pub(super) fn set_large_write(&mut self, policy: LargeWritePolicy) -> Result<(), FileGrantError> {
+    pub(super) fn set_large_write(&mut self, mut policy: LargeWritePolicy) -> Result<(), FileGrantError> {
         if policy.ec_scheme.data_num == 0
             || policy.ec_scheme.code_num == 0
             || policy.client.read_buffer_size == 0
         {
             return Err(FileGrantError::Invalid);
         }
+        own_large_write(&mut policy);
         self.large_write = policy;
         Ok(())
     }
@@ -235,12 +241,12 @@ impl FileHttp {
             table: file_request.location.table(),
             file: crowdb_access_iceberg::key::FileId::random(),
         };
-        if let Some(client) = self.blocks.stream_client() {
-            let sealed = stream::upload(
-                client,
+        if self.blocks.supports_stream_io() {
+            let published = stream::upload(
+                self.blocks.as_ref(),
                 &self.uploads,
                 admission,
-                &mut body,
+                body,
                 owner,
                 file_request.location.clone(),
                 length,
@@ -248,13 +254,16 @@ impl FileHttp {
                 native_receiver,
                 self.small_threshold_exclusive,
                 &self.large_write,
+                &self.upload_metrics,
+                stream::Publication::Direct {
+                    repository: &self.repository,
+                    context,
+                },
             )
             .await?;
-            let published = self
-                .repository
-                .publish(context, &sealed)
-                .await
-                .map_err(catalog_error)?;
+            let stream::UploadedObject::Direct(published) = published else {
+                return Err(FileS3ErrorCode::InternalError);
+            };
             let mut response = Response::new(IcebergBody::new(Vec::new()));
             set_header(&mut response, ETAG, &etag(&published))?;
             return Ok(response);

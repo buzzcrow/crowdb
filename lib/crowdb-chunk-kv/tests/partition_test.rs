@@ -302,6 +302,8 @@ fn chunk_page_store(tree_id: u64, owner_epoch: u64) -> Arc<PageStore> {
                 pack_bytes: 4_096,
                 iu_size: 1,
                 max_concurrent_packs: 2,
+                max_chunk_bytes: 0,
+                mirror_copies: 0,
                 materialization_bytes_per_pass: 4_096,
             },
             catalog,
@@ -560,6 +562,8 @@ async fn chunk_root_checkpoint_supplies_the_wal_replay_offset() {
         pack_bytes: 4_096,
         iu_size: 1,
         max_concurrent_packs: 2,
+        max_chunk_bytes: 0,
+        mirror_copies: 0,
         materialization_bytes_per_pass: 4_096,
     };
     let page_store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());

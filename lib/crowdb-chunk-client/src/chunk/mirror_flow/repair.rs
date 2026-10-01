@@ -184,9 +184,7 @@ impl MirrorStripFlow {
         }
         self.mark_unavailable(chunk, committed_cursor, strip_sequence, failed)
             .await?;
-        Err(IoError::WriteFailed(format!(
-            "mirror replica repair exhausted: {last_error}"
-        )))
+        Err(IoError::ReplicaRepairExhausted(last_error))
     }
 
     async fn publish(&self, request: ReplaceChunkStripRangeRequest, replacement: Segment) -> Result<Chunk> {

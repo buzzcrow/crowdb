@@ -76,8 +76,8 @@ impl IcebergBootstrap {
         let service = profile
             .services
             .iter()
-            .find(|service| service.id == "iceberg")
-            .ok_or(IcebergBootstrapError::Profile("Iceberg service is absent"))?;
+            .find(|service| service.id == "access")
+            .ok_or(IcebergBootstrapError::Profile("Access service is absent"))?;
         let seeds = service
             .env
             .get("CROWDB_MANAGEMENT_SEEDS")
@@ -247,6 +247,7 @@ impl ManagementCommand<'_> {
         let output = tokio::time::timeout(
             COMMAND_TIMEOUT,
             Command::new(self.program)
+                .arg("iceberg")
                 .args(arguments)
                 .env("CROWDB_MANAGEMENT_SEEDS", self.seeds)
                 .env("CROWDB_ICEBERG_TOKEN", self.credentials.iceberg_manage_token())

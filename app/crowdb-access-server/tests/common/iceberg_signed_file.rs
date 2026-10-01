@@ -2,10 +2,12 @@ use super::common::now_ms;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use hmac::{Hmac, Mac};
+use hyper::body::Bytes;
 use md5::Md5;
 use reqwest::{Client, Method, Response};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
+use std::io;
 
 fn hex(bytes: &[u8]) -> String {
     let mut result = String::new();
@@ -25,6 +27,12 @@ pub struct TestFileClient {
     pub client: Client,
     pub credentials: crowdb_access_iceberg::file::FileCredentials,
     pub address: std::net::SocketAddr,
+}
+
+struct SignedPayload {
+    body: reqwest::Body,
+    hash: String,
+    content_md5: Option<String>,
 }
 
 impl TestFileClient {
@@ -56,15 +64,121 @@ impl TestFileClient {
         md5: bool,
         range: Option<&str>,
     ) -> reqwest::RequestBuilder {
+        let content_md5 = md5.then(|| STANDARD.encode(Md5::digest(body)));
+        let hash = if md5 {
+            "UNSIGNED-PAYLOAD".to_owned()
+        } else {
+            hex(&Sha256::digest(body))
+        };
+        self.signed_request(
+            method,
+            path,
+            query,
+            SignedPayload {
+                body: reqwest::Body::from(body.to_vec()),
+                hash,
+                content_md5,
+            },
+            range,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub async fn send_repeated(
+        &self,
+        method: Method,
+        path: &str,
+        block: Bytes,
+        repetitions: usize,
+        md5: [u8; 16],
+    ) -> Response {
+        self.send_repeated_with_query(method, path, "", block, repetitions, md5)
+            .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn send_repeated_with_query(
+        &self,
+        method: Method,
+        path: &str,
+        query: &str,
+        block: Bytes,
+        repetitions: usize,
+        md5: [u8; 16],
+    ) -> Response {
+        let length = block.len() * repetitions;
+        let frames = futures::stream::iter((0..repetitions).map(move |_| Ok::<_, io::Error>(block.clone())));
+        self.signed_request(
+            method,
+            path,
+            query,
+            SignedPayload {
+                body: reqwest::Body::wrap_stream(frames),
+                hash: "UNSIGNED-PAYLOAD".to_owned(),
+                content_md5: Some(STANDARD.encode(md5)),
+            },
+            None,
+        )
+        .header("content-length", length)
+        .send()
+        .await
+        .unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub fn request_stream(
+        &self,
+        method: Method,
+        path: &str,
+        length: usize,
+        md5: [u8; 16],
+        receiver: tokio::sync::mpsc::Receiver<Result<Bytes, io::Error>>,
+    ) -> reqwest::RequestBuilder {
+        let frames = futures::stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|frame| (frame, receiver))
+        });
+        self.signed_request(
+            method,
+            path,
+            "",
+            SignedPayload {
+                body: reqwest::Body::wrap_stream(frames),
+                hash: "UNSIGNED-PAYLOAD".to_owned(),
+                content_md5: Some(STANDARD.encode(md5)),
+            },
+            None,
+        )
+        .header("content-length", length)
+    }
+
+    fn signed_request(
+        &self,
+        method: Method,
+        path: &str,
+        query: &str,
+        payload: SignedPayload,
+        range: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let SignedPayload {
+            body,
+            hash,
+            content_md5,
+        } = payload;
         let now =
             chrono::DateTime::<chrono::Utc>::from_timestamp_millis(i64::try_from(now_ms()).unwrap()).unwrap();
         let date = now.format("%Y%m%dT%H%M%SZ").to_string();
         let short = now.format("%Y%m%d").to_string();
-        let hash = hex(&Sha256::digest(body));
         let host = self.address.to_string();
-        let names = "host;x-amz-content-sha256;x-amz-date;x-amz-security-token";
+        let names = if content_md5.is_some() {
+            "content-md5;host;x-amz-content-sha256;x-amz-date;x-amz-security-token"
+        } else {
+            "host;x-amz-content-sha256;x-amz-date;x-amz-security-token"
+        };
+        let md5_header = content_md5
+            .as_ref()
+            .map_or_else(String::new, |value| format!("content-md5:{value}\n"));
         let canonical = format!(
-            "{}\n{path}\n{query}\nhost:{host}\nx-amz-content-sha256:{hash}\nx-amz-date:{date}\nx-amz-security-token:{}\n\n{names}\n{hash}",
+            "{}\n{path}\n{query}\n{md5_header}host:{host}\nx-amz-content-sha256:{hash}\nx-amz-date:{date}\nx-amz-security-token:{}\n\n{names}\n{hash}",
             method.as_str(), self.credentials.session_token()
         );
         let date_key = mac(
@@ -97,9 +211,9 @@ impl TestFileClient {
             .header("x-amz-date", date)
             .header("x-amz-security-token", self.credentials.session_token())
             .header("authorization", authorization)
-            .body(body.to_vec());
-        if md5 {
-            request = request.header("content-md5", STANDARD.encode(Md5::digest(body)));
+            .body(body);
+        if let Some(content_md5) = content_md5 {
+            request = request.header("content-md5", content_md5);
         }
         if let Some(range) = range {
             request = request.header("range", range);

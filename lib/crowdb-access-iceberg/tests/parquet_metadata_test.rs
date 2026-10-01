@@ -21,6 +21,28 @@ async fn apache_alltypes_plain_footer_decodes_standard_delta_field_headers() {
 }
 
 #[tokio::test]
+async fn many_row_groups_fit_within_a_bounded_footer() {
+    let groups = vec![row_group(10, &column()); 6_000];
+    let mut fields = footer();
+    set(&mut fields, 3, number(60_000));
+    set(&mut fields, 4, list(12, &groups));
+    let bytes = structure(&fields);
+    assert!(bytes.len() < 1024 * 1024);
+    let (store, record) = stored(&bytes, 64).await;
+    let mut limits = limits();
+    limits.footer_bytes = 1024 * 1024;
+    limits.row_groups = 10_000;
+    limits.values = 100_000;
+    assert!(matches!(
+        read_parquet_metadata(store.clone(), &record, limits).await,
+        Err(Error::Bounds)
+    ));
+    limits.values = 500_000;
+    let metadata = read_parquet_metadata(store, &record, limits).await.unwrap();
+    assert_eq!((metadata.rows, metadata.row_groups), (60_000, 6_000));
+}
+
+#[tokio::test]
 async fn canonical_footer_decodes_long_form_fields_and_ignores_stored_hints() {
     let mut fields = footer();
     fields.reverse();

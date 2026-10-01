@@ -223,6 +223,10 @@ TEST(DiskioServerTest, WriteAndReadRoundTrip)
     for (uint32_t i = 0; i < DATA_SIZE; i++) {
         payload[i] = static_cast<uint8_t>(i % 256);
     }
+    // A strip-boundary fragment may start with a frame magic without
+    // containing the complete frame. DiskIO must store that slice verbatim.
+    payload[0] = 0x01;
+    payload[1] = 0x03;
 
     uint64_t write_req_id = 10;
     Buffer  *write_ctrl   = build_write_request(pool, write_req_id, {1, 1}, 0, 0, DATA_SIZE, wall_time_ms());

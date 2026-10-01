@@ -234,6 +234,8 @@ pub(super) fn proto_chunk_type(fb: FBChunkType) -> Option<ProtoChunkType> {
         FBChunkType::BtreePage => Some(ProtoChunkType::BtreePage),
         FBChunkType::PageIndex => Some(ProtoChunkType::PageIndex),
         FBChunkType::Stream => Some(ProtoChunkType::Stream),
+        FBChunkType::S3 => Some(ProtoChunkType::S3),
+        FBChunkType::IcebergTable => Some(ProtoChunkType::IcebergTable),
         _ => None,
     }
 }
@@ -987,6 +989,8 @@ pub(super) fn fb_chunk_type(t: ProtoChunkType) -> FBChunkType {
         ProtoChunkType::BtreePage => FBChunkType::BtreePage,
         ProtoChunkType::PageIndex => FBChunkType::PageIndex,
         ProtoChunkType::Stream => FBChunkType::Stream,
+        ProtoChunkType::S3 => FBChunkType::S3,
+        ProtoChunkType::IcebergTable => FBChunkType::IcebergTable,
     }
 }
 

@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_client::{ChunkIoClient, ChunkIoWriter};
+use crowdb_chunk_client::{
+    ChunkIoClient, ChunkIoWriter, ChunkReadStream, LargeWritePolicy, ReadFlowMetricsSnapshot,
+    SmallWriteMetricsSnapshot,
+};
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 use sha2::{Digest, Sha256};
@@ -29,10 +32,78 @@ pub enum FileIoError {
     Finished,
 }
 
+pub struct FileLocationStream {
+    inner: ChunkReadStream,
+}
+
+impl FileLocationStream {
+    pub async fn next_chunk(&mut self) -> Option<Result<Bytes, FileIoError>> {
+        self.inner
+            .next_chunk()
+            .await
+            .map(|result| result.map_err(FileIoError::from))
+    }
+}
+
 #[async_trait]
 pub trait FileBlockStore: Send + Sync {
     fn stream_client(&self) -> Option<&ChunkIoClient> {
         None
+    }
+
+    fn supports_stream_io(&self) -> bool {
+        self.stream_client().is_some()
+    }
+
+    fn chunk_metrics(&self) -> Option<(ReadFlowMetricsSnapshot, SmallWriteMetricsSnapshot)> {
+        self.stream_client()
+            .map(|client| (client.read_flow_metrics(), client.small_write_metrics()))
+    }
+
+    /// Prepares an upload writer when this store owns native chunk storage.
+    ///
+    /// # Errors
+    /// Returns a chunk write admission or preparation error.
+    async fn prepare_upload_writer(
+        &self,
+        location_key: &str,
+        small_length: Option<usize>,
+        declared_length: Option<u64>,
+        large_write: &LargeWritePolicy,
+    ) -> Result<Option<crate::storage::IcebergFileWriter>, FileIoError> {
+        let Some(chunks) = self.stream_client() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            crate::storage::prepare_file_writer(
+                chunks,
+                location_key,
+                small_length,
+                declared_length,
+                large_write,
+            )
+            .await?,
+        ))
+    }
+
+    /// Opens a native pull stream when this store owns chunk locations.
+    ///
+    /// # Errors
+    /// Returns an invalid range or chunk read preparation error.
+    fn stream_locations(
+        &self,
+        locations: &[Location],
+        start: u64,
+        end: u64,
+    ) -> Result<Option<FileLocationStream>, FileIoError> {
+        self.stream_client()
+            .map(|client| {
+                client
+                    .read_range_stream(locations, start, end)
+                    .map(|inner| FileLocationStream { inner })
+                    .map_err(FileIoError::from)
+            })
+            .transpose()
     }
 
     async fn read_locations(

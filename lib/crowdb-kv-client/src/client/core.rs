@@ -148,16 +148,13 @@ impl CrowdbKvClient {
     }
 
     fn build(config: ClientConfig, transport: Option<Arc<crate::KvRpcTransport>>) -> Self {
-        // Log client creation so accidental instance proliferation
-        // (each with its own topology cache + connection pool) is
-        // visible in logs. Standalone clients (no shared transport)
-        // are warned at WARN level — they should be rare; repeated
-        // creation is a red flag that the shared client is not being
-        // reused. Shared clients are logged at INFO (file only).
+        // A standalone client is normal at process startup. Keep the
+        // distinction available for diagnostics without warning on each
+        // test listener restart or each independently deployed process.
         if transport.is_none() {
-            tracing::warn!(
+            tracing::debug!(
                 seed_count = config.mgmt_seeds.len(),
-                "CrowdbKvClient: new standalone instance created (no shared transport) — prefer from_shared() to reuse topology cache"
+                "CrowdbKvClient: new standalone instance created"
             );
         } else {
             tracing::info!(

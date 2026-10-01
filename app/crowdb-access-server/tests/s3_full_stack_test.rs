@@ -130,6 +130,15 @@ fn main() {
 
 async fn run_suite() {
     let mut stack = start_full_stack().await;
+    if let Ok(method) = std::env::var("CROWDB_S3_E2E_ONLY") {
+        assert!(
+            BOTO3_CASES.contains(&method.as_str()),
+            "unknown focused S3 case: {method}"
+        );
+        stack.run_one_boto3_case(&method);
+        stack.rpc.stop();
+        return;
+    }
     println!("\nrunning {TEST_COUNT} tests");
     stack.run_boto3_cases();
     stack.run_restart_cases().await;
@@ -139,6 +148,20 @@ async fn run_suite() {
 }
 
 impl FullStackSetup {
+    fn run_one_boto3_case(&self, method: &str) {
+        let context = Boto3CaseContext {
+            listen: &self.listen,
+            second_listen: &self.second_listen,
+            access_key: &self.access_key,
+            secret_key: &self.secret_key,
+            access_server: self.access_server.as_ref().expect("primary access server"),
+            chunk_kv: &self.chunk_kv,
+        };
+        let case = TestCase::start(&format!("boto3::{method}"));
+        run_boto3_case(method, &context);
+        case.pass();
+    }
+
     fn run_boto3_cases(&self) {
         let context = Boto3CaseContext {
             listen: &self.listen,
@@ -531,6 +554,7 @@ fn start_access_server(
     let log_path = service_root.join("log").join("access-server.log");
     let log = std::fs::File::create(&log_path).expect("create access-server log");
     let child = Command::new(access_binary)
+        .arg("s3")
         .env("CROWDB_S3_LISTEN", &listen)
         .env("CROWDB_MANAGEMENT_SEEDS", seeds)
         .env("CROWDB_S3_TENANT", "boto3-e2e")

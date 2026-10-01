@@ -1,5 +1,14 @@
 # Canonical crowdb-chunkdb startup configuration.
 # Omitted fields use the typed defaults documented in chunkdb_config.rs.
 
+[deployment]
+mode = "production"
+max_node_failures = 1
+
 [server]
+rpc_workers = 2
+
+[conversion_io]
+normal_connections_per_endpoint = 1
+priority_connections_per_endpoint = 1
 rpc_workers = 2

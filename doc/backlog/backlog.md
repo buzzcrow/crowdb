@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R191** — Bump this line in the same commit when adding a new item.
+**Next R number: R197** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -40,6 +40,24 @@ R152–R166 delivered the limited basic S3 service, including the restart
 acceptance baseline. Multipart upload is available; R168–R169 defer
 shared-storage GC without blocking basic large-object deletion. R170 adds
 optional cuObject/RDMA acceleration after the TCP baseline is correct and measured.
+- **[R195](R195-access-shared-large-upload-flow.md)** — shared bounded large
+  HTTP upload flow — Area: access server / S3 / Iceberg / chunk IO — Run socket
+  fetch and chunk writes as separate producer/consumer stages with three
+  owner credits, transition-only wakeups, placement-safe frame completion,
+  and bounded mirror/EC writes. S3 and Iceberg keep separate authority and
+  publication while sharing the transport flow.
+- **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
+  upload benchmark regression — Area: CLI / access server / benchmark — Add a
+  shared real-protocol CLI workload and retained local regression scripts for
+  direct and multipart small/large uploads, with correctness gates, metrics,
+  and profile-matched performance baselines.
+- **[R193](R193-chunkdb-node-failure-budget.md)** — configurable node failure
+  budget and EC placement — Area: KV / chunkdb / chunk IO / deployment —
+  Generalize the fixed one-node and three-node profiles to larger clusters.
+  Validate mirror copies and EC against the worst configured set of failed
+  nodes. A six-node cluster with a two-node budget admits `4+2` and `8+4` EC,
+  but rejects `2+1`. Persist degraded placement and restore full protection
+  after capacity returns.
 - **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
   reclamation — Area: access server / S3 / chunkdb — **Deferred on R95.** Turn
   exact pending shared ranges into qualified, restart-safe physical deletion.
@@ -76,6 +94,12 @@ Caches, selected ORC and container engine workflows remain separate.
   container verification.** Verify Python dataframe, local SQL, distributed
   engine and optional ingest scenarios against the single-node image; publish
   only tested compatibility recipes.
+- **[R194](R194-access-iceberg-object-listing.md)** — native object listing and
+  S3-style address semantics — Area: Iceberg / native FileIO / clients —
+  **Deferred pending client and address-model research.** Determine which clients
+  need intentional prefix listing, whether the bucket field should identify a
+  catalog, table, or opaque scope, and implement a bounded authorized listing
+  contract only if that evidence warrants it.
 
 ### High Priority
 

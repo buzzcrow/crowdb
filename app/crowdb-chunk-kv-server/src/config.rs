@@ -167,6 +167,8 @@ pub struct StorageConfig {
     pub metadata_store_id: u64,
     pub stream_writer_lease_ms: u64,
     pub stream_mirror_copies: u32,
+    pub tree_chunk_capacity_bytes: u64,
+    pub stream_chunk_capacity_bytes: u64,
     pub diskio_connections_per_endpoint: usize,
     pub diskio_rpc_workers: u32,
 }
@@ -176,7 +178,9 @@ impl Default for StorageConfig {
         Self {
             metadata_store_id: 1,
             stream_writer_lease_ms: 30_000,
-            stream_mirror_copies: 3,
+            stream_mirror_copies: 2,
+            tree_chunk_capacity_bytes: 256 * 1024 * 1024,
+            stream_chunk_capacity_bytes: 256 * 1024 * 1024,
             diskio_connections_per_endpoint: 1,
             diskio_rpc_workers: 2,
         }
@@ -187,11 +191,15 @@ impl StorageConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         if self.stream_writer_lease_ms == 0
             || self.stream_mirror_copies == 0
+            || self.stream_mirror_copies > 5
+            || !(1024 * 1024..=256 * 1024 * 1024).contains(&self.tree_chunk_capacity_bytes)
+            || !(1024 * 1024..=256 * 1024 * 1024).contains(&self.stream_chunk_capacity_bytes)
             || self.diskio_connections_per_endpoint == 0
             || self.diskio_rpc_workers == 0
         {
             return Err(ConfigError::Invalid(
-                "storage lease, connections, and workers must be nonzero".into(),
+                "storage lease, mirror copies, connections, workers, and tree chunk capacity must be valid"
+                    .into(),
             ));
         }
         Ok(())

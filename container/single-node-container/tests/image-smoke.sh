@@ -24,6 +24,9 @@ done
 
 docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-monitor "$image" validate /opt/crowdb/etc/profile.toml
 docker run --rm --network none --entrypoint /bin/sh "$image" -ec '
+    test -f /opt/crowdb/lib/libcrypto.so.3
+    LD_LIBRARY_PATH=/opt/crowdb/lib ldd /opt/crowdb/bin/crowdb-access-server |
+        grep -F "libcrypto.so.3 => /opt/crowdb/lib/libcrypto.so.3" >/dev/null
     for tool in pixi cargo rustc gcc g++ cmake npm; do
         if command -v "$tool" >/dev/null 2>&1; then
             echo "Build tool was packaged into the runtime image: $tool" >&2
@@ -37,12 +40,10 @@ docker run --rm --network none --entrypoint /bin/sh "$image" -ec '
         fi
     done
 '
-for binary in crowdb-iceberg crowdb-access-server; do
-    capability=$(docker run --rm --network none --entrypoint /sbin/getcap "$image" "/opt/crowdb/bin/$binary")
-    [[ "$capability" == *'cap_net_bind_service=ep' ]]
-done
+capability=$(docker run --rm --network none --entrypoint /sbin/getcap "$image" /opt/crowdb/bin/crowdb-access-server)
+[[ "$capability" == *'cap_net_bind_service=ep' ]]
 
-iceberg_output=$(docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-iceberg "$image" 2>&1) && {
+iceberg_output=$(docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-access-server "$image" iceberg 2>&1) && {
     echo "Iceberg started without required configuration" >&2
     exit 1
 }

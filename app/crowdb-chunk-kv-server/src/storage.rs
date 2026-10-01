@@ -47,6 +47,8 @@ pub struct ChunkKvStorage {
     chunk_io: ChunkIoClient,
     streams: Arc<ProductionStreamRuntime>,
     tree_transport: Arc<ChunkTransport>,
+    tree_mirror_copies: u32,
+    tree_chunk_capacity_bytes: u64,
     metadata_store_id: u64,
 }
 
@@ -72,12 +74,14 @@ impl ChunkKvStorage {
         )
         .await
         .map_err(|error| StorageRuntimeError::ChunkIo(error.to_string()))?;
-        Self::from_parts(
+        Self::from_parts_with_mirror_copies(
             kv,
             chunk_io,
             config.storage.metadata_store_id,
             config.storage.stream_writer_lease_ms,
             config.storage.stream_mirror_copies,
+            config.storage.tree_chunk_capacity_bytes,
+            config.storage.stream_chunk_capacity_bytes,
         )
         .await
     }
@@ -88,19 +92,34 @@ impl ChunkKvStorage {
         metadata_store_id: u64,
         writer_lease_ms: u64,
         stream_mirror_copies: u32,
+        tree_chunk_capacity_bytes: u64,
+        stream_chunk_capacity_bytes: u64,
     ) -> Result<Self, StorageRuntimeError> {
+        let stream_config = StreamConfig {
+            chunk_capacity_bytes: stream_chunk_capacity_bytes,
+            ..StreamConfig::default()
+        };
         let streams = Arc::new(
             ProductionStreamRuntime::new_with_mirror_copies(
                 Arc::clone(&kv),
                 &chunk_io,
                 writer_lease_ms,
                 ChunkReadPolicy::default(),
-                StreamConfig::default(),
+                stream_config,
                 stream_mirror_copies,
             )
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?,
         );
-        Self::assemble(kv, chunk_io, streams, metadata_store_id, writer_lease_ms).await
+        Self::assemble(
+            kv,
+            chunk_io,
+            streams,
+            metadata_store_id,
+            writer_lease_ms,
+            stream_mirror_copies,
+            tree_chunk_capacity_bytes,
+        )
+        .await
     }
 
     /// Assembles production adapters from already connected process clients.
@@ -121,6 +140,8 @@ impl ChunkKvStorage {
             metadata_store_id,
             writer_lease_ms,
             stream_mirror_copies,
+            256 * 1024 * 1024,
+            256 * 1024 * 1024,
         )
         .await
     }
@@ -131,6 +152,8 @@ impl ChunkKvStorage {
         streams: Arc<ProductionStreamRuntime>,
         metadata_store_id: u64,
         writer_lease_ms: u64,
+        mirror_copies: u32,
+        tree_chunk_capacity_bytes: u64,
     ) -> Result<Self, StorageRuntimeError> {
         let (chunkdb, disks) = chunk_io
             .native_storage_routes()
@@ -151,6 +174,7 @@ impl ChunkKvStorage {
                 writer_lease_ms,
                 rpc_timeout_ms: writer_lease_ms,
                 completion_capacity: 1_024,
+                mirror_copies,
             })
             .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
         );
@@ -159,6 +183,8 @@ impl ChunkKvStorage {
             chunk_io,
             streams,
             tree_transport,
+            tree_mirror_copies: mirror_copies,
+            tree_chunk_capacity_bytes,
             metadata_store_id,
         })
     }
@@ -187,9 +213,11 @@ impl ChunkKvStorage {
     /// Returns an invalid native page-store or transport error.
     pub fn open_tree_page_store(
         &self,
-        options: ChunkPageStoreOptions,
+        mut options: ChunkPageStoreOptions,
         catalog: Arc<ChunkRootCatalog>,
     ) -> Result<Arc<PageStore>, StorageRuntimeError> {
+        options.mirror_copies = self.tree_mirror_copies;
+        options.max_chunk_bytes = self.tree_chunk_capacity_bytes;
         PageStore::open_chunk(options, catalog, Some(&self.tree_transport))
             .map(Arc::new)
             .map_err(|error| StorageRuntimeError::Tree(error.to_string()))
@@ -298,6 +326,8 @@ impl ChunkKvStorage {
                     iu_size: 0,
                     max_concurrent_packs: 0,
                     materialization_bytes_per_pass: 0,
+                    mirror_copies: 0,
+                    max_chunk_bytes: 0,
                 },
                 binding.metadata_group_id,
             )
@@ -441,6 +471,8 @@ impl ChunkKvStorage {
                     iu_size: 0,
                     max_concurrent_packs: 0,
                     materialization_bytes_per_pass: 0,
+                    mirror_copies: 0,
+                    max_chunk_bytes: 0,
                 },
                 config.metadata_group_id,
             )
@@ -636,6 +668,8 @@ impl ChunkKvStorage {
                     iu_size: 0,
                     max_concurrent_packs: 0,
                     materialization_bytes_per_pass: 0,
+                    mirror_copies: 0,
+                    max_chunk_bytes: 0,
                 },
                 metadata_group_id,
             )

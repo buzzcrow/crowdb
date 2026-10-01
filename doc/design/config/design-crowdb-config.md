@@ -23,7 +23,7 @@ validated, and activated.
 ## 1. Scope
 
 The `crowdb-kv-server`, `crowdb-diskdb`, `crowdb-chunkdb`, `crowdb-diskio`,
-`crowdb-access-server`, and `crowdb-iceberg` processes accept typed TOML startup
+and `crowdb-access-server` processes accept typed TOML startup
 configuration. A service may require a file or make it optional, but a supplied
 file follows the same resolution and failure rules in every process.
 

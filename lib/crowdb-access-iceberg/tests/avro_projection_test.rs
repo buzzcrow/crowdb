@@ -1,5 +1,5 @@
 use crowdb_access_iceberg::file::{
-    AvroContainerError, AvroDatumLimits, AvroProjection, AvroScalar, AvroSchema,
+    AvroContainerError, AvroDatumLimits, AvroProjection, AvroScalar, AvroScalarType, AvroSchema,
 };
 
 fn limits() -> AvroDatumLimits {
@@ -46,16 +46,13 @@ fn projection_uses_ids_and_request_order_with_borrowed_strings_and_nullable_valu
 }
 
 #[test]
-fn projection_rejects_ambiguous_ids_and_non_scalar_layouts_without_changing_avro_validation() {
+fn projection_rejects_ambiguous_ids_and_unsupported_layouts_without_changing_avro_validation() {
     let schema = schema();
-    for ids in [
-        vec![],
-        vec![500; 65],
-        vec![500, 500],
-        vec![-1],
-        vec![999],
-        vec![507],
-    ] {
+    assert_eq!(
+        AvroProjection::new(&schema, &[507]).unwrap().field_types(),
+        &[Some(AvroScalarType::IntList)]
+    );
+    for ids in [vec![], vec![500; 65], vec![500, 500], vec![-1], vec![999]] {
         assert!(AvroProjection::new(&schema, &ids).is_err());
     }
     for fields in [
@@ -66,6 +63,7 @@ fn projection_rejects_ambiguous_ids_and_non_scalar_layouts_without_changing_avro
         r#"[{"name":"a","field-id":0,"type":"long"},{"name":"b","field-id":0,"type":"long"}]"#,
         r#"[{"name":"a","field-id":0,"type":["long","int"]}]"#,
         r#"[{"name":"a","field-id":0,"type":["null","long","int"]}]"#,
+        r#"[{"name":"a","field-id":0,"type":{"type":"array","items":"string"}}]"#,
     ] {
         let bytes = format!(r#"{{"type":"record","name":"R","fields":{fields}}}"#);
         let schema = AvroSchema::parse(bytes.as_bytes()).unwrap();

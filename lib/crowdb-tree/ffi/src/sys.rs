@@ -63,6 +63,8 @@ pub struct ct_chunk_page_store_options {
     pub iu_size: u32,
     pub max_concurrent_packs: usize,
     pub materialization_bytes_per_pass: u64,
+    pub max_chunk_bytes: u64,
+    pub mirror_copies: u32,
 }
 
 #[repr(C)]
@@ -87,6 +89,7 @@ pub struct ct_chunk_rpc_transport_options {
     pub writer_lease_ms: u64,
     pub rpc_timeout_ms: u64,
     pub completion_capacity: u32,
+    pub mirror_copies: u32,
 }
 
 #[repr(C)]

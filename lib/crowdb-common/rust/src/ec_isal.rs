@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! isa-l FFI bindings for Reed-Solomon GF(2^8) erasure coding.
+//! isa-l FFI bindings for Reed-Solomon GF(2^8) erasure coding and CRC32C.
 //!
 //! Wraps the isa-l `erasure_code.h` API: `gf_gen_rs_matrix`,
 //! `ec_init_tables`, `ec_encode_data`, `gf_invert_matrix`. The safe
@@ -20,6 +20,7 @@
 type UcPtr = *mut u8;
 
 extern "C" {
+    fn crc32_iscsi(buffer: *mut u8, length: i32, seed: u32) -> u32;
     fn gf_gen_rs_matrix(a: UcPtr, m: i32, k: i32);
     fn gf_invert_matrix(input: UcPtr, output: UcPtr, n: i32);
     fn ec_init_tables(k: i32, rows: i32, a: UcPtr, gftbls: UcPtr);
@@ -33,6 +34,19 @@ extern "C" {
         data: UcPtr,
         coding: *const UcPtr,
     );
+}
+
+/// Continue the raw seed-zero CRC32C used by chunk frames and durable pages.
+#[must_use]
+pub fn crc32c_update(mut crc: u32, mut data: &[u8]) -> u32 {
+    while !data.is_empty() {
+        let length = data.len().min(i32::MAX as usize);
+        // SAFETY: ISA-L reads but does not modify the input, and `length`
+        // stays within the signed length accepted by its C interface.
+        crc = unsafe { crc32_iscsi(data.as_ptr().cast_mut(), length as i32, crc) };
+        data = &data[length..];
+    }
+    crc
 }
 
 // ── GF(2^8) arithmetic ──────────────────────────────────────────

@@ -6,8 +6,9 @@ use std::sync::{
 };
 use std::task::{Context, Poll};
 
-use crowdb_access_iceberg::file::{ByteRange, FileBlockStore, FileIoError, FileReader, FileRecord};
-use crowdb_chunk_client::{ChunkReadStream, ReadError};
+use crowdb_access_iceberg::file::{
+    ByteRange, FileBlockStore, FileIoError, FileLocationStream, FileReader, FileRecord,
+};
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 
 #[derive(Debug, thiserror::Error)]
@@ -66,13 +67,7 @@ impl FileResponseBudget {
                 start: 0,
                 end: record.length,
             });
-            Some(
-                store
-                    .stream_client()
-                    .ok_or(FileIoError::Bounds)?
-                    .read_range_stream(&locations, interval.start, interval.end)
-                    .map_err(FileIoError::from)?,
-            )
+            store.stream_locations(&locations, interval.start, interval.end)?
         } else {
             None
         };
@@ -100,12 +95,13 @@ impl Drop for Permit {
 }
 
 type ReadFuture = Pin<Box<dyn Future<Output = (FileReader, Result<Option<Vec<u8>>, FileIoError>)> + Send>>;
-type StreamFuture = Pin<Box<dyn Future<Output = (ChunkReadStream, Option<Result<Bytes, ReadError>>)> + Send>>;
+type StreamFuture =
+    Pin<Box<dyn Future<Output = (FileLocationStream, Option<Result<Bytes, FileIoError>>)> + Send>>;
 
 pub struct FileReadBody {
     reader: Option<FileReader>,
     pending: Option<ReadFuture>,
-    stream: Option<ChunkReadStream>,
+    stream: Option<FileLocationStream>,
     stream_pending: Option<StreamFuture>,
     remaining: u64,
     permit: Option<Permit>,
@@ -165,7 +161,7 @@ impl Body for FileReadBody {
                 }
                 Some(Err(error)) => {
                     body.finish();
-                    Poll::Ready(Some(Err(FileIoError::Read(error))))
+                    Poll::Ready(Some(Err(error)))
                 }
                 _ => {
                     body.finish();

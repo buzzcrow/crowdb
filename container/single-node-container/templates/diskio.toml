@@ -1,13 +1,13 @@
 [server]
 bind_address = "127.0.0.1"
 listen_port = 13000
-rpc_workers = 4
+rpc_workers = 1
 node_id = {{node.0.id}}
 dummy_disk_type = "null"
 o_direct = true
 
 [engine]
-thread_pool_size = 4
+thread_pool_size = 1
 sq_entries = 256
 
 [group0]

@@ -32,16 +32,17 @@ listed document or section needed by the task.
 ## Working & Flow-Analysis Docs
 
 Temporary plans live under `doc/working/`; flow analyses live under
-`doc/design/{kv,chunkio,rpc}/`.
+`doc/design/{access-server,kv,chunkio,rpc}/`.
 
-| Doc                                                    | When to read                                   |
-| ------------------------------------------------------ | ---------------------------------------------- |
-| `doc/design/kv/kv-read-flow-analysis.md`               | KV point-read flow and benchmarks.             |
-| `doc/design/kv/kv-scan-flow-analysis.md`               | KV scan flow and benchmarks.                   |
-| `doc/design/kv/kv-write-flow-analysis.md`              | KV write flow and optimization evidence.       |
-| `doc/design/chunkio/chunkio-write-flow-analysis.md`    | Chunk I/O large-write flow and benchmarks.     |
-| `doc/design/chunkio/chunkio-small-io-flow-analysis.md` | Chunk I/O small-I/O flow and benchmarks.       |
-| `doc/design/rpc/rpc-flow-analysis.md`                  | RPC flow, benchmarks, and performance history. |
+| Doc                                                                     | When to read                                            |
+| ----------------------------------------------------------------------- | ------------------------------------------------------- |
+| `doc/design/kv/kv-read-flow-analysis.md`                                | KV point-read flow and benchmarks.                      |
+| `doc/design/kv/kv-scan-flow-analysis.md`                                | KV scan flow and benchmarks.                            |
+| `doc/design/kv/kv-write-flow-analysis.md`                               | KV write flow and optimization evidence.                |
+| `doc/design/chunkio/chunkio-write-flow-analysis.md`                     | Chunk I/O large-write flow and benchmarks.              |
+| `doc/design/chunkio/chunkio-small-io-flow-analysis.md`                  | Chunk I/O small-I/O flow and benchmarks.                |
+| `doc/design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md` | Iceberg FileIO upload path and container measurements.  |
+| `doc/design/rpc/rpc-flow-analysis.md`                                   | RPC flow, benchmarks, and performance history.          |
 
 ## Dev Environment (`doc/dev/`)
 

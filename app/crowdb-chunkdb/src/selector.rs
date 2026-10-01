@@ -67,7 +67,8 @@ impl ChunkPlacementStrategy for ProtectedPlacementStrategy {
     }
 
     fn permits_degraded_disk(&self, constraints: &PlacementConstraints, ec: bool) -> bool {
-        constraints.allow_degraded_failure_domains && (!ec || constraints.allow_unsafe_ec)
+        constraints.allow_degraded_failure_domains
+            && (!ec || constraints.allow_unsafe_ec || constraints.allow_degraded_ec)
     }
 
     fn permits_unsafe_ec(&self, configured: bool) -> bool {
@@ -193,6 +194,8 @@ pub struct PlacementConstraints {
     pub exclude_disk_groups: Vec<DiskGroupId>,
     /// Permit EC placement that exceeds the safe per-node failure bound.
     pub allow_unsafe_ec: bool,
+    /// Permit EC placement across two survivors of a three-node production cluster.
+    pub allow_degraded_ec: bool,
     /// Permit a plan that cannot satisfy every requested failure domain.
     pub allow_degraded_failure_domains: bool,
     /// Ordering used to choose among otherwise eligible domains.
@@ -228,6 +231,13 @@ impl PlacementConstraints {
     #[must_use]
     pub fn allow_unsafe_ec(mut self) -> Self {
         self.allow_unsafe_ec = true;
+        self
+    }
+
+    #[must_use]
+    pub fn allow_degraded_ec(mut self) -> Self {
+        self.allow_degraded_ec = true;
+        self.allow_degraded_failure_domains = true;
         self
     }
 
@@ -356,7 +366,11 @@ pub(super) fn finish_plan(
     ec_shape: bool,
 ) -> Result<PlacementPlan, PlacementError> {
     let protection = assess_entries(&entries, loss_budget);
-    if ec_shape && protection.max_fragments_per_node > loss_budget && !constraints.allow_unsafe_ec {
+    if ec_shape
+        && protection.max_fragments_per_node > loss_budget
+        && !constraints.allow_unsafe_ec
+        && !constraints.allow_degraded_ec
+    {
         return Err(PlacementError::UnsafePlacementRequired);
     }
     // A single-copy mirror has no recoverable domain-loss budget. It still

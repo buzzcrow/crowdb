@@ -1,10 +1,14 @@
-# Access configuration shared by S3 and Iceberg processes.
+# Access configuration shared by the S3 and Iceberg listeners.
 # Secrets stay in /opt/crowdb/data/secrets/server.env.
+
+[deployment]
+mode = "test_single_node"
+max_node_failures = 0
 
 [common]
 management_seeds = ["http://127.0.0.1:10000"]
-diskio_connections_per_endpoint = 2
-diskio_rpc_workers = 2
+diskio_connections_per_endpoint = 1
+diskio_rpc_workers = 1
 
 [read]
 stream_window_bytes = 1048576
@@ -15,7 +19,8 @@ recovery_memory_bytes = 268435456
 [small_write]
 threshold_ratio = 0.9
 disk_block_bytes = 1048576
-conversion_enabled = true
+conversion_enabled = false
+mirror_copies = 1
 ec_data = 2
 ec_code = 1
 memory_budget_bytes = 1342177280
@@ -23,8 +28,10 @@ queue_capacity = 1024
 min_pipelines = 1
 max_pipelines = 32
 max_batch_bytes = 1048576
+chunk_capacity_bytes = 67108864
 
 [s3]
+large_mirror_copies = 1
 listen = "0.0.0.0:81"
 tenant = "preview"
 region = "us-east-1"
@@ -36,15 +43,33 @@ native_budget_bytes = 268435456
 cleanup_backlog_limit = 10000
 ec_data = 2
 ec_code = 1
-max_chunk_size = 1073741824
+max_chunk_size = 67108864
+
+[s3.small_write]
+conversion_enabled = false
+mirror_copies = 1
+disk_block_bytes = 1048576
+ec_data = 2
+ec_code = 1
+chunk_capacity_bytes = 67108864
 
 [iceberg]
+large_mirror_copies = 1
 listen = "0.0.0.0:80"
 native_budget_bytes = 268435456
+max_chunk_size = 67108864
+
+[iceberg.small_write]
+conversion_enabled = false
+mirror_copies = 1
+disk_block_bytes = 1048576
+ec_data = 2
+ec_code = 1
+chunk_capacity_bytes = 33554432
 
 [iceberg.gc]
 enabled = false
-interval_ms = 1000
+interval_ms = 60000
 step_bytes = 8388608
 step_ms = 1000
 page_items = 64

@@ -19,7 +19,7 @@ use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::{decode, encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
-    Chunk, ChunkState, ConversionFilter, Location, Strip, TriggerConversionBatchRequest,
+    Chunk, ChunkState, ChunkType, ConversionFilter, Location, Strip, TriggerConversionBatchRequest,
     TriggerConversionRequest,
 };
 use crowdb_protocol::common::DiskId;
@@ -555,6 +555,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     let mut configured = policy();
     configured.chunk_capacity = 16 * MIB as u64;
     configured.conversion_enabled = false;
+    configured.chunk_type = ChunkType::S3;
     let stack = E2eStack::start(configured).await;
     let mut object_groups = Vec::new();
     for value in 11_u8..19 {
@@ -577,6 +578,8 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     .await
     .expect("background close checkpoint did not reach strip 7");
     assert_eq!(before.state, ChunkState::Active as i32);
+    assert_eq!(before.chunk_type, ChunkType::S3 as i32);
+    assert_eq!(before.id.unwrap().high >> 56, ChunkType::S3 as u64);
     assert_eq!(before.closed_strip_sequence, Some(7));
     assert_eq!(before.strips.len(), 8);
     assert!(before
@@ -609,6 +612,8 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     .await
     .expect("manual conversion task did not finish");
     let strip = &converted.strips[0];
+    assert_eq!(converted.id, before.id);
+    assert_eq!(converted.chunk_type, ChunkType::S3 as i32);
     let Some(Strip::EcStrip(ec)) = &strip.strip else {
         unreachable!();
     };
@@ -904,6 +909,61 @@ async fn small_write_repairs_failed_replica_through_real_chunkdb_and_diskio() {
 }
 
 #[tokio::test]
+async fn single_copy_small_write_reports_real_diskio_write_failure() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start_with_diskio_fault_rate(policy(), 1.0).await;
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let data = Bytes::from(vec![0x5a; MAX_FRAME_PAYLOAD_BYTES]);
+        let mut writer = stack.client.prepare_small_write(data.len()).await?;
+        writer.on_data(data).await?;
+        writer.on_finish().await.map(|_| ())
+    })
+    .await
+    .expect("real DiskIO write failure did not return within 15 seconds");
+    assert!(
+        matches!(result, Err(IoError::WriteFailed(_))),
+        "unexpected write result: {result:?}"
+    );
+    let metrics = stack.client.small_write_metrics();
+    assert_eq!(metrics.failed, 1);
+    assert_eq!(metrics.repairs_avoiding_rotation, 0);
+}
+
+#[tokio::test]
+async fn single_copy_read_reports_diskio_process_failure() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut stack = E2eStack::start(policy()).await;
+    let data = Bytes::from_static(b"diskio-read-failure");
+    let location = write_object(&stack.client, data.clone()).await;
+    stack.client.shutdown_small_writes().await.unwrap();
+    assert_eq!(
+        stack
+            .client
+            .read_object(std::slice::from_ref(&location))
+            .await
+            .unwrap()
+            .concat()
+            .as_slice(),
+        data.as_ref()
+    );
+    stack.crash_diskio();
+    let read = tokio::time::timeout(
+        Duration::from_secs(15),
+        stack.client.read_object(std::slice::from_ref(&location)),
+    )
+    .await
+    .expect("read did not return after DiskIO exited");
+    assert!(
+        read.is_err(),
+        "single-copy read succeeded after its DiskIO process exited"
+    );
+}
+
+#[tokio::test]
 async fn small_write_repair_preserves_acknowledged_prefix_in_open_block() {
     if !all_binaries_available() {
         return;
@@ -972,7 +1032,9 @@ async fn small_write_rotates_strips_and_chunks_without_splitting_objects() {
     if !all_binaries_available() {
         return;
     }
-    let stack = E2eStack::start(policy()).await;
+    let mut configured = policy();
+    configured.chunk_type = ChunkType::IcebergTable;
+    let stack = E2eStack::start(configured).await;
     let first_group = write_full_small_strip(&stack.client, 3).await;
     let second_group = write_full_small_strip(&stack.client, 5).await;
     let third_group = write_full_small_strip(&stack.client, 7).await;
@@ -986,6 +1048,8 @@ async fn small_write_rotates_strips_and_chunks_without_splitting_objects() {
     assert_ne!(second.chunk_id, third.chunk_id);
     assert_eq!(third.offset, 0);
     let first_chunk = stack.query_chunk(&first).await;
+    assert_eq!(first_chunk.chunk_type, ChunkType::IcebergTable as i32);
+    assert_eq!(first_chunk.id.unwrap().high >> 56, ChunkType::IcebergTable as u64);
     assert_eq!(first_chunk.state, ChunkState::Sealed as i32);
     assert_eq!(first_chunk.strips.len(), 2);
     assert_eq!(first_chunk.acknowledged_cursor, 2 * MIB as u64);
@@ -997,6 +1061,8 @@ async fn small_write_rotates_strips_and_chunks_without_splitting_objects() {
         assert_mirror_data(&stack, &first_chunk, location, data).await;
     }
     let third_chunk = stack.query_chunk(&third).await;
+    assert_eq!(third_chunk.chunk_type, ChunkType::IcebergTable as i32);
+    assert_eq!(third_chunk.id.unwrap().high >> 56, ChunkType::IcebergTable as u64);
     for (data, location) in &third_group {
         assert_mirror_data(&stack, &third_chunk, location, data).await;
     }

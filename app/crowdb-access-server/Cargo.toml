@@ -12,7 +12,7 @@ workspace = true
 
 [features]
 default = ["s3"]
-test-util = []
+test-util = ["crowdb-chunk-client/test-util"]
 s3-e2e = ["s3"]
 iceberg-e2e = []
 s3 = [
@@ -29,6 +29,7 @@ crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
 crowdb-common = { path = "../../lib/crowdb-common/rust" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
+crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 futures = { version = "0.3", optional = true }
 http-body-util = "0.1"
 hyper = { workspace = true, features = ["http1", "server"] }
@@ -37,6 +38,7 @@ percent-encoding = "2"
 quick-xml = "0.38"
 base64 = "0.22"
 md-5 = "0.10"
+openssl = "0.10"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
@@ -49,16 +51,17 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 crowdb-access-server = { path = ".", default-features = false, features = ["test-util"] }
+futures = "0.3"
+crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 hmac = "0.12"
 arc-swap = "1.9"
 async-trait = "0.1"
 crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
 crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
 crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client", features = ["test-util"] }
-crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["chunk-kv", "chunkdb", "diskdb", "diskio"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 
 [[test]]
@@ -66,10 +69,6 @@ name = "s3_full_stack_test"
 path = "tests/s3_full_stack_test.rs"
 harness = false
 required-features = ["s3-e2e"]
-
-[[bin]]
-name = "crowdb-iceberg"
-path = "src/iceberg_main.rs"
 
 [[test]]
 name = "iceberg_full_stack_test"

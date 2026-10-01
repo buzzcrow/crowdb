@@ -7,6 +7,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use hyper::body::Bytes;
 use sha2::{Digest as _, Sha256};
+use std::fmt::Write as _;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum IntegrityError {
@@ -87,30 +88,52 @@ impl SinglePartIntegrity {
     ) -> Result<(String, Vec<u8>), IntegrityError> {
         let Self { md5, sha256 } = self;
         let digest = md5.compute();
-        let result = (format!("{digest:x}"), digest.0.to_vec());
-        if let Some(expected) = expected_content_md5 {
-            let expected = STANDARD
-                .decode(expected)
-                .map_err(|_| IntegrityError::InvalidDigest)?;
-            if expected.len() != 16 {
-                return Err(IntegrityError::InvalidDigest);
-            }
-            if expected != result.1 {
-                return Err(IntegrityError::Mismatch);
-            }
-        }
-        if let Some(expected) = expected_payload_sha256 {
-            if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(IntegrityError::InvalidPayloadDigest);
-            }
-            let sha256 = sha256.ok_or(IntegrityError::InvalidPayloadDigest)?;
-            let actual = format!("{:x}", sha256.finalize());
-            if !actual.eq_ignore_ascii_case(expected) {
-                return Err(IntegrityError::PayloadMismatch);
-            }
-        }
-        Ok(result)
+        let sha256 = sha256.map(|sha256| sha256.finalize().into());
+        validate_completed_digests(digest.0, sha256, expected_content_md5, expected_payload_sha256)
     }
+}
+
+/// Validates checksums produced by a separate object-scoped digest worker.
+///
+/// # Errors
+/// Rejects malformed or mismatched declared digests.
+pub fn validate_completed_digests(
+    md5: [u8; 16],
+    sha256: Option<[u8; 32]>,
+    expected_content_md5: Option<&str>,
+    expected_payload_sha256: Option<&str>,
+) -> Result<(String, Vec<u8>), IntegrityError> {
+    let result = (hex_digest(&md5), md5.to_vec());
+    if let Some(expected) = expected_content_md5 {
+        let expected = STANDARD
+            .decode(expected)
+            .map_err(|_| IntegrityError::InvalidDigest)?;
+        if expected.len() != 16 {
+            return Err(IntegrityError::InvalidDigest);
+        }
+        if expected != result.1 {
+            return Err(IntegrityError::Mismatch);
+        }
+    }
+    if let Some(expected) = expected_payload_sha256 {
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(IntegrityError::InvalidPayloadDigest);
+        }
+        let sha256 = sha256.ok_or(IntegrityError::InvalidPayloadDigest)?;
+        let actual = hex_digest(&sha256);
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(IntegrityError::PayloadMismatch);
+        }
+    }
+    Ok(result)
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut value, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    value
 }
 
 /// Encodes a composite multipart `ETag` as a distinct 18-byte metadata

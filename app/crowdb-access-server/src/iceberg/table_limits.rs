@@ -47,7 +47,7 @@ pub(super) fn commits() -> CommitProofLimits {
     };
     let parquet = ParquetMetadataLimits {
         footer_bytes: 1024 * 1024,
-        values: 100_000,
+        values: 500_000,
         depth: 32,
         schema_elements: 4096,
         row_groups: 10_000,

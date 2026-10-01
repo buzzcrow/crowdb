@@ -25,6 +25,7 @@ use crate::{Result, StreamError};
 
 #[derive(Clone, Debug)]
 pub struct StreamConfig {
+    pub chunk_capacity_bytes: u64,
     pub queue_requests: usize,
     pub queue_bytes: u64,
     pub batch_requests: usize,
@@ -42,6 +43,7 @@ pub struct StreamConfig {
 impl Default for StreamConfig {
     fn default() -> Self {
         Self {
+            chunk_capacity_bytes: crowdb_chunk_client::STREAM_CHUNK_BYTES,
             queue_requests: 1_024,
             queue_bytes: 64 * 1024 * 1024,
             batch_requests: 64,
@@ -61,6 +63,7 @@ impl Default for StreamConfig {
 impl StreamConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.queue_requests == 0
+            || !(1024 * 1024..=crowdb_chunk_client::STREAM_CHUNK_BYTES).contains(&self.chunk_capacity_bytes)
             || self.queue_bytes == 0
             || self.batch_requests == 0
             || self.batch_bytes == 0
@@ -1236,6 +1239,7 @@ async fn write_with_recovery(
     requests: &[AppendRequest],
     bytes: usize,
 ) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
+    let mut rotated = false;
     loop {
         match write_batch_with_watchdog(state, requests, bytes).await {
             Err(BatchFailure::MirrorWrite(
@@ -1247,6 +1251,9 @@ async fn write_with_recovery(
                 BatchFailure::MirrorWrite(error)
                 | BatchFailure::Other(error @ StreamError::DefinitelyNotCommitted(_)),
             ) => {
+                if rotated {
+                    return Err(BatchFailure::Other(error));
+                }
                 tracing::warn!(
                     stream_high = state.stream_name.high,
                     stream_low = state.stream_name.low,
@@ -1254,24 +1261,8 @@ async fn write_with_recovery(
                     %error,
                     "chunk-stream append will rotate after an uncommitted write"
                 );
-                loop {
-                    match rollover(state).await {
-                        Ok(()) => break,
-                        Err(
-                            error @ (StreamError::StaleWriter
-                            | StreamError::Corruption(_)
-                            | StreamError::InvalidRequest(_)),
-                        ) => {
-                            state.stalled = true;
-                            return Err(BatchFailure::Other(error));
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "chunk-stream rollover remains unavailable");
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                rollover(state).await.map_err(BatchFailure::Other)?;
+                rotated = true;
             }
             Err(BatchFailure::Other(error)) => {
                 if matches!(rotate_externally_sealed_active(state).await, Ok(true)) {
@@ -1468,10 +1459,11 @@ async fn resolve_cursor_advance(
                         "committed cursor has an unexpected checksum".into(),
                     ));
                 }
-                Ok(_) => {
-                    return Err(StreamError::Corruption(
-                        "durable cursor is outside the append bounds".into(),
-                    ));
+                Ok(durable) => {
+                    return Err(StreamError::Corruption(format!(
+                        "durable cursor is outside the append bounds: chunk={chunk_id:?} epoch={} expected={expected_cursor} new={new_cursor} durable={}",
+                        state.writer_epoch, durable.offset
+                    )));
                 }
                 Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
                 Err(error) => {

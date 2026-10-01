@@ -56,6 +56,30 @@ struct OperationCounters {
     conditional_delete: AtomicU64,
 }
 
+#[derive(Clone, Default)]
+pub struct CatalogStoreOperationMeter(Arc<OperationCounters>);
+
+impl CatalogStoreOperationMeter {
+    #[must_use]
+    pub fn snapshot(&self) -> CatalogStoreOperationCounts {
+        self.0.snapshot()
+    }
+
+    pub async fn observe<F: std::future::Future>(&self, future: F) -> F::Output {
+        REQUEST_OPERATIONS.scope(self.clone(), future).await
+    }
+}
+
+tokio::task_local! {
+    static REQUEST_OPERATIONS: CatalogStoreOperationMeter;
+}
+
+fn count_request(operation: fn(&OperationCounters) -> &AtomicU64) {
+    let _ = REQUEST_OPERATIONS.try_with(|meter| {
+        operation(&meter.0).fetch_add(1, Ordering::Relaxed);
+    });
+}
+
 impl OperationCounters {
     fn snapshot(&self) -> CatalogStoreOperationCounts {
         CatalogStoreOperationCounts {
@@ -132,6 +156,7 @@ impl RoutedCatalogStore {
         }
         validate_value(expected)?;
         self.counters.conditional_delete.fetch_add(1, Ordering::Relaxed);
+        count_request(|counters| &counters.conditional_delete);
         let response = self
             .client
             .execute_with_identity(
@@ -183,6 +208,7 @@ impl RoutedCatalogStore {
             return Err(StoreError::Response);
         }
         self.counters.scan.fetch_add(1, Ordering::Relaxed);
+        count_request(|counters| &counters.scan);
         let page = self.client.scan(request).await?;
         if let Some(failure) = page.terminal_failure {
             return Err(StoreError::Rejected(failure));
@@ -207,6 +233,7 @@ impl CatalogStore for RoutedCatalogStore {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         IcebergKey::decode(key)?;
         self.counters.get.fetch_add(1, Ordering::Relaxed);
+        count_request(|counters| &counters.get);
         let response = self.client.get(key.to_vec(), None).await?;
         match response.result.map_err(StoreError::Rejected)? {
             OperationResult::Value(value) => value.map(|value| stored(key, value)).transpose(),
@@ -238,6 +265,7 @@ impl CatalogStore for RoutedCatalogStore {
             },
         };
         self.counters.compare_exchange.fetch_add(1, Ordering::Relaxed);
+        count_request(|counters| &counters.compare_exchange);
         let response = self
             .client
             .execute_with_identity(operation, None, identity)

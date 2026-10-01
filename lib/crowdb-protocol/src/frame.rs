@@ -121,14 +121,13 @@ pub fn parse_frame_views(
     for view in views {
         let included = footer_start.saturating_sub(cursor).min(view.len());
         if included > 0 {
-            crc = !crc32c::crc32c_append(!crc, &view[..included]);
+            crc = crowdb_common::ec_isal::crc32c_update(crc, &view[..included]);
         }
         cursor = cursor.saturating_add(view.len());
         if cursor >= footer_start {
             break;
         }
     }
-    crc = !crc32c::crc32c_append(!crc, &footer[4..]);
     if crc != expected_crc {
         return Err(FrameError::ChecksumMismatch);
     }
@@ -212,6 +211,23 @@ pub fn encode_frame_regions(
     header_region: &mut [u8],
     footer_region: &mut [u8],
 ) -> Result<(), FrameError> {
+    prepare_frame_regions(magic, payload, write_time_ms, header_region, footer_region)?;
+    set_frame_chunk_id(chunk_id, footer_region)
+}
+
+/// Prepare the frame header and CRC before its destination chunk is known.
+/// The CRC covers the header and payload; the chunk ID is checked separately
+/// against the expected location when the frame is read.
+///
+/// # Errors
+/// Returns an error for an oversized payload or incorrectly sized regions.
+pub fn prepare_frame_regions(
+    magic: FrameMagic,
+    payload: &[u8],
+    write_time_ms: u64,
+    header_region: &mut [u8],
+    footer_region: &mut [u8],
+) -> Result<(), FrameError> {
     if header_region.len() != FRAME_HEADER_PREFIX_BYTES || footer_region.len() != FRAME_FOOTER_BYTES {
         return Err(FrameError::InvalidRegionLength);
     }
@@ -224,10 +240,21 @@ pub fn encode_frame_regions(
     };
     frame_length(header)?;
     write_header_region(header_region, header);
+    let checksum = crc32c_parts([header_region, payload]);
+    footer_region[..4].copy_from_slice(&checksum.to_le_bytes());
+    Ok(())
+}
+
+/// Set the destination chunk after the frame header and CRC are prepared.
+///
+/// # Errors
+/// Returns an error for an incorrectly sized footer region.
+pub fn set_frame_chunk_id(chunk_id: ChunkId, footer_region: &mut [u8]) -> Result<(), FrameError> {
+    if footer_region.len() != FRAME_FOOTER_BYTES {
+        return Err(FrameError::InvalidRegionLength);
+    }
     footer_region[4..12].copy_from_slice(&chunk_id.high.to_be_bytes());
     footer_region[12..20].copy_from_slice(&chunk_id.low.to_be_bytes());
-    let checksum = crc32c_parts([header_region, payload, &footer_region[4..]]);
-    footer_region[..4].copy_from_slice(&checksum.to_le_bytes());
     Ok(())
 }
 
@@ -273,7 +300,7 @@ pub fn parse_frame(bytes: &[u8], expected_chunk_id: ChunkId) -> Result<ParsedFra
             required_bytes: length,
         }
     })?);
-    if crc32c_frame_parts(&bytes[..footer_start], &bytes[footer_start + 4..length]) != checksum {
+    if crc32c_parts([&bytes[..footer_start]]) != checksum {
         return Err(FrameError::ChecksumMismatch);
     }
     let chunk_id =
@@ -501,13 +528,7 @@ fn write_header_region(region: &mut [u8], header: FrameHeaderPrefix) {
 fn crc32c_parts<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u32 {
     let mut crc = 0_u32;
     for bytes in parts {
-        // The frame format stores the raw seed-zero CRC, while this API applies
-        // initial and final XOR. Invert around each append to preserve the wire value.
-        crc = !crc32c::crc32c_append(!crc, bytes);
+        crc = crowdb_common::ec_isal::crc32c_update(crc, bytes);
     }
     crc
-}
-
-fn crc32c_frame_parts(prefix: &[u8], chunk_id: &[u8]) -> u32 {
-    crc32c_parts([prefix, chunk_id])
 }

@@ -127,6 +127,7 @@ pub use reservation::{
 
 /// Lifecycle handler — orchestrates allocate/append/seal/delete/query/list.
 pub struct LifecycleHandler {
+    deployment_mode: Option<crate::chunkdb_config::DeploymentMode>,
     store: Arc<ChunkStore>,
     allocator: Arc<ChunkAllocator>,
     topology: TopologyCache,
@@ -187,6 +188,7 @@ impl LifecycleHandler {
     #[must_use]
     pub fn new(store: Arc<ChunkStore>, allocator: Arc<ChunkAllocator>, topology: TopologyCache) -> Self {
         Self {
+            deployment_mode: None,
             store,
             allocator,
             topology,
@@ -234,6 +236,99 @@ impl LifecycleHandler {
     pub fn with_allow_unsafe_ec(mut self, allow: bool) -> Self {
         self.allow_unsafe_ec = allow;
         self
+    }
+
+    #[must_use]
+    pub fn with_deployment_mode(mut self, mode: crate::chunkdb_config::DeploymentMode) -> Self {
+        self.deployment_mode = Some(mode);
+        self
+    }
+
+    fn validate_strip_layout(
+        &self,
+        strip_type: ProtoStripType,
+        data_num: u32,
+        code_num: u32,
+        copy_count: u32,
+        capacity_kb: u32,
+    ) -> Result<(), LifecycleError> {
+        use crate::chunkdb_config::DeploymentMode;
+        if strip_type == ProtoStripType::Mirror && copy_count > 5 {
+            return Err(LifecycleError::InvalidRequest(
+                "mirror strips support at most five copies".into(),
+            ));
+        }
+        match self.deployment_mode {
+            Some(DeploymentMode::TestSingleNode) => {
+                if strip_type != ProtoStripType::Mirror
+                    || copy_count != 1
+                    || data_num != 0
+                    || code_num != 0
+                    || capacity_kb != 1024
+                {
+                    return Err(LifecycleError::InvalidRequest(
+                        "test_single_node requires 1 MiB mirror strips with one copy each".into(),
+                    ));
+                }
+            }
+            Some(DeploymentMode::Production) if strip_type == ProtoStripType::Mirror && copy_count < 2 => {
+                return Err(LifecycleError::InvalidRequest(
+                    "production mirror strips require at least two copies".into(),
+                ));
+            }
+            Some(DeploymentMode::Production) => {}
+            Some(DeploymentMode::TestUnsafePlacement) => {}
+            None => {}
+        }
+        Ok(())
+    }
+
+    fn validate_replacement_layouts(&self, strips: &[ChunkStrip]) -> Result<(), LifecycleError> {
+        for strip in strips {
+            match strip.strip.as_ref() {
+                Some(Strip::MirrorStrip(mirror)) => self.validate_strip_layout(
+                    ProtoStripType::Mirror,
+                    0,
+                    0,
+                    u32::try_from(mirror.segments.len()).unwrap_or(u32::MAX),
+                    strip.capacity,
+                )?,
+                Some(Strip::EcStrip(ec)) => self.validate_strip_layout(
+                    ProtoStripType::Ec,
+                    ec.data_num,
+                    ec.code_num,
+                    0,
+                    strip.capacity,
+                )?,
+                None => {
+                    return Err(LifecycleError::InvalidRequest(
+                        "replacement strip has no body".into(),
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn protected_degraded_layout(
+        &self,
+        strip_type: ProtoStripType,
+        snapshot: &crate::topology::TopologySnapshot,
+    ) -> Option<StripAllocType> {
+        use std::collections::HashSet;
+
+        if self.deployment_mode != Some(crate::chunkdb_config::DeploymentMode::Production) {
+            return None;
+        }
+        if strip_type != ProtoStripType::Mirror {
+            return None;
+        }
+        let healthy_nodes: HashSet<_> = snapshot
+            .healthy_disk_groups()
+            .into_iter()
+            .map(|group| group.node_id)
+            .collect();
+        (healthy_nodes.len() == 2).then_some(StripAllocType::Mirror { copy_count: 2 })
     }
 
     /// Attach the persistent task store used for foreground degraded EC admission.
@@ -347,6 +442,7 @@ impl LifecycleHandler {
         writer_lease_ms: u64,
         owner_key: Vec<u8>,
     ) -> Result<Chunk, LifecycleError> {
+        self.validate_strip_layout(strip_type, data_num, code_num, copy_count, write_granularity_kb)?;
         if !chunk_owner_key_matches_type(chunk_type, &owner_key) {
             return Err(LifecycleError::InvalidRequest(
                 "chunk owner key does not match chunk type".into(),
@@ -356,6 +452,11 @@ impl LifecycleHandler {
             Some(id) => id,
             None => self.generate_owned_chunk_id(chunk_type)?,
         };
+        if (id.high >> 56) != u64::from(chunk_type as u8) {
+            return Err(LifecycleError::InvalidRequest(
+                "chunk id prefix does not match chunk type".into(),
+            ));
+        }
         self.check_range(&id)?;
         let mut allocation_guard = AllocationMetricGuard::new(self.metrics.clone());
 
@@ -382,18 +483,20 @@ impl LifecycleHandler {
 
         let snap = self.topology.snapshot();
 
-        let mirror_copies = if copy_count == 0 { 3 } else { copy_count as usize };
-        let strip_alloc_type = match strip_type {
-            ProtoStripType::Mirror => StripAllocType::Mirror {
-                copy_count: mirror_copies,
-            },
-            ProtoStripType::Ec => StripAllocType::Ec {
-                data_num: data_num as usize,
-                code_num: code_num as usize,
-            },
-        };
+        let mirror_copies = if copy_count == 0 { 2 } else { copy_count as usize };
+        let strip_alloc_type =
+            self.protected_degraded_layout(strip_type, &snap)
+                .unwrap_or(match strip_type {
+                    ProtoStripType::Mirror => StripAllocType::Mirror {
+                        copy_count: mirror_copies,
+                    },
+                    ProtoStripType::Ec => StripAllocType::Ec {
+                        data_num: data_num as usize,
+                        code_num: code_num as usize,
+                    },
+                });
 
-        let constraints = self.placement_constraints();
+        let constraints = self.allocation_constraints(strip_type, &snap);
         // Convert write_granularity (KB) to unit_count using the unit
         // size from the topology snapshot. Fall back to treating KB as
         // units if unit_size_bytes is unavailable (0).
@@ -675,6 +778,8 @@ impl LifecycleHandler {
         copy_count: u32,
         unit_count: u32,
     ) -> Result<AppendChunkOutcome, LifecycleError> {
+        let capacity_kb = unit_count.saturating_mul(self.topology.snapshot().unit_size_bytes() / 1024);
+        self.validate_strip_layout(strip_type, data_num, code_num, copy_count, capacity_kb)?;
         self.check_range(chunk_id)?;
 
         let mut guard = if let Some(locks) = &self.locks {
@@ -705,18 +810,20 @@ impl LifecycleHandler {
         }
 
         let snap = self.topology.snapshot();
-        let mirror_copies = if copy_count == 0 { 3 } else { copy_count as usize };
-        let strip_alloc_type = match strip_type {
-            ProtoStripType::Mirror => StripAllocType::Mirror {
-                copy_count: mirror_copies,
-            },
-            ProtoStripType::Ec => StripAllocType::Ec {
-                data_num: data_num as usize,
-                code_num: code_num as usize,
-            },
-        };
+        let mirror_copies = if copy_count == 0 { 2 } else { copy_count as usize };
+        let strip_alloc_type =
+            self.protected_degraded_layout(strip_type, &snap)
+                .unwrap_or(match strip_type {
+                    ProtoStripType::Mirror => StripAllocType::Mirror {
+                        copy_count: mirror_copies,
+                    },
+                    ProtoStripType::Ec => StripAllocType::Ec {
+                        data_num: data_num as usize,
+                        code_num: code_num as usize,
+                    },
+                });
 
-        let constraints = self.placement_constraints();
+        let constraints = self.allocation_constraints(strip_type, &snap);
         let start_seq = if chunk.next_strip_sequence == 0 {
             chunk
                 .strips
@@ -860,7 +967,7 @@ impl LifecycleHandler {
                 self.store.delete_reservation_group(chunk_id, &group_id).await?;
             }
         }
-        seal_written_ec_strips(&mut chunk, seal_length, now_ms);
+        seal_written_strips(&mut chunk, seal_length, now_ms);
         close_acknowledged_strips(&mut chunk, now_ms);
 
         self.store.put_chunk(&chunk).await?;
@@ -1120,6 +1227,7 @@ impl LifecycleHandler {
                 "strip replacement ranges must be non-empty".into(),
             ));
         }
+        self.validate_replacement_layouts(replacement_strips)?;
         let mut guard = if let Some(locks) = &self.locks {
             Some(
                 locks
@@ -1461,6 +1569,11 @@ impl LifecycleHandler {
         data_num: u32,
         code_num: u32,
     ) -> Result<ChunkStrip, LifecycleError> {
+        if self.deployment_mode == Some(crate::chunkdb_config::DeploymentMode::TestSingleNode) {
+            return Err(LifecycleError::InvalidRequest(
+                "test_single_node disables mirror-to-EC conversion".into(),
+            ));
+        }
         self.check_range(chunk_id)?;
         let first = old_strips
             .first()
@@ -1789,6 +1902,29 @@ impl LifecycleHandler {
         constraints
     }
 
+    fn allocation_constraints(
+        &self,
+        strip_type: ProtoStripType,
+        snapshot: &crate::topology::TopologySnapshot,
+    ) -> PlacementConstraints {
+        let constraints = self.placement_constraints();
+        if self.deployment_mode != Some(crate::chunkdb_config::DeploymentMode::Production)
+            || strip_type != ProtoStripType::Ec
+        {
+            return constraints;
+        }
+        let healthy_nodes = snapshot
+            .healthy_disk_groups()
+            .into_iter()
+            .map(|group| group.node_id)
+            .collect::<std::collections::HashSet<_>>();
+        if healthy_nodes.len() == 2 {
+            constraints.allow_degraded_ec()
+        } else {
+            constraints
+        }
+    }
+
     fn admit_placement_repairs(&self, chunk: &Chunk) {
         let Some(tasks) = self.placement_tasks.clone() else {
             return;
@@ -2007,19 +2143,18 @@ fn close_acknowledged_strips(chunk: &mut Chunk, now_ms: u64) {
     chunk.closed_strip_sequence = last_closed;
 }
 
-fn seal_written_ec_strips(chunk: &mut Chunk, seal_length: u32, now_ms: u64) {
+fn seal_written_strips(chunk: &mut Chunk, seal_length: u32, now_ms: u64) {
     let mut remaining = seal_length;
     for strip in &mut chunk.strips {
         let written = remaining.min(strip.capacity);
         if written == 0 {
             break;
         }
-        let Some(crowdb_protocol::chunkdb::rpc::Strip::EcStrip(ec)) = strip.strip.as_mut() else {
-            continue;
-        };
         strip.sealed_length = written;
         strip.sealed_ts_ms = now_ms;
-        ec.ec_state = crowdb_protocol::chunkdb::rpc::EcState::Parity as i32;
+        if let Some(crowdb_protocol::chunkdb::rpc::Strip::EcStrip(ec)) = strip.strip.as_mut() {
+            ec.ec_state = crowdb_protocol::chunkdb::rpc::EcState::Parity as i32;
+        }
         remaining -= written;
     }
 }

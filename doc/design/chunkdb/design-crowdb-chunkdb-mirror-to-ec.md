@@ -138,9 +138,10 @@ cannot join or allocate.
 ## 3. Foreground Conversion
 
 Each small-write pipeline owns one special reservation group containing eight
-three-copy mirror candidate sets and four parity segments. The group is chosen
-from one placement snapshot and is hidden from `Chunk.strips` until individual
-mirrors are confirmed. A group is not started when the current chunk cannot
+mirror candidate sets with the configured copy count and four parity segments.
+The group is chosen from one placement snapshot and is hidden from
+`Chunk.strips` until individual mirrors are confirmed. A group is not started
+when the current chunk cannot
 contain eight remaining full strips.
 
 After a mirror strip is durable, its existing one-MiB shadow updates four

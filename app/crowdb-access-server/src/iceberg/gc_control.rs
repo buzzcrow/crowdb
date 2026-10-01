@@ -75,7 +75,7 @@ pub(super) async fn manage(
             };
             show(&task);
         }
-        _ => return Err("usage: crowdb-iceberg gc limits | start-table UUID TABLE_ID | start-retired UUID CATALOG_ID EPOCH | inspect|pause|resume|retry CATALOG_ID TASK_ID".into()),
+        _ => return Err("usage: crowdb-access-server iceberg gc limits | start-table UUID TABLE_ID | start-retired UUID CATALOG_ID EPOCH | inspect|pause|resume|retry CATALOG_ID TASK_ID".into()),
     }
     Ok(())
 }

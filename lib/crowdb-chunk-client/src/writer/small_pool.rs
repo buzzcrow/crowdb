@@ -188,8 +188,7 @@ impl SmallPoolRuntime {
             }
             let routes = self.routes.load_full();
             if routes.is_empty() {
-                tokio::task::yield_now().await;
-                continue;
+                return Err(IoError::WriteFailed("small-write pipelines unavailable".into()));
             }
             let route = Arc::clone(&object.route);
             route.accepted(object.len);
@@ -232,6 +231,12 @@ pub(crate) struct SmallWritePool {
 }
 
 impl SmallWritePool {
+    pub fn manager_failed(&self) -> bool {
+        self.runtime
+            .get()
+            .is_some_and(|runtime| !runtime.closed.load(Ordering::Acquire) && runtime.manager_tx.is_closed())
+    }
+
     pub fn new(
         allocator: Arc<dyn ChunkAllocator>,
         disk_writer: Arc<dyn DiskWriter>,
@@ -282,6 +287,19 @@ impl SmallWritePool {
         done_rx
             .await
             .map_err(|_| IoError::Internal("small-write manager shutdown was lost".into()))?
+    }
+
+    #[cfg(feature = "test-util")]
+    pub async fn stop_manager_for_test(self: &Arc<Self>) -> Result<()> {
+        let runtime = self.runtime().await?;
+        let (done_tx, done_rx) = oneshot::channel();
+        runtime
+            .manager_tx
+            .send(ManagerCommand::StopForTest(done_tx))
+            .map_err(|_| IoError::Internal("small-write manager already stopped".into()))?;
+        done_rx
+            .await
+            .map_err(|_| IoError::Internal("small-write manager test stop was lost".into()))
     }
 }
 

@@ -4,7 +4,6 @@
 #include "rpc/dio_server.h"
 
 #include "crowdb-common/metrics/metrics.h"
-#include "crowdb-protocol/frame.h"
 #include "crowdb-rpc/server/message.h"
 #include "crowdb-rpc/server/server.h"
 #include "disk/disk.h"
@@ -182,23 +181,6 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
         return nullptr;
     }
-    // An EC shard is opaque DiskIO data.  It can begin with the same two
-    // bytes as a public frame because the first data shard carries the
-    // original prefix, but it is not itself a frame sequence.  Without an
-    // explicit content-kind field, only a single-frame request is
-    // unambiguously self-describing at this boundary.
-    if (data_buf != nullptr && size <= crowdb::protocol::kMaxFrameBytes && size >= 2 &&
-        crowdb::protocol::valid_magic(crowdb::protocol::read_u16_le(data_buf->data))) {
-        const auto frame_status =
-            crowdb::protocol::validate_frame_sequence(std::span<const uint8_t>(data_buf->data, size));
-        if (frame_status != crowdb::protocol::FrameError::Ok) {
-            data_buf->release();
-            send_error_response(conn, req_id, create_nano, msg_type,
-                                static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
-            return nullptr;
-        }
-    }
-
     uint64_t ordering_phys_offset = zone->base_offset + ordering_zone_offset;
     auto     started              = std::chrono::steady_clock::now();
     aligned_writer_.submit_ordered(disk, phys_offset, data_buf ? data_buf->data : nullptr, size, ordering_phys_offset,

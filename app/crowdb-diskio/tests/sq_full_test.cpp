@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -74,17 +75,19 @@ TEST(SqFullBackpressureTest, BlockingEngineMoreJobsThanThreads)
     constexpr int NUM_IOS   = 100;
     constexpr int DATA_SIZE = 4096;
 
-    std::atomic<int>     completed{0};
-    std::vector<uint8_t> payload(DATA_SIZE, 0xAB);
+    std::atomic<int> completed{0};
+    auto             payload = std::make_shared<const std::vector<uint8_t>>(DATA_SIZE, 0xAB);
 
     for (int i = 0; i < NUM_IOS; i++) {
-        std::vector<uint8_t> data(payload);
         // Each write goes to a different offset so they don't overlap.
         off_t offset = static_cast<off_t>(i * DATA_SIZE);
-        engine->submit_write(disk.get(), offset, data.data(), DATA_SIZE, [&completed, DATA_SIZE](int result) {
-            EXPECT_EQ(result, DATA_SIZE);
-            completed.fetch_add(1, std::memory_order_release);
-        });
+        // The completion keeps the buffer alive until the asynchronous write finishes.
+        engine->submit_write(disk.get(), offset, payload->data(), DATA_SIZE,
+                             [payload, &completed, DATA_SIZE](int result) {
+                                 static_cast<void>(payload);
+                                 EXPECT_EQ(result, DATA_SIZE);
+                                 completed.fetch_add(1, std::memory_order_release);
+                             });
     }
 
     // Wait for all to complete.

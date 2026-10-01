@@ -34,15 +34,14 @@ pub use file_auth::authenticate_file_request;
 pub use file_body::{FileBodyError, FileReadBody, FileResponseBudget};
 pub use file_complete::FileCompleteBody;
 pub use file_encoding::{FileEncodingError, FileUploadBody};
+pub use file_http::UploadFlowSnapshot;
 pub use file_request::{FileRequest, FileRequestError, MultipartRequest};
 pub use file_response::{FileResponseError, FileS3ErrorCode, MultipartResponses};
 pub use file_selection::{CompletePart, CompleteRequestError, CompleteResolveError, CompleteSelection};
 pub use file_upload::{FileUploadBudget, FileUploadConstraints, FileUploadError};
 pub use http::{serve, IcebergHttpService};
 pub use metrics::{IcebergMetricsSnapshot, MetricCounts, ICEBERG_OUTCOME_NAMES, ICEBERG_ROUTE_NAMES};
-pub use runtime::{run, IcebergRuntimeConfig};
+pub use runtime::{run, run_with_shutdown, IcebergRuntimeConfig};
 
 #[cfg(feature = "test-util")]
 pub use connection::active_io_for_tests;
-#[cfg(feature = "test-util")]
-pub use gc_runtime::budget::{BudgetedGcBlocks, BudgetedGcStore, GcIoBudget};

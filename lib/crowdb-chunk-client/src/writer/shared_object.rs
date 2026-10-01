@@ -292,12 +292,11 @@ impl ChunkIoWriter for SharedObjectWriter {
             return;
         };
         let notified = route.capacity_changed.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         if route.has_capacity() {
             return;
         }
-        tokio::select! {
-            () = notified => {},
-            () = tokio::time::sleep(std::time::Duration::from_millis(5)) => {},
-        }
+        notified.await;
     }
 }

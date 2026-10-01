@@ -72,6 +72,7 @@ pub enum ConversionError {
 
 /// Coordinates client-side no-reread conversion with durable task takeover.
 pub struct ConversionCoordinator {
+    enabled: bool,
     lifecycle: Arc<LifecycleHandler>,
     tasks: Arc<TaskStore>,
     wake: Option<Arc<tokio::sync::Notify>>,
@@ -451,6 +452,7 @@ impl ConversionCoordinator {
     #[must_use]
     pub fn new(lifecycle: Arc<LifecycleHandler>, tasks: Arc<TaskStore>) -> Self {
         Self {
+            enabled: true,
             lifecycle,
             tasks,
             wake: None,
@@ -470,6 +472,12 @@ impl ConversionCoordinator {
     }
 
     #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn with_policy(
         mut self,
         data_num: u32,
@@ -485,6 +493,9 @@ impl ConversionCoordinator {
     }
 
     pub async fn reconcile_reservations(&self, max_groups: u32, now_ms: u64) -> Result<u64, ConversionError> {
+        if !self.enabled {
+            return Ok(0);
+        }
         let cursor = self.reservation_scan_cursor.load_full();
         let groups = self
             .lifecycle
@@ -544,6 +555,11 @@ impl ConversionCoordinator {
         claim_lease_ms: u64,
         now_ms: u64,
     ) -> Result<PreparedConversion, ConversionError> {
+        if !self.enabled {
+            return Err(ConversionError::Payload(
+                "conversion is disabled by deployment mode".into(),
+            ));
+        }
         let chunk = self.lifecycle.query_chunk(&chunk_id).await?;
         validate_source(&chunk, expected_modify_ts, start_index, &old_strips)?;
         let task_id = conversion_task_id(&old_strips, data_num, code_num)?;
@@ -655,6 +671,11 @@ impl ConversionCoordinator {
         client_owner: u64,
         now_ms: u64,
     ) -> Result<Chunk, ConversionError> {
+        if !self.enabled {
+            return Err(ConversionError::Payload(
+                "conversion is disabled by deployment mode".into(),
+            ));
+        }
         let task = self
             .tasks
             .get(&chunk_id, TASK_KIND_MIRROR_TO_EC, &task_id)
@@ -706,6 +727,11 @@ impl ConversionCoordinator {
         code_num: u32,
         now_ms: u64,
     ) -> Result<u64, ConversionError> {
+        if !self.enabled {
+            return Err(ConversionError::Payload(
+                "conversion is disabled by deployment mode".into(),
+            ));
+        }
         let chunk = self.lifecycle.query_chunk(&chunk_id).await?;
         self.admit_groups(&chunk, data_num, code_num, now_ms, false, 0)
             .await
@@ -749,6 +775,11 @@ impl ConversionCoordinator {
         min_age_ms: u64,
         now_ms: u64,
     ) -> Result<u64, ConversionError> {
+        if !self.enabled {
+            return Err(ConversionError::Payload(
+                "conversion is disabled by deployment mode".into(),
+            ));
+        }
         let limit = if max_chunks == 0 { 256 } else { max_chunks };
         let start_after = self.scan_cursor.load_full();
         let chunks = self.lifecycle.list_chunks(start_after.as_deref(), limit).await?;

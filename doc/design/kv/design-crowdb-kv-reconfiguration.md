@@ -31,11 +31,11 @@ CROWDB supports membership changes within a single group. Specifically:
 - **Replace a member.** Implemented as add-then-remove (or vice versa), each as a single-member change.
 - **Change the leadership of the group.** Triggered as a side effect when removing the current leader.
 
-Out of scope (design-crowdb-kv.md §2](design-crowdb-kv.md)):
+Out of scope ([design-crowdb-kv.md §2](design-crowdb-kv.md)):
 
 - Changing `num_groups` (the total number of groups in the cluster) — fixed at cluster creation.
 - Splitting or merging groups — not supported.
-- Going below 3 voting members — not supported (a 1-member group has no fault tolerance).
+- Reconfiguring a protected group below 3 voting members — not supported. The explicit single-node test deployment starts with one voter and has no fault tolerance; it is not entered through membership reconfiguration.
 - Going above 7 voting members — not in the initial scope; quorum size grows linearly with membership and the marginal availability gain past 7 is small.
 
 **Granularity:** every reconfiguration moves *exactly one member* in or out at a time. To go 3 → 5, do two single-member additions in sequence. Under the exact-match `membership_epoch` fence (§6) this single-member-at-a-time rule is no longer required for safety, but it is still recommended because it minimizes the propagation window during which writes stall.

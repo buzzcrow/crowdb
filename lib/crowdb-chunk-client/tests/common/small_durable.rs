@@ -7,6 +7,16 @@ struct TestWriteIntent {
     length: AtomicU64,
 }
 
+struct CountingIntent(AtomicUsize);
+
+#[async_trait]
+impl crowdb_chunk_client::SmallWriteIntent for CountingIntent {
+    async fn before_write(&self, _location: &crowdb_protocol::chunkdb::rpc::Location) -> Result<()> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl crowdb_chunk_client::SmallWriteIntent for TestWriteIntent {
     async fn before_write(&self, location: &crowdb_protocol::chunkdb::rpc::Location) -> Result<()> {
@@ -64,6 +74,25 @@ async fn failed_intent_never_writes_object_bytes_or_returns_a_location() {
     if let Err(error) = client.shutdown_small_writes().await {
         assert!(matches!(error, IoError::WriteFailed(message) if message == "intent persistence failed"));
     }
+}
+
+#[tokio::test]
+async fn durable_intent_is_not_relocated_after_mirror_repair_exhaustion() {
+    let (client, _, disk) = client(policy());
+    disk.fail.store(true, Ordering::Relaxed);
+    let intent = Arc::new(CountingIntent(AtomicUsize::new(0)));
+    let mut writer = client.prepare_small_write(16).await.unwrap();
+    writer
+        .on_data(Bytes::from_static(b"0123456789abcdef"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        writer.finish_durable_with_intent(intent.clone()).await,
+        Err(IoError::WriteFailed(_))
+    ));
+    assert_eq!(intent.0.load(Ordering::Relaxed), 1);
+    assert_eq!(client.small_write_metrics().exhausted_repairs, 1);
+    let _ = client.shutdown_small_writes().await;
 }
 
 #[tokio::test]

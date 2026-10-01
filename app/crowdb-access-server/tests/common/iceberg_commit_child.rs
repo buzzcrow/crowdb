@@ -39,7 +39,11 @@ pub async fn run() {
             management_seeds: seeds,
             diskio_connections_per_endpoint: 2,
             diskio_rpc_workers: 2,
-            small_write: SmallWritePolicy::default(),
+            small_write: SmallWritePolicy {
+                mirror_copies: 1,
+                conversion_enabled: false,
+                ..SmallWritePolicy::default()
+            },
         },
         control,
     )

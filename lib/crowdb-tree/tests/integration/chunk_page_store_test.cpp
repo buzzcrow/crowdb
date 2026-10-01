@@ -403,13 +403,13 @@ TEST(ChunkPageStore, AsyncPackPipelineFansOutMirrorWrites)
     transport->hold_writes();
     CompletionState completed;
     ASSERT_TRUE(store.submit_fsync({.context = &completed, .complete_fn = &record_completion}).ok());
-    transport->wait_for_concurrent_writes(3);
-    EXPECT_GE(transport->max_active_writes(), 3U);
+    transport->wait_for_concurrent_writes(2);
+    EXPECT_GE(transport->max_active_writes(), 2U);
     EXPECT_FALSE(completed.done.load(std::memory_order_acquire));
     transport->release_writes();
     completed.done.wait(false, std::memory_order_acquire);
     EXPECT_EQ(completed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
-    EXPECT_LE(transport->max_active_writes(), 3U);
+    EXPECT_LE(transport->max_active_writes(), 2U);
     ASSERT_NE(catalog->load(29), nullptr);
 }
 
@@ -540,7 +540,7 @@ TEST(ChunkPageStore, ShutdownCancelsAndDrainsBlockedPackWrites)
     transport->hold_writes();
     CompletionState completed;
     ASSERT_TRUE(store->submit_fsync({.context = &completed, .complete_fn = &record_completion}).ok());
-    transport->wait_for_concurrent_writes(3);
+    transport->wait_for_concurrent_writes(2);
     std::thread closer([&store] { store.reset(); });
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     transport->release_writes();
@@ -554,7 +554,8 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
 {
     auto                   catalog   = std::make_shared<MemoryRootCatalog>(7);
     auto                   transport = std::make_shared<MemoryChunkTransport>();
-    ChunkPageStore::Config config{.tree_id = 42, .owner_epoch = 7, .pack_bytes = 4096, .iu_size = 1};
+    ChunkPageStore::Config config{
+        .tree_id = 42, .owner_epoch = 7, .pack_bytes = 4096, .mirror_copies = 3, .iu_size = 1};
     {
         ChunkPageStore store(config, catalog, transport);
         Config         options;
@@ -1288,7 +1289,7 @@ TEST(ChunkPageStore, AvailabilityAndCorruptionRemainDistinct)
     transport->inject_unavailable(false);
     auto manifest = catalog->load(5);
     ASSERT_NE(manifest, nullptr);
-    for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+    for (uint32_t mirror = 0; mirror < 2; ++mirror) {
         transport->corrupt_mirror(manifest->packs[2].ref.chunk_id, mirror, manifest->packs[2].ref.offset);
     }
     ChunkPageStore corrupted({.tree_id = 5, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
@@ -1777,6 +1778,8 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
         .iu_size                        = 1,
         .max_concurrent_packs           = 2,
         .materialization_bytes_per_pass = 4096,
+        .max_chunk_bytes                = 256U * 1024U * 1024U,
+        .mirror_copies                  = 5,
     };
     ct_page_store *store = nullptr;
     ASSERT_EQ(ct_chunk_page_store_open(&store_options, catalog, &store), 0);
@@ -1820,7 +1823,7 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
     ASSERT_EQ(ct_chunk_page_store_get_stats(store, &stats), 0);
     EXPECT_EQ(stats.generations_published, 1U);
     EXPECT_GT(stats.packs_written, 0U);
-    EXPECT_EQ(stats.mirror_write_attempts, stats.packs_written * 3U);
+    EXPECT_EQ(stats.mirror_write_attempts, stats.packs_written * 5U);
     ct_page_store_free(store);
     ct_close(tree);
     ct_root_catalog_free(catalog);

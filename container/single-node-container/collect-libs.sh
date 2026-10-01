@@ -8,7 +8,7 @@ mkdir -p "$output/bin" "$output/lib"
 for binary in \
     crowdb-monitor crowdb-kv-server crowdb-diskdb crowdb-diskio \
     crowdb-chunkdb crowdb-chunk-kv-server crowdb-access-server \
-    crowdb-iceberg crowdb-web; do
+    crowdb-web; do
     if [[ "$binary" == crowdb-diskio ]]; then
         source="$build_root/app/crowdb-diskio/build/crowdb-diskio"
     else
@@ -49,6 +49,10 @@ for binary in "$output"/bin/*; do
 done
 if [[ ! -f "$output/lib/libcrowdb_kv_client.so" ]]; then
     echo 'DiskIO FFI library was not collected' >&2
+    exit 1
+fi
+if [[ ! -f "$output/lib/libcrypto.so.3" ]]; then
+    echo 'the pixi OpenSSL runtime was not collected' >&2
     exit 1
 fi
 for library in "$output"/lib/*; do

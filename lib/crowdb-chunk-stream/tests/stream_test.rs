@@ -375,20 +375,12 @@ async fn ambiguous_cursor_is_resolved_without_resubmission() {
 }
 
 #[tokio::test]
-async fn repeated_mirror_failures_rotate_until_the_same_append_commits() {
+async fn repeated_mirror_failures_return_after_one_rotation() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let stream = create_stream(&store, 64, StreamConfig::default()).await;
-    store.fail_next_writes(3);
-    assert_eq!(
-        stream
-            .append(&[Bytes::from_static(b"record")])
-            .await
-            .unwrap()
-            .begin,
-        0
-    );
-    assert_eq!(store.chunk_write_count(), 4);
-    assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"record"));
+    store.fail_next_writes(2);
+    assert!(stream.append(&[Bytes::from_static(b"record")]).await.is_err());
+    assert_eq!(store.chunk_write_count(), 2);
 }
 
 #[tokio::test]
@@ -623,7 +615,12 @@ async fn higher_epoch_reopens_same_bytes_and_fences_old_writer() {
     let store = Arc::new(MemoryStreamStore::new(32));
     let old = create_stream(&store, 32, StreamConfig::default()).await;
     let name = StreamName { high: 1, low: 32 };
-    old.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    let old_chunk = old
+        .append(&[Bytes::from_static(b"old")])
+        .await
+        .unwrap()
+        .chunk_id
+        .unwrap();
 
     let registry: Arc<dyn StreamRegistry> = store.clone();
     let metadata: Arc<dyn StreamMetadataStore> = store.clone();
@@ -632,11 +629,14 @@ async fn higher_epoch_reopens_same_bytes_and_fences_old_writer() {
         .await
         .unwrap();
     assert_eq!(new.tail(), 3);
+    assert!(store.durable_cursor(old_chunk, 10).await.unwrap().sealed);
     assert_eq!(
         old.append(&[Bytes::from_static(b"stale")]).await,
         Err(StreamError::StaleWriter)
     );
-    assert_eq!(new.append(&[Bytes::from_static(b"new")]).await.unwrap().begin, 3);
+    let appended = new.append(&[Bytes::from_static(b"new")]).await.unwrap();
+    assert_eq!(appended.begin, 3);
+    assert_ne!(appended.chunk_id, Some(old_chunk));
     assert_eq!(new.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
 }
 

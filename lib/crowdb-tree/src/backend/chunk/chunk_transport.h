@@ -16,6 +16,8 @@
 namespace crowdb::tree::detail
 {
 
+inline constexpr uint32_t kMaxMirrorCopies = 5;
+
 struct ChunkId
 {
     uint64_t high = 0;
@@ -84,7 +86,7 @@ class ChunkTransport
 };
 
 // Lock-free immutable-snapshot transport for tests and embedded use. It models
-// the same allocation, three-mirror write, acknowledged-cursor, and seal
+// the same allocation, mirror write, acknowledged-cursor, and seal
 // boundaries as the production RPC transport.
 class MemoryChunkTransport final : public ChunkTransport
 {
@@ -108,9 +110,9 @@ class MemoryChunkTransport final : public ChunkTransport
   private:
     struct Chunk
     {
-        ChunkLayout                         layout;
-        uint64_t                            owner_epoch = 0;
-        std::array<std::vector<uint8_t>, 3> mirrors;
+        ChunkLayout                                        layout;
+        uint64_t                                           owner_epoch = 0;
+        std::array<std::vector<uint8_t>, kMaxMirrorCopies> mirrors;
     };
 
     using Chunks = std::vector<Chunk>;

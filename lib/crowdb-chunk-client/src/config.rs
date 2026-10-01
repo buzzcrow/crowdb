@@ -11,12 +11,15 @@
 use std::time::Duration;
 
 use crowdb_common::ec::EcScheme;
+use crowdb_protocol::chunkdb::rpc::ChunkType;
 
 use crate::IoError;
 
 /// Bounded aggregation and elasticity policy for shared small writes.
 #[derive(Debug, Clone)]
 pub struct SmallWritePolicy {
+    /// Type assigned to every chunk owned by this pool.
+    pub chunk_type: ChunkType,
     pub object_limit: usize,
     pub memory_budget: usize,
     pub queue_capacity: usize,
@@ -50,6 +53,7 @@ impl Default for SmallWritePolicy {
     fn default() -> Self {
         const MIB: usize = 1024 * 1024;
         Self {
+            chunk_type: ChunkType::Repo,
             object_limit: 8 * MIB,
             // 1,000 concurrent 1 MiB objects are a normal S3 small-object
             // workload.  3,000 and 5,000 require roughly 3.25 GiB and 5.25
@@ -69,7 +73,7 @@ impl Default for SmallWritePolicy {
             cooldown: Duration::from_millis(100),
             chunk_capacity: 1024 * 1024 * 1024,
             small_strip_prefetch_count: 4,
-            mirror_copies: 3,
+            mirror_copies: 2,
             conversion_enabled: true,
             conversion_data_num: 8,
             conversion_code_num: 4,
@@ -118,7 +122,7 @@ impl SmallWritePolicy {
             || self.scale_out_queue_objects > self.queue_capacity
             || self.chunk_capacity < self.object_limit as u64
             || self.small_strip_prefetch_count == 0
-            || self.mirror_copies == 0
+            || !(1..=5).contains(&self.mirror_copies)
             || self.conversion_data_num == 0
             || self.conversion_code_num == 0
             || self.batch_watchdog.is_zero()
@@ -155,6 +159,10 @@ impl SmallWritePolicy {
 /// Configuration for the chunk data path. Shared by all writers.
 #[derive(Debug, Clone)]
 pub struct ChunkClientConfig {
+    /// Type assigned to every chunk prepared by a large-write session.
+    pub chunk_type: ChunkType,
+    /// Mirror copies for large-write strips; `None` selects EC.
+    pub large_mirror_copies: Option<u32>,
     // ── write path ──────────────────────────────────────────────
     /// Fetch read granularity / block size (bytes). Default 1 MB.
     pub read_buffer_size: usize,
@@ -166,6 +174,12 @@ pub struct ChunkClientConfig {
     pub max_chunk_size: u64,
     /// Strip-prefetch results buffered ahead of the write cursor. Default 1.
     pub prefetch_strips_per_chunk: usize,
+    /// Maximum strips in one known-size large-write prefetch batch. Default 32.
+    pub large_prefetch_max_strips_per_batch: usize,
+    /// Maximum mirror-strip writes in flight for one large object.
+    pub large_parallel_strip_writes: usize,
+    /// Completed body owners retained before a large-object writer consumes them.
+    pub large_held_buffers: usize,
     /// Maximum completed-strip parity/finalization tasks in flight. Default 2.
     pub parity_depth: usize,
     /// Chunks allocated ahead. Default 1.
@@ -184,10 +198,15 @@ impl Default for ChunkClientConfig {
         const MB: usize = 1024 * 1024;
         const GB: usize = 1024 * 1024 * 1024;
         Self {
+            chunk_type: ChunkType::Repo,
+            large_mirror_copies: None,
             read_buffer_size: MB,
             max_cached_buffer: 4 * MB,
             max_chunk_size: GB as u64,
             prefetch_strips_per_chunk: 1,
+            large_prefetch_max_strips_per_batch: 32,
+            large_parallel_strip_writes: 4,
+            large_held_buffers: 4,
             parity_depth: 2,
             chunk_preparation_depth: 1,
             large_write_repair_attempts: 3,
@@ -213,6 +232,16 @@ impl ChunkClientConfig {
         if self.prefetch_strips_per_chunk == 0 {
             return Err(IoError::Internal("prefetch_strips_per_chunk must be > 0".into()));
         }
+        if self.large_prefetch_max_strips_per_batch == 0 {
+            return Err(IoError::Internal(
+                "large_prefetch_max_strips_per_batch must be > 0".into(),
+            ));
+        }
+        if self.large_parallel_strip_writes == 0 || self.large_held_buffers == 0 {
+            return Err(IoError::Internal(
+                "large write parallel and held buffer counts must be > 0".into(),
+            ));
+        }
         if self.parity_depth == 0 {
             return Err(IoError::Internal("parity_depth must be > 0".into()));
         }
@@ -222,6 +251,14 @@ impl ChunkClientConfig {
         if self.large_write_repair_attempts == 0 {
             return Err(IoError::Internal(
                 "large_write_repair_attempts must be > 0".into(),
+            ));
+        }
+        if self
+            .large_mirror_copies
+            .is_some_and(|copies| !(1..=5).contains(&copies))
+        {
+            return Err(IoError::Internal(
+                "large mirror copy count must be between one and five".into(),
             ));
         }
         Ok(())

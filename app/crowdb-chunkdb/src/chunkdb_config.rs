@@ -19,9 +19,37 @@ pub enum PlacementMode {
     UnsafeColocated,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentMode {
+    #[default]
+    Production,
+    TestSingleNode,
+    /// Legacy colocated EC fixtures; rejected by release builds.
+    TestUnsafePlacement,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeploymentConfig {
+    pub mode: DeploymentMode,
+    pub max_node_failures: u32,
+}
+
+impl Default for DeploymentConfig {
+    fn default() -> Self {
+        Self {
+            mode: DeploymentMode::Production,
+            max_node_failures: 1,
+        }
+    }
+}
+
 /// Top-level configuration for a chunkdb instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkdbConfig {
+    #[serde(default)]
+    pub deployment: DeploymentConfig,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -42,6 +70,27 @@ pub struct ChunkdbConfig {
     pub placement_rebalance: PlacementRebalanceConfig,
     #[serde(default)]
     pub reservation: ReservationConfig,
+    #[serde(default)]
+    pub conversion_io: ConversionIoConfig,
+}
+
+/// DiskIO transport used by background conversion and repair.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversionIoConfig {
+    pub normal_connections_per_endpoint: usize,
+    pub priority_connections_per_endpoint: usize,
+    pub rpc_workers: u32,
+}
+
+impl Default for ConversionIoConfig {
+    fn default() -> Self {
+        Self {
+            normal_connections_per_endpoint: 1,
+            priority_connections_per_endpoint: 1,
+            rpc_workers: 2,
+        }
+    }
 }
 
 /// Placement safety policy.
@@ -60,6 +109,35 @@ pub struct PlacementConfig {
 
 impl BaseConfig for ChunkdbConfig {
     fn validate(&self) -> Result<(), String> {
+        match self.deployment.mode {
+            DeploymentMode::Production => {
+                if self.deployment.max_node_failures != 1 {
+                    return Err("production requires max_node_failures = 1".into());
+                }
+                if self.placement.mode != PlacementMode::Protected
+                    || self.placement.allow_unsafe_ec
+                    || self.placement.allow_degraded_failure_domains
+                {
+                    return Err("production deployment requires protected placement".into());
+                }
+            }
+            DeploymentMode::TestSingleNode => {
+                if self.deployment.max_node_failures != 0 {
+                    return Err("test_single_node requires max_node_failures = 0".into());
+                }
+                if self.placement.mode != PlacementMode::UnsafeColocated {
+                    return Err("test_single_node requires explicit unsafe_colocated placement".into());
+                }
+                if self.conversion.enabled {
+                    return Err("test_single_node must disable mirror-to-EC conversion".into());
+                }
+            }
+            DeploymentMode::TestUnsafePlacement => {
+                if !cfg!(debug_assertions) {
+                    return Err("test_unsafe_placement is unavailable in release builds".into());
+                }
+            }
+        }
         if self.server.rpc_workers == 0 {
             return Err("server.rpc_workers must be > 0".into());
         }
@@ -94,6 +172,12 @@ impl BaseConfig for ChunkdbConfig {
         self.placement_repair.validate()?;
         self.placement_rebalance.validate()?;
         self.reservation.validate()?;
+        if self.conversion_io.normal_connections_per_endpoint == 0
+            || self.conversion_io.priority_connections_per_endpoint == 0
+            || self.conversion_io.rpc_workers == 0
+        {
+            return Err("conversion_io connections and RPC workers must be > 0".into());
+        }
         Ok(())
     }
 }

@@ -803,11 +803,11 @@ pub async fn wait_for_disks_ready(
 }
 
 /// Wait until the topology cache contains the seeded healthy disk-groups.
-async fn wait_for_topology_ready(topology: &TopologyCache) {
+async fn wait_for_topology_ready(topology: &TopologyCache, expected_disk_groups: usize) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let snap = topology.snapshot();
-        if snap.healthy_disk_groups().len() >= seeded_dg_ids().len() {
+        if snap.healthy_disk_groups().len() >= expected_disk_groups {
             return;
         }
         assert!(
@@ -841,6 +841,14 @@ impl ChunkdbHarness {
     }
 
     pub async fn start_with_layout_validity(cluster: &KvCluster, layout_validity: Duration) -> Self {
+        Self::start_with_disk_group_count(cluster, layout_validity, seeded_dg_ids().len()).await
+    }
+
+    pub async fn start_with_disk_group_count(
+        cluster: &KvCluster,
+        layout_validity: Duration,
+        expected_disk_groups: usize,
+    ) -> Self {
         let kv = cluster.make_crowdb_client();
 
         // Topology cache + refresh loop.
@@ -852,7 +860,7 @@ impl ChunkdbHarness {
             run_refresh_loop(refresh_cache, hw, Duration::from_secs(5), stop_rx).await;
         });
 
-        wait_for_topology_ready(&topology).await;
+        wait_for_topology_ready(&topology, expected_disk_groups).await;
 
         // Binding cache — all buckets to store 0, group 1.
         let bindings = BindingCache::new();

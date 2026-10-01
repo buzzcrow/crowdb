@@ -238,11 +238,14 @@ definition; Rust code works with proto types directly.
 
 ### 3.9 Chunk types for different use cases
 
-Four chunk types are defined for CROWDB's storage hierarchy:
-- **Repo chunk**: User data storage.
+Seven chunk types are defined for CROWDB's storage hierarchy:
+- **Repo chunk**: Historical general user data storage.
 - **WAL chunk**: Write-ahead log entries.
 - **BTree page chunk**: B-tree page storage for the crowdb-tree engine.
 - **Page index chunk**: Page index metadata.
+- **Stream chunk**: Native chunk stream data.
+- **S3 chunk**: S3 object data.
+- **Iceberg table chunk**: Iceberg immutable file data.
 
 **Rationale:** Different storage components have different redundancy and
 performance requirements. Chunk types allow optimization for each component's
@@ -320,13 +323,13 @@ zone_offset, size, tag }` (from diskdb proto).
 
 A **strip** is the atomic redundancy unit. Two strip types:
 
-**Mirror Strip**: One disk block capacity, replicated across N nodes
-(configurable copy count, default 3). Each replica is a full copy on a
-different node. Data capacity = 1 × disk_block_size.
+**Mirror Strip**: A configured number of disk allocation units replicated
+across N nodes (configurable copy count, production default 2). Each segment
+is a full copy on a different node. Data capacity = unit_count × unit_size.
 
-**EC Strip**: `data_num` data blocks + `code_num` parity blocks,
-distributed across different nodes. Data capacity = `data_num ×
-disk_block_size`. For example:
+**EC Strip**: `data_num` data segments + `code_num` parity segments,
+distributed across nodes under the failure-domain placement rule. Data
+capacity = `data_num × unit_count × unit_size`. For example:
 - 6+3 EC with 1 MB blocks → 6 MB data capacity, 9 MB total.
 - 8+4 EC with 1 MB blocks → 8 MB data capacity, 12 MB total.
 
@@ -346,9 +349,9 @@ Each strip tracks:
 A **chunk** is a container for strips. Chunk properties:
 - **128-bit ID**: Chunk type (8 bits) + Timestamp (48 bits) + Randomness (72 bits).
 - **State**: `Init` → `Active` → `Sealed` → `Deleted`.
-- **Type**: Repo, WAL, B-tree page, or page index. Shared versus
-  dedicated is a client-side packing and ownership policy for Repo
-  chunks, not a wire-level chunk type.
+- **Type**: Repo, WAL, B-tree page, page index, stream, S3, or Iceberg table.
+  The ID's high-byte prefix and the stored type must agree. Historical Repo
+  references remain readable by both access protocols.
 - **Capacity**: Total data capacity across all strips.
 - **Write granularity**: Minimum write alignment (e.g., 4 KB).
 - **Strips**: Ordered list of strips (mirror or EC).
@@ -536,12 +539,15 @@ BucketMigrationState:
 ### 5.5 Chunk types
 
 | Type          | Chunk Type Value | Description                          |
-|---------------|------------------|--------------------------------------|
-| Repo          | 0                | User data storage                    |
+| ------------- | ---------------- | ------------------------------------ |
+| Repo          | 0                | Historical general user data         |
 | WAL           | 1                | Write-ahead log entries              |
 | BTree page    | 2                | B-tree page storage                  |
 | Page index    | 3                | Page index metadata                  |
-| Reserved      | 4-255            | Reserved for future use              |
+| Stream        | 4                | Native chunk streams                 |
+| S3            | 5                | S3 object data                       |
+| Iceberg table | 6                | Iceberg immutable file data          |
+| Reserved      | 7-255            | Reserved for future use              |
 
 **Note:** Chunk type is independent of strip type. Any chunk type can use
 either mirror or EC strips based on configuration and requirements.
@@ -611,6 +617,21 @@ projected usable utilization, `(used + in_flight + planned) / capacity`, only
 among candidates that meet that safety constraint. Equal scores use stable
 topology identifiers, making retries deterministic.
 
+`deployment.mode` is `production` or `test_single_node` in release builds. Production startup
+requires at least three distinct voting nodes for every KV group and protected
+placement, with `deployment.max_node_failures = 1`. Test-single-node startup
+requires one voting node per group and `deployment.max_node_failures = 0`, with
+explicit colocated placement. The mode never changes in response to topology
+loss. In test-single-node mode, new strips must be one-copy 1 MiB mirrors;
+EC, extra copies, and mirror-to-EC conversion are rejected. Production rejects
+new mirror strips with fewer than two copies. The production profile normally
+places two mirror copies on distinct nodes, including for journal and tree-page
+data.
+
+Debug builds also accept `test_unsafe_placement` for legacy colocated EC
+integration fixtures. Release builds reject it during configuration loading;
+it is separate from the single-node deployment profile.
+
 `placement.mode` selects one placement strategy at process construction. The
 allocator depends on the `ChunkPlacementStrategy` interface and does not branch
 on the mode while allocating, converting, repairing, or deciding whether a
@@ -618,18 +639,18 @@ degraded disk result may be published. Each mode is a separate strategy type:
 
 - `protected` uses failure-domain-aware mirror and EC selectors. The granular
   degraded-placement settings below remain available only within this mode.
-- `unsafe_colocated` deliberately selects one healthy disk group and may place
-  every mirror copy or EC fragment in that same group, on the same physical
-  disk, and in the same zone. This mode supports the minimum container topology
-  of one rack, one node, one disk group, one disk, and one zone. It preserves
-  strip geometry and encoding but provides no node-, disk-, or zone-failure
-  durability; losing the colocated resource may lose every fragment.
+- `unsafe_colocated` selects one healthy disk group for the explicit
+  test-single-node deployment. This deployment uses one mirror copy and has
+  no data protection; a read or write error reaches the caller.
 
 The mode is an explicit deployment property, not an automatic fallback. A
 protected deployment never changes to `unsafe_colocated` because topology is
-small or unavailable. New placement policies are added as strategy
-implementations and selected at the composition root, keeping policy branches
-out of the allocation hot path.
+small or unavailable. With two healthy nodes remaining, a new EC strip retains
+its requested data and parity geometry. Its fragments may span both survivors
+with a degraded-placement marker and a durable repair task. A new mirror strip
+still places two copies across the survivors. New placement
+policies are added as strategy implementations and selected at the composition
+root, keeping policy branches out of the allocation hot path.
 
 For an EC `data_num + code_num` strip, a protected rack, node, or physical
 disk contains at most `code_num` fragments. For a mirror strip, losing a
@@ -659,7 +680,7 @@ rack failures:
 **Negative hints**: Nodes can be excluded from placement (e.g., during
 recovery to avoid re-using failed nodes).
 
-**Example**: 3-copy mirror on 3-rack cluster → 3 replicas on 3 distinct racks.
+**Example**: 2-copy mirror on 3-rack cluster → 2 replicas on 2 distinct racks.
 On insufficient topology, normal placement returns a typed failure before any
 DiskDB allocation. An explicitly degraded result identifies the missing
 protection instead of claiming rack safety.
@@ -685,8 +706,10 @@ that exceeds the normal recovery budget when the cluster is too small. It does
 not select colocated placement. Insufficient topology otherwise returns a typed
 placement error without allocating blocks.
 
-**Example**: 8+4 EC on 12-node cluster → 12 blocks across ≥3 racks, max 4
-blocks per node. On 3-node cluster (unsafe mode) → 12 blocks, 4 per node.
+**Example**: 8+4 EC on a healthy 3-node cluster places 12 fragments with at
+most 4 per node, so loss of any one node leaves 8 fragments. If one node is
+already unavailable, the same geometry may span the two survivors and is
+marked for placement repair when the third node returns.
 
 ### 7.3 Physical validation and degraded-placement repair
 
@@ -1235,7 +1258,8 @@ Key configuration parameters:
 | Parameter                                         | Default    | Description                                                   |
 |---------------------------------------------------|------------|---------------------------------------------------------------|
 | disk_block_size                                   | 1 MB       | Size of disk blocks from diskdb                               |
-| mirror_copy_count                                 | 3          | Number of replicas for mirror strips                          |
+| deployment.max_node_failures                      | 1          | Protected production node-failure budget                      |
+| mirror_copy_count                                 | 2          | Production mirror copies on distinct nodes                    |
 | default_ec_scheme                                 | 6+3        | Default EC scheme (data+parity)                               |
 | topology_refresh_interval                         | 30 s       | Topology cache refresh interval                               |
 | placement.mode                                    | protected  | Select `protected` or explicit `unsafe_colocated` strategy    |

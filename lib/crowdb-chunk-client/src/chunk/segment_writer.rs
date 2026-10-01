@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Durable EC-segment writes and placement-safe in-line replacement.
+//! Durable segment writes and placement-safe in-line replacement.
 
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ use crate::metrics::LargeWriteRepairMetrics;
 use crate::negative_list::FailedDiskList;
 use crate::{ChunkAllocator, DiskWriter, IoError, Result};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct FailedSegmentWrite {
     pub strip_sequence: u32,
     pub segment: Segment,
@@ -82,21 +82,21 @@ impl SegmentRepair<'_> {
                 .position(|strip| strip.strip_sequence == failure.strip_sequence)
             else {
                 return Err(IoError::MetadataConflict(
-                    "failed EC strip disappeared during replacement".into(),
+                    "failed strip disappeared during replacement".into(),
                 ));
             };
             let old_strip = chunk.strips[strip_index].clone();
-            let Some(Strip::EcStrip(mut ec)) = old_strip.strip.clone() else {
-                return Err(IoError::MetadataConflict(
-                    "failed EC strip changed type during replacement".into(),
-                ));
+            let Some(strip_body) = old_strip.strip.clone() else {
+                return Err(IoError::MetadataConflict("failed strip lost its body".into()));
             };
-            let Some(segment_index) = ec.segments.iter().position(|segment| *segment == failure.segment)
-            else {
+            let segments = match &strip_body {
+                Strip::EcStrip(ec) => &ec.segments,
+                Strip::MirrorStrip(mirror) => &mirror.segments,
+            };
+            let Some(segment_index) = segments.iter().position(|segment| *segment == failure.segment) else {
                 return Ok(chunk);
             };
-            let survivors = ec
-                .segments
+            let survivors = segments
                 .iter()
                 .copied()
                 .filter(|segment| *segment != failure.segment)
@@ -120,21 +120,25 @@ impl SegmentRepair<'_> {
             let Some(replacement) = allocation.segment else {
                 continue;
             };
-            if self
-                .disk_writer
-                .write_views(&replacement, failure.unit_bytes, failure.data.clone())
-                .await
-                .is_err()
-            {
+            let replay = self.replay_replacement(&strip_body, &replacement, &failure).await;
+            if replay.is_err() {
                 if let Some(disk_id) = replacement.disk_id {
                     self.failed_disks.insert(disk_id);
                 }
                 self.discard(chunk_id, replacement).await;
                 continue;
             }
-            ec.segments[segment_index] = replacement;
             let mut replacement_strip = old_strip.clone();
-            replacement_strip.strip = Some(Strip::EcStrip(ec));
+            replacement_strip.strip = Some(match strip_body {
+                Strip::EcStrip(mut ec) => {
+                    ec.segments[segment_index] = replacement;
+                    Strip::EcStrip(ec)
+                }
+                Strip::MirrorStrip(mut mirror) => {
+                    mirror.segments[segment_index] = replacement;
+                    Strip::MirrorStrip(mirror)
+                }
+            });
             replacement_strip
                 .unavailable_segments
                 .retain(|segment| *segment != failure.segment);
@@ -158,10 +162,40 @@ impl SegmentRepair<'_> {
             }
         }
         self.metrics.exhausted.inc();
-        Err(IoError::WriteFailed(format!(
-            "EC segment repair exhausted after durable write failure: {}",
+        Err(IoError::ReplicaRepairExhausted(format!(
+            "segment repair exhausted after durable write failure: {}",
             failure.error
         )))
+    }
+
+    async fn replay_replacement(
+        &self,
+        strip: &Strip,
+        replacement: &Segment,
+        failure: &FailedSegmentWrite,
+    ) -> Result<()> {
+        match strip {
+            Strip::EcStrip(_) => {
+                self.disk_writer
+                    .write_views(replacement, failure.unit_bytes, failure.data.clone())
+                    .await
+            }
+            Strip::MirrorStrip(_) => {
+                if failure.data.is_empty() {
+                    return Err(IoError::Internal("mirror repair lost its buffer".into()));
+                }
+                let mut offset = 0u64;
+                for bytes in &failure.data {
+                    self.disk_writer
+                        .write_at_byte_offset(replacement, failure.unit_bytes, offset, bytes.clone())
+                        .await?;
+                    offset = offset
+                        .checked_add(bytes.len() as u64)
+                        .ok_or_else(|| IoError::WriteFailed("mirror replay offset overflow".into()))?;
+                }
+                self.disk_writer.fsync(replacement).await
+            }
+        }
     }
 
     async fn query_chunk(&self, chunk_id: ChunkId) -> Result<Chunk> {

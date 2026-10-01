@@ -372,6 +372,16 @@ impl LifecycleHandler {
         fence: ReservationFence,
         spec: ReserveGroupSpec,
     ) -> Result<ReservationMutation, LifecycleError> {
+        let capacity_kb = spec
+            .strip_size
+            .saturating_mul(self.topology.snapshot().unit_size_bytes() / 1024);
+        self.validate_strip_layout(
+            super::ProtoStripType::Mirror,
+            spec.conversion_data_num,
+            spec.conversion_code_num,
+            spec.copy_count,
+            capacity_kb,
+        )?;
         self.check_range(chunk_id)?;
         validate_reserve_spec(fence, spec)?;
         let mut guard = self.acquire_reservation_guard(chunk_id).await?;

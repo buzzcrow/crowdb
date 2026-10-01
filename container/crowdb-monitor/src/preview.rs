@@ -288,20 +288,15 @@ async fn bootstrap_services(
     .await?;
     S3Bootstrap::reconcile(session, profile, credentials, supervisor.monitor_log_mut()).await?;
     IcebergBootstrap::reconcile(session, profile, credentials, supervisor.monitor_log_mut()).await?;
-    supervisor
-        .start_service(
-            "s3",
-            BTreeMap::from([("CROWDB_S3_MASTER_KEY".into(), credentials.s3_master_key().into())]),
-        )
-        .await?;
-    let iceberg_environment = credentials
+    let mut access_environment: BTreeMap<String, String> = credentials
         .server_env()
         .lines()
         .filter_map(|line| line.split_once('='))
         .filter(|(name, _)| name.starts_with("CROWDB_ICEBERG_"))
         .map(|(name, value)| (name.to_owned(), value.to_owned()))
         .collect();
-    supervisor.start_service("iceberg", iceberg_environment).await?;
+    access_environment.insert("CROWDB_S3_MASTER_KEY".into(), credentials.s3_master_key().into());
+    supervisor.start_service("access", access_environment).await?;
     supervisor
         .start_service(
             "web",
@@ -439,8 +434,8 @@ fn management_seed(profile: &DeploymentProfile) -> Result<String, PreviewError> 
     let service = profile
         .services
         .iter()
-        .find(|service| service.id == "s3")
-        .ok_or(PreviewError::Invalid("S3 service is absent"))?;
+        .find(|service| service.id == "access")
+        .ok_or(PreviewError::Invalid("Access service is absent"))?;
     let seeds = service
         .env
         .get("CROWDB_MANAGEMENT_SEEDS")

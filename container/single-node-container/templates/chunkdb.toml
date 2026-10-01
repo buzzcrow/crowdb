@@ -1,14 +1,23 @@
+[deployment]
+mode = "test_single_node"
+max_node_failures = 0
+
 [server]
-rpc_workers = 2
+rpc_workers = 1
 http_listen_addr = "127.0.0.1:12100"
 rpc_listen_addr = "127.0.0.1:12200"
 instance_id = "1"
 kv_server_mgmt_seeds = ["http://127.0.0.1:10000"]
 keepalive_interval_secs = 1
 kv_pool_size = 1
-kv_rpc_workers = 2
+kv_rpc_workers = 1
 diskdb_pool_size = 1
-diskdb_rpc_workers = 2
+diskdb_rpc_workers = 1
+
+[conversion_io]
+normal_connections_per_endpoint = 1
+priority_connections_per_endpoint = 1
+rpc_workers = 1
 
 [topology]
 refresh_interval_secs = 1
@@ -23,5 +32,3 @@ lock_hold_warn_threshold_ms = 1000
 
 [placement]
 mode = "unsafe_colocated"
-allow_unsafe_ec = true
-allow_degraded_failure_domains = true

@@ -448,7 +448,7 @@ pub async fn local_deploy_combined_after_kv(
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
     Ok(LocalCombinedDeploySummary {
         kv_nodes: 3,
-        racks: 1,
+        racks: ctx.config().racks.len(),
         diskdb_instances: diskdb.instance_count,
         chunkdb_instances: chunkdb.instance_count,
         diskio_instances: diskio,
@@ -498,7 +498,7 @@ pub async fn local_deploy_combined_file_backed_after_kv(
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
     Ok(LocalCombinedDeploySummary {
         kv_nodes: 3,
-        racks: 1,
+        racks: ctx.config().racks.len(),
         diskdb_instances: diskdb.instance_count,
         chunkdb_instances: chunkdb.instance_count,
         diskio_instances: diskio,
@@ -1188,6 +1188,30 @@ pub async fn prepare_local_deploy(
     workspace_dir: Option<&std::path::Path>,
     tunables: Option<&KvDeployTunables>,
 ) -> Result<(u64, Vec<u64>)> {
+    prepare_local_deploy_with_layout(ctx, node_count, workspace_dir, tunables, false).await
+}
+
+/// Start a simulated local cluster with each process assigned to a distinct rack.
+/// This is for validating protected placement on one development host.
+///
+/// # Errors
+/// Returns a validation, binary, spawn, or readiness error.
+pub async fn prepare_local_deploy_distinct_racks(
+    ctx: &OpContext,
+    node_count: usize,
+    workspace_dir: Option<&std::path::Path>,
+    tunables: Option<&KvDeployTunables>,
+) -> Result<(u64, Vec<u64>)> {
+    prepare_local_deploy_with_layout(ctx, node_count, workspace_dir, tunables, true).await
+}
+
+async fn prepare_local_deploy_with_layout(
+    ctx: &OpContext,
+    node_count: usize,
+    workspace_dir: Option<&std::path::Path>,
+    tunables: Option<&KvDeployTunables>,
+    distinct_racks: bool,
+) -> Result<(u64, Vec<u64>)> {
     if node_count == 0 {
         return Err(Error::Validation {
             field: "node_count".into(),
@@ -1212,8 +1236,17 @@ pub async fn prepare_local_deploy(
     let rack_id: u64 = 1;
     let node_ids: Vec<u64> = (1..=u64::try_from(node_count).unwrap_or(u64::MAX)).collect();
 
-    write_rack_and_nodes(ctx, rack_id, &node_ids);
-    deploy_servers(ctx, &bin, &workspace, rack_id, &node_ids, tunables).await?;
+    write_rack_and_nodes(ctx, rack_id, &node_ids, distinct_racks);
+    deploy_servers(
+        ctx,
+        &bin,
+        &workspace,
+        rack_id,
+        &node_ids,
+        tunables,
+        distinct_racks,
+    )
+    .await?;
 
     // Re-seed the group-0 leader hint to the first deployed server's
     // RPC endpoint so sysdata writes during `init` target the right node.
@@ -1278,16 +1311,17 @@ fn alloc_workspace_ports(
     })
 }
 
-/// Phase 1: write rack 1 + nodes 1..=N into the config (idempotent).
-fn write_rack_and_nodes(ctx: &OpContext, rack_id: u64, node_ids: &[u64]) {
+/// Phase 1: write the requested rack layout and nodes into the config.
+fn write_rack_and_nodes(ctx: &OpContext, rack_id: u64, node_ids: &[u64], distinct_racks: bool) {
     let mut cfg = ctx.config_mut();
-    if cfg.racks.iter().all(|r| r.id != rack_id) {
-        let _ = cfg.add_rack(RackEntry {
-            id: rack_id,
-            name: format!("rack-{rack_id}"),
-        });
-    }
     for nid in node_ids {
+        let rack_id = if distinct_racks { *nid } else { rack_id };
+        if cfg.racks.iter().all(|r| r.id != rack_id) {
+            let _ = cfg.add_rack(RackEntry {
+                id: rack_id,
+                name: format!("rack-{rack_id}"),
+            });
+        }
         if cfg.nodes.iter().all(|n| n.id != *nid) {
             let _ = cfg.add_node(NodeEntry {
                 id: *nid,
@@ -1315,11 +1349,13 @@ async fn deploy_servers(
     rack_id: u64,
     node_ids: &[u64],
     tunables: Option<&KvDeployTunables>,
+    distinct_racks: bool,
 ) -> Result<()> {
     let n = u16::try_from(node_ids.len()).unwrap_or(u16::MAX);
     let rest_ports = alloc_workspace_ports(workspace, ServicePort::KvServerMgmt, 0, n)?;
     let rpc_ports = alloc_workspace_ports(workspace, ServicePort::KvServerListen, 0, n)?;
     for (i, nid) in node_ids.iter().enumerate() {
+        let rack_id = if distinct_racks { *nid } else { rack_id };
         let rest_port = rest_ports[i];
         let rpc_port = rpc_ports[i];
 

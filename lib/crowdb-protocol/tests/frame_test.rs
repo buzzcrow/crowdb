@@ -11,7 +11,7 @@ use crowdb_protocol::frame::{
 const CHUNK: ChunkId = ChunkId { high: 7, low: 11 };
 const REPO_SMALL_VECTOR: [u8; 37] = [
     0x01, 0x01, 0x0E, 0x00, 0x03, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03,
-    0x96, 0x16, 0xD6, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xEB, 0x45, 0x53, 0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x0B,
 ];
 
@@ -55,7 +55,7 @@ fn split_frame_views_verify_without_assembling_payload() {
 }
 
 #[test]
-fn frame_crc_matches_bitwise_reference_across_header_payload_and_chunk_id() {
+fn frame_crc_matches_bitwise_reference_across_header_and_payload() {
     for length in [0, 1, 17, 1024, MAX_FRAME_PAYLOAD_BYTES] {
         let payload: Vec<u8> = (0..length)
             .map(|index| u8::try_from(index % 251).unwrap())
@@ -63,7 +63,7 @@ fn frame_crc_matches_bitwise_reference_across_header_payload_and_chunk_id() {
         let frame = encode_frame(FrameMagic::RepoLargeV1, CHUNK, &payload, 42).unwrap();
         let footer = frame.len() - FRAME_FOOTER_BYTES;
         let mut crc = 0_u32;
-        for byte in frame[..footer].iter().chain(frame[footer + 4..].iter()) {
+        for byte in &frame[..footer] {
             crc ^= u32::from(*byte);
             for _ in 0..8 {
                 crc = (crc >> 1) ^ (0x82F6_3B78 & (0_u32.wrapping_sub(crc & 1)));

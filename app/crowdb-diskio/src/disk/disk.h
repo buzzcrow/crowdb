@@ -10,13 +10,14 @@
 #include "disk/types.h"
 #include "engine/io_engine.h"
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 namespace crowdb::diskio
 {
 
-enum class DiskType {
+enum class DiskType : std::uint8_t {
     Block,
     Null,
     Mem,
@@ -27,13 +28,13 @@ class Disk
   public:
     virtual ~Disk() = default;
 
-    virtual DiskType  type() const                   = 0;
-    virtual int       fd() const                     = 0;
-    virtual bool      is_o_direct() const            = 0;
-    virtual size_t    block_size() const             = 0;
-    virtual IoEngine *engine()                       = 0;
-    virtual DiskId    id() const                     = 0;
-    virtual Zone     *find_zone(uint32_t zone_index) = 0;
+    [[nodiscard]] virtual DiskType type() const                   = 0;
+    [[nodiscard]] virtual int      fd() const                     = 0;
+    [[nodiscard]] virtual bool     is_o_direct() const            = 0;
+    [[nodiscard]] virtual size_t   block_size() const             = 0;
+    virtual IoEngine              *engine()                       = 0;
+    [[nodiscard]] virtual DiskId   id() const                     = 0;
+    virtual Zone                  *find_zone(uint32_t zone_index) = 0;
 
   protected:
     std::vector<Zone> zones_;

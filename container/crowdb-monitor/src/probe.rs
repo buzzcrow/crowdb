@@ -10,7 +10,7 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::{ProbeKind, ServiceProfile};
+use crate::{ProbeKind, ProbeProfile, ServiceProfile};
 
 #[derive(Debug, Error)]
 pub enum ProbeError {
@@ -112,14 +112,22 @@ impl ProbeExecutor {
         service: &ServiceProfile,
         environment: &BTreeMap<String, String>,
     ) -> Result<(), ProbeError> {
-        let duration = Duration::from_millis(service.probe.timeout_ms);
-        match service.probe.kind {
+        self.probe_one(&service.probe, environment).await?;
+        for probe in &service.additional_probes {
+            self.probe_one(probe, environment).await?;
+        }
+        Ok(())
+    }
+
+    async fn probe_one(
+        &self,
+        probe: &ProbeProfile,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(), ProbeError> {
+        let duration = Duration::from_millis(probe.timeout_ms);
+        match probe.kind {
             ProbeKind::Tcp => {
-                let address: SocketAddr = service
-                    .probe
-                    .target
-                    .parse()
-                    .map_err(|_| ProbeError::InvalidTarget)?;
+                let address: SocketAddr = probe.target.parse().map_err(|_| ProbeError::InvalidTarget)?;
                 timeout(duration, TcpStream::connect(address))
                     .await
                     .map_err(|_| ProbeError::Timeout)?
@@ -127,11 +135,7 @@ impl ProbeExecutor {
                 Ok(())
             }
             ProbeKind::RpcPing => {
-                let address = service
-                    .probe
-                    .target
-                    .parse()
-                    .map_err(|_| ProbeError::InvalidTarget)?;
+                let address = probe.target.parse().map_err(|_| ProbeError::InvalidTarget)?;
                 self.rpc
                     .as_ref()
                     .ok_or(ProbeError::Unavailable)?
@@ -139,8 +143,8 @@ impl ProbeExecutor {
                     .await
             }
             ProbeKind::Http => {
-                let mut request = self.client.get(&service.probe.target).timeout(duration);
-                if let Some(name) = &service.probe.bearer_env {
+                let mut request = self.client.get(&probe.target).timeout(duration);
+                if let Some(name) = &probe.bearer_env {
                     let token = environment
                         .get(name)
                         .filter(|token| !token.is_empty())

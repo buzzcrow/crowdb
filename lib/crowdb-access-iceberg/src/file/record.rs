@@ -1,5 +1,6 @@
 use crate::error::ValidationError;
 use crate::key::FileId;
+use crowdb_protocol::chunkdb::rpc::Location;
 
 use super::{FileContent, FileLocation};
 
@@ -54,6 +55,46 @@ pub struct FileRecord {
 }
 
 impl FileRecord {
+    /// Builds one unbound file authority from completed chunk locations.
+    /// # Errors
+    /// Rejects invalid locations, `ETag`, or file record contents.
+    pub fn from_uploaded_locations(
+        file: FileId,
+        location: FileLocation,
+        locations: &[Location],
+        length: u64,
+        etag: String,
+    ) -> Result<Self, ValidationError> {
+        let content = FileContent::from_locations(locations, length, etag)?;
+        let extension = std::path::Path::new(location.relative_key()).extension();
+        let has_extension = |wanted: &str| extension.is_some_and(|value| value.eq_ignore_ascii_case(wanted));
+        let (kind, format) = if has_extension("json") {
+            (FileKind::Metadata, ContentFormat::Json)
+        } else if has_extension("avro") {
+            (FileKind::Unbound, ContentFormat::Avro)
+        } else if has_extension("parquet") {
+            (FileKind::Unbound, ContentFormat::Parquet)
+        } else if has_extension("orc") {
+            (FileKind::Unbound, ContentFormat::Orc)
+        } else if has_extension("puffin") {
+            (FileKind::Unbound, ContentFormat::Puffin)
+        } else {
+            (FileKind::Unbound, ContentFormat::Opaque)
+        };
+        let record = Self {
+            file,
+            location,
+            kind,
+            format,
+            length,
+            digest: [0; 32],
+            content,
+            hint: None,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
     /// # Errors
     /// Rejects invalid format/kind pairs and inconsistent bounded storage variants.
     pub fn validate(&self) -> Result<(), ValidationError> {

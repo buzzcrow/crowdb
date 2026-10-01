@@ -3,17 +3,19 @@
 
 use std::future::poll_fn;
 use std::pin::Pin;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::frame::FrameMagic;
 
-use crowdb_chunk_client::ChunkIoWriter;
+use crowdb_chunk_client::{ChunkIoWriter, FramedWriteBuffer};
 use crowdb_chunk_kv_client::ClientError;
 use hyper::body::{Body, Bytes};
 
 use crate::integrity::SinglePartIntegrity;
 use crate::metadata::{ChunkKvMetadataStore, MetadataStoreError, ObjectRecord};
-use crate::native_buffer::NativeBodyReceiver;
+use crate::native_buffer::{NativeBodyReceiver, NativeFramedOwner};
 use crate::publication::{publish, PublicationError, PublicationRequest};
 
 #[derive(Debug, thiserror::Error)]
@@ -318,11 +320,12 @@ where
         let frame = poll_fn(|context| Pin::new(&mut *body).poll_frame(context)).await;
         let Some(frame) = frame else {
             if receiver.owner_handoff_active() {
-                if let Some(owner) = receiver
+                if let Some(mut owner) = receiver
                     .finish_owner_when_ready()
                     .await
                     .map_err(|error| put_error(PutErrorCode::BodyRead, error))?
                 {
+                    prepare_native_owner(&mut owner)?;
                     writer
                         .on_framed_data(Box::new(owner))
                         .await
@@ -340,7 +343,8 @@ where
         }
         integrity.update(&data);
         if receiver.owner_handoff_active() {
-            if let Some(owner) = receiver.take_ready_owner() {
+            if let Some(mut owner) = receiver.take_ready_owner() {
+                prepare_native_owner(&mut owner)?;
                 writer
                     .on_framed_data(Box::new(owner))
                     .await
@@ -353,6 +357,17 @@ where
                 .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
         }
     }
+}
+
+fn prepare_native_owner(owner: &mut NativeFramedOwner) -> Result<(), PutOutcome> {
+    let write_time_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
+    owner
+        .prepare_frames(FrameMagic::RepoLargeV1, write_time_ms)
+        .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))
 }
 
 fn finish_integrity(
@@ -474,9 +489,12 @@ pub async fn cleanup_after_definite_error(
 
 fn classify_publication_error(error: PublicationError) -> PutOutcome {
     match error {
-        PublicationError::Store(MetadataStoreError::Client(
+        timeout @ PublicationError::Store(MetadataStoreError::Client(
             ClientError::Deadline | ClientError::Transport(_),
-        )) => PutOutcome::Timeout,
+        )) => {
+            tracing::warn!(%timeout, "S3 object publication outcome is uncertain");
+            PutOutcome::Timeout
+        }
         PublicationError::Metadata(error) => PutOutcome::Error {
             code: PutErrorCode::MetadataEncoding,
             message: error.to_string(),

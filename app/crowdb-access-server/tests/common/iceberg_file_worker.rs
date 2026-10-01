@@ -106,7 +106,8 @@ impl TestWorker {
         let address = reservation.local_addr().unwrap();
         drop(reservation);
         Self(
-            Command::new(env!("CARGO_BIN_EXE_crowdb-iceberg"))
+            Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"))
+                .arg("iceberg")
                 .env("CROWDB_MANAGEMENT_SEEDS", seeds.join(","))
                 .env("CROWDB_ICEBERG_LISTEN", address.to_string())
                 .env("CROWDB_ICEBERG_READ_TOKEN", "r".repeat(32))

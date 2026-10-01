@@ -232,6 +232,22 @@ fn ec_select_8_4_unsafe_fallback_3_nodes() {
 }
 
 #[test]
+fn protected_degraded_ec_uses_both_survivors_and_marks_repair() {
+    let cache = build_topology(&[(1, &[10]), (2, &[20])]);
+    let snap = cache.snapshot();
+    let constraints = PlacementConstraints::new().allow_degraded_ec();
+    let plan = EcPlacement::select(&snap, 4, 2, &constraints).unwrap();
+    assert_eq!(plan.entries.len(), 6);
+    assert_eq!(plan.protection.max_fragments_per_node, 3);
+    assert!(!plan.safe_mode);
+    assert!(plan.entries.iter().any(|entry| entry.node_id == 10));
+    assert!(plan.entries.iter().any(|entry| entry.node_id == 20));
+
+    let one_node = build_topology(&[(1, &[10])]);
+    assert!(EcPlacement::select(&one_node.snapshot(), 4, 2, &constraints).is_err());
+}
+
+#[test]
 fn ec_select_4_1_unsafe_one_rack_balances_nodes() {
     let cache = build_topology(&[(1, &[10, 11, 12])]);
     let plan = EcPlacement::select(

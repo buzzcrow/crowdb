@@ -52,11 +52,15 @@ impl Publisher {
         mut operation: TableCommitOperation,
     ) -> Result<TableCommitOutcome, Error> {
         self.current(&operation).await?;
+        let mut prepared_body = None;
         if operation.phase == Phase::Publishing {
-            operation = self.select(&operation).await?;
+            (operation, prepared_body) = self.select(&operation).await?;
         }
         if operation.phase == Phase::Published {
-            let body = self.success_body(&operation).await?;
+            let body = match prepared_body {
+                Some(body) => body,
+                None => self.success_body(&operation).await?,
+            };
             let mut next = advance(&operation, Phase::Complete)?;
             next.outcome = Some(TableCommitOutcome { status: 200, body });
             self.change(&operation, &next).await?;
@@ -74,9 +78,12 @@ impl Publisher {
         Ok(outcome)
     }
 
-    async fn select(&self, operation: &TableCommitOperation) -> Result<TableCommitOperation, Error> {
+    async fn select(
+        &self,
+        operation: &TableCommitOperation,
+    ) -> Result<(TableCommitOperation, Option<crate::operation::PayloadReference>), Error> {
         let candidate = operation.candidate.as_ref().ok_or(ValidationError::Record)?;
-        self.success_body(operation).await?;
+        let prepared_body = self.success_body(operation).await?;
         self.current(operation).await?;
         let key = head_key(candidate.catalog, candidate.table).encode()?;
         let before = StorageRecord::TableHead(Box::new(operation.before.clone())).encode()?;
@@ -111,7 +118,7 @@ impl Publisher {
             next.outcome = Some(TableCommitOutcome { status: 409, body });
         }
         self.change(operation, &next).await?;
-        Ok(next)
+        Ok((next, published.then_some(prepared_body)))
     }
 
     async fn success_body(

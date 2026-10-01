@@ -1,5 +1,7 @@
 [server]
-rpc_workers = 2
+rpc_workers = 1
+kv_pool_size = 1
+kv_rpc_workers = 1
 listen_addr = "127.0.0.1:11000"
 http_listen_addr = "127.0.0.1:11100"
 rpc_listen_addr = "127.0.0.1:11200"

@@ -43,7 +43,7 @@ pub struct E2eStack {
     _permit: OwnedSemaphorePermit,
     pub cluster: KvCluster,
     _diskdb: DiskdbProcess,
-    _diskio: DiskioProcess,
+    diskio: DiskioProcess,
     #[allow(dead_code)]
     chunkdb: Option<ChunkdbProcess>,
     #[allow(dead_code)]
@@ -59,6 +59,23 @@ impl E2eStack {
         Self::start_with_disk_and_chunkdb_options(
             small_write,
             "mem",
+            0.0,
+            ChunkdbStartOptions {
+                allow_unsafe_ec: true,
+                allow_degraded_failure_domains: true,
+                repair_allow_unsafe_placement: true,
+                ..ChunkdbStartOptions::default()
+            },
+        )
+        .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn start_with_diskio_fault_rate(small_write: SmallWritePolicy, fault_error_rate: f64) -> Self {
+        Self::start_with_disk_and_chunkdb_options(
+            small_write,
+            "mem",
+            fault_error_rate,
             ChunkdbStartOptions {
                 allow_unsafe_ec: true,
                 allow_degraded_failure_domains: true,
@@ -74,6 +91,7 @@ impl E2eStack {
         Self::start_with_disk_and_chunkdb_options(
             small_write,
             "null",
+            0.0,
             ChunkdbStartOptions {
                 allow_unsafe_ec: true,
                 allow_degraded_failure_domains: true,
@@ -89,12 +107,13 @@ impl E2eStack {
         small_write: SmallWritePolicy,
         chunkdb_options: ChunkdbStartOptions,
     ) -> Self {
-        Self::start_with_disk_and_chunkdb_options(small_write, "mem", chunkdb_options).await
+        Self::start_with_disk_and_chunkdb_options(small_write, "mem", 0.0, chunkdb_options).await
     }
 
     async fn start_with_disk_and_chunkdb_options(
         small_write: SmallWritePolicy,
         dummy_disk: &str,
+        fault_error_rate: f64,
         chunkdb_options: ChunkdbStartOptions,
     ) -> Self {
         let permit = E2E_STACK_PERMITS
@@ -113,7 +132,7 @@ impl E2eStack {
             dummy_disk,
             kv_seeds: &cluster.mgmt_endpoints,
             disks: &[],
-            fault_error_rate: 0.0,
+            fault_error_rate,
             fault_latency_ms: None,
             no_o_direct: false,
         });
@@ -157,7 +176,7 @@ impl E2eStack {
             _permit: permit,
             cluster,
             _diskdb: diskdb,
-            _diskio: diskio,
+            diskio,
             chunkdb: Some(chunkdb),
             chunkdb_options,
             client,
@@ -205,6 +224,12 @@ impl E2eStack {
     }
 
     #[allow(dead_code)]
+    pub fn crash_diskio(&mut self) {
+        self.diskio.child.kill().expect("kill DiskIO process");
+        self.diskio.child.wait().expect("reap DiskIO process");
+    }
+
+    #[allow(dead_code)]
     pub async fn crash_and_restart_chunkdb_with_options(&mut self, options: ChunkdbStartOptions) {
         let mut chunkdb = self.chunkdb.take().expect("chunkdb is running");
         chunkdb.crash();
@@ -226,7 +251,17 @@ impl E2eStack {
         )));
         let service = ServiceRegistryClient::from_shared(kv);
         let chunkdb = ChunkdbClient::new(service, Arc::new(ChunkdbRpcTransport::new()));
-        chunkdb.refresh_endpoints().await.unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match chunkdb.refresh_endpoints().await {
+                Ok(()) => break,
+                Err(error) if tokio::time::Instant::now() < deadline => {
+                    eprintln!("waiting for ChunkDB discovery after KV recovery: {error}");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(error) => panic!("ChunkDB discovery did not recover: {error}"),
+            }
+        }
         let response = chunkdb
             .query_chunk(QueryChunkRequest {
                 chunk_id: location.chunk_id,

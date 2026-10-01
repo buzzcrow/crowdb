@@ -5,6 +5,7 @@
 //! data-path writers.
 
 use std::ops::Range;
+use std::time::Duration;
 
 use bytes::Bytes;
 
@@ -22,6 +23,15 @@ pub trait FramedWriteBuffer: Send {
     fn frame_count(&self) -> usize;
     /// Logical payload bytes in one frame slot.
     fn frame_payload_len(&self, index: usize) -> Option<usize>;
+    /// Prepare frame headers and CRC before placement. Implementations that
+    /// cannot prepare early may use the default and finalize in the writer.
+    fn prepare_frames(
+        &mut self,
+        _magic: FrameMagic,
+        _write_time_ms: u64,
+    ) -> std::result::Result<(), FrameError> {
+        Ok(())
+    }
     /// Fill one slot's reserved frame bytes for its actual destination chunk.
     fn finalize_frame(
         &mut self,
@@ -42,6 +52,20 @@ pub enum FeedStatus {
     /// Buffer stored; writer is at capacity — pause feeding.
     /// Poll `require_data()` before resuming.
     Pause,
+}
+
+/// Timings observed by one large writer after its completed chunk writes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ChunkWriteTiming {
+    pub strip_prepare_waits: u64,
+    pub strip_prepare_wait_time: Duration,
+    pub strip_write_successes: u64,
+    pub strip_write_success_time: Duration,
+    pub strip_write_success_max: Duration,
+    /// Submitted mirror strips awaiting ordered commit, including completed tasks.
+    pub mirror_uncommitted_peak: u64,
+    /// Highest number of mirror data writes actually inside DiskIO.
+    pub mirror_active_write_peak: u64,
 }
 
 /// Caller-side backpressure strategy. Selects how to react when
@@ -98,6 +122,10 @@ pub trait ChunkIoWriter: Send {
     /// complete input. Callers may finish without polling a further body frame.
     fn input_complete(&self) -> bool {
         false
+    }
+    /// Per-writer strip preparation and successful push timings, if available.
+    fn write_timing(&self) -> Option<ChunkWriteTiming> {
+        None
     }
     /// Wait for a capacity change without polling more network input. Writers
     /// with no external notifier use the short default recheck.

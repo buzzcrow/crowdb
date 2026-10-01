@@ -3,6 +3,7 @@ set -euo pipefail
 
 image=${CROWDB_CONTAINER_IMAGE:-crowdb-iceberg-single-node:dev}
 root=$(mktemp -d /tmp/crowdb-preview-e2e.XXXXXX)
+layout_binary=$(mktemp /tmp/crowdb-chunk-layout.XXXXXX)
 name="crowdb-preview-e2e-$$"
 chmod 0777 "$root"
 
@@ -27,8 +28,14 @@ cleanup() {
         --mount "type=bind,source=$root,target=/data" \
         --entrypoint /bin/chmod "$image" -R 0777 /data >/dev/null 2>&1 || true
     rm -rf "$root"
+    rm -f "$layout_binary"
 }
 trap cleanup EXIT
+
+cargo build --locked --release -p crowdb-chunkdb-client --example single_node_chunk_layout
+cp target/release/examples/single_node_chunk_layout "$layout_binary"
+patchelf --set-rpath /opt/crowdb/lib "$layout_binary"
+chmod 0755 "$layout_binary"
 
 start_container() {
     local storage_mode=${1:-bind}
@@ -96,6 +103,46 @@ verify_clients() {
     export CROWDB_PREVIEW_ICEBERG_URI="http://127.0.0.1:$(port 80)"
     pixi run -e s3-e2e python container/single-node-container/tests/s3-client.py "$operation"
     pixi run -e iceberg-e2e python container/single-node-container/tests/iceberg-client.py "$operation"
+}
+
+verify_chunk_layouts() {
+    docker cp "$layout_binary" "$name:/tmp/chunk-layout-check"
+    docker exec "$name" /tmp/chunk-layout-check
+}
+
+verify_listener_failure_propagation() {
+    local failed=$1 output status
+    if output=$(timeout 30 docker exec "$name" /bin/sh -ec '
+        failed=$1
+        config=/tmp/crowdb-access-listener-failure.toml
+        case "$failed" in
+            s3)
+                sed "s/0.0.0.0:80/127.0.0.1:18080/" /opt/crowdb/run/config/access.toml > "$config"
+                ;;
+            iceberg)
+                sed "s/0.0.0.0:81/127.0.0.1:18181/" /opt/crowdb/run/config/access.toml > "$config"
+                ;;
+            *) exit 2 ;;
+        esac
+        set -a
+        . /opt/crowdb/data/secrets/server.env
+        set +a
+        export CROWDB_ACCESS_LOG_DIR=/tmp/crowdb-access-listener-failure-log
+        export CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:80
+        export CROWDB_S3_PUBLIC_URI=http://127.0.0.1:81
+        exec /opt/crowdb/bin/crowdb-access-server --config "$config"
+    ' _ "$failed" 2>&1); then
+        echo "combined access process accepted an occupied $failed listener" >&2
+        return 1
+    else
+        status=$?
+    fi
+    if (( status == 124 )) || [[ "$output" != *'Address already in use'* ]]; then
+        echo "combined access $failed failure did not terminate as expected: status=$status" >&2
+        printf '%s\n' "$output" >&2
+        return 1
+    fi
+    docker exec "$name" crowdb-monitor readiness
 }
 
 verify_web_logical() {
@@ -292,13 +339,18 @@ verify_public_services
 node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 8080)" "$name"
 echo "checking S3 and Iceberg client writes"
 verify_clients write
+echo "checking single-node protocol chunk layouts"
+verify_chunk_layouts
+echo "checking combined access listener failure propagation"
+verify_listener_failure_propagation s3
+verify_listener_failure_propagation iceberg
 echo "checking Web logical writes"
 verify_web_logical
-for service in kv diskdb diskio chunkdb chunk-kv s3 iceberg web; do
+for service in kv diskdb diskio chunkdb chunk-kv access web; do
     echo "checking $service crash recovery"
     verify_child_recovery "$service" KILL child_exited
 done
-for service in kv diskdb diskio chunkdb chunk-kv s3 iceberg web; do
+for service in kv diskdb diskio chunkdb chunk-kv access web; do
     echo "checking $service hang recovery"
     verify_child_recovery "$service" STOP probe_failed
 done

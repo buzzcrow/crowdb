@@ -39,29 +39,31 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         endpoints,
         BTreeMap::from([("iceberg", 80), ("s3", 81), ("web", 8080)])
     );
-    let iceberg = profile
+    let access_service = profile
         .services
         .iter()
-        .find(|service| service.id == "iceberg")
+        .find(|service| service.id == "access")
         .unwrap();
     assert_eq!(
-        iceberg.env.get("CROWDB_ICEBERG_PUBLIC_URI"),
+        access_service.env.get("CROWDB_ICEBERG_PUBLIC_URI"),
         Some(&"http://localhost".to_owned())
     );
-    assert_eq!(iceberg.probe.target, "http://127.0.0.1:80/v1/config");
+    assert_eq!(access_service.probe.target, "http://127.0.0.1:80/v1/config");
+    assert_eq!(access_service.additional_probes.len(), 1);
     assert_eq!(
-        iceberg.env.get("CROWDB_MANAGEMENT_SEEDS"),
+        access_service.additional_probes[0].target,
+        "http://127.0.0.1:81/_crowdb/health/ready"
+    );
+    assert_eq!(
+        access_service.additional_probes[0].failure_threshold,
+        access_service.probe.failure_threshold
+    );
+    assert_eq!(
+        access_service.env.get("CROWDB_MANAGEMENT_SEEDS"),
         Some(&"http://127.0.0.1:10000".to_owned())
     );
-    let s3 = profile
-        .services
-        .iter()
-        .find(|service| service.id == "s3")
-        .unwrap();
-    assert_eq!(s3.probe.target, "http://127.0.0.1:81/_crowdb/health/ready");
-    assert_eq!(s3.args[1], "/opt/crowdb/run/config/access.toml");
-    assert_eq!(iceberg.args[2], s3.args[1]);
-    assert_eq!(iceberg.config_template, s3.config_template);
+    assert_eq!(access_service.args[1], "/opt/crowdb/run/config/access.toml");
+    assert_eq!(access_service.fence_listeners.len(), 2);
     let access = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates/access.toml"),
     )
@@ -94,7 +96,7 @@ fn single_node_preview_declares_complete_dependency_order() {
         .collect::<Vec<_>>();
     assert_eq!(
         order,
-        ["kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "s3", "iceberg", "web"]
+        ["kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"]
     );
     for service in &profile.services {
         if let Some(template) = &service.config_template {

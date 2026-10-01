@@ -63,6 +63,7 @@ impl IcebergHttpService {
             snapshot.chunk_read = Some(read);
             snapshot.chunk_small_write = Some(write);
         }
+        snapshot.upload_flow = self.files.as_ref().map(|files| files.upload_metrics_snapshot());
         snapshot
     }
 

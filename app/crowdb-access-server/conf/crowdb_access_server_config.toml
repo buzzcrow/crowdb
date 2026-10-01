@@ -1,6 +1,10 @@
 # Canonical configuration for the S3 and Iceberg access processes.
 # Credentials and bearer tokens are supplied through environment variables.
 
+[deployment]
+mode = "production"
+max_node_failures = 1
+
 [common]
 management_seeds = ["http://127.0.0.1:10000"]
 diskio_connections_per_endpoint = 2
@@ -23,6 +27,7 @@ queue_capacity = 1024
 min_pipelines = 1
 max_pipelines = 32
 max_batch_bytes = 1048576
+chunk_capacity_bytes = 1073741824
 
 [s3]
 listen = "127.0.0.1:8081"
@@ -42,6 +47,7 @@ max_chunk_size = 1073741824
 [iceberg]
 listen = "127.0.0.1:8181"
 native_budget_bytes = 268435456
+max_chunk_size = 1073741824
 
 [iceberg.gc]
 enabled = false

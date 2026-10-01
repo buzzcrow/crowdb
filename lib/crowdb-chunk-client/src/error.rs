@@ -12,6 +12,8 @@ pub enum IoError {
     AllocationFailed(String),
     #[error("disk write failed: {0}")]
     WriteFailed(String),
+    #[error("mirror replica repair exhausted: {0}")]
+    ReplicaRepairExhausted(String),
     #[error("disk read failed: {0}")]
     ReadFailed(String),
     #[error("transient disk read failed: {0}")]

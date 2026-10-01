@@ -19,8 +19,10 @@ base64 = "0.22"
 bincode = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 crowdb-chunk-client = { path = "../crowdb-chunk-client" }
+crowdb-common = { workspace = true }
 crowdb-access-multipart = { path = "../crowdb-access-multipart" }
 crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
+crowdb-kv-client = { path = "../crowdb-kv-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 flatbuffers = { workspace = true }
 hyper = { workspace = true, features = ["http1", "server"] }

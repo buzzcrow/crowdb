@@ -23,22 +23,22 @@ class BlockDisk : public Disk
               bool o_direct);
     ~BlockDisk() override;
 
-    DiskType type() const override
+    [[nodiscard]] DiskType type() const override
     {
         return DiskType::Block;
     }
 
-    int fd() const override
+    [[nodiscard]] int fd() const override
     {
         return fd_;
     }
 
-    bool is_o_direct() const override
+    [[nodiscard]] bool is_o_direct() const override
     {
         return o_direct_;
     }
 
-    size_t block_size() const override
+    [[nodiscard]] size_t block_size() const override
     {
         return block_size_;
     }
@@ -48,7 +48,7 @@ class BlockDisk : public Disk
         return engine_.get();
     }
 
-    DiskId id() const override
+    [[nodiscard]] DiskId id() const override
     {
         return id_;
     }

@@ -15,7 +15,7 @@ use crowdb_chunk_client::{
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
-    AppendChunkResponse, Chunk, ChunkState, ChunkStrip, DeleteChunkRequest, DeleteChunkResponse,
+    AppendChunkResponse, Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest, DeleteChunkResponse,
     DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, MirrorStrip,
     MutateStripReservationRequest, MutateStripReservationResponse, QueryChunkRequest, QueryChunkResponse,
     ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, ReserveStripGroupRequest,
@@ -100,7 +100,10 @@ impl ChunkAllocator for MockAllocator {
         if self.fail_on_attempt.load(Ordering::Relaxed) == low {
             return Err(IoError::AllocationFailed("injected allocation failure".into()));
         }
-        let chunk_id = req.chunk_id.unwrap_or(ChunkId { high: 7, low });
+        let chunk_id = req.chunk_id.unwrap_or(ChunkId {
+            high: u64::try_from(req.chunk_type).unwrap() << 56,
+            low,
+        });
         let strips: Vec<_> = (0..req.strip_count.max(1))
             .map(|sequence| make_strip(chunk_id, sequence, req.copy_count.max(1)))
             .collect();
@@ -494,6 +497,32 @@ struct SelectiveFailureDiskWriter {
     writes: Mutex<Vec<(u64, Bytes)>>,
 }
 
+struct FailFirstChunkDiskWriter {
+    inner: Arc<RecordingDiskWriter>,
+}
+
+#[async_trait]
+impl DiskWriter for FailFirstChunkDiskWriter {
+    async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
+        self.write_at_byte_offset(seg, unit_bytes, 0, data).await
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if seg.owner_chunk.is_some_and(|chunk| chunk.low == 1) {
+            return Err(IoError::WriteFailed("first chunk disk failure".into()));
+        }
+        self.inner
+            .write_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await
+    }
+}
+
 #[async_trait]
 impl DiskWriter for SelectiveFailureDiskWriter {
     async fn write(&self, seg: &Segment, _unit_bytes: u64, data: Bytes) -> Result<()> {
@@ -523,6 +552,7 @@ impl DiskWriter for SelectiveFailureDiskWriter {
 
 fn policy() -> SmallWritePolicy {
     SmallWritePolicy {
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
         object_limit: 1024 * 1024,
         memory_budget: 4 * 1024 * 1024,
         queue_capacity: 128,
@@ -563,6 +593,37 @@ fn client(policy: SmallWritePolicy) -> (ChunkIoClient, Arc<MockAllocator>, Arc<R
     let client = ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk.clone(), policy)
         .expect("valid policy");
     (client, allocator, disk)
+}
+
+#[tokio::test]
+async fn stopped_small_write_manager_reports_terminal_failure() {
+    let (client, _, _) = client(policy());
+    client.stop_small_write_manager_for_test().await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        client.wait_for_small_write_manager_failure(),
+    )
+    .await
+    .expect("manager termination must become visible");
+}
+
+#[tokio::test]
+async fn small_object_uses_owning_chunk_type() {
+    let mut iceberg_policy = policy();
+    iceberg_policy.chunk_type = ChunkType::IcebergTable;
+    let (client, allocator, _) = client(iceberg_policy);
+    let mut writer = client.prepare_small_write(32).await.unwrap();
+    writer.on_data(Bytes::from_static(&[7; 32])).await.unwrap();
+    writer.on_finish().await.unwrap();
+    let chunks: Vec<_> = allocator.state.lock().unwrap().chunks.values().cloned().collect();
+    assert!(!chunks.is_empty());
+    assert!(chunks
+        .iter()
+        .all(|chunk| chunk.chunk_type == ChunkType::IcebergTable as i32));
+    assert!(chunks
+        .iter()
+        .all(|chunk| chunk.id.unwrap().high >> 56 == ChunkType::IcebergTable as u64));
+    client.shutdown_small_writes().await.unwrap();
 }
 
 #[tokio::test]
@@ -654,7 +715,7 @@ async fn small_object_mirror_failure_fails_every_object_without_cursor_commit() 
     assert_eq!(client.small_write_metrics().completed, 0);
     assert_eq!(client.small_write_metrics().failed, 4);
     let (replacement_allocations, replacements, discards, _, _) = allocator.repair_snapshot();
-    assert_eq!((replacement_allocations, replacements, discards), (3, 0, 3));
+    assert_eq!((replacement_allocations, replacements, discards), (6, 0, 6));
     disk.fail.store(false, Ordering::Relaxed);
     let recovered = tokio::time::timeout(Duration::from_secs(1), async {
         let mut writer = client.prepare_small_write(4096).await.unwrap();
@@ -689,8 +750,8 @@ async fn small_object_replacement_allocation_exhaustion_publishes_no_location() 
     let metrics = client.small_write_metrics();
     assert_eq!(metrics.completed, 0);
     assert_eq!(metrics.failed, 1);
-    assert_eq!(metrics.repair_attempts, 3);
-    assert_eq!(metrics.exhausted_repairs, 1);
+    assert_eq!(metrics.repair_attempts, 6);
+    assert_eq!(metrics.exhausted_repairs, 2);
     allocator
         .fail_replacement_allocations
         .store(false, Ordering::Relaxed);
@@ -717,13 +778,13 @@ async fn small_object_metadata_exhaustion_publishes_no_location() {
     writer.on_data(Bytes::from(vec![8; 4096])).await.unwrap();
     assert!(matches!(writer.on_finish().await, Err(IoError::WriteFailed(_))));
     let (allocations, replacements, discards, _, chunks) = allocator.repair_snapshot();
-    assert_eq!((allocations, replacements, discards), (1, 0, 0));
-    assert_eq!(chunks[0].acknowledged_cursor, 0);
+    assert_eq!((allocations, replacements, discards), (2, 0, 0));
+    assert!(chunks.iter().all(|chunk| chunk.acknowledged_cursor == 0));
     let metrics = client.small_write_metrics();
     assert_eq!(metrics.completed, 0);
     assert_eq!(metrics.failed, 1);
-    assert_eq!(metrics.repair_attempts, 3);
-    assert_eq!(metrics.exhausted_repairs, 1);
+    assert_eq!(metrics.repair_attempts, 6);
+    assert_eq!(metrics.exhausted_repairs, 2);
     allocator.fail_replacements.store(false, Ordering::Relaxed);
     tokio::time::timeout(Duration::from_secs(1), async {
         while client.small_write_metrics().pipeline_replacements == 0 {
@@ -777,6 +838,149 @@ async fn small_object_repairs_two_failed_replicas_from_the_same_shadow() {
     assert_eq!(client.small_write_metrics().active_repairs, 0);
     assert!(client.small_write_metrics().repair_latency_ns > 0);
     assert_eq!(allocator.snapshot().3, 0);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn two_copy_small_object_replaces_one_failed_replica_without_rotation() {
+    let allocator = Arc::new(MockAllocator::default());
+    let disk = Arc::new(SelectiveFailureDiskWriter {
+        failed_initial_disks: vec![1],
+        writes: Mutex::new(Vec::new()),
+    });
+    let mut configured = policy();
+    configured.mirror_copies = 2;
+    let client =
+        ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk.clone(), configured).unwrap();
+    let mut writer = client.prepare_small_write(12 * 1024).await.unwrap();
+    writer.on_data(Bytes::from(vec![0x5a; 12 * 1024])).await.unwrap();
+    let locations = writer.on_finish().await.unwrap();
+    assert_eq!(locations.len(), 1);
+
+    let (allocations, replacements, discards, exclusions, chunks) = allocator.repair_snapshot();
+    assert_eq!((allocations, replacements, discards), (1, 1, 0));
+    assert_eq!(chunks.len(), 1);
+    let Some(Strip::MirrorStrip(mirror)) = &chunks[0].strips[0].strip else {
+        panic!("expected mirror strip");
+    };
+    assert_eq!(mirror.segments.len(), 2);
+    assert!(mirror
+        .segments
+        .iter()
+        .all(|segment| segment.disk_id.unwrap().high != 1));
+    assert!(exclusions[0].iter().any(|disk| disk.high == 1));
+    {
+        let recorded = disk.writes.lock().unwrap();
+        let retained = recorded.iter().find(|(disk, _)| *disk == 2).unwrap();
+        let replaced = recorded.iter().find(|(disk, _)| *disk >= 100).unwrap();
+        assert_eq!(retained.1, replaced.1);
+        let frame = parse_frame(&replaced.1, locations[0].chunk_id.unwrap()).unwrap();
+        assert_eq!(frame.payload, vec![0x5a; 12 * 1024]);
+    }
+    assert_eq!(allocator.snapshot().0, 1);
+    assert_eq!(client.small_write_metrics().repairs_avoiding_rotation, 1);
+    assert_eq!(client.small_write_metrics().repaired_replicas, 1);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn two_copy_small_write_crosses_mirror_block_boundary() {
+    let mut configured = policy();
+    configured.mirror_copies = 2;
+    let (client, allocator, disk) = client(configured);
+    let mut first = client.prepare_small_write(4000).await.unwrap();
+    first.on_data(Bytes::from(vec![0x31; 4000])).await.unwrap();
+    let first = first.on_finish().await.unwrap().remove(0);
+    let mut second = client.prepare_small_write(100).await.unwrap();
+    second.on_data(Bytes::from(vec![0x32; 100])).await.unwrap();
+    let second = second.on_finish().await.unwrap().remove(0);
+
+    assert_eq!(first.chunk_id, second.chunk_id);
+    assert_eq!(second.offset, frame_bytes(4000));
+    assert!(second.offset < 4096 && second.offset + second.length > 4096);
+    let chunk_id = second.chunk_id.unwrap();
+    let base = chunk_id.low * 4096 * 4096;
+    let mut copies = HashMap::<u64, Vec<u8>>::new();
+    {
+        let writes = disk.writes.lock().unwrap();
+        for (disk_id, offset, data) in writes.iter() {
+            let relative = usize::try_from(offset - base).unwrap();
+            let copy = copies.entry(*disk_id).or_default();
+            copy.resize(copy.len().max(relative + data.len()), 0);
+            copy[relative..relative + data.len()].copy_from_slice(data);
+        }
+    }
+    assert_eq!(copies.len(), 2);
+    for copy in copies.values() {
+        let first_end = usize::try_from(second.offset).unwrap();
+        let second_end = usize::try_from(second.offset + second.length).unwrap();
+        assert_eq!(
+            parse_frame(&copy[..first_end], chunk_id).unwrap().payload,
+            vec![0x31; 4000]
+        );
+        assert_eq!(
+            parse_frame(&copy[first_end..second_end], chunk_id)
+                .unwrap()
+                .payload,
+            vec![0x32; 100]
+        );
+    }
+    assert_eq!(allocator.snapshot().2, 2);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn two_copy_small_object_rotates_once_after_repair_exhaustion() {
+    let mut configured = policy();
+    configured.mirror_copies = 2;
+    let (client, allocator, disk) = client(configured);
+    disk.fail.store(true, Ordering::Relaxed);
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![0x5a; 4096])).await.unwrap();
+    assert!(matches!(writer.on_finish().await, Err(IoError::WriteFailed(_))));
+    let metrics = client.small_write_metrics();
+    assert_eq!(metrics.completed, 0);
+    assert_eq!(metrics.failed, 1);
+    assert_eq!(metrics.exhausted_repairs, 2);
+    assert_eq!(metrics.repairs_avoiding_rotation, 0);
+    let snapshot = allocator.snapshot();
+    assert!(snapshot.0 >= 2, "the failed write must rotate to a new chunk");
+    assert!(snapshot.4 >= 2, "both failed chunks must be deleted");
+    let _ = client.shutdown_small_writes().await;
+}
+
+#[tokio::test]
+async fn two_copy_small_object_succeeds_after_one_chunk_rotation() {
+    let mut configured = policy();
+    configured.mirror_copies = 2;
+    let allocator = Arc::new(MockAllocator::default());
+    let recorded = Arc::new(RecordingDiskWriter::default());
+    let disk = Arc::new(FailFirstChunkDiskWriter {
+        inner: Arc::clone(&recorded),
+    });
+    let client = ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk, configured).unwrap();
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![0x5a; 4096])).await.unwrap();
+    let locations = writer.on_finish().await.unwrap();
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].chunk_id.unwrap().low, 2);
+    assert_eq!(client.small_write_metrics().exhausted_repairs, 1);
+    assert_eq!(client.small_write_metrics().completed, 1);
+    {
+        let state = allocator.state.lock().unwrap();
+        let chunks = &state.chunks;
+        let high = locations[0].chunk_id.unwrap().high;
+        assert_eq!(chunks[&(high, 1)].state, ChunkState::Deleted as i32);
+        assert_eq!(chunks[&(high, 2)].state, ChunkState::Active as i32);
+    }
+    {
+        let recorded_images = recorded.writes.lock().unwrap();
+        assert_eq!(recorded_images.len(), 2);
+        for (_, _, image) in recorded_images.iter() {
+            let frame = parse_frame(image, locations[0].chunk_id.unwrap()).unwrap();
+            assert_eq!(frame.payload, vec![0x5a; 4096]);
+        }
+    }
     client.shutdown_small_writes().await.unwrap();
 }
 
@@ -998,6 +1202,62 @@ async fn small_object_manager_scales_out_by_queued_bytes_then_drains_idle_pipeli
 }
 
 #[tokio::test]
+async fn protocol_small_write_pools_scale_independently() {
+    let mut s3_policy = policy();
+    s3_policy.chunk_type = ChunkType::S3;
+    s3_policy.max_pipelines = 2;
+    s3_policy.max_batch_bytes = 16 * 1024;
+    s3_policy.max_batch_objects = 1;
+    s3_policy.scale_out_queue_bytes = 16 * 1024;
+    s3_policy.control_interval = Duration::from_millis(2);
+    s3_policy.cooldown = Duration::from_millis(1);
+    let mut iceberg_policy = s3_policy.clone();
+    iceberg_policy.chunk_type = ChunkType::IcebergTable;
+    let (s3, _, s3_disk) = client(s3_policy);
+    let (iceberg, _, iceberg_disk) = client(iceberg_policy);
+    s3_disk.delay_ms.store(30, Ordering::Relaxed);
+    iceberg_disk.delay_ms.store(30, Ordering::Relaxed);
+
+    let mut warmup = iceberg.prepare_small_write(1).await.unwrap();
+    warmup.on_data(Bytes::from_static(b"x")).await.unwrap();
+    warmup.on_finish().await.unwrap();
+    let iceberg_before = iceberg.small_write_metrics();
+    let mut pending_tasks = Vec::new();
+    for _ in 0..12 {
+        let s3 = s3.clone();
+        pending_tasks.push(tokio::spawn(async move {
+            let mut writer = s3.prepare_small_write(16 * 1024).await.unwrap();
+            writer.on_data(Bytes::from(vec![1; 16 * 1024])).await.unwrap();
+            writer.on_finish().await.unwrap();
+        }));
+    }
+    for task in pending_tasks {
+        task.await.unwrap();
+    }
+    assert!(s3.small_write_metrics().scale_out > 0);
+    assert_eq!(iceberg.small_write_metrics().submitted, iceberg_before.submitted);
+    assert_eq!(iceberg.small_write_metrics().scale_out, iceberg_before.scale_out);
+
+    let s3_before = s3.small_write_metrics();
+    let mut pending_tasks = Vec::new();
+    for _ in 0..12 {
+        let iceberg = iceberg.clone();
+        pending_tasks.push(tokio::spawn(async move {
+            let mut writer = iceberg.prepare_small_write(16 * 1024).await.unwrap();
+            writer.on_data(Bytes::from(vec![2; 16 * 1024])).await.unwrap();
+            writer.on_finish().await.unwrap();
+        }));
+    }
+    for task in pending_tasks {
+        task.await.unwrap();
+    }
+    assert!(iceberg.small_write_metrics().scale_out > 0);
+    assert_eq!(s3.small_write_metrics().submitted, s3_before.submitted);
+    s3.shutdown_small_writes().await.unwrap();
+    iceberg.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
 async fn small_object_manager_scales_out_by_queued_object_count() {
     let mut elastic = policy();
     elastic.max_pipelines = 2;
@@ -1097,9 +1357,65 @@ async fn direct_mirror_chunk_writer_replicates_advances_and_seals() {
         (0, 6)
     );
     assert_eq!(writer.cursor(), 6);
-    assert_eq!(disk.calls(), 3);
+    assert_eq!(disk.calls(), 2);
     assert_eq!(allocator.snapshot().2, 1);
 
     writer.seal().await.unwrap();
     assert_eq!(allocator.snapshot().3, 1);
+}
+
+#[tokio::test]
+async fn direct_mirror_chunk_writer_supports_five_copies() {
+    let allocator: Arc<dyn ChunkAllocator> = Arc::new(MockAllocator::default());
+    let disk = Arc::new(RecordingDiskWriter::default());
+    let disk_writer: Arc<dyn DiskWriter> = disk.clone();
+    let mut writer = MirrorChunkWriter::allocate_with_copy_count(
+        allocator,
+        disk_writer,
+        crowdb_protocol::chunk_stream::StreamName { high: 1, low: 5 },
+        44,
+        30_000,
+        5,
+    )
+    .await
+    .unwrap();
+    writer.append(Bytes::from_static(b"stream")).await.unwrap();
+    assert_eq!(disk.calls(), 5);
+}
+
+#[tokio::test]
+async fn direct_mirror_chunk_writer_accepts_protected_degraded_layout() {
+    let allocator: Arc<dyn ChunkAllocator> = Arc::new(MockAllocator::default());
+    let disk: Arc<dyn DiskWriter> = Arc::new(RecordingDiskWriter::default());
+    let stream = crowdb_protocol::chunk_stream::StreamName { high: 1, low: 3 };
+    let healthy = MirrorChunkWriter::allocate_with_copy_count(
+        Arc::clone(&allocator),
+        Arc::clone(&disk),
+        stream,
+        44,
+        30_000,
+        3,
+    )
+    .await
+    .unwrap();
+    let mut chunk = healthy.chunk().clone();
+    let Some(Strip::MirrorStrip(mirror)) = &mut chunk.strips[0].strip else {
+        panic!("allocated stream chunk must use mirrors");
+    };
+    mirror.segments.pop();
+    assert!(MirrorChunkWriter::open_with_copy_count(
+        Arc::clone(&allocator),
+        Arc::clone(&disk),
+        chunk.clone(),
+        stream,
+        44,
+        30_000,
+        3,
+    )
+    .is_ok());
+    let Some(Strip::MirrorStrip(mirror)) = &mut chunk.strips[0].strip else {
+        panic!("allocated stream chunk must use mirrors");
+    };
+    mirror.segments.pop();
+    assert!(MirrorChunkWriter::open_with_copy_count(allocator, disk, chunk, stream, 44, 30_000, 3).is_err());
 }

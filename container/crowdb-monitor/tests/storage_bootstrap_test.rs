@@ -84,26 +84,14 @@ impl TestRoot {
                         .to_string_lossy()
                         .into_owned(),
                 ],
-                "iceberg" => vec![
-                    "serve".into(),
+                "access" => vec![
                     "--config".into(),
                     format!("{}/run/config/access.toml", self.0.display()),
                 ],
                 _ => unreachable!(),
             };
-            if service.id == "iceberg" {
-                service.env.insert(
-                    "CROWDB_MANAGEMENT_SEEDS".into(),
-                    format!("http://127.0.0.1:{}", ports.kv_management),
-                );
-                service.env.insert(
-                    "CROWDB_ICEBERG_LISTEN".into(),
-                    format!("127.0.0.1:{}", ports.iceberg),
-                );
-                service.env.insert(
-                    "CROWDB_ICEBERG_PUBLIC_URI".into(),
-                    format!("http://127.0.0.1:{}", ports.iceberg),
-                );
+            if service.id == "access" {
+                self.configure_access_env(service, ports);
             }
             service.fence_listeners = match service.id.as_str() {
                 "kv" => vec![ports.kv_management, ports.kv_rpc],
@@ -111,7 +99,7 @@ impl TestRoot {
                 "diskio" => vec![ports.diskio_rpc],
                 "chunkdb" => vec![ports.chunkdb_http, ports.chunkdb_rpc],
                 "chunk-kv" => vec![ports.chunk_kv_http, ports.chunk_kv_rpc],
-                "iceberg" => vec![ports.iceberg],
+                "access" => vec![ports.iceberg, ports.s3],
                 _ => unreachable!(),
             }
             .into_iter()
@@ -123,12 +111,35 @@ impl TestRoot {
                 "diskio" => format!("127.0.0.1:{}", ports.diskio_rpc),
                 "chunkdb" => format!("http://127.0.0.1:{}/ready", ports.chunkdb_http),
                 "chunk-kv" => format!("http://127.0.0.1:{}/ready", ports.chunk_kv_http),
-                "iceberg" => format!("http://127.0.0.1:{}/v1/config", ports.iceberg),
+                "access" => format!("http://127.0.0.1:{}/v1/config", ports.iceberg),
                 _ => unreachable!(),
             };
+            if service.id == "access" {
+                service.additional_probes[0].target =
+                    format!("http://127.0.0.1:{}/_crowdb/health/ready", ports.s3);
+            }
         }
         profile.validate().unwrap();
         profile
+    }
+
+    fn configure_access_env(&self, service: &mut crowdb_monitor::ServiceProfile, ports: &Ports) {
+        service.env.insert(
+            "CROWDB_MANAGEMENT_SEEDS".into(),
+            format!("http://127.0.0.1:{}", ports.kv_management),
+        );
+        service.env.insert(
+            "CROWDB_ICEBERG_LISTEN".into(),
+            format!("127.0.0.1:{}", ports.iceberg),
+        );
+        service.env.insert(
+            "CROWDB_ICEBERG_PUBLIC_URI".into(),
+            format!("http://127.0.0.1:{}", ports.iceberg),
+        );
+        service.env.insert(
+            "CROWDB_ACCESS_LOG_DIR".into(),
+            self.0.join("data/log/access").to_string_lossy().into_owned(),
+        );
     }
 
     fn templates(&self, ports: &Ports) {
@@ -155,7 +166,8 @@ impl TestRoot {
                 .replace("127.0.0.1:12200", &format!("127.0.0.1:{}", ports.chunkdb_rpc))
                 .replace("127.0.0.1:15100", &format!("127.0.0.1:{}", ports.chunk_kv_http))
                 .replace("127.0.0.1:15200", &format!("127.0.0.1:{}", ports.chunk_kv_rpc))
-                .replace("0.0.0.0:80", &format!("127.0.0.1:{}", ports.iceberg));
+                .replace("0.0.0.0:80", &format!("127.0.0.1:{}", ports.iceberg))
+                .replace("0.0.0.0:81", &format!("127.0.0.1:{}", ports.s3));
             fs::write(self.0.join("templates").join(name), body).unwrap();
         }
     }
@@ -171,7 +183,7 @@ impl TestRoot {
                 profile
                     .services
                     .iter()
-                    .any(|service| service.id == "iceberg")
+                    .any(|service| service.id == "access")
                     .then(iceberg_step_names)
                     .into_iter()
                     .flatten()
@@ -203,12 +215,13 @@ struct Ports {
     chunk_kv_http: u16,
     chunk_kv_rpc: u16,
     iceberg: u16,
+    s3: u16,
 }
 
 impl Ports {
     async fn allocate() -> Self {
         let mut listeners = Vec::new();
-        for _ in 0..11 {
+        for _ in 0..12 {
             listeners.push(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
         }
         let ports = listeners
@@ -227,6 +240,7 @@ impl Ports {
             chunk_kv_http: ports[8],
             chunk_kv_rpc: ports[9],
             iceberg: ports[10],
+            s3: ports[11],
         }
     }
 }
@@ -398,7 +412,7 @@ async fn preview_real_iceberg_catalog_and_listener_survive_restart() {
         ("diskio", diskio_binary),
         ("chunkdb", binary_root.join("crowdb-chunkdb")),
         ("chunk-kv", binary_root.join("crowdb-chunk-kv-server")),
-        ("iceberg", binary_root.join("crowdb-iceberg")),
+        ("access", binary_root.join("crowdb-access-server")),
     ];
     if binaries.iter().any(|(_, binary)| !binary.exists()) {
         eprintln!("skipping real Iceberg bootstrap: storage or Iceberg binary unavailable");
@@ -428,9 +442,10 @@ async fn preview_real_iceberg_catalog_and_listener_survive_restart() {
     IcebergBootstrap::reconcile(&mut session, &profile, &credentials, supervisor.monitor_log_mut())
         .await
         .unwrap();
-    let environment = iceberg_environment(&credentials);
+    let mut environment = iceberg_environment(&credentials);
+    environment.insert("CROWDB_S3_MASTER_KEY".into(), credentials.s3_master_key().into());
     supervisor
-        .start_service("iceberg", environment.clone())
+        .start_service("access", environment.clone())
         .await
         .unwrap();
     session.mark_ready().unwrap();
@@ -456,7 +471,7 @@ async fn preview_real_iceberg_catalog_and_listener_survive_restart() {
     )
     .await
     .unwrap();
-    restarted.start_service("iceberg", environment).await.unwrap();
+    restarted.start_service("access", environment).await.unwrap();
     restarted.mark_ready().await.unwrap();
     restarted.shutdown().await.unwrap();
 }

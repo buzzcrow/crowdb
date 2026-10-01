@@ -102,7 +102,7 @@ impl ParquetMetadataLimits {
         if self.footer_bytes == 0
             || self.footer_bytes > 1024 * 1024
             || self.values == 0
-            || self.values > 100_000
+            || self.values > 500_000
             || self.depth == 0
             || self.depth > 32
             || self.schema_elements == 0

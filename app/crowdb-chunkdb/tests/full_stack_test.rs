@@ -20,7 +20,7 @@ use common::cluster::{
     DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID,
 };
 use crowdb_chunkdb::allocator::StripAllocType;
-use crowdb_chunkdb::chunkdb_config::PlacementRebalanceConfig;
+use crowdb_chunkdb::chunkdb_config::{DeploymentMode, PlacementRebalanceConfig};
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::finalize::FinalizeChunkTaskHandler;
@@ -41,6 +41,7 @@ use crowdb_chunkdb::task::{
     RelocateSegmentTaskHandler, SegmentOwnerResolver, TaskAdmission, TaskClaim, TaskExecutor, TaskHandler,
     TaskManager, TaskOutcome, TaskScanner, TaskStore,
 };
+use crowdb_chunkdb::topology::build_snapshot;
 use crowdb_chunkdb_client::ChunkdbRpcTransport;
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
@@ -53,7 +54,7 @@ use crowdb_protocol::chunkdb::rpc::{
     QuerySegmentOwnerRequest, RelocateSegmentHandoffRequest, RelocationHandoffDisposition,
     SegmentOwnerDisposition, Strip, StripReservationAction, StripReservationState, StripType,
 };
-use crowdb_protocol::common::{ChunkId, DiskGroupUsageSummary};
+use crowdb_protocol::common::{ChunkId, DiskGroupUsageSummary, HwStatus};
 use crowdb_protocol::diskdb::rpc::RelocationJournalPhase;
 use crowdb_protocol::{port::alloc as port_alloc, ServicePort};
 use crowdb_test_harness::diskio::{DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
@@ -334,6 +335,13 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
     )
     .await;
     let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
+    let service = cluster.make_service_registry_client();
+    let hardware = cluster.make_hardware_client();
+    let io = ConversionDiskIo::deferred(crowdb_chunkdb::chunkdb_config::ConversionIoConfig::default());
+    assert!(
+        io.refresh(&service, &hardware).await.is_err(),
+        "DiskIO routes must be unavailable before the services start"
+    );
     let diskio = start_diskio_groups(
         &cluster,
         &[
@@ -346,11 +354,9 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
         ],
         2_000,
     );
-    let service = cluster.make_service_registry_client();
-    let hardware = cluster.make_hardware_client();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        if ConversionDiskIo::connect(&service, &hardware).await.is_ok() {
+        if io.refresh(&service, &hardware).await.is_ok() {
             break;
         }
         assert!(
@@ -836,6 +842,419 @@ fn task_value() -> ChunkTaskValue {
 }
 
 struct CompleteTaskHandler;
+
+#[tokio::test]
+async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let handler = LifecycleHandler::new(
+        Arc::clone(&harness.store),
+        Arc::clone(&harness.allocator),
+        harness.topology.clone(),
+    )
+    .with_deployment_mode(DeploymentMode::TestSingleNode)
+    .with_locks(Arc::new(ChunkLockMap::new(
+        10_000,
+        Arc::new(LifecycleMetrics::new()),
+        Duration::from_secs(60),
+    )));
+    for (strip_type, copies, size_kb) in [
+        (StripType::Ec, 0, 1024),
+        (StripType::Mirror, 2, 1024),
+        (StripType::Mirror, 1, 512),
+    ] {
+        assert!(matches!(
+            handler
+                .allocate_chunk(None, size_kb, 1, strip_type, 0, 0, copies, ChunkType::Repo, 0, 0)
+                .await,
+            Err(LifecycleError::InvalidRequest(_))
+        ));
+    }
+    let chunk = handler
+        .allocate_chunk(
+            None,
+            1024,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            1,
+            ChunkType::Repo,
+            71,
+            30_000,
+        )
+        .await
+        .unwrap();
+    assert_eq!(chunk.strips[0].capacity, 1024);
+    assert!(matches!(chunk.strips[0].strip, Some(Strip::MirrorStrip(_))));
+    let id = chunk.id.unwrap();
+    let fence = ReservationFence {
+        expected_modify_ts: chunk.modify_ts,
+        writer_epoch: 71,
+        lease_generation: 1,
+        lease_ms: 30_000,
+    };
+    for copies in [0, 2] {
+        let group = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+        assert!(matches!(
+            handler
+                .reserve_strip_group(
+                    &id,
+                    &group,
+                    fence,
+                    ReserveGroupSpec {
+                        strip_size: 1,
+                        strip_count: 1,
+                        copy_count: copies,
+                        conversion_data_num: 0,
+                        conversion_code_num: 0,
+                    },
+                )
+                .await,
+            Err(LifecycleError::InvalidRequest(_))
+        ));
+    }
+    assert!(matches!(
+        handler.allocate_conversion_strip(&id, &chunk.strips, 1, 1).await,
+        Err(LifecycleError::InvalidRequest(_))
+    ));
+    let mut invalid_replacement = chunk.strips[0].clone();
+    let Some(Strip::MirrorStrip(mirror)) = invalid_replacement.strip.as_mut() else {
+        panic!("single-node strip must be a mirror");
+    };
+    mirror.segments.push(mirror.segments[0]);
+    let operation = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    assert!(matches!(
+        handler
+            .replace_chunk_strip_range(
+                &id,
+                chunk.modify_ts,
+                0,
+                &chunk.strips,
+                &[invalid_replacement],
+                operation,
+            )
+            .await,
+        Err(LifecycleError::InvalidRequest(_))
+    ));
+    assert_single_node_reservation(&handler, &id, fence).await;
+}
+
+async fn assert_single_node_reservation(handler: &LifecycleHandler, id: &ChunkId, fence: ReservationFence) {
+    let group = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    let reserved = handler
+        .reserve_strip_group(
+            id,
+            &group,
+            fence,
+            ReserveGroupSpec {
+                strip_size: 1,
+                strip_count: 1,
+                copy_count: 1,
+                conversion_data_num: 0,
+                conversion_code_num: 0,
+            },
+        )
+        .await
+        .expect("one-copy single-node reservation");
+    let strip = reserved.group.unwrap().strips[0].clone();
+    assert_eq!(strip.capacity, 1024);
+    let mut invalid = strip.clone();
+    let Some(Strip::MirrorStrip(mirror)) = invalid.strip.as_mut() else {
+        panic!("reserved strip must be a mirror");
+    };
+    mirror.segments.push(mirror.segments[0]);
+    let operation = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    assert!(matches!(
+        handler
+            .replace_chunk_strip_range(id, reserved.chunk.modify_ts, 1, &[strip], &[invalid], operation,)
+            .await,
+        Err(LifecycleError::InvalidRequest(_))
+    ));
+}
+
+async fn assert_invalid_production_mirror_copies(handler: &LifecycleHandler) {
+    for copies in [0, 1] {
+        assert!(matches!(
+            handler
+                .allocate_chunk(
+                    None,
+                    1024,
+                    1,
+                    StripType::Mirror,
+                    0,
+                    0,
+                    copies,
+                    ChunkType::S3,
+                    0,
+                    0
+                )
+                .await,
+            Err(LifecycleError::InvalidRequest(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn production_ec_stays_degraded_ec_and_mirrors_use_two_copies_after_one_node_loss() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hardware = cluster.make_hardware_client();
+    let groups = seed_hardware_layout_with_zones(
+        &hardware,
+        &[(100, vec![10]), (101, vec![11]), (102, vec![12])],
+        32,
+    )
+    .await;
+    let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &groups, 32).await;
+    let harness = ChunkdbHarness::start_with_disk_group_count(&cluster, Duration::from_secs(30), 3).await;
+    hardware
+        .set_node_status(102, 12, HwStatus::Offline)
+        .await
+        .unwrap();
+    harness
+        .topology
+        .replace(build_snapshot(&hardware).await.expect("refreshed hardware"));
+    let handler = LifecycleHandler::new(
+        Arc::clone(&harness.store),
+        Arc::clone(&harness.allocator),
+        harness.topology.clone(),
+    )
+    .with_deployment_mode(DeploymentMode::Production);
+    assert_invalid_production_mirror_copies(&handler).await;
+    let degraded = handler
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let Some(Strip::EcStrip(ec)) = &degraded.strips[0].strip else {
+        panic!("degraded allocation must retain EC geometry");
+    };
+    assert_eq!(ec.segments.len(), 3);
+    assert!(degraded.strips[0].placement_repair_required);
+    let degraded_small = handler
+        .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
+        .await
+        .unwrap();
+    let Some(Strip::MirrorStrip(small_mirror)) = &degraded_small.strips[0].strip else {
+        panic!("degraded small allocation must use protected mirrors");
+    };
+    assert_eq!(small_mirror.segments.len(), 2);
+    let appended = handler
+        .append_chunk(
+            &degraded_small.id.unwrap(),
+            degraded_small.modify_ts,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            1,
+        )
+        .await
+        .unwrap();
+    let Some(Strip::MirrorStrip(appended_mirror)) = &appended.strips[0].strip else {
+        panic!("degraded append must use protected mirrors");
+    };
+    assert_eq!(appended_mirror.segments.len(), 2);
+    hardware.set_node_status(102, 12, HwStatus::Up).await.unwrap();
+    harness
+        .topology
+        .replace(build_snapshot(&hardware).await.expect("recovered hardware"));
+    let healthy = handler
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    assert!(matches!(healthy.strips[0].strip, Some(Strip::EcStrip(_))));
+
+    hardware
+        .set_node_status(100, 10, HwStatus::Offline)
+        .await
+        .unwrap();
+    harness
+        .topology
+        .replace(build_snapshot(&hardware).await.expect("replacement topology"));
+    let source = small_mirror
+        .segments
+        .iter()
+        .find(|segment| segment.disk_id.unwrap().low / 10 == 1000)
+        .expect("mirror copy on failed node");
+    let retained = small_mirror
+        .segments
+        .iter()
+        .copied()
+        .filter(|segment| segment != source)
+        .collect::<Vec<_>>();
+    let replacement = handler
+        .allocate_replacement_segment(&degraded_small.id.unwrap(), source, &retained, &[])
+        .await
+        .expect("replace failed mirror copy on unused survivor");
+    assert_eq!(replacement.disk_id.unwrap().low / 10, 1002);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn production_degraded_ec_task_repairs_after_node_returns() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    if !crowdb_test_harness::diskio::check_diskio_only() {
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hardware = cluster.make_hardware_client();
+    let groups = seed_hardware_layout_with_zones(
+        &hardware,
+        &[(100, vec![10]), (101, vec![11]), (102, vec![12])],
+        32,
+    )
+    .await;
+    let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &groups, 32).await;
+    let service = cluster.make_service_registry_client();
+    let io = Arc::new(ConversionDiskIo::deferred(
+        crowdb_chunkdb::chunkdb_config::ConversionIoConfig::default(),
+    ));
+    assert!(io.refresh(&service, &hardware).await.is_err());
+
+    let harness = ChunkdbHarness::start_with_disk_group_count(&cluster, Duration::from_secs(30), 3).await;
+    hardware
+        .set_node_status(102, 12, HwStatus::Offline)
+        .await
+        .unwrap();
+    harness
+        .topology
+        .replace(build_snapshot(&hardware).await.expect("outage topology"));
+    let handler = Arc::new(
+        LifecycleHandler::new(
+            Arc::clone(&harness.store),
+            Arc::clone(&harness.allocator),
+            harness.topology.clone(),
+        )
+        .with_deployment_mode(DeploymentMode::Production)
+        .with_layout_validity(Duration::from_millis(1)),
+    );
+    let chunk = handler
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
+        .await
+        .expect("allocate degraded EC strip");
+    assert!(chunk.strips[0].placement_repair_required);
+    let chunk_id = chunk.id.expect("chunk identity");
+    let Some(Strip::EcStrip(ec)) = chunk.strips[0].strip.as_ref() else {
+        panic!("degraded allocation must remain EC");
+    };
+
+    let diskio = start_diskio_groups(
+        &cluster,
+        &[(1000, 100, 10), (1001, 101, 11), (1002, 102, 12)],
+        2_000,
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if io.refresh(&service, &hardware).await.is_ok() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "DiskIO routes were not published"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for segment in &ec.segments {
+        io.write_segment(segment, 1024 * 1024, Bytes::from(vec![0x5a; 1024 * 1024]))
+            .await
+            .expect("seed degraded EC fragment");
+    }
+
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let coordinator = PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&tasks));
+    assert_eq!(coordinator.scan_batch(256, 100).await.unwrap(), 1);
+    let mut registry = MetricsRegistry::new();
+    let metrics = ChunkdbMetrics::register(&mut registry).placement;
+    let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 97, 30_000));
+    let executor = Arc::new(
+        TaskExecutor::new(
+            Arc::clone(&manager),
+            1,
+            vec![Arc::new(PlacementRepairTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&manager),
+                Arc::clone(&io),
+                metrics,
+            ))],
+        )
+        .unwrap(),
+    );
+    let scanner = TaskScanner::new(Arc::clone(&tasks), manager, executor, 16, Duration::from_secs(1));
+    assert_eq!(
+        scanner.run_once(100).await.unwrap().tasks_completed_or_requeued,
+        1
+    );
+    assert!(handler.query_chunk(&chunk_id).await.unwrap().strips[0].placement_repair_required);
+
+    drop(scanner);
+    drop(coordinator);
+    drop(tasks);
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let mut registry = MetricsRegistry::new();
+    let metrics = ChunkdbMetrics::register(&mut registry).placement;
+    let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 98, 30_000));
+    let executor = Arc::new(
+        TaskExecutor::new(
+            Arc::clone(&manager),
+            1,
+            vec![Arc::new(PlacementRepairTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&manager),
+                Arc::clone(&io),
+                metrics,
+            ))],
+        )
+        .unwrap(),
+    );
+    let scanner = TaskScanner::new(Arc::clone(&tasks), manager, executor, 16, Duration::from_secs(1));
+
+    hardware.set_node_status(102, 12, HwStatus::Up).await.unwrap();
+    harness
+        .topology
+        .replace(build_snapshot(&hardware).await.expect("recovered topology"));
+    for _ in 0..6 {
+        let summary = scanner.run_once(u64::MAX).await.unwrap();
+        if !handler.query_chunk(&chunk_id).await.unwrap().strips[0].placement_repair_required {
+            break;
+        }
+        assert!(
+            summary.tasks_completed_or_requeued > 0,
+            "placement task did not resume"
+        );
+    }
+    let repaired = handler.query_chunk(&chunk_id).await.unwrap();
+    let assessment = repaired.strips[0].placement_assessment.as_ref().unwrap();
+    assert!(assessment.rack_protected && assessment.node_protected && assessment.disk_protected);
+    assert!(!repaired.strips[0].placement_repair_required);
+    let Some(Strip::EcStrip(ec)) = repaired.strips[0].strip.as_ref() else {
+        panic!("repaired strip must remain EC");
+    };
+    for segment in &ec.segments {
+        assert_eq!(
+            io.read_segment(segment, 1024 * 1024).await.unwrap(),
+            Bytes::from(vec![0x5a; 1024 * 1024])
+        );
+    }
+    assert_eq!(diskio.len(), 3);
+}
 
 #[tokio::test]
 async fn active_chunk_creates_one_deadline_indexed_finalizer() {
@@ -2908,6 +3327,54 @@ async fn generated_chunk_ids_stay_with_the_serving_range_owner() {
             .unwrap();
         assert!(hash_to_bucket(&chunk.id.unwrap()) <= 32_767);
     }
+}
+
+#[tokio::test]
+async fn allocated_chunk_type_matches_its_id_prefix() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+
+    for chunk_type in [ChunkType::S3, ChunkType::IcebergTable] {
+        let chunk = harness
+            .handler
+            .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 1, chunk_type, 0, 0)
+            .await
+            .expect("typed allocation");
+        let id = chunk.id.expect("allocated id");
+        assert_eq!(id.high >> 56, chunk_type as u64);
+        assert_eq!(chunk.chunk_type, chunk_type as i32);
+        let persisted = harness.handler.query_chunk(&id).await.expect("persisted chunk");
+        assert_eq!(persisted.chunk_type, chunk_type as i32);
+    }
+
+    let mismatched = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
+    let result = harness
+        .handler
+        .allocate_chunk(
+            Some(mismatched),
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            1,
+            ChunkType::IcebergTable,
+            0,
+            0,
+        )
+        .await;
+    assert!(matches!(result, Err(LifecycleError::InvalidRequest(_))));
+    assert!(matches!(
+        harness.handler.query_chunk(&mismatched).await,
+        Err(LifecycleError::ChunkNotFound)
+    ));
 }
 
 #[tokio::test]

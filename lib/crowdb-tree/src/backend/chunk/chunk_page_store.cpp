@@ -833,6 +833,9 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     if (config_.max_chunk_bytes == 0) {
         config_.max_chunk_bytes = 256U * 1024U * 1024U;
     }
+    if (config_.mirror_copies == 0) {
+        config_.mirror_copies = 2;
+    }
     if (config_.page_alignment == 0) {
         config_.page_alignment = 64U * 1024U;
     }
@@ -1214,7 +1217,7 @@ Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const 
     }
     auto framed           = std::make_shared<std::vector<uint8_t>>(physical_length);
     bool mirror_responded = false;
-    for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+    for (uint32_t mirror = 0; mirror < config_.mirror_copies; ++mirror) {
         if (cancellation.cancelled()) {
             return Status::unavailable("chunk page read cancelled");
         }
@@ -1566,7 +1569,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
             return Status::resource_exhausted("chunk page frame encoding failed");
         }
         *new_pack_bytes += length;
-        for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+        for (uint32_t mirror = 0; mirror < config_.mirror_copies; ++mirror) {
             bool written = false;
             for (uint32_t attempt = 0; attempt <= config_.mirror_retry_limit; ++attempt) {
                 if (cancellation.cancelled()) {
@@ -1754,7 +1757,7 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
             orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
             return fail(Status::resource_exhausted("chunk materialization frame encoding failed"));
         }
-        for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+        for (uint32_t mirror = 0; mirror < config_.mirror_copies; ++mirror) {
             bool written = false;
             for (uint32_t attempt = 0; attempt <= config_.mirror_retry_limit; ++attempt) {
                 mirror_write_attempts_.fetch_add(1, std::memory_order_relaxed);
@@ -2288,7 +2291,8 @@ void ct_root_catalog_free(ct_root_catalog *catalog)
 ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
                                    ct_page_store **out)
 {
-    if (options == nullptr || catalog == nullptr || catalog->catalog == nullptr || out == nullptr) {
+    if (options == nullptr || catalog == nullptr || catalog->catalog == nullptr || out == nullptr ||
+        options->mirror_copies > crowdb::tree::detail::kMaxMirrorCopies) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
     }
     auto handle    = std::make_unique<ct_page_store>();
@@ -2299,6 +2303,8 @@ ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, c
             .owner_epoch                    = options->owner_epoch,
             .open_generation                = options->open_generation,
             .pack_bytes                     = options->pack_bytes,
+            .max_chunk_bytes                = options->max_chunk_bytes,
+            .mirror_copies                  = options->mirror_copies,
             .iu_size                        = options->iu_size,
             .max_concurrent_packs           = options->max_concurrent_packs,
             .materialization_bytes_per_pass = options->materialization_bytes_per_pass,
@@ -2318,7 +2324,8 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
                                                   ct_chunk_transport *transport, ct_page_store **out)
 {
     if (options == nullptr || catalog == nullptr || catalog->catalog == nullptr || transport == nullptr ||
-        transport->transport == nullptr || out == nullptr) {
+        transport->transport == nullptr || out == nullptr ||
+        options->mirror_copies > crowdb::tree::detail::kMaxMirrorCopies) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
     }
     auto handle    = std::make_unique<ct_page_store>();
@@ -2329,6 +2336,8 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
             .owner_epoch                    = options->owner_epoch,
             .open_generation                = options->open_generation,
             .pack_bytes                     = options->pack_bytes,
+            .max_chunk_bytes                = options->max_chunk_bytes,
+            .mirror_copies                  = options->mirror_copies,
             .iu_size                        = options->iu_size,
             .max_concurrent_packs           = options->max_concurrent_packs,
             .materialization_bytes_per_pass = options->materialization_bytes_per_pass,

@@ -19,7 +19,7 @@ namespace crowdb::diskio
 {
 
 // Disk type for dummy disks (when no real block device is configured).
-enum class DummyDiskType {
+enum class DummyDiskType : std::uint8_t {
     Null, // memfd, drop-write + pattern read (default, for benchmarks)
     Mem,  // memfd, store + read-back (for correctness tests)
 };

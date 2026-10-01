@@ -1,6 +1,7 @@
 //! Durable, bounded reclamation after reachability and retention proof.
 
 mod admission;
+mod budget;
 mod candidate;
 mod claim;
 mod discovery;
@@ -18,6 +19,7 @@ mod task;
 mod tree;
 mod worker;
 
+pub use budget::{BudgetedGcBlocks, BudgetedGcStore, GcIoBudget};
 pub use candidate::{CandidatePhase, GcCandidate};
 pub use limits::GcLimits;
 pub use mark::GcMarkError;

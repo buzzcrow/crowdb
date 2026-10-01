@@ -143,6 +143,7 @@ fn owned_chunk_rpc_transport_retains_route_handles() {
         writer_lease_ms: 30_000,
         rpc_timeout_ms: 1_000,
         completion_capacity: 32,
+        mirror_copies: 0,
     })
     .unwrap();
     drop(transport);
@@ -322,6 +323,8 @@ fn injected_chunk_store_round_trip_and_stats() {
                 iu_size: 1,
                 max_concurrent_packs: 2,
                 materialization_bytes_per_pass: 4096,
+                max_chunk_bytes: 0,
+                mirror_copies: 0,
             },
             Arc::clone(&catalog),
             None,
@@ -369,6 +372,8 @@ fn callback_root_catalog_reopens_published_manifest() {
         iu_size: 1,
         max_concurrent_packs: 2,
         materialization_bytes_per_pass: 4096,
+        max_chunk_bytes: 0,
+        mirror_copies: 0,
     };
     let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
     {
@@ -419,6 +424,8 @@ fn callback_root_catalog_persists_transition_generation_pin() {
         iu_size: 1,
         max_concurrent_packs: 2,
         materialization_bytes_per_pass: 4096,
+        max_chunk_bytes: 0,
+        mirror_copies: 0,
     };
     let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
     let tree = Crowdbtree::open(&Config {
@@ -456,6 +463,8 @@ fn memory_root_catalog_pin_blocks_generation_reclaim_until_unpin() {
         iu_size: 1,
         max_concurrent_packs: 2,
         materialization_bytes_per_pass: 4096,
+        max_chunk_bytes: 0,
+        mirror_copies: 0,
     };
     let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
     let tree = Crowdbtree::open(&Config {
@@ -517,6 +526,8 @@ fn callback_root_catalog_opens_exact_manifest_without_latest_fallback() {
         iu_size: 1,
         max_concurrent_packs: 2,
         materialization_bytes_per_pass: 4096,
+        max_chunk_bytes: 0,
+        mirror_copies: 0,
     };
     let latest_store = Arc::new(PageStore::open_chunk(latest_options, Arc::clone(&catalog), None).unwrap());
     let latest = Crowdbtree::open(&Config {
@@ -576,6 +587,8 @@ fn exact_manifest_tracks_durable_snapshot_after_range_rebuild() {
         iu_size: 1,
         max_concurrent_packs: 2,
         materialization_bytes_per_pass: 4096,
+        max_chunk_bytes: 0,
+        mirror_copies: 0,
     };
     let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
     let config = Config {
@@ -634,6 +647,8 @@ fn published_manifest_is_visible_through_the_same_page_store() {
                 iu_size: 65_536,
                 max_concurrent_packs: 2,
                 materialization_bytes_per_pass: 4096,
+                max_chunk_bytes: 0,
+                mirror_copies: 0,
             },
             catalog,
             None,

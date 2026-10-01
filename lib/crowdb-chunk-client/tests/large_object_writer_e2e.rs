@@ -6,25 +6,81 @@
 #[path = "common/e2e_stack.rs"]
 mod e2e_stack;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::ops::Range;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{
-    ChunkClientConfig, ChunkIoClient, ChunkReadPolicy, DiskWriter, IoError, LargeWritePolicy, Result,
-    RoutedDiskWriter, SmallWritePolicy,
+    ChunkClientConfig, ChunkIoClient, ChunkIoWriter, ChunkReadPolicy, DiskWriter, FramedWriteBuffer, IoError,
+    LargeWritePolicy, Result, RoutedDiskWriter, SmallWritePolicy,
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, EcState, Location, Strip};
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{ChunkLocation, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{
+    encode_frame_regions, ChunkLocation, FrameError, FrameMagic, FRAME_FOOTER_BYTES,
+    FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+};
 
 use e2e_stack::{all_binaries_available, E2eStack};
 
 const MIB: usize = 1024 * 1024;
+
+struct FullFramedOwner {
+    bytes: Vec<u8>,
+    frames: usize,
+}
+
+impl FullFramedOwner {
+    fn new(frames: usize) -> Self {
+        let mut bytes = vec![0; frames * MAX_FRAME_BYTES];
+        for index in 0..frames {
+            let start = index * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
+            bytes[start..start + MAX_FRAME_PAYLOAD_BYTES].fill(0x5a);
+        }
+        Self { bytes, frames }
+    }
+}
+
+impl FramedWriteBuffer for FullFramedOwner {
+    fn logical_len(&self) -> u64 {
+        (self.frames * MAX_FRAME_PAYLOAD_BYTES) as u64
+    }
+
+    fn frame_count(&self) -> usize {
+        self.frames
+    }
+
+    fn frame_payload_len(&self, index: usize) -> Option<usize> {
+        (index < self.frames).then_some(MAX_FRAME_PAYLOAD_BYTES)
+    }
+
+    fn finalize_frame(
+        &mut self,
+        index: usize,
+        magic: FrameMagic,
+        chunk_id: crowdb_protocol::common::ChunkId,
+        write_time_ms: u64,
+    ) -> std::result::Result<Range<usize>, FrameError> {
+        let start = index * MAX_FRAME_BYTES;
+        let end = start + MAX_FRAME_BYTES;
+        let frame = &mut self.bytes[start..end];
+        let (header, remainder) = frame.split_at_mut(FRAME_HEADER_PREFIX_BYTES);
+        let (payload, footer) = remainder.split_at_mut(MAX_FRAME_PAYLOAD_BYTES);
+        debug_assert_eq!(footer.len(), FRAME_FOOTER_BYTES);
+        encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
+        Ok(start..end)
+    }
+
+    fn views(&self, range: Range<usize>) -> std::result::Result<Vec<Bytes>, FrameError> {
+        Ok(vec![Bytes::copy_from_slice(&self.bytes[range])])
+    }
+}
 
 struct FailWriteCall {
     inner: Arc<dyn DiskWriter>,
@@ -33,6 +89,9 @@ struct FailWriteCall {
     persistent: bool,
     failed_segment: Mutex<Option<Segment>>,
     segments: Mutex<Vec<Segment>>,
+    failure_delay: Duration,
+    failure_pending: AtomicBool,
+    successes_during_failure: AtomicUsize,
 }
 
 impl FailWriteCall {
@@ -66,12 +125,21 @@ impl DiskWriter for FailWriteCall {
         byte_offset: u64,
         data: Bytes,
     ) -> Result<()> {
-        if byte_offset % unit_bytes == 0 {
-            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        let injected = self.inject_failure(seg);
+        if injected.is_err() && !self.failure_delay.is_zero() {
+            self.failure_pending.store(true, Ordering::Release);
+            tokio::time::sleep(self.failure_delay).await;
+            self.failure_pending.store(false, Ordering::Release);
         }
-        Err(IoError::WriteFailed(
-            "byte-offset writes not supported by this writer".into(),
-        ))
+        injected?;
+        let result = self
+            .inner
+            .write_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await;
+        if result.is_ok() && self.failure_pending.load(Ordering::Acquire) {
+            self.successes_during_failure.fetch_add(1, Ordering::AcqRel);
+        }
+        result
     }
 
     async fn read(
@@ -82,6 +150,76 @@ impl DiskWriter for FailWriteCall {
         length: u32,
     ) -> Result<Bytes> {
         self.inner.read(segment, unit_bytes, segment_offset, length).await
+    }
+
+    async fn fsync(&self, segment: &Segment) -> Result<()> {
+        self.inner.fsync(segment).await
+    }
+}
+
+struct FailLaterWritesInFirstChunk {
+    inner: Arc<dyn DiskWriter>,
+    first_chunk: Mutex<Option<crowdb_protocol::common::ChunkId>>,
+    first_chunk_writes: AtomicUsize,
+    successful_writes: usize,
+}
+
+impl FailLaterWritesInFirstChunk {
+    fn check(&self, segment: &Segment) -> Result<()> {
+        let chunk_id = segment
+            .owner_chunk
+            .ok_or_else(|| IoError::WriteFailed("fault segment has no chunk".into()))?;
+        let mut first = self.first_chunk.lock().unwrap();
+        let first_id = *first.get_or_insert(chunk_id);
+        drop(first);
+        if chunk_id == first_id
+            && self.first_chunk_writes.fetch_add(1, Ordering::AcqRel) >= self.successful_writes
+        {
+            return Err(IoError::WriteFailed(
+                "old chunk is persistently unwritable".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DiskWriter for FailLaterWritesInFirstChunk {
+    async fn write(&self, segment: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
+        self.check(segment)?;
+        self.inner.write(segment, unit_bytes, data).await
+    }
+
+    async fn write_views(&self, segment: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
+        self.check(segment)?;
+        self.inner.write_views(segment, unit_bytes, data).await
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        self.check(segment)?;
+        self.inner
+            .write_at_byte_offset(segment, unit_bytes, byte_offset, data)
+            .await
+    }
+
+    async fn read(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<Bytes> {
+        self.inner.read(segment, unit_bytes, segment_offset, length).await
+    }
+
+    async fn fsync(&self, segment: &Segment) -> Result<()> {
+        self.inner.fsync(segment).await
     }
 }
 
@@ -103,8 +241,13 @@ fn policy(max_chunk_size: u64) -> LargeWritePolicy {
     LargeWritePolicy {
         ec_scheme: ec_4_1(),
         client: Arc::new(ChunkClientConfig {
+            chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
+            large_mirror_copies: None,
             max_chunk_size,
             prefetch_strips_per_chunk: 2,
+            large_prefetch_max_strips_per_batch: 32,
+            large_parallel_strip_writes: 4,
+            large_held_buffers: 4,
             parity_depth: 2,
             chunk_preparation_depth: 1,
             large_write_repair_attempts: 3,
@@ -227,15 +370,324 @@ async fn large_write_multi_strip_persists_data_metadata_and_parity() {
 }
 
 #[tokio::test]
+async fn large_one_copy_mirror_reads_across_strips() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let data = make_test_data(9 * MIB);
+    let mut configured = policy(16 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+    let result = stack
+        .client
+        .prepare_large_write(Some(data.len() as u64), configured)
+        .write_stream(data.as_slice())
+        .await
+        .unwrap();
+    let chunk = stack.query_chunk(&result.locations[0]).await;
+    assert!(chunk.strips.len() >= 9);
+    let Strip::MirrorStrip(mirror) = chunk.strips[0].strip.as_ref().unwrap() else {
+        panic!("large mirror policy allocated a different strip");
+    };
+    assert_eq!(mirror.segments.len(), 1);
+    assert!(chunk.strips.iter().take(9).all(|strip| strip.sealed_length > 0));
+    assert_eq!(
+        stack
+            .client
+            .read_object(&result.locations)
+            .await
+            .unwrap()
+            .concat(),
+        data
+    );
+    assert_eq!(
+        stack
+            .client
+            .read_range(&result.locations, MIB as u64 - 100, MIB as u64 + 100)
+            .await
+            .unwrap()
+            .concat(),
+        data[MIB - 100..MIB + 100]
+    );
+}
+
+#[tokio::test]
+async fn large_raw_buffers_submit_complete_mirror_strips_concurrently() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let mut configured = policy(16 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+    let mut writer = stack.client.prepare_large_write(None, configured);
+    let block = Bytes::from(vec![0x5a; 16 * MAX_FRAME_PAYLOAD_BYTES]);
+    for _ in 0..8 {
+        assert_eq!(
+            writer.on_data(block.clone()).await.unwrap(),
+            crowdb_chunk_client::FeedStatus::Continue
+        );
+    }
+    let locations = writer.on_finish().await.unwrap();
+    let timing = writer.write_timing().unwrap();
+    assert_eq!(timing.strip_write_successes, 8);
+    assert!(timing.mirror_uncommitted_peak > 0);
+    assert!(timing.mirror_active_write_peak > 0);
+    assert_eq!(
+        stack.client.read_object(&locations).await.unwrap().concat(),
+        block.repeat(8)
+    );
+}
+
+#[tokio::test]
+async fn large_mirror_replaces_failed_replica_before_ordered_completion() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let (allocator, disk_writer) = real_parts(&stack).await;
+    for fail_on in [1, 3, 4] {
+        let fault = Arc::new(FailWriteCall {
+            inner: disk_writer.clone(),
+            calls: AtomicUsize::new(0),
+            fail_on,
+            persistent: false,
+            failed_segment: Mutex::new(None),
+            segments: Mutex::new(Vec::new()),
+            failure_delay: Duration::ZERO,
+            failure_pending: AtomicBool::new(false),
+            successes_during_failure: AtomicUsize::new(0),
+        });
+        let client =
+            ChunkIoClient::from_parts_with_small_policy(allocator.clone(), fault.clone(), small_policy())
+                .unwrap();
+        let data = make_test_data(4 * MIB);
+        let mut configured = policy(16 * MIB as u64);
+        Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+        let result = client
+            .prepare_large_write(Some(data.len() as u64), configured)
+            .write_stream(data.as_slice())
+            .await
+            .unwrap();
+        let failed = fault.failed_segment.lock().unwrap().expect("injected segment");
+        let chunk = stack.query_chunk(&result.locations[0]).await;
+        assert!(chunk.strips.iter().all(|strip| {
+            let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
+                return false;
+            };
+            !mirror.segments.contains(&failed)
+        }));
+        assert_eq!(client.large_write_repair_metrics().repaired_segments, 1);
+        assert_eq!(
+            client.read_object(&result.locations).await.unwrap().concat(),
+            data
+        );
+    }
+}
+
+#[tokio::test]
+async fn large_mirror_retains_later_framed_buffers_until_failed_first_strip_is_repaired() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let (allocator, disk_writer) = real_parts(&stack).await;
+    let fault = Arc::new(FailWriteCall {
+        inner: disk_writer,
+        calls: AtomicUsize::new(0),
+        fail_on: 1,
+        persistent: false,
+        failed_segment: Mutex::new(None),
+        segments: Mutex::new(Vec::new()),
+        failure_delay: Duration::from_millis(80),
+        failure_pending: AtomicBool::new(false),
+        successes_during_failure: AtomicUsize::new(0),
+    });
+    let client =
+        ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
+    let mut configured = policy(16 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+    let frames = 65;
+    let expected = vec![0x5a; frames * MAX_FRAME_PAYLOAD_BYTES];
+    let mut writer = client.prepare_large_write(Some(expected.len() as u64), configured);
+    writer
+        .on_framed_data(Box::new(FullFramedOwner::new(frames)))
+        .await
+        .unwrap();
+    let locations = writer.on_finish().await.unwrap();
+    assert!(fault.successes_during_failure.load(Ordering::Acquire) > 0);
+    assert_eq!(client.large_write_repair_metrics().repaired_segments, 1);
+    assert_eq!(client.read_object(&locations).await.unwrap().concat(), expected);
+}
+
+#[tokio::test]
+async fn large_mirror_rotates_after_repair_exhaustion_and_replays_ordered_data() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let (allocator, disk_writer) = real_parts(&stack).await;
+    let fault = Arc::new(FailLaterWritesInFirstChunk {
+        inner: disk_writer,
+        first_chunk: Mutex::new(None),
+        first_chunk_writes: AtomicUsize::new(0),
+        successful_writes: 2,
+    });
+    let client =
+        ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
+    let mut configured = policy(16 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+    let frames = 225;
+    let expected = vec![0x5a; frames * MAX_FRAME_PAYLOAD_BYTES];
+    let mut writer = client.prepare_large_write(Some(expected.len() as u64), configured);
+    writer
+        .on_framed_data(Box::new(FullFramedOwner::new(frames)))
+        .await
+        .unwrap();
+    let locations = writer.on_finish().await.unwrap();
+    let old_id = fault.first_chunk.lock().unwrap().expect("first chunk");
+    assert_ne!(locations[0].chunk_id, Some(old_id));
+    let repair = client.large_write_repair_metrics();
+    assert_eq!(repair.chunk_rotations, 1);
+    assert_eq!(repair.rotated_chunks, 1);
+    assert!(repair.replayed_bytes > 0);
+    assert!(repair.replayed_bytes < (frames * MAX_FRAME_BYTES) as u64);
+    assert_eq!(client.read_object(&locations).await.unwrap().concat(), expected);
+    assert_eq!(
+        stack
+            .query_chunk(&Location {
+                chunk_id: Some(old_id),
+                ..Location::default()
+            })
+            .await
+            .state,
+        ChunkState::Deleted as i32
+    );
+}
+
+#[tokio::test]
+async fn large_mirror_rotates_failed_partial_final_strip() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let (allocator, disk_writer) = real_parts(&stack).await;
+    let fault = Arc::new(FailLaterWritesInFirstChunk {
+        inner: disk_writer,
+        first_chunk: Mutex::new(None),
+        first_chunk_writes: AtomicUsize::new(0),
+        successful_writes: 0,
+    });
+    let client =
+        ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
+    let mut configured = policy(16 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+    let expected = vec![0x5a; MAX_FRAME_PAYLOAD_BYTES];
+    let mut writer = client.prepare_large_write(Some(expected.len() as u64), configured);
+    writer
+        .on_framed_data(Box::new(FullFramedOwner::new(1)))
+        .await
+        .unwrap();
+    let locations = writer.on_finish().await.unwrap();
+    let old_id = fault.first_chunk.lock().unwrap().expect("first chunk");
+    assert_ne!(locations[0].chunk_id, Some(old_id));
+    assert_eq!(client.read_object(&locations).await.unwrap().concat(), expected);
+}
+
+#[tokio::test]
+async fn large_mirror_abort_drains_delayed_submitted_write_before_delete() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let (allocator, disk_writer) = real_parts(&stack).await;
+    let fault = Arc::new(FailWriteCall {
+        inner: disk_writer,
+        calls: AtomicUsize::new(0),
+        fail_on: 1,
+        persistent: false,
+        failed_segment: Mutex::new(None),
+        segments: Mutex::new(Vec::new()),
+        failure_delay: Duration::from_millis(80),
+        failure_pending: AtomicBool::new(false),
+        successes_during_failure: AtomicUsize::new(0),
+    });
+    let client =
+        ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
+    let mut configured = policy(16 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+    let mut writer = client.prepare_large_write(Some((16 * MAX_FRAME_PAYLOAD_BYTES) as u64), configured);
+    writer
+        .on_framed_data(Box::new(FullFramedOwner::new(16)))
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    writer.on_error().await.unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(70));
+    assert!(!fault.failure_pending.load(Ordering::Acquire));
+    let old_id = fault.failed_segment.lock().unwrap().unwrap().owner_chunk;
+    let chunk = stack
+        .query_chunk(&Location {
+            chunk_id: old_id,
+            ..Location::default()
+        })
+        .await;
+    assert_eq!(chunk.state, ChunkState::Deleted as i32);
+}
+
+#[tokio::test]
+async fn large_mirror_repair_exhaustion_deletes_unsealed_chunk() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy()).await;
+    let (allocator, disk_writer) = real_parts(&stack).await;
+    let fault = Arc::new(FailWriteCall {
+        inner: disk_writer,
+        calls: AtomicUsize::new(0),
+        fail_on: 1,
+        persistent: true,
+        failed_segment: Mutex::new(None),
+        segments: Mutex::new(Vec::new()),
+        failure_delay: Duration::ZERO,
+        failure_pending: AtomicBool::new(false),
+        successes_during_failure: AtomicUsize::new(0),
+    });
+    let client =
+        ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
+    let mut configured = policy(16 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().large_mirror_copies = Some(1);
+    let result = client
+        .prepare_large_write(Some(MIB as u64), configured)
+        .write_stream(make_test_data(MIB).as_slice())
+        .await;
+    assert!(matches!(result, Err(IoError::ReplicaRepairExhausted(_))));
+    let repair = client.large_write_repair_metrics();
+    assert!(repair.exhausted >= 1);
+    assert_eq!(repair.chunk_rotations, 1);
+    assert_eq!(repair.rotated_chunks, 0);
+    let failed = fault.failed_segment.lock().unwrap().expect("injected segment");
+    let chunk = stack
+        .query_chunk(&Location {
+            chunk_id: failed.owner_chunk,
+            ..Location::default()
+        })
+        .await;
+    assert_eq!(chunk.state, ChunkState::Deleted as i32);
+}
+
+#[tokio::test]
 async fn large_write_rotates_chunks_without_losing_data() {
     if !all_binaries_available() {
         return;
     }
     let stack = E2eStack::start(small_policy()).await;
     let data = make_test_data(20 * MIB);
+    let mut configured = policy(8 * MIB as u64);
+    Arc::get_mut(&mut configured.client).unwrap().chunk_type =
+        crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable;
     let result = stack
         .client
-        .prepare_large_write(Some(data.len() as u64), policy(8 * MIB as u64))
+        .prepare_large_write(Some(data.len() as u64), configured)
         .write_stream(data.as_slice())
         .await
         .unwrap();
@@ -257,6 +709,14 @@ async fn large_write_rotates_chunks_without_losing_data() {
     let mut read_back = Vec::new();
     for location in &result.locations {
         let chunk = stack.query_chunk(location).await;
+        assert_eq!(
+            chunk.chunk_type,
+            crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable as i32
+        );
+        assert_eq!(
+            chunk.id.unwrap().high >> 56,
+            crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable as u64
+        );
         assert_eq!(chunk.state, ChunkState::Sealed as i32);
         assert_eq!(
             chunk.sealed_length,
@@ -373,6 +833,9 @@ async fn large_write_replaces_failed_data_and_parity_segments_end_to_end() {
             persistent: false,
             failed_segment: Mutex::new(None),
             segments: Mutex::new(Vec::new()),
+            failure_delay: Duration::ZERO,
+            failure_pending: AtomicBool::new(false),
+            successes_during_failure: AtomicUsize::new(0),
         });
         let client =
             ChunkIoClient::from_parts_with_small_policy(allocator.clone(), fault.clone(), small_policy())
@@ -420,6 +883,9 @@ async fn large_write_repair_exhaustion_deletes_unsealed_chunk() {
         persistent: true,
         failed_segment: Mutex::new(None),
         segments: Mutex::new(Vec::new()),
+        failure_delay: Duration::ZERO,
+        failure_pending: AtomicBool::new(false),
+        successes_during_failure: AtomicUsize::new(0),
     });
     let client =
         ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), small_policy()).unwrap();
@@ -427,7 +893,7 @@ async fn large_write_repair_exhaustion_deletes_unsealed_chunk() {
         .prepare_large_write(Some(MIB as u64), policy(16 * MIB as u64))
         .write_stream(make_test_data(MIB).as_slice())
         .await;
-    assert!(matches!(result, Err(IoError::WriteFailed(_))));
+    assert!(matches!(result, Err(IoError::ReplicaRepairExhausted(_))));
     assert_eq!(client.large_write_repair_metrics().exhausted, 1);
     let failed = fault.failed_segment.lock().unwrap().expect("injected segment");
     let location = Location {

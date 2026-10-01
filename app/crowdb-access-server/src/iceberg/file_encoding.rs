@@ -123,9 +123,15 @@ impl<Input> FileUploadBody<Input> {
         self.chunks.is_none() && self.length.is_some()
     }
 
-    #[must_use]
-    pub fn md5(&self) -> [u8; 16] {
-        self.content_md5.digest()
+    /// Native uploads validate MD5 after their independent digest pipe finishes.
+    pub fn defer_md5(&mut self) {
+        self.content_md5.defer();
+    }
+
+    /// # Errors
+    /// Rejects a declared Content-MD5 that differs from the completed digest pipe.
+    pub fn verify_deferred_md5(&self, digest: [u8; 16]) -> Result<(), FileEncodingError> {
+        self.content_md5.verify_deferred(digest)
     }
 
     pub(super) const fn failure(&self) -> Option<FileEncodingError> {

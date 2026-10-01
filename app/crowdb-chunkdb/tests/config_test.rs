@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_chunkdb::chunkdb_config::{ChunkdbConfig, PlacementMode};
+use crowdb_chunkdb::chunkdb_config::{ChunkdbConfig, DeploymentMode, PlacementMode};
 use crowdb_chunkdb::selector::FailureDomainPriority;
 use crowdb_common::config::BaseConfig;
 
@@ -9,6 +9,7 @@ use crowdb_common::config::BaseConfig;
 fn rpc_workers_defaults_and_validates() {
     let config: ChunkdbConfig = toml::from_str("[server]\n").expect("partial config parses");
     assert_eq!(config.server.rpc_workers, 2);
+    assert_eq!(config.conversion_io.rpc_workers, 2);
     config.validate().expect("default workers validate");
 
     let mut invalid = config;
@@ -26,11 +27,43 @@ fn tracked_config_file_loads_and_validates() {
         .join("crowdb_chunkdb_config.toml");
     let config = crowdb_common::config::load_from_file::<ChunkdbConfig>(&path).expect("load tracked config");
     assert_eq!(config.server.rpc_workers, 2);
+    assert_eq!(config.conversion_io.normal_connections_per_endpoint, 1);
     assert_eq!(
         config.placement.failure_domain_priority,
         FailureDomainPriority::RackFirst
     );
     assert!(!config.placement.allow_degraded_failure_domains);
+}
+
+#[test]
+fn single_node_container_declares_test_only_deployment() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../container/single-node-container/templates/chunkdb.toml");
+    let config = crowdb_common::config::load_from_file::<ChunkdbConfig>(&path).unwrap();
+    assert_eq!(config.deployment.mode, DeploymentMode::TestSingleNode);
+    assert_eq!(config.deployment.max_node_failures, 0);
+    assert_eq!(config.placement.mode, PlacementMode::UnsafeColocated);
+    assert_eq!(config.conversion_io.rpc_workers, 1);
+}
+
+#[test]
+fn conversion_io_transport_rejects_zero_resources() {
+    let mut config = ChunkdbConfig::default();
+    config.conversion_io.priority_connections_per_endpoint = 0;
+    assert_eq!(
+        config.validate(),
+        Err("conversion_io connections and RPC workers must be > 0".to_string())
+    );
+}
+
+#[test]
+fn unsafe_fixture_mode_is_explicit_and_only_available_to_debug_builds() {
+    let config: ChunkdbConfig = toml::from_str(
+        "[deployment]\nmode = \"test_unsafe_placement\"\n[placement]\nmode = \"unsafe_colocated\"\nallow_unsafe_ec = true\n",
+    )
+    .unwrap();
+    assert_eq!(config.deployment.mode, DeploymentMode::TestUnsafePlacement);
+    assert_eq!(config.validate().is_ok(), cfg!(debug_assertions));
 }
 
 #[test]
@@ -62,6 +95,32 @@ fn unsafe_colocated_placement_mode_is_explicit() {
     let colocated: ChunkdbConfig =
         toml::from_str("[placement]\nmode = \"unsafe_colocated\"\n").expect("mode parses");
     assert_eq!(colocated.placement.mode, PlacementMode::UnsafeColocated);
+    assert!(colocated.validate().is_err());
+
+    let single: ChunkdbConfig = toml::from_str(
+        "[deployment]\nmode = \"test_single_node\"\nmax_node_failures = 0\n[placement]\nmode = \"unsafe_colocated\"\n",
+    )
+    .expect("explicit test mode parses");
+    assert_eq!(single.deployment.mode, DeploymentMode::TestSingleNode);
+    single.validate().expect("explicit test mode validates");
+
+    let mut bad_budget = single;
+    bad_budget.deployment.max_node_failures = 1;
+    assert_eq!(
+        bad_budget.validate(),
+        Err("test_single_node requires max_node_failures = 0".to_string())
+    );
+
+    let mut bad_production_budget = ChunkdbConfig::default();
+    bad_production_budget.deployment.max_node_failures = 0;
+    assert_eq!(
+        bad_production_budget.validate(),
+        Err("production requires max_node_failures = 1".to_string())
+    );
+
+    let mut unsafe_production = protected;
+    unsafe_production.placement.allow_unsafe_ec = true;
+    assert!(unsafe_production.validate().is_err());
 }
 
 #[test]

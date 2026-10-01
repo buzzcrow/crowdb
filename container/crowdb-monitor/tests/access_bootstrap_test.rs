@@ -39,7 +39,7 @@ fn profile(root: &TestRoot) -> DeploymentProfile {
     .unwrap();
     let program = root.0.join("credential-command");
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\nprintf 'rpc initialization log\\nAWS_ACCESS_KEY_ID=CROW123\\nAWS_SECRET_ACCESS_KEY=secret_123\\n'\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\nprintf 'rpc initialization log\\nAWS_ACCESS_KEY_ID=CROW123\\nAWS_SECRET_ACCESS_KEY=secret_123\\n'\n",
         root.0.join("calls").display()
     );
     fs::write(&program, script).unwrap();
@@ -47,7 +47,7 @@ fn profile(root: &TestRoot) -> DeploymentProfile {
     profile
         .services
         .iter_mut()
-        .find(|service| service.id == "s3")
+        .find(|service| service.id == "access")
         .unwrap()
         .program = program;
     profile

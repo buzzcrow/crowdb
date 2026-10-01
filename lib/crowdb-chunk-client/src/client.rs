@@ -393,6 +393,24 @@ impl ChunkIoClient {
         self.small_pool.shutdown().await
     }
 
+    /// Wait until the small-write manager stops without a requested shutdown.
+    pub async fn wait_for_small_write_manager_failure(&self) {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            if self.small_pool.manager_failed() {
+                return;
+            }
+        }
+    }
+
+    /// Stop the manager without a shutdown request to exercise process supervision.
+    #[cfg(feature = "test-util")]
+    pub async fn stop_small_write_manager_for_test(&self) -> Result<()> {
+        self.small_pool.stop_manager_for_test().await
+    }
+
     /// Snapshot lock-free shared small-write counters and gauges.
     pub fn small_write_metrics(&self) -> SmallWriteMetricsSnapshot {
         let mut snapshot = self.small_pool.metrics.snapshot();
@@ -849,6 +867,14 @@ impl ChunkIoWriter for PreparedLargeWrite {
     fn require_data(&self) -> bool {
         self.writer.require_data()
     }
+
+    async fn wait_for_capacity(&mut self) {
+        self.writer.wait_for_capacity().await;
+    }
+
+    fn write_timing(&self) -> Option<crate::ChunkWriteTiming> {
+        Some(self.writer.write_timing())
+    }
 }
 
 fn build_large_write_result(
@@ -860,6 +886,25 @@ fn build_large_write_result(
     let logical_bytes: u64 = locations.iter().map(|location| location.logical_length).sum();
     let data_bytes: u64 = locations.iter().map(|location| location.length).sum();
     let block_bytes = policy.client.read_buffer_size as u64;
+    if let Some(copies) = policy.client.large_mirror_copies {
+        return LargeWriteResult {
+            chunks: locations.len(),
+            locations,
+            logical_bytes,
+            physical_bytes: data_bytes.saturating_mul(u64::from(copies)),
+            strips: data_bytes.div_ceil(block_bytes.max(1)),
+            elapsed,
+            preparation_stalls: writer.preparation_stalls(),
+            preparation_stall_time: writer.preparation_stall_time(),
+            source_reads: writer.source_reads,
+            source_read_time: writer.source_read_time,
+            assembly_copies: writer.assembly_copies,
+            assembly_copy_bytes: writer.assembly_copy_bytes,
+            assembly_copy_time: writer.assembly_copy_time,
+            ec_encode_time: writer.ec_encode_time,
+            completion_wait_time: writer.completion_wait_time,
+        };
+    }
     let strip_data_bytes = block_bytes * policy.ec_scheme.data_num as u64;
     let full_strips = data_bytes / strip_data_bytes;
     let tail_bytes = data_bytes % strip_data_bytes;

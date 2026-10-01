@@ -86,7 +86,7 @@ fn prepare_runtime(runtime: &mut crate::test_dirs::TestRuntime) -> ChunkdbRuntim
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkdbPlacementMode {
     #[default]
     Protected,
@@ -102,9 +102,25 @@ impl ChunkdbPlacementMode {
     }
 }
 
+fn deployment_mode(options: ChunkdbStartOptions) -> &'static str {
+    if options.test_single_node {
+        return "test_single_node";
+    }
+    if options.placement_mode == ChunkdbPlacementMode::UnsafeColocated
+        || options.allow_unsafe_ec
+        || options.allow_degraded_failure_domains
+        || options.repair_allow_unsafe_placement
+    {
+        "test_unsafe_placement"
+    } else {
+        "production"
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ChunkdbStartOptions {
+    pub test_single_node: bool,
     pub placement_mode: ChunkdbPlacementMode,
     pub allow_unsafe_ec: bool,
     pub allow_degraded_failure_domains: bool,
@@ -123,6 +139,7 @@ pub struct ChunkdbStartOptions {
 impl Default for ChunkdbStartOptions {
     fn default() -> Self {
         Self {
+            test_single_node: false,
             placement_mode: ChunkdbPlacementMode::Protected,
             allow_unsafe_ec: false,
             allow_degraded_failure_domains: false,
@@ -193,8 +210,14 @@ impl ChunkdbProcess {
         let rpc_port = paths.rpc_port;
         let http_port = paths.http_port;
 
+        let deployment_mode = deployment_mode(options);
+        let max_node_failures = u32::from(!options.test_single_node);
         let config_content = format!(
-            r#"[server]
+            r#"[deployment]
+mode = "{deployment_mode}"
+max_node_failures = {max_node_failures}
+
+[server]
 rpc_workers = 2
 listen_addr = "127.0.0.1:{listen_port}"
 rpc_listen_addr = "127.0.0.1:{rpc_port}"

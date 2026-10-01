@@ -110,10 +110,48 @@ authentication policy, admission budget, metrics, and lifecycle. Shared
 utilities may manage buffers, credentials, errors, and shutdown, but cannot
 reinterpret model semantics.
 
+The `crowdb-access-server` executable starts the S3 and Iceberg listeners
+together by default. The container supervises one access process for both
+ports. Explicit `s3` and `iceberg` commands are reserved for focused tests
+and management operations.
+The combined entry point signals the other listener when either service
+returns, then waits for both services to drain their owned small-write pools
+before exiting. An unexpected Iceberg recovery or GC worker exit fails the
+Iceberg listener, so the combined process also stops the S3 listener. A
+terminated small-write manager fails its owning listener; an empty pipeline
+route set remains recoverable while the manager continues restarting pipelines.
+
+The listeners own separate `ChunkIoClient` instances and small-write pools.
+New S3 chunks use type `S3`; new Iceberg file chunks use type `IcebergTable`.
+Each protocol may override the legacy common small-write policy and select
+its own large-write EC, memory, prefetch, and mirror settings. Each protocol
+library constructs its own storage clients and chooses foreground writers;
+the executable handles HTTP framing, listener startup, and process shutdown.
+Iceberg file-record construction also lives in the Iceberg library, including
+the format rule shared by ordinary uploads and multipart completion.
+Iceberg GC uses a separate chunk client with Iceberg's small-write policy.
+The Iceberg library owns its GC storage budget and file-block adapters.
+Each small-write policy also chooses its chunk capacity; each protocol's
+large-write policy chooses its own maximum chunk size. The deployment profile
+sets RPC workers and DiskIO connections independently of these data limits.
+
 ## 5. Data paths
 
 The ordinary path streams bounded data through the Access Server over HTTP. It
 is the universal path and remains available without specialized hardware.
+
+S3 and Iceberg PUT and multipart part uploads share an object-scoped transfer
+driver. One task polls the protocol's body decoder and a bounded write
+consumer; it can continue receiving while earlier strips are in flight.
+Completed receive owners are offered to the writer before their logical
+payload views enter a separate MD5 and optional SHA-256 worker. The writer
+uses separately bounded held-buffer and in-flight strip windows, and
+processes strip completion in submission order. Small objects use the same
+handoff and digest completion but retain their protocol-owned shared
+small-write pipeline after the handoff. Authentication, checksum declarations,
+metadata publication, multipart authority, and cleanup remain with each
+protocol. The [Iceberg upload-flow design](iceberge/design-crowdb-iceberg-upload-flow.md)
+describes scheduling and stage measurements in detail.
 
 The Dataset native path embeds routing, retry, bounded planning, streaming, and
 buffer ownership in the application. It resolves one immutable dataset
@@ -180,6 +218,13 @@ table, or dataset size.
   descriptors are not capabilities by themselves.
 - **AS-I9 — Completion lifetime:** every buffer and registration outlives all
   socket, RPC, storage, NIC, and GPU operations that reference it.
+- **AS-I10 — Protocol storage ownership:** S3 and Iceberg use distinct chunk
+  types and independently admitted foreground write pools; each library owns
+  its file or object authority and storage policy.
+- **AS-I11 — Shared upload progress:** one body reader and one write consumer
+  own each S3 or Iceberg PUT or multipart part. Socket readiness and write
+  completion can each resume an idle transfer without changing protocol
+  publication authority.
 
 ## 9. Direction and risks
 

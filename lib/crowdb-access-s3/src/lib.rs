@@ -17,6 +17,7 @@ pub mod publication;
 pub mod range;
 pub mod retrieval;
 pub mod route;
+pub mod storage;
 pub mod streaming;
 pub mod wire;
 

@@ -194,6 +194,7 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
         .writer_lease_ms     = 5000,
         .rpc_timeout_ms      = 1000,
         .completion_capacity = 16,
+        .mirror_copies       = 3,
     };
     RpcChunkTransport transport(options);
     ChunkId           allocated;
