@@ -14,6 +14,9 @@ fn iceberg_large_policy_owns_type_and_capacity() {
         max_chunk_size: Some(32 * 1024 * 1024),
         memory_budget_bytes: Some(16 * 1024 * 1024),
         prefetch_strips_per_chunk: Some(2),
+        prefetch_max_strips_per_batch: Some(20),
+        parallel_strip_writes: Some(4),
+        held_buffers: Some(4),
         chunk_preparation_depth: Some(2),
     }
     .policy()
@@ -24,6 +27,7 @@ fn iceberg_large_policy_owns_type_and_capacity() {
     assert_eq!(policy.client.large_mirror_copies, Some(1));
     assert_eq!(policy.client.max_chunk_size, 32 * 1024 * 1024);
     assert_eq!(policy.client.prefetch_strips_per_chunk, 2);
+    assert_eq!(policy.client.large_prefetch_max_strips_per_batch, 20);
 }
 
 #[test]
@@ -36,6 +40,9 @@ fn iceberg_large_policy_rejects_zero_prefetch() {
         max_chunk_size: None,
         memory_budget_bytes: None,
         prefetch_strips_per_chunk: Some(0),
+        prefetch_max_strips_per_batch: None,
+        parallel_strip_writes: None,
+        held_buffers: None,
         chunk_preparation_depth: None,
     }
     .policy();

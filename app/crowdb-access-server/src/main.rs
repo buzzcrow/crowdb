@@ -364,6 +364,9 @@ fn s3_write_policies(
             max_chunk_size: configured_u64(access.s3.max_chunk_size, "CROWDB_S3_MAX_CHUNK_SIZE")?,
             memory_budget_bytes: access.s3.large_memory_budget_bytes,
             prefetch_strips_per_chunk: access.s3.large_prefetch_strips_per_chunk,
+            prefetch_max_strips_per_batch: access.s3.large_prefetch_max_strips_per_batch,
+            parallel_strip_writes: access.s3.large_parallel_strip_writes,
+            held_buffers: access.s3.large_held_buffers,
             chunk_preparation_depth: access.s3.large_chunk_preparation_depth,
         },
     }

@@ -185,6 +185,9 @@ pub struct S3Config {
     pub max_chunk_size: Option<u64>,
     pub large_memory_budget_bytes: Option<usize>,
     pub large_prefetch_strips_per_chunk: Option<usize>,
+    pub large_prefetch_max_strips_per_batch: Option<usize>,
+    pub large_parallel_strip_writes: Option<usize>,
+    pub large_held_buffers: Option<usize>,
     pub large_chunk_preparation_depth: Option<usize>,
     pub large_mirror_copies: Option<u32>,
 }
@@ -201,6 +204,9 @@ pub struct IcebergConfig {
     pub max_chunk_size: Option<u64>,
     pub large_memory_budget_bytes: Option<usize>,
     pub large_prefetch_strips_per_chunk: Option<usize>,
+    pub large_prefetch_max_strips_per_batch: Option<usize>,
+    pub large_parallel_strip_writes: Option<usize>,
+    pub large_held_buffers: Option<usize>,
     pub large_chunk_preparation_depth: Option<usize>,
     pub large_mirror_copies: Option<u32>,
     pub gc: IcebergGcConfig,
@@ -273,9 +279,15 @@ impl BaseConfig for AccessConfig {
             || self.iceberg.max_chunk_size == Some(0)
             || self.s3.large_memory_budget_bytes == Some(0)
             || self.s3.large_prefetch_strips_per_chunk == Some(0)
+            || self.s3.large_prefetch_max_strips_per_batch == Some(0)
+            || self.s3.large_parallel_strip_writes == Some(0)
+            || self.s3.large_held_buffers == Some(0)
             || self.s3.large_chunk_preparation_depth == Some(0)
             || self.iceberg.large_memory_budget_bytes == Some(0)
             || self.iceberg.large_prefetch_strips_per_chunk == Some(0)
+            || self.iceberg.large_prefetch_max_strips_per_batch == Some(0)
+            || self.iceberg.large_parallel_strip_writes == Some(0)
+            || self.iceberg.large_held_buffers == Some(0)
             || self.iceberg.large_chunk_preparation_depth == Some(0)
             || self.s3.large_mirror_copies == Some(0)
             || self.iceberg.large_mirror_copies == Some(0)

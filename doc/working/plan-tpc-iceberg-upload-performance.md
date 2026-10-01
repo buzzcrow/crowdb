@@ -1,0 +1,40 @@
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
+
+# TPC Iceberg Object Upload Performance Plan
+
+Upstream: [R195](../backlog/R195-access-shared-large-upload-flow.md); benchmark contract: [R196](../backlog/R196-access-upload-benchmark-regression.md).
+Goal: implement the agreed object-scoped large-write flow, then measure and improve the real 100-MiB TPC FileIO upload while preserving integrity, bounded memory, and durable publication.
+
+## Measurement
+
+- [x] **Retain existing baseline evidence**: The direct small-cluster PUT passed in 677 ms on 2026-10-01; its 33-second test duration includes cluster startup. The 13-part profile (four concurrent uploads) completed in 613 ms: 48 ms session creation, 404 ms part phase, 162 ms completion. Across 13 parts, server metrics summed 905 ms writer feed, 198 ms part publication, 98 ms digest enqueue, and 83 ms body polls; these sums overlap. One earlier profile run returned HTTP 200 for completion but got a 404 on subsequent range read, while two later runs passed; determine whether the completion body carried an embedded error. Baseline does not gate the flow implementation.
+- [x] **Measure strip readiness and write completion**: The focused single-node, one-mirror, null-DiskIO 100-MiB PUT passed in 2.056 s after adding the counters. Writer feed occupied 1.920 s; waiting for the next strip occupied 0.795 s across 52 waits, while 101 successful `strip.push` calls occupied 0.309 s total (6.35 ms maximum). These stages overlap with receive and digest. Default `prefetch_strips_per_chunk` is 1; inspect prefetch runway before changing write concurrency.
+- [x] **Batch known-size large-write strip prefetch**: Keep the initial chunk allocation and ordinary prefetch depth at one strip. For a known-size large write, cap each append batch by the object's remaining framed bytes, the chunk's strip capacity, and configurable `large_prefetch_max_strips_per_batch` (default 32). Start the next append after half of the prior batch has been consumed. The same 100-MiB PUT passed in 0.836 s and 1.035 s in two local runs; strip preparation wait fell to 2 waits/17 ms and 1 wait/43 ms respectively, while `strip.push` success time stayed near 255–259 ms. Treat these as samples, not a stable throughput distribution.
+- [x] **Measure the four-write coroutine flow**: A focused 100-MiB PUT on the single-node null-DiskIO fixture passed in 335.9 ms after forwarding capacity waits through `PreparedLargeWrite`. The upload observation was 315.4 ms, including 224.0 ms in body-frame polls, 47.4 ms across 30 writer-capacity waits, 23.1 ms across 2 strip-preparation waits, 23.0 ms writer finish, 0.95 ms digest finish, and 47.9 ms publication. The 558.0 ms sum of 101 strip-write durations and 234.3 ms digest CPU time overlap other stages and are not additive wall time. A missing `wait_for_capacity` delegation first caused a capacity-loop livelock; the same test passed after the fix.
+- [ ] **Expose fixed-stage counters**: Add per-upload local measurements, aggregate them at completion, and export the same definitions on success and failure. Measure only actual waits. Files: `app/crowdb-access-server/src/iceberg/metrics.rs`, `app/crowdb-access-server/src/iceberg/file_http.rs`, `app/crowdb-access-server/src/iceberg/file_http/stream.rs`.
+
+## Write flow
+
+- [~] **Own the large Iceberg write**: A single-use `WriteObject` now owns body, writer, digest, object identity, bounds, and terminal result. Keep direct-file and multipart-part publication separate, and preserve small-write behavior. Files: `app/crowdb-access-server/src/iceberg/file_http.rs`, `app/crowdb-access-server/src/iceberg/file_http/stream.rs`, `app/crowdb-access-server/src/iceberg/file_http/multipart.rs`.
+- [x] **Implement bounded coroutine receive and mirror writes**: One upload task polls the socket receiver and write consumer with the same waker. Four held owners and four independently configured mirror-strip writes permit receive-ahead. The oldest completion is awaited only when the write window is full; later results are processed in submission order. The digest runs on its own bounded worker queue. A two-block delayed-socket test confirms that a new readable event restarts the idle upload after earlier disk writes have drained. Files: `app/crowdb-access-server/src/iceberg/file_http/stream.rs`, `app/crowdb-access-server/src/iceberg/file_http/digest_pipe.rs`, `lib/crowdb-chunk-client/src/chunk/chunk_writer.rs`, `lib/crowdb-chunk-client/src/client.rs`.
+- [~] **Handle failed concurrent strip writes**: Test first, middle, and last completion failures after later writes have completed. Fence seal on an earlier failure, attempt mirror-block replacement and replay, and rotate the chunk only if replacement fails. Verify abort drains submitted writes before deleting the chunk. The current mirror path reports a failed write and aborts; unlike the EC segment path, it does not yet replace a broken mirror block. Files: `lib/crowdb-chunk-client/src/chunk/chunk_writer.rs`, `lib/crowdb-chunk-client/src/chunk/mirror_strip_writer.rs`, affected chunk-client tests.
+
+## Verification and closeout
+
+- [ ] **Verify large-path boundaries and errors**: Run 100-MiB direct, multipart, digest failure, cancellation, and chunk rotation cases. Confirm owner credits return and no unpublished record becomes visible. Files: `app/crowdb-access-server/tests/iceberg_file_http_test.rs`, affected chunk-client tests.
+- [ ] **Compare real FileIO**: Use the R196 benchmark when available, or the focused FileIO path until then; retain raw samples and stage counters for before/after comparison on the same profile. Update the permanent upload-flow analysis with measured outcome. Files: `doc/design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md`.
+- [ ] **Run gates and clean up**: Run affected tests, `pixi run rs-fmt-check`, and `pixi run rs-lint` separately; remove the completed requirement, index entry, and this plan after acceptance.
+- [ ] **Check packaged OpenSSL**: Confirm the staged container resolves bundled `libcrypto.so.3` from the same pixi lockfile used for the binary and that the MD5/SHA-256 upload path works in the image. Files: `container/single-node-container/collect-libs.sh`, relevant container smoke test.
+
+## Files
+
+- Iceberg HTTP upload and metrics: `app/crowdb-access-server/src/iceberg/file_http.rs`, `file_http/stream.rs`, `file_http/multipart.rs`, `file_http/digest_pipe.rs`, `iceberg/metrics.rs`.
+- Native receive and chunk writer, only where measured: `lib/crowdb-access-s3/src/native_buffer.rs`, `lib/crowdb-chunk-client/src/chunk/mirror_strip_writer.rs`, `lib/crowdb-chunk-client/src/writer/large_async_object.rs`.
+- Tests and evidence: `app/crowdb-access-server/tests/iceberg_file_http_test.rs`, `doc/design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md`.
+
+## Tests
+
+- Unit: offer/pause/resume, digest order and lifetime, metric wait count and duration, frame finalization where changed.
+- Integration: delayed large writer/digest, failed body/digest/write/publication.
+- E2E: focused 100-MiB direct and multipart FileIO, range verification after timing, S3 smoke if shared chunk or native receive code changes.

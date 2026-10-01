@@ -58,6 +58,54 @@ struct RejectingDiskWriter {
     attempts: AtomicUsize,
 }
 
+#[derive(Debug)]
+struct OrderedMirrorDiskWriter {
+    first_release: tokio::sync::Semaphore,
+    first_four_started: tokio::sync::Barrier,
+    inflight: AtomicUsize,
+    max_inflight: AtomicUsize,
+    completed: Mutex<Vec<u64>>,
+}
+
+impl Default for OrderedMirrorDiskWriter {
+    fn default() -> Self {
+        Self {
+            first_release: tokio::sync::Semaphore::new(0),
+            first_four_started: tokio::sync::Barrier::new(4),
+            inflight: AtomicUsize::new(0),
+            max_inflight: AtomicUsize::new(0),
+            completed: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl DiskWriter for OrderedMirrorDiskWriter {
+    async fn write(&self, segment: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
+        self.write_at_byte_offset(segment, unit_bytes, 0, data).await
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        segment: &Segment,
+        _unit_bytes: u64,
+        _byte_offset: u64,
+        _data: Bytes,
+    ) -> Result<()> {
+        let inflight = self.inflight.fetch_add(1, Ordering::Relaxed) + 1;
+        self.max_inflight.fetch_max(inflight, Ordering::Relaxed);
+        if segment.unit_offset < 4 {
+            self.first_four_started.wait().await;
+        }
+        if segment.unit_offset == 0 {
+            self.first_release.acquire().await.unwrap().forget();
+        }
+        self.completed.lock().unwrap().push(segment.unit_offset);
+        self.inflight.fetch_sub(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl DiskWriter for RejectingDiskWriter {
     async fn write(&self, _seg: &Segment, _unit_bytes: u64, _data: Bytes) -> Result<()> {
@@ -360,6 +408,9 @@ fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
         large_mirror_copies: None,
         max_chunk_size,
         prefetch_strips_per_chunk: 2,
+        large_prefetch_max_strips_per_batch: 32,
+        large_parallel_strip_writes: 4,
+        large_held_buffers: 4,
         parity_depth: 2,
         chunk_preparation_depth: 1,
         large_write_repair_attempts: 3,
@@ -516,6 +567,117 @@ async fn single_copy_mirror_write_returns_its_disk_error() {
         writer.push(Bytes::from(vec![7; 1024])).await,
         Err(IoError::WriteFailed(_))
     ));
+    assert_eq!(disk.attempts.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn mirror_strip_writes_keep_four_in_flight_and_commit_in_order() {
+    let chunk_id = ChunkId { high: 1, low: 11 };
+    let mut offset = 0;
+    let strips = (0..5)
+        .map(|index| ChunkStrip {
+            chunk_offset: index * 4,
+            strip_sequence: index,
+            unit_kb: 4,
+            capacity: 4,
+            strip_type: StripType::Mirror as i32,
+            strip: Some(StripOneof::MirrorStrip(MirrorStrip {
+                segments: make_segments(chunk_id, 1, &mut offset),
+            })),
+            ..ChunkStrip::default()
+        })
+        .collect::<Vec<_>>();
+    let allocator = MockChunkAllocator::new();
+    allocator
+        .state
+        .lock()
+        .unwrap()
+        .chunks
+        .insert((chunk_id.high, chunk_id.low), (strips.clone(), 0, false));
+    let disk = Arc::new(OrderedMirrorDiskWriter::default());
+    let mut writer = ChunkWriter::new(
+        Arc::new(allocator.clone()),
+        disk.clone(),
+        EcScheme::new(2, 1),
+        test_config(5 * UNIT_BYTES),
+    );
+    writer
+        .open(
+            Chunk {
+                id: Some(chunk_id),
+                strips,
+                capacity: 20,
+                ..Chunk::default()
+            },
+            Some(5 * UNIT_BYTES),
+        )
+        .unwrap();
+    for index in 0..4 {
+        writer.push(block(index, UNIT_BYTES as usize)).await.unwrap();
+    }
+    {
+        let fifth = writer.push(block(4, UNIT_BYTES as usize));
+        tokio::pin!(fifth);
+        tokio::select! {
+            result = &mut fifth => panic!("fifth write passed the four-write window: {result:?}"),
+            () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+        }
+        assert_eq!(disk.max_inflight.load(Ordering::Relaxed), 4);
+        let mut completed = disk.completed.lock().unwrap().clone();
+        completed.sort_unstable();
+        assert_eq!(completed, vec![1, 2, 3]);
+        assert_eq!(allocator.snapshot().seal_calls, 0);
+        disk.first_release.add_permits(1);
+        fifth.await.unwrap();
+    }
+    assert_eq!(writer.seal().await.unwrap().length, 5 * UNIT_BYTES);
+    assert_eq!(disk.max_inflight.load(Ordering::Relaxed), 4);
+    assert_eq!(allocator.snapshot().seal_calls, 1);
+}
+
+#[tokio::test]
+async fn failed_full_mirror_strip_cannot_seal_after_async_dispatch() {
+    let chunk_id = ChunkId { high: 1, low: 12 };
+    let mut offset = 0;
+    let strip = ChunkStrip {
+        unit_kb: 4,
+        capacity: 4,
+        strip_type: StripType::Mirror as i32,
+        strip: Some(StripOneof::MirrorStrip(MirrorStrip {
+            segments: make_segments(chunk_id, 1, &mut offset),
+        })),
+        ..ChunkStrip::default()
+    };
+    let allocator = MockChunkAllocator::new();
+    allocator
+        .state
+        .lock()
+        .unwrap()
+        .chunks
+        .insert((chunk_id.high, chunk_id.low), (vec![strip.clone()], 0, false));
+    let disk = Arc::new(RejectingDiskWriter::default());
+    let mut writer = ChunkWriter::new(
+        Arc::new(allocator.clone()),
+        disk.clone(),
+        EcScheme::new(2, 1),
+        test_config(UNIT_BYTES),
+    );
+    writer
+        .open(
+            Chunk {
+                id: Some(chunk_id),
+                strips: vec![strip],
+                capacity: 4,
+                ..Chunk::default()
+            },
+            Some(UNIT_BYTES),
+        )
+        .unwrap();
+    writer.push(block(7, UNIT_BYTES as usize)).await.unwrap();
+    assert!(matches!(writer.seal().await, Err(IoError::WriteFailed(_))));
+    assert_eq!(allocator.snapshot().seal_calls, 0);
+    writer.abort().await.unwrap();
+    assert_eq!(allocator.snapshot().delete_calls, 1);
     assert_eq!(disk.attempts.load(Ordering::Relaxed), 1);
 }
 

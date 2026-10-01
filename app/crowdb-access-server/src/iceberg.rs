@@ -34,6 +34,7 @@ pub use file_auth::authenticate_file_request;
 pub use file_body::{FileBodyError, FileReadBody, FileResponseBudget};
 pub use file_complete::FileCompleteBody;
 pub use file_encoding::{FileEncodingError, FileUploadBody};
+pub use file_http::UploadFlowSnapshot;
 pub use file_request::{FileRequest, FileRequestError, MultipartRequest};
 pub use file_response::{FileResponseError, FileS3ErrorCode, MultipartResponses};
 pub use file_selection::{CompletePart, CompleteRequestError, CompleteResolveError, CompleteSelection};

@@ -53,6 +53,7 @@ pub struct IcebergMetricsSnapshot {
     pub selected_versions: [u64; 3],
     pub chunk_read: Option<crowdb_chunk_client::ReadFlowMetricsSnapshot>,
     pub chunk_small_write: Option<crowdb_chunk_client::SmallWriteMetricsSnapshot>,
+    pub upload_flow: Option<super::file_http::UploadFlowSnapshot>,
     pub catalog: Option<crowdb_access_iceberg::catalog::CatalogStoreOperationCounts>,
 }
 
@@ -126,6 +127,7 @@ impl IcebergMetrics {
             selected_versions: array::from_fn(|index| self.selected_versions[index].load(Ordering::Relaxed)),
             chunk_read: None,
             chunk_small_write: None,
+            upload_flow: None,
             catalog: None,
         }
     }

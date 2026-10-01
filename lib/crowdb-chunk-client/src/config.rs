@@ -174,6 +174,12 @@ pub struct ChunkClientConfig {
     pub max_chunk_size: u64,
     /// Strip-prefetch results buffered ahead of the write cursor. Default 1.
     pub prefetch_strips_per_chunk: usize,
+    /// Maximum strips in one known-size large-write prefetch batch. Default 32.
+    pub large_prefetch_max_strips_per_batch: usize,
+    /// Maximum mirror-strip writes in flight for one large object.
+    pub large_parallel_strip_writes: usize,
+    /// Completed body owners retained before a large-object writer consumes them.
+    pub large_held_buffers: usize,
     /// Maximum completed-strip parity/finalization tasks in flight. Default 2.
     pub parity_depth: usize,
     /// Chunks allocated ahead. Default 1.
@@ -198,6 +204,9 @@ impl Default for ChunkClientConfig {
             max_cached_buffer: 4 * MB,
             max_chunk_size: GB as u64,
             prefetch_strips_per_chunk: 1,
+            large_prefetch_max_strips_per_batch: 32,
+            large_parallel_strip_writes: 4,
+            large_held_buffers: 4,
             parity_depth: 2,
             chunk_preparation_depth: 1,
             large_write_repair_attempts: 3,
@@ -222,6 +231,16 @@ impl ChunkClientConfig {
         }
         if self.prefetch_strips_per_chunk == 0 {
             return Err(IoError::Internal("prefetch_strips_per_chunk must be > 0".into()));
+        }
+        if self.large_prefetch_max_strips_per_batch == 0 {
+            return Err(IoError::Internal(
+                "large_prefetch_max_strips_per_batch must be > 0".into(),
+            ));
+        }
+        if self.large_parallel_strip_writes == 0 || self.large_held_buffers == 0 {
+            return Err(IoError::Internal(
+                "large write parallel and held buffer counts must be > 0".into(),
+            ));
         }
         if self.parity_depth == 0 {
             return Err(IoError::Internal("parity_depth must be > 0".into()));

@@ -38,6 +38,7 @@ percent-encoding = "2"
 quick-xml = "0.38"
 base64 = "0.22"
 md-5 = "0.10"
+openssl = "0.10"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
@@ -50,6 +51,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 crowdb-access-server = { path = ".", default-features = false, features = ["test-util"] }
+futures = "0.3"
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 hmac = "0.12"
 arc-swap = "1.9"
@@ -59,7 +61,7 @@ crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
 crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["chunk-kv", "chunkdb", "diskdb", "diskio"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 
 [[test]]

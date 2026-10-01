@@ -68,27 +68,33 @@ impl MirrorStripWriter {
         if length > capacity.saturating_sub(self.accepted) {
             return Err(IoError::WriteFailed("mirror strip capacity exceeded".into()));
         }
-        let mut writes = JoinSet::new();
-        for segment in segments {
-            let disk_io = Arc::clone(&self.disk_writer);
-            let bytes = buffer.clone();
-            let offset = self.accepted;
-            writes.spawn(async move {
-                disk_io
-                    .write_at_byte_offset(&segment, unit_bytes, offset, bytes)
-                    .await
-            });
-        }
-        let mut failure = None;
-        while let Some(result) = writes.join_next().await {
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => failure = Some(error),
-                Err(error) => failure = Some(IoError::WriteFailed(error.to_string())),
+        if segments.len() == 1 {
+            self.disk_writer
+                .write_at_byte_offset(&segments[0], unit_bytes, self.accepted, buffer)
+                .await?;
+        } else {
+            let mut writes = JoinSet::new();
+            for segment in segments {
+                let disk_io = Arc::clone(&self.disk_writer);
+                let bytes = buffer.clone();
+                let offset = self.accepted;
+                writes.spawn(async move {
+                    disk_io
+                        .write_at_byte_offset(&segment, unit_bytes, offset, bytes)
+                        .await
+                });
             }
-        }
-        if let Some(error) = failure {
-            return Err(error);
+            let mut failure = None;
+            while let Some(result) = writes.join_next().await {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => failure = Some(error),
+                    Err(error) => failure = Some(IoError::WriteFailed(error.to_string())),
+                }
+            }
+            if let Some(error) = failure {
+                return Err(error);
+            }
         }
         self.accepted += length;
         Ok(if self.accepted == capacity {

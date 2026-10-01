@@ -257,6 +257,9 @@ fn iceberg_large_write(
         max_chunk_size: access_config.iceberg.max_chunk_size,
         memory_budget_bytes: access_config.iceberg.large_memory_budget_bytes,
         prefetch_strips_per_chunk: access_config.iceberg.large_prefetch_strips_per_chunk,
+        prefetch_max_strips_per_batch: access_config.iceberg.large_prefetch_max_strips_per_batch,
+        parallel_strip_writes: access_config.iceberg.large_parallel_strip_writes,
+        held_buffers: access_config.iceberg.large_held_buffers,
         chunk_preparation_depth: access_config.iceberg.large_chunk_preparation_depth,
     }
     .policy()?)

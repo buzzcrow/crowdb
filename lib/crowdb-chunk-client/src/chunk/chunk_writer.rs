@@ -53,14 +53,27 @@ pub struct ChunkWriter {
     pub(crate) strips_remaining: Option<usize>,
     pub(crate) current_strip: Option<StripWriter>,
     pub(crate) completion_handles: VecDeque<JoinHandle<Result<Vec<FailedSegmentWrite>>>>,
+    mirror_completions: VecDeque<JoinHandle<Result<(StripResult, Duration)>>>,
     pub(crate) prefetch_handle: Option<JoinHandle<()>>,
     pub(crate) prefetch_rx: Option<mpsc::Receiver<Result<Chunk>>>,
+    prefetch_plan: Option<StripPrefetchPlan>,
+    prefetch_trigger: Option<mpsc::Sender<()>>,
+    prefetch_trigger_index: Option<u32>,
     pub(crate) preparation_stalls: u64,
     pub(crate) preparation_stall_time: Duration,
+    pub(crate) strip_write_successes: u64,
+    pub(crate) strip_write_success_time: Duration,
+    pub(crate) strip_write_success_max: Duration,
     pub(crate) ec_encode_time: Duration,
     pub(crate) completion_wait_time: Duration,
     pub(crate) failed_disks: Arc<FailedDiskList>,
     pub(crate) repair_metrics: Arc<LargeWriteRepairMetrics>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StripPrefetchPlan {
+    pub total_strips: u32,
+    pub batch_max: u32,
 }
 
 impl ChunkWriter {
@@ -101,10 +114,17 @@ impl ChunkWriter {
             strips_remaining: None,
             current_strip: None,
             completion_handles: VecDeque::new(),
+            mirror_completions: VecDeque::new(),
             prefetch_handle: None,
             prefetch_rx: None,
+            prefetch_plan: None,
+            prefetch_trigger: None,
+            prefetch_trigger_index: None,
             preparation_stalls: 0,
             preparation_stall_time: Duration::ZERO,
+            strip_write_successes: 0,
+            strip_write_success_time: Duration::ZERO,
+            strip_write_success_max: Duration::ZERO,
             ec_encode_time: Duration::ZERO,
             completion_wait_time: Duration::ZERO,
             failed_disks,
@@ -121,6 +141,15 @@ impl ChunkWriter {
     /// allocated; unknown-size objects pre-append up to
     /// `strips_per_chunk`.
     pub fn open(&mut self, chunk: Chunk, object_size: Option<u64>) -> Result<()> {
+        self.open_with_prefetch_plan(chunk, object_size, None)
+    }
+
+    pub(crate) fn open_with_prefetch_plan(
+        &mut self,
+        chunk: Chunk,
+        object_size: Option<u64>,
+        plan: Option<StripPrefetchPlan>,
+    ) -> Result<()> {
         if chunk.id.is_none() {
             return Err(IoError::AllocationFailed("open: chunk missing id".into()));
         }
@@ -128,7 +157,12 @@ impl ChunkWriter {
             return Err(IoError::AllocationFailed("open: chunk has no strips".into()));
         }
         self.object_size = object_size;
-        self.strips_remaining = compute_strips_remaining(object_size, &chunk);
+        self.strips_remaining = plan.map_or_else(
+            || compute_strips_remaining(object_size, &chunk),
+            |plan| Some((plan.total_strips as usize).saturating_sub(chunk.strips.len())),
+        );
+        self.prefetch_plan = plan;
+        self.prefetch_trigger_index = None;
         let chunk = Arc::new(chunk);
         let strip = self.make_strip_writer(Arc::clone(&chunk), 0)?;
         self.chunk = Some(chunk);
@@ -169,7 +203,7 @@ impl ChunkWriter {
     /// after finishing the current strip — the block is NOT pushed
     /// (caller rotates chunks, then re-pushes).
     pub async fn push(&mut self, buffer: Bytes) -> Result<FeedStatus> {
-        if self.current_strip.is_none() {
+        if self.current_strip.is_none() && self.chunk.is_none() {
             return Err(IoError::Internal("push with no open strip".into()));
         }
         // A public frame can span several EC data blocks. Feed each strip only
@@ -178,7 +212,9 @@ impl ChunkWriter {
         let mut offset = 0usize;
         while offset < buffer.len() {
             if self.is_strip_full() {
-                self.finish_strip().await?;
+                if self.current_strip.is_some() {
+                    self.finish_strip().await?;
+                }
                 if self.is_full() {
                     return Ok(FeedStatus::Pause);
                 }
@@ -194,10 +230,80 @@ impl ChunkWriter {
                 continue;
             }
             let end = offset.saturating_add(remaining).min(buffer.len());
+            if matches!(strip, StripWriter::Mirror(_))
+                && strip.accepted_bytes() == 0
+                && end - offset == remaining
+            {
+                self.ensure_mirror_capacity().await?;
+                let mut strip = self
+                    .current_strip
+                    .take()
+                    .ok_or_else(|| IoError::Internal("mirror strip vanished before dispatch".into()))?;
+                let bytes = buffer.slice(offset..end);
+                self.mirror_completions.push_back(tokio::spawn(async move {
+                    let started = Instant::now();
+                    strip.push(bytes).await?;
+                    Ok((strip.finish().await?, started.elapsed()))
+                }));
+                self.bytes_in_chunk += remaining as u64;
+                offset = end;
+                continue;
+            }
+            let started = Instant::now();
             strip.push(buffer.slice(offset..end)).await?;
+            let elapsed = started.elapsed();
+            self.strip_write_successes += 1;
+            self.strip_write_success_time += elapsed;
+            self.strip_write_success_max = self.strip_write_success_max.max(elapsed);
             offset = end;
         }
         Ok(FeedStatus::Continue)
+    }
+
+    pub(crate) fn mirror_write_capacity(&self) -> bool {
+        self.mirror_completions.len() < self.config.large_parallel_strip_writes
+    }
+
+    pub(crate) async fn ensure_mirror_capacity(&mut self) -> Result<()> {
+        self.commit_ready_mirrors().await?;
+        if !self.mirror_write_capacity() {
+            self.commit_oldest_mirror().await?;
+            self.commit_ready_mirrors().await?;
+        }
+        Ok(())
+    }
+
+    async fn commit_oldest_mirror(&mut self) -> Result<()> {
+        // Keep the handle in the queue across cancellation of this await.
+        let handle = self
+            .mirror_completions
+            .front_mut()
+            .ok_or_else(|| IoError::Internal("missing mirror completion".into()))?;
+        let completion = handle
+            .await
+            .map_err(|error| IoError::Internal(format!("mirror write task panicked: {error}")))?;
+        self.mirror_completions.pop_front();
+        let (result, elapsed) = completion?;
+        if !result.completion_handles.is_empty() {
+            return Err(IoError::Internal(
+                "mirror strip returned unexpected completion handles".into(),
+            ));
+        }
+        self.strip_write_successes += 1;
+        self.strip_write_success_time += elapsed;
+        self.strip_write_success_max = self.strip_write_success_max.max(elapsed);
+        Ok(())
+    }
+
+    async fn commit_ready_mirrors(&mut self) -> Result<()> {
+        while self
+            .mirror_completions
+            .front()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            self.commit_oldest_mirror().await?;
+        }
+        Ok(())
     }
 
     /// Open the next strip on the current chunk. First drains the
@@ -229,6 +335,7 @@ impl ChunkWriter {
                 let strip = self.make_strip_writer(Arc::clone(chunk), next_index)?;
                 self.write_cursor = next_index;
                 self.current_strip = Some(strip);
+                self.maybe_trigger_prefetch();
                 return Ok(());
             }
             // Next strip not ready — wait for the prefetch task to
@@ -250,7 +357,7 @@ impl ChunkWriter {
             self.preparation_stall_time += started.elapsed();
             match result {
                 Some(Ok(new_chunk)) => {
-                    self.chunk = Some(Arc::new(new_chunk));
+                    self.accept_prefetched_chunk(new_chunk);
                     // Loop back: check if the next strip is now available.
                 }
                 Some(Err(e)) => return Err(e),
@@ -268,18 +375,39 @@ impl ChunkWriter {
     /// Drain the prefetch channel (non-blocking) and Arc-swap to the
     /// latest cumulative `Chunk` from the prefetch task.
     fn drain_prefetch(&mut self) {
-        if let Some(rx) = self.prefetch_rx.as_mut() {
-            while let Ok(result) = rx.try_recv() {
-                match result {
-                    Ok(new_chunk) => {
-                        self.chunk = Some(Arc::new(new_chunk));
-                    }
-                    Err(e) => {
-                        warn!("strip prefetch error: {e}");
-                        break;
-                    }
+        loop {
+            let result = self.prefetch_rx.as_mut().and_then(|rx| rx.try_recv().ok());
+            match result {
+                Some(Ok(new_chunk)) => self.accept_prefetched_chunk(new_chunk),
+                Some(Err(error)) => {
+                    warn!("strip prefetch error: {error}");
+                    break;
                 }
+                None => break,
             }
+        }
+    }
+
+    fn accept_prefetched_chunk(&mut self, chunk: Chunk) {
+        if self.prefetch_plan.is_some() {
+            let previous = self.chunk.as_ref().map_or(0, |current| current.strips.len());
+            let batch = chunk.strips.len().saturating_sub(previous);
+            let half = batch.div_ceil(2);
+            self.prefetch_trigger_index =
+                Some(u32::try_from(chunk.strips.len().saturating_sub(half)).unwrap_or(u32::MAX));
+        }
+        self.chunk = Some(Arc::new(chunk));
+    }
+
+    fn maybe_trigger_prefetch(&mut self) {
+        if self
+            .prefetch_trigger_index
+            .is_some_and(|index| self.write_cursor >= index)
+        {
+            if let Some(trigger) = &self.prefetch_trigger {
+                let _ = trigger.try_send(());
+            }
+            self.prefetch_trigger_index = None;
         }
     }
 
@@ -287,6 +415,8 @@ impl ChunkWriter {
     /// `tx.send` fails → task exits) + abort the handle.
     fn stop_prefetch(&mut self) {
         self.prefetch_rx.take();
+        self.prefetch_trigger.take();
+        self.prefetch_trigger_index = None;
         if let Some(handle) = self.prefetch_handle.take() {
             handle.abort();
         }
@@ -302,8 +432,16 @@ impl ChunkWriter {
         let Some(mut chunk) = self.chunk.as_deref().cloned() else {
             return;
         };
-        let (tx, rx) = mpsc::channel::<Result<Chunk>>(self.config.prefetch_strips_per_chunk);
+        let plan = self.prefetch_plan;
+        let capacity = if plan.is_some() {
+            1
+        } else {
+            self.config.prefetch_strips_per_chunk
+        };
+        let (tx, rx) = mpsc::channel::<Result<Chunk>>(capacity);
         self.prefetch_rx = Some(rx);
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(1);
+        self.prefetch_trigger = plan.map(|_| trigger_tx);
         let allocator = Arc::clone(&self.allocator);
         let ec_scheme = self.ec_scheme;
         let config = Arc::clone(&self.config);
@@ -341,10 +479,13 @@ impl ChunkWriter {
                 // For larger objects (more strips to allocate), batch 2
                 // strips per append to reduce RPC count. For smaller objects,
                 // allocate 1 at a time so the first strip is ready sooner.
-                let batch = match strips_remaining.as_ref() {
-                    Some(total) if *total > 4 => 2u32,
-                    _ => 1u32,
-                };
+                let batch = plan.map_or_else(
+                    || match strips_remaining.as_ref() {
+                        Some(total) if *total > 4 => 2u32,
+                        _ => 1u32,
+                    },
+                    |plan| plan.batch_max,
+                );
                 let strip_count = batch.min(runway).min(remaining);
                 if strip_count == 0 {
                     break;
@@ -357,6 +498,9 @@ impl ChunkWriter {
                         next_strip_index = next_strip_index.saturating_add(strip_count);
                         if let Some(remaining) = strips_remaining.as_mut() {
                             *remaining = remaining.saturating_sub(strip_count as usize);
+                        }
+                        if plan.is_some() && trigger_rx.recv().await.is_none() {
+                            break;
                         }
                     }
                     Err(e) => {
@@ -462,6 +606,10 @@ impl ChunkWriter {
                 self.finish_strip().await?;
             }
         }
+        while !self.mirror_completions.is_empty() {
+            self.commit_oldest_mirror().await?;
+            self.commit_ready_mirrors().await?;
+        }
         let chunk_id = self.current_chunk_id();
         let bytes_in_chunk = self.bytes_in_chunk;
 
@@ -544,6 +692,9 @@ impl ChunkWriter {
         // Submitted DiskIO RPCs are not cancellable. Drain finalization before
         // freeing segments so a late parity write cannot hit reused storage.
         for handle in self.completion_handles.drain(..) {
+            let _ = handle.await;
+        }
+        for handle in self.mirror_completions.drain(..) {
             let _ = handle.await;
         }
         // Delete the chunk if it was opened and has any data — either

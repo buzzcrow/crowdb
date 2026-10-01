@@ -867,6 +867,14 @@ impl ChunkIoWriter for PreparedLargeWrite {
     fn require_data(&self) -> bool {
         self.writer.require_data()
     }
+
+    async fn wait_for_capacity(&mut self) {
+        self.writer.wait_for_capacity().await;
+    }
+
+    fn write_timing(&self) -> Option<crate::ChunkWriteTiming> {
+        Some(self.writer.write_timing())
+    }
 }
 
 fn build_large_write_result(

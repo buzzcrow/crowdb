@@ -7,6 +7,7 @@ use super::FileEncodingError;
 pub(super) struct ContentMd5 {
     expected: Option<[u8; 16]>,
     digest: Md5,
+    deferred: bool,
 }
 
 impl ContentMd5 {
@@ -23,6 +24,7 @@ impl ContentMd5 {
         Ok(Self {
             expected,
             digest: Md5::new(),
+            deferred: false,
         })
     }
 
@@ -35,10 +37,26 @@ impl ContentMd5 {
     }
 
     pub(super) fn update(&mut self, bytes: &[u8]) {
-        self.digest.update(bytes);
+        if !self.deferred {
+            self.digest.update(bytes);
+        }
+    }
+
+    pub(super) fn defer(&mut self) {
+        self.deferred = true;
+    }
+
+    pub(super) fn verify_deferred(&self, actual: [u8; 16]) -> Result<(), FileEncodingError> {
+        if !self.deferred || self.expected.is_some_and(|expected| expected != actual) {
+            return Err(FileEncodingError::Checksum);
+        }
+        Ok(())
     }
 
     pub(super) fn verify(&self) -> Result<(), FileEncodingError> {
+        if self.deferred {
+            return Ok(());
+        }
         if self.expected.is_some_and(|expected| self.digest() != expected) {
             return Err(FileEncodingError::Checksum);
         }

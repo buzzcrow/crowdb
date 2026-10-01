@@ -26,6 +26,7 @@ use crowdb_access_server::config::AccessConfig;
 use crowdb_common::config::load_from_file;
 use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, Strip};
 use crowdb_test_harness::chunkdb::make_client as make_chunkdb_client;
+use futures::StreamExt;
 use md5::{Digest, Md5};
 use reqwest::{Client, Method};
 use std::fmt::Write as _;
@@ -577,6 +578,234 @@ async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
         }
         println!("iceberg ordinary size={size} PUT={put_elapsed:?} GET={get_elapsed:?}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_socket_resumes_upload_after_writer_drains() {
+    const BLOCK_BYTES: usize = 1024 * 1024;
+    let (_stack, _process, client, table) = setup_with_bounds_and_file_limit(
+        ClearBounds {
+            request_ms: 120_000,
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+        16 * 1024 * 1024,
+        16 * 1024 * 1024,
+    )
+    .await;
+    let block = hyper::body::Bytes::from(vec![41; BLOCK_BYTES]);
+    let mut md5 = Md5::new();
+    md5.update(&block);
+    md5.update(&block);
+    let digest: [u8; 16] = md5.finalize().into();
+    let object = path(table, "data/slow-socket.parquet");
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    let request = client.request_stream(Method::PUT, &object, 2 * BLOCK_BYTES, digest, receiver);
+    let upload = tokio::spawn(async move { request.send().await.unwrap() });
+    sender.send(Ok(block.clone())).await.unwrap();
+    // Let the first strip finish so no disk task remains to wake the upload.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    sender.send(Ok(block)).await.unwrap();
+    drop(sender);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(30), upload)
+        .await
+        .expect("socket readiness must resume the idle upload")
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let get = client.send(Method::GET, &object, "", b"", false).await;
+    assert_eq!(get.status(), 200);
+    assert_eq!(get.bytes().await.unwrap().len(), 2 * BLOCK_BYTES);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "manual 100 MiB upload profile"]
+async fn repeated_100_mib_put_streams_without_client_payload_copy() {
+    const BLOCK_BYTES: usize = 1024 * 1024;
+    const BLOCK_COUNT: usize = 100;
+    let (_stack, _process, client, table) = setup_with_bounds_and_file_limit(
+        ClearBounds {
+            request_ms: 120_000,
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+        128 * 1024 * 1024,
+        128 * 1024 * 1024,
+    )
+    .await;
+    let block = hyper::body::Bytes::from(vec![37; BLOCK_BYTES]);
+    let mut md5 = Md5::new();
+    for _ in 0..BLOCK_COUNT {
+        md5.update(&block);
+    }
+    let digest: [u8; 16] = md5.finalize().into();
+    let object = path(table, "data/repeated-100-mib.parquet");
+    let started = Instant::now();
+    let response = client
+        .send_repeated(Method::PUT, &object, block.clone(), BLOCK_COUNT, digest)
+        .await;
+    let put_elapsed = started.elapsed();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let metrics: serde_json::Value = Client::new()
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let upload_flow = &metrics["upload_flow"];
+    assert_eq!(upload_flow["attempts"], 1);
+    assert_eq!(upload_flow["completed"], 1);
+    assert_eq!(upload_flow["logical_bytes"], BLOCK_BYTES * BLOCK_COUNT);
+    assert!(upload_flow["strip_write_successes"].as_u64().unwrap() > 0);
+    assert!(upload_flow["strip_write_success_ns"].as_u64().unwrap() > 0);
+    let head = client.send(Method::HEAD, &object, "", b"", false).await;
+    assert_eq!(head.status(), 200);
+    assert_eq!(
+        head.headers()["content-length"],
+        (BLOCK_BYTES * BLOCK_COUNT).to_string()
+    );
+    let last = format!(
+        "bytes={}-{}",
+        BLOCK_BYTES * BLOCK_COUNT - 128,
+        BLOCK_BYTES * BLOCK_COUNT - 1
+    );
+    let range = client
+        .send_range(Method::GET, &object, "", b"", false, Some(&last))
+        .await;
+    assert_eq!(range.status(), 206);
+    assert_eq!(range.bytes().await.unwrap().as_ref(), &[37; 128]);
+    let invalid = path(table, "data/repeated-invalid-md5.parquet");
+    let rejected = client
+        .send_repeated(Method::PUT, &invalid, block, 1, [0; 16])
+        .await;
+    assert_eq!(rejected.status(), 400);
+    assert!(rejected.text().await.unwrap().contains("BadDigest"));
+    let absent = client.send(Method::HEAD, &invalid, "", b"", false).await;
+    assert_eq!(absent.status(), 404);
+    let sha_object = path(table, "data/signed-sha256.parquet");
+    let sha = client
+        .send(Method::PUT, &sha_object, "", b"sha256 payload", false)
+        .await;
+    assert_eq!(sha.status(), 200, "{}", sha.text().await.unwrap());
+    println!("iceberg repeated 100 MiB PUT={put_elapsed:?}");
+    println!("iceberg direct upload flow metrics={upload_flow}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "manual 100 MiB multipart upload profile"]
+async fn repeated_100_mib_multipart_upload_profile() {
+    const BLOCK_BYTES: usize = 1024 * 1024;
+    const PART_COUNT: usize = 13;
+    let (_stack, _process, client, table) = setup_with_bounds_and_file_limit(
+        ClearBounds {
+            request_ms: 120_000,
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+        128 * 1024 * 1024,
+        128 * 1024 * 1024,
+    )
+    .await;
+    let block = hyper::body::Bytes::from(vec![37; BLOCK_BYTES]);
+    let digests = [8, 4].map(|repetitions| {
+        let mut md5 = Md5::new();
+        for _ in 0..repetitions {
+            md5.update(&block);
+        }
+        <[u8; 16]>::from(md5.finalize())
+    });
+    let object = path(table, "data/repeated-100-mib-multipart.parquet");
+    let upload_started = Instant::now();
+    let created = client.send(Method::POST, &object, "uploads=", b"", false).await;
+    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
+    let created_body = created.text().await.unwrap();
+    let upload = created_body
+        .split_once("<UploadId>")
+        .unwrap()
+        .1
+        .split_once("</UploadId>")
+        .unwrap()
+        .0;
+    let create_elapsed = upload_started.elapsed();
+    let part_started = Instant::now();
+    let parts = futures::stream::iter(1..=PART_COUNT)
+        .map(|number| {
+            let block = block.clone();
+            let query = format!("partNumber={number}&uploadId={upload}");
+            let object = object.clone();
+            let repetitions = if number == PART_COUNT { 4 } else { 8 };
+            let digest = if repetitions == 4 { digests[1] } else { digests[0] };
+            let client = &client;
+            async move {
+                let started = Instant::now();
+                let response = client
+                    .send_repeated_with_query(Method::PUT, &object, &query, block, repetitions, digest)
+                    .await;
+                assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+                let etag = response.headers()["etag"].to_str().unwrap().to_owned();
+                (number, etag, started.elapsed())
+            }
+        })
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await;
+    let parts_elapsed = part_started.elapsed();
+    let mut parts = parts;
+    parts.sort_unstable_by_key(|part| part.0);
+    let mut manifest = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+    );
+    for (number, etag, _) in &parts {
+        write!(
+            manifest,
+            "<Part><ETag>{etag}</ETag><PartNumber>{number}</PartNumber></Part>"
+        )
+        .unwrap();
+    }
+    manifest.push_str("</CompleteMultipartUpload>");
+    let complete_started = Instant::now();
+    let completed = client
+        .send(
+            Method::POST,
+            &object,
+            &format!("uploadId={upload}"),
+            manifest.as_bytes(),
+            false,
+        )
+        .await;
+    assert_eq!(completed.status(), 200, "{}", completed.text().await.unwrap());
+    let completed_body = completed.text().await.unwrap();
+    assert!(
+        completed_body.contains("</CompleteMultipartUploadResult>"),
+        "{completed_body}"
+    );
+    let complete_elapsed = complete_started.elapsed();
+    let last = format!("bytes={}-{}", 100 * BLOCK_BYTES - 128, 100 * BLOCK_BYTES - 1);
+    let range = client
+        .send_range(Method::GET, &object, "", b"", false, Some(&last))
+        .await;
+    assert_eq!(range.status(), 206);
+    assert_eq!(range.bytes().await.unwrap().as_ref(), &[37; 128]);
+    println!(
+        "iceberg 100 MiB multipart create={create_elapsed:?} parts={parts_elapsed:?} complete={complete_elapsed:?} slowest_part={:?}",
+        parts.iter().map(|part| part.2).max().unwrap()
+    );
+    let metrics: serde_json::Value = Client::new()
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    println!("iceberg upload flow metrics={}", metrics["upload_flow"]);
+    assert_eq!(metrics["upload_flow"]["attempts"], PART_COUNT);
+    assert_eq!(metrics["upload_flow"]["completed"], PART_COUNT);
+    assert_eq!(metrics["upload_flow"]["logical_bytes"], 100 * BLOCK_BYTES);
+    assert_eq!(metrics["upload_flow"]["multipart_completions"], 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

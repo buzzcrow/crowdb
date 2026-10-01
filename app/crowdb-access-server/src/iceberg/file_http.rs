@@ -26,8 +26,13 @@ use super::file_request::{FileRequest, FileRequestError};
 use super::file_response::{FileS3ErrorCode, MultipartResponses};
 use super::file_upload::FileUploadBudget;
 
+mod digest_pipe;
+mod metrics;
 mod multipart;
 mod stream;
+
+use metrics::UploadFlowMetrics;
+pub use metrics::UploadFlowSnapshot;
 
 pub(super) struct FileHttp {
     repository: FileRepository,
@@ -41,11 +46,16 @@ pub(super) struct FileHttp {
     small_threshold_exclusive: usize,
     large_write: LargeWritePolicy,
     native_allocator: Option<Arc<NativeBodyAllocator>>,
+    upload_metrics: Arc<UploadFlowMetrics>,
     region: String,
     limits: FileServiceLimits,
 }
 
 impl FileHttp {
+    pub(super) fn upload_metrics_snapshot(&self) -> UploadFlowSnapshot {
+        self.upload_metrics.snapshot()
+    }
+
     pub(super) fn chunk_metrics(
         &self,
     ) -> Option<(
@@ -82,6 +92,7 @@ impl FileHttp {
             small_threshold_exclusive: crate::config::SmallWriteConfig::default().threshold_exclusive(),
             large_write: default_large_write(),
             native_allocator,
+            upload_metrics: Arc::new(UploadFlowMetrics::default()),
             region,
             limits: FileServiceLimits {
                 max_request_bytes: 1024 * 1024 * 1024,
@@ -232,11 +243,11 @@ impl FileHttp {
             file: crowdb_access_iceberg::key::FileId::random(),
         };
         if self.blocks.supports_stream_io() {
-            let sealed = stream::upload(
+            let published = stream::upload(
                 self.blocks.as_ref(),
                 &self.uploads,
                 admission,
-                &mut body,
+                body,
                 owner,
                 file_request.location.clone(),
                 length,
@@ -244,13 +255,16 @@ impl FileHttp {
                 native_receiver,
                 self.small_threshold_exclusive,
                 &self.large_write,
+                &self.upload_metrics,
+                stream::Publication::Direct {
+                    repository: &self.repository,
+                    context,
+                },
             )
             .await?;
-            let published = self
-                .repository
-                .publish(context, &sealed)
-                .await
-                .map_err(catalog_error)?;
+            let stream::UploadedObject::Direct(published) = published else {
+                return Err(FileS3ErrorCode::InternalError);
+            };
             let mut response = Response::new(IcebergBody::new(Vec::new()));
             set_header(&mut response, ETAG, &etag(&published))?;
             return Ok(response);

@@ -51,6 +51,9 @@ pub struct S3LargeWriteSettings {
     pub max_chunk_size: Option<u64>,
     pub memory_budget_bytes: Option<usize>,
     pub prefetch_strips_per_chunk: Option<usize>,
+    pub prefetch_max_strips_per_batch: Option<usize>,
+    pub parallel_strip_writes: Option<usize>,
+    pub held_buffers: Option<usize>,
     pub chunk_preparation_depth: Option<usize>,
 }
 
@@ -103,6 +106,15 @@ impl S3WriteSettings {
         }
         if let Some(value) = self.large.prefetch_strips_per_chunk {
             client.prefetch_strips_per_chunk = value;
+        }
+        if let Some(value) = self.large.prefetch_max_strips_per_batch {
+            client.large_prefetch_max_strips_per_batch = value;
+        }
+        if let Some(value) = self.large.parallel_strip_writes {
+            client.large_parallel_strip_writes = value;
+        }
+        if let Some(value) = self.large.held_buffers {
+            client.large_held_buffers = value;
         }
         if let Some(value) = self.large.chunk_preparation_depth {
             client.chunk_preparation_depth = value;

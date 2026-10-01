@@ -62,6 +62,9 @@ fn production_policies() -> (S3WritePolicies, LargeWritePolicy, SmallWritePolicy
         max_chunk_size: Some(16 * MIB as u64),
         memory_budget_bytes: Some(96 * MIB),
         prefetch_strips_per_chunk: Some(3),
+        prefetch_max_strips_per_batch: None,
+        parallel_strip_writes: None,
+        held_buffers: None,
         chunk_preparation_depth: Some(1),
     }
     .policy()
