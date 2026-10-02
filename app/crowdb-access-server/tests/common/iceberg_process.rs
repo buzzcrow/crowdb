@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -21,9 +21,10 @@ impl TestIcebergProcess {
         gc_enabled: bool,
         settings: &[(&str, &str)],
     ) -> Self {
-        let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = reservation.local_addr().unwrap();
-        drop(reservation);
+        let port = crowdb_protocol::port::alloc::alloc_test_port(
+            crowdb_protocol::ServicePort::AccessServerIcebergHttp,
+        );
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
         let mut launch = command(seeds);
         launch
             .env("CROWDB_ICEBERG_LISTEN", address.to_string())

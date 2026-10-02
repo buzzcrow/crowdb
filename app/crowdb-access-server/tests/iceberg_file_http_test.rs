@@ -135,6 +135,9 @@ async fn setup_with_bounds_and_file_limit(
         .unwrap();
     assert_eq!(draft.status(), 200, "{}", draft.text().await.unwrap());
     let draft: serde_json::Value = draft.json().await.unwrap();
+    let ports = crowdb_protocol::ServicePort::AccessServerIcebergHttp;
+    assert!((ports.base()..ports.base() + ports.range_size()).contains(&process.address.port()));
+    assert_eq!(draft["config"]["s3.endpoint"], endpoint);
     let table: TableLocation = format!("{}/", draft["metadata"]["location"].as_str().unwrap())
         .parse()
         .unwrap();

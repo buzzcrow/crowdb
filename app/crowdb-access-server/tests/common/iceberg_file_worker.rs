@@ -1,4 +1,3 @@
-use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -102,14 +101,14 @@ struct TestWorker(Child);
 
 impl TestWorker {
     fn start(seeds: &[String]) -> Self {
-        let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = reservation.local_addr().unwrap();
-        drop(reservation);
+        let port = crowdb_protocol::port::alloc::alloc_test_port(
+            crowdb_protocol::ServicePort::AccessServerIcebergHttp,
+        );
         Self(
             Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"))
                 .arg("iceberg")
                 .env("CROWDB_MANAGEMENT_SEEDS", seeds.join(","))
-                .env("CROWDB_ICEBERG_LISTEN", address.to_string())
+                .env("CROWDB_ICEBERG_LISTEN", format!("127.0.0.1:{port}"))
                 .env("CROWDB_ICEBERG_READ_TOKEN", "r".repeat(32))
                 .env("CROWDB_ICEBERG_WRITE_TOKEN", "w".repeat(32))
                 .env("CROWDB_ICEBERG_MANAGE_TOKEN", "m".repeat(32))

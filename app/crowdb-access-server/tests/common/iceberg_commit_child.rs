@@ -99,9 +99,10 @@ pub struct TestCommitChild {
 
 impl TestCommitChild {
     pub async fn start(seeds: &[String], marker: PathBuf, target: usize, after: bool) -> Self {
-        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = reservation.local_addr().unwrap();
-        drop(reservation);
+        let port = crowdb_protocol::port::alloc::alloc_test_port(
+            crowdb_protocol::ServicePort::AccessServerIcebergHttp,
+        );
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
         let configuration = serde_json::json!({"seeds":seeds,"address":address.to_string(),"marker":marker,"target":target,"after":after});
         let child = Command::new(std::env::current_exe().unwrap())
             .args([

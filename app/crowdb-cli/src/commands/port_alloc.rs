@@ -38,6 +38,10 @@ pub enum ServiceArg {
     Web,
     #[value(name = "access-http")]
     AccessHttp,
+    #[value(name = "access-iceberg-http")]
+    AccessIcebergHttp,
+    #[value(name = "access-dataset-http")]
+    AccessDatasetHttp,
 }
 
 impl From<ServiceArg> for ServicePort {
@@ -54,6 +58,8 @@ impl From<ServiceArg> for ServicePort {
             ServiceArg::DiskioRpc => Self::DiskioRpc,
             ServiceArg::Web => Self::Web,
             ServiceArg::AccessHttp => Self::AccessServerHttp,
+            ServiceArg::AccessIcebergHttp => Self::AccessServerIcebergHttp,
+            ServiceArg::AccessDatasetHttp => Self::AccessServerDatasetHttp,
         }
     }
 }
