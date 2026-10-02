@@ -3,6 +3,7 @@
 
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import { Domain } from '../types';
+import { useDomain } from './DomainContext';
 
 export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk';
 
@@ -23,6 +24,7 @@ export interface SelectedEntity {
 
 interface SelectionContextType {
   selectedEntity: SelectedEntity | null;
+  selectionForDomain: (domain: Domain) => SelectedEntity | null;
   selectEntity: (entity: SelectedEntity | null) => void;
   clearSelection: () => void;
   isSelected: (entityId: string) => boolean;
@@ -31,13 +33,16 @@ interface SelectionContextType {
 const SelectionContext = createContext<SelectionContextType | undefined>(undefined);
 
 export function SelectionProvider({ children }: { children: ReactNode }) {
-  const [selectedEntity, setSelectedEntity] = useState<SelectedEntity | null>(null);
+  const { domain } = useDomain();
+  const [scopes, setScopes] = useState<Partial<Record<Domain, SelectedEntity | null>>>({});
+  const selectedEntity = scopes[domain] ?? null;
+  const selectionForDomain = useCallback((scope: Domain) => scopes[scope] ?? null, [scopes]);
 
   const selectEntity = useCallback((entity: SelectedEntity | null) => {
-    setSelectedEntity(entity);
-  }, []);
+    setScopes(previous => ({ ...previous, [entity?.domain ?? domain]: entity }));
+  }, [domain]);
 
-  const clearSelection = useCallback(() => setSelectedEntity(null), []);
+  const clearSelection = useCallback(() => setScopes(previous => ({ ...previous, [domain]: null })), [domain]);
 
   const isSelected = useCallback(
     (entityId: string) => selectedEntity?.id === entityId,
@@ -45,7 +50,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <SelectionContext.Provider value={{ selectedEntity, selectEntity, clearSelection, isSelected }}>
+    <SelectionContext.Provider value={{ selectedEntity, selectionForDomain, selectEntity, clearSelection, isSelected }}>
       {children}
     </SelectionContext.Provider>
   );

@@ -297,15 +297,23 @@ async fn bootstrap_services(
         .collect();
     access_environment.insert("CROWDB_S3_MASTER_KEY".into(), credentials.s3_master_key().into());
     supervisor.start_service("access", access_environment).await?;
-    supervisor
-        .start_service(
-            "web",
-            BTreeMap::from([(
-                "CROWDB_ICEBERG_MANAGE_TOKEN".into(),
-                credentials.iceberg_manage_token().into(),
-            )]),
-        )
-        .await?;
+    let access = profile
+        .services
+        .iter()
+        .find(|service| service.id == "access")
+        .ok_or(PreviewError::Invalid("Access service is absent"))?;
+    let mut web_environment = BTreeMap::from([(
+        "CROWDB_ICEBERG_MANAGE_TOKEN".into(),
+        credentials.iceberg_manage_token().into(),
+    )]);
+    for name in ["CROWDB_S3_PUBLIC_URI", "CROWDB_ICEBERG_PUBLIC_URI"] {
+        let value = access
+            .env
+            .get(name)
+            .ok_or(PreviewError::Invalid("Access public URI is absent"))?;
+        web_environment.insert(name.to_owned(), value.clone());
+    }
+    supervisor.start_service("web", web_environment).await?;
     record_bootstrap_probe(
         supervisor,
         "web-authority",

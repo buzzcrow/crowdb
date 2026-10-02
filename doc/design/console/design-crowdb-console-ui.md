@@ -28,9 +28,9 @@ what we chose and why. Requirements (the *what*) live in
 - [9. Module Layout](#9-module-layout)
 - [10. Accessibility](#10-accessibility)
 - [11. Testing](#11-testing)
-- [12. Domain Restructure: Cluster / KV / Chunk](#12-domain-restructure-cluster--kv--chunk)
-  - [12.1 Three domains](#121-three-domains)
-  - [12.2 Why three domains (not view-modes)](#122-why-three-domains-not-view-modes)
+- [12. Domain responsibilities](#12-domain-responsibilities)
+  - [12.1 Five domains](#121-five-domains)
+  - [12.2 Scope and navigation invariants](#122-scope-and-navigation-invariants)
   - [12.3 Swagger UI removal](#123-swagger-ui-removal)
   - [12.4 Batch Add Disk](#124-batch-add-disk)
 - [13. DiskDB Server Deploy / Restart / Stop](#13-diskdb-server-deploy--restart--stop)
@@ -43,14 +43,14 @@ what we chose and why. Requirements (the *what*) live in
 - [16. Console-Shared DiskDB Client + CLI](#16-console-shared-diskdb-client--cli)
   - [16.1 Console-shared client](#161-console-shared-client)
   - [16.2 CLI subcommands](#162-cli-subcommands)
+- [17. Native Access and Chunk diagnostics](#17-native-access-and-chunk-diagnostics)
 
 ## 1. Goals (recap)
 
 - Single page, no full-page navigation.
-- Three first-class **domains** (Cluster / KV / Chunk) that drive the
-  sidebar tree, the topology canvas, and the inspector together. The
-  domain split aligns the web UI with the CLI's four-domain structure
-  (Cluster / KV / Chunk / Bench — Bench is CLI-only).
+- Five first-class domains: Cluster, KV, Capacity, Iceberg, and S3. Each
+  owns navigation, operations, and details. Capacity retains the internal
+  `Chunk` domain identity for embedding compatibility.
 - Full operator surface: rack/node/server lifecycle, store/group/replica
   CRUD, KV data plane, disk-group/disk lifecycle, capacity
   visualization.
@@ -75,39 +75,35 @@ what we chose and why. Requirements (the *what*) live in
 
 ## 3. Information Architecture
 
-A fixed three-pane shell. A single root-level **domain** (Cluster / KV
-/ Chunk) selects which hierarchy every pane renders. The domain
-replaces the former view-mode (Physical / Capacity / KV) and aligns
-the web UI with the CLI's domain structure. The per-domain sidebar +
-center panel layouts are detailed in §12.1.
+The shared header selects Cluster, KV, Capacity, Iceberg, or S3. Each domain
+owns its left navigation, center operations, and selected-resource details.
 
-```
-┌─ Header ───────────────────────────────────────────────────────────┐
-│ brand · health pill · domain toggle (Cluster/KV/Capacity) · refresh│
-├─ Sidebar ─────┬─ Center panel ─────────────┬─ Inspector ────────────┤
-│ (per-domain   │ (per-domain layout,        │ Details (key/value)    │
-│  tree, see    │  see §12.1)                │ Activity (recent ops)  │
-│  §12.1)       │                            │                        │
-│               │                            │ (unchanged — scoped    │
-│               │                            │  to current selection) │
-└───────────────┴────────────────────────────┴────────────────────────┘
+```text
++---------------------------------------------------------------------+
+| Cluster | KV | Capacity | Iceberg | S3             health / refresh  |
++----------------------+-------------------------------+--------------+
+| Domain scope         | Domain operations and state   | Details      |
+| Physical hierarchy   | Rack/Node/Service layout      | Physical     |
+| Store/Group/Replica  | KV CRUD and scans             | Logical      |
+| Disk/Zone or Chunk   | Capacity or Strip layout      | Placement    |
+| Namespace/Table      | Catalog metadata operations   | Table head   |
+| Bucket/Prefix        | Objects and multipart state   | Object       |
++----------------------+-------------------------------+--------------+
 ```
 
-- **Header** (~56px): brand label, cluster health pill, domain toggle
-  (Cluster / KV / Chunk), last-refresh time, manual refresh button.
-- **Sidebar** (~240px): a text filter plus the hierarchy tree for the
-  active domain. Click selects; right-click opens the per-layer context
-  menu. No favorites, no recent, no saved presets.
-- **Center panel**: content depends on the active domain — Cluster
-  renders a hardware topology canvas; KV renders a tabbed logical
-  canvas + KV operator panel; Chunk renders a capacity visualization
-  panel. See §12.1 for the per-domain layouts.
-- **Inspector** (~320px, collapsible): tabs scoped to the selection:
-  Details and Activity only. KV operations have moved to the center KV
-  Operator panel (§6.1).
-
-Selection is held in one `SelectionContext`. The shell is rendered
-once; switching domain swaps the tree data and the center panel only.
+- Cluster renders physical resources through services. Logical KV resources
+  belong to KV. DiskDB-owned disks remain reachable from their physical service.
+- Capacity has independent Capacity and Chunk subpanels. Chunk queries and
+  fragment placement do not duplicate the physical topology canvas.
+- Iceberg and S3 use the same workbench layout, input styles, activity journal,
+  and result/error feedback. They own protocol authentication and resource scope.
+- Selection is stored by domain. Workbenches remain mounted when hidden, keeping
+  inputs, credentials, queries, selected resources, and subpanel state for the
+  browser session. Reload discards session credentials and activity.
+- Container renders this same UI. Physical topology/deployment controls are
+  read-only; a checked management bearer enables supported logical/data and
+  DiskDB maintenance operations. Native Access credentials authorize native
+  operations independently of the management bearer.
 
 ### 3.1 Selection & cross-jump
 
@@ -239,7 +235,7 @@ The SPA is mountable as a sub-component with a minimal props interface
 - **Standalone** — `index.html` mounts at the document root with defaults;
   `embed.ts` exports the component for hosts.
 
-The `initialDomain` prop (values: `Cluster | KV | Chunk`) replaces the
+The `initialDomain` prop (values: `Cluster | KV | Chunk | Iceberg | S3`) replaces the
 former `initialViewMode`. The `modules` opt-out keys are
 `'racks' | 'nodes' | 'stores' | 'groups' | 'replicas' | 'kv' |
 'activity'` — the former `'swagger'` key is removed (Swagger UI is no
@@ -297,154 +293,40 @@ needed for the lean surface.
 
 ---
 
-## 12. Domain Restructure: Cluster / KV / Chunk
+## 12. Domain responsibilities
 
-The header toggle evolved from two view-modes (Physical | Logical) to
-three view-modes (Physical | Capacity | KV) and then to three
-**domains** (Cluster / KV / Chunk). The domain split aligns the web
-UI with the CLI's four-domain structure (Cluster / KV / Chunk / Bench
-— Bench is CLI-only). Each domain owns a single responsibility and a
-self-contained sidebar + center panel.
+### 12.1 Five domains
 
-### 12.1 Three domains
+- **Cluster**: Datacenter → Rack → Node → deployed KV/DiskDB services and
+  assigned disk resources. Center layout ends at physical services. Add,
+  deploy, restart, stop, and delete use existing lifecycle operations.
+- **KV**: Store → Group → Replica. The center operator supports initialization,
+  scan/get/put/delete, binary values, group-specific cursors, and demo data.
+  Store 0 / Group 0 is read-only to general data mutation APIs as well as UI.
+- **Capacity**: DiskDB instance/group/disk/zone capacity and maintenance, plus a
+  Chunk subpanel with bounded queries and routed layout inspection. Strip
+  sequence identifies layouts; visible cards describe actual Mirror/EC
+  fragments and separate current placement observations.
+- **Iceberg**: Namespace/Table metadata CRUD through native REST. Schema,
+  snapshots, and metadata file references are real catalog responses. Files
+  are references rather than fabricated data-file enumeration; row DML has no
+  console execution path.
+- **S3**: Bucket/object CRUD, prefixes and cursors, HEAD/ETag, bounded preview,
+  downloads, multipart transfer/inspection/abort through native signed requests.
 
-The shell has one shared frame: a top bar, a left tree panel, a center panel, and a right properties panel. The header's domain toggle switches between Cluster, KV, and Capacity. `Capacity` is the user-facing name of the internal Chunk domain; `bench` is CLI-only. Each domain owns the content and behavior of its three panels; shared shell components provide layout, selection, context menus, loading states, and the inspector. Changing domains clears the selection so the right properties panel never shows an item from an inactive domain.
+### 12.2 Scope and navigation invariants
 
-```
-┌─ Header ───────────────────────────────────────────────────────────┐
-│ brand · health pill · domain toggle (Cluster/KV/Capacity) · refresh│
-├─ Sidebar ─────┬─ Center panel ─────────────┬─ Inspector ────────────┤
-│ (per-domain   │ (per-domain layout,        │ Details (key/value)    │
-│  tree, see    │  see below)                │ Activity (recent ops)  │
-│  below)       │                            │                        │
-│               │                            │ (unchanged — scoped    │
-│               │                            │  to current selection) │
-└───────────────┴────────────────────────────┴────────────────────────┘
-```
-
-**Domain 1 — Cluster (physical infrastructure)**
-
-```
-┌─ Sidebar ─────┐┌─ Center: hierarchy chart ─────────────────────────┐
-│ ▾ Rack 1      ││  Rack 1                                           │
-│   ▾ Node 1    ││   ├─ Node 1                                       │
-│     ▾ DG-0    ││   │   └─ ┌─────────────────────────────┐          │
-│       • disk0 ││   │       │ DG-0                       │          │
-│       • disk1 ││   │       │  ⬢ a3f1  ⬢ b7c2  ⬢ e9d4   │          │
-│   ▸ Node 2    ││   │       └─────────────────────────────┘          │
-│ ▾ Rack 2      ││   └─ Node 2 ...                                   │
-│   ▸ Node 3    ││  Rack 2 ...                                       │
-└───────────────┘└───────────────────────────────────────────────────┘
-```
-
-The Cluster tree is the physical source for node and service lifecycle.
-Disk groups assigned to a DiskDB instance appear beneath that owning DDB
-service rather than directly beneath the node; unassigned disk groups are
-not projected in Cluster. The center mirrors this ownership hierarchy and
-renders each disk group as one compact card with its disks stacked inside.
-The properties panel displays the selected physical item and recent
-activity.
-
-Context menus: Rack (Add Node, Delete Rack) · Node (Deploy KV Server,
-Deploy DiskDB, Ping, Delete Node) · KV Server and DiskDB (Restart, Stop,
-Delete) · DiskGroup (Add Disk batch, Remove, Set Status) · Disk (Remove,
-Set Status). Adding disk groups is available only in Capacity; shared
-disk-management actions do not duplicate their business logic.
-Cluster-level ops (init / reset / clean) are triggered from the header
-or a toolbar above the canvas.
-
-**Domain 2 — KV (logical data operations)**
-
-```
-┌─ Sidebar ─────┐┌─ Center: [Cluster] [KV] ──────────────────────────┐
-│ ▾ Rack 1      ││  Store 1                                          │
-│   ▾ Node 1    ││   ├─ Group 1                                      │
-│     ▸ kv-srv  ││   │   ├─ Replica 0 (node 1)                       │
-│   ▸ Node 2    ││   │   └─ Replica 1 (node 2)                       │
-│ ▾ Rack 2      ││   └─ Group 2 ...                                  │
-│   ▸ Node 3    ││  Store 2 ...                                      │
-│               ││  (Cluster tab shown — click [KV] for operator)    │
-└───────────────┘└───────────────────────────────────────────────────┘
-
-KV tab active:
-┌─ Sidebar ─────┐┌─ Center: [Cluster] [KV] ──────────────────────────┐
-│ ▾ Rack 1      ││  KV Operator: [store ▾] [group ▾]                 │
-│   ▾ Node 1    ││  key: [_______]  value: [_______]  [Put]          │
-│     ▸ kv-srv  ││  key: [_______]  [Get]  [Delete]                  │
-│   ▸ Node 2    ││  scan: [prefix___] [Scan]  results: ...           │
-│ ▾ Rack 2      ││                                                   │
-│   ▸ Node 3    ││                                                   │
-└───────────────┘└───────────────────────────────────────────────────┘
-```
-
-The KV left tree is the single logical source: datacenter → store →
-group → replica. Logical entities are not repeated under physical KV
-servers. The center always renders the KV operation panel. It supports
-store/group selection, get, put, delete, scan, pagination, and operation
-feedback. The properties panel displays details and activity for the
-selected tree item. Node placement is replica metadata and a cross-jump
-target, not a KV-tree parent.
-
-Context menus: Store (Add Group, Delete) · Group (Add Replica, Delete) ·
-Replica (Delete). KV server lifecycle actions are owned by Cluster and
-are not duplicated in the KV tree.
-
-**Domain 3 — Capacity (internal Chunk domain; chunkdb / diskdb / diskio management)**
-
-```
-┌─ Sidebar ─────┐┌─ Center: [Capacity] [Chunk] ──────────────────────┐
-│ ▾ Rack 1      ││  (Capacity sub-view shown by default)              │
-│   ▾ Node 1    ││                                                   │
-│     ▸ chunkdb ││  Rack 1 / Node 1 / DG-0                           │
-│     ▸ diskdb  ││   ┌─────────────────────────────────────┐         │
-│       ▸ DG-0  ││   │ ▓▓▓▓▓░░░░  ▓▓▓░░░░░░  ▓▓▓▓▓▓░░    │         │
-│         • d0  ││   │ disk a3f1   disk b7c2   disk e9d4   │         │
-│         • d1  ││   │ 78% used    42% used    88% used    │         │
-│     ▸ diskio  ││   └─────────────────────────────────────┘         │
-│   ▸ Node 2    ││                                                   │
-│ ▾ Rack 2      ││  Rack 1 / Node 2 / DG-1 ...                       │
-│   ▸ Node 3    ││                                                   │
-└───────────────┘└───────────────────────────────────────────────────┘
-```
-
-The Capacity tree keeps the physical node → disk-group → disk hierarchy
-and shows DiskDB as an additional node item. It is the only domain that
-allows adding disk groups. Disk-group and disk dialogs are shared with
-the Cluster ownership projection, while Capacity owns creation and full
-physical disk management.
-
-The center capacity panel shows usage, busy/free space, scanner and
-recalculation controls for the selected resource. The properties panel
-shows the selected node, DiskDB, disk-group, or disk details and recent
-activity. Future chunk-management operations may extend the center
-panel without changing the shared shell.
-
-`DomainContext` holds the active domain. Selection is shared across all
-three domains via `SelectionContext`, while each domain defines how the
-selected item is resolved and displayed. Switching domains changes the
-tree and center panel without creating duplicate logical entities. The
-inspector remains the right properties panel for the active selection.
-
-### 12.2 Why three domains (not view-modes)
-
-The former view-mode split (Physical / Capacity / KV) mixed
-infrastructure management (Physical) with disk lifecycle (Capacity)
-and KV operations (KV), but the CLI had already moved to a cleaner
-domain split (Cluster / KV / Chunk / Bench). The domain restructure
-unifies the two frontends:
-
-- **Cluster** merges the former Physical + Capacity views — hardware
-  topology and disk lifecycle are both infrastructure concerns and
-  belong together. The Capacity center panel moves under the Chunk
-  domain (capacity is a property of the chunk/disk storage layer).
-- **KV** keeps the logical KV layer and data-plane. The KV tree is
-  independent of physical server placement; KV server lifecycle belongs
-  to the Cluster domain.
-- **Chunk** is new — it hosts the chunk/disk storage layer (diskdb,
-  chunkdb, diskio) and the capacity visualization that belongs to
-  that layer. The Chunk center panel is the capacity panel today.
-  Future chunk-management features may extend this center panel
-  (`ops::chunk` is currently stubs).
+- **I1**: each domain retains its own selection and filters. A cross-jump
+  changes only the destination selection; unrelated domain scopes survive.
+- **I2**: physical layout never expands logical groups or replicas under a KV
+  service. KV owns logical relationships and CRUD.
+- **I3**: an unavailable authority is an error, not a confirmed empty tree.
+  Container monitor recovery remains visible separately from Group 0 topology.
+- **I4**: domain operations name their native target. Read-only embedding and
+  Container hardware restrictions are enforced by the server as applicable.
+- **I5**: demo cleanup uses owned session resources. KV cleanup scans only the
+  current session prefix within the selected group/store; Access demos name an
+  exact namespace/table or bucket/key and do not recursively remove user data.
 
 ### 12.3 Swagger UI removal
 
@@ -753,3 +635,37 @@ crowdb diskdb rebuild <disk_id> [--zone <zi>]
 
 All route through `ConsoleClient` → `crowdb-web` → `DiskdbClient` →
 crowdb-rpc; no direct talk to `crowdb-diskdb`.
+
+## 17. Native Access and Chunk diagnostics
+
+- Access endpoints are deployment inputs, separate from authoritative hardware
+  topology. Container receives finite origins from its profile; standalone
+  accepts a persisted HTTP origin without embedded credentials or path.
+  Access currently has no Group 0 endpoint registration to discover.
+- The Web proxy accepts a fixed protocol and operation path, preserves native
+  status/authentication/ETag/range headers, forwards native credentials, and
+  refuses redirects. Request URLs cannot select arbitrary upstream hosts.
+- Iceberg mutations use catalog REST requirements and updates. UUID assertions
+  identify the table; concurrent commits retain forms and require metadata
+  refresh. Reader/manager/writer authorization remains native service policy.
+- S3 signs canonical upstream host/path/query/payload in the browser using
+  WebCrypto. Secrets remain session inputs, excluded from persisted config and
+  activity. Large uploads use serial 8 MiB parts, bounded by the proxy's 16 MiB
+  request cap. Cancellation leaves the UploadId available for inspection/abort.
+- Downloads stream into a supported browser file writer. The compatibility
+  fallback permits only known sizes at most 16 MiB. Preview consumes at most
+  4 KiB even when an upstream ignores Range.
+- Chunk listing scans bounded windows from live registered owners, merges exact
+  IDs, and applies type/hex-prefix filtering. Partial owner failure exposes its
+  identity and suppresses continuation until recovery. Routed detail retains
+  layout revision and stable Strip sequence; placement has a separate timestamp
+  and an explicit unknown state when hardware metadata cannot be read.
+- Protocol integers beyond JavaScript's exact range are represented as strings.
+  Disk/Chunk IDs use complete 128-bit identities; fragment offsets use BigInt.
+  Chunk/Strip capacity and logical offsets are KiB; acknowledged cursor is bytes.
+- New workbenches expose bounded browser-session activity. It is operational
+  feedback, not a persistent audit record.
+
+- Chunk Strip rendering uses 20-entry pages with stable sequence selection;
+  multipart upload and part lists use native continuation markers. Changing
+  native credentials clears the corresponding resource scope and loaded data.

@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { listRacks, listNodes, listNodeStores, pingNode, listNodeDiskGroups, listDisksInGroup } from '../api';
 import { NodeHealth } from '../types';
 import type { Rack, Node, NodeStore, DiskGroupEntry, DiskEntry } from '../types';
+import { physicalSnapshot } from '../managed/physicalSnapshot';
 
 export interface NodeDiskGroups {
   diskGroups: DiskGroupEntry[];
@@ -16,6 +17,7 @@ interface UseClusterTreeOptions {
   pollIntervalInactive?: number;
   enabled?: boolean;
   recursive?: number;
+  managed?: boolean;
 }
 
 interface UseClusterTreeResult {
@@ -42,6 +44,7 @@ export function useClusterTree({
   pollIntervalInactive = 30000,
   enabled = true,
   recursive = 3,
+  managed = false,
 }: UseClusterTreeOptions = {}): UseClusterTreeResult {
   const [racks, setRacks] = useState<Rack[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -62,6 +65,12 @@ export function useClusterTree({
         setLoading(true);
       }
 
+      if (managed) {
+        const snapshot = await physicalSnapshot();
+        setRacks(snapshot.racks); setNodes(snapshot.nodes); setNodeDiskGroups(snapshot.diskGroups);
+        setNodeStores({}); setNodeHealthById({}); setError(null);
+        return;
+      }
       const racksData = await listRacks(recursive);
       setRacks(Array.isArray(racksData) ? racksData : []);
 
@@ -113,12 +122,13 @@ export function useClusterTree({
       setError(null);
     } catch (err) {
       console.error('Failed to fetch cluster tree:', err);
+      if (managed) { setRacks([]); setNodes([]); setNodeDiskGroups({}); }
       setError(err instanceof Error ? err : new Error('Unknown error fetching cluster tree'));
     } finally {
       hasLoadedRef.current = true;
       setLoading(false);
     }
-  }, [enabled, recursive]);
+  }, [enabled, recursive, managed]);
 
   const fetchDiskGroups = useCallback(
     async (nodeIds: number[]) => {

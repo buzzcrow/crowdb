@@ -190,6 +190,7 @@ async fn managed_mode_does_not_expose_local_topology_or_mutations() {
         (Method::GET, "/api/stores"),
         (Method::POST, "/api/racks"),
         (Method::DELETE, "/api/nodes/1"),
+        (Method::POST, "/internal/reset"),
     ] {
         let response = app
             .clone()

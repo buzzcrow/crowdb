@@ -15,6 +15,7 @@ interface UseLogicalTreeOptions {
   enabled?: boolean;
   /** Recursive depth to fetch */
   recursive?: number;
+  managed?: boolean;
 }
 
 interface UseLogicalTreeResult {
@@ -46,6 +47,7 @@ export function useLogicalTree({
   pollIntervalInactive = 30000,
   enabled = true,
   recursive = 3,
+  managed = false,
 }: UseLogicalTreeOptions = {}): UseLogicalTreeResult {
   const [stores, setStores] = useState<EnrichedStoreView[]>([]);
   const [groups, setGroups] = useState<GroupView[]>([]);
@@ -143,7 +145,7 @@ export function useLogicalTree({
       hasLoadedRef.current = true;
       setLoading(false);
     }
-  }, [enabled, recursive]);
+  }, [enabled, recursive, managed]);
 
   // Initial fetch
   useEffect(() => {

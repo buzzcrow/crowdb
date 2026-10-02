@@ -16,6 +16,7 @@ use crate::state::AppState;
 
 static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
 
+mod readiness;
 mod recovery;
 
 impl AppState {

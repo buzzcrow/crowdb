@@ -68,6 +68,23 @@ async function scanAllDemoKeys(baseURL: string, storeId: number, groupId: number
 }
 
 test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
+  test('demo cleanup preserves another session demo keys', async ({ page, request }) => {
+    const foreign = 'demo_key_other_session_preserved';
+    const seeded = await request.post('/api/stores/261/groups/2610/kv/put', { data: { key: foreign, value: 'preserve' } });
+    expect(seeded.ok(), await seeded.text()).toBeTruthy();
+    await openKvPanel(page, '261', '2610');
+    await page.getByLabel('Demo key count').fill('2');
+    await page.getByRole('button', { name: 'Inject', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Inject', exact: true })).toBeEnabled({ timeout: 3000 });
+    await page.getByRole('button', { name: 'Delete all demo', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Delete all demo', exact: true })).toBeEnabled({ timeout: 3000 });
+    const found = await request.get(`/api/stores/261/groups/2610/kv/get?key=${foreign}`);
+    expect(found.ok(), await found.text()).toBeTruthy();
+    expect(await found.json()).toMatchObject({ value_utf8: 'preserve' });
+    const deleted = await request.post('/api/stores/261/groups/2610/kv/delete', { data: { key: foreign } });
+    expect(deleted.ok(), await deleted.text()).toBeTruthy();
+  });
   test.beforeAll(async () => {
     // The demo/advanced flows assume a backend with no leftover topology.
     await step('kv: resetAll', () => resetAll(apiBase));

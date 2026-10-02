@@ -42,7 +42,7 @@ test.describe('shell · embedding', () => {
       stores: [{ store_id: 0, node_ids: [1] }, { store_id: 7, node_ids: [1] }],
       groups: [{ store_id: 0, group_id: 0 }, { store_id: 7, group_id: 70 }],
       replicas: [],
-      services: [],
+      services: [{ kind: 'kv-server', node_id: 1, endpoint: 'http://127.0.0.1:19001', monitor: { healthy: true, pid: 100 } }],
       monitor: { phase: 'Ready', revision: 1, updated_at_ms: 1, services: {} },
     } }));
     await page.goto('/');
@@ -51,10 +51,17 @@ test.describe('shell · embedding', () => {
     await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only');
     await expect(page.getByTestId('managed-monitor-phase')).toContainText('Ready');
     await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Create store' })).toBeDisabled();
+    await page.route('**/api/management/check', route => route.fulfill({ status: 204 }));
+    await page.route(/\/api\/stores(\?.*)?$/, route => route.request().method() === 'GET'
+      ? route.fulfill({ json: [{ store_id: 0, nodes: [1], groups: [{ group_id: 0, replicas: [] }] }, { store_id: 7, nodes: [1], groups: [{ group_id: 70, replicas: [] }] }] })
+      : route.fallback());
+    await page.route(/\/api\/stores\/([07])\/groups\/(0|70)(\?.*)?$/, route => route.fulfill({ json: { store_id: Number(new URL(route.request().url()).pathname.split('/')[3]), group_id: Number(new URL(route.request().url()).pathname.split('/')[5]), state: 'Running', replicas: [] } }));
+    await page.getByTestId('domain-kv').click();
+    await expect(page.getByRole('button', { name: 'Add Store' })).toHaveCount(0);
     const writes: Array<{ path: string; token: string | undefined; body: unknown }> = [];
     await page.route('**/api/stores**', async (route) => {
       const request = route.request();
+      if (request.method() === 'GET') return route.fallback();
       writes.push({
         path: new URL(request.url()).pathname,
         token: request.headers().authorization,
@@ -63,22 +70,30 @@ test.describe('shell · embedding', () => {
       await route.fulfill({ status: 201, json: {} });
     });
     await page.getByLabel('Management token').fill('m'.repeat(64));
-    await page.getByLabel('Store ID').fill('8');
-    await page.getByRole('combobox', { name: 'Store node' }).selectOption('1');
-    await page.getByRole('button', { name: 'Create store' }).click();
+    await page.getByRole('button', { name: 'Authorize', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Add Store', exact: true })).toBeVisible({ timeout: 3000 });
+    await page.getByRole('button', { name: 'Add Store', exact: true }).click();
+    await page.getByLabel('KV Store ID (numeric)').fill('8');
+    await page.getByLabel(/^1\b/).check();
+    await page.getByRole('button', { name: /create kv store/i }).click();
     await expect.poll(() => writes.length, { intervals: [100] }).toBe(1);
     expect(writes[0]).toEqual({ path: '/api/stores', token: `Bearer ${'m'.repeat(64)}`, body: { store_id: 8, nodes: [1] } });
-    await page.getByRole('combobox', { name: 'Group store' }).selectOption('7');
-    await page.getByLabel('Group ID').fill('71');
-    await page.getByRole('combobox', { name: 'Group node' }).selectOption('1');
-    await page.getByRole('button', { name: 'Create group' }).click();
+    await page.getByRole('button', { name: 'S-7', exact: true }).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: /add group/i }).click();
+    await page.getByLabel('Group ID (numeric)').fill('71');
+    await page.getByLabel('Starting Replica ID (numeric)').fill('710');
+    await page.getByLabel(/^1\b/).check();
+    await page.getByRole('button', { name: /create group/i }).click();
     await expect.poll(() => writes.length, { intervals: [100] }).toBe(2);
     expect(writes[1].path).toBe('/api/stores/7/groups');
-    await page.getByRole('combobox', { name: 'Replica group' }).selectOption('7/70');
-    await page.getByRole('combobox', { name: 'Replica node' }).selectOption('1');
+    await page.getByRole('button', { name: 'G-70', exact: true }).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: /add replica/i }).click();
+    await page.getByLabel('Node', { exact: true }).selectOption('1');
     await page.getByRole('button', { name: 'Add replica' }).click();
     await expect.poll(() => writes.length, { intervals: [100] }).toBe(3);
     expect(writes[2].path).toBe('/api/stores/7/groups/70/replicas');
+    await page.getByTestId('domain-cluster').click();
+    await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
   });
 
   test('Docker mode separates unavailable topology from current monitor recovery', async ({ page }) => {
@@ -99,13 +114,13 @@ test.describe('shell · embedding', () => {
     }));
     await page.goto('/');
     await expect(page.getByTestId('managed-process-kv')).toContainText('PID 100');
-    await expect(page.getByRole('list', { name: 'Logical stores' })).toContainText('Store 7');
+    await expect(page.getByTestId('managed-monitor-phase')).toContainText('ready');
     available = false;
     monitor = { phase: 'restarting', revision: 2, updated_at_ms: 2,
       services: { kv: { pid: null, generation: 1, restart_attempts: 1, healthy: false } } };
     await page.clock.runFor(3001);
     await expect(page.getByTestId('managed-unavailable')).toContainText('Group 0 is unavailable');
-    await expect(page.getByRole('list', { name: 'Logical stores' })).toHaveCount(0);
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'S-7', exact: true })).toHaveCount(0);
     await expect(page.getByTestId('managed-process-kv')).toContainText('unhealthy');
     await expect(page.getByTestId('managed-monitor-phase')).toContainText('restarting');
     monitor = null;

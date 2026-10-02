@@ -76,6 +76,7 @@ impl AppState {
             }
         }
         if found_group0 {
+            self.confirm_kv_registrations().await?;
             self.reload_group0().await?;
         }
         for server in config

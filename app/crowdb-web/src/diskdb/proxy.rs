@@ -34,7 +34,7 @@ use crate::state::AppState;
 /// is known.
 pub(crate) async fn build_diskdb_client(state: &AppState) -> Option<DiskdbClient> {
     let snap = state.monitor_cache.snapshot().await;
-    if snap.is_empty() {
+    if snap.is_empty() && !state.managed_mode {
         return None;
     }
     // Use the shared kv_client so topology discovery seeds are

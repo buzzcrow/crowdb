@@ -59,6 +59,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
 
   const [demoCount, setDemoCount] = useState(20);
   const [demoLoading, setDemoLoading] = useState(false);
+  const [demoSession] = useState(() => crypto.randomUUID().replace(/-/g, ''));
 
   const groupsInStore = useMemo(() => {
     if (!storeId) return [] as GroupView[];
@@ -405,7 +406,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     let ok = 0, fail = 0;
     const batch = Math.random().toString(36).substring(2, 6);
     for (let i = 1; i <= demoCount; i++) {
-      const key = `demo_key_${batch}_${String(i).padStart(4, '0')}`;
+      const key = `demo_key_${demoSession}_${batch}_${String(i).padStart(4, '0')}`;
       const value = `demo_val_${batch}_${String(i).padStart(4, '0')}`;
       const gid = gids[Math.floor(Math.random() * gids.length)];
       try {
@@ -419,7 +420,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     success(`Injected ${ok} demo keys${fail > 0 ? `, ${fail} failed` : ''}`);
     setDemoLoading(false);
     setTimeout(() => handleScan(), 100);
-  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoCount, targetLabel, log, success, handleScan]);
+  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoCount, demoSession, targetLabel, log, success, handleScan]);
 
   const handleDemoDelete = useCallback(async () => {
     if (!storeId || !groupId) return;
@@ -436,7 +437,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       let anyTruncated = false;
       for (const gid of gids) {
         const sa = cursors.get(gid);
-        const result = await kvScan(storeId, gid, 'demo_', 500, sa);
+        const result = await kvScan(storeId, gid, `demo_key_${demoSession}_`, 500, sa);
         allKeys.push(...result.items.map((item) => ({ key: item.key_utf8, gid })));
         if (result.truncated && result.items.length > 0) {
           cursors.set(gid, result.items[result.items.length - 1].key_utf8);
@@ -486,7 +487,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
             if (done.has(gid)) continue;
             const sa = cursors.get(gid);
             if (sa === undefined) { done.add(gid); continue; }
-            const result = await kvScan(storeId, gid, 'demo_', 500, sa);
+            const result = await kvScan(storeId, gid, `demo_key_${demoSession}_`, 500, sa);
             batch.push(...result.items.map((item) => ({ key: item.key_utf8, gid })));
             if (result.truncated && result.items.length > 0) {
               cursors.set(gid, result.items[result.items.length - 1].key_utf8);
@@ -506,7 +507,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       setDemoLoading(false);
       setTimeout(() => handleScan(), 100);
     }});
-  }, [storeId, groupId, isSystemGroup, writableGroupIds, targetLabel, log, success, handleScan]);
+  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoSession, targetLabel, log, success, handleScan]);
 
   const toggleRow = useCallback((idx: number) => {
     setScanRows((prev) => prev.map((r, i) => (i === idx ? { ...r, selected: !r.selected } : r)));
@@ -749,6 +750,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
                 <Trash2 className="tw-h-3 tw-w-3" />
                 Delete all demo
               </button>
+              <span className="tw-text-[10px] tw-text-muted">Cleanup affects this session's demo keys in the selected scope.</span>
             </div>
           )}
         </div>
