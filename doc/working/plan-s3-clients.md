@@ -17,7 +17,7 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - [x] **Container and recipes**: default SDK and configured CLI ordinary/multipart copy pass, with exact bytes after all service crash/hang recovery and persisted-volume restart. Full pixi run test-single-node-container passes. README documents pinned versions/configurations and unsupported workflows.
 - [x] **Applicable quality gates**: library/server tests, shared encoding/auth tests, official embedded-copy error test, fmt/clippy, Python compilation, shell syntax and release policy checks pass.
 - [ ] **Accumulated full-stack gate**: resume without skipping tests after R205 fixes journal cursor regression/snapshot corruption.
-- [ ] **Completion cleanup**: commit verified tasks with blocked state; retain requirement/index/plan until all positive client and full-stack gates pass.
+- [ ] **Completion cleanup**: retain requirement/index/plan until all positive client and full-stack gates pass, then remove them in the cleanup commit.
 
 ## Verification
 
@@ -43,6 +43,7 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - Fresh trailer-only real-stack gate passes final streaming route restrictions and old-object preservation. Existing thousand-key isolated gate also passes. These focused successes do not replace the failed accumulated regression.
 - Default SDK focused gate now runs assert_native_write_metrics with copy_baseline=0: native receive bytes, framed owners/views, small writes and bounded read metrics are positive, while large payload-copy operations remain zero. Exact ordinary/multipart bytes and CRC32/MD5 failures pass. Final fmt/clippy pass after this focused ownership assertion.
 - Final real FUSE rerun mounts, rejects mkdir on x-amz-meta-atime in 0.511 seconds, unmounts and exits without leftover daemon/worker. R204 remains a known failing positive gate; prerequisites are available.
+- Verified independent implementation and blocked state committed as d2103fe2. R200 remains open; no final requirement cleanup or push was performed. Both original stashes are preserved.
 
 ## Files
 
