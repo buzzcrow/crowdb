@@ -67,9 +67,6 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
-    if args.config.is_none() && !args.test_mode {
-        return Err("crowdb-web requires a versioned --config outside test mode".into());
-    }
     let process_config = args.config.as_deref().map(WebProcessConfig::load).transpose()?;
     if args.registry.is_some()
         && process_config
@@ -91,7 +88,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     info!(%addr, "crowdb-web starting");
 
-    let mut state = crowdb_web::AppState::default().with_test_mode(args.test_mode);
+    let mut state = if args.test_mode || process_config.is_some() {
+        crowdb_web::AppState::default().with_test_mode(args.test_mode)
+    } else {
+        let directory = crowdb_protocol::port::namespace::runtime_root()
+            .join("persistent")
+            .join("console")
+            .join("default");
+        crowdb_web::AppState::open_standalone(directory)?
+    };
     if let Some(config) = process_config {
         state = state.with_process_config(&config);
         state = state.with_management_token(std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN")?)?;
@@ -102,13 +107,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(started, "reconciled configured service launches");
     }
     tracing::info!(
-        servers = 0,
+        servers = state
+            .config
+            .read()
+            .map_err(|error| error.to_string())?
+            .servers
+            .len(),
         launches = launch_registry
             .as_ref()
             .map_or(0, |registry| registry.launches.len()),
         "loaded web startup configuration"
     );
     if !args.skip_startup_restore && !state.managed_mode {
+        state.recover_standalone().await?;
         crowdb_web::mgmt::startup_topology_check(&state).await;
     }
 

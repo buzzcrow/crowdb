@@ -22,6 +22,7 @@ use crowdb_console_shared::{config::ServerEntry, ConsoleConfig};
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<RwLock<ConsoleConfig>>,
+    pub(crate) config_path: Option<PathBuf>,
     pub runtime_root: Arc<PathBuf>,
     pub monitor_cache: Arc<MonitorCache>,
     pub runtime_pids: Arc<std::sync::Mutex<HashMap<String, u32>>>,
@@ -92,6 +93,7 @@ impl AppState {
     pub fn with_runtime_root(config: ConsoleConfig, runtime_root: PathBuf) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
+            config_path: None,
             runtime_root: Arc::new(runtime_root),
             monitor_cache: Arc::new(MonitorCache::new()),
             runtime_pids: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -122,6 +124,7 @@ impl AppState {
 
     #[must_use]
     pub fn with_process_config(mut self, config: &WebProcessConfig) -> Self {
+        self.config_path = None;
         self.managed_mode = true;
         self.web_mode = Some(config.mode);
         self.ui_root = Arc::new(config.ui_root.clone());
@@ -176,13 +179,12 @@ impl AppState {
         self
     }
 
-    /// The legacy in-memory handlers share state only within this Web process.
-    /// No topology is written to a local file.
+    /// Save standalone UI configuration; managed and in-memory test states do not write it.
     ///
     /// # Errors
-    /// Reserved for callers that propagate operation errors.
+    /// Reports configuration serialization or durable write failures.
     pub fn persist(&self) -> crowdb_console_shared::error::Result<()> {
-        Ok(())
+        self.persist_standalone()
     }
 
     /// Get the runtime PID for a node.
