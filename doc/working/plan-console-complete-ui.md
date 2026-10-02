@@ -132,9 +132,9 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 - Existing Capacity test skips its totals comparison when DiskDB does not publish
   usage in its fixture. Scanner/maintenance controls pass; that skipped condition
   is not proof of totals correctness.
-- Add explicit fault injection for interrupted atomic config writes and sealed
-  bootstrap intent replay; startup tests currently cover malformed preservation
-  and real before/after-init recovery, not every interruption boundary.
+- Atomic config publication failure and sealed bootstrap-intent replay now pass
+  focused regressions. Extend coverage to process interruption during Group 0
+  publication; not every interruption boundary has been exercised.
 - Extend Chunk acceptance with multi-owner partial recovery and layout-change
   races; current coverage combines validation, a Mirror/EC UI fixture and a real
   routed S3 Chunk from the managed chain.
@@ -150,3 +150,11 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 - Final new browser regressions: Chunk windowing and S3 part marker/credential
   scope checks, 4 passed; native managed chain rechecked after final assets,
   1 passed. Isolated test supervisor stopped after verification.
+
+- Final startup tests: 5 passed, including non-writable publication preserving
+  previous bytes and restart consuming sealed intent to initialize Group 0.
+- Live Capacity inspection: physical disk topology survives, but Group 0's
+  DiskDB instance query returns `[]`. Existing DiskDB logs repeatedly report
+  `owned disk-group has no bind dg_id=1`; no runtime/config data was changed to
+  conceal this condition. Native managed acceptance has valid registration/binds.
+  Investigate this existing standalone deployment state separately.

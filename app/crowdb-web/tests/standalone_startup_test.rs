@@ -150,7 +150,17 @@ async fn standalone_recovers_kv_before_and_after_group0_init() {
     drop(web);
     let web = start(root.path(), &http).await;
     assert_eq!(get(&web, &http, "/api/servers").await[0]["health"], "up");
-    post(&web, &http, "/api/cluster/init", json!({"nodes":[1]})).await;
+    let directory = root.path().join("persistent/console/default");
+    let config: crowdb_console_shared::ConsoleConfig =
+        serde_json::from_slice(&std::fs::read(directory.join("config.json")).unwrap()).unwrap();
+    crowdb_console_shared::bootstrap_intent::BootstrapIntent::capture(&config, &[1])
+        .unwrap()
+        .seal(&directory.join("bootstrap-intent.toml"))
+        .unwrap();
+    drop(web);
+    let web = start(root.path(), &http).await;
+    assert!(!directory.join("bootstrap-intent.toml").exists());
+    assert_eq!(get(&web, &http, "/api/stores").await[0]["store_id"], 0);
     post(&web, &http, "/api/stores", json!({"store_id":7,"nodes":[1]})).await;
     post(
         &web,
@@ -197,6 +207,35 @@ fn malformed_standalone_config_is_preserved_and_rejected() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("config.json"));
     assert_eq!(std::fs::read_to_string(path).unwrap(), "broken config");
+}
+
+#[test]
+fn failed_standalone_publication_preserves_complete_previous_config() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir_in_test_data("standalone-write-failure");
+    let state = crowdb_web::AppState::open_standalone(root.path().to_path_buf()).unwrap();
+    let path = root.path().join("config.json");
+    let before = std::fs::read(&path).unwrap();
+    state
+        .config
+        .write()
+        .unwrap()
+        .racks
+        .push(crowdb_console_shared::config::RackEntry {
+            id: 42,
+            name: "new-rack".into(),
+        });
+    let permissions = std::fs::metadata(root.path()).unwrap().permissions();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let result = state.persist();
+    std::fs::set_permissions(root.path(), permissions).unwrap();
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    state.persist().unwrap();
+    let reopened = crowdb_web::AppState::open_standalone(root.path().to_path_buf()).unwrap();
+    assert_eq!(reopened.config.read().unwrap().racks[0].id, 42);
 }
 
 #[tokio::test]

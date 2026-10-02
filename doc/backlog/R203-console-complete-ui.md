@@ -1,53 +1,72 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R203: console — 完整 Web UI 与 Container 操作界面
+### R203: console — Complete Web UI and Container Operations Interface
 
 #### Problem
 
-- 当前 Web 的顶层入口是 Cluster、KV、Capacity。Cluster 展示物理布局；
-  KV 提供逻辑资源管理与键值操作；Capacity 提供 DiskDB 容量操作。
-- Capacity 内的 Chunk 子页仍复用拓扑画布，没有完整的 Chunk 列表、Strip
-  组成和实际落盘位置展示。Iceberg、S3 没有对应的顶层操作页。
-- Container 当前进入独立的 `ManagedPreview`，无法使用完整 Console。
-  Container 应具有相同的数据操作界面，但物理拓扑与进程部署由部署配置、
-  crowdb-monitor 管理，用户不能从 Web 改写这些信息。
-- 独立 Web 的首次引导不能要求先存在 Group 0。用户应能从空 UI 添加
-  Rack、Node、部署 Server，然后在 KV 中初始化 Group 0。此前删除本地
-  临时配置及恢复入口的改动打断了此流程。当前分支的修复尚未完成全面验证，
-  本需求不能把它当作已验收的持久化能力。
-- 具体场景：定位一个 Iceberg/S3 请求使用的存储资源；检查一个 Chunk 的
-  Mirror/EC Strip 落在哪个 Node、DiskGroup、Disk；重启 Web 后继续管理
-  原集群；在 Container 中执行数据 CRUD 而不改变物理部署。
-- 根设计：[Console architecture](../design/console/design-crowdb-console.md)、
-  [Console UI](../design/console/design-crowdb-console-ui.md)。本需求修订独立
-  Web 的引导边界，保留 Container 中 Group 0 为已初始化配置权威的原则。
+- The current top-level Web tabs are Cluster, KV, and Capacity. Cluster shows
+  the physical layout; KV provides logical resource management and key-value
+  operations; Capacity provides DiskDB capacity operations.
+- The Chunk subpage under Capacity still reuses the topology canvas. It lacks a
+  complete Chunk list, Strip composition, and actual physical placement views.
+  Iceberg and S3 have no corresponding top-level operations pages.
+- Container currently opens a separate `ManagedPreview` and cannot use the full
+  Console. Container should provide the same data operations interface, while
+  deployment configuration and crowdb-monitor manage physical topology and
+  process deployment. Users must not change these through the Web UI.
+- Initial standalone Web bootstrap must not require Group 0 to exist first.
+  Users should be able to add Racks and Nodes and deploy Servers from an empty
+  UI, then initialize Group 0 in KV. Earlier removal of local temporary
+  configuration and recovery entry points broke this flow. The fixes on the
+  current branch have not yet been fully verified; this requirement must not
+  treat them as accepted persistence capabilities.
+- Concrete scenarios: identify the storage resources used by an Iceberg/S3
+  request; inspect the Node, DiskGroup, and Disk holding a Chunk's Mirror/EC
+  Strips; continue managing the original cluster after restarting Web; perform
+  data CRUD in Container without changing physical deployment.
+- Root designs: [Console architecture](../design/console/design-crowdb-console.md)
+  and [Console UI](../design/console/design-crowdb-console-ui.md). This requirement
+  revises the standalone Web bootstrap boundary while retaining Group 0 as the
+  authority for initialized configuration in Container.
 
 #### Solution
 
-##### 1. 共用框架与信息架构
+##### 1. Shared Shell and Information Architecture
 
-- 五个顶层 tab：`Cluster | KV | Capacity | Iceberg | S3`。
-  用户可见名称为 Iceberg；仓库现有 `iceberge` 文档路径不在本需求中改名。
-- 共用 Header、左侧资源树/筛选、中间业务面板、右侧 Inspector。
-  Inspector 提供 Details 与 Activity，可折叠。左右栏可调整宽度。
-- 同域选择同步左树、中心内容和 Inspector。切换域清除不适用的选中实体。
-  跨域跳转携带目标身份；加载后展开目标，缺失目标给明确提示。
-- 查询/写入表单参考现有 KV 面板：作用域选择、操作栏、查询结果、选中项
-  编辑区。每个域显示自己的操作语义，不能把所有资源变成通用 JSON 编辑。
-- 每个 tab 有独立 scope：Cluster 为物理实体，KV 为 Store/Group，Capacity
-  为硬件容量或 Chunk prefix/ID，Iceberg 为 Catalog/Namespace/Table，S3 为
-  授权作用域/Bucket/prefix。scope 在对应面板明确可见；刷新、过滤、写操作
-  只作用于该 scope。切域可保留筛选，不能沿用其他域的写入目标。
-- Demo 操作分域提供，标注实际写入目标；KV 示例键、S3 示例对象及 Iceberg
-  示例表使用可识别的 demo 名称，确认清理的精确范围。禁止往 Group 0 系统
-  配置键写 demo。Chunk/Capacity 只展示真实数据，不注入假布局；没有数据时
-  引导到对应部署或数据写入流程。Demo 使用正常 API 与权限，不能绕过协议。
-- 查询列表使用服务端筛选与有界分页；默认每页 100 项，Load more 追加。
-  没有精确总数时只显示已加载数量及是否还有下一页，不扫描全域计算总数。
-- 修改操作等待后端结果再刷新对应资源，不用客户端缓存伪造成功。
-  Activity 记录当前会话的操作、目标、时间、结果和关联请求信息；它不承诺
-  作为持久化审计日志。不同域不会共用一个笼统的“Backend unreachable”。
+- Five top-level tabs: `Cluster | KV | Capacity | Iceberg | S3`. The user-facing
+  name is Iceberg; existing `iceberge` documentation paths are not renamed here.
+- Share the Header, left resource tree/filter, central domain panel, and right
+  Inspector. The Inspector provides collapsible Details and Activity views.
+  Both sidebars have adjustable widths.
+- Selection within a domain synchronizes the left tree, central content, and
+  Inspector. Switching domains clears inapplicable selected entities. Navigation
+  across domains carries the target identity, expands it after loading, and
+  reports missing targets explicitly.
+- Query/write forms follow the existing KV panel: scope selection, operation
+  toolbar, query results, and an editor for the selected item. Each domain shows
+  its own operation semantics; resources must not all become generic JSON editors.
+- Each tab has its own scope: physical entities for Cluster; Store/Group for KV;
+  hardware capacity or Chunk prefix/ID for Capacity; Catalog/Namespace/Table for
+  Iceberg; authorized scope/Bucket/prefix for S3. The corresponding panel clearly
+  displays its scope. Refresh, filters, and writes apply only to that scope.
+  Domain switches may retain filters, but must not reuse another domain's write
+  target.
+- Provide demo operations per domain and label their actual write targets. KV
+  sample keys, S3 sample objects, and Iceberg sample tables use recognizable demo
+  names; confirm the exact cleanup scope. Never write demo data to Group 0 system
+  configuration keys. Chunk/Capacity show real data only, without fabricated
+  layouts; empty states guide users to the relevant deployment or data write
+  flow. Demos use normal APIs and permissions and cannot bypass protocols.
+- Query lists use server-side filtering and bounded pagination, with 100 items
+  per page by default and Load more to append results. Without an exact total,
+  show only the loaded count and whether another page exists; do not scan the
+  whole domain to calculate totals.
+- Mutations wait for backend results before refreshing the relevant resources;
+  client caches must not fabricate success. Activity records operations, targets,
+  times, results, and associated request information for the current session.
+  It does not promise a durable audit log. Domains must not share one generic
+  “Backend unreachable” error.
 
 ```text
 +----------------------------------------------------------------------------+
@@ -61,31 +80,44 @@
 +-------------------+------------------------------------+-------------------+
 ```
 
-##### 2. 启动、配置权威与部署能力
+##### 2. Startup, Configuration Authority, and Deployment Capabilities
 
-- 独立 Web：无参数启动到固定 `default` 工作目录；首次为空，不自动创建
-  Rack、Node、Server 或 Group 0，也不自动部署示例集群。
-- Group 0 创建前，UI 的配置修改原子落盘到工作目录的临时配置文件；本地
-  启动信息与数据目录稳定。重启读取同一目录，恢复已配置的 Server。
-  仍存活的受管理进程应被重新识别，不能重复启动或仅凭旧 PID 控制进程。
-- KV Init 在已部署、可达的 KV 节点上创建 Group 0，确认将硬件、逻辑配置
-  写入 Group 0。保留可恢复的初始化意图，成功确认前不能删掉唯一引导信息。
-- 初始化后，Group 0 成为集群配置权威。本地只承担连接提示、私密凭据引用、
-  进程启动与恢复输入；本地缓存不能覆盖 Group 0，也不能在其不可达时变成
-  可写的备用拓扑。重启先恢复 Server/Group 0，再读取其已确认信息。
-- Header 显示 `Empty / Configuring / Initializing / Ready / Degraded /
-  Unavailable` 中对应状态。Web 可达但尚无 Group 0 不等于后端故障。
-  局部服务失败只影响相关功能；已初始化的 Group 0 不可达时显示配置不可用，
-  禁用依赖它的修改，保留诊断和受管理的恢复操作。
-- Container：相同五个 tab、相同资源展示。Rack、Node、Server 部署/删除、
-  进程启动/停止/重启、DiskGroup/Disk 添加/删除/移动/状态修改不可操作。
-  不允许手动 Init/Reset 已由 Container 管理的集群。
-- Container 可以在认证角色允许时进行 Store/Group/Replica 管理、用户 KV、
-  Iceberg、S3 数据操作，以及部署 profile 明确支持的存储运行时维护。
-  单节点 profile 的复制/EC 限制仍由服务端校验，不能通过 UI 绕过。
-- 权限按能力提供：拓扑修改、进程管理、逻辑管理、数据读/写、运行时维护。
-  页面整体 `readonly` 仍禁用所有写操作，但不能用它代替 Container 的
-  分域权限。隐藏/禁用按钮只是展示；后端也必须拒绝越权请求。
+- Standalone Web starts without arguments in a fixed `default` working directory.
+  Its initial state is empty: no automatic Rack, Node, Server, or Group 0 creation,
+  and no automatic sample cluster deployment.
+- Before Group 0 is created, UI configuration changes are atomically persisted
+  to a temporary configuration file in the working directory. Local launch
+  information and data directories remain stable. Restart reads the same
+  directory and restores configured Servers. Identify surviving managed processes
+  again; do not start duplicates or control a process solely by an old PID.
+- KV Init creates Group 0 on deployed, reachable KV nodes and confirms that
+  hardware and logical configuration has been written to Group 0. Preserve a
+  recoverable initialization intent; do not delete the only bootstrap information
+  before success is confirmed.
+- After initialization, Group 0 becomes the cluster configuration authority.
+  Local information serves only as connection hints, private credential
+  references, and process launch/recovery inputs. Local caches cannot override
+  Group 0 or become a writable fallback topology while it is unreachable. On
+  restart, restore Servers/Group 0 first, then read its confirmed information.
+- The Header shows the appropriate state from `Empty / Configuring / Initializing /
+  Ready / Degraded / Unavailable`. Reachable Web without Group 0 is not a backend
+  failure. Partial service failures affect only related features. When an
+  initialized Group 0 is unreachable, show configuration as unavailable, disable
+  dependent mutations, and retain diagnostics and managed recovery operations.
+- Container provides the same five tabs and resource views. Disable Rack, Node,
+  and Server deployment/deletion; process start/stop/restart; and DiskGroup/Disk
+  addition, deletion, movement, and status changes. Do not allow manual Init/Reset
+  of a cluster already managed by Container.
+- Container may allow Store/Group/Replica management, user KV, Iceberg, and S3
+  data operations when authorized by the authenticated role, along with storage
+  runtime maintenance explicitly supported by the deployment profile. The server
+  still validates replication/EC limits for single-node profiles; the UI cannot
+  bypass them.
+- Expose permissions as capabilities: topology mutation, process management,
+  logical management, data read/write, and runtime maintenance. Page-wide
+  `readonly` still disables all writes, but cannot replace Container's per-domain
+  permissions. Hidden/disabled buttons are presentation only; the backend must
+  also reject unauthorized requests.
 
 ```text
 first standalone start
@@ -106,19 +138,25 @@ restart -> local launch hints -> restore Servers/Group 0 -> confirmed config
                           Group 0 unavailable --+--> diagnostics, no fallback writes
 ```
 
-##### 3. Cluster：物理资源与 Server 生命周期
+##### 3. Cluster: Physical Resources and Server Lifecycle
 
-- 左侧：Datacenter → Rack → Node → Server。Server 按类型展示 KV、DiskDB、
-  DiskIO、ChunkDB、Chunk-KV、Access Server；仅展示实际支持/已部署的类型。
-  分配给 DiskDB 的 DiskGroup/Disk 可以在该 Server 下显示，未分配资源在
-  Capacity 管理。Server 名称带类型、实例身份与状态，避免混淆。
-- 中间：物理层级布局。一个 Node 卡片内列出所属 Server 和状态；Rack 包含
-  Node。图是导航和部署状态投影，不表示 KV 副本关系或 Chunk Strip 关系。
-- 操作：Add Rack、Add Node；Node 的 Deploy Server 按类型选择并校验启动
-  参数；Server 的 Restart/Stop/Delete；实体 Details 和所属资源跳转。
-  删除须明确影响范围；Container 隐藏物理修改操作并显示托管说明。
-- Group 0 初始化属于 KV；Cluster 可以提示下一步并跳转 KV Init，不重复
-  实现初始化业务。尚未提供完整部署能力的 Server 显示能力说明，不伪造入口。
+- Left panel: Datacenter → Rack → Node → Server. Show Servers by type: KV, DiskDB,
+  DiskIO, ChunkDB, Chunk-KV, and Access Server, displaying only types actually
+  supported/deployed. DiskGroups/Disks assigned to DiskDB may appear under that
+  Server; manage unassigned resources in Capacity. Server names include type,
+  instance identity, and status to avoid ambiguity.
+- Central panel: physical hierarchy layout. Each Node card lists its Servers
+  and their status; Racks contain Nodes. The diagram is a navigation and deployment
+  status projection, not a representation of KV replication or Chunk Strip
+  relationships.
+- Operations: Add Rack, Add Node; Deploy Server on a Node with type selection and
+  launch parameter validation; Restart/Stop/Delete on a Server; entity Details
+  and links to associated resources. Deletion must state its impact explicitly.
+  Container hides physical mutations and explains that deployment is managed.
+- Group 0 initialization belongs to KV. Cluster may suggest the next step and
+  link to KV Init, but must not duplicate initialization logic. Server types
+  without complete deployment support show capability information, without
+  fabricated operation entry points.
 
 ```text
 +-------------------+---------------------------------------+----------------+
@@ -133,20 +171,28 @@ restart -> local launch hints -> restore Servers/Group 0 -> confirmed config
 +-------------------+---------------------------------------+----------------+
 ```
 
-##### 4. KV：初始化、逻辑资源与键值 CRUD
+##### 4. KV: Initialization, Logical Resources, and Key-Value CRUD
 
-- 左侧改为逻辑树：Store → Group → Replica。物理资源管理留在 Cluster。
-  Replica 标注 Node、健康和 Leader；点击可跳转 Cluster 的所属 Server。
-- 未初始化时中间显示 Init 引导：选择已部署且可达的 KV 节点，展示将创建
-  Store 0/Group 0 及所选成员。无可用节点时引导到 Cluster Deploy。
-- 初始化后：管理 Store、Group、Replica；选中 Store 可扫描所有 Group，
-  选中 Group 进入其 KV 操作面板，选中 Replica 查看详情并保留所属 Group
-  作用域。Replica 管理调用现有成员变更流程，不能编辑裸配置替代它。
-- 中間为 Prefix/Key 筛选、Scan/Get、结果列表、选中键的 UTF-8/Hex
-  查看、Put/Delete、Load more。Put 编辑的是值；Key 改名必须明确为新建
-  和删除两个操作。扫描游标按 Group 独立保存，全 Store 结果标注 Group。
-- 系统 Store 0/Group 0 明确标为 System，普通用户 KV CRUD 不可改写系统
-  配置键。系统资源变更走对应管理操作；避免在通用 KV 面板破坏集群权威。
+- Replace the left panel with a logical tree: Store → Group → Replica. Physical
+  resource management stays in Cluster. Replicas show their Node, health, and
+  Leader status; selecting one can navigate to its Server in Cluster.
+- Before initialization, the central panel provides Init guidance: select
+  deployed, reachable KV nodes and show the Store 0/Group 0 to be created and
+  selected members. With no available nodes, guide users to Cluster Deploy.
+- After initialization, manage Stores, Groups, and Replicas. Selecting a Store
+  can scan all Groups; selecting a Group opens its KV operations panel; selecting
+  a Replica shows details while retaining its Group scope. Replica management
+  invokes the existing membership change flow, rather than editing raw
+  configuration as a substitute.
+- The central panel provides Prefix/Key filters, Scan/Get, a results list,
+  UTF-8/Hex views of the selected key, Put/Delete, and Load more. Put edits the
+  value; renaming a key must explicitly be two operations: creation and deletion.
+  Keep scan cursors independently per Group and label Group identities in
+  results spanning a Store.
+- Clearly label system Store 0/Group 0 as System. Ordinary user KV CRUD cannot
+  modify system configuration keys. System resource changes use the appropriate
+  management operations, preventing generic KV operations from damaging the
+  cluster authority.
 
 ```text
 +-------------------+---------------------------------------+----------------+
@@ -161,39 +207,54 @@ restart -> local launch hints -> restore Servers/Group 0 -> confirmed config
 +-------------------+---------------------------------------+----------------+
 ```
 
-##### 5. Capacity：DiskDB 容量与 ChunkDB 检查
+##### 5. Capacity: DiskDB Capacity and ChunkDB Inspection
 
-- 保留二级 `Capacity | Chunk`。Capacity 的左树是物理容量作用域；Chunk 的
-  左树是 Chunk 类型/prefix 分类，两者的筛选和选中实体分别管理。
-- Capacity 保留 Cluster/Rack/Node/DiskGroup/Disk 逐级容量、DiskDB 实例
-  状态、Zone 网格和 Bitmap；Scan/Recalc/Compact/Rebuild 显示准确作用域。
-  DiskGroup/Disk 管理仍在此域。Container 可查看全部层级；硬件修改禁止，
-  运行时维护依赖独立能力。单个实例不可达显示部分结果及缺失来源。
-- Chunk 子页默认是只读诊断，不提供裸 Chunk/Strip 删除或布局手工改写。
-  生命周期仍由所属业务和既有服务流程控制，避免绕过引用与回收规则。
-- 左侧分类使用 Chunk ID 的真实类型字节以及可输入的十六进制 prefix。
-  类型名/编码来自协议定义，不复制旧文档中的枚举数字。不认识的类型显示
-  原始值；ID 类型与记录不符显示异常。任意 prefix 筛选与类型分类可组合。
-- 分类是列表筛选，不是 ChunkDB hash range、KV Group 或存储所有权。
-  后端跨相关所有者执行有界查询，处理分页、路由变化与部分不可达；不能在
-  浏览器抓取整个 Chunk 集合再筛选。直接输入完整 ID 可定位单个 Chunk。
-- 中间上部：Chunk ID、类型、生命周期状态、版本/代次（若服务暴露）、
-  逻辑容量、已写入范围/使用情况（若服务可确认）、Strip 数量与查询时间。
-  已分配容量、已写字节、物理占用分开显示，缺失量不能推导为 0。
-- 中间下部：按逻辑顺序展示 Strip，使用 Strip 的稳定 sequence 身份；
-  删除/替换后不能按数组下标重新编号。Mirror 标注实际 copy 数，EC 标注
-  实际 k+m 和编码状态。同一 Chunk 可以包含不同布局，不假设全 Chunk
-  使用同一种 Mirror/EC 参数。
-- 点击 Strip：显示其覆盖的逻辑 offset/range、布局、写入/编码/健康状态、
-  Segment/fragment 明细。每个 fragment 显示 Mirror copy 或 EC data/parity
-  角色、Rack → Node → DiskGroup → Disk、物理 offset/length，以及协议
-  提供的分配单位信息。拓扑解析失败保留 Disk ID 并标注 Unknown。
-- 片段位置图采用有限可视窗口和按需详情；大量 Strip/fragment 不一次画成
-  全量关系网。布局记录与物理位置必须标注同一查询代次或分别标注观测时间；
-  正在转换/迁移时不能把两个版本拼成不存在的 Strip。
-- fragment 可跳转 Capacity 的具体 Disk；存在可验证 Zone 映射时才定位
-  Zone/Bitmap。Node/Server 跳转 Cluster。反向容量详情可链接到相关 Chunk
-  查询，但服务未提供反查能力时不虚构“此 Disk 上全部 Chunk”。
+- Retain the secondary `Capacity | Chunk` tabs. Capacity's left tree represents
+  physical capacity scopes; Chunk's left tree groups Chunk types/prefixes.
+  Manage their filters and selected entities separately.
+- Capacity retains hierarchical Cluster/Rack/Node/DiskGroup/Disk capacity,
+  DiskDB instance status, Zone grids, and Bitmaps. Scan/Recalc/Compact/Rebuild
+  show their exact scope. DiskGroup/Disk management remains in this domain.
+  Container can view every level; hardware mutations are prohibited and runtime
+  maintenance requires a separate capability. An unreachable instance yields
+  partial results identifying the missing source.
+- The Chunk subpage provides read-only diagnostics by default, without raw
+  Chunk/Strip deletion or manual layout rewriting. Lifecycle remains controlled
+  by the owning business and existing service flows, preserving reference and
+  reclamation rules.
+- Left-side grouping uses the actual type byte of Chunk IDs and a user-entered
+  hexadecimal prefix. Type names/encodings come from protocol definitions,
+  rather than copied enum numbers from old documents. Show raw values for unknown
+  types and flag mismatches between ID type and record. Arbitrary prefix filters
+  can be combined with type grouping.
+- Grouping is a list filter, not a ChunkDB hash range, KV Group, or storage
+  ownership boundary. The backend performs bounded queries across relevant owners,
+  handling pagination, routing changes, and partial unavailability. The browser
+  must not fetch all Chunks and then filter them. Entering a full ID locates a
+  single Chunk.
+- Upper central panel: Chunk ID, type, lifecycle state, version/generation (if
+  exposed), logical capacity, written ranges/usage (if confirmed by the service),
+  Strip count, and query time. Show allocated capacity, written bytes, and physical
+  usage separately; missing quantities must not be inferred as zero.
+- Lower central panel: Strips in logical order, using their stable sequence
+  identities. Do not renumber them by array index after deletion/replacement.
+  Mirror shows the actual copy count; EC shows actual k+m and encoding state.
+  One Chunk can contain different layouts; do not assume uniform Mirror/EC
+  parameters across it.
+- Selecting a Strip shows its logical offset/range, layout, write/encoding/health
+  state, and Segment/fragment details. Each fragment shows its Mirror copy or EC
+  data/parity role, Rack → Node → DiskGroup → Disk, physical offset/length, and
+  allocation unit information provided by the protocol. If topology resolution
+  fails, retain the Disk ID and label it Unknown.
+- Fragment placement diagrams use a bounded visible window and on-demand details;
+  do not render large Strip/fragment collections as one complete relationship
+  graph. Layout records and physical locations must show the same query generation
+  or their separate observation times. During conversion/migration, do not combine
+  two versions into a Strip that never existed.
+- Fragments can link to a specific Disk in Capacity. Locate Zone/Bitmap only with
+  a verifiable Zone mapping. Node/Server links navigate to Cluster. Capacity
+  details may link back to related Chunk queries, but must not fabricate “all
+  Chunks on this Disk” without a service supporting reverse lookup.
 
 ```text
 +-------------------+---------------------------------------+----------------+
@@ -221,26 +282,34 @@ Strip seq 8: EC 4+2 (example only; profile determines allowed placement)
   D3 -> N4 / DG401 / Disk d
 ```
 
-##### 6. Iceberg：Catalog、Namespace、Table 操作
+##### 6. Iceberg: Catalog, Namespace, and Table Operations
 
-- 左侧：当前可访问 Catalog → Namespace → Table。Header/操作栏显示当前
-  Catalog 与权限；只有一个 Catalog 时直接进入，不伪造多 Catalog 能力。
-- Namespace 支持 list/load/create/update properties/drop。Table 支持
-  list/load/create/rename/drop，以及服务广告支持的结构化 metadata commit。
-  请求沿用原生 Iceberg REST Catalog 语义，显示校验失败、冲突和未知结果。
-- 选中 Table 中间分为 `Overview | Schema | Snapshots | Files`：Overview
-  展示 UUID、location、format version、当前 snapshot；Schema 展示字段 ID、
-  类型、required、partition/sort spec；Snapshots 展示父关系、时间和摘要；
-  Files 展示该 Table 的受支持元数据引用与文件信息、授权下载。
-- Files 必须有已支持的表关联/manifest 读取来源。不能把任意原生 FileIO
-  全域 prefix listing 当作已实现能力；没有来源时显示明确的能力缺口。
-- Create Table 用 Schema 和属性表单；变更 Schema/properties 使用结构化
-  操作与明确前置版本，发生并发提交冲突后保留输入并要求重新确认。
-  Drop 明确区分取消目录注册和服务支持的物理清理语义，不默认为立即释放
-  全部底层空间。不能通过编辑 JSON 文件绕过 metadata commit。
-- Table 内逐行查询、Insert/Update/Delete 不由 REST Catalog 自动提供。
-  其 UI 设计与执行途径属于下面的 Open Questions，未决前不发布假的行 CRUD。
-  已知 Chunk 引用可跳转 Chunk 详情，没有引用则不猜测对象到 Chunk 的映射。
+- Left panel: currently accessible Catalog → Namespace → Table. The Header/toolbar
+  shows the current Catalog and permissions. Enter directly when there is only
+  one Catalog; do not fabricate support for multiple Catalogs.
+- Namespace supports list/load/create/update properties/drop. Table supports
+  list/load/create/rename/drop and structured metadata commits advertised by the
+  service. Requests retain native Iceberg REST Catalog semantics and show
+  validation failures, conflicts, and unknown outcomes.
+- Selecting a Table divides the central panel into `Overview | Schema | Snapshots |
+  Files`. Overview shows UUID, location, format version, and current snapshot;
+  Schema shows field IDs, types, required flags, and partition/sort specs;
+  Snapshots shows parent relationships, times, and summaries; Files shows
+  supported metadata references and file information for that Table, with
+  authorized downloads.
+- Files requires a supported source for table-associated references/manifest
+  reads. Do not treat arbitrary native FileIO listing across all prefixes as an
+  implemented capability; explicitly show the capability gap when no source exists.
+- Create Table uses Schema and property forms. Schema/property changes use
+  structured operations and an explicit prerequisite version. After a concurrent
+  commit conflict, retain input and require reconfirmation. Drop distinguishes
+  Catalog deregistration from physical cleanup semantics supported by the service;
+  it must not imply immediate release of all underlying space. Editing JSON files
+  cannot bypass metadata commits.
+- REST Catalog does not automatically provide row queries or Insert/Update/Delete
+  within a Table. Their UI design and execution path belong to Open Questions
+  below; do not publish fabricated row CRUD while unresolved. Known Chunk references
+  may link to Chunk details; without references, do not guess object-to-Chunk mappings.
 
 ```text
 +-------------------+---------------------------------------+----------------+
@@ -254,23 +323,30 @@ Strip seq 8: EC 4+2 (example only; profile determines allowed placement)
 +-------------------+---------------------------------------+----------------+
 ```
 
-##### 7. S3：Bucket 与 Object CRUD
+##### 7. S3: Bucket and Object CRUD
 
-- 左侧：当前授权 S3 作用域 → Bucket → prefix。prefix 是 key 的虚拟分组，
-  不是可独立删除的目录；键中的大小写、重复斜杠等按协议保留。
-- 中间：Bucket selector、prefix/key 查询、对象分页列表、选中对象预览和
-  操作区。列表标注 Key、size、ETag、last modified（服务提供时）。
-- Bucket 支持 create/list/head/delete；非空 Bucket 的删除错误原样展示，
-  不隐式递归删除。Object 支持 upload/replace、head/get/download、delete。
-  Update 是替换对象内容，不能把 ETag 当作内容或可编辑属性。
-- 小文本对象可有界预览 UTF-8/Hex 和编辑；超出预览上限或二进制文件使用
-  文件上传/下载。大对象保持流式与取消语义，不在 Web 或浏览器内整体缓冲。
-  Multipart 展示上传进度/状态；取消后报告是否仍有待处理上传，遵循既有
-  abort/recovery 语义。失败/结果未知不会被表示为已保存。
-- 首版不依赖 CopyObject、UploadPartCopy、批量 DeleteObjects、版本历史
-  或 IAM 管理。只有相应服务能力落地后才增加入口。
-- Object Inspector 显示可得的原生引用；通过授权管理查询才能跳转 Chunk，
-  不把 S3 key prefix 与 Chunk ID prefix 混为一种分类。
+- Left panel: current authorized S3 scope → Bucket → prefix. A prefix virtually
+  groups keys; it is not an independently deletable directory. Preserve key case,
+  repeated slashes, and other details according to the protocol.
+- Central panel: Bucket selector, prefix/key queries, paginated object list,
+  selected object preview, and operations. Lists show Key, size, ETag, and last
+  modified time when provided by the service.
+- Bucket supports create/list/head/delete. Display errors for deleting nonempty
+  Buckets as returned, without implicit recursive deletion. Object supports
+  upload/replace, head/get/download, and delete. Update replaces object contents;
+  ETag is neither content nor an editable property.
+- Small text objects allow bounded UTF-8/Hex previews and editing. Objects beyond
+  the preview limit and binary files use file upload/download. Large objects retain
+  streaming and cancellation semantics without full buffering in Web or the browser.
+  Multipart shows upload progress/status. After cancellation, report whether uploads
+  remain pending, following existing abort/recovery semantics. Failures and unknown
+  outcomes must not be shown as saved.
+- The first version does not depend on CopyObject, UploadPartCopy, batch
+  DeleteObjects, version history, or IAM management. Add entry points only after
+  the corresponding service capabilities are implemented.
+- The Object Inspector shows available native references. Navigation to Chunk
+  requires an authorized management query; S3 key prefixes and Chunk ID prefixes
+  must not be treated as the same classification.
 
 ```text
 +-------------------+---------------------------------------+----------------+
@@ -285,149 +361,227 @@ Strip seq 8: EC 4+2 (example only; profile determines allowed placement)
 +-------------------+---------------------------------------+----------------+
 ```
 
-##### 8. 服务边界、凭据与能力缺口
+##### 8. Service Boundaries, Credentials, and Capability Gaps
 
-- 浏览器统一通过 crowdb-web 的 API 前缀访问；KV、ChunkDB、DiskDB 查询由
-  `crowdb-console-shared` 与各自 typed client 复用；Iceberg/S3 通过 Access
-  Server 的真实协议操作，不直接修改其底层 KV/Chunk 元数据。
-- Access endpoint 来自确认的服务发现或受校验的部署输入。Iceberg Catalog
-  与 S3 Bucket 的作用域分别管理。切换 endpoint/作用域取消旧请求并清理
-  不再授权的数据，不把 A 集群响应插入 B 集群页面。
-- UI 登录/连接状态显示有效能力。S3 签名凭据和 Iceberg 的 read/write/
-  management 角色按现有协议分离；management token 不自动拥有 writer
-  权限。服务端持有的密钥不回传浏览器或写入 Group 0；客户端凭据输入与
-  存储政策须遵守所选部署的认证契约。
-- 后端提供可用能力和限制，前端不能只凭 domain 或 deployment 字符串猜测。
-  `readonly`、Container 硬件只读、当前认证角色、协议/profile 的限制合取。
-- 新增 UI 所需的 Chunk list/detail、placement lookup、Access proxy 和
-  capability API 都属于本需求交付范围。现有接口不足时补 typed adapter
-  或有界查询接口；不保留只能展示假数据的“已完成”面板。
-- 本需求不改变 ChunkDB 的分区模型、Mirror/EC 算法、原生数据协议、GC
-  或权限角色含义。既有能力缺口必须在 UI 明确表示。
+- Browser access consistently uses crowdb-web's API prefix. KV, ChunkDB, and
+  DiskDB queries reuse `crowdb-console-shared` and their typed clients. Iceberg/S3
+  use the Access Server's real protocols, without directly modifying underlying
+  KV/Chunk metadata.
+- Access endpoints come from confirmed service discovery or validated deployment
+  inputs. Manage Iceberg Catalog and S3 Bucket scopes separately. Switching
+  endpoints/scopes cancels old requests and clears data no longer authorized;
+  responses from cluster A must not appear on cluster B's page.
+- UI login/connection status shows effective capabilities. S3 signing credentials
+  and Iceberg read/write/management roles remain separate under existing protocols;
+  a management token does not automatically grant writer permissions. Server-held
+  secrets are not returned to the browser or written to Group 0. Client credential
+  entry and storage policies must follow the selected deployment's authentication
+  contract.
+- The backend supplies available capabilities and limits; the frontend cannot
+  infer them solely from domain or deployment strings. Apply `readonly`, Container
+  hardware read-only restrictions, the current authenticated role, and protocol/profile
+  restrictions together.
+- New Chunk list/detail, placement lookup, Access proxy, and capability APIs needed
+  by the UI are deliverables of this requirement. Where existing interfaces are
+  insufficient, add typed adapters or bounded query interfaces; do not retain
+  “complete” panels that can only show fabricated data.
+- This requirement does not change ChunkDB's partition model, Mirror/EC algorithms,
+  native data protocols, GC, or permission role meanings. The UI must explicitly
+  show existing capability gaps.
 
 Work items:
 
-1. 在 `app/crowdb-web/src/main.rs`、`state.rs`、`standalone/` 和
-   `mgmt/cluster_init.rs` 补全独立启动、临时配置、初始化与恢复契约；
-   `config/web.rs` 与 Container managed router 保持显式部署输入边界。
-2. 在 `ui/src/App.tsx`、`contexts/`、`shell/`、`views/` 实现五域框架、
-   能力控制、逻辑 KV 左树、空状态和跨域选择；减少根组件的领域业务堆积。
-3. 在 `lib/crowdb-console-shared/src/ops/` 与 Web 领域路由接通实际支持的
-   Server 生命周期；共用启动/恢复输入与结果，不为 Container 另建业务实现。
-4. 在 ChunkDB client、Web 新 Chunk 领域路由、`ui/src/views/ChunkView.tsx`
-   和领域组件补齐 Chunk 查询、真实 prefix 分组、Strip 和 placement 展示。
-5. 在 Web Access 领域适配层、`ui/src/api.ts`、新 Iceberg/S3 views 与领域
-   组件实现所列协议操作、流式传输、凭据/作用域和能力错误处理。
-6. 让 `ManagedPreview` 的模式分支进入共用 UI，复用 Group 0/monitor 投影，
-   后端与前端共同落实 Container 的权限；更新 Container 的 Web 验收。
-7. 维护领域类型、单元/集成/真实后端浏览器用例及永久 Console/UI 设计。
-   实施顺序、具体文件拆分和接口签名留给 working plan。
+1. Complete the standalone startup, temporary configuration, initialization, and
+   recovery contracts in `app/crowdb-web/src/main.rs`, `state.rs`, `standalone/`,
+   and `mgmt/cluster_init.rs`. Keep deployment input boundaries explicit in
+   `config/web.rs` and the Container managed router.
+2. Implement the five-domain shell, capability controls, logical KV tree, empty
+   states, and navigation across domains in `ui/src/App.tsx`, `contexts/`, `shell/`,
+   and `views/`. Reduce accumulated domain logic in the root component.
+3. Connect actually supported Server lifecycle operations in
+   `lib/crowdb-console-shared/src/ops/` and Web domain routes. Share launch/recovery
+   inputs and results instead of creating separate business logic for Container.
+4. Complete Chunk queries, actual prefix grouping, Strip views, and placement
+   views in the ChunkDB client, new Web Chunk domain routes,
+   `ui/src/views/ChunkView.tsx`, and domain components.
+5. Implement the listed protocol operations, streaming, credentials/scopes, and
+   capability error handling in the Web Access domain adapters, `ui/src/api.ts`,
+   new Iceberg/S3 views, and domain components.
+6. Route the `ManagedPreview` mode branch into the shared UI, reuse Group 0/monitor
+   projections, enforce Container permissions in both backend and frontend, and
+   update Container Web acceptance tests.
+7. Maintain domain types, unit/integration/browser tests using real backends, and
+   permanent Console/UI designs. Leave implementation order, detailed file
+   decomposition, and interface signatures to the working plan.
 
 #### Dependencies
 
-- 入依赖：现有 Console、KV CRUD/成员管理、DiskDB 容量 API、ChunkDB
-  ListChunks 与 chunk/strip records、Group 0 服务发现、原生 Iceberg REST
-  Catalog 与 FileIO、基本 S3/multipart，以及 Container profile/monitor。
-- 命名产物：[ChunkDB model](../design/chunkdb/design-crowdb-chunkdb.md)、
-  [Iceberg contract](../design/access-server/iceberge/design-crowdb-iceberg.md)、
-  [S3 contract](../design/access-server/s3/design-crowdb-access-s3.md)、
-  `container/single-node-container/profile.toml`、`ui/e2e/`。
-- R96 原为 ChunkDB Console/CLI 占位需求。本需求拥有完整 Web 界面，包括
-  Chunk 子页；R96 保留 CLI 范围及与本需求复用的操作能力，避免重复实现。
-- R202 的 ChunkDB partition 设计不阻塞只读浏览；当前路由查询必须服从
-  已落地的 ownership，后续适配新分区接口，不能先假定一种未来分区布局。
-- R193 不阻塞显示已有 Mirror/EC；UI 显示当前 profile 的真实限制，不开放
-  尚未落地的 failure-budget 配置。
-- R194 未完成前不承诺 Iceberg 全域 FileIO prefix listing；Files 页使用
-  已支持的 Table 关联引用，缺少可分页来源时交付明确的能力状态。
-- R198/R199 未完成不阻塞基本 S3 CRUD，不显示 copy/批量删除入口。
-  R168/R169/R147 的物理回收尚未完成时，删除成功只表示协议承诺的逻辑
-  删除，不能声称空间已回收。R189 的引擎集成未完成不能当作行 CRUD 基础。
-- 出依赖：本需求形成共用 UI/capability/领域 API 契约，供后续访问协议功能
-  和物理诊断扩展使用；不要求这些后续需求先落地。
+- Incoming dependencies: existing Console, KV CRUD/membership management, DiskDB
+  capacity APIs, ChunkDB ListChunks and chunk/strip records, Group 0 service
+  discovery, native Iceberg REST Catalog and FileIO, basic S3/multipart, and
+  Container profile/monitor.
+- Named artifacts: [ChunkDB model](../design/chunkdb/design-crowdb-chunkdb.md),
+  [Iceberg contract](../design/access-server/iceberge/design-crowdb-iceberg.md),
+  [S3 contract](../design/access-server/s3/design-crowdb-access-s3.md),
+  `container/single-node-container/profile.toml`, and `ui/e2e/`.
+- R96 was originally a placeholder for ChunkDB Console/CLI. This requirement owns
+  the complete Web interface, including the Chunk subpage. R96 retains the CLI
+  scope and shared operation capabilities to avoid duplicate implementation.
+- R202's ChunkDB partition design does not block read-only browsing. Current routed
+  queries must respect implemented ownership and later adapt to new partition
+  interfaces, without assuming a future partition layout now.
+- R193 does not block displaying existing Mirror/EC. The UI shows actual limits
+  of the current profile and does not expose unimplemented failure-budget settings.
+- Until R194 is complete, do not promise Iceberg FileIO listing across all prefixes.
+  Files uses supported Table-associated references and supplies an explicit
+  capability state when no paginated source exists.
+- Incomplete R198/R199 do not block basic S3 CRUD; do not expose copy/batch deletion.
+  While physical reclamation in R168/R169/R147 remains incomplete, successful
+  deletion means only the logical deletion promised by the protocol, not reclaimed
+  space. Incomplete engine integration in R189 cannot serve as the basis for row CRUD.
+- Outgoing dependencies: this requirement establishes shared UI/capability/domain
+  API contracts for future access protocol features and physical diagnostics.
+  Those follow-up requirements need not land first.
 
 #### Acceptance
 
-- **A1 / 启动权威**：空 default 目录且无 Group 0 → 无配置启动 Web →
-  显示 Empty、可 Add Rack/Node，没有自动部署，也不提示后端不可达。E2E test
-- **A2 / 初始化前持久化**：添加 Rack、Node、部署 KV Server，未 Init →
-  终止 Web 后重新启动 → 配置与端口/数据目录保留，活进程重新识别，停止的
-  auto-start Server 恢复，不重复部署。Integration test
-- **A3 / 原子配置**：已有可读配置，注入写失败/中断 → 写入并重启 →
-  只能读取完整旧版或完整新版，错误被报告，损坏文件不被空配置覆盖。Integration test
-- **A4 / 初始化可恢复**：可用 KV 节点，初始化中断于创建或发布阶段 →
-  重启/重试 → 意图保留，成员身份不改变，全部配置确认写入 Group 0 后才
-  宣告 Ready。Integration test
-- **A5 / Group 0 权威恢复**：初始化并写入用户 KV，篡改本地拓扑缓存 →
-  停止 Web/Server 再启动 → Server 与 Group 0 恢复，显示 Group 0 配置，
-  原 KV 数据可读；不可达时不启用本地缓存写入。Integration test
-- **A6 / 三栏与跨域选择**：多种实体已存在 → 树/图选择、切换域、跨域跳转 →
-  Inspector 身份正确，目标展开，缺失目标明确提示，没有旧域实体残留。E2E test
-- **A7 / Cluster 责任**：多 Node、多类型 Server → 选择并部署实际支持的
-  Server、查看布局、Stop/Restart/Delete → 类型/状态/影响范围准确，KV Init
-  跳转而非重复实现；不支持类型无可执行假入口。E2E test
-- **A8 / KV 逻辑导航**：多 Store/Group/Replica，包含 Leader → 选择 Group
-  和 Replica → 左侧为逻辑树，Group 显示 CRUD，Replica 显示所属 Group，
-  可定位 Cluster Server；成员操作经过真实协议。E2E test
-- **A9 / KV CRUD 与游标**：不同 Group 中有超过一页的相同 prefix 键与
-  二进制值 → Scan/Load more/Get/Put/Delete → 游标按 Group 隔离、结果注明
-  Group，UTF-8/Hex 正确，写后刷新；系统配置键不接受普通 KV 修改。E2E test
-- **A10 / 局部服务失败**：一个 DiskDB 或 Access endpoint 不可达 → 查看各域 →
-  失败范围和部分结果明确，其他域仍可用，空域与失败域不混淆。E2E test
-- **A11 / Capacity 能力**：有 Disk/Zone/Bitmap → 逐级选择并执行获授权维护 →
-  图与请求作用域一致；缺失实例标记 Partial；维护限制由后端执行。E2E test
-- **A12 / Chunk prefix 与分页**：多 owner 中有多种类型、未知类型和大量 Chunk →
-  类型筛选、任意合法 hex prefix、ID lookup、Load more → 返回有界真实记录，
-  无 owner 遗漏伪装成完整结果，未知/不匹配类型标识明确，不展示虚构总数。Integration test
-- **A13 / Strip 正确性**：一个 Chunk 含 Mirror/EC 与不连续 seq → 选择 Chunk/
-  Strip → 按真实 logical range/稳定 seq 展示实际 copy/k+m 和编码状态，
-  不混淆逻辑容量、已写量与物理占用。E2E test
-- **A14 / Placement 一致性**：fragment 位于多个 Disk，期间发生布局版本变化，
-  一个 Disk 拓扑缺失 → 刷新并跨域跳转 → 不拼接不同布局，缺失位置标记 Unknown，
-  有据可查才定位 Zone，无反查接口不虚构反向结果。Integration test
-- **A15 / 有界渲染**：Chunk 含大量 Strip/fragment → 滚动并选择详情 →
-  仅渲染可视窗口和按需详情，选中 seq 稳定，不加载全量关系图。E2E test
-- **A16 / Iceberg CRUD**：有有效 writer 和支持的格式 profile → 创建/改属性/
-  删除 Namespace，创建/加载/改 Schema/rename/drop Table → 使用原生语义，
-  field ID/head/snapshot 准确，冲突保留输入，删除清理语义明确。Integration test
-- **A17 / Iceberg 能力边界**：Reader、manager、writer 及缺少 file-list 来源
-  的 Table → 操作或查看 Files → 角色不互相继承，未支持 listing/行 CRUD 不
-  伪装成功，metadata 更新不能走裸 JSON/file 覆盖。E2E test
-- **A18 / S3 CRUD**：授权 scope 中有空/非空 Bucket、文本和二进制对象 →
-  create/list/head/upload/get/replace/delete → 真实协议结果；非空 Bucket
-  不隐式清空，prefix 不被当目录，特殊 key 原样保留。Integration test
-- **A19 / 流式传输**：大对象与 multipart，上传中取消/断线 → 操作并恢复 →
-  内存有界，已确认字节/状态准确，未完成和未知结果不表示为成功。Integration test
-- **A20 / 凭据与作用域**：两个不同 endpoint/scope 和不同权限 → 查询未完成时
-  切换 → 旧响应不进入新 scope，密钥不出现在响应/Group 0/活动日志中，
-  所有越权请求后端拒绝。Integration test
-- **A21 / Container 共用 UI**：启动单节点 Container → 遍历五个域、执行获授权
-  用户数据 CRUD，直接请求物理修改/部署/Init/Reset → 共用 UI 可用，全部
-  硬件与进程管理写入拒绝，逻辑/数据能力按角色/profile 生效。E2E test
-- **A22 / 会话与写入反馈**：有失败、冲突、结果未知和成功操作 → 查看 Activity
-  并刷新页面 → 每次结果准确，没有缓存伪造成功；会话记录不被宣称持久审计。E2E test
-- **A23 / 独立 scope 与 demo**：各域分别选定作用域 → 切换域、刷新、执行
-  demo 并清理 → 写入目标始终可见且准确，只清理对应示例资源，不修改系统
-  元数据，不使用假 Chunk/Capacity 数据替代真实结果。E2E test
+- **A1 / Startup authority**: Empty default directory and no Group 0 → start Web
+  without configuration → show Empty, allow Add Rack/Node, perform no automatic
+  deployment, and show no backend-unreachable warning. E2E test
+- **A2 / Persistence before initialization**: Add Rack and Node and deploy a KV
+  Server without Init → terminate and restart Web → retain configuration, ports,
+  and data directories; identify live processes again, restore stopped auto-start
+  Servers, and avoid duplicate deployment. Integration test
+- **A3 / Atomic configuration**: Readable configuration exists; inject a write
+  failure/interruption → write and restart → read only a complete old or new
+  version, report errors, and never overwrite a corrupt file with empty
+  configuration. Integration test
+- **A4 / Recoverable initialization**: Available KV nodes; initialization is
+  interrupted during creation or publication → restart/retry → preserve intent
+  and member identities, and declare Ready only after all configuration is
+  confirmed written to Group 0. Integration test
+- **A5 / Recovery of Group 0 authority**: Initialize and write user KV, then tamper
+  with the local topology cache → stop and restart Web/Servers → restore Servers
+  and Group 0, display Group 0 configuration, and read original KV data; do not
+  enable local cache writes when Group 0 is unreachable. Integration test
+- **A6 / Three panels and selection across domains**: Various entities exist →
+  select in tree/diagram, switch domains, and navigate across domains → show the
+  correct Inspector identity, expand targets, explicitly report missing targets,
+  and retain no entity from the previous domain. E2E test
+- **A7 / Cluster responsibilities**: Multiple Nodes and Server types → select and
+  deploy supported Servers, inspect layout, Stop/Restart/Delete → show accurate
+  types, states, and impact; link to KV Init without duplicating it, and provide
+  no fabricated executable entry points for unsupported types. E2E test
+- **A8 / Logical KV navigation**: Multiple Stores/Groups/Replicas including a
+  Leader → select Groups and Replicas → show the logical tree, Group CRUD, and
+  the Replica's owning Group; locate its Cluster Server and use real protocols
+  for membership operations. E2E test
+- **A9 / KV CRUD and cursors**: More than one page of keys with the same prefix
+  and binary values in different Groups → Scan/Load more/Get/Put/Delete → isolate
+  cursors per Group, label results by Group, correctly display UTF-8/Hex, refresh
+  after writes, and reject ordinary KV changes to system configuration keys. E2E test
+- **A10 / Partial service failure**: One DiskDB or Access endpoint is unreachable →
+  view each domain → clearly show failure scope and partial results, keep other
+  domains usable, and distinguish empty domains from failed ones. E2E test
+- **A11 / Capacity capabilities**: Disks/Zones/Bitmaps exist → select each level
+  and perform authorized maintenance → match diagram and request scope, label
+  missing instances Partial, and enforce maintenance limits in the backend. E2E test
+- **A12 / Chunk prefixes and pagination**: Multiple owners hold many Chunks of
+  several types, including unknown types → filter by type and arbitrary valid hex
+  prefix, look up IDs, and Load more → return bounded real records, never present
+  missing owners as complete results, explicitly flag unknown/mismatched types,
+  and show no fabricated totals. Integration test
+- **A13 / Strip correctness**: One Chunk contains Mirror/EC and noncontiguous seq
+  values → select Chunk/Strip → show actual copy counts/k+m and encoding states
+  by real logical range/stable seq, keeping logical capacity, written quantity,
+  and physical usage distinct. E2E test
+- **A14 / Placement consistency**: Fragments span multiple Disks; layout version
+  changes during observation and one Disk lacks topology → refresh and navigate
+  across domains → do not combine different layouts, label missing locations
+  Unknown, locate Zones only with evidence, and fabricate no reverse lookup
+  results without an interface. Integration test
+- **A15 / Bounded rendering**: A Chunk contains many Strips/fragments → scroll
+  and select details → render only the visible window and on-demand details,
+  retain stable selected seq, and avoid loading a full relationship graph. E2E test
+- **A16 / Iceberg CRUD**: Valid writer and supported format profile → create,
+  update properties, and delete Namespaces; create/load/update Schema/rename/drop
+  Tables → use native semantics, show accurate field IDs/head/snapshots, retain
+  input on conflicts, and clarify deletion cleanup semantics. Integration test
+- **A17 / Iceberg capability boundaries**: Reader, manager, writer, and a Table
+  without a file-list source → operate or view Files → do not inherit permissions
+  across roles or fabricate successful unsupported listing/row CRUD; metadata
+  updates cannot use raw JSON/file overwrites. E2E test
+- **A18 / S3 CRUD**: Empty/nonempty Buckets and text/binary objects in an authorized
+  scope → create/list/head/upload/get/replace/delete → return real protocol
+  results, never implicitly empty nonempty Buckets, do not treat prefixes as
+  directories, and preserve special keys exactly. Integration test
+- **A19 / Streaming**: Large objects and multipart uploads, with cancellation or
+  disconnection during upload → operate and recover → bound memory, accurately
+  report confirmed bytes/status, and never present incomplete or unknown outcomes
+  as success. Integration test
+- **A20 / Credentials and scopes**: Two endpoints/scopes with different permissions →
+  switch while a query is pending → keep old responses out of the new scope,
+  exclude secrets from responses/Group 0/Activity logs, and reject every
+  unauthorized request in the backend. Integration test
+- **A21 / Shared Container UI**: Start single-node Container → visit all five
+  domains, perform authorized user data CRUD, and directly request physical
+  mutations/deployment/Init/Reset → provide the shared UI, reject all hardware
+  and process management writes, and apply logical/data capabilities according
+  to role/profile. E2E test
+- **A22 / Session and write feedback**: Failed, conflicting, unknown, and successful
+  operations exist → view Activity and refresh the page → report each result
+  accurately without fabricated cache success, and do not claim session records
+  are a durable audit log. E2E test
+- **A23 / Independent scopes and demos**: Select a scope in each domain → switch
+  domains, refresh, run demos, and clean up → keep write targets visible and
+  accurate, clean up only the relevant sample resources, leave system metadata
+  unchanged, and never substitute fabricated Chunk/Capacity data for real
+  results. E2E test
 
 #### Delivery status — 2026-10-03
 
-- 首版五域 UI、持久化启动恢复、真实 Chunk/Strip、Iceberg metadata CRUD、
-  S3 CRUD/multipart 和 Container 共用 UI 已实现。
-- 验证与剩余验收边界见 [implementation plan](../working/plan-console-complete-ui.md)。
-  Docker 镜像验证受本机镜像源代理拒绝连接阻断；完整服务链已在隔离目录中验证。
-- 本需求暂不关闭：保留下面需要用户决定的产品问题，以及 plan 中明确列出的
-  故障注入、多 owner 和传输边界验收工作。
+- The first version of the five-domain UI, persistent startup recovery, real
+  Chunk/Strip views, Iceberg metadata CRUD, S3 CRUD/multipart, and shared Container
+  UI has been implemented.
+- Verification and remaining acceptance boundaries are recorded in the
+  [implementation plan](../working/plan-console-complete-ui.md). Docker image
+  verification is blocked by connection refusal from the local image registry
+  proxy; the complete service chain has been verified in an isolated directory.
+- This requirement remains open: retain the product questions below that require
+  user decisions, along with the fault injection, multiple-owner, and transport
+  boundary acceptance work explicitly listed in the plan.
+
+#### Known issues / follow-up acceptance
+
+- In the existing standalone deployment on port 9090, Rack/Node/Disk topology is
+  readable and DiskDB processes are alive, but the Group 0 instance query returns
+  empty results. DiskDB logs repeatedly report missing binds for owned DiskGroups.
+  Registration/ownership/bind state needs diagnosis. This round preserved existing
+  data and processes and did not conceal the issue with automatic reassignment.
+  Registration and actual Chunk placement passed verification in the isolated
+  managed service chain; this does not establish that Capacity in the existing
+  deployment has recovered.
+- Docker image builds are affected by proxy connection refusal; acceptance inside
+  the actual image still needs to be rerun.
+- Further acceptance for Partial recovery across multiple owners, layout changes,
+  interruption during publication, and multipart disconnection/unknown outcomes
+  is recorded in the plan. Keep the corresponding acceptance items open until
+  this work is complete.
 
 #### Open Questions
 
-- **Iceberg 表内行操作**：首版只做 Namespace/Table metadata CRUD，还是同时
-  支持样本行读取与写入？推荐先完成 metadata CRUD；行查询需要选定真实
-  engine/client 执行途径，Insert/Update/Delete 还涉及文件生成、delete 语义
-  和原子 commit。不得把此决策隐藏在 Catalog API 的实现里。
-- **Iceberg/S3 到 Chunk 的业务引用**：首版只展示已经可查询的引用，还是新增
-  授权的对象到 Chunk 诊断查询？前者范围小但部分对象无法跳转；后者需要
-  明确业务身份、鉴权与分页，不能暴露全域内部引用。Chunk 独立浏览不受阻。
+- **Row operations within Iceberg Tables**: Should the first version provide only
+  Namespace/Table metadata CRUD, or also sample row reads and writes? Recommend
+  completing metadata CRUD first. Row queries require a real engine/client
+  execution path; Insert/Update/Delete also involve file generation, delete
+  semantics, and atomic commits. Do not hide this decision inside the Catalog
+  API implementation.
+- **Business references from Iceberg/S3 to Chunk**: Should the first version show
+  only references already queryable, or add authorized object-to-Chunk diagnostic
+  queries? The former has a smaller scope but leaves some objects without links;
+  the latter requires explicit business identity, authorization, and pagination,
+  without exposing internal references across the whole domain. Independent
+  Chunk browsing is not blocked.
 
 Implementation verification commands (record results when implemented; this
 documentation change does not run the implementation suites):
