@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R203** — Bump this line in the same commit when adding a new item.
+**Next R number: R204** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -100,6 +100,12 @@ Caches, selected ORC and container engine workflows remain separate.
   matrix. ORC is deferred independently under R186.
 
 ### High Priority
+
+- **[R203](R203-s3-principal-namespace-authorization.md)** — credential
+  principals and namespace authorization — Area: S3 / auth / namespace —
+  Define shared-realm or principal-scoped authority. Current accepted keys share
+  the configured listener namespace; copy/delete client tests do not certify
+  per-user bucket rights. Preserve user identity or explicitly bind realm keys.
 
 - **[R202](R202-chunkdb-key-partition-design.md)** — ChunkDB key partition
   model and storage ownership — Area: chunkdb / Paxos KV / chunk-kv — High

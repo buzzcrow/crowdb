@@ -30,6 +30,7 @@ pub enum S3Operation {
     ListMultipartUploads,
     CopyObject,
     UploadPartCopy,
+    DeleteObjects,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,6 +79,9 @@ pub fn classify(method: &Method, uri: &Uri) -> Result<S3Route, RouteError> {
     }
     let key = key.map(decode);
     let operation = match (method, key.as_deref(), query_value(uri.query(), "list-type")) {
+        (&Method::POST, None, _) if uri.query() == Some("delete") || uri.query() == Some("delete=") => {
+            S3Operation::DeleteObjects
+        }
         (&Method::PUT, None, _) => S3Operation::CreateBucket,
         (&Method::HEAD, None, _) => S3Operation::HeadBucket,
         (&Method::DELETE, None, _) => S3Operation::DeleteBucket,

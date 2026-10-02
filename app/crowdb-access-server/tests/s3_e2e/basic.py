@@ -18,6 +18,7 @@ from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
 
 import boto3
+from batch_delete import BatchDeleteCases
 from botocore.auth import S3SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.config import Config
@@ -41,7 +42,7 @@ class FragmentedBody(BytesIO):
         return super().read(fragment)
 
 
-class BasicS3CompatibilityTest(unittest.TestCase):
+class BasicS3CompatibilityTest(BatchDeleteCases, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         endpoint = os.environ.get("CROWDB_S3_E2E_ENDPOINT")

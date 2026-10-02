@@ -5,6 +5,7 @@
 
 import os
 import socket
+from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import md5, sha256
 from http.client import HTTPConnection, RemoteDisconnected
@@ -117,6 +118,14 @@ def main():
     assert client.get_object(Bucket=bucket, Key=copied)["Body"].read() == payload
     client.delete_object(Bucket=bucket, Key=copied)
     client.delete_object(Bucket=bucket, Key=key)
+    batch_key = "retry/batch-response-loss.bin"
+    client.put_object(Bucket=bucket, Key=batch_key, Body=payload)
+    batch_body = f"<Delete><Object><Key>{batch_key}</Key></Object></Delete>".encode()
+    drop_reply(endpoint, credentials, "POST", f"/{bucket}?delete", batch_body, 200,
+               {"Content-MD5": b64encode(md5(batch_body).digest()).decode()})
+    assert client.list_objects_v2(Bucket=bucket, Prefix=batch_key)["KeyCount"] == 0
+    retried = client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": batch_key}]})
+    assert [item["Key"] for item in retried["Deleted"]] == [batch_key]
 
     multipart_key = "retry/multipart.bin"
     part = b"multipart-response-loss" * 512

@@ -32,7 +32,7 @@ use hyper::body::Bytes;
 use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const TEST_COUNT: usize = 22;
+const TEST_COUNT: usize = 25;
 const SKIPPED_CASE: &str = "test_slow_signed_upload_releases_native_buffers";
 const COPY_CASES: &[&str] = &[
     "test_server_side_copy_preserves_bytes_and_supported_metadata",
@@ -40,6 +40,9 @@ const COPY_CASES: &[&str] = &[
     "test_copy_captures_source_before_overwrite_and_delete",
 ];
 const BOTO3_CASES: &[&str] = &[
+    "test_batch_delete_preserves_exact_keys_and_quiet",
+    "test_batch_delete_thousand_keys_and_unversioned_retry",
+    "test_batch_delete_rejects_entire_invalid_request",
     "test_signed_raw_http_wire_contract",
     "test_multipart_replaces_parts_and_publishes_selected_bytes",
     "test_independent_frontends_share_one_namespace",

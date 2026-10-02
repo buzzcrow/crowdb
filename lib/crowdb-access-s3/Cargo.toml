@@ -18,6 +18,7 @@ atomic-waker = "1"
 base64 = "0.22"
 bincode = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+crc = "3.3"
 crowdb-chunk-client = { path = "../crowdb-chunk-client" }
 crowdb-common = { workspace = true }
 crowdb-access-multipart = { path = "../crowdb-access-multipart" }
@@ -30,6 +31,7 @@ hmac = "0.12"
 httpdate = "1"
 md5 = "0.7"
 percent-encoding = "2"
+quick-xml = "0.38"
 libc = "0.2"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }

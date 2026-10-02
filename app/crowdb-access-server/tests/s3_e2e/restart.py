@@ -43,6 +43,11 @@ def main():
         assert client.put_object(Bucket=bucket, Key=overwritten_key, Body=new_payload)["ETag"] == new_etag
         client.put_object(Bucket=bucket, Key=deleted_key, Body=old_payload)
         client.delete_object(Bucket=bucket, Key=deleted_key)
+        batch_keys = ["persisted/batch-deleted-1", "persisted/batch-deleted-2"]
+        for batch_key in batch_keys:
+            client.put_object(Bucket=bucket, Key=batch_key, Body=old_payload)
+        result = client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": item} for item in batch_keys]})
+        assert [item["Key"] for item in result["Deleted"]] == batch_keys
         client.copy_object(Bucket=bucket, Key=copied_key, CopySource={"Bucket": bucket, "Key": key})
         upload_id = client.create_multipart_upload(Bucket=bucket, Key=multipart_key)["UploadId"]
         client.upload_part(Bucket=bucket, Key=multipart_key, UploadId=upload_id,

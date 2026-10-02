@@ -20,13 +20,16 @@ before deletion, while valid requests may have per-key failures.
 1. Extend `lib/crowdb-access-s3/src/route.rs` and the S3 wire/error layer for
    POST bucket `?delete`, with an explicit operation rather than ordinary PUT.
    Parse XML with bounded body size, depth, key length, and at most 1,000 keys.
-   Honor Quiet and the AWS integrity-header rules for the supported general
-   bucket surface. Reject malformed XML, bad checksums, excessive keys, and
+   Honor Quiet and require verified integrity for the supported general bucket
+   surface. Accept Content-MD5 and the CRC32 header emitted by the pinned boto3
+   serializer; CRC32 in place of MD5 is an explicit compatibility extension.
+   Verify every declared checksum and the signed payload hash. Reject malformed XML, bad checksums, excessive keys, and
    unsupported version-ID requests before any key is deleted.
 2. Add batch orchestration using `lib/crowdb-access-s3/src/object.rs` and
    `app/crowdb-access-server/src/s3/operations.rs`. Authenticate the bucket and
    apply the same per-key authorization as DeleteObject. Use bounded concurrency
-   and existing predecessor-fenced mutations, without a new global lock.
+   and the same ordered unconditional point mutations as DeleteObject, without
+   a new global lock or a preliminary per-object read/CAS.
 3. Return S3 DeleteResult XML with escaped keys and per-key Deleted/Error entries.
    Missing objects are successful deletes. Quiet suppresses successes but
    retains errors. A request-wide authentication/bucket/parse failure remains
@@ -37,6 +40,9 @@ before deletion, while valid requests may have per-key failures.
    deletion; do not claim exactly-once deletion across response loss.
 
 #### Dependencies
+
+- R203 defines per-principal namespace/grant authority. Batch deletion preserves
+  the current configured-listener realm and does not add or certify user ACLs.
 
 - Existing DeleteObject publication and cleanup behavior is reused; this does
   not implement versions, delete markers, or new physical reclamation rules.
@@ -58,9 +64,11 @@ before deletion, while valid requests may have per-key failures.
 - Given exactly 1,000 keys and escaped/unicode names, delete and parse the
   response with boto3; assert the full supported limit and exact key identity.
   Wire fidelity. E2E test.
-- Given another principal's bucket and a missing bucket, issue a batch; assert
-  request-level authorization/NoSuchBucket errors and no mutation. Isolation.
+- Given an invalid signature and a missing bucket, issue a batch; assert
+  request-level AccessDenied/NoSuchBucket errors and no mutation. Admission.
   E2E test.
+- Multi-principal bucket authorization is deferred to R203 because the existing
+  authentication interface does not propagate that identity to operations.
 - Given duplicate keys, a repeated request, and a concurrent PUT, execute
   deletion; assert documented duplicate and retry results and whole-generation
   visibility matching ordinary DeleteObject semantics. Publication ordering.

@@ -221,6 +221,30 @@ pub fn copy_result(etag: &str, modified_ms: u64, part: bool) -> String {
     output
 }
 
+#[must_use]
+pub fn delete_objects(results: &[(Vec<u8>, Result<(), crate::error::S3ErrorCode>)], quiet: bool) -> String {
+    let mut output = xml_start("DeleteResult");
+    for (key, result) in results {
+        match result {
+            Ok(()) if quiet => {}
+            Ok(()) => {
+                output.push_str("<Deleted>");
+                element(&mut output, "Key", &String::from_utf8_lossy(key));
+                output.push_str("</Deleted>");
+            }
+            Err(code) => {
+                output.push_str("<Error>");
+                element(&mut output, "Key", &String::from_utf8_lossy(key));
+                element(&mut output, "Code", code.code());
+                element(&mut output, "Message", code.message());
+                output.push_str("</Error>");
+            }
+        }
+    }
+    output.push_str("</DeleteResult>");
+    output
+}
+
 fn element(output: &mut String, name: &str, value: &str) {
     output.push('<');
     output.push_str(name);
@@ -242,6 +266,7 @@ fn iso8601(timestamp_ms: u64) -> String {
 fn push_escaped(output: &mut String, value: &str) {
     for character in value.chars() {
         match character {
+            '\r' => output.push_str("&#13;"),
             '&' => output.push_str("&amp;"),
             '<' => output.push_str("&lt;"),
             '>' => output.push_str("&gt;"),

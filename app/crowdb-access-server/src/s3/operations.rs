@@ -37,6 +37,7 @@ use super::{error_response, full_body, install_body_receive_provider, BoxError, 
 use crowdb_access_s3::wire;
 
 mod copy;
+mod delete;
 mod multipart;
 mod upload;
 
@@ -146,6 +147,7 @@ impl ProductionS3Operations {
             S3Operation::GetObject => self.get_object(route, &request, &request_id).await,
             S3Operation::ListObjectsV2 => self.list_objects(route, &request).await,
             S3Operation::DeleteObject => self.delete_object(route).await,
+            S3Operation::DeleteObjects => self.delete_objects(route, request).await,
             S3Operation::CopyObject => self.copy_object(route, &request).await,
             S3Operation::UploadPartCopy => self.upload_part_copy(route, &request).await,
             S3Operation::CreateMultipartUpload => self.create_multipart_upload(route, &request).await,

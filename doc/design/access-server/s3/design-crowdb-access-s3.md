@@ -46,6 +46,13 @@ S3 is authoritative for bucket and object visibility, overwrite behavior,
 listing position, multipart publication, deletion, and S3 credentials. It
 stores opaque data references rather than physical storage topology.
 
+The current listener uses one configured tenant for all accepted credentials.
+Signature verification authenticates a key but does not pass a user/grant
+identity to operations. Accepted keys therefore share that listener namespace;
+per-user bucket ACLs and IAM policies are not part of the installed surface.
+Namespace isolation currently means the configured tenant/bucket identity
+boundaries, not isolation between multiple accepted users on one listener.
+
 ## 3. HTTP data path
 
 PUT and multipart upload stream HTTP bodies into bounded CROWDB writers. GET
@@ -98,6 +105,22 @@ ends with CopyObjectResult, CopyPartResult, or an embedded Error. Clients must
 consume and validate the whole response. The body owns the copy future, cancels
 it on disconnect, and caps execution at 300 seconds. A retry after response loss
 can select a newer source generation; copy is not an exactly-once operation.
+
+DeleteObjects validates its entire request before issuing a mutation: at most
+1,000 nonempty UTF-8/XML keys of 1,024 bytes each, a 2 MiB body, and no versions
+or conditional object selectors. Content-MD5 is supported; verified CRC32 may
+replace it for the current SDK serializer. This is an explicit integrity
+compatibility extension to the general-bucket MD5 rule. Every supplied supported
+checksum and signed payload hash is verified; unknown integrity extensions are
+rejected. Neither missing integrity nor malformed XML can delete any key.
+
+A valid batch uses the same logical deletion as DeleteObject, sequentially in
+input order. Each occurrence of a duplicate key gets its own result, and absent
+keys are successes. Failures do not undo preceding successes; Quiet omits only
+success entries. Dropping the request cancels remaining work. Batch deletion is
+not a transaction or an exactly-once operation: retries converge for keys with
+no intervening writes, but can delete a new unversioned PUT after response loss.
+Physical reclamation remains independent of this request.
 
 Multipart uploads keep a durable session, current part pointers, and immutable
 part generations under one upload prefix. Replacing a part number advances its
