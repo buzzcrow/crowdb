@@ -248,7 +248,7 @@ A 2026-10-02 comparison used the same local single-node, one-mirror,
 Every measured group uploaded 128 distinct paths with Content-MD5, then read
 back every file. Concurrency was one or 32; the 32-client groups followed
 128 warmup uploads at that concurrency. The reference revision was cd5bede8;
-the measured implementation uses exact native owners, inline checksums,
+the measured implementation (c27f6fce) uses exact native owners, inline checksums,
 owner-view packing, 32-strip prefetch and bounded concurrent transport frames.
 These are individual process runs, not a throughput distribution or physical
 SSD benchmark. Sequential readback and background maintenance change pipeline
@@ -305,3 +305,34 @@ bound. DiskIO submits its disjoint ranges at bounded concurrent depth within
 the same batch and drains outcomes before one fsync and cursor publication.
 Waiting for each subdivision separately doubled tiny-object concurrent time
 in a diagnostic run; bounded overlap removed that doubled regression.
+
+### Consolidated acceptance
+
+After the native owner implementation, consolidated acceptance passed the full
+Iceberg library and default Access Server suites, nine native HTTP scenarios,
+three native catalog/namespace recovery cases with the pinned PyIceberg client,
+file storage restart, all nonignored GC control/capacity cases, and eighteen
+real-process shared-writer cases. These cover cross-strip readback, mirror repair,
+conversion, restart takeover and elasticity. Separate acceptance fixes preserve
+visible commit retries in the existing TableHead CAS, reduce retained response
+reservations, and terminate small pipelines after a pre-batch allocation failure.
+
+The final 5-MiB release profile recorded PUT 82 ms (3 GET, 1 CAS), UploadPart
+69 ms (5 GET, 1 CAS) and GET 24 ms (4 GET, no CAS). PUT and UploadPart each
+recorded zero small completions, six large strips and six writer feeds; PUT used
+one Chunk location. This is another null-DiskIO sample, not an SSD result or a
+stable latency distribution. The native path assembles socket reads into 1-MiB
+receive buffers before issuing large writes.
+
+The final release loader run used TPC-H SF=0.01 with eight upload workers and
+TPC-DS SF=0.01 with twenty-four workers against the same single-node fixture.
+All eight TPC-H and twenty-four TPC-DS tables uploaded, committed and passed row
+count verification, with no observed 503. The combined test completed in 61.94 s;
+that time includes cluster startup, generation, uploads, commits and verification.
+Run IDs were `ff518ccf7029449cb7fae2d7fc0491ae` and
+`0c321c0991ae44b0b1c8b7182d46ac09`. It is a functional concurrency acceptance
+sample rather than an upload-only throughput comparison.
+
+The ignored exhaustive crash matrix and additional Java/engine integration
+profiles were not rerun in this acceptance batch. The suites above and the
+recorded profiles establish the tested scope.
