@@ -66,7 +66,11 @@ fn only_independent_writer_receives_file_mutations() {
             .unwrap();
         let grant = credentials.grant();
         fingerprints.push(grant.principal);
-        for operation in [FileOperation::Head, FileOperation::Get] {
+        for operation in [
+            FileOperation::Head,
+            FileOperation::Get,
+            FileOperation::ListObjects,
+        ] {
             assert_eq!(grant.authorize(operation, &location, 100, 1000), Ok(()));
         }
         for operation in [

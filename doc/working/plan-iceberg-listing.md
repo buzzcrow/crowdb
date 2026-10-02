@@ -5,14 +5,15 @@
 
 Upstream: [native listing requirement](../backlog/R194-access-iceberg-object-listing.md).
 
-Goal: decide native listing from reproducible client evidence before choosing its address and visibility contract.
+Goal: support authorized native ListObjectsV2 while preserving existing exact-file operations and addresses.
 
 ## Tasks
 
-- [~] **Client request evidence**: trace PyIceberg exact-file existence/open and Arrow prefix selection using installed clients; inspect accepted Java/Rust FileIO and direct DuckDB boundary. Files: app/crowdb-access-server/tests/common/iceberg_listing_client.py; tools/pixi-tasks/test-iceberg-listing-client.sh; pixi.toml.
-- [ ] **Authority decision**: compare catalog, table and opaque routing scopes against existing table-bound credentials and two-catalog/two-table tests; record the selected scope only if listing is justified. Files: lib/crowdb-access-iceberg/src/file/credentials.rs; app/crowdb-access-server/tests/iceberg_file_request_test.rs.
-- [ ] **Supported contract**: retain exact-object adapters if no accepted workflow needs discovery; otherwise define published-file visibility and a bounded consistent pagination contract before implementing. Files: doc/backlog/R194-access-iceberg-object-listing.md; doc/design/access-server/iceberge/design-crowdb-iceberg.md.
-- [ ] **Acceptance and cleanup**: run focused client and native regression gates, commit verified work, remove requirement/index/plan only when its accepted scope is complete.
+- [x] **Client request evidence**: official PyIceberg/PyArrow probes distinguish exact file operations from intentional prefix selection; direct DuckDB and engine profiles remain under ecosystem acceptance. Files: app/crowdb-access-server/tests/common/iceberg_listing_client.py; tools/pixi-tasks/test-iceberg-listing-client.sh; pixi.toml.
+- [x] **Authority decision**: retain catalog-shaped bucket and require explicit table prefix; user confirmed listing is required alongside existing exact-file support. Files: doc/backlog/R194-access-iceberg-object-listing.md.
+- [x] **Supported contract**: implement bounded selected-file scans, table-bound list capability, authenticated live cursors, strict request parser and XML serialization; test publication/deletion, scope and official native clients. Files: lib/crowdb-access-iceberg/src/file/listing/; app/crowdb-access-server/src/iceberg/file_list_request.rs, file_list_response.rs, file_http/listing.rs; native tests and Pixi task.
+- [x] **Permanent contract**: document visibility, live pagination, slash delimiter, URL encoding, fixed epoch timestamp and independent S3 authority. Files: doc/design/access-server/iceberge/design-crowdb-iceberg.md.
+- [x] **Acceptance and cleanup**: focused client and native regression gates passed; commit verified work and remove requirement/index/plan.
 
 ## Files and verification
 
@@ -25,13 +26,8 @@ Goal: decide native listing from reproducible client evidence before choosing it
 
 - Official-client probe passed all four cases with PyIceberg 0.11.1 and PyArrow 25.0.0; both versions are resolved in pixi.lock.
 - Existing exact paths use HEAD/GET; missing exact paths trigger incidental listing; explicit FileSelector triggers intentional listing.
-- No running container was present during inspection; this probe does not claim container acceptance.
+- Native listing tests passed, including official PyArrow create/read/discovery and signed pagination/isolation requests.
+- Full Iceberg library and access-server suites, six listing cases, Rust formatting and clippy passed.
+- Single-node container E2E passed, including writes, directory discovery, service recovery and persisted-volume reads.
+- Native exact-file regression passed: 10 tests, including multipart restart/replay, ranges, slow sockets and concurrent uploads; 12 opt-in stress/crash/Java fixtures remain ignored in that invocation. The separate official native listing task passed both tests.
 - Copy and batch-delete drafts are preserved in the named Git stash and are outside this active requirement.
-
-## Blocked
-
-- Decision: retain exact-file adapters and close the native listing item, or support intentional table-scoped prefix discovery.
-- Evidence: exact existing files need no list operation; missing-file probes and default exact creation fail if directory fallback is rejected; explicit Arrow FileSelector intentionally lists. This does not establish a required Iceberg table workflow.
-- Alternatives: exact adapters keep the current address/authority model and avoid pagination state; intentional listing adds a supported discovery surface and requires choosing address scope, published-file visibility, and stable bounded pagination.
-- No accepted direct DuckDB/distributed-engine request trace establishes a clear product winner. The scope question was sent to the user; no address or visibility contract is chosen until answered.
-- Passing checks: official-client probe (4 cases), shell syntax, CI task registration, Rust formatting, workspace clippy and diff whitespace.

@@ -5,7 +5,7 @@
 
 #### Status
 
-Client research started; native listing remains unimplemented. Exact-object FileIO already supports the small TPC-H and TPC-DS loader flow; listing is not a prerequisite for that flow. The scope decision below remains necessary before changing addresses or exposing prefix discovery.
+Implementation in progress. Both exact-object FileIO and native `ListObjectsV2` are required. Preserve the current catalog-shaped bucket and authorize each listing through an explicit table prefix and a table-bound delegated credential.
 
 Observed with PyIceberg 0.11.1 and PyArrow 25.0.0 using
 `pixi run -e iceberg-e2e test-iceberg-listing-client`:
@@ -41,21 +41,21 @@ The current S3-shaped file location uses an encoded catalog ID in the URI author
 
 Research and record the exact API call sequences of PyIceberg, Arrow, DuckDB, and any engine accepted under R189. Distinguish incidental listing used for exact-object existence from intentional prefix discovery. Check the Iceberg FileIO and REST Catalog contracts separately; compatibility with an S3-shaped URI alone does not make S3 bucket/list semantics part of Iceberg.
 
-Choose an address model only after that research. The S3 request's bucket field could represent a catalog, a table, or an opaque native routing scope. Preserve catalog/table IDs as first-class Iceberg authorities and avoid creating general S3 bucket records or granting cross-table discovery by default. Document what each choice means for existing table locations, catalog isolation, credentials, pagination, and future multiple-catalog deployments. There is no historical-data compatibility requirement, but an address change must still be atomic for active tables and clients.
+Retain the catalog in the bucket field and the explicit `t/<table-id>/` prefix. A table-shaped bucket would unnecessarily change existing locations and credential vending; an opaque scope adds indirection without improving the existing table-bound grant. Require a complete table prefix on listing, reject bucket-wide discovery, and authorize catalog and table before scanning. General S3 records and credentials remain unrelated. No address migration is needed, including for future multiple-catalog deployments.
 
-If intentional listing is needed, implement only the chosen native listing contract:
+Implement the native listing contract:
 
 1. Extend `app/crowdb-access-server/src/iceberg/file_request.rs` and the native route selection to parse and validate `ListObjectsV2` parameters, including prefix, delimiter, continuation token, encoding, and page limit. Reject unsupported or ambiguous requests before storage access.
-2. Add authorized, bounded prefix scans over published file records in `lib/crowdb-access-iceberg/src/file/repository.rs` and its catalog storage. Return only files visible to the caller's table scope; exclude drafts, uncommitted uploads, losing CAS candidates, and retired files according to a documented visibility rule.
+2. Add authorized, bounded prefix scans over selected file-location records in `lib/crowdb-access-iceberg/src/file/repository.rs` and its catalog storage. Include every fully published immutable file in the table scope, even when not yet referenced by a committed snapshot. Exclude draft storage candidates without a selected location, incomplete uploads, losing CAS candidates and logically deleted files. This is object discovery, not current-snapshot enumeration. Return real lengths and ETags; native records lack wall-clock publication time, so expose the documented fixed epoch timestamp instead of inventing one.
 3. Extend `lib/crowdb-access-iceberg/src/file/credentials.rs` and credential vending only if a distinct list permission is needed. Bind it to the chosen routing scope and table authorization, with no privilege inherited from the general S3 service.
-4. Make pagination stable under concurrent publication and deletion. Bind continuation tokens to the caller, scope, prefix, delimiter, and listing generation or equivalent consistent cursor. Bound scan work and response size; reject malformed, expired, or cross-scope tokens.
+4. Use bounded forward live cursors with strict lexical progress. An unchanged eligible set has no omissions or duplicates. Publication before the cursor is observed only by a new traversal; deletion before a later page removes that entry; publication ahead may appear. A returned CommonPrefix advances past its entire subtree so it cannot repeat. Bind authenticated tokens to caller, credential nonce, catalog epoch, table, prefix, delimiter and encoding, with an expiry no later than the original credential. Bound each scan to 256 records/4 MiB and XML to 2 MiB; reject malformed, expired, or cross-scope tokens before scanning. Support at most 1,000 requested keys, zero-key pages, slash delimiter and URL encoding; reject unsupported selectors.
 5. Add protocol and official-client tests for clients shown by the research to require listing. Keep exact-object FileIO functional without listing and keep the separate general S3 authority unchanged.
 
 #### Dependencies
 
 - R189 client and engine acceptance supplies the observed call sequences and determines which listing cases have user value. Until this requirement is implemented, use an exact-object FileIO for clients that only need Iceberg table files.
 - The native file, catalog, and credential contracts in the [Iceberg design](../design/access-server/iceberge/design-crowdb-iceberg.md) define the present authority boundary. General S3 listing is not a fallback for native Iceberg files.
-- If research finds no client that needs intentional prefix listing, close this requirement with the client evidence and retain only exact-object FileIO adapters.
+- Listing is required independently of the ecosystem acceptance. Keep exact-object FileIO functional and verify default PyArrow missing-file probes and explicit prefix discovery against the native endpoint.
 
 #### Acceptance
 
@@ -68,10 +68,3 @@ If intentional listing is needed, implement only the chosen native listing contr
 - Given exact-object PyIceberg reads and writes, run the existing native FileIO tests after any routing change; assert they still work without `ListObjectsV2`. E2E test.
 
 Run `pixi run rs-fmt-check`, `pixi run rs-lint`, `pixi run cargo test -p crowdb-access-iceberg`, and `pixi run cargo test -p crowdb-access-server` for the implemented scope.
-
-#### Open Questions
-
-- Which supported client operations require intentional prefix listing rather than an exact-object existence or length check? Is the behavior required by the Iceberg FileIO or REST Catalog specification, or by a particular S3 client implementation?
-- Should the S3 bucket field map to a catalog, a table, or an opaque native routing scope? A catalog keeps existing locations compact but makes per-table isolation rely on key prefixes; a table makes isolation explicit but affects location and credential vending; an opaque scope allows routing evolution but is less readable to clients.
-- Should listing include only files reachable from current table snapshots, all retained snapshots, or every published immutable file awaiting reclamation? How should that choice interact with namespace/table deletion and concurrent commits?
-- Is a native `ListObjectsV2` endpoint worth maintaining if supported clients can instead use exact-object FileIO and Iceberg metadata enumeration?

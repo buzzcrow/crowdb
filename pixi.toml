@@ -90,6 +90,7 @@ maven = "3.9.*"
 
 [feature.iceberg-e2e.tasks]
 test-iceberg-listing-client = "bash tools/pixi-tasks/test-iceberg-listing-client.sh"
+test-iceberg-listing-native = "bash tools/pixi-tasks/test-iceberg-listing-native.sh"
 test-iceberg-native = "bash tools/pixi-tasks/test-iceberg-native.sh"
 test-java-iceberg-e2e = "bash tools/pixi-tasks/test-java-iceberg-e2e.sh"
 test-rust-iceberg-e2e = "bash tools/pixi-tasks/test-rust-iceberg-e2e.sh"

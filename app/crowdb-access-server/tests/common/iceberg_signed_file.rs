@@ -23,6 +23,33 @@ fn mac(key: &[u8], input: &str) -> Vec<u8> {
     signer.finalize().into_bytes().to_vec()
 }
 
+fn canonical_query(query: &str) -> String {
+    use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, NON_ALPHANUMERIC};
+    const ENCODING: &AsciiSet = &NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    let encode =
+        |value: &str| percent_encode(&percent_decode_str(value).collect::<Vec<_>>(), ENCODING).to_string();
+    if query.is_empty() {
+        return String::new();
+    }
+    let mut fields: Vec<_> = query
+        .split('&')
+        .map(|field| {
+            let (name, value) = field.split_once('=').unwrap_or((field, ""));
+            (encode(name), encode(value))
+        })
+        .collect();
+    fields.sort();
+    fields
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 pub struct TestFileClient {
     pub client: Client,
     pub credentials: crowdb_access_iceberg::file::FileCredentials,
@@ -177,8 +204,9 @@ impl TestFileClient {
         let md5_header = content_md5
             .as_ref()
             .map_or_else(String::new, |value| format!("content-md5:{value}\n"));
+        let signed_query = canonical_query(query);
         let canonical = format!(
-            "{}\n{path}\n{query}\n{md5_header}host:{host}\nx-amz-content-sha256:{hash}\nx-amz-date:{date}\nx-amz-security-token:{}\n\n{names}\n{hash}",
+            "{}\n{path}\n{signed_query}\n{md5_header}host:{host}\nx-amz-content-sha256:{hash}\nx-amz-date:{date}\nx-amz-security-token:{}\n\n{names}\n{hash}",
             method.as_str(), self.credentials.session_token()
         );
         let date_key = mac(

@@ -11,6 +11,8 @@ mod child;
 mod fault;
 #[path = "common/iceberg_file_lifecycle.rs"]
 mod lifecycle;
+#[path = "common/iceberg_file_listing.rs"]
+mod listing;
 #[path = "common/iceberg_upload_profiles.rs"]
 mod profiles;
 #[path = "common/iceberg_file_recovery.rs"]
@@ -156,6 +158,7 @@ async fn setup_with_bounds_and_file_limit(
             operations: FileOperations::new(&[
                 FileOperation::Head,
                 FileOperation::Get,
+                FileOperation::ListObjects,
                 FileOperation::Put,
                 FileOperation::CreateMultipart,
                 FileOperation::UploadPart,

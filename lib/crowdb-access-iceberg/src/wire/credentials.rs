@@ -140,6 +140,7 @@ impl FileDelegationLimits {
             FileOperations::new(&[
                 FileOperation::Head,
                 FileOperation::Get,
+                FileOperation::ListObjects,
                 FileOperation::Put,
                 FileOperation::CreateMultipart,
                 FileOperation::UploadPart,
@@ -148,7 +149,11 @@ impl FileDelegationLimits {
                 FileOperation::AbortMultipart,
             ])?
         } else {
-            FileOperations::new(&[FileOperation::Head, FileOperation::Get])?
+            FileOperations::new(&[
+                FileOperation::Head,
+                FileOperation::Get,
+                FileOperation::ListObjects,
+            ])?
         };
         let mut digest = Sha256::new();
         digest.update(b"crowdb-iceberg-file-principal-v1");

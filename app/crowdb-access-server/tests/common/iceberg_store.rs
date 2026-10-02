@@ -133,6 +133,46 @@ impl crowdb_access_iceberg::namespace::NamespaceStore for TestStore {
 
 #[async_trait]
 impl CatalogStore for TestStore {
+    async fn scan_file_locations(
+        &self,
+        scan: crowdb_access_iceberg::file::FileLocationScan,
+    ) -> Result<crowdb_chunk_kv_client::MultiScanPage, StoreError> {
+        let request = scan.request()?;
+        let snapshot = self.values.load_full();
+        let candidates: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _)| {
+                *key >= request.start.as_ref().unwrap() && *key < request.end.as_ref().unwrap()
+            })
+            .collect();
+        let mut items = Vec::new();
+        let mut bytes = 0;
+        for (key, value) in &candidates {
+            let cost = key.len() + value.bytes.len();
+            if items.len() == request.max_items || bytes + cost > request.max_bytes {
+                break;
+            }
+            bytes += cost;
+            items.push(crowdb_protocol::chunk_kv::RpcValue {
+                key: (*key).clone(),
+                value: value.bytes.clone(),
+                revision: value.revision,
+            });
+        }
+        let continuation =
+            (items.len() < candidates.len()).then(|| crowdb_chunk_kv_client::MultiScanContinuation {
+                direction: request.direction,
+                original_start: request.start,
+                original_end: request.end,
+                last_key: items.last().unwrap().key.clone(),
+                catalog_generation: 1,
+            });
+        Ok(crowdb_chunk_kv_client::MultiScanPage {
+            items,
+            continuation,
+            terminal_failure: None,
+        })
+    }
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         let value = self.values.load().get(key).cloned();
         if matches!(

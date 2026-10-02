@@ -29,6 +29,7 @@ use super::file_response::{FileS3ErrorCode, MultipartResponses};
 use super::file_upload::FileUploadBudget;
 
 mod delete;
+mod listing;
 mod metrics;
 mod multipart;
 mod stream;
@@ -52,6 +53,7 @@ pub(super) struct FileHttp {
     upload_metrics: Arc<UploadFlowMetrics>,
     region: String,
     limits: FileServiceLimits,
+    list_tokens: crowdb_access_iceberg::file::FileListTokens,
 }
 
 impl FileHttp {
@@ -92,6 +94,8 @@ impl FileHttp {
             return Err(FileGrantError::Invalid);
         }
         Ok(Self {
+            list_tokens: crowdb_access_iceberg::file::FileListTokens::new(secret)
+                .map_err(|_| FileGrantError::Invalid)?,
             repository: FileRepository::new(store.clone()),
             store: store.clone(),
             gc: GcRepository::new(store.clone()),
@@ -159,6 +163,11 @@ impl FileHttp {
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         if request.method() == Method::POST && matches!(request.uri().query(), Some("delete" | "delete=")) {
             return self.delete_objects(catalog, request, request_timeout).await;
+        }
+        if let Some(list) = super::file_list_request::parse_file_list(request.method(), request.uri())
+            .map_err(request_error)?
+        {
+            return self.list_files(catalog, &request, &list, request_timeout).await;
         }
         let file_request = FileRequest::parse(request.method(), request.uri()).map_err(request_error)?;
         let (root, authority) = catalog.status().await.map_err(catalog_error)?;

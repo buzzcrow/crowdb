@@ -104,10 +104,10 @@ Caches, selected ORC and container engine workflows remain separate.
   matrix. ORC is deferred independently under R186.
 - **[R194](R194-access-iceberg-object-listing.md)** — native object listing and
   S3-style address semantics — Area: Iceberg / native FileIO / clients —
-  **Deferred pending client and address-model research.** Determine which clients
-  need intentional prefix listing, whether the bucket field should identify a
-  catalog, table, or opaque scope, and implement a bounded authorized listing
-  contract only if that evidence warrants it.
+  **Acceptance in progress.** Retain catalog-shaped buckets and explicit table
+  prefixes; support bounded authorized ListObjectsV2 alongside exact FileIO.
+  Official PyArrow native discovery passes; container and exact-file regression
+  gates are running.
 
 ### High Priority
 
