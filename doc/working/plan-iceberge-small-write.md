@@ -134,12 +134,18 @@ retaining one safe publication point per table or file and explicit cleanup.
   24 TPC-DS tables without a 503; earlier failed runs completed only 4/8
   and 17/24, so their upload latency is not a comparable baseline.
 - The native 5 MiB HTTP profile starts the Iceberg GC disabled. Its last
-  run measured PUT 192 ms with 3 catalog GETs and 1 CAS, UploadPart 192 ms
-  with 23 GETs and 3 scans in the cluster-wide counter window, and GET
-  36 ms with 4 GETs. Concurrent Chunk-KV maintenance can contribute to
-  these aggregate counters. A deterministic store-count test observes one
-  part-record GET and one CAS per independent UploadPart; the earlier
-  session reload has been removed.
+  run measured PUT 237 ms with 3 catalog GETs and 1 CAS, UploadPart 205 ms
+  with 24 GETs and 3 scans in the cluster-wide counter window, and GET
+  37 ms with 4 GETs. Concurrent Chunk-KV maintenance can contribute to
+  these aggregate counters. The 5 MiB PUT and UploadPart each recorded
+  zero completed small writes, six successful large strips, and six writer
+  feeds; the published PUT used one Chunk location. The single-node
+  fixture uses a 1 MiB mirror strip and a 0.9 MiB routing boundary. The
+  HTTP receive path aggregates socket frames in a 1 MiB native buffer;
+  the older `FileTreeWriter` 64 KiB leaf path is not used by these requests.
+  A deterministic store-count test observes one part-record GET and one
+  CAS per independent UploadPart; the earlier session reload has been
+  removed.
 - The GC scheduler now defaults to one scan every 30 minutes after an
   immediate startup scan. The sample config uses the same interval, while
   test processes explicitly use 100 ms. A 20-minute purge deadline is an

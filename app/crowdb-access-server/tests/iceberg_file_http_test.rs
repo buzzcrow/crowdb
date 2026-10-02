@@ -435,6 +435,24 @@ fn catalog_delta(before: (u64, u64, u64, u64), after: (u64, u64, u64, u64)) -> S
     )
 }
 
+async fn upload_route_counts(client: &TestFileClient) -> (u64, u64, u64) {
+    let metrics: serde_json::Value = client
+        .client
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    (
+        metrics["chunk_small_write"]["completed"].as_u64().unwrap(),
+        metrics["upload_flow"]["strip_write_successes"].as_u64().unwrap(),
+        metrics["upload_flow"]["writer_feeds"].as_u64().unwrap(),
+    )
+}
+
 async fn file_request_counts(client: &TestFileClient) -> (u64, u64) {
     let response: serde_json::Value = client
         .client
@@ -456,10 +474,12 @@ async fn file_request_counts(client: &TestFileClient) -> (u64, u64) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "native null-DiskIO release performance fixture"]
 async fn native_file_5_mib_profile() {
-    let (_stack, _process, client, table) = setup().await;
+    let (stack, _process, client, table) = setup().await;
     let bytes = vec![0x5a; 5 * 1024 * 1024];
+    assert!(bytes.len() >= fixture_config().iceberg_small_write().threshold_exclusive());
     let object = path(table, "data/profile-put.bin");
     let before = catalog_counts(&client).await;
+    let route_before = upload_route_counts(&client).await;
     let started = Instant::now();
     let put = client.send(Method::PUT, &object, "", &bytes, true).await;
     let put_ms = started.elapsed().as_millis();
@@ -468,6 +488,34 @@ async fn native_file_5_mib_profile() {
         "iceberg 5MiB PUT: {put_ms}ms {}",
         catalog_delta(before, catalog_counts(&client).await)
     );
+    let route_after = upload_route_counts(&client).await;
+    assert_eq!(route_after.0 - route_before.0, 0, "5MiB PUT entered small-write");
+    assert!(
+        route_after.1 > route_before.1,
+        "5MiB PUT did not write large strips"
+    );
+    println!(
+        "iceberg 5MiB PUT route: small_completed={} large_strips={} writer_feeds={}",
+        route_after.0 - route_before.0,
+        route_after.1 - route_before.1,
+        route_after.2 - route_before.2
+    );
+    let store = stack.store().await;
+    let context = CatalogRepository::new(store.clone(), ClearBounds::default())
+        .unwrap()
+        .status()
+        .await
+        .unwrap()
+        .0
+        .context;
+    let published = FileRepository::new(store)
+        .load(context, &table.file("data/profile-put.bin").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let chunks = published.content.locations(published.length).unwrap().unwrap();
+    assert_eq!(chunks.len(), 1, "5MiB file should fit one configured chunk");
+    println!("iceberg 5MiB PUT chunks={}", chunks.len());
 
     let multipart = path(table, "data/profile-mpu.bin");
     let created = client
@@ -484,6 +532,7 @@ async fn native_file_5_mib_profile() {
         .0;
     let query = format!("partNumber=1&uploadId={upload}");
     let before = catalog_counts(&client).await;
+    let route_before = upload_route_counts(&client).await;
     let started = Instant::now();
     let part = client.send(Method::PUT, &multipart, &query, &bytes, true).await;
     let part_ms = started.elapsed().as_millis();
@@ -492,6 +541,22 @@ async fn native_file_5_mib_profile() {
     println!(
         "iceberg 5MiB UploadPart: {part_ms}ms {}",
         catalog_delta(before, catalog_counts(&client).await)
+    );
+    let route_after = upload_route_counts(&client).await;
+    assert_eq!(
+        route_after.0 - route_before.0,
+        0,
+        "5MiB UploadPart entered small-write"
+    );
+    assert!(
+        route_after.1 > route_before.1,
+        "5MiB UploadPart did not write large strips"
+    );
+    println!(
+        "iceberg 5MiB UploadPart route: small_completed={} large_strips={} writer_feeds={}",
+        route_after.0 - route_before.0,
+        route_after.1 - route_before.1,
+        route_after.2 - route_before.2
     );
     let manifest = format!(
         "<CompleteMultipartUpload><Part><ETag>{etag}</ETag><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>"
