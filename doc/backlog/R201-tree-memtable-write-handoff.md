@@ -54,8 +54,10 @@ Work items:
    publication, validation, rotation and scan memory ordering; observing zero
    without closing admission is insufficient. Keep reader reclamation separate
    so long-lived readers do not unnecessarily block write completion.
-3. Compare this with a shared write-reference count and synchronized admission,
-   as used in Pebble. Select registration bounds and slot reuse policy instead
+3. Compare this with Pebble's shared write references and RocksDB's write-group
+   completion plus queue barrier, described below. Preserve concurrent MemTable
+   insertion; a single consumer for all data writes is not the selected design.
+   Select registration bounds and slot reuse policy instead
    of assuming Tokio workers are the only writers: maintenance currently uses
    `spawn_blocking`, and public library callers can supply other threads.
 4. Separate reader-visible Freezing tables from drain eligibility in the tree.
@@ -64,6 +66,52 @@ Work items:
 5. Retain focused concurrent-batch regressions and restore any temporarily
    skipped S3 coverage once the chosen protocol is verified. Measure small
    and large batches at controlled concurrency before claiming performance gains.
+
+RocksDB reference protocol (an alternative for evaluation, not an adopted
+CROWDB implementation):
+
+- **Concurrent writes inside a group.** `LaunchParallelMemTableWriters`
+  initializes the group's atomic `running` count. Writers insert concurrently;
+  `CompleteParallelMemTableWriter` decrements that count. The last writer
+  performs group completion duties. This is a write-group count, not one
+  persistent counter attached to each MemTable.
+- **Pipelined write rotation uses a queue barrier.** The switch operation is
+  coordinated with the upstream writer queue. `WaitForMemTableWriters` creates
+  an empty `Writer` node and links it into the MemTable writer queue. If earlier
+  writers exist, it waits until the node becomes `STATE_MEMTABLE_WRITER_LEADER`.
+  Earlier groups can hand over leadership only after their inserts finish.
+  Once the barrier reaches the front, the helper clears the MemTable queue.
+  Together with upstream write admission ordering, this creates a boundary
+  after all old-table writes and before later writes. It is not merely a
+  snapshot observation that the queue happens to be empty.
+- **Ordinary writes use group ordering.** Without pipelined or unordered writes,
+  the prior write group completes before the next group starts. This still
+  permits concurrent insertion within the active group.
+- **Unordered writes use a pending count.** `WaitForPendingWrites` waits for
+  `pending_memtable_writes_` to reach zero for already admitted writes. The
+  count works within the surrounding admission protocol; copying only the
+  zero check would not stop a new writer from entering CROWDB's old table.
+- **Waiting is not completely lock-free.** Writer-state waiting starts with
+  spinning, may yield, and falls back to a mutex/condition variable for longer
+  waits. In pipelined mode, `WaitForPendingWrites` releases the DB mutex while
+  waiting on MemTable writers and reacquires it afterward. The unordered
+  count wait uses a mutex/condition variable. Evaluate these costs explicitly
+  against the requested lock-free CROWDB handoff.
+- **Adaptation boundary.** CROWDB currently allows independent apply calls and
+  background flush; it does not already have RocksDB's write-group admission
+  protocol. Any queue-barrier candidate must define who owns the admission
+  boundary and include maintenance relocation and snapshot import. A marker
+  inserted only into a flush queue cannot fence direct MemTable writers.
+
+For illustration, the pipelined MemTable queue is:
+
+```text
+concurrent write group 1 -> concurrent write group 2 -> switch barrier
+```
+
+The barrier becomes eligible only after both preceding groups finish. Later
+admission is coordinated upstream; this diagram does not imply a dedicated
+thread serially inserts every record.
 
 #### Dependencies
 
@@ -81,6 +129,12 @@ Work items:
   The [current implementation](https://github.com/facebook/rocksdb/blob/main/db/db_impl/db_impl.h)
   waits on memtable writers for pipelined writes and on pending write counts
   for unordered writes; normal write groups already provide a completion boundary.
+  Concrete queue and group-counter functions are in
+  [write_thread.cc](https://github.com/facebook/rocksdb/blob/main/db/write_thread.cc);
+  flush scheduling and switch call sites are in
+  [db_impl_write.cc](https://github.com/facebook/rocksdb/blob/main/db/db_impl/db_impl_write.cc).
+  PR 5716 is a discussion reference, not proof that that particular PR merged;
+  the current implementation is the behavior reference.
 - Until implementation lands, any test skip is a coverage exception only;
   it does not establish correctness or repair missing acknowledged records.
 
@@ -92,6 +146,10 @@ Work items:
 - Given a writer paused around announcement and validation, interleave
   rotation and a participant scan; assert it either safely completes on A or
   retries B without writing an already drained table (I1, I2). Unit test.
+- Given a queue-barrier candidate with one paused group and concurrent writers
+  inside that group, request a switch and submit a later batch; assert the
+  barrier cannot pass unfinished inserts, later admission cannot write the
+  old table, and group members remain concurrent (I1, I2, I4). Integration test.
 - Given completed and incomplete slots in A and concurrent queries, finish
   its flush; assert every acknowledged key remains visible and no record
   beyond the contiguous frontier is lost (I2, I3). Integration test.
@@ -117,7 +175,10 @@ Work items:
 - Fixed pre-registered slots or lazily registered reusable slots? Fixed slots
   bound scans but require explicit worker limits; lazy slots accommodate library
   callers but require a bounded reclamation/reuse policy.
-- Writer-owned announcements or shared write references? Announcements avoid
+- Writer-owned announcements, shared write references or a write-group barrier?
+  A barrier requires an admission/ordering protocol absent from the current
+  independent apply interface and may block later groups during rotation.
+  Announcements avoid
   shared increments but add scans and admission validation; references simplify
   completion detection but may contend at high batch rates.
 - Should explicit flush wait for admitted writes or return with Freezing tables
