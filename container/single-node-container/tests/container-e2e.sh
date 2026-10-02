@@ -45,7 +45,7 @@ start_container() {
     fi
     docker run -d --name "$name" \
         "${mount_args[@]}" \
-        -p 127.0.0.1:80:80 -p 127.0.0.1::81 -p 127.0.0.1::8080 \
+        -p 127.0.0.1:9092:9092 -p 127.0.0.1::9091 -p 127.0.0.1::9090 \
         "$image" >/dev/null
     for attempt in $(seq 1 240); do
         state=$(docker inspect --format '{{.State.Status}}' "$name")
@@ -71,9 +71,9 @@ port() {
 
 verify_public_services() {
     local iceberg_port s3_port web_port token
-    iceberg_port=$(port 80)
-    s3_port=$(port 81)
-    web_port=$(port 8080)
+    iceberg_port=$(port 9092)
+    s3_port=$(port 9091)
+    web_port=$(port 9090)
     curl --fail --silent --show-error --max-time 5 \
         "http://127.0.0.1:$s3_port/_crowdb/health/ready" >/dev/null
     curl --fail --silent --show-error --max-time 5 \
@@ -99,8 +99,8 @@ verify_clients() {
     AWS_ACCESS_KEY_ID=$(printf '%s\n' "$client_env" | sed -n 's/^AWS_ACCESS_KEY_ID=//p')
     AWS_SECRET_ACCESS_KEY=$(printf '%s\n' "$client_env" | sed -n 's/^AWS_SECRET_ACCESS_KEY=//p')
     ICEBERG_TOKEN=$(printf '%s\n' "$client_env" | sed -n 's/^ICEBERG_TOKEN=//p')
-    export CROWDB_PREVIEW_S3_ENDPOINT="http://127.0.0.1:$(port 81)"
-    export CROWDB_PREVIEW_ICEBERG_URI="http://127.0.0.1:$(port 80)"
+    export CROWDB_PREVIEW_S3_ENDPOINT="http://127.0.0.1:$(port 9091)"
+    export CROWDB_PREVIEW_ICEBERG_URI="http://127.0.0.1:$(port 9092)"
     pixi run -e s3-e2e python container/single-node-container/tests/s3-client.py "$operation"
     pixi run -e iceberg-e2e python container/single-node-container/tests/iceberg-client.py "$operation"
 }
@@ -117,10 +117,10 @@ verify_listener_failure_propagation() {
         config=/tmp/crowdb-access-listener-failure.toml
         case "$failed" in
             s3)
-                sed "s/0.0.0.0:80/127.0.0.1:18080/" /opt/crowdb/run/config/access.toml > "$config"
+                sed "s/0.0.0.0:9092/127.0.0.1:18080/" /opt/crowdb/run/config/access.toml > "$config"
                 ;;
             iceberg)
-                sed "s/0.0.0.0:81/127.0.0.1:18181/" /opt/crowdb/run/config/access.toml > "$config"
+                sed "s/0.0.0.0:9091/127.0.0.1:18181/" /opt/crowdb/run/config/access.toml > "$config"
                 ;;
             *) exit 2 ;;
         esac
@@ -128,8 +128,8 @@ verify_listener_failure_propagation() {
         . /opt/crowdb/data/secrets/server.env
         set +a
         export CROWDB_ACCESS_LOG_DIR=/tmp/crowdb-access-listener-failure-log
-        export CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:80
-        export CROWDB_S3_PUBLIC_URI=http://127.0.0.1:81
+        export CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9092
+        export CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9091
         exec /opt/crowdb/bin/crowdb-access-server --config "$config"
     ' _ "$failed" 2>&1); then
         echo "combined access process accepted an occupied $failed listener" >&2
@@ -147,7 +147,7 @@ verify_listener_failure_propagation() {
 
 verify_web_logical() {
     local web_port manage_token status
-    web_port=$(port 8080)
+    web_port=$(port 9090)
     manage_token=$(docker exec "$name" sed -n 's/^CROWDB_ICEBERG_MANAGE_TOKEN=//p' /opt/crowdb/data/secrets/server.env)
     [[ -n "$manage_token" ]]
     status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
@@ -336,7 +336,7 @@ docker exec "$name" cat /opt/crowdb/data/bootstrap/manifest.json | jq -e '.state
 kv_pid=$(docker exec "$name" cat /opt/crowdb/run/status/monitor.json | jq -er '.services.kv.pid')
 [[ $(docker exec "$name" readlink "/proc/$kv_pid/cwd") == /opt/crowdb/data/crash ]]
 verify_public_services
-node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 8080)" "$name"
+node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 9090)" "$name"
 echo "checking S3 and Iceberg client writes"
 verify_clients write
 echo "checking single-node protocol chunk layouts"
@@ -355,7 +355,7 @@ for service in kv diskdb diskio chunkdb chunk-kv access web; do
     verify_child_recovery "$service" STOP probe_failed
 done
 verify_public_services
-node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 8080)"
+node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 9090)"
 verify_clients read
 sleep 12
 docker exec "$name" crowdb-monitor readiness

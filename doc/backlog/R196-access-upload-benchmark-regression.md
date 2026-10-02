@@ -15,7 +15,7 @@ Consequently, a change can improve chunk IO while slowing S3 or Iceberg PUT,
 multipart part upload, or metadata publication without a comparable measurement.
 See the [access server design](../design/access-server/design-crowdb-access-server.md),
 [Iceberg upload-flow analysis](../design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md),
-and [shared upload-flow requirement](R195-access-shared-large-upload-flow.md).
+and [implemented upload-flow analysis](../design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md).
 
 #### Solution
 
@@ -115,12 +115,11 @@ Work items:
 
 - The existing local deployment facilities, access-server S3 and Iceberg
   HTTP routes, protocol credentials, and chunk IO benchmark artifact
-  conventions are the baseline. This requirement can produce an HTTP
-  performance baseline before R195 lands.
-- R195 supplies finer write-flow stage metrics. Until then, the benchmark
-  records available request and chunk IO metrics and marks absent R195 fields
-  unavailable rather than fabricating stage measurements. Once R195 lands,
-  the local sentinel requires those fields for both protocols.
+  conventions are the baseline. The shared upload flow is implemented and its current performance is accepted;
+  this requirement owns reproducible repeated measurements and regression gates.
+- The implemented shared upload flow supplies finer write-flow stage metrics.
+  The local sentinel requires those fields for both protocols and reports any
+  missing field explicitly rather than fabricating stage measurements.
 - Official client compatibility remains covered by the existing E2E suites;
   this benchmark's common producer isolates server upload performance from
   PyArrow or boto3 buffering. A separate client-inclusive profile may reuse

@@ -39,6 +39,13 @@ on-disk upgrade compatibility are not supported, and Dataset and direct GPU
 delivery are not available yet. The container's PyIceberg write and pandas
 example is in the [quick start](https://crowdb.dev/docs/quickstart/).
 
+The release workflow also publishes the same runtime as
+[`crowdb/crowdb-s3`](https://hub.docker.com/r/crowdb/crowdb-s3/tags), with
+matching version and `latest` tags. See the
+[S3 container example](container/single-node-container/README.md#s3-container-usage)
+for port mapping and boto3 setup. Either image can serve both interfaces from
+one container.
+
 - [Project homepage](https://crowdb.dev/)
 - [Quick start](https://crowdb.dev/docs/quickstart/)
 - [Documentation](https://crowdb.dev/docs/)

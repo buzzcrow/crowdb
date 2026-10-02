@@ -37,7 +37,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         endpoints,
-        BTreeMap::from([("iceberg", 80), ("s3", 81), ("web", 8080)])
+        BTreeMap::from([("iceberg", 9092), ("s3", 9091), ("web", 9090)])
     );
     let access_service = profile
         .services
@@ -46,13 +46,13 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         .unwrap();
     assert_eq!(
         access_service.env.get("CROWDB_ICEBERG_PUBLIC_URI"),
-        Some(&"http://localhost".to_owned())
+        Some(&"http://localhost:9092".to_owned())
     );
-    assert_eq!(access_service.probe.target, "http://127.0.0.1:80/v1/config");
+    assert_eq!(access_service.probe.target, "http://127.0.0.1:9092/v1/config");
     assert_eq!(access_service.additional_probes.len(), 1);
     assert_eq!(
         access_service.additional_probes[0].target,
-        "http://127.0.0.1:81/_crowdb/health/ready"
+        "http://127.0.0.1:9091/_crowdb/health/ready"
     );
     assert_eq!(
         access_service.additional_probes[0].failure_threshold,
@@ -69,20 +69,20 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
     )
     .unwrap();
     let access: toml::Value = toml::from_str(&access).unwrap();
-    assert_eq!(access["iceberg"]["listen"].as_str(), Some("0.0.0.0:80"));
-    assert_eq!(access["s3"]["listen"].as_str(), Some("0.0.0.0:81"));
+    assert_eq!(access["iceberg"]["listen"].as_str(), Some("0.0.0.0:9092"));
+    assert_eq!(access["s3"]["listen"].as_str(), Some("0.0.0.0:9091"));
     let web = profile
         .services
         .iter()
         .find(|service| service.id == "web")
         .unwrap();
-    assert_eq!(web.probe.target, "http://127.0.0.1:8080/healthz");
+    assert_eq!(web.probe.target, "http://127.0.0.1:9090/healthz");
     let template = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates/crowdb-web.toml"),
     )
     .unwrap();
     let config: toml::Value = toml::from_str(&template).unwrap();
-    assert_eq!(config["port"].as_integer(), Some(8080));
+    assert_eq!(config["port"].as_integer(), Some(9090));
 }
 
 #[test]

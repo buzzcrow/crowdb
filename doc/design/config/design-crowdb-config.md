@@ -151,8 +151,9 @@ topology and fresh monitor process status independently; missing authority does
 not produce an empty or cached topology. Hardware/process mutation is disabled,
 while authenticated logical operations use the existing operation paths.
 
-Only the container profile overrides public listeners to Iceberg 80, S3 81 and
-Web 8080. Bare-metal defaults remain independent. Container publication,
+Public examples and the container profile use Console 9090, S3 9091 and
+Iceberg 9092. Standalone Web defaults to 9090; explicit service configuration
+and managed deployment port allocations take precedence. Container publication,
 volume and endpoint usage are defined by the container deployment files.
 
 ## 7. Failure Handling

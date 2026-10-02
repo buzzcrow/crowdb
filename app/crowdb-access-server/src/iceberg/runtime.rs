@@ -64,7 +64,7 @@ impl IcebergRuntimeConfig {
             .listen
             .clone()
             .or_else(|| std::env::var("CROWDB_ICEBERG_LISTEN").ok())
-            .unwrap_or_else(|| "127.0.0.1:8181".into());
+            .unwrap_or_else(|| "127.0.0.1:9092".into());
         let _: std::net::SocketAddr = listen.parse()?;
         Ok(Self {
             listen,

@@ -31,7 +31,7 @@ chunk_capacity_bytes = 268435456
 small_strip_prefetch_count = 32
 
 [s3]
-listen = "127.0.0.1:8081"
+listen = "127.0.0.1:9091"
 tenant = "preview"
 region = "us-east-1"
 trusted_network = false
@@ -46,7 +46,7 @@ ec_code = 4
 max_chunk_size = 1073741824
 
 [iceberg]
-listen = "127.0.0.1:8181"
+listen = "127.0.0.1:9092"
 native_budget_bytes = 268435456
 max_chunk_size = 1073741824
 

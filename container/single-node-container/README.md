@@ -50,10 +50,21 @@ pixi run -- python tools/release.py --dry-run
 pixi run -- python tools/release.py --execute
 ```
 
-After the image passes container verification, publication updates both
-`crowdb/crowdb-iceberg:<version>` and `crowdb/crowdb-iceberg:latest` to the
-same image digest. Rerunning publication from an older release branch also
-updates `latest`, so use the newest release branch for the blog's moving tag.
+After the image passes container verification, publication updates four tags
+to the same image digest:
+
+- `crowdb/crowdb-iceberg:<version>` and `crowdb/crowdb-iceberg:latest`.
+- `crowdb/crowdb-s3:<version>` and `crowdb/crowdb-s3:latest`.
+
+The repositories provide separate entry points for Iceberg and S3 users. Both
+contain the same runtime, including one Access Server listening on Iceberg
+port 9092 and S3 port 9091. Publish the ports needed by the client; using both
+interfaces requires only one container. The container verification runs boto3
+S3 and PyIceberg clients against that runtime, including reads after recovery
+and persisted-volume restart.
+
+Rerunning publication from an older release branch also updates both `latest`
+tags, so use the newest release branch for moving tags.
 
 The script only dispatches the workflow; it does not change files or push.
 The dry run does not contact GitHub.
@@ -61,12 +72,72 @@ The dry run does not contact GitHub.
 The workflow builds and tests the container, then waits for DockerHub environment approval.
 Before publishing, it checks that the remote branch still points to the same
 commit. A newer branch commit requires a new run. Each successful run replaces
-`crowdb/crowdb-iceberg:<version>` and signs the new image digest. It does not
+both repositories' version and `latest` tags and signs the digest in each
+repository. It does not
 create a Git tag or GitHub Release. Fix a failed candidate on the release
 branch and run the workflow again.
 
 The workflow archives the verified runtime, then packages those same files in
 its publish job without recompiling them.
+
+## Public ports
+
+The default host mappings match the container listener ports:
+
+- Console: `9090:9090`, optional.
+- S3: `9091:9091`.
+- Iceberg catalog and native FileIO: `9092:9092`.
+
+Port `9093` is reserved for future Dataset access; the current image does not
+listen on it.
+
+Publish only the interfaces needed by the client. The generated default client
+addresses use `localhost` with these ports. An Iceberg deployment with a different
+host name or mapped port must also configure its advertised public URI; changing
+the catalog connection URI alone does not change delegated FileIO endpoints.
+The Access Server runs as the existing unprivileged user without a low-port
+binding capability.
+
+## S3 container usage
+
+Start the published S3 image with a named data volume and map host port 9091
+to the container's S3 port 9091:
+
+```sh
+docker run -d --name crowdb-s3 \
+  --mount type=volume,source=crowdb-s3-data,target=/opt/crowdb/data \
+  -p 127.0.0.1:9091:9091 \
+  crowdb/crowdb-s3:latest
+docker inspect --format '{{.State.Health.Status}}' crowdb-s3
+```
+
+Wait for `healthy`, then obtain the generated client credentials:
+
+```sh
+docker exec crowdb-s3 crowdb-monitor credentials show --format env
+```
+
+Configure boto3 with endpoint `http://127.0.0.1:9091`, the displayed AWS
+credentials and region, and path-style addressing:
+
+```python
+import boto3
+from botocore.config import Config
+
+client = boto3.client(
+    "s3",
+    endpoint_url="http://127.0.0.1:9091",
+    config=Config(s3={"addressing_style": "path"}),
+)
+client.create_bucket(Bucket="example")
+client.put_object(Bucket="example", Key="hello.txt", Body=b"hello")
+print(client.get_object(Bucket="example", Key="hello.txt")["Body"].read())
+```
+
+Set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_DEFAULT_REGION`
+in the client's environment using the displayed values before running this
+example. To use Iceberg from the same container, also map container port 9092.
+These published images use the single-node development profile described above.
 
 ## Crash collection boundary
 

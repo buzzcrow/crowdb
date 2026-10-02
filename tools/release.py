@@ -65,8 +65,9 @@ def main() -> None:
 
     branch = release_branch()
     print(f"Dispatch release-container.yml on {branch}", flush=True)
-    print(f"Image tag: crowdb/crowdb-iceberg:{branch.removeprefix('release/')}", flush=True)
-    print("Also updates: crowdb/crowdb-iceberg:latest", flush=True)
+    for repository in ("crowdb/crowdb-iceberg", "crowdb/crowdb-s3"):
+        print(f"Image tag: {repository}:{branch.removeprefix('release/')}", flush=True)
+        print(f"Also updates: {repository}:latest", flush=True)
     if args.dry_run:
         return
 
