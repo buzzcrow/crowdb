@@ -704,7 +704,11 @@ but selected ORC validation and compute-engine certification are separate work.
   validators separately cover position deletes, v3 lineage, deletion vectors,
   defaults, nested/variant types, integer encodings and nullable values.
 - **Statistics:** `TestIcebergCatalogWrites` and the official partition-statistics
-  fixtures cover publication, replay, evolution and staged creation. Historical
+  fixtures cover publication, replay, evolution and staged creation.
+  `TestIcebergCommitErrors` verifies supported partition-statistics metadata
+  publication, exact inventory reload and removal; a foreign file location
+  rejects the whole update batch and preserves the selected head. Metadata
+  acceptance is separate from explicit Parquet content validation. Historical
   omissions follow the explicit compatibility rules described above.
 - **Discovery and authorization:**
   `discovery_uses_installed_routes_and_unsupported_paths_leave_no_record` and

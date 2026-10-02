@@ -16,7 +16,7 @@ const G0_STORE: u64 = 0;
 const G0_GROUP: u64 = 0;
 
 /// Default sub-range count for the binding table.
-pub const DEFAULT_SUB_RANGE_COUNT: u32 = 1024;
+pub const DEFAULT_SUB_RANGE_COUNT: u32 = 12;
 
 /// chunkdb range binding strategy — divides the bucket space into
 /// `sub_range_count` fixed sub-ranges and assigns them to chunkdb
@@ -56,6 +56,21 @@ impl BindingStrategy for ChunkdbRangeStrategy {
     }
 
     async fn write_bindings(&self, kv: &CrowdbKvClient, bindings: &[Self::Binding]) -> Result<()> {
+        // Preserve populated partition boundaries until an explicit conversion
+        // protocol exists; changing the default must not leave mixed layouts.
+        let current = self.read_bindings(kv).await?;
+        if current.iter().any(|old| {
+            !bindings.iter().any(|new| {
+                new.sub_range_index == old.sub_range_index
+                    && new.range_start == old.range_start
+                    && new.range_end == old.range_end
+            })
+        }) {
+            return Err(Error::SysdataDecode {
+                key: ChunkdbRangeBindingKey::text_prefix_all(),
+                reason: "existing chunkdb partition boundaries require an explicit migration".into(),
+            });
+        }
         // PUT each binding (idempotent overwrite). No delete-all — the
         // sub-range count is fixed, so the key set is stable; changed
         // entries are overwritten in place. This avoids the non-atomic
@@ -143,7 +158,6 @@ pub fn compute_sub_range_assignment(
 
     let n = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
     let total_buckets = u32::from(u16::MAX) + 1;
-    let sub_range_width = total_buckets / sub_range_count;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
@@ -152,12 +166,10 @@ pub fn compute_sub_range_assignment(
     for sr in 0..sub_range_count {
         let i = sr * n / sub_range_count;
         let (id, val) = sorted[i as usize];
-        let range_start = sr * sub_range_width;
-        let range_end = if sr == sub_range_count - 1 {
-            u32::from(u16::MAX)
-        } else {
-            (sr + 1) * sub_range_width - 1
-        };
+        // Round each boundary independently to distribute the remainder
+        // without gaps or an oversized final range for non-power-of-two counts.
+        let range_start = sr * total_buckets / sub_range_count;
+        let range_end = (sr + 1) * total_buckets / sub_range_count - 1;
         out.push(ChunkdbRangeBindingValue {
             sub_range_index: sr,
             range_start,

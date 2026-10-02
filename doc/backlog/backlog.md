@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R201** — Bump this line in the same commit when adding a new item.
+**Next R number: R203** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -111,6 +111,16 @@ Caches, selected ORC and container engine workflows remain separate.
 
 ### High Priority
 
+- **[R202](R202-chunkdb-key-partition-design.md)** — ChunkDB key partition
+  model and storage ownership — Area: chunkdb / Paxos KV / chunk-kv — High
+  priority, high complexity. **Deferred pending architecture review.** Retain
+  12 temporary bootstrap ranges; define service versus storage ownership,
+  backend paths, tree mapping and generation-fenced partition conversion.
+- **[R201](R201-tree-memtable-write-handoff.md)** — MemTable write handoff
+  before flush — Area: crowdb-tree / KV — High priority, high complexity.
+  **Deferred pending user review of synchronization and performance.** Separate
+  Active, Freezing and Frozen; close old-table admission, wait for admitted
+  batches before drain, and evaluate bounded writer-owned announcement slots.
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
   migration — Area: chunkdb / kv — Implement the full
   `Copying`/`Cutover`/`Complete` migration flow for transferring chunkdb
