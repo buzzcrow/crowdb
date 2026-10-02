@@ -1,9 +1,11 @@
+use crate::expand::Recursive;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use crowdb_console_shared::cluster::{GroupSummary, GroupView, StoreView};
 use crowdb_console_shared::error::Error;
 use crowdb_console_shared::ops;
-use crowdb_protocol::common::{GroupValue, ReplicaValue, StoreValue};
+use crowdb_protocol::common::ReplicaValue;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -11,6 +13,13 @@ use crate::error::ErrorBody;
 use crate::state::AppState;
 
 type ApiError = (StatusCode, Json<ErrorBody>);
+
+fn snapshot_error(mut error: ApiError) -> ApiError {
+    if error.0 == StatusCode::BAD_GATEWAY {
+        error.0 = StatusCode::SERVICE_UNAVAILABLE;
+    }
+    error
+}
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn api_error(error: Error) -> ApiError {
@@ -44,31 +53,19 @@ pub(crate) struct CreateStore {
     nodes: Vec<u64>,
 }
 
-pub(crate) async fn list_stores(State(state): State<AppState>) -> Result<Json<Vec<StoreValue>>, ApiError> {
-    let context = state.op_context().await.map_err(api_error)?;
-    ops::kv_logical::list_stores(&context)
+pub(crate) async fn list_stores(State(state): State<AppState>) -> Result<Json<Vec<StoreView>>, ApiError> {
+    crate::mgmt::http_list_stores(State(state), Recursive::default())
         .await
-        .map(Json)
-        .map_err(api_error)
+        .map_err(snapshot_error)
 }
 
 pub(crate) async fn get_store(
     State(state): State<AppState>,
     Path(store_id): Path<u64>,
-) -> Result<Json<StoreValue>, ApiError> {
-    let context = state.op_context().await.map_err(api_error)?;
-    context
-        .sysmd()
-        .get_store(store_id)
+) -> Result<Json<StoreView>, ApiError> {
+    crate::mgmt::http_get_store(State(state), Path(store_id), Recursive::default())
         .await
-        .map_err(|error| api_error(error.into()))?
-        .map(Json)
-        .ok_or_else(|| {
-            api_error(Error::NotFound {
-                kind: "store".into(),
-                id: store_id.to_string(),
-            })
-        })
+        .map_err(snapshot_error)
 }
 
 pub(crate) async fn add_store(
@@ -112,31 +109,19 @@ pub(crate) struct CreateGroup {
 pub(crate) async fn list_groups(
     State(state): State<AppState>,
     Path(store_id): Path<u64>,
-) -> Result<Json<Vec<GroupValue>>, ApiError> {
-    let context = state.op_context().await.map_err(api_error)?;
-    ops::kv_logical::list_groups(&context, store_id)
+) -> Result<Json<Vec<GroupSummary>>, ApiError> {
+    crate::mgmt::http_list_groups(State(state), Path(store_id), Recursive::default())
         .await
-        .map(Json)
-        .map_err(api_error)
+        .map_err(snapshot_error)
 }
 
 pub(crate) async fn get_group(
     State(state): State<AppState>,
-    Path((store_id, group_id)): Path<(u64, u64)>,
-) -> Result<Json<GroupValue>, ApiError> {
-    let context = state.op_context().await.map_err(api_error)?;
-    context
-        .sysmd()
-        .get_group(store_id, group_id)
+    Path(ids): Path<(u64, u64)>,
+) -> Result<Json<GroupView>, ApiError> {
+    crate::mgmt::http_get_group(State(state), Path(ids), Recursive::default())
         .await
-        .map_err(|error| api_error(error.into()))?
-        .map(Json)
-        .ok_or_else(|| {
-            api_error(Error::NotFound {
-                kind: "group".into(),
-                id: format!("{store_id}/{group_id}"),
-            })
-        })
+        .map_err(snapshot_error)
 }
 
 pub(crate) async fn add_group(

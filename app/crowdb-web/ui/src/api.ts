@@ -47,6 +47,8 @@ export interface AddNodeRequest {
  * different path (e.g. behind a reverse proxy). Default `/api` is a no-op.
  */
 let apiBase = '/api';
+let managementToken = '';
+export function setManagementToken(token: string): void { managementToken = token; }
 
 export function setApiBase(prefix?: string): void {
   const trimmed = (prefix ?? '').trim().replace(/\/+$/, '');
@@ -208,6 +210,7 @@ async function fetchWithOptions(
     try {
       const response = await fetch(resolveUrl(url), {
         ...fetchInit,
+        headers: { ...Object.fromEntries(new Headers(fetchInit.headers).entries()), ...(managementToken ? { Authorization: `Bearer ${managementToken}` } : {}) },
         signal: controller.signal,
       });
 

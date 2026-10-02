@@ -410,6 +410,15 @@ Work items:
   demo 并清理 → 写入目标始终可见且准确，只清理对应示例资源，不修改系统
   元数据，不使用假 Chunk/Capacity 数据替代真实结果。E2E test
 
+#### Delivery status — 2026-10-03
+
+- 首版五域 UI、持久化启动恢复、真实 Chunk/Strip、Iceberg metadata CRUD、
+  S3 CRUD/multipart 和 Container 共用 UI 已实现。
+- 验证与剩余验收边界见 [implementation plan](../working/plan-console-complete-ui.md)。
+  Docker 镜像验证受本机镜像源代理拒绝连接阻断；完整服务链已在隔离目录中验证。
+- 本需求暂不关闭：保留下面需要用户决定的产品问题，以及 plan 中明确列出的
+  故障注入、多 owner 和传输边界验收工作。
+
 #### Open Questions
 
 - **Iceberg 表内行操作**：首版只做 Namespace/Table metadata CRUD，还是同时

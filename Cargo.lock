@@ -1218,6 +1218,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "crowdb-chunkdb-client",
  "crowdb-common",
  "crowdb-console-shared",
  "crowdb-diskdb-client",

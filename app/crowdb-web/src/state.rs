@@ -30,6 +30,8 @@ pub struct AppState {
     /// Cached crowdb-rpc transport reused across KV requests to avoid
     /// spawning 6+ threads per request. Shared by the cached `kv_client`.
     pub kv_rpc_transport: Arc<tokio::sync::RwLock<Option<Arc<crowdb_kv_client::KvRpcTransport>>>>,
+    /// Immutable transport shared by bounded Chunk diagnostics requests.
+    pub(crate) chunk_rpc_transport: Arc<crowdb_chunkdb_client::ChunkdbRpcTransport>,
     /// Cached `CrowdbKvClient` reused across KV requests so the topology
     /// cache persists — avoids re-discovering the leader from seeds on
     /// every put/get/delete. Invalidated on `/internal/reset`.
@@ -99,6 +101,7 @@ impl AppState {
             runtime_pids: Arc::new(std::sync::Mutex::new(HashMap::new())),
             diskdb_client: Arc::new(tokio::sync::RwLock::new(None)),
             kv_rpc_transport: Arc::new(tokio::sync::RwLock::new(None)),
+            chunk_rpc_transport: Arc::new(crowdb_chunkdb_client::ChunkdbRpcTransport::new()),
             kv_client: Arc::new(tokio::sync::RwLock::new(None)),
             discovery_client: Arc::new(tokio::sync::RwLock::new(None)),
             warn_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -428,7 +431,9 @@ impl AppState {
             let cfg = self.config.read().unwrap();
             cfg.servers
                 .iter()
-                .filter(|s| s.node_id.is_some())
+                .filter(|s| {
+                    s.node_id.is_some() && s.service_type == crowdb_console_shared::config::ServiceType::Kv
+                })
                 .map(|s| s.url.clone())
                 .collect::<Vec<_>>()
         };

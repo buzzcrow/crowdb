@@ -9,7 +9,9 @@
 //! KV data plane with leader resolution via the monitor cache and
 //! `NotLeader` retry (A8), Swagger UI (A9), React SPA shell.
 
+mod access;
 mod auth;
+mod chunk;
 pub mod corr_id;
 pub mod diskdb;
 pub mod error;
@@ -43,6 +45,39 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/mode", get(health::mode))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
+            .route("/api/chunks", get(chunk::list))
+            .route("/api/chunks/:id", get(chunk::detail))
+            .merge(access::read_router())
+            .route("/api/diskdb/instances", get(diskdb::http_list_diskdb_instances))
+            .route("/api/diskdb/usage", get(diskdb::http_diskdb_usage))
+            .route("/api/hardware/capacity", get(diskdb::http_hardware_capacity))
+            .route("/api/diskdb/scan-status", get(diskdb::http_diskdb_scan_status))
+            .route(
+                "/api/diskdb/scan",
+                post(diskdb::http_diskdb_scan).route_layer(authorization.clone()),
+            )
+            .route(
+                "/api/diskdb/recalc",
+                post(diskdb::http_diskdb_recalc).route_layer(authorization.clone()),
+            )
+            .route(
+                "/api/diskdb/compact",
+                post(diskdb::http_diskdb_compact).route_layer(authorization.clone()),
+            )
+            .route(
+                "/api/diskdb/rebuild",
+                post(diskdb::http_diskdb_rebuild).route_layer(authorization.clone()),
+            )
+            .route("/api/stores/:sid/groups/:gid/kv/get", get(kv::http_kv_get))
+            .route("/api/stores/:sid/groups/:gid/kv/scan", get(kv::http_kv_scan))
+            .route(
+                "/api/stores/:sid/groups/:gid/kv/put",
+                post(kv::http_kv_put).route_layer(authorization.clone()),
+            )
+            .route(
+                "/api/stores/:sid/groups/:gid/kv/delete",
+                post(kv::http_kv_delete).route_layer(authorization.clone()),
+            )
             .route("/api/management/check", post(auth::management_check))
             .route(
                 "/api/stores",
@@ -75,6 +110,7 @@ pub fn router(state: AppState) -> axum::Router {
                     .merge(delete(managed_logical::remove_replica).route_layer(authorization.clone())),
             )
             .route("/api/*path", any(health::managed_api_unavailable))
+            .route("/internal/reset", any(health::managed_api_unavailable))
             .fallback(spa::spa_fallback);
         let managed = if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
             let hardware = axum::Router::new()
@@ -139,6 +175,10 @@ pub fn router(state: AppState) -> axum::Router {
     }
 
     axum::Router::new()
+        .route("/api/chunks", get(chunk::list))
+        .route("/api/chunks/:id", get(chunk::detail))
+        .merge(access::read_router())
+        .route("/api/access/connections", post(access::configure))
         .route("/healthz", get(health::healthz))
         .route("/api/mode", get(health::mode))
         // ── Physical tree (A3): rack + node lifecycle ────────────────

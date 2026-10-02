@@ -44,11 +44,13 @@ describe('Header', () => {
     expect(getByTitle('Cluster health: Healthy')).toBeTruthy();
   });
 
-  it('renders Cluster, KV, and Capacity domain toggle buttons', () => {
+  it('renders all five domain toggle buttons', () => {
     const { getByTestId } = renderHeader();
     expect(getByTestId('domain-cluster')).toHaveTextContent('Cluster');
     expect(getByTestId('domain-kv')).toHaveTextContent('KV');
     expect(getByTestId('domain-chunk')).toHaveTextContent('Capacity');
+    expect(getByTestId('domain-iceberg')).toHaveTextContent('Iceberg');
+    expect(getByTestId('domain-s3')).toHaveTextContent('S3');
   });
 
   it('marks the active domain button with aria-pressed=true', () => {

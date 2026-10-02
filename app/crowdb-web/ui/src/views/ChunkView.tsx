@@ -6,13 +6,14 @@ import type { Node as ClusterNode, Rack, CrowdbKVServerView, EnrichedStoreView, 
 import type { SelectedEntity } from '../contexts/SelectionContext';
 import type { NodeDiskGroups } from '../data/useClusterTree';
 import type { CenterPanelMode } from '../shell/Header';
+import { ChunkBrowser } from '../chunk/ChunkBrowser';
 
 const CapacityPanel = lazy(() => import('../panels/CapacityPanel').then((m) => ({ default: m.CapacityPanel })));
-const TopologyCanvas = lazy(() => import('../topology/TopologyCanvas').then((m) => ({ default: m.TopologyCanvas })));
 
 export interface ChunkViewProps {
   centerPanel: CenterPanelMode;
   onCenterPanelChange: (panel: CenterPanelMode) => void;
+  onPlacement: (entity: SelectedEntity) => void;
   instances: DiskdbInstanceInfo[];
   usage: CapacityUsageResponse | null;
   hardwareCapacity: HardwareCapacitySummary | null;
@@ -36,7 +37,7 @@ export interface ChunkViewProps {
 
 export function ChunkView({ centerPanel, onCenterPanelChange, ...props }: ChunkViewProps) {
   return (
-    <>
+    <div className="tw-h-full tw-flex tw-flex-col tw-min-h-0">
       <div className="tw-flex tw-items-center tw-gap-1 tw-px-4 tw-py-1.5 tw-border-b tw-border-border tw-bg-panel">
         <button
           data-testid="chunk-tab-capacity"
@@ -56,8 +57,7 @@ export function ChunkView({ centerPanel, onCenterPanelChange, ...props }: ChunkV
         </button>
       </div>
       <Suspense fallback={<ViewFallback />}>
-      {centerPanel === 'capacity' ? (
-        <CapacityPanel
+      <div hidden={centerPanel !== 'capacity'} className="tw-flex-1 tw-min-h-0"><CapacityPanel
           instances={props.instances}
           usage={props.usage}
           hardwareCapacity={props.hardwareCapacity}
@@ -66,25 +66,10 @@ export function ChunkView({ centerPanel, onCenterPanelChange, ...props }: ChunkV
           readonly={props.readonly}
           onRefresh={props.onRefresh}
           selectedEntity={props.selectedEntity}
-        />
-      ) : (
-        <TopologyCanvas
-          racks={props.racks}
-          nodes={props.nodes}
-          servers={props.servers}
-          stores={props.stores}
-          nodeStores={props.nodeStores}
-          nodeHealthById={props.nodeHealthById}
-          diskdbNodeIds={props.diskdbNodeIds}
-          diskdbInstances={props.instances}
-          nodeDiskGroups={props.nodeDiskGroups}
-          refreshToken={props.refreshToken}
-          focusRequest={props.focusRequest}
-          onEntityContextMenu={props.onEntityContextMenu}
-        />
-      )}
+        /></div>
+        <div hidden={centerPanel !== 'chunk'} className="tw-flex-1 tw-min-h-0"><ChunkBrowser onPlacement={props.onPlacement} /></div>
       </Suspense>
-    </>
+    </div>
   );
 }
 

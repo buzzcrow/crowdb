@@ -33,7 +33,7 @@ const chromiumUse = process.env.PLAYWRIGHT_CHANNEL
 
 export default defineConfig({
   testDir: './flows',
-  testIgnore: ['**/fixtures/**'],
+  testIgnore: ['**/fixtures/**', '**/71-s3-native.spec.ts', '**/72-managed-native.spec.ts'],
   globalSetup: './globalSetup.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

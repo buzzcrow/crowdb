@@ -43,6 +43,7 @@ struct ServiceView {
     endpoint: String,
     last_heartbeat_ms: u64,
     monitor: Option<ServiceStatus>,
+    node_id: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -155,6 +156,7 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
                 None
             };
             services.extend(instances.into_iter().map(|(instance_id, record)| ServiceView {
+                node_id: record.extra.as_ref().and_then(|extra| extra.kv_server.as_ref().and_then(|server| server.node_id).or_else(|| extra.diskdb.as_ref().and_then(|server| server.node_id))),
                 kind,
                 instance_id: instance_id.to_string(),
                 endpoint: record.rpc_endpoint,
@@ -167,7 +169,7 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
             racks: racks.into_iter().map(|(id, value)| json!({"id": id, "name": value.name, "status": value.status, "node_ids": value.node_ids})).collect(),
             nodes: nodes.into_iter().map(|(rack_id, id, value)| json!({"rack_id": rack_id, "id": id, "status": value.status, "disk_group_ids": value.disk_group_ids, "management_host": value.management_host, "ssh_port": value.ssh_port, "ssh_user": value.ssh_user, "ssh_credential_ref": value.ssh_credential_ref})).collect(),
             disk_groups: disk_groups.into_iter().map(|group| json!(group)).collect(),
-            disks: disks.into_iter().map(|disk| json!({"rack_id": disk.rack_id, "node_id": disk.node_id, "disk_group_id": disk.disk_group_id, "disk_id": disk.disk_id, "value": disk.value})).collect(),
+            disks: disks.into_iter().map(|disk| json!({"rack_id": disk.rack_id, "node_id": disk.node_id, "disk_group_id": disk.disk_group_id, "disk_id": {"high":disk.disk_id.high.to_string(),"low":disk.disk_id.low.to_string()}, "value": disk.value})).collect(),
             stores: stores.into_iter().map(|store| json!(store)).collect(),
             groups: groups.into_iter().map(|group| json!(group)).collect(),
             replicas: replicas.into_iter().map(|replica| json!(replica)).collect(),
