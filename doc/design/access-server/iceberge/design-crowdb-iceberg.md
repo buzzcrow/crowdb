@@ -699,8 +699,13 @@ but selected ORC validation and compute-engine certification are separate work.
   reads historical snapshots, expires them logically, and reloads after restart.
 - **Selected data and deletes:** client-generated fixtures exercise original
   rows, equality-delete visibility and historical snapshots. Commit treats client
-  manifests as opaque references; selected-use probes are explicit validator
-  tests rather than a normal publication gate. Canonical file
+  manifests as opaque references. `TestIcebergSelectedFiles` publishes mismatched
+  data/delete declarations in isolated tables and checks the selected head and
+  snapshot inventory; its valid table still verifies actual rows, equality deletes
+  and historical reads. Selected-use rejection probes are explicit validator
+  tests rather than a normal publication gate. `TestIcebergFileOperations` checks
+  that upload credentials lack cleanup permission (403 `AccessDenied`) and that
+  rejection preserves the immutable file. Canonical file
   validators separately cover position deletes, v3 lineage, deletion vectors,
   defaults, nested/variant types, integer encodings and nullable values.
 - **Statistics:** `TestIcebergCatalogWrites` and the official partition-statistics

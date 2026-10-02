@@ -1276,7 +1276,7 @@ async fn run_catalog_sdk(endpoint: String, mode: &'static str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires native storage services, Maven and pinned Apache Iceberg dependencies"]
-async fn official_java_identical_s3_uploads_validate_selected_data_and_delete_uses() {
+async fn official_java_opaque_metadata_publication_preserves_valid_data_and_delete_reads() {
     let (_stack, process, _, _) = setup_with_bounds(ClearBounds {
         request_ms: 300_000,
         delegated_access_ms: 900_000,
