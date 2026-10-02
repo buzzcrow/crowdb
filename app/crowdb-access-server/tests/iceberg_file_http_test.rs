@@ -17,7 +17,8 @@ mod recovery;
 use common::{now_ms, TestIcebergStack};
 use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds, ManagementPrivilege};
 use crowdb_access_iceberg::file::{
-    FileGrant, FileGrantIssuer, FileKind, FileOperation, FileOperations, FileRepository, TableLocation,
+    FileGrant, FileGrantIssuer, FileKind, FileLocation, FileOperation, FileOperations, FileRepository,
+    TableLocation,
 };
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
@@ -174,6 +175,48 @@ fn path(table: TableLocation, key: &str) -> String {
     format!("/{}/{}", table.bucket(), table.file(key).unwrap().object_key())
 }
 
+async fn cleanup_client(
+    stack: &TestIcebergStack,
+    client: &TestFileClient,
+    table: TableLocation,
+) -> TestFileClient {
+    let context = CatalogRepository::new(
+        stack.store().await,
+        ClearBounds {
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+    )
+    .unwrap()
+    .status()
+    .await
+    .unwrap()
+    .0
+    .context;
+    let authenticator =
+        BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
+    let issuer = FileGrantIssuer::new(authenticator.namespace_token_key(), 15 * 60 * 1000).unwrap();
+    let started = now_ms();
+    TestFileClient {
+        client: client.client.clone(),
+        credentials: issuer
+            .issue(FileGrant {
+                context,
+                table: table.table,
+                principal: [9; 32],
+                nonce: OperationId::random(),
+                issued_ms: started - 1_000,
+                expires_ms: started + 10 * 60 * 1000,
+                operations: FileOperations::new(&[FileOperation::DeleteObject, FileOperation::DeleteObjects])
+                    .unwrap(),
+                max_request_bytes: 1024 * 1024,
+                max_file_bytes: 1024 * 1024,
+            })
+            .unwrap(),
+        address: client.address,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_multipart_creates_use_independent_sessions() {
     let (_stack, _process, client, table) = setup().await;
@@ -198,41 +241,7 @@ async fn explicit_cleanup_supports_single_batch_and_same_path_reupload() {
     let ordinary = client.send(Method::DELETE, &object, "", b"", false).await;
     assert_eq!(ordinary.status(), 403);
 
-    let context = CatalogRepository::new(
-        stack.store().await,
-        ClearBounds {
-            delegated_access_ms: 900_000,
-            ..ClearBounds::default()
-        },
-    )
-    .unwrap()
-    .status()
-    .await
-    .unwrap()
-    .0
-    .context;
-    let authenticator =
-        BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
-    let issuer = FileGrantIssuer::new(authenticator.namespace_token_key(), 15 * 60 * 1000).unwrap();
-    let started = now_ms();
-    let cleanup = TestFileClient {
-        client: client.client.clone(),
-        credentials: issuer
-            .issue(FileGrant {
-                context,
-                table: table.table,
-                principal: [9; 32],
-                nonce: OperationId::random(),
-                issued_ms: started - 1_000,
-                expires_ms: started + 10 * 60 * 1000,
-                operations: FileOperations::new(&[FileOperation::DeleteObject, FileOperation::DeleteObjects])
-                    .unwrap(),
-                max_request_bytes: 1024 * 1024,
-                max_file_bytes: 1024 * 1024,
-            })
-            .unwrap(),
-        address: client.address,
-    };
+    let cleanup = cleanup_client(&stack, &client, table).await;
     let deleted = cleanup.send(Method::DELETE, &object, "", b"", false).await;
     assert_eq!(deleted.status(), 204, "{}", deleted.text().await.unwrap());
     let missing = client.send(Method::GET, &object, "", b"", false).await;
@@ -265,6 +274,50 @@ async fn explicit_cleanup_supports_single_batch_and_same_path_reupload() {
         client.send(Method::GET, &object, "", b"", false).await.status(),
         404
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_cleanup_rejects_a_retained_metadata_file() {
+    let (stack, _process, client, _) = setup().await;
+    let endpoint = format!("http://{}", client.address);
+    let created = client
+        .client
+        .post(format!("{endpoint}/v1/namespaces/analytics/tables"))
+        .bearer_auth("w".repeat(32))
+        .json(&serde_json::json!({"name":"protected", "schema":{"type":"struct","fields":[]}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
+    let created: serde_json::Value = created.json().await.unwrap();
+    let location: FileLocation = created["metadata-location"].as_str().unwrap().parse().unwrap();
+    let table = location.table();
+    let cleanup = cleanup_client(&stack, &client, table).await;
+    let object = format!("/{}/{}", table.bucket(), location.object_key());
+    let single = cleanup.send(Method::DELETE, &object, "", b"", false).await;
+    assert_eq!(single.status(), 409, "{}", single.text().await.unwrap());
+    let xml = format!(
+        "<Delete><Object><Key>{}</Key></Object></Delete>",
+        location.object_key()
+    );
+    let batch = cleanup
+        .send(
+            Method::POST,
+            &format!("/{}", table.bucket()),
+            "delete=",
+            xml.as_bytes(),
+            true,
+        )
+        .await;
+    let status = batch.status();
+    let body = batch.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("<Error>"), "{body}");
+    assert!(FileRepository::new(stack.store().await)
+        .load(cleanup.credentials.grant().context, &location)
+        .await
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

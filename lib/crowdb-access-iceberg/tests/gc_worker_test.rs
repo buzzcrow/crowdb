@@ -171,6 +171,44 @@ async fn active_multipart_cleanup_reclaims_expired_part_without_touching_publish
 }
 
 #[tokio::test]
+async fn explicit_delete_requires_a_durable_candidate_before_reupload_and_reclaims_only_old_blocks() {
+    let (fixture, blocks, _, limits, old_id) = fixture(false).await;
+    let files = FileRepository::new(fixture.store.clone());
+    let location = fixture.table.file("data/object.parquet").unwrap();
+    let old = files.load(fixture.context, &location).await.unwrap().unwrap();
+    assert_eq!(old.file, old_id);
+    let deleted = files.mark_deleted(fixture.context, &old, 2_000).await.unwrap();
+    assert!(files.load(fixture.context, &location).await.unwrap().is_none());
+    let replacement = fixture.record("data/object.parquet", b"new bytes");
+    assert!(files.publish(fixture.context, &replacement).await.is_err());
+    let gc = GcRepository::new(fixture.store.clone());
+    gc.claim_deleted_file(fixture.context, &deleted, 2_000, limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        files.publish(fixture.context, &replacement).await.unwrap(),
+        replacement
+    );
+    let mut task = gc.admit_multipart(fixture.context, 2_000, limits).await.unwrap();
+    let worker = GcWorker::new(gc, blocks.clone(), limits).unwrap();
+    for _ in 0..300 {
+        task = worker
+            .step(&task, (2_000 + 2 * GcTask::PURGE_DELAY_MS).max(task.retry_at_ms))
+            .await
+            .unwrap();
+        if task.phase == GcPhase::Complete {
+            break;
+        }
+    }
+    assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
+    assert!(blocks.blocks.values.load().is_empty());
+    assert_eq!(
+        files.load(fixture.context, &location).await.unwrap(),
+        Some(replacement)
+    );
+}
+
+#[tokio::test]
 async fn retired_file_reclamation_survives_worker_restart_at_every_step() {
     let (fixture, blocks, mut task, limits, file) = fixture(true).await;
     for _ in 0..300 {

@@ -9,8 +9,9 @@ use crowdb_access_multipart::{next_part_revision, reserve_part_accounting, PartA
 use super::{check_live, increment, MultipartRepository};
 
 impl MultipartRepository {
-    /// Publishes a streamed part with one CAS on that part number. The session
-    /// is read for admission, but distinct part numbers do not write it.
+    /// Publishes a streamed part with one CAS on that part number. The caller's
+    /// admitted session snapshot bounds the part; later aborts leave an orphan
+    /// for multipart cleanup instead of changing a different part's result.
     /// # Errors
     /// Rejects closed sessions, invalid parts, stale contexts and storage failures.
     pub async fn put_stream_part(
@@ -20,32 +21,28 @@ impl MultipartRepository {
         now_ms: u64,
     ) -> Result<Option<MultipartPart>, CatalogError> {
         session.validate()?;
-        let current = self
-            .load(session.context, session.upload)
-            .await?
-            .ok_or(CatalogError::Conflict)?;
-        check_live(&current, now_ms)?;
-        if current.phase != MultipartPhase::Open || current.pending.is_some() {
+        check_live(session, now_ms)?;
+        if session.phase != MultipartPhase::Open || session.pending.is_some() {
             return Err(CatalogError::Conflict);
         }
-        if u64::from(current.limits.max_parts)
-            .checked_mul(current.limits.max_part_bytes)
-            .map_or(true, |bytes| bytes > current.limits.max_staged_bytes)
+        if u64::from(session.limits.max_parts)
+            .checked_mul(session.limits.max_part_bytes)
+            .map_or(true, |bytes| bytes > session.limits.max_staged_bytes)
             || part.stream.is_none()
             || part.tree.is_some()
         {
             return Err(ValidationError::Record.into());
         }
-        part.validate_for(&current)?;
+        part.validate_for(session)?;
         let before = self.read_part(&part.key()).await?;
         if let Some(before) = &before {
-            before.validate_for(&current)?;
+            before.validate_for(session)?;
         }
         let mut after = part.clone();
         after.revision = next_part_revision(before.as_ref().map(|before| before.revision))
             .ok_or(ValidationError::Record)?;
         after.modified_ms = now_ms;
-        after.validate_for(&current)?;
+        after.validate_for(session)?;
         let key = after.key().encode()?;
         let expected = before.as_ref().map(encode_part).transpose()?;
         let value = encode_part(&after)?;
@@ -70,9 +67,6 @@ impl MultipartRepository {
                 }
             }
         };
-        if written.is_some() {
-            check_context(self.store.as_ref(), current.context).await?;
-        }
         Ok(written)
     }
 

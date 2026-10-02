@@ -72,9 +72,9 @@ impl GcRuntimeConfig {
         if limits.minimum_retention_ms < GcLimits::default().minimum_retention_ms {
             return Err("GC retention must be at least seven days".into());
         }
-        let interval_ms = setting_or("CROWDB_ICEBERG_GC_INTERVAL_MS", file.interval_ms, 60_000_u64)?;
-        if !(100..=60_000).contains(&interval_ms) {
-            return Err("GC interval must be between 100 and 60000 milliseconds".into());
+        let interval_ms = setting_or("CROWDB_ICEBERG_GC_INTERVAL_MS", file.interval_ms, 30 * 60_000_u64)?;
+        if !(100..=24 * 60 * 60_000).contains(&interval_ms) {
+            return Err("GC interval must be between 100 and 86400000 milliseconds".into());
         }
         let names = match &file.catalogs {
             Some(names) => names.clone(),
@@ -195,8 +195,11 @@ pub(super) async fn run(
     let mut index = 0_usize;
     loop {
         interval.tick().await;
-        let Ok(Ok((root, _))) =
-            tokio::time::timeout(Duration::from_millis(config.interval_ms), catalog.status()).await
+        let Ok(Ok((root, _))) = tokio::time::timeout(
+            Duration::from_millis(config.interval_ms.min(60_000)),
+            catalog.status(),
+        )
+        .await
         else {
             tracing::warn!("GC catalog status unavailable; retrying later");
             continue;

@@ -90,7 +90,6 @@ impl MultipartRepository {
         if session.as_ref().is_some_and(|session| session.context != context) {
             return Err(ValidationError::IdentityMismatch.into());
         }
-        check_context(self.store.as_ref(), context).await?;
         Ok(session)
     }
 

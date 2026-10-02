@@ -127,7 +127,25 @@ retaining one safe publication point per table or file and explicit cleanup.
 
 ## Findings
 
-- The implementation snapshot is being committed before the final acceptance
+- The first implementation snapshot is commit `2b599b64`. Post-commit
+  acceptance ran the complete Iceberg library suite, the service GC control
+  and capacity cases, retained-reference HTTP deletion, and a 32-worker
+  TPC-H/TPC-DS small-cluster load. The loader completed all 8 TPC-H and
+  24 TPC-DS tables without a 503; earlier failed runs completed only 4/8
+  and 17/24, so their upload latency is not a comparable baseline.
+- The native 5 MiB HTTP profile starts the Iceberg GC disabled. Its last
+  run measured PUT 192 ms with 3 catalog GETs and 1 CAS, UploadPart 192 ms
+  with 23 GETs and 3 scans in the cluster-wide counter window, and GET
+  36 ms with 4 GETs. Concurrent Chunk-KV maintenance can contribute to
+  these aggregate counters. A deterministic store-count test observes one
+  part-record GET and one CAS per independent UploadPart; the earlier
+  session reload has been removed.
+- The GC scheduler now defaults to one scan every 30 minutes after an
+  immediate startup scan. The sample config uses the same interval, while
+  test processes explicitly use 100 ms. A 20-minute purge deadline is an
+  eligibility threshold; the periodic scheduler may start it up to another
+  scan interval later. Catalog status waits remain capped at 60 seconds.
+- The implementation snapshot was committed before the final acceptance
   pass so later workload and GC fixes can be compared as a separate change.
   Ordinary existing-table updates write immutable metadata and publish with
   one `TableHead` CAS; an old retry hidden by a later generation may return
@@ -138,9 +156,10 @@ retaining one safe publication point per table or file and explicit cleanup.
   test targets, and the native HTTP single/batch deletion and same-path reupload
   test. The initial full library run exposed seven test targets that still
   asserted the superseded dual-key, foreground GC fence, or deep staged-file
-  proof contract; their updated targeted runs pass. The 32-worker loader,
-  full GC acceptance, and latency/KV comparison remain for the post-commit
-  acceptance pass.
+  proof contract; their updated targeted runs pass. The post-commit full
+  library suite and service GC control suite also pass. A request-isolated
+  cluster latency comparison remains open; the aggregate counter window
+  includes Chunk-KV maintenance.
 
 - Baseline `pixi run test-access-iceberg` failed two create tests and hung on
   an old test barrier that required the removed namespace admission write.

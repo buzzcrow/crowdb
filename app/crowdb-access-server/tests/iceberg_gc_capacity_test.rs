@@ -10,8 +10,8 @@ use common::TestIcebergStack;
 use crowdb_access_iceberg::{
     catalog::{CatalogContext, CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege},
     file::{
-        file_key, ContentFormat, FileContent, FileIdentity, FileKind, FileReader, FileRecord, FileRepository,
-        FileTreeWriter, NativeFileBlocks, TableLocation,
+        location_key, ContentFormat, FileContent, FileIdentity, FileKind, FileLocation, FileReader,
+        FileRecord, FileRepository, FileTreeWriter, NativeFileBlocks, TableLocation,
     },
     gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{FileId, OperationId, TableId},
@@ -160,7 +160,7 @@ async fn seed_gc_workspace_task(
     Arc<gc_capacity::TestGcWorkspace>,
     GcRepository,
     GcTask,
-    FileId,
+    FileLocation,
     GcLimits,
 ) {
     let store = stack.store().await;
@@ -182,6 +182,7 @@ async fn seed_gc_workspace_task(
         .publish(context, &metadata)
         .await
         .unwrap();
+    let gc_location = metadata.location.clone();
     let head = TableHead {
         catalog: context.catalog,
         table: table.table,
@@ -230,7 +231,7 @@ async fn seed_gc_workspace_task(
     )
     .unwrap();
     repository.create(&task).await.unwrap();
-    (workspace, repository, task, metadata.file, limits)
+    (workspace, repository, task, gc_location, limits)
 }
 
 async fn run_gc_until_resource_stall(worker: &GcWorker, mut task: GcTask) -> GcTask {
@@ -275,7 +276,7 @@ async fn assert_gc_workspace_stall(
     workspace: &Arc<gc_capacity::TestGcWorkspace>,
     repository: &GcRepository,
     task: GcTask,
-    file: FileId,
+    file: &FileLocation,
     limits: GcLimits,
 ) -> GcTask {
     workspace.deny(true);
@@ -289,7 +290,7 @@ async fn assert_gc_workspace_stall(
     assert!(stack
         .store()
         .await
-        .get(&file_key(stalled.context.catalog, file).encode().unwrap())
+        .get(&location_key(file).encode().unwrap())
         .await
         .unwrap()
         .is_some());
@@ -309,7 +310,7 @@ async fn assert_gc_workspace_recovered(
     workspace: &Arc<gc_capacity::TestGcWorkspace>,
     repository: GcRepository,
     task: GcTask,
-    file: FileId,
+    file: &FileLocation,
     limits: GcLimits,
 ) {
     workspace.deny(false);
@@ -320,7 +321,7 @@ async fn assert_gc_workspace_recovered(
     assert!(stack
         .store()
         .await
-        .get(&file_key(finished.context.catalog, file).encode().unwrap())
+        .get(&location_key(file).encode().unwrap())
         .await
         .unwrap()
         .is_none());
@@ -378,7 +379,7 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
         &workspace,
         &gc_repository,
         gc_task,
-        gc_file,
+        &gc_file,
         gc_limits,
     )
     .await;
@@ -414,7 +415,7 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
         &workspace,
         gc_repository,
         stalled,
-        gc_file,
+        &gc_file,
         gc_limits,
     )
     .await;

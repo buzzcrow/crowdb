@@ -577,7 +577,9 @@ it uses a separate storage client pool, one-step concurrency admission, bounded
 KV and chunk request/byte budgets, and durable retry state. The enabled
 scheduler admits persisted table purge markers and completed catalog clears;
 management may also start inactive tasks. Operators can disable the scheduler
-or adjust validated resource limits.
+or adjust validated resource limits. It scans once at startup, then every
+30 minutes by default. A purge becomes eligible 20 minutes after the drop;
+the next scan may start its work up to one scan interval later.
 
 Provisioned disk capacity is the allocation boundary for both foreground files
 and GC durable workspace. A failed GC workspace write retains the last durable

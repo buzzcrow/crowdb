@@ -51,7 +51,7 @@ max_chunk_size = 1073741824
 
 [iceberg.gc]
 enabled = false
-interval_ms = 1000
+interval_ms = 1800000
 step_bytes = 8388608
 step_ms = 1000
 page_items = 64
