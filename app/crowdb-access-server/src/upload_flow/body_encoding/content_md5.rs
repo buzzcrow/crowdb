@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use hyper::HeaderMap;
 use md5::{Digest, Md5};
 
-use super::FileEncodingError;
+use super::UploadEncodingError;
 
 pub(super) struct ContentMd5 {
     expected: Option<[u8; 16]>,
@@ -11,14 +11,14 @@ pub(super) struct ContentMd5 {
 }
 
 impl ContentMd5 {
-    pub(super) fn from_headers(headers: &HeaderMap) -> Result<Self, FileEncodingError> {
+    pub(super) fn from_headers(headers: &HeaderMap) -> Result<Self, UploadEncodingError> {
         let expected = super::header(headers, "content-md5")?
             .map(|value| {
                 STANDARD
                     .decode(value)
-                    .map_err(|_| FileEncodingError::Framing)?
+                    .map_err(|_| UploadEncodingError::Framing)?
                     .try_into()
-                    .map_err(|_| FileEncodingError::Framing)
+                    .map_err(|_| UploadEncodingError::Framing)
             })
             .transpose()?;
         Ok(Self {
@@ -46,19 +46,19 @@ impl ContentMd5 {
         self.deferred = true;
     }
 
-    pub(super) fn verify_deferred(&self, actual: [u8; 16]) -> Result<(), FileEncodingError> {
+    pub(super) fn verify_deferred(&self, actual: [u8; 16]) -> Result<(), UploadEncodingError> {
         if !self.deferred || self.expected.is_some_and(|expected| expected != actual) {
-            return Err(FileEncodingError::Checksum);
+            return Err(UploadEncodingError::Checksum);
         }
         Ok(())
     }
 
-    pub(super) fn verify(&self) -> Result<(), FileEncodingError> {
+    pub(super) fn verify(&self) -> Result<(), UploadEncodingError> {
         if self.deferred {
             return Ok(());
         }
         if self.expected.is_some_and(|expected| self.digest() != expected) {
-            return Err(FileEncodingError::Checksum);
+            return Err(UploadEncodingError::Checksum);
         }
         Ok(())
     }

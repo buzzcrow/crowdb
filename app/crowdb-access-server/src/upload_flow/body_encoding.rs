@@ -12,7 +12,7 @@ mod content_md5;
 const MAX_RECEIVE_FRAME_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
-pub enum FileEncodingError {
+pub enum UploadEncodingError {
     #[error("invalid upload framing")]
     Framing,
     #[error("upload length exceeds its declared bounds")]
@@ -25,7 +25,7 @@ pub enum FileEncodingError {
     Transport,
 }
 
-pub struct FileUploadBody<Input> {
+pub struct UploadBody<Input> {
     input: Input,
     buffered: Bytes,
     chunks: Option<chunks::Chunks>,
@@ -37,10 +37,11 @@ pub struct FileUploadBody<Input> {
     max_wire_bytes: u64,
     has_integrity: bool,
     done: bool,
-    failure: Option<FileEncodingError>,
+    failure: Option<UploadEncodingError>,
+    metrics: Option<fn(usize)>,
 }
 
-impl<Input> FileUploadBody<Input> {
+impl<Input> UploadBody<Input> {
     /// The streaming verifier must come from authenticating these exact headers.
     /// Returned data is staging input; only successful EOF authorizes publication.
     /// # Errors
@@ -50,22 +51,22 @@ impl<Input> FileUploadBody<Input> {
         headers: &HeaderMap,
         verifier: Option<StreamingPayloadVerifier>,
         max_wire_bytes: u64,
-    ) -> Result<Self, FileEncodingError> {
+    ) -> Result<Self, UploadEncodingError> {
         let wire_length = length_header(headers, "content-length")?;
         if wire_length.is_some_and(|length| length > max_wire_bytes) {
-            return Err(FileEncodingError::Length);
+            return Err(UploadEncodingError::Length);
         }
         let (length, chunks, checksum, streaming_integrity) = if let Some(verifier) = verifier {
             if header(headers, "content-encoding")? != Some("aws-chunked") {
-                return Err(FileEncodingError::Framing);
+                return Err(UploadEncodingError::Framing);
             }
-            let length =
-                length_header(headers, "x-amz-decoded-content-length")?.ok_or(FileEncodingError::Framing)?;
+            let length = length_header(headers, "x-amz-decoded-content-length")?
+                .ok_or(UploadEncodingError::Framing)?;
             if length > max_wire_bytes {
-                return Err(FileEncodingError::Length);
+                return Err(UploadEncodingError::Length);
             }
             if !verifier.has_trailer() && headers.contains_key("x-amz-trailer") {
-                return Err(FileEncodingError::Framing);
+                return Err(UploadEncodingError::Framing);
             }
             let checksum = checksum::Checksum::from_headers(headers, verifier.has_trailer())?;
             let streaming_integrity = verifier.is_signed() || checksum.is_some();
@@ -81,7 +82,7 @@ impl<Input> FileUploadBody<Input> {
                 || header(headers, "content-encoding")?
                     .is_some_and(|value| value.split(',').any(|encoding| encoding.trim() == "aws-chunked"))
             {
-                return Err(FileEncodingError::Framing);
+                return Err(UploadEncodingError::Framing);
             }
             (
                 wire_length,
@@ -105,6 +106,7 @@ impl<Input> FileUploadBody<Input> {
             has_integrity,
             done: false,
             failure: None,
+            metrics: None,
         })
     }
 
@@ -130,17 +132,23 @@ impl<Input> FileUploadBody<Input> {
 
     /// # Errors
     /// Rejects a declared Content-MD5 that differs from the completed digest pipe.
-    pub fn verify_deferred_md5(&self, digest: [u8; 16]) -> Result<(), FileEncodingError> {
+    pub fn verify_deferred_md5(&self, digest: [u8; 16]) -> Result<(), UploadEncodingError> {
         self.content_md5.verify_deferred(digest)
     }
 
-    pub(super) const fn failure(&self) -> Option<FileEncodingError> {
+    pub(crate) const fn failure(&self) -> Option<UploadEncodingError> {
         self.failure
     }
 
-    fn finish(&self) -> Result<(), FileEncodingError> {
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: fn(usize)) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    fn finish(&self) -> Result<(), UploadEncodingError> {
         if self.wire_length.is_some_and(|length| length != self.wire_bytes) {
-            return Err(FileEncodingError::Length);
+            return Err(UploadEncodingError::Length);
         }
         if let Some(chunks) = &self.chunks {
             chunks.finish()?;
@@ -153,8 +161,8 @@ impl<Input> FileUploadBody<Input> {
     }
 }
 
-impl<Input: Body<Data = Bytes> + Unpin> FileUploadBody<Input> {
-    fn poll_data(&mut self, context: &mut Context<'_>) -> Poll<Result<Option<Bytes>, FileEncodingError>> {
+impl<Input: Body<Data = Bytes> + Unpin> UploadBody<Input> {
+    fn poll_data(&mut self, context: &mut Context<'_>) -> Poll<Result<Option<Bytes>, UploadEncodingError>> {
         for _ in 0..64 {
             if !self.buffered.is_empty() {
                 if let Some(chunks) = &mut self.chunks {
@@ -173,17 +181,19 @@ impl<Input: Body<Data = Bytes> + Unpin> FileUploadBody<Input> {
             }
             match std::task::ready!(Pin::new(&mut self.input).poll_frame(context)) {
                 Some(Ok(frame)) => {
-                    self.buffered = frame.into_data().map_err(|_| FileEncodingError::Framing)?;
-                    super::metrics::record_request_bytes(self.buffered.len());
+                    self.buffered = frame.into_data().map_err(|_| UploadEncodingError::Framing)?;
+                    if let Some(metrics) = self.metrics {
+                        metrics(self.buffered.len());
+                    }
                     self.wire_bytes = self
                         .wire_bytes
                         .checked_add(self.buffered.len() as u64)
-                        .ok_or(FileEncodingError::Length)?;
+                        .ok_or(UploadEncodingError::Length)?;
                     if self.wire_bytes > self.max_wire_bytes {
-                        return Poll::Ready(Err(FileEncodingError::Length));
+                        return Poll::Ready(Err(UploadEncodingError::Length));
                     }
                 }
-                Some(Err(_)) => return Poll::Ready(Err(FileEncodingError::Transport)),
+                Some(Err(_)) => return Poll::Ready(Err(UploadEncodingError::Transport)),
                 None => {
                     self.finish()?;
                     return Poll::Ready(Ok(None));
@@ -195,9 +205,9 @@ impl<Input: Body<Data = Bytes> + Unpin> FileUploadBody<Input> {
     }
 }
 
-impl<Input: Body<Data = Bytes> + Unpin> Body for FileUploadBody<Input> {
+impl<Input: Body<Data = Bytes> + Unpin> Body for UploadBody<Input> {
     type Data = Bytes;
-    type Error = FileEncodingError;
+    type Error = UploadEncodingError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -230,23 +240,23 @@ impl<Input: Body<Data = Bytes> + Unpin> Body for FileUploadBody<Input> {
     }
 }
 
-fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, FileEncodingError> {
+fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, UploadEncodingError> {
     if headers.get_all(name).iter().count() > 1 {
-        return Err(FileEncodingError::Framing);
+        return Err(UploadEncodingError::Framing);
     }
     headers
         .get(name)
-        .map(|value| value.to_str().map_err(|_| FileEncodingError::Framing))
+        .map(|value| value.to_str().map_err(|_| UploadEncodingError::Framing))
         .transpose()
 }
 
-fn length_header(headers: &HeaderMap, name: &str) -> Result<Option<u64>, FileEncodingError> {
+fn length_header(headers: &HeaderMap, name: &str) -> Result<Option<u64>, UploadEncodingError> {
     header(headers, name)?
         .map(|value| {
             if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(FileEncodingError::Framing);
+                return Err(UploadEncodingError::Framing);
             }
-            value.parse().map_err(|_| FileEncodingError::Length)
+            value.parse().map_err(|_| UploadEncodingError::Length)
         })
         .transpose()
 }

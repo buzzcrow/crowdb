@@ -12,6 +12,7 @@ use crowdb_chunk_client::{ChunkIoWriter, FramedWriteBuffer, IoError};
 use hyper::body::Bytes;
 use tokio::sync::mpsc;
 
+pub mod body_encoding;
 pub(crate) mod digest_pipe;
 
 pub(crate) enum UploadBuffer {

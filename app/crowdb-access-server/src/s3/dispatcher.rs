@@ -9,7 +9,7 @@ use crowdb_access_s3::auth::{AuthError, RawAuthRequest, RequestAuthenticator};
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
 use crowdb_access_s3::metrics::{DependencyHealth, OutcomeClass, RequestMeasurement, S3Health, S3Metrics};
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
-use crowdb_access_s3::route::{classify_request, RouteError};
+use crowdb_access_s3::route::{classify_request, RouteError, S3Operation};
 use crowdb_chunk_client::ChunkIoClient;
 use hyper::body::{Http1BodyReceiveProvider, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
@@ -186,14 +186,7 @@ impl S3HttpHandler for S3Dispatcher {
             let resource = request.uri().path().to_owned();
             let head_only = request.method() == Method::HEAD;
             let authentication_started = Instant::now();
-            if let Err(error) = authenticator
-                .authenticate(RawAuthRequest::from_parts(
-                    request.method(),
-                    request.uri(),
-                    request.headers(),
-                ))
-                .await
-            {
+            if let Err(error) = authenticate_request(authenticator.as_ref(), &mut request).await {
                 if matches!(error, AuthError::Unavailable) {
                     health.set_authentication(DependencyHealth::Unavailable);
                 }
@@ -227,6 +220,13 @@ impl S3HttpHandler for S3Dispatcher {
                 }
             };
             let operation = route.operation;
+            if streaming_requires_upload(&request, operation) {
+                metrics.finish_predispatch(OutcomeClass::ClientError, elapsed_ns(started));
+                return Ok(error_response(
+                    &S3Error::new(S3ErrorCode::InvalidRequest, resource, request_id, host_id),
+                    head_only,
+                ));
+            }
             defer_body_provider(operation, body_receive_provider_factory, &mut request);
             let request_bytes = request
                 .headers()
@@ -274,6 +274,31 @@ fn auth_error_outcome(error: AuthError) -> (S3ErrorCode, OutcomeClass) {
         AuthError::Rejected => (S3ErrorCode::AccessDenied, OutcomeClass::ClientError),
         AuthError::Unavailable => (S3ErrorCode::ServiceUnavailable, OutcomeClass::Unavailable),
     }
+}
+
+async fn authenticate_request(
+    authenticator: &dyn RequestAuthenticator,
+    request: &mut Request<Incoming>,
+) -> Result<(), AuthError> {
+    let streaming = authenticator
+        .authenticate_upload(RawAuthRequest::from_parts(
+            request.method(),
+            request.uri(),
+            request.headers(),
+        ))
+        .await?;
+    if let Some(verifier) = streaming {
+        request.extensions_mut().insert(Arc::new(verifier));
+    }
+    Ok(())
+}
+
+fn streaming_requires_upload(request: &Request<Incoming>, operation: S3Operation) -> bool {
+    request
+        .extensions()
+        .get::<Arc<crowdb_access_s3::auth::StreamingPayloadVerifier>>()
+        .is_some()
+        && !matches!(operation, S3Operation::PutObject | S3Operation::UploadPart)
 }
 
 fn elapsed_ns(started: Instant) -> u64 {

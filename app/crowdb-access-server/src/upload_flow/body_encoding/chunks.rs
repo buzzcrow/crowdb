@@ -2,7 +2,7 @@ use crowdb_access_s3::auth::StreamingPayloadVerifier;
 use hyper::body::Bytes;
 use sha2::{Digest, Sha256};
 
-use super::{checksum::Checksum, FileEncodingError, MAX_RECEIVE_FRAME_BYTES};
+use super::{checksum::Checksum, UploadEncodingError, MAX_RECEIVE_FRAME_BYTES};
 
 enum State {
     Header,
@@ -39,7 +39,7 @@ impl Chunks {
         }
     }
 
-    pub(super) fn next(&mut self, input: &mut Bytes) -> Result<Option<Bytes>, FileEncodingError> {
+    pub(super) fn next(&mut self, input: &mut Bytes) -> Result<Option<Bytes>, UploadEncodingError> {
         while !input.is_empty() {
             if let State::Data(remaining) = self.state {
                 let length = input
@@ -62,31 +62,31 @@ impl Chunks {
                 return Ok(Some(bytes));
             }
             if matches!(self.state, State::Done) {
-                return Err(FileEncodingError::Framing);
+                return Err(UploadEncodingError::Framing);
             }
             let byte = input.split_to(1)[0];
             self.line.push(byte);
             if self.line.len() > 1024 {
-                return Err(FileEncodingError::Framing);
+                return Err(UploadEncodingError::Framing);
             }
             if byte == b'\n' {
                 let line = std::mem::take(&mut self.line);
-                let line = line.strip_suffix(b"\r\n").ok_or(FileEncodingError::Framing)?;
-                let line = std::str::from_utf8(line).map_err(|_| FileEncodingError::Framing)?;
+                let line = line.strip_suffix(b"\r\n").ok_or(UploadEncodingError::Framing)?;
+                let line = std::str::from_utf8(line).map_err(|_| UploadEncodingError::Framing)?;
                 self.line(line)?;
             }
         }
         Ok(None)
     }
 
-    fn line(&mut self, line: &str) -> Result<(), FileEncodingError> {
+    fn line(&mut self, line: &str) -> Result<(), UploadEncodingError> {
         match self.state {
             State::Header => self.start_chunk(line)?,
             State::Separator if line.is_empty() => self.state = State::Header,
             State::Checksum => {
                 self.checksum
                     .as_mut()
-                    .ok_or(FileEncodingError::Framing)?
+                    .ok_or(UploadEncodingError::Framing)?
                     .trailer(line)?;
                 self.canonical_trailer = format!("{line}\n");
                 self.state = if self.verifier.is_signed() {
@@ -98,41 +98,41 @@ impl Chunks {
             State::Signature => {
                 let signature = line
                     .strip_prefix("x-amz-trailer-signature:")
-                    .ok_or(FileEncodingError::Framing)?;
+                    .ok_or(UploadEncodingError::Framing)?;
                 self.verifier
                     .verify_trailer(&self.canonical_trailer, Some(signature))
-                    .map_err(|_| FileEncodingError::Signature)?;
+                    .map_err(|_| UploadEncodingError::Signature)?;
                 self.state = State::End;
             }
             State::End if line.is_empty() => self.state = State::Done,
-            _ => return Err(FileEncodingError::Framing),
+            _ => return Err(UploadEncodingError::Framing),
         }
         Ok(())
     }
 
-    fn start_chunk(&mut self, line: &str) -> Result<(), FileEncodingError> {
+    fn start_chunk(&mut self, line: &str) -> Result<(), UploadEncodingError> {
         let (length, signature) = if self.verifier.is_signed() {
             let (length, signature) = line
                 .split_once(";chunk-signature=")
-                .ok_or(FileEncodingError::Framing)?;
+                .ok_or(UploadEncodingError::Framing)?;
             if signature.len() != 64 || !signature.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(FileEncodingError::Framing);
+                return Err(UploadEncodingError::Framing);
             }
             (length, Some(signature.to_owned()))
         } else {
             (line, None)
         };
         if length.is_empty() || length.len() > 16 || !length.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(FileEncodingError::Framing);
+            return Err(UploadEncodingError::Framing);
         }
-        let length = u64::from_str_radix(length, 16).map_err(|_| FileEncodingError::Framing)?;
+        let length = u64::from_str_radix(length, 16).map_err(|_| UploadEncodingError::Framing)?;
         if length > self.remaining {
-            return Err(FileEncodingError::Length);
+            return Err(UploadEncodingError::Length);
         }
         self.signature = signature;
         if length == 0 {
             if self.remaining != 0 {
-                return Err(FileEncodingError::Length);
+                return Err(UploadEncodingError::Length);
             }
             self.verify_chunk()?;
             self.state = if self.verifier.has_trailer() {
@@ -146,16 +146,16 @@ impl Chunks {
         Ok(())
     }
 
-    fn verify_chunk(&mut self) -> Result<(), FileEncodingError> {
+    fn verify_chunk(&mut self) -> Result<(), UploadEncodingError> {
         let digest = std::mem::take(&mut self.hash).finalize().into();
         self.verifier
             .verify_chunk(digest, self.signature.as_deref())
-            .map_err(|_| FileEncodingError::Signature)
+            .map_err(|_| UploadEncodingError::Signature)
     }
 
-    pub(super) fn finish(&self) -> Result<(), FileEncodingError> {
+    pub(super) fn finish(&self) -> Result<(), UploadEncodingError> {
         if !matches!(self.state, State::Done) || !self.line.is_empty() || self.remaining != 0 {
-            return Err(FileEncodingError::Framing);
+            return Err(UploadEncodingError::Framing);
         }
         if let Some(checksum) = &self.checksum {
             checksum.verify()?;

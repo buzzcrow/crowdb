@@ -3,6 +3,18 @@
 
 ### R200: access-s3 — Real-client compatibility and default checksum coverage
 
+#### Status
+
+Partially implemented. Default SDK and configured AWS CLI acceptance proceed
+independently. Positive rclone and s3fs compatibility remains pending
+[R204](R204-s3-client-metadata-and-mount.md): real clients require persisted
+metadata and mounted-file semantics. No compatibility claim or prerequisite
+skip substitutes for these failing positive gates. Default concurrent CLI
+progress is tracked by [R205](R205-s3-concurrent-client-progress.md).
+The accumulated full-stack regression also remains unaccepted because of the
+reproduced journal cursor regression and snapshot corruption recorded there;
+the isolated thousand-key case and new SDK cases pass independently.
+
 #### Problem
 
 Existing boto3 real-storage tests cover core operations, multipart, restart,
@@ -56,6 +68,11 @@ inferring broad S3 compatibility from one SDK.
   remain regression baselines. R196 owns performance benchmarks, not this gate.
 - Host FUSE permissions are an external prerequisite for s3fs only. Their
   absence must not block AWS CLI/rclone or silently certify the mount workflow.
+- R204 owns mandatory client metadata, multipart schema migration and mounted
+  file/ACL decisions. Retained positive client gates resume after it lands.
+- R203 owns principal/realm authority; current recipes use the configured realm.
+- R205 retains default concurrent multipart progress diagnostics. A documented
+  single-concurrency development recipe does not certify default concurrency.
 
 #### Acceptance
 

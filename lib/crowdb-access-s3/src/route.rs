@@ -70,9 +70,9 @@ pub fn classify(method: &Method, uri: &Uri) -> Result<S3Route, RouteError> {
             })
             .ok_or(RouteError::Invalid);
     }
-    let (bucket, key) = path
-        .split_once('/')
-        .map_or((path, None), |(bucket, key)| (bucket, Some(key)));
+    let (bucket, key) = path.split_once('/').map_or((path, None), |(bucket, key)| {
+        (bucket, (!key.is_empty()).then_some(key))
+    });
     let bucket = decode(bucket);
     if bucket.is_empty() {
         return Err(RouteError::Invalid);
@@ -116,24 +116,26 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
     {
         return Err(RouteError::Invalid);
     }
-    if headers.keys().any(|name| {
-        matches!(
-            name.as_str(),
-            "x-amz-acl"
-                | "x-amz-storage-class"
-                | "x-amz-server-side-encryption"
-                | "x-amz-server-side-encryption-aws-kms-key-id"
-                | "x-amz-server-side-encryption-context"
-                | "x-amz-server-side-encryption-customer-algorithm"
-                | "x-amz-server-side-encryption-customer-key"
-                | "x-amz-server-side-encryption-customer-key-md5"
-                | "x-amz-tagging"
-                | "x-amz-website-redirect-location"
-                | "x-amz-object-lock-mode"
-                | "x-amz-object-lock-retain-until-date"
-                | "x-amz-object-lock-legal-hold"
-        )
+    if let Some(name) = headers.keys().find(|name| {
+        name.as_str().starts_with("x-amz-meta-")
+            || matches!(
+                name.as_str(),
+                "x-amz-acl"
+                    | "x-amz-storage-class"
+                    | "x-amz-server-side-encryption"
+                    | "x-amz-server-side-encryption-aws-kms-key-id"
+                    | "x-amz-server-side-encryption-context"
+                    | "x-amz-server-side-encryption-customer-algorithm"
+                    | "x-amz-server-side-encryption-customer-key"
+                    | "x-amz-server-side-encryption-customer-key-md5"
+                    | "x-amz-tagging"
+                    | "x-amz-website-redirect-location"
+                    | "x-amz-object-lock-mode"
+                    | "x-amz-object-lock-retain-until-date"
+                    | "x-amz-object-lock-legal-hold"
+            )
     }) {
+        tracing::debug!(header = %name, "unsupported S3 selector");
         return Err(RouteError::NotImplemented);
     }
     if let Some(multipart) = classify_multipart(method, uri)? {
@@ -181,6 +183,11 @@ fn selects_extension(query: Option<&str>) -> bool {
             matches!(
                 name,
                 "uploads"
+                    | "location"
+                    | "acl"
+                    | "versioning"
+                    | "annotations"
+                    | "annotation"
                     | "uploadId"
                     | "partNumber"
                     | "versionId"

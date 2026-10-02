@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R204** — Bump this line in the same commit when adding a new item.
+**Next R number: R206** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -43,8 +43,9 @@ optional cuObject/RDMA acceleration after the TCP baseline is correct and measur
 - **[R200](R200-s3-client-compatibility.md)** — real-client compatibility and
   default checksum coverage — Area: S3 / clients / container — High priority,
   high complexity. Verify default boto3, AWS CLI, rclone, and FUSE-enabled s3fs
-  workflows; trace gaps and gate published compatibility recipes. Research can
-  start independently; copy and batch deletion are available.
+  workflows; trace gaps and gate published compatibility recipes. **Partially
+  implemented:** SDK and configured AWS recipe coverage is available; positive
+  rclone/s3fs waits on R204 and accumulated storage regression on R205.
 - **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
   upload benchmark regression — Area: CLI / access server / benchmark — Add a
   shared real-protocol CLI workload and retained local regression scripts for
@@ -97,6 +98,14 @@ Caches, selected ORC and container engine workflows remain separate.
 
 ### High Priority
 
+- **[R204](R204-s3-client-metadata-and-mount.md)** — client metadata and
+  mounted-file contract — Area: S3 / clients — High priority. Persist bounded
+  metadata through PUT, multipart and copy; accept rclone and real s3fs mounts
+  without silently discarding requested attributes or ACLs.
+- **[R205](R205-s3-concurrent-client-progress.md)** — concurrent client
+  admission and storage progress — Area: S3 / KV / DiskIO — High priority.
+  Diagnose default CLI multipart resource rejection, storage stalls and the
+  accumulated serial-suite journal/snapshot failure; retain exact reproducers.
 - **[R203](R203-s3-principal-namespace-authorization.md)** — credential
   principals and namespace authorization — Area: S3 / auth / namespace —
   Define shared-realm or principal-scoped authority. Current accepted keys share

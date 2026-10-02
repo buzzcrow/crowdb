@@ -16,7 +16,10 @@ pub fn list_buckets(tenant: &[u8], buckets: &[BucketNameRecord]) -> String {
     for bucket in buckets {
         output.push_str("<Bucket><Name>");
         push_escaped(&mut output, &String::from_utf8_lossy(&bucket.name));
-        output.push_str("</Name></Bucket>");
+        output.push_str("</Name>");
+        // Bucket records do not persist creation time; use a stable placeholder.
+        element(&mut output, "CreationDate", &iso8601(0));
+        output.push_str("</Bucket>");
     }
     output.push_str("</Buckets></ListAllMyBucketsResult>");
     output
@@ -152,12 +155,24 @@ pub fn list_objects(
     delimiter: Option<&[u8]>,
     max_keys: usize,
     page: &ListObjectsV2Page,
+    url_encoding: bool,
+    start_after: Option<&[u8]>,
 ) -> String {
     let mut output = xml_start("ListBucketResult");
     element(&mut output, "Name", &String::from_utf8_lossy(bucket));
-    element(&mut output, "Prefix", &String::from_utf8_lossy(prefix));
+    element(&mut output, "Prefix", &listing_text(prefix, url_encoding));
+    if url_encoding {
+        element(&mut output, "EncodingType", "url");
+    }
+    if let Some(start_after) = start_after {
+        element(
+            &mut output,
+            "StartAfter",
+            &listing_text(start_after, url_encoding),
+        );
+    }
     if let Some(delimiter) = delimiter {
-        element(&mut output, "Delimiter", &String::from_utf8_lossy(delimiter));
+        element(&mut output, "Delimiter", &listing_text(delimiter, url_encoding));
     }
     element(&mut output, "MaxKeys", &max_keys.to_string());
     element(
@@ -175,11 +190,11 @@ pub fn list_objects(
         },
     );
     for object in &page.objects {
-        object_entry(&mut output, object);
+        object_entry(&mut output, object, url_encoding);
     }
     for common_prefix in &page.common_prefixes {
         output.push_str("<CommonPrefixes>");
-        element(&mut output, "Prefix", &String::from_utf8_lossy(common_prefix));
+        element(&mut output, "Prefix", &listing_text(common_prefix, url_encoding));
         output.push_str("</CommonPrefixes>");
     }
     if let Some(token) = &page.next_continuation_token {
@@ -189,14 +204,27 @@ pub fn list_objects(
     output
 }
 
-fn object_entry(output: &mut String, object: &ObjectRecord) {
+fn object_entry(output: &mut String, object: &ObjectRecord, url_encoding: bool) {
     output.push_str("<Contents>");
-    element(output, "Key", &String::from_utf8_lossy(&object.key));
+    element(output, "Key", &listing_text(&object.key, url_encoding));
     element(output, "LastModified", &iso8601(object.modified_at_ms));
     element(output, "ETag", &format!("\"{}\"", object.etag));
     element(output, "Size", &object.logical_length.to_string());
     element(output, "StorageClass", "STANDARD");
     output.push_str("</Contents>");
+}
+
+fn listing_text(bytes: &[u8], url_encoding: bool) -> String {
+    const SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    if url_encoding {
+        percent_encoding::percent_encode(bytes, SET).to_string()
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
 }
 
 fn xml_start(root: &str) -> String {

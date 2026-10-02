@@ -6,7 +6,6 @@ mod file_admission;
 mod file_auth;
 mod file_body;
 mod file_complete;
-mod file_encoding;
 mod file_http;
 mod file_list_request;
 mod file_list_response;
@@ -36,7 +35,7 @@ pub use file_admission::{FileAdmissionError, FileServiceLimits, FileTransferAdmi
 pub use file_auth::authenticate_file_request;
 pub use file_body::{FileBodyError, FileReadBody, FileResponseBudget};
 pub use file_complete::FileCompleteBody;
-pub use file_encoding::{FileEncodingError, FileUploadBody};
+
 pub use file_http::UploadFlowSnapshot;
 pub use file_request::{FileRequest, FileRequestError, MultipartRequest};
 pub use file_response::{FileResponseError, FileS3ErrorCode, MultipartResponses};

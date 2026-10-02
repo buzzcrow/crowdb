@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
 use crowdb_access_s3::bucket::{self, BucketError, DeleteBucketResult, RandomBucketIdGenerator};
 use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::continuation::ContinuationTokenSigner;
@@ -32,6 +33,8 @@ use hyper::{Request, Response, StatusCode};
 use percent_encoding::percent_decode_str;
 
 use crate::storage::S3StorageClients;
+use crate::upload_flow::body_encoding::{UploadBody, UploadEncodingError};
+use crowdb_access_s3::auth::StreamingPayloadVerifier;
 
 use super::{error_response, full_body, install_body_receive_provider, BoxError, ResponseBody};
 use crowdb_access_s3::wire;
@@ -250,14 +253,14 @@ impl ProductionS3Operations {
         let bucket_name = required_bucket(&route)?;
         let key = required_key(&route)?.to_vec();
         let bucket_id = self.resolve_bucket(bucket_name).await?;
-        let content_length = content_length(&request)?;
+        let streaming = take_streaming(&mut request)?;
+        let content_length = upload_length(&request, streaming.is_some())?;
         let content_type = header(&request, CONTENT_TYPE)
             .unwrap_or("application/octet-stream")
             .to_owned();
-        let content_md5 =
-            strict_header(&request, "content-md5", S3ErrorCode::InvalidDigest)?.map(str::to_owned);
+        let content_md5 = content_md5_header(&request)?.map(str::to_owned);
         let payload_sha256 = strict_header(&request, "x-amz-content-sha256", S3ErrorCode::InvalidRequest)?
-            .filter(|value| *value != "UNSIGNED-PAYLOAD")
+            .filter(|value| *value != "UNSIGNED-PAYLOAD" && streaming.is_none())
             .map(str::to_owned);
         let mut route_key =
             Vec::with_capacity(self.config.tenant.as_bytes().len() + bucket_id.as_bytes().len() + key.len());
@@ -265,7 +268,7 @@ impl ProductionS3Operations {
         route_key.extend_from_slice(bucket_id.as_bytes());
         route_key.extend_from_slice(&key);
         let mut writer = self.prepare_writer(content_length, &route_key).await?;
-        let native_receiver = if writer.is_large() && content_length.is_some() {
+        let native_receiver = if writer.is_large() && content_length.is_some() && streaming.is_none() {
             install_body_receive_provider(&mut request)
         } else {
             None
@@ -273,7 +276,10 @@ impl ProductionS3Operations {
         if let Some(receiver) = &native_receiver {
             receiver.enable_owner_handoff();
         }
-        let mut body = request.into_body();
+        let (parts, body) = request.into_parts();
+        let mut body = UploadBody::new(body, &parts.headers, streaming, 6 * 1024 * 1024 * 1024)
+            .map_err(encoding_error)?;
+        body.defer_md5();
         let write_result = write_object_body(
             &mut body,
             &mut writer,
@@ -289,7 +295,9 @@ impl ProductionS3Operations {
             Ok(result) => result,
             Err(outcome) => {
                 let _ = writer.on_error().await;
-                return Err(map_put_outcome(&outcome));
+                return Err(body
+                    .failure()
+                    .map_or_else(|| map_put_outcome(&outcome), encoding_error));
             }
         };
         let locations = writer.on_finish().await.map_err(|error| {
@@ -397,6 +405,11 @@ impl ProductionS3Operations {
         let delimiter = query.bytes("delimiter");
         let start_after = query.bytes("start-after");
         let continuation = query.text("continuation-token");
+        let url_encoding = match query.text("encoding-type").as_deref() {
+            None => false,
+            Some("url") => true,
+            _ => return Err(S3ErrorCode::InvalidRequest),
+        };
         let max_keys = query
             .text("max-keys")
             .map_or(Ok(DEFAULT_LIST_LIMIT), |value| value.parse::<usize>())
@@ -427,6 +440,8 @@ impl ProductionS3Operations {
             delimiter.as_deref(),
             max_keys,
             &page,
+            url_encoding,
+            start_after.as_deref(),
         ))
     }
 
@@ -597,6 +612,50 @@ fn content_length(request: &Request<Incoming>) -> Result<Option<u64>, S3ErrorCod
         .map(str::parse)
         .transpose()
         .map_err(|_| S3ErrorCode::InvalidRequest)
+}
+
+fn take_streaming(request: &mut Request<Incoming>) -> Result<Option<StreamingPayloadVerifier>, S3ErrorCode> {
+    request
+        .extensions_mut()
+        .remove::<Arc<StreamingPayloadVerifier>>()
+        .map(|value| Arc::try_unwrap(value).map_err(|_| S3ErrorCode::InternalError))
+        .transpose()
+}
+
+fn upload_length(request: &Request<Incoming>, streaming: bool) -> Result<Option<u64>, S3ErrorCode> {
+    if streaming {
+        strict_header(
+            request,
+            "x-amz-decoded-content-length",
+            S3ErrorCode::InvalidRequest,
+        )?
+        .map(str::parse)
+        .transpose()
+        .map_err(|_| S3ErrorCode::InvalidRequest)
+    } else {
+        content_length(request)
+    }
+}
+
+fn encoding_error(error: UploadEncodingError) -> S3ErrorCode {
+    match error {
+        UploadEncodingError::Checksum => S3ErrorCode::BadDigest,
+        UploadEncodingError::Signature => S3ErrorCode::AccessDenied,
+        _ => S3ErrorCode::InvalidRequest,
+    }
+}
+
+fn content_md5_header(request: &Request<Incoming>) -> Result<Option<&str>, S3ErrorCode> {
+    let value = strict_header(request, "content-md5", S3ErrorCode::InvalidDigest)?;
+    if let Some(value) = value {
+        let digest = base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map_err(|_| S3ErrorCode::InvalidDigest)?;
+        if digest.len() != 16 {
+            return Err(S3ErrorCode::InvalidDigest);
+        }
+    }
+    Ok(value)
 }
 
 fn conditions(request: &Request<Incoming>) -> ObjectConditions<'_> {

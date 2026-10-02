@@ -19,7 +19,10 @@ from xml.etree import ElementTree
 
 import boto3
 from batch_delete import BatchDeleteCases
-from botocore.auth import S3SigV4Auth
+from default_client import DefaultClientCases
+from clients import CliClientCases
+from fuse_client import FuseClientCases
+from botocore.auth import S3SigV4Auth, SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.config import Config
 from botocore.credentials import Credentials
@@ -42,7 +45,7 @@ class FragmentedBody(BytesIO):
         return super().read(fragment)
 
 
-class BasicS3CompatibilityTest(BatchDeleteCases, unittest.TestCase):
+class BasicS3CompatibilityTest(BatchDeleteCases, DefaultClientCases, CliClientCases, FuseClientCases, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         endpoint = os.environ.get("CROWDB_S3_E2E_ENDPOINT")
@@ -82,7 +85,8 @@ class BasicS3CompatibilityTest(BatchDeleteCases, unittest.TestCase):
             os.environ.get("CROWDB_S3_E2E_ACCESS_KEY", "test-access"),
             os.environ.get("CROWDB_S3_E2E_SECRET_KEY", "test-secret"),
         )
-        S3SigV4Auth(credentials, "s3", os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1")).add_auth(request)
+        signer = SigV4Auth if signed_headers["x-amz-content-sha256"].startswith("STREAMING-") else S3SigV4Auth
+        signer(credentials, "s3", os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1")).add_auth(request)
         if corrupt_signature:
             authorization = request.headers["Authorization"]
             request.headers["Authorization"] = authorization[:-1] + (

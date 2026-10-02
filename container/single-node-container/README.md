@@ -59,8 +59,8 @@ to the same image digest:
 The repositories provide separate entry points for Iceberg and S3 users. Both
 contain the same runtime, including one Access Server listening on Iceberg
 port 9092 and S3 port 9091. Publish the ports needed by the client; using both
-interfaces requires only one container. The container verification runs boto3
-S3 and PyIceberg clients against that runtime, including reads after recovery
+interfaces requires only one container. The container verification runs boto3,
+AWS CLI and PyIceberg clients against that runtime, including reads after recovery
 and persisted-volume restart.
 
 Rerunning publication from an older release branch also updates both `latest`
@@ -138,6 +138,54 @@ Set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_DEFAULT_REGION`
 in the client's environment using the displayed values before running this
 example. To use Iceberg from the same container, also map container port 9092.
 These published images use the single-node development profile described above.
+
+## Tested S3 client recipes
+
+- The locked `s3-e2e` environment pins boto3/botocore 1.43.92, AWS CLI 2.36.47,
+  rclone 1.75.1 (the packaged binary identifies its build as `1.75.1-DEV`), and
+  s3fs 1.97. Run repository acceptance commands through Pixi.
+- boto3 uses its default checksum calculation and validation settings. Only
+  path-style addressing, SigV4 and the endpoint are configured. Ordinary and multipart
+  uploads verify request CRC32 checksums and exact downloaded bytes. Presigned
+  URLs and AWS chunked trailers have separate integrity tests. Supported request
+  checksums do not imply arbitrary response checksum negotiation.
+- AWS CLI uses the configured recipe below for discovery, ordinary and multipart
+  transfers, prefix listing, server copy, sync with deletion, and recursive
+  cleanup. One concurrent request matches the bounded development fixture.
+  Default concurrency has a separate diagnostic task and is not accepted by
+  this recipe. Copy explicitly requests COPY metadata; the CLI's broader
+  property/annotation discovery is unsupported.
+
+```ini
+[default]
+region = us-east-1
+s3 =
+    addressing_style = path
+    preferred_transfer_client = classic
+    max_concurrent_requests = 1
+    multipart_threshold = 8MB
+    multipart_chunksize = 5MB
+```
+
+Use that profile in `AWS_CONFIG_FILE`, export the generated credentials, then
+run `aws --endpoint-url http://127.0.0.1:9091 ...`. For server copy, supply
+`--metadata-directive COPY` to `aws s3 cp`. The repeatable repository gate is
+`pixi run -e s3-e2e test-aws-cli-e2e`; container acceptance runs the same recipe
+and checks persisted bytes after recovery before publication credentials become
+available.
+
+- rclone and s3fs are investigation gates, not accepted compatibility claims.
+  rclone always requests modification-time user metadata, which currently
+  returns NotImplemented without mutation. s3fs requires a real Linux FUSE
+  device and additional mounted-file metadata semantics. Retained reproduction
+  commands are `pixi run -e s3-e2e test-rclone-e2e` and
+  `pixi run -e s3-e2e test-s3fs-e2e`. Missing host prerequisites are reported
+  as skips only by the optional FUSE task; `test-s3fs-required` and the dedicated
+  manual CI workflow require actual mounted operations and fail on absence.
+- The endpoint has one configured namespace shared by accepted credentials;
+  per-user ACLs, versioning, annotations, and user metadata are unsupported.
+  ListBuckets CreationDate is a stable Unix-epoch placeholder. ListObjectsV2
+  supports `encoding-type=url` for keys requiring XML-safe encoding.
 
 ## Crash collection boundary
 

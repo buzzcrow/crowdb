@@ -3,7 +3,7 @@ use hyper::HeaderMap;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use super::FileEncodingError;
+use super::UploadEncodingError;
 
 const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 const CRC32C: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISCSI);
@@ -28,11 +28,11 @@ impl Checksum {
     pub(super) fn from_headers(
         headers: &HeaderMap,
         trailer: bool,
-    ) -> Result<Option<Self>, FileEncodingError> {
+    ) -> Result<Option<Self>, UploadEncodingError> {
         for name in headers.keys() {
             if let Some(algorithm) = name.as_str().strip_prefix("x-amz-checksum-") {
                 if !NAMES.contains(&algorithm) && algorithm != "type" {
-                    return Err(FileEncodingError::Framing);
+                    return Err(UploadEncodingError::Framing);
                 }
             }
         }
@@ -41,14 +41,14 @@ impl Checksum {
             let header = format!("x-amz-checksum-{name}");
             if let Some(value) = super::header(headers, &header)? {
                 if selected.is_some() || trailer {
-                    return Err(FileEncodingError::Framing);
+                    return Err(UploadEncodingError::Framing);
                 }
                 selected = Some(Self::new(&header, Some(value.to_owned()))?);
             }
         }
         if trailer {
             selected = Some(Self::new(
-                super::header(headers, "x-amz-trailer")?.ok_or(FileEncodingError::Framing)?,
+                super::header(headers, "x-amz-trailer")?.ok_or(UploadEncodingError::Framing)?,
                 None,
             )?);
         }
@@ -56,20 +56,20 @@ impl Checksum {
             if selected.as_ref().map_or(true, |selected| {
                 selected.name != format!("x-amz-checksum-{}", algorithm.to_ascii_lowercase())
             }) {
-                return Err(FileEncodingError::Framing);
+                return Err(UploadEncodingError::Framing);
             }
         }
         Ok(selected)
     }
 
-    fn new(name: &str, expected: Option<String>) -> Result<Self, FileEncodingError> {
+    fn new(name: &str, expected: Option<String>) -> Result<Self, UploadEncodingError> {
         let state = match name {
             "x-amz-checksum-crc32" => DigestState::Crc32(CRC32.digest()),
             "x-amz-checksum-crc32c" => DigestState::Crc32(CRC32C.digest()),
             "x-amz-checksum-crc64nvme" => DigestState::Crc64(CRC64.digest()),
             "x-amz-checksum-sha1" => DigestState::Sha1(Sha1::new()),
             "x-amz-checksum-sha256" => DigestState::Sha256(Sha256::new()),
-            _ => return Err(FileEncodingError::Framing),
+            _ => return Err(UploadEncodingError::Framing),
         };
         Ok(Self {
             name: name.to_owned(),
@@ -87,16 +87,16 @@ impl Checksum {
         }
     }
 
-    pub(super) fn trailer(&mut self, line: &str) -> Result<(), FileEncodingError> {
-        let (name, value) = line.split_once(':').ok_or(FileEncodingError::Framing)?;
+    pub(super) fn trailer(&mut self, line: &str) -> Result<(), UploadEncodingError> {
+        let (name, value) = line.split_once(':').ok_or(UploadEncodingError::Framing)?;
         if name != self.name || self.expected.is_some() {
-            return Err(FileEncodingError::Framing);
+            return Err(UploadEncodingError::Framing);
         }
         self.expected = Some(value.to_owned());
         self.verify()
     }
 
-    pub(super) fn verify(&self) -> Result<(), FileEncodingError> {
+    pub(super) fn verify(&self) -> Result<(), UploadEncodingError> {
         let value = match self.state.clone() {
             DigestState::Crc32(digest) => STANDARD.encode(digest.finalize().to_be_bytes()),
             DigestState::Crc64(digest) => STANDARD.encode(digest.finalize().to_be_bytes()),
@@ -106,7 +106,7 @@ impl Checksum {
         if self.expected.as_deref() == Some(value.as_str()) {
             Ok(())
         } else {
-            Err(FileEncodingError::Checksum)
+            Err(UploadEncodingError::Checksum)
         }
     }
 }

@@ -52,6 +52,8 @@ identity to operations. Accepted keys therefore share that listener namespace;
 per-user bucket ACLs and IAM policies are not part of the installed surface.
 Namespace isolation currently means the configured tenant/bucket identity
 boundaries, not isolation between multiple accepted users on one listener.
+Presigned request expiry is enforced independently of the allowed future-clock
+skew; clock tolerance cannot extend an issued URL's lifetime.
 
 ## 3. HTTP data path
 
@@ -59,6 +61,16 @@ PUT and multipart upload stream HTTP bodies into bounded CROWDB writers. GET
 streams owner-backed CROWDB data into an HTTP response. Backpressure bounds
 memory and storage work independently of object size; slow peers cannot create
 unbounded buffering.
+
+Uploads use the shared bounded `UploadBody` decoder. It verifies supported
+CRC32, CRC32C, CRC64NVME, SHA1 and SHA256 headers or declared AWS trailers,
+alongside Content-MD5 and signed payload hashes. Streaming SigV4 first verifies
+the request seed, then every signed chunk and signed trailer. Unsigned chunks
+require a verified declared trailer. Encoded and decoded lengths, frame size,
+terminal chunks and trailing bytes are checked before publication; malformed
+or corrupt bodies cannot replace a selected object. Checksum calculation on
+requests is supported; arbitrary response checksum negotiation is outside the
+installed surface.
 
 The ordinary HTTP path is always available. An optional direct data plane may
 move an authenticated object range between DiskIO and registered client memory
@@ -79,6 +91,11 @@ reused.
 
 Listings are ordered and continuation-safe within their documented consistency
 model. Continuation state is opaque and bound to the original request scope.
+Bucket paths accept a single trailing slash. ListObjectsV2 supports URL encoding
+of XML-incompatible keys and selected prefix/delimiter fields. ListBuckets
+reports the Unix epoch as a stable CreationDate placeholder because bucket
+records do not retain creation timestamps. User metadata headers are rejected
+before dispatch rather than accepted and discarded.
 
 Server-side CopyObject and UploadPartCopy resolve source and destination through
 the configured S3 tenant. Copy selects one immutable source record before

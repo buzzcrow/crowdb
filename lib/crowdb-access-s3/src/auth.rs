@@ -79,6 +79,15 @@ pub enum AuthError {
 #[async_trait::async_trait]
 pub trait RequestAuthenticator: Send + Sync {
     async fn authenticate(&self, request: RawAuthRequest<'_>) -> Result<(), AuthError>;
+
+    /// Returns an authenticated streaming seed whose full body must be verified.
+    async fn authenticate_upload(
+        &self,
+        request: RawAuthRequest<'_>,
+    ) -> Result<Option<StreamingPayloadVerifier>, AuthError> {
+        self.authenticate(request).await?;
+        Ok(None)
+    }
 }
 
 /// Explicit trusted-network bypass. Construction emits the required warning.

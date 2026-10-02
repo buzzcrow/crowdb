@@ -102,6 +102,7 @@ verify_clients() {
     export CROWDB_PREVIEW_S3_ENDPOINT="http://127.0.0.1:$(port 9091)"
     export CROWDB_PREVIEW_ICEBERG_URI="http://127.0.0.1:$(port 9092)"
     pixi run -e s3-e2e python container/single-node-container/tests/s3-client.py "$operation"
+    pixi run -e s3-e2e python container/single-node-container/tests/s3-cli-client.py "$operation"
     pixi run -e iceberg-e2e python container/single-node-container/tests/iceberg-client.py "$operation"
 }
 

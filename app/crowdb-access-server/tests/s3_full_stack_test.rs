@@ -32,7 +32,8 @@ use hyper::body::Bytes;
 use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const TEST_COUNT: usize = 25;
+const TEST_COUNT: usize = 30;
+const CLIENT_CASES: &[&str] = &["test_aws_cli_workflow"];
 const SKIPPED_CASE: &str = "test_slow_signed_upload_releases_native_buffers";
 const COPY_CASES: &[&str] = &[
     "test_server_side_copy_preserves_bytes_and_supported_metadata",
@@ -40,6 +41,10 @@ const COPY_CASES: &[&str] = &[
     "test_copy_captures_source_before_overwrite_and_delete",
 ];
 const BOTO3_CASES: &[&str] = &[
+    "test_default_boto3_checksums_and_multipart",
+    "test_presigned_transfers_tamper_and_expiry",
+    "test_aws_chunked_trailers_are_verified_before_publication",
+    "test_rclone_metadata_is_rejected_without_mutation",
     "test_batch_delete_preserves_exact_keys_and_quiet",
     "test_batch_delete_thousand_keys_and_unversioned_retry",
     "test_batch_delete_rejects_entire_invalid_request",
@@ -141,10 +146,17 @@ async fn run_suite() {
     let mut stack = start_full_stack().await;
     if let Ok(method) = std::env::var("CROWDB_S3_E2E_ONLY") {
         assert!(
-            BOTO3_CASES.contains(&method.as_str()) || COPY_CASES.contains(&method.as_str()),
+            BOTO3_CASES.contains(&method.as_str())
+                || COPY_CASES.contains(&method.as_str())
+                || CLIENT_CASES.contains(&method.as_str())
+                || method == "test_s3fs_mounted_workflow"
+                || method == "test_rclone_workflow",
             "unknown focused S3 case: {method}"
         );
         stack.run_one_boto3_case(&method);
+        if method == "test_default_boto3_checksums_and_multipart" {
+            assert_native_write_metrics(&stack.listen, 0);
+        }
         stack.rpc.stop();
         return;
     }
@@ -207,6 +219,9 @@ impl FullStackSetup {
             case.pass();
         }
         assert_native_write_metrics(&self.listen, copy_baseline);
+        for method in CLIENT_CASES {
+            self.run_one_boto3_case(method);
+        }
         let case = TestCase::start("boto3::lost_put_and_multipart_replies_are_idempotent");
         run_restart_phase("lost-reply", &self.listen, &self.access_key, &self.secret_key);
         case.pass();
@@ -593,6 +608,7 @@ fn start_access_server(
         .env("CROWDB_S3_REGION", "us-east-1")
         .env("CROWDB_S3_EC_DATA", "2")
         .env("CROWDB_S3_EC_CODE", "1")
+        .env("RUST_LOG", "warn,crowdb_access_s3::route=debug")
         .env("CROWDB_S3_NATIVE_BUDGET_BYTES", (1024 * 1024).to_string())
         .env("CROWDB_S3_MAX_CHUNK_SIZE", (4 * 1024 * 1024).to_string())
         .stdout(Stdio::from(log.try_clone().expect("clone access-server log")))
@@ -628,8 +644,11 @@ fn run_boto3_case(method: &str, context: &Boto3CaseContext<'_>) {
         context.access_server.log_content(),
         context.chunk_kv.log_content(),
     );
-    if method == "test_ordinary_put_size_matrix" {
+    if method == "test_ordinary_put_size_matrix" || method.contains("workflow") {
         print!("{}", String::from_utf8_lossy(&python.stdout));
+    }
+    if method == "test_s3fs_mounted_workflow" {
+        print!("{}", String::from_utf8_lossy(&python.stderr));
     }
 }
 

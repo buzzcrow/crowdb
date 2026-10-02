@@ -48,6 +48,8 @@ publish_job=$(sed -n '/^  publish:/,$p' "$release")
 [[ "$verify_job" != *'verified-container-symbols'* ]]
 [[ "$publish_job" == *'context: target/container-runtime'* ]]
 [[ "$verify_job" == *'pixi run test-single-node-container'* ]]
+client_gate=$(cat container/single-node-container/tests/container-e2e.sh)
+[[ "$client_gate" == *'s3-client.py "$operation"'* && "$client_gate" == *'s3-cli-client.py "$operation"'* ]]
 [[ "$verify_job" != *'Require CI success for the release branch commit'* ]]
 [[ "$verify_job" != *'git push origin'* && "$verify_job" != *'gh release create'* ]]
 ! grep -Eq 'DOCKERHUB_|push: true|id-token: write' <<<"$verify_job"

@@ -15,6 +15,9 @@ fn classifies_the_finite_path_style_surface() {
         (Method::HEAD, "/bucket", S3Operation::HeadBucket),
         (Method::DELETE, "/bucket", S3Operation::DeleteBucket),
         (Method::GET, "/bucket?list-type=2", S3Operation::ListObjectsV2),
+        (Method::GET, "/bucket/?list-type=2", S3Operation::ListObjectsV2),
+        (Method::HEAD, "/bucket/", S3Operation::HeadBucket),
+        (Method::GET, "/bucket//", S3Operation::GetObject),
         (Method::PUT, "/bucket/key", S3Operation::PutObject),
         (Method::HEAD, "/bucket/key", S3Operation::HeadObject),
         (Method::GET, "/bucket/key", S3Operation::GetObject),
@@ -81,6 +84,16 @@ fn rejects_headers_that_select_excluded_behavior() {
     headers.insert("x-amz-storage-class", HeaderValue::from_static("GLACIER"));
     assert_eq!(
         classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers),
+        Err(RouteError::NotImplemented)
+    );
+    headers.clear();
+    headers.insert("x-amz-meta-mtime", HeaderValue::from_static("123"));
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers),
+        Err(RouteError::NotImplemented)
+    );
+    assert_eq!(
+        classify(&Method::GET, &"/bucket?location".parse().unwrap()),
         Err(RouteError::NotImplemented)
     );
 }
