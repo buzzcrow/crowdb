@@ -1,12 +1,14 @@
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::iceberg_fb::{
-    FBFileChunkRoot, FBFileChunkRootArgs, FBFileMapping, FBFileMappingArgs, FBFileRecord, FBFileRecordArgs,
+    FBDeletedFile, FBDeletedFileArgs, FBFileChunkRoot, FBFileChunkRootArgs, FBFileMapping, FBFileMappingArgs,
+    FBFileRecord, FBFileRecordArgs,
 };
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
 use crate::error::ValidationError;
 use crate::file::{
-    ChunkRoot, ContentFormat, FileContent, FileKind, FileMapping, FileRecord, FormatHint, InlineCodec,
+    ChunkRoot, ContentFormat, DeletedFile, FileContent, FileKind, FileMapping, FileRecord, FormatHint,
+    InlineCodec,
 };
 use crate::key::FileId;
 
@@ -189,4 +191,28 @@ pub(super) fn decode_mapping(value: FBFileMapping<'_>) -> Result<FileMapping, Va
         location: value.location().parse()?,
         file: FileId::from_bytes(value.file_id().bytes())?,
     })
+}
+
+pub(super) fn encode_deleted<'buffer>(
+    builder: &mut FlatBufferBuilder<'buffer>,
+    record: &DeletedFile,
+) -> Result<WIPOffset<FBDeletedFile<'buffer>>, ValidationError> {
+    record.validate()?;
+    let file = encode(builder, &record.file)?;
+    Ok(FBDeletedFile::create(
+        builder,
+        &FBDeletedFileArgs {
+            file: Some(file),
+            deleted_ms: record.deleted_ms,
+        },
+    ))
+}
+
+pub(super) fn decode_deleted(value: FBDeletedFile<'_>) -> Result<DeletedFile, ValidationError> {
+    let record = DeletedFile {
+        file: decode(value.file())?,
+        deleted_ms: value.deleted_ms(),
+    };
+    record.validate()?;
+    Ok(record)
 }

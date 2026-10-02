@@ -120,7 +120,15 @@ impl TableCreator {
                 Phase::Staged => return Err(Error::Unsupported("unbound staged table")),
                 Phase::Prepared => self.reserve(&operation, budget).await?,
                 Phase::Reserved => self.write_metadata(&operation).await?,
-                Phase::FilesReady => self.prepare_admission(&operation, budget).await?,
+                Phase::FilesReady => {
+                    if self.parent_ready(&operation).await? {
+                        self.journal()
+                            .advance(&operation, &operation.next(Phase::Publishing)?)
+                            .await?;
+                    } else {
+                        self.abort(&operation, 404).await?;
+                    }
+                }
                 Phase::Admitting => self.admit(&operation).await?,
                 Phase::Admitted => {
                     self.check_admission(&operation).await?;
@@ -149,9 +157,6 @@ impl TableCreator {
     }
 
     async fn write_metadata(&self, operation: &TableCreateOperation) -> Result<(), Error> {
-        if !self.parent_ready(operation).await? {
-            return self.abort(operation, 404).await;
-        }
         let blocks = self.blocks.clone().ok_or(CatalogError::Busy)?;
         let bytes = self.payloads().get(&operation.document).await?;
         let document = Arc::new(TableMetadataDocument::parse(
@@ -159,17 +164,7 @@ impl TableCreator {
             &operation.candidate,
             limits(),
         )?);
-        if operation.stage.is_some() {
-            if let Err(error) = self
-                .validate_initial_files(operation, blocks.clone(), document.clone())
-                .await
-            {
-                if staged::definite_validation_failure(&error) {
-                    return self.abort(operation, 400).await;
-                }
-                return Err(error);
-            }
-        } else if !document.snapshots().is_empty() {
+        if operation.stage.is_none() && !document.snapshots().is_empty() {
             return Err(ValidationError::Record.into());
         }
         self.current(operation).await?;

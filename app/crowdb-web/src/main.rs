@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 use clap::Parser;
 use crowdb_common::logging::init_file_and_console_logging_split;
 use crowdb_console_shared::config::web::{LaunchRegistry, WebMode, WebProcessConfig};
-use crowdb_protocol::WEB_BASE;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -18,7 +17,7 @@ struct Args {
     #[arg(long, conflicts_with = "config")]
     bind: Option<String>,
 
-    /// Port for the web server (default: 14000)
+    /// Port for the web server (default: 9090)
     #[arg(long, conflicts_with = "config", value_parser = clap::value_parser!(u16).range(1..))]
     port: Option<u16>,
 
@@ -88,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let port = process_config
         .as_ref()
-        .map_or_else(|| args.port.unwrap_or(WEB_BASE), |config| config.port);
+        .map_or_else(|| args.port.unwrap_or(9090), |config| config.port);
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     info!(%addr, "crowdb-web starting");
 

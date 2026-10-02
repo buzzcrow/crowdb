@@ -7,9 +7,8 @@ use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::file::{
-    ByteRange, FileGrant, FileIdentity, FileOperation, FileOperations, MultipartAdmissionLimits,
-    MultipartAdmissionRecord, MultipartCredit, MultipartLimits, MultipartPhase, MultipartSession,
-    TableLocation,
+    ByteRange, FileGrant, FileIdentity, FileOperation, FileOperations, MultipartCredit, MultipartLimits,
+    MultipartPhase, MultipartSession, TableLocation,
 };
 use crowdb_access_iceberg::key::{CatalogId, FileId, OperationId, TableId};
 use crowdb_access_server::iceberg::{
@@ -94,21 +93,6 @@ fn session(grant: &FileGrant) -> MultipartSession {
         published: None,
         pending: None,
         credit: None,
-    }
-}
-
-fn policy(grant: &FileGrant) -> MultipartAdmissionRecord {
-    MultipartAdmissionRecord {
-        context: grant.context,
-        policy: OperationId::random(),
-        revision: 1,
-        limits: MultipartAdmissionLimits {
-            max_sessions: 2,
-            max_reserved_bytes: 25,
-        },
-        sessions: 0,
-        reserved_bytes: 0,
-        pending: None,
     }
 }
 
@@ -218,7 +202,7 @@ async fn authorized_upload_and_range_reads_enforce_declared_and_actual_bytes() {
 }
 
 #[test]
-fn multipart_session_and_global_credit_intersections_fail_closed() {
+fn multipart_session_limits_and_legacy_released_credit_fail_closed() {
     let grant = grant(&[
         FileOperation::CreateMultipart,
         FileOperation::UploadPart,
@@ -231,37 +215,22 @@ fn multipart_session_and_global_credit_intersections_fail_closed() {
     assert_eq!(limits.max_parts, 7);
     assert!(u64::from(limits.max_parts) * limits.max_part_bytes <= limits.max_staged_bytes);
     let mut session = session(&grant);
-    let mut policy = policy(&grant);
-    assert!(admitted.check_create(&session, &policy).is_ok());
-    policy.sessions = policy.limits.max_sessions;
-    policy.reserved_bytes = policy.limits.max_reserved_bytes;
-    assert!(matches!(
-        admitted.check_create(&session, &policy),
-        Err(FileAdmissionError::Bounds)
-    ));
-    policy.sessions = 1;
-    policy.reserved_bytes = 10;
-    assert!(matches!(
-        admitted.check_create(&session, &policy),
-        Err(FileAdmissionError::Bounds)
-    ));
-    policy.reserved_bytes = 0;
-    policy.sessions = 0;
+    assert!(admitted.check_create(&session).is_ok());
     session.limits.max_part_bytes = 5;
     assert!(matches!(
-        admitted.check_create(&session, &policy),
+        admitted.check_create(&session),
         Err(FileAdmissionError::Bounds)
     ));
     session.limits.max_part_bytes = 4;
     session.limits.max_file_bytes = 13;
     assert!(matches!(
-        admitted.check_create(&session, &policy),
+        admitted.check_create(&session),
         Err(FileAdmissionError::Bounds)
     ));
     session.limits.max_file_bytes = 12;
     session.limits.max_staged_bytes = 31;
     assert!(matches!(
-        admitted.check_create(&session, &policy),
+        admitted.check_create(&session),
         Err(FileAdmissionError::Bounds)
     ));
     session.limits.max_staged_bytes = 20;
@@ -271,9 +240,9 @@ fn multipart_session_and_global_credit_intersections_fail_closed() {
         &Method::PUT,
         &format!("?uploadId={}&partNumber=1", session.upload),
     );
-    assert!(FileTransferAdmission::authorize(&grant, &part_request, service(), Some(&session), 101).is_err());
+    assert!(FileTransferAdmission::authorize(&grant, &part_request, service(), Some(&session), 101).is_ok());
     session.credit = Some(MultipartCredit {
-        policy: policy.policy,
+        policy: OperationId::random(),
         sequence: 2,
         released: false,
     });

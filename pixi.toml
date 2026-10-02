@@ -1,6 +1,6 @@
 [workspace]
 name = "crowdb-kv"
-version = "0.2.0"
+version = "0.2.1"
 description = "CROWDB — distributed key-value store with multi-paxos groups"
 channels = ["conda-forge"]
 # Keep glibc requirement low (2.17 = CentOS 7 / Ubuntu 16.04 era) so that
@@ -136,7 +136,7 @@ build-single-node-container = "bash container/single-node-container/build.sh ima
 test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["build-single-node-container", "install-ui-deps"] }
 
 # ── Run ──────────────────────────────────────────────────────────
-web = { cmd = "echo 'CROWDB console starting at: http://127.0.0.1:14000/' && cargo run --release -p crowdb-web", depends-on = ["build"] }
+web = { cmd = "echo 'CROWDB console starting at: http://127.0.0.1:9090/' && cargo run --release -p crowdb-web", depends-on = ["build"] }
 
 # ── Benchmark ────────────────────────────────────────────────────
 bench = { cmd = "cargo run --release -p crowdb-cli -- bench kv --mode mem --duration-secs 12 --loader-num 2 --connections 1 --workload write", depends-on = ["build"] }

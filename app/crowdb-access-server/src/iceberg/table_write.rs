@@ -64,6 +64,7 @@ impl TableWrites {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn execute(
         &self,
         context: CatalogContext,
@@ -81,7 +82,7 @@ impl TableWrites {
                 "Table write privilege is required",
             ));
         }
-        let _permit = SpoolPermit::acquire(&self.active).ok_or_else(service_unavailable)?;
+        let _permit = SpoolPermit::acquire(&self.active, 2 * 1024 * 1024).ok_or_else(service_unavailable)?;
         let now = now_ms()?;
         if request.headers().get_all("idempotency-key").iter().count() > 1 {
             return Err(bad_request());
@@ -118,6 +119,16 @@ impl TableWrites {
             status: 0,
             body: Vec::new(),
         };
+        if method == Method::POST && uri.path() != "/v1/tables/rename" {
+            if let Some(body) = self
+                .try_direct_update(&record, capabilities, &uri, &bytes)
+                .await?
+            {
+                let body =
+                    self.decorate_response(200, body, configuration_target, context, authority, principal)?;
+                return Ok(response(200, body));
+            }
+        }
         let admission = self.admit(&mut record, key, now).await?;
         let (record, resuming) = match admission {
             RetryAdmission::Replay(record) => {
@@ -284,7 +295,12 @@ impl TableWrites {
                         .map_err(|_| bad_request())?
                         .identity();
                 }
-                result => return result.map_err(|error| mutation_error(&error)),
+                result => {
+                    return result.map_err(|error| {
+                        tracing::warn!(%error, "table retry ledger admission failed");
+                        mutation_error(&error)
+                    })
+                }
             }
         }
         Err(service_unavailable())

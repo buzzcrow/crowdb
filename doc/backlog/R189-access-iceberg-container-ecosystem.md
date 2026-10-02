@@ -5,9 +5,22 @@
 
 ## Status
 
-Ready after R187 local single-node image verification. This is a
-separate client-ecosystem project, not a gate for publishing the non-production
-Docker preview and is independent of the completed REST/official-SDK acceptance.
+Partially implemented; retain the client/engine acceptance below. The current
+container fixture covers PyIceberg create/append and Arrow/pandas reads across
+service recovery and persisted-volume restart. The separate TPC loader report
+records Parquet/table verification and DuckDB query-result checks; those checks
+do not by themselves prove direct DuckDB REST catalog attachment.
+
+Remaining acceptance includes filtered/historical Arrow-batch and Polars reads,
+bounded downstream consumption, direct DuckDB REST/FileIO verification or a
+classified unsupported boundary, pinned Spark/Flink/Trino interoperability,
+cross-client snapshot verification after restart, and a reproducible capability
+matrix and ecosystem task. This remains separate from publication of the
+non-production preview and completed REST/official-SDK acceptance.
+
+ORC implementation and validation are explicitly outside this requirement.
+R186 remains the deferred independent follow-up; use the supported Parquet
+profile for every workflow here.
 
 ## Problem
 

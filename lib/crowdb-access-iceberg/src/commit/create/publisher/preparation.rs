@@ -119,6 +119,7 @@ fn target(
             request.identity.operation
         ))?,
         metadata_digest: [0; 32],
+        commit_binding: None,
         format_version: 2,
         table_uuid: Some(uuid::Uuid::new_v4()),
         operation_fence: 1,

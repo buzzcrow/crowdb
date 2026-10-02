@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use crate::catalog::{check_context, CasOutcome, CatalogContext, CatalogError, CatalogStore};
 use crate::error::ValidationError;
+use crate::gc::GcCandidate;
 use crate::operation::mutation_identity;
 use crate::record::StorageRecord;
 
-use super::{file_key, location_key, FileLocation, FileMapping, FileRecord};
+use super::{file_key, location_key, DeletedFile, FileLocation, FileRecord};
 
 #[derive(Clone)]
 pub struct FileRepository {
@@ -26,9 +27,7 @@ impl FileRepository {
         location: &FileLocation,
     ) -> Result<Option<FileRecord>, CatalogError> {
         self.check_context(context, location).await?;
-        let result = self.resolve(location).await?;
-        self.check_context(context, location).await?;
-        Ok(result)
+        self.resolve(location).await
     }
 
     /// Publishes a candidate after callers verify transfer integrity and durable storage.
@@ -43,76 +42,140 @@ impl FileRepository {
         self.publish_inner(context, candidate).await
     }
 
+    /// Marks one proven-unreferenced object for delayed physical cleanup.
+    /// # Errors
+    /// Rejects a changed location record or retired catalog.
+    pub async fn mark_deleted(
+        &self,
+        context: CatalogContext,
+        expected: &FileRecord,
+        now_ms: u64,
+    ) -> Result<DeletedFile, CatalogError> {
+        let location = &expected.location;
+        self.check_context(context, location).await?;
+        let key = location_key(location);
+        let encoded = key.encode()?;
+        let Some(current) = self.store.get(&encoded).await? else {
+            return Err(CatalogError::Conflict);
+        };
+        if let StorageRecord::DeletedFile(deleted) = StorageRecord::decode(&key, &current.bytes)? {
+            return if deleted.file == *expected {
+                Ok(*deleted)
+            } else {
+                Err(CatalogError::Conflict)
+            };
+        }
+        let file = self.resolve_value(location, &current.bytes).await?;
+        if file != *expected {
+            return Err(CatalogError::Conflict);
+        }
+        let deleted = DeletedFile {
+            file,
+            deleted_ms: now_ms,
+        };
+        let after = StorageRecord::DeletedFile(Box::new(deleted.clone())).encode()?;
+        match self
+            .store
+            .compare_exchange(
+                &encoded,
+                Some(&current.bytes),
+                &after,
+                mutation_identity(&encoded, Some(&current.bytes), &after),
+            )
+            .await?
+        {
+            CasOutcome::Applied(_) => Ok(deleted),
+            CasOutcome::Conflict(Some(value))
+                if matches!(
+                    StorageRecord::decode(&key, &value.bytes)?,
+                    StorageRecord::DeletedFile(_)
+                ) =>
+            {
+                let StorageRecord::DeletedFile(current) = StorageRecord::decode(&key, &value.bytes)? else {
+                    unreachable!()
+                };
+                if current.file == *expected {
+                    Ok(*current)
+                } else {
+                    Err(CatalogError::Conflict)
+                }
+            }
+            CasOutcome::Conflict(_) => Err(CatalogError::Conflict),
+        }
+    }
+
+    /// Returns a durable deletion marker for a retry after an uncertain response.
+    /// # Errors
+    /// Rejects corrupt records and stale catalog contexts.
+    pub async fn deleted(
+        &self,
+        context: CatalogContext,
+        location: &FileLocation,
+    ) -> Result<Option<DeletedFile>, CatalogError> {
+        self.check_context(context, location).await?;
+        let key = location_key(location);
+        let Some(value) = self.store.get(&key.encode()?).await? else {
+            return Ok(None);
+        };
+        match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::DeletedFile(deleted) => Ok(Some(*deleted)),
+            _ => Ok(None),
+        }
+    }
+
     async fn publish_inner(
         &self,
         context: CatalogContext,
         candidate: &FileRecord,
     ) -> Result<FileRecord, CatalogError> {
         candidate.validate()?;
-        self.check_deletion(candidate).await?;
         self.check_context(context, &candidate.location).await?;
-        self.check_publication_table(context, &candidate.location).await?;
-        if let Some(existing) = self.resolve(&candidate.location).await? {
-            self.check_context(context, &candidate.location).await?;
-            return compatible(existing, candidate);
-        }
-        self.stage(candidate).await?;
-        self.check_deletion(candidate).await?;
-        self.check_context(context, &candidate.location).await?;
-        self.check_publication_table(context, &candidate.location).await?;
         let key = location_key(&candidate.location).encode()?;
-        let bytes = StorageRecord::FileMapping(FileMapping {
-            location: candidate.location.clone(),
-            file: candidate.file,
-        })
-        .encode()?;
+        let bytes = StorageRecord::File(Box::new(candidate.clone())).encode()?;
         let result = self
             .store
             .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
             .await?;
         let published = match result {
             CasOutcome::Applied(_) => candidate.clone(),
-            CasOutcome::Conflict(_) => self
-                .resolve(&candidate.location)
-                .await?
-                .ok_or(ValidationError::Record)?,
+            CasOutcome::Conflict(Some(value)) => {
+                let record_key = location_key(&candidate.location);
+                if let StorageRecord::DeletedFile(deleted) = StorageRecord::decode(&record_key, &value.bytes)?
+                {
+                    if candidate.file == deleted.file.file {
+                        return Err(CatalogError::Conflict);
+                    }
+                    let gc_key = GcCandidate::deleted_key(&deleted.file);
+                    let Some(claim) = self.store.get(&gc_key.encode()?).await? else {
+                        return Err(CatalogError::Busy);
+                    };
+                    let StorageRecord::GcCandidate(claim) = StorageRecord::decode(&gc_key, &claim.bytes)?
+                    else {
+                        return Err(ValidationError::Record.into());
+                    };
+                    if claim.file != deleted.file {
+                        return Err(CatalogError::Conflict);
+                    }
+                    match self
+                        .store
+                        .compare_exchange(
+                            &key,
+                            Some(&value.bytes),
+                            &bytes,
+                            mutation_identity(&key, Some(&value.bytes), &bytes),
+                        )
+                        .await?
+                    {
+                        CasOutcome::Applied(_) => candidate.clone(),
+                        CasOutcome::Conflict(_) => return Err(CatalogError::Conflict),
+                    }
+                } else {
+                    self.resolve_value(&candidate.location, &value.bytes).await?
+                }
+            }
+            CasOutcome::Conflict(None) => return Err(CatalogError::Busy),
         };
-        self.check_context(context, &candidate.location).await?;
-        self.check_publication_table(context, &candidate.location).await?;
-        self.check_deletion(&published).await?;
         compatible(published, candidate)
-    }
-
-    async fn stage(&self, candidate: &FileRecord) -> Result<(), CatalogError> {
-        let key = file_key(candidate.location.table().catalog, candidate.file).encode()?;
-        let bytes = StorageRecord::File(Box::new(candidate.clone())).encode()?;
-        match self
-            .store
-            .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(Some(existing)) if existing.bytes == bytes => Ok(()),
-            CasOutcome::Conflict(_) => Err(CatalogError::Conflict),
-        }
-    }
-
-    async fn check_publication_table(
-        &self,
-        context: CatalogContext,
-        location: &FileLocation,
-    ) -> Result<(), CatalogError> {
-        let key = crate::table::head_key(context.catalog, location.table().table);
-        let Some(value) = self.store.get(&key.encode()?).await? else {
-            return Ok(());
-        };
-        let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        if head.lifecycle != crate::table::TableLifecycle::Ready {
-            return Err(CatalogError::Busy);
-        }
-        Ok(())
     }
 
     async fn resolve(&self, location: &FileLocation) -> Result<Option<FileRecord>, CatalogError> {
@@ -120,62 +183,38 @@ impl FileRepository {
         let Some(value) = self.store.get(&key.encode()?).await? else {
             return Ok(None);
         };
-        let StorageRecord::FileMapping(mapping) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        let key = file_key(location.table().catalog, mapping.file);
-        let value = self
-            .store
-            .get(&key.encode()?)
-            .await?
-            .ok_or(ValidationError::Record)?;
-        let StorageRecord::File(record) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        if matches!(
+            StorageRecord::decode(&key, &value.bytes)?,
+            StorageRecord::DeletedFile(_)
+        ) {
+            return Ok(None);
+        }
+        self.resolve_value(location, &value.bytes).await.map(Some)
+    }
+
+    async fn resolve_value(&self, location: &FileLocation, bytes: &[u8]) -> Result<FileRecord, CatalogError> {
+        let key = location_key(location);
+        let record = match StorageRecord::decode(&key, bytes)? {
+            StorageRecord::File(record) => record,
+            StorageRecord::FileMapping(mapping) => {
+                let key = file_key(location.table().catalog, mapping.file);
+                let value = self
+                    .store
+                    .get(&key.encode()?)
+                    .await?
+                    .ok_or(ValidationError::Record)?;
+                let StorageRecord::File(record) = StorageRecord::decode(&key, &value.bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                record
+            }
+            StorageRecord::DeletedFile(_) => return Err(CatalogError::Conflict),
+            _ => return Err(ValidationError::Record.into()),
         };
         if record.location != *location {
             return Err(ValidationError::IdentityMismatch.into());
         }
-        self.check_deletion(&record).await?;
-        Ok(Some(*record))
-    }
-
-    async fn check_deletion(&self, record: &FileRecord) -> Result<(), CatalogError> {
-        super::write_intent::check_write_fence(
-            self.store.as_ref(),
-            super::FileIdentity {
-                table: record.location.table(),
-                file: record.file,
-            },
-        )
-        .await?;
-        let mut suffix = record.location.table().table.as_bytes().to_vec();
-        suffix.extend_from_slice(record.file.as_bytes());
-        let key = crate::key::IcebergKey::Catalog {
-            catalog: record.location.table().catalog,
-            scope: crate::key::CatalogScope::GcClaim,
-            suffix,
-        };
-        let Some(value) = self.store.get(&key.encode()?).await? else {
-            return Ok(());
-        };
-        let StorageRecord::GcCandidate(claim) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        if claim.file != *record {
-            return Err(ValidationError::Record.into());
-        }
-        let key = claim.key();
-        let value = self.store.get(&key.encode()?).await?.ok_or(CatalogError::Busy)?;
-        let StorageRecord::GcCandidate(candidate) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        if candidate.file != *record {
-            return Err(ValidationError::Record.into());
-        }
-        if candidate.phase != crate::gc::CandidatePhase::Retained {
-            return Err(CatalogError::Busy);
-        }
-        Ok(())
+        Ok(*record)
     }
 
     async fn check_context(

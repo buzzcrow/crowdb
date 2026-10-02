@@ -176,7 +176,7 @@ impl TableCredentials {
             .ok_or_else(bad_request)?;
         let target = super::table_write::request::parse(&path.parse().map_err(|_| bad_request())?)?;
         let name = target.name.ok_or_else(bad_request)?;
-        let selector = selector(request.uri().query())?;
+        let (selector, cleanup) = selector(request.uri().query())?;
         let now = now_ms()?;
         let parent = self
             .namespaces
@@ -247,10 +247,12 @@ impl TableCredentials {
             },
             ttl_ms,
             now,
+            cleanup,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn issue_response(
         &self,
         repository: &CatalogRepository,
@@ -259,6 +261,7 @@ impl TableCredentials {
         target: FileDelegationTarget,
         ttl_ms: u64,
         now: u64,
+        cleanup: bool,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         let (root, authority) = repository.status().await.map_err(|_| service_unavailable())?;
         if root.context != context
@@ -273,12 +276,16 @@ impl TableCredentials {
         {
             return Err(unsupported());
         }
-        let credentials = FileDelegationLimits {
+        let limits = FileDelegationLimits {
             ttl_ms,
             max_request_bytes: 1024 * 1024 * 1024,
             max_file_bytes: 1024 * 1024 * 1024 * 1024,
+        };
+        let credentials = if cleanup {
+            limits.issue_cleanup(&self.issuer, principal, context, &authority, target, now)
+        } else {
+            limits.issue(&self.issuer, principal, context, &authority, target, now)
         }
-        .issue(&self.issuer, principal, context, &authority, target, now)
         .map_err(|_| service_unavailable())?;
         Ok(response(
             200,
@@ -288,18 +295,22 @@ impl TableCredentials {
     }
 }
 
-fn selector(query: Option<&str>) -> Result<Option<TableId>, IcebergErrorResponse> {
+fn selector(query: Option<&str>) -> Result<(Option<TableId>, bool), IcebergErrorResponse> {
     let mut selector = None;
+    let mut cleanup = false;
     for pair in query
         .unwrap_or_default()
         .split('&')
         .filter(|pair| !pair.is_empty())
     {
         let (name, value) = pair.split_once('=').ok_or_else(bad_request)?;
-        if decode_query(name)? != "table-id" || selector.is_some() {
-            return Err(bad_request());
+        match decode_query(name)?.as_str() {
+            "table-id" if selector.is_none() => {
+                selector = Some(decode_query(value)?.parse().map_err(|_| bad_request())?);
+            }
+            "cleanup" if !cleanup && decode_query(value)? == "true" => cleanup = true,
+            _ => return Err(bad_request()),
         }
-        selector = Some(decode_query(value)?.parse().map_err(|_| bad_request())?);
     }
-    Ok(selector)
+    Ok((selector, cleanup))
 }

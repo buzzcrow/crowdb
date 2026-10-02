@@ -86,7 +86,7 @@ fn grants_bind_exact_table_operations_and_independent_byte_limits() {
         );
     }
     assert!(FileOperations::new(&[]).is_err());
-    assert!(FileOperations::from_bits(1 << 8).is_err());
+    assert!(FileOperations::from_bits(1 << 10).is_err());
     assert!(FileOperations::from_bits(u16::MAX).is_err());
     let all = FileOperations::from_bits(255).unwrap();
     for operation in [

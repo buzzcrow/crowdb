@@ -1,4 +1,4 @@
-name: Publish crowdb-iceberge docker container
+name: Publish S3 and Iceberg containers
 
 on:
   workflow_dispatch:
@@ -146,8 +146,12 @@ jobs:
         tags: |
           docker.io/crowdb/crowdb-iceberg:${{ needs.verify.outputs.image_tag }}
           docker.io/crowdb/crowdb-iceberg:latest
+          docker.io/crowdb/crowdb-s3:${{ needs.verify.outputs.image_tag }}
+          docker.io/crowdb/crowdb-s3:latest
     - uses: sigstore/cosign-installer@v4.1.2
     - name: Sign published digest
       env:
         DIGEST: ${{ steps.build.outputs.digest }}
-      run: pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"
+      run: |
+        pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"
+        pixi run cosign sign --yes "docker.io/crowdb/crowdb-s3@$DIGEST"

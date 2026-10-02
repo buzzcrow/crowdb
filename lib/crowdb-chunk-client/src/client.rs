@@ -341,7 +341,7 @@ impl ChunkIoClient {
         Ok(SharedObjectWriter::new(runtime, object_size, route, route_hash))
     }
 
-    /// Prepares a shared-object write whose pipeline slot is stable for `key`.
+    /// Prepares a shared-object write using `key` as its preferred pipeline hint.
     pub async fn prepare_small_write_for_key(
         &self,
         object_size: usize,
@@ -382,7 +382,8 @@ impl ChunkIoClient {
             return Err(IoError::MemoryBudgetExhausted);
         }
         let mut writer = SharedObjectWriter::new(runtime, object_size, route, route_hash);
-        while !writer.try_reserve_declared() {
+        writer.require_durable_completion();
+        while !writer.try_reserve_declared()? {
             writer.wait_for_route_capacity().await;
         }
         Ok(writer)
@@ -670,6 +671,26 @@ impl DiskWriter for MetricsDiskWriter {
 
     async fn fsync(&self, seg: &Segment) -> Result<()> {
         self.inner.fsync(seg).await
+    }
+
+    async fn write_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        let bytes = data.iter().map(|view| view.len() as u64).sum();
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self
+            .inner
+            .write_views_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
     }
 
     async fn write_priority_at_byte_offset(

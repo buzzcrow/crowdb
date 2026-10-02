@@ -4,7 +4,7 @@ use flatbuffers::FlatBufferBuilder;
 use crate::catalog::{ActiveCatalogRecord, CatalogAuthority};
 use crate::error::ValidationError;
 use crate::file::{
-    file_key, location_key, FileMapping, FileRecord, MultipartAdmissionRecord, MultipartPart,
+    file_key, location_key, DeletedFile, FileMapping, FileRecord, MultipartAdmissionRecord, MultipartPart,
     MultipartSession,
 };
 use crate::key::{CatalogScope, IcebergKey, SystemScope};
@@ -37,6 +37,7 @@ pub enum StorageRecord {
     RetryResult(Box<RetryResult>),
     NamespaceOperation(Box<NamespaceOperation>),
     File(Box<FileRecord>),
+    DeletedFile(Box<DeletedFile>),
     FileMapping(FileMapping),
     MultipartSession(Box<MultipartSession>),
     MultipartPart(Box<MultipartPart>),
@@ -119,6 +120,10 @@ impl StorageRecord {
             Self::File(record) => (
                 FBRecordValue::FBFileRecord,
                 super::file::encode(builder, record)?.as_union_value(),
+            ),
+            Self::DeletedFile(record) => (
+                FBRecordValue::FBDeletedFile,
+                super::file::encode_deleted(builder, record)?.as_union_value(),
             ),
             Self::FileMapping(mapping) => (
                 FBRecordValue::FBFileMapping,
@@ -321,6 +326,11 @@ impl StorageRecord {
             FBRecordValue::FBFileRecord => Self::File(Box::new(super::file::decode(
                 envelope.value_as_fbfile_record().ok_or(ValidationError::Record)?,
             )?)),
+            FBRecordValue::FBDeletedFile => Self::DeletedFile(Box::new(super::file::decode_deleted(
+                envelope
+                    .value_as_fbdeleted_file()
+                    .ok_or(ValidationError::Record)?,
+            )?)),
             FBRecordValue::FBFileMapping => Self::FileMapping(super::file::decode_mapping(
                 envelope
                     .value_as_fbfile_mapping()
@@ -400,9 +410,13 @@ impl StorageRecord {
             (Self::MultipartAdmission(record), key) if *key == record.key() => Ok(()),
             (Self::MultipartSession(session), key) if *key == session.key() => Ok(()),
             (Self::MultipartPart(part), key) if *key == part.key() => Ok(()),
-            (Self::File(record), key) if *key == file_key(record.location.table().catalog, record.file) => {
+            (Self::File(record), key)
+                if *key == file_key(record.location.table().catalog, record.file)
+                    || *key == location_key(&record.location) =>
+            {
                 Ok(())
             }
+            (Self::DeletedFile(record), key) if *key == location_key(&record.file.location) => Ok(()),
             (Self::FileMapping(mapping), key) if *key == location_key(&mapping.location) => Ok(()),
             (Self::NamespaceOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::PayloadPage(page), key) if *key == page.reference.page_key(page.index)? => Ok(()),

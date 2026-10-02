@@ -17,9 +17,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{
-    encode_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_PAYLOAD_BYTES,
-};
+use crowdb_protocol::frame::FrameMagic;
 use crowdb_protocol::generate_chunk_id;
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit};
 
@@ -58,6 +56,7 @@ pub(crate) async fn spawn(runtime: Arc<SmallPoolRuntime>, _id: u64) -> Result<Ma
         wake: Arc::clone(&wake),
         chunk: owned,
         replacement: None,
+        ready_replacement: None,
         carry: None,
     };
     let join = tokio::spawn(worker.run());
@@ -77,7 +76,8 @@ impl ManagedPipeline {
 }
 
 mod batch;
-mod stream_object;
+mod prefetch;
+mod worker;
 
 struct PipelineWorker {
     runtime: Arc<SmallPoolRuntime>,
@@ -86,214 +86,9 @@ struct PipelineWorker {
     retire: Arc<AtomicBool>,
     wake: Arc<Notify>,
     chunk: OwnedChunk,
-    replacement: Option<OwnedChunk>,
+    replacement: Option<tokio::task::JoinHandle<Result<OwnedChunk>>>,
+    ready_replacement: Option<OwnedChunk>,
     carry: Option<PendingObject>,
-}
-
-impl PipelineWorker {
-    async fn run(mut self) -> Result<()> {
-        let mut liveness = tokio::time::interval(Duration::from_secs(12 * 60));
-        liveness.tick().await;
-        loop {
-            if self.retire.load(Ordering::Acquire) {
-                self.receiver.close();
-            }
-            let (first, dequeued) = if let Some(object) = self.carry.take() {
-                (Some(object), false)
-            } else if self.retire.load(Ordering::Acquire) {
-                (self.receiver.recv().await, true)
-            } else {
-                let object = tokio::select! {
-                    object = self.receiver.recv() => object,
-                    () = self.wake.notified() => {
-                        self.receiver.close();
-                        self.receiver.recv().await
-                    },
-                    _ = liveness.tick() => {
-                        if let Err(error) = self.renew_idle_chunks().await {
-                            self.receiver.close();
-                            self.fail_remaining(&error.to_string()).await;
-                            let _ = self.finish_chunks().await;
-                            return Err(error);
-                        }
-                        continue;
-                    },
-                };
-                (object, true)
-            };
-            let Some(first) = first else {
-                break;
-            };
-            if dequeued {
-                self.note_dequeue(&first);
-            }
-            let fit = if first.len > MAX_FRAME_PAYLOAD_BYTES {
-                self.ensure_stream_object_fits(stream_object::physical_bytes(first.len)?)
-                    .await
-            } else {
-                self.ensure_object_fits(frame_bytes(first.len)?).await
-            };
-            if let Err(error) = fit {
-                fail_one(first, &error.to_string(), &self.runtime.metrics);
-                self.fail_remaining(&error.to_string()).await;
-                let _ = self.finish_chunks().await;
-                return Err(error);
-            }
-            let batch = self.collect_batch(first);
-            self.route.busy.store(true, Ordering::Release);
-            let result = self.write_batch_with_watchdog(batch).await;
-            self.route.busy.store(false, Ordering::Release);
-            self.route
-                .last_active_ms
-                .store(self.runtime.now_ms(), Ordering::Relaxed);
-            if let Err(error) = result {
-                if matches!(error, IoError::SourceRead(_)) {
-                    let replacement = match self.replacement.take() {
-                        Some(chunk) => chunk,
-                        None => {
-                            OwnedChunk::allocate(&self.runtime, Arc::clone(&self.route.conversion_active))
-                                .await?
-                        }
-                    };
-                    self.chunk.finish().await?;
-                    self.chunk = replacement;
-                    continue;
-                }
-                self.receiver.close();
-                self.fail_remaining(&error.to_string()).await;
-                let _ = self.finish_chunks().await;
-                return Err(error);
-            }
-            self.prepare_replacement().await;
-        }
-        self.finish_chunks().await
-    }
-
-    async fn write_batch_with_watchdog(&mut self, batch: Vec<PendingObject>) -> Result<()> {
-        let object_count = batch.len();
-        let logical_bytes: usize = batch.iter().map(|object| object.len).sum();
-        let watchdog = self.runtime.policy.batch_watchdog;
-        let metrics = Arc::clone(&self.runtime.metrics);
-        let write = self.chunk.write_batch(batch, &metrics, &self.runtime);
-        tokio::pin!(write);
-        let mut elapsed = Duration::ZERO;
-        loop {
-            tokio::select! {
-                result = &mut write => return result,
-                () = tokio::time::sleep(watchdog) => {
-                    elapsed = elapsed.saturating_add(watchdog);
-                    metrics
-                        .batch_watchdog_expirations
-                        .fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(
-                        object_count,
-                        logical_bytes,
-                        watchdog_ms = watchdog.as_millis(),
-                        elapsed_ms = elapsed.as_millis(),
-                        "small-write batch remains in flight after watchdog interval"
-                    );
-                }
-            }
-        }
-    }
-
-    fn note_dequeue(&self, object: &PendingObject) {
-        self.route.dequeued(object.len, self.runtime.now_ms());
-        let delay = u64::try_from(object.enqueued_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        self.runtime
-            .metrics
-            .queue_delay_ns
-            .fetch_add(delay, Ordering::Relaxed);
-        self.runtime
-            .metrics
-            .max_queue_delay_ns
-            .fetch_max(delay, Ordering::Relaxed);
-    }
-
-    async fn ensure_object_fits(&mut self, object_len: usize) -> Result<()> {
-        if self.chunk.remaining_in_chunk() < object_len as u64 {
-            let replacement = match self.replacement.take() {
-                Some(chunk) => chunk,
-                None => {
-                    OwnedChunk::allocate(&self.runtime, Arc::clone(&self.route.conversion_active)).await?
-                }
-            };
-            self.chunk.finish().await?;
-            self.chunk = replacement;
-        }
-        if self.chunk.remaining_in_strip() < object_len as u64 {
-            if self.chunk.current_strip().is_ok() {
-                self.chunk.close_strip(&self.runtime.metrics).await?;
-            }
-            self.chunk.ensure_strip().await?;
-        }
-        Ok(())
-    }
-
-    async fn prepare_replacement(&mut self) {
-        if self.replacement.is_none()
-            && self.chunk.remaining_in_chunk() < self.runtime.policy.object_limit as u64
-        {
-            self.replacement = OwnedChunk::allocate(&self.runtime, Arc::clone(&self.route.conversion_active))
-                .await
-                .ok();
-        }
-    }
-
-    async fn finish_chunks(&mut self) -> Result<()> {
-        let current_result = self.chunk.finish().await;
-        let replacement_result = match self.replacement.as_mut() {
-            Some(chunk) => chunk.finish().await,
-            None => Ok(()),
-        };
-        current_result.and(replacement_result)
-    }
-
-    async fn renew_idle_chunks(&mut self) -> Result<()> {
-        self.chunk.renew_liveness().await?;
-        if let Some(replacement) = self.replacement.as_mut() {
-            replacement.renew_liveness().await?;
-        }
-        Ok(())
-    }
-
-    fn collect_batch(&mut self, first: PendingObject) -> Vec<PendingObject> {
-        if first.len > MAX_FRAME_PAYLOAD_BYTES {
-            return vec![first];
-        }
-        let mut bytes = frame_bytes(first.len).unwrap_or(usize::MAX);
-        let mut batch = vec![first];
-        while batch.len() < self.runtime.policy.max_batch_objects
-            && bytes < self.runtime.policy.max_batch_bytes
-        {
-            let Ok(next) = self.receiver.try_recv() else {
-                break;
-            };
-            self.note_dequeue(&next);
-            let candidate_bytes = bytes.saturating_add(frame_bytes(next.len).unwrap_or(usize::MAX));
-            let available = self
-                .chunk
-                .remaining_in_strip()
-                .min(self.chunk.remaining_in_chunk());
-            if candidate_bytes > self.runtime.policy.max_batch_bytes || candidate_bytes as u64 > available {
-                self.carry = Some(next);
-                break;
-            }
-            bytes = candidate_bytes;
-            batch.push(next);
-        }
-        batch
-    }
-
-    async fn fail_remaining(&mut self, message: &str) {
-        if let Some(object) = self.carry.take() {
-            fail_one(object, message, &self.runtime.metrics);
-        }
-        while let Some(object) = self.receiver.recv().await {
-            self.note_dequeue(&object);
-            fail_one(object, message, &self.runtime.metrics);
-        }
-    }
 }
 
 fn fail_one(object: PendingObject, message: &str, metrics: &SmallWriteMetrics) {
@@ -750,6 +545,7 @@ struct OwnedChunk {
     writer_epoch: u64,
     mirror_flow: MirrorStripFlow,
     shadow: Option<BytesMut>,
+    retained_views: Vec<Bytes>,
     metrics: Arc<SmallWriteMetrics>,
     budget: Arc<tokio::sync::Semaphore>,
     conversion_active: Arc<AtomicBool>,
@@ -757,6 +553,8 @@ struct OwnedChunk {
     pending_conversion_update: Option<tokio::task::JoinHandle<Result<PendingEcGroup>>>,
     pending_advance: Option<tokio::task::JoinHandle<Result<Chunk>>>,
     reservation_mode: bool,
+    prefetched_group:
+        Option<tokio::task::JoinHandle<Result<crowdb_protocol::chunkdb::rpc::ReserveStripGroupResponse>>>,
     reservation_group_id: Option<ChunkId>,
     reservation_generation: u64,
     reserved_strips: VecDeque<ChunkStrip>,
@@ -773,12 +571,6 @@ struct PendingEcGroup {
     reservation_group_id: Option<ChunkId>,
     parity_segments: Vec<Segment>,
     _budget: OwnedSemaphorePermit,
-}
-
-struct MirrorBatchStats {
-    object_count: usize,
-    buffer_count: usize,
-    logical_bytes: usize,
 }
 
 impl OwnedChunk {
@@ -822,6 +614,7 @@ impl OwnedChunk {
             writer_epoch,
             mirror_flow,
             shadow: None,
+            retained_views: Vec::new(),
             metrics: Arc::clone(&runtime.metrics),
             budget: Arc::clone(&runtime.conversion_budget),
             conversion_active,
@@ -829,6 +622,7 @@ impl OwnedChunk {
             pending_conversion_update: None,
             pending_advance: None,
             reservation_mode: true,
+            prefetched_group: None,
             reservation_group_id: None,
             reservation_generation: 1,
             reserved_strips: VecDeque::new(),
@@ -962,6 +756,10 @@ impl OwnedChunk {
     }
 
     async fn reserve_more(&mut self) -> Result<()> {
+        if self.reserved_strips.is_empty() && self.prefetched_group.is_some() {
+            self.install_prefetched_group().await?;
+            return Ok(());
+        }
         if !self.reserved_strips.is_empty()
             || self.active_reservation.is_some()
             || self.staged_reservation.is_some()
@@ -1017,6 +815,7 @@ impl OwnedChunk {
         let response = self
             .allocator
             .reserve_strip_group(ReserveStripGroupRequest {
+                reservation_offset_kb: None,
                 chunk_id: Some(chunk_id),
                 expected_modify_ts: self.chunk.modify_ts,
                 group_id: Some(group_id),
@@ -1046,17 +845,7 @@ impl OwnedChunk {
                 return Err(error);
             }
         };
-        self.chunk = response
-            .chunk
-            .ok_or_else(|| IoError::AllocationFailed("reservation response missing chunk".into()))?;
-        let group = response
-            .group
-            .ok_or_else(|| IoError::AllocationFailed("reservation response missing group".into()))?;
-        self.reservation_group_id = Some(group_id);
-        self.reservation_first_sequence = group.strips.first().map(|strip| strip.strip_sequence);
-        self.reservation_parity_segments = group.parity_segments;
-        self.reserved_strips = group.strips.into();
-        Ok(())
+        self.apply_reservation_response(response)
     }
 
     async fn mutate_reservation(
@@ -1090,51 +879,21 @@ impl OwnedChunk {
         Ok(response.chunk)
     }
 
-    async fn close_strip(&mut self, metrics: &SmallWriteMetrics) -> Result<()> {
-        let strip = self.current_strip()?.clone();
-        let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
-        let tail = strip_end.saturating_sub(self.cursor);
-        if tail > 0 {
-            metrics.tail_waste_bytes.fetch_add(tail, Ordering::Relaxed);
-        }
-        self.cursor = strip_end;
-        let closed = self
-            .chunk
-            .strips
-            .iter()
-            .find(|current| current.strip_sequence == strip.strip_sequence)
-            .cloned()
-            .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
-        self.schedule_closed_advance(strip_end, strip.strip_sequence);
-        if let Err(error) = self.retain_closed_strip(closed).await {
-            tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
-        }
-        Ok(())
-    }
-
     async fn write_batch(
         &mut self,
         mut batch: Vec<PendingObject>,
         metrics: &SmallWriteMetrics,
         runtime: &SmallPoolRuntime,
     ) -> Result<()> {
-        let stream_object = batch.len() == 1 && batch[0].len > MAX_FRAME_PAYLOAD_BYTES;
-        let first = if stream_object {
-            self.try_write_stream_object(&mut batch[0], metrics)
-                .await
-                .map(|location| vec![location])
-        } else {
-            self.try_write_batch(&batch, metrics).await
-        };
-        // Stream sources cannot be replayed, and durable intents already name an exact location.
-        let can_relocate = !stream_object && batch.iter().all(|object| object.intent.is_none());
+        let first = self.try_write_batch(&mut batch, metrics).await;
+        let can_relocate = batch.iter().all(|object| object.intent.is_none());
         let result = if can_relocate && matches!(first, Err(IoError::ReplicaRepairExhausted(_))) {
             let prior = first.unwrap_err();
             match self.finish().await {
                 Ok(()) => match Self::allocate(runtime, Arc::clone(&self.conversion_active)).await {
                     Ok(next) => {
                         *self = next;
-                        self.try_write_batch(&batch, metrics).await.map_err(|error| {
+                        self.try_write_batch(&mut batch, metrics).await.map_err(|error| {
                             if let IoError::ReplicaRepairExhausted(message) = error {
                                 IoError::WriteFailed(format!(
                                     "mirror replica repair exhausted after chunk rotation: {message}"
@@ -1180,6 +939,16 @@ impl OwnedChunk {
     }
 
     fn take_shadow(&mut self, strip_bytes: usize, block_offset: usize) -> BytesMut {
+        if !self.retained_views.is_empty() {
+            let mut image = BytesMut::with_capacity(strip_bytes);
+            for view in self.retained_views.drain(..) {
+                image.extend_from_slice(&view);
+            }
+            self.metrics
+                .shadow_bytes
+                .fetch_add(image.capacity() as u64, Ordering::Relaxed);
+            self.shadow = Some(image);
+        }
         let mut shadow = if let Some(shadow) = self.shadow.take() {
             shadow
         } else {
@@ -1200,6 +969,15 @@ impl OwnedChunk {
 
     #[allow(clippy::too_many_lines)]
     async fn retain_closed_strip(&mut self, strip: crowdb_protocol::chunkdb::rpc::ChunkStrip) -> Result<()> {
+        if !self.policy.conversion_enabled && self.shadow.is_none() {
+            self.retained_views.clear();
+            return Ok(());
+        }
+        if !self.retained_views.is_empty() {
+            let bytes = strip.capacity as usize * 1024;
+            let image = self.take_shadow(bytes, 0);
+            self.shadow = Some(image);
+        }
         let mut shadow = self
             .shadow
             .take()
@@ -1341,42 +1119,6 @@ impl OwnedChunk {
         }
     }
 
-    async fn write_mirrors_with_repair(
-        &mut self,
-        strip: &crowdb_protocol::chunkdb::rpc::ChunkStrip,
-        data: Bytes,
-        full_image: Bytes,
-        _unit_bytes: u64,
-        block_offset: u64,
-        stats: MirrorBatchStats,
-    ) -> (Bytes, Result<()>) {
-        let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
-            return (
-                data,
-                Err(IoError::Internal("shared chunk strip is not mirrored".into())),
-            );
-        };
-        self.metrics.record_aggregate_write(
-            mirror.segments.len() as u64,
-            stats.object_count,
-            stats.buffer_count,
-            stats.logical_bytes,
-            data.len(),
-        );
-        let result = self
-            .mirror_flow
-            .write(
-                &mut self.chunk,
-                self.cursor,
-                strip.strip_sequence,
-                block_offset,
-                data.clone(),
-                full_image,
-                &mut self.pending_advance,
-            )
-            .await;
-        (data, result)
-    }
     async fn advance(&mut self, cursor: u64, closed_strip_sequence: Option<u32>) -> Result<()> {
         let chunk_id = self
             .chunk
@@ -1635,6 +1377,23 @@ impl OwnedChunk {
                 })?;
             }
         }
+        if self.prefetched_group.is_some() {
+            self.install_prefetched_group().await?;
+            let group_id = self
+                .reservation_group_id
+                .ok_or_else(|| IoError::Internal("prefetched group missing ID".into()))?;
+            while let Some(strip) = self.reserved_strips.pop_front() {
+                self.mutate_reservation(
+                    group_id,
+                    self.reservation_generation,
+                    strip.strip_sequence,
+                    StripReservationAction::Cancel,
+                    self.chunk.acknowledged_cursor,
+                    None,
+                )
+                .await?;
+            }
+        }
         let Some(chunk_id) = self.chunk.id else {
             return Ok(());
         };
@@ -1691,6 +1450,7 @@ impl OwnedChunk {
 
     fn release_local_state(&mut self) {
         self.clear_shadow();
+        self.retained_views.clear();
         self.conversion_group = None;
         self.pending_conversion_update = None;
         if self.owns_conversion_gate {
@@ -1717,19 +1477,16 @@ fn batch_shape(batch: &[PendingObject]) -> Result<(usize, usize, usize)> {
             .checked_add(frame_bytes(object.len)?)
             .ok_or_else(|| IoError::WriteFailed("small frame batch is too large".into()))?;
         logical_bytes = logical_bytes.saturating_add(object.len);
-        buffer_count = buffer_count.saturating_add(object.fragments.len());
+        buffer_count =
+            buffer_count.saturating_add(object.fragments.len() + usize::from(object.framed.is_some()));
     }
     Ok((physical_bytes, logical_bytes, buffer_count))
 }
 
 fn frame_bytes(payload_bytes: usize) -> Result<usize> {
-    if payload_bytes > MAX_FRAME_PAYLOAD_BYTES {
-        return Err(IoError::ObjectTooLarge {
-            size: payload_bytes,
-            limit: MAX_FRAME_PAYLOAD_BYTES,
-        });
-    }
-    Ok(FRAME_HEADER_PREFIX_BYTES + payload_bytes + FRAME_FOOTER_BYTES)
+    crowdb_protocol::frame::framed_physical_length(payload_bytes as u64)
+        .map_err(|error| IoError::WriteFailed(error.to_string()))
+        .and_then(|bytes| usize::try_from(bytes).map_err(|error| IoError::WriteFailed(error.to_string())))
 }
 
 fn next_writer_epoch() -> u64 {

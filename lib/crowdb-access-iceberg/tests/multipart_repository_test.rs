@@ -88,6 +88,7 @@ async fn streamed_parts_commit_independently_without_session_mutations() {
     let repository = MultipartRepository::new(fixture.store.clone());
     repository.begin(&initial, 100).await.unwrap();
     let writes = fixture.store.writes.load(Ordering::SeqCst);
+    let reads = fixture.store.reads.load(Ordering::SeqCst);
     let first_input = stream_part(&initial, 1, 1);
     let second_input = stream_part(&initial, 2, 2);
     let (first, second) = tokio::join!(
@@ -99,6 +100,7 @@ async fn streamed_parts_commit_independently_without_session_mutations() {
     assert_eq!(first.revision, 1);
     assert_eq!(second.revision, 1);
     assert_eq!(fixture.store.writes.load(Ordering::SeqCst) - writes, 2);
+    assert_eq!(fixture.store.reads.load(Ordering::SeqCst) - reads, 2);
     assert_eq!(load(&repository, &initial).await, initial);
     let replacement = repository
         .put_stream_part(&initial, &stream_part(&initial, 1, 3), 102)
@@ -114,7 +116,9 @@ async fn streamed_parts_commit_independently_without_session_mutations() {
     assert!(repository
         .put_stream_part(&initial, &stream_part(&initial, 3, 4), 103)
         .await
-        .is_err());
+        .unwrap()
+        .is_some());
+    assert_eq!(load(&repository, &initial).await.phase, MultipartPhase::Aborted);
 }
 
 #[tokio::test]

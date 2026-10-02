@@ -32,7 +32,7 @@ chunk_capacity_bytes = 67108864
 
 [s3]
 large_mirror_copies = 1
-listen = "0.0.0.0:81"
+listen = "0.0.0.0:9091"
 tenant = "preview"
 region = "us-east-1"
 small_object_limit = 8388608
@@ -55,7 +55,7 @@ chunk_capacity_bytes = 67108864
 
 [iceberg]
 large_mirror_copies = 1
-listen = "0.0.0.0:80"
+listen = "0.0.0.0:9092"
 native_budget_bytes = 268435456
 max_chunk_size = 67108864
 

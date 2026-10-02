@@ -194,3 +194,25 @@ fn only_frame_aligned_locations_merge() {
     };
     assert_eq!(merge_adjacent_locations(&[tail, next]).unwrap().len(), 2);
 }
+
+#[test]
+fn encoding_payload_views_preserves_pointers_and_canonical_bytes() {
+    let payload = bytes::Bytes::from_static(b"multiple payload pieces");
+    let pieces = vec![payload.slice(..7), payload.slice(7..13), payload.slice(13..)];
+    let pointers: Vec<_> = pieces.iter().map(|view| view.as_ptr()).collect();
+    let encoded =
+        crowdb_protocol::frame::encode_frame_views(FrameMagic::RepoSmallV1, CHUNK, pieces, 42).unwrap();
+    assert_eq!(
+        encoded[1..4].iter().map(|view| view.as_ptr()).collect::<Vec<_>>(),
+        pointers
+    );
+    assert_eq!(
+        encoded.concat(),
+        encode_frame(FrameMagic::RepoSmallV1, CHUNK, &payload, 42).unwrap()
+    );
+    let refs: Vec<_> = encoded.iter().map(bytes::Bytes::as_ref).collect();
+    assert_eq!(
+        parse_frame_views(&refs, CHUNK).unwrap().physical_length,
+        payload.len() + 34
+    );
+}

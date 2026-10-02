@@ -13,6 +13,8 @@ use super::{
 };
 
 impl GcTask {
+    pub const PURGE_DELAY_MS: u64 = 20 * 60 * 1000;
+
     /// # Errors
     /// Rejects incoherent roots, invalid budgets and overflowing retention deadlines.
     pub fn plan(
@@ -41,7 +43,11 @@ impl GcTask {
             revision: 1,
             created_ms: now_ms,
             not_before_ms: now_ms
-                .checked_add(limits.minimum_retention_ms)
+                .checked_add(if kind == GcTaskKind::PurgeTable {
+                    Self::PURGE_DELAY_MS
+                } else {
+                    limits.minimum_retention_ms
+                })
                 .ok_or(ValidationError::Deadline)?,
             retry_at_ms: 0,
             attempts: 0,
@@ -79,10 +85,19 @@ impl GcRepository {
         }
         let scan = GcScan {
             catalog: task.context.catalog,
-            scope: Some(match task.discovery_scope {
-                0 => CatalogScope::File,
-                1 => CatalogScope::MultipartPart,
-                _ => CatalogScope::MultipartSession,
+            scope: Some(if task.kind == GcTaskKind::MultipartCleanup {
+                match task.discovery_scope {
+                    0 => CatalogScope::FileLocation,
+                    1 => CatalogScope::MultipartPart,
+                    _ => CatalogScope::MultipartSession,
+                }
+            } else {
+                match task.discovery_scope {
+                    0 => CatalogScope::File,
+                    1 => CatalogScope::FileLocation,
+                    2 => CatalogScope::MultipartPart,
+                    _ => CatalogScope::MultipartSession,
+                }
             }),
             prefix: Vec::new(),
             after: task.scan_after.clone(),
@@ -106,7 +121,13 @@ impl GcRepository {
             next.scan_after.clone_from(&last.key);
         } else {
             next.scan_after.clear();
-            if task.discovery_scope < 2 {
+            if task.discovery_scope
+                < if task.kind == GcTaskKind::MultipartCleanup {
+                    2
+                } else {
+                    3
+                }
+            {
                 next.discovery_scope += 1;
             } else if task.phase == GcPhase::Rescan {
                 next.discovery_scope = 0;
@@ -141,6 +162,7 @@ impl GcRepository {
         limits: GcLimits,
         now_ms: u64,
     ) -> Result<Option<GcCandidate>, CatalogError> {
+        let mut deleted_ms = None;
         let (file, part, assembly) = match key {
             IcebergKey::Catalog {
                 scope: CatalogScope::File,
@@ -151,6 +173,18 @@ impl GcRepository {
                 };
                 (*file, None, None)
             }
+            IcebergKey::Catalog {
+                scope: CatalogScope::FileLocation,
+                ..
+            } => match StorageRecord::decode(key, bytes)? {
+                StorageRecord::File(file) if task.kind != GcTaskKind::MultipartCleanup => (*file, None, None),
+                StorageRecord::DeletedFile(record) => {
+                    deleted_ms = Some(record.deleted_ms);
+                    (record.file, None, None)
+                }
+                StorageRecord::File(_) | StorageRecord::FileMapping(_) => return Ok(None),
+                _ => return Err(ValidationError::Record.into()),
+            },
             IcebergKey::Catalog {
                 scope: CatalogScope::MultipartPart,
                 ..
@@ -195,10 +229,23 @@ impl GcRepository {
             task: task.identity,
             generation: task.head.as_ref().map_or(0, |head| head.generation),
             first_seen_ms: now_ms.max(task.created_ms),
-            not_before_ms: now_ms
-                .max(task.created_ms)
-                .checked_add(limits.minimum_retention_ms)
-                .ok_or(ValidationError::Deadline)?,
+            not_before_ms: if task.kind == GcTaskKind::PurgeTable {
+                task.not_before_ms.max(now_ms)
+            } else if let Some(deleted_ms) = deleted_ms {
+                deleted_ms
+                    .checked_add(GcTask::PURGE_DELAY_MS)
+                    .ok_or(ValidationError::Deadline)?
+                    .max(now_ms)
+            } else if task.kind == GcTaskKind::MultipartCleanup {
+                now_ms
+                    .checked_add(GcTask::PURGE_DELAY_MS)
+                    .ok_or(ValidationError::Deadline)?
+            } else {
+                now_ms
+                    .max(task.created_ms)
+                    .checked_add(limits.minimum_retention_ms)
+                    .ok_or(ValidationError::Deadline)?
+            },
             revision: 1,
             phase: CandidatePhase::Retained,
             cursor: TreeReclaimCursor::new(&file)?,
@@ -293,6 +340,13 @@ impl GcRepository {
             .checked_add(authority.admission_bounds.request_ms)
             .and_then(|time| time.checked_add(authority.admission_bounds.clock_skew_ms))
             .ok_or(ValidationError::Deadline)?;
-        Ok(terminal && session.context == task.context && session.pending.is_none() && now_ms >= deadline)
+        Ok(terminal
+            && session.context == task.context
+            && session.pending.is_none()
+            && match session.credit {
+                None => true,
+                Some(credit) => credit.released,
+            }
+            && now_ms >= deadline)
     }
 }

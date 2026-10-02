@@ -15,7 +15,7 @@ use crate::group0_control_plane::Group0ControlPlane;
 
 use super::{DomainMonitorDriver, DomainMonitorFuture};
 
-pub const DEFAULT_SUB_RANGE_COUNT: u32 = 1024;
+pub const DEFAULT_SUB_RANGE_COUNT: u32 = 12;
 
 pub struct ChunkdbRangeMonitorDriver {
     sub_range_count: u32,
@@ -60,6 +60,17 @@ impl DomainMonitorDriver for ChunkdbRangeMonitorDriver {
             let instances = read_live_instances(control, descriptor).await?;
             let current = read_bindings(control).await?;
             let current_values: Vec<_> = current.iter().map(|binding| binding.value.clone()).collect();
+            // A new default is not permission to resize a populated table.
+            // Reject incompatible boundaries before overwriting any ownership records.
+            let bucket_count = u32::from(u16::MAX) + 1;
+            if current_values.iter().any(|binding| {
+                binding.sub_range_index >= self.sub_range_count
+                    || binding.range_start != binding.sub_range_index * bucket_count / self.sub_range_count
+                    || binding.range_end
+                        != (binding.sub_range_index + 1) * bucket_count / self.sub_range_count - 1
+            }) {
+                return Err("existing chunkdb partition boundaries require an explicit migration".into());
+            }
             let (desired, changed) =
                 compute_incremental_assignment(&current_values, &instances, self.sub_range_count);
             if !changed {
@@ -182,7 +193,6 @@ fn compute_assignment(
     instances.sort_by_key(|(instance_id, _)| *instance_id);
     let instance_count = u32::try_from(instances.len()).unwrap_or(u32::MAX);
     let bucket_count = u32::from(u16::MAX) + 1;
-    let width = bucket_count / sub_range_count;
     let now_ms = wall_time_ms();
     (0..sub_range_count)
         .map(|sub_range_index| {
@@ -190,12 +200,10 @@ fn compute_assignment(
             let (instance_id, instance) = instances[owner_index as usize];
             ChunkdbRangeBindingValue {
                 sub_range_index,
-                range_start: sub_range_index * width,
-                range_end: if sub_range_index == sub_range_count - 1 {
-                    u32::from(u16::MAX)
-                } else {
-                    (sub_range_index + 1) * width - 1
-                },
+                // Divide at each boundary so non-power-of-two counts cover
+                // the whole hash space with range widths differing by at most one.
+                range_start: sub_range_index * bucket_count / sub_range_count,
+                range_end: (sub_range_index + 1) * bucket_count / sub_range_count - 1,
                 instance_id: *instance_id,
                 rpc_endpoint: instance.rpc_endpoint.clone(),
                 original_instance_id: 0,

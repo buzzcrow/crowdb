@@ -23,6 +23,7 @@ pub struct TableHead {
     pub metadata_file: FileId,
     pub metadata_location: FileLocation,
     pub metadata_digest: [u8; 32],
+    pub commit_binding: Option<[u8; 32]>,
     pub format_version: u8,
     pub table_uuid: Option<uuid::Uuid>,
     pub operation_fence: u64,

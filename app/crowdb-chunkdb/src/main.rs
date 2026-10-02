@@ -213,7 +213,7 @@ async fn main() {
             max_clock_skew_ms: 1_000,
             self_fence_margin_ms: 1_000,
             failure_policy: crowdb_protocol::chunk_kv::DomainFailurePolicy::AutomaticSharedStorage,
-            balance_policy: "uniform-1024-v1".into(),
+            balance_policy: "uniform-12-v1".into(),
             chunk_kv_range_balance: None,
         },
     };

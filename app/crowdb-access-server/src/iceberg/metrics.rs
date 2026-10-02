@@ -54,6 +54,7 @@ pub struct IcebergMetricsSnapshot {
     pub chunk_read: Option<crowdb_chunk_client::ReadFlowMetricsSnapshot>,
     pub chunk_small_write: Option<crowdb_chunk_client::SmallWriteMetricsSnapshot>,
     pub upload_flow: Option<super::file_http::UploadFlowSnapshot>,
+    pub native_receive: Option<crowdb_access_s3::native_buffer::NativeBufferMetricsSnapshot>,
     pub catalog: Option<crowdb_access_iceberg::catalog::CatalogStoreOperationCounts>,
 }
 
@@ -128,6 +129,7 @@ impl IcebergMetrics {
             chunk_read: None,
             chunk_small_write: None,
             upload_flow: None,
+            native_receive: None,
             catalog: None,
         }
     }

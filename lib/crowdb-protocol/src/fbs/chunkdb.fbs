@@ -254,6 +254,7 @@ table FBReserveStripGroupRequest {
     copy_count:uint32;
     conversion_data_num:uint32;
     conversion_code_num:uint32;
+    reservation_offset_kb:uint32 = 4294967295;
 }
 
 table FBReserveStripGroupResponse {

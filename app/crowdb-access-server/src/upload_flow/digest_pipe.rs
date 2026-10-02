@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 pub(crate) struct DigestPipe {
     sender: Option<mpsc::Sender<DigestBatch>>,
     worker: Option<JoinHandle<Result<Digests, ()>>>,
+    inline: Option<InlineDigest>,
 }
 
 struct DigestBatch {
@@ -65,10 +66,36 @@ impl DigestPipe {
         Self {
             sender: Some(sender),
             worker: Some(worker),
+            inline: None,
         }
     }
 
-    pub(crate) fn enqueue(&self, payload: Vec<Bytes>) -> Result<(), ()> {
+    pub(crate) fn start_inline(check_sha256: bool) -> Result<Self, ()> {
+        Ok(Self {
+            sender: None,
+            worker: None,
+            inline: Some(InlineDigest {
+                md5: Hasher::new(MessageDigest::md5()).map_err(|_| ())?,
+                sha256: check_sha256
+                    .then(|| Hasher::new(MessageDigest::sha256()).map_err(|_| ()))
+                    .transpose()?,
+                process_time: Duration::ZERO,
+            }),
+        })
+    }
+
+    pub(crate) fn enqueue(&mut self, payload: Vec<Bytes>) -> Result<(), ()> {
+        if let Some(inline) = &mut self.inline {
+            let started = Instant::now();
+            for bytes in payload {
+                inline.md5.update(&bytes).map_err(|_| ())?;
+                if let Some(sha256) = &mut inline.sha256 {
+                    sha256.update(&bytes).map_err(|_| ())?;
+                }
+            }
+            inline.process_time += started.elapsed();
+            return Ok(());
+        }
         self.sender
             .as_ref()
             .ok_or(())?
@@ -76,8 +103,42 @@ impl DigestPipe {
             .map_err(|_| ())
     }
 
+    pub(crate) fn process_inline(&mut self, payload: &[u8]) -> Result<(), ()> {
+        let inline = self.inline.as_mut().ok_or(())?;
+        let started = Instant::now();
+        inline.md5.update(payload).map_err(|_| ())?;
+        if let Some(sha256) = &mut inline.sha256 {
+            sha256.update(payload).map_err(|_| ())?;
+        }
+        inline.process_time += started.elapsed();
+        Ok(())
+    }
+
     pub(crate) async fn finish(&mut self) -> Result<Digests, ()> {
+        if let Some(mut inline) = self.inline.take() {
+            return Ok(Digests {
+                md5: inline
+                    .md5
+                    .finish()
+                    .map_err(|_| ())?
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| ())?,
+                sha256: inline
+                    .sha256
+                    .as_mut()
+                    .map(|hash| hash.finish().map_err(|_| ())?.as_ref().try_into().map_err(|_| ()))
+                    .transpose()?,
+                process_time: inline.process_time,
+            });
+        }
         self.sender.take();
         self.worker.take().ok_or(())?.await.map_err(|_| ())?
     }
+}
+
+struct InlineDigest {
+    md5: Hasher,
+    sha256: Option<Hasher>,
+    process_time: Duration,
 }

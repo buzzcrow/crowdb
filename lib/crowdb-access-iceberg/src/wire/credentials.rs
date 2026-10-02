@@ -79,6 +79,38 @@ impl FileDelegationLimits {
         target: FileDelegationTarget,
         now_ms: u64,
     ) -> Result<FileCredentials, FileGrantError> {
+        self.issue_inner(issuer, principal, context, authority, target, now_ms, false)
+    }
+
+    /// Issues an explicit cleanup credential without adding deletion to `FileIO` grants.
+    /// # Errors
+    /// Rejects principals without table write rights or staged tables.
+    pub fn issue_cleanup(
+        self,
+        issuer: &FileGrantIssuer,
+        principal: Principal,
+        context: CatalogContext,
+        authority: &CatalogAuthority,
+        target: FileDelegationTarget,
+        now_ms: u64,
+    ) -> Result<FileCredentials, FileGrantError> {
+        if !principal.namespace_write || target.staged {
+            return Err(FileGrantError::Forbidden);
+        }
+        self.issue_inner(issuer, principal, context, authority, target, now_ms, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn issue_inner(
+        self,
+        issuer: &FileGrantIssuer,
+        principal: Principal,
+        context: CatalogContext,
+        authority: &CatalogAuthority,
+        target: FileDelegationTarget,
+        now_ms: u64,
+        cleanup: bool,
+    ) -> Result<FileCredentials, FileGrantError> {
         authority.validate().map_err(|_| FileGrantError::Invalid)?;
         if authority.catalog != context.catalog || authority.lifecycle != CatalogLifecycle::Ready {
             return Err(FileGrantError::Forbidden);
@@ -101,21 +133,23 @@ impl FileDelegationLimits {
         } else {
             FormatAction::Write
         };
-        let operations =
-            if principal.namespace_write && authority.capabilities.supports(target.format_version, action) {
-                FileOperations::new(&[
-                    FileOperation::Head,
-                    FileOperation::Get,
-                    FileOperation::Put,
-                    FileOperation::CreateMultipart,
-                    FileOperation::UploadPart,
-                    FileOperation::ListParts,
-                    FileOperation::CompleteMultipart,
-                    FileOperation::AbortMultipart,
-                ])?
-            } else {
-                FileOperations::new(&[FileOperation::Head, FileOperation::Get])?
-            };
+        let operations = if cleanup {
+            FileOperations::new(&[FileOperation::DeleteObject, FileOperation::DeleteObjects])?
+        } else if principal.namespace_write && authority.capabilities.supports(target.format_version, action)
+        {
+            FileOperations::new(&[
+                FileOperation::Head,
+                FileOperation::Get,
+                FileOperation::Put,
+                FileOperation::CreateMultipart,
+                FileOperation::UploadPart,
+                FileOperation::ListParts,
+                FileOperation::CompleteMultipart,
+                FileOperation::AbortMultipart,
+            ])?
+        } else {
+            FileOperations::new(&[FileOperation::Head, FileOperation::Get])?
+        };
         let mut digest = Sha256::new();
         digest.update(b"crowdb-iceberg-file-principal-v1");
         digest.update(principal.name.as_bytes());

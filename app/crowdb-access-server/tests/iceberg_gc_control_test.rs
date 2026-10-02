@@ -100,6 +100,7 @@ async fn seed_head(store: &RoutedCatalogStore, context: CatalogContext) -> Table
         metadata_file: FileId::random(),
         metadata_location: location.file("metadata/first.json").unwrap(),
         metadata_digest: [7; 32],
+        commit_binding: None,
         format_version: 1,
         table_uuid: None,
         operation_fence: 1,
@@ -173,6 +174,7 @@ async fn seed_purge_marker(store: &RoutedCatalogStore, context: CatalogContext, 
     let marker = TablePurgeTask {
         activation_epoch: context.activation_epoch,
         head: *head,
+        dropped_ms: 0,
     };
     let encoded = marker.key().encode().unwrap();
     let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();

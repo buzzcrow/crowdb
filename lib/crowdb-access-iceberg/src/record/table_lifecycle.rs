@@ -127,6 +127,7 @@ pub(super) fn encode_purge<'buffer>(
         &FBTablePurgeTaskArgs {
             activation_epoch: task.activation_epoch,
             head: Some(head),
+            dropped_ms: task.dropped_ms,
         },
     ))
 }
@@ -135,6 +136,7 @@ pub(super) fn decode_purge(value: FBTablePurgeTask<'_>) -> Result<TablePurgeTask
     let task = TablePurgeTask {
         activation_epoch: value.activation_epoch(),
         head: super::table::decode_head(value.head())?,
+        dropped_ms: value.dropped_ms(),
     };
     task.validate()?;
     Ok(task)

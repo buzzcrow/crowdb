@@ -15,7 +15,7 @@ test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainer
 volumes=$(docker image inspect --format '{{json .Config.Volumes}}' "$image")
 jq -e 'has("/opt/crowdb/data")' <<<"$volumes" >/dev/null
 exposed=$(docker image inspect --format '{{json .Config.ExposedPorts}}' "$image")
-for port in 80 81 8080; do
+for port in 9092 9091 9090; do
     jq -e --arg port "$port/tcp" 'has($port)' <<<"$exposed" >/dev/null
 done
 for port in 10000 13000 15200; do
@@ -40,8 +40,6 @@ docker run --rm --network none --entrypoint /bin/sh "$image" -ec '
         fi
     done
 '
-capability=$(docker run --rm --network none --entrypoint /sbin/getcap "$image" /opt/crowdb/bin/crowdb-access-server)
-[[ "$capability" == *'cap_net_bind_service=ep' ]]
 
 iceberg_output=$(docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-access-server "$image" iceberg 2>&1) && {
     echo "Iceberg started without required configuration" >&2

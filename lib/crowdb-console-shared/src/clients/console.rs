@@ -24,7 +24,7 @@ use crate::config::{NodeEntry, RackEntry, ServerEntry};
 use crate::error::{Error, Result};
 
 /// Thin wrapper around `reqwest::Client` bound to one `crowdb-web`
-/// console base URL (default `http://127.0.0.1:14000`).
+/// console base URL (default `http://127.0.0.1:9090`).
 #[derive(Debug, Clone)]
 pub struct ConsoleClient {
     base_url: String,

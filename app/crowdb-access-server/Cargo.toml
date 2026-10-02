@@ -35,7 +35,7 @@ http-body-util = "0.1"
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 percent-encoding = "2"
-quick-xml = "0.38"
+quick-xml = { version = "0.38", features = ["serialize"] }
 base64 = "0.22"
 md-5 = "0.10"
 openssl = "0.10"

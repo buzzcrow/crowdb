@@ -159,6 +159,7 @@ impl TableLifecycleOperation {
 pub struct TablePurgeTask {
     pub activation_epoch: u64,
     pub head: TableHead,
+    pub dropped_ms: u64,
 }
 
 impl TablePurgeTask {

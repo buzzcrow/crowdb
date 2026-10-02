@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use crowdb_access_iceberg::{
     catalog::{CasOutcome, CatalogStore, RoutedCatalogStore, StoreError, StoredValue},
     file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError, MultipartPartScan, MultipartPartStore},
-    key::IcebergKey,
+    gc::{GcScan, GcStore, GcSystemScan},
+    key::{CatalogScope, IcebergKey},
     namespace::{ChildScan, NamespaceStore},
     record::StorageRecord,
 };
@@ -62,6 +63,26 @@ impl MultipartPartStore for TestCommitStore {
 }
 
 #[async_trait]
+impl GcStore for TestCommitStore {
+    async fn scan_gc(&self, scan: GcScan) -> Result<MultiScanPage, StoreError> {
+        self.inner.scan_gc(scan).await
+    }
+
+    async fn scan_gc_system(&self, scan: GcSystemScan) -> Result<MultiScanPage, StoreError> {
+        self.inner.scan_gc_system(scan).await
+    }
+
+    async fn delete_gc_record(
+        &self,
+        key: &[u8],
+        expected: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        self.inner.delete_gc_record(key, expected, identity).await
+    }
+}
+
+#[async_trait]
 impl NamespaceStore for TestCommitStore {
     async fn scan_children(&self, request: ChildScan) -> Result<MultiScanPage, StoreError> {
         self.inner.scan_children(request).await
@@ -93,10 +114,22 @@ impl CatalogStore for TestCommitStore {
         value: &[u8],
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
-        let label = match StorageRecord::decode(&IcebergKey::decode(key)?, value)? {
+        let record_key = IcebergKey::decode(key)?;
+        let label = match StorageRecord::decode(&record_key, value)? {
             StorageRecord::TableCreateOperation(operation) => format!("create-{:?}", operation.phase),
             StorageRecord::TableCommitOperation(operation) => format!("commit-{:?}", operation.phase),
             StorageRecord::TableHead(head) => format!("head-{}", head.generation),
+            StorageRecord::File(_)
+                if matches!(
+                    record_key,
+                    IcebergKey::Catalog {
+                        scope: CatalogScope::FileLocation,
+                        ..
+                    }
+                ) =>
+            {
+                "file-location-authority".into()
+            }
             StorageRecord::File(_) => "file-record".into(),
             StorageRecord::FileMapping(_) => "file-mapping".into(),
             StorageRecord::MultipartSession(session) => format!("multipart-{:?}", session.phase),

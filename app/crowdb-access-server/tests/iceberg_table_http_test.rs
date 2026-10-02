@@ -272,7 +272,7 @@ async fn read_admission_is_shared_by_complete_and_paged_lists_and_releases_after
     let fixture = Arc::new(TestTableHttp::new().await);
     fixture.store.scan_delay_ms.store(500, Ordering::SeqCst);
     let mut readers = Vec::new();
-    for index in 0..4 {
+    for index in 0..32 {
         let fixture = fixture.clone();
         readers.push(tokio::spawn(async move {
             let path = if index % 2 == 0 {
@@ -284,7 +284,7 @@ async fn read_admission_is_shared_by_complete_and_paged_lists_and_releases_after
         }));
     }
     tokio::time::timeout(Duration::from_secs(1), async {
-        while fixture.store.scans.load(Ordering::SeqCst) < 4 {
+        while fixture.store.scans.load(Ordering::SeqCst) < 32 {
             tokio::task::yield_now().await;
         }
     })

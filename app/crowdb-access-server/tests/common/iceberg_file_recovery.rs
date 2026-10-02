@@ -51,12 +51,20 @@ pub async fn run() {
                 labels.insert(label);
             }
         }
-        assert!(labels.contains("file-record"));
-        assert!(labels.contains("file-mapping"));
+        // New uploads publish the descriptor directly at the exact location.
+        // The separate file-ID/mapping pair is a legacy read representation.
+        assert!(labels.contains("file-location-authority"));
+        assert!(!labels.contains("file-mapping"));
+        assert!(!labels.contains("file-record"));
         if multipart {
             assert!(labels.contains("multipart-Completing"));
             assert!(labels.contains("multipart-Publishing"));
             assert!(labels.contains("multipart-Published"));
+        } else {
+            assert_eq!(
+                count, 1,
+                "direct stream publication has one durable authority CAS"
+            );
         }
     }
 }
@@ -132,6 +140,12 @@ async fn released_by_recovery(stack: &TestIcebergStack, published: &MultipartSes
     let store = stack.store().await;
     let sessions = MultipartRepository::new(store.clone());
     let admission = MultipartAdmission::new(store);
+    if published.credit.is_none() {
+        // Current sessions have per-session limits and no catalog-wide credits.
+        // Recovery must not recreate the legacy admission journal.
+        assert!(admission.load(published.context).await.unwrap().is_none());
+        return;
+    }
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let current = sessions

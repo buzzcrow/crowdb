@@ -67,6 +67,7 @@ impl FileRequest {
             None if method == Method::GET => FileOperation::Get,
             None if method == Method::HEAD => FileOperation::Head,
             None if method == Method::PUT => FileOperation::Put,
+            None if method == Method::DELETE => FileOperation::DeleteObject,
             None => return Err(FileRequestError::Unsupported),
         };
         Ok(Self {

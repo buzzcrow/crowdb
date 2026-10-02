@@ -22,12 +22,17 @@ for required in \
     'RUNTIME_SHA256=${{ needs.verify.outputs.runtime_sha256 }}' \
     'needs: verify' \
     'docker.io/crowdb/crowdb-iceberg:${{ needs.verify.outputs.image_tag }}' \
+    'docker.io/crowdb/crowdb-iceberg:latest' \
+    'docker.io/crowdb/crowdb-s3:${{ needs.verify.outputs.image_tag }}' \
+    'docker.io/crowdb/crowdb-s3:latest' \
+    'pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"' \
+    'pixi run cosign sign --yes "docker.io/crowdb/crowdb-s3@$DIGEST"' \
     'provenance: mode=max' \
     'sbom: true' \
     'cosign sign --yes'; do
     grep -Fq "$required" "$release"
 done
-! grep -Eq 'crowdb-iceberg:(preview|latest)' "$release"
+! grep -Eq 'crowdb-(iceberg|s3):preview' "$release"
 [[ $(grep -c 'push: true' "$release") == 1 ]]
 [[ $(grep -c 'id-token: write' "$release") == 1 ]]
 [[ "$events" != *'schedule:'* ]]

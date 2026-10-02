@@ -39,7 +39,7 @@ impl TableCreatePhase {
             (Staged, Prepared | Aborted)
                 | (Prepared, Reserved | Aborting)
                 | (Reserved, FilesReady | Aborting)
-                | (FilesReady, Admitting | Aborting)
+                | (FilesReady, Admitting | Publishing | Aborting)
                 | (Admitting, Admitted | FilesReady | Aborting)
                 | (Admitted, Publishing | Aborting)
                 | (Publishing, Published)
@@ -94,8 +94,7 @@ impl TableCreateOperation {
     /// Rejects foreign payloads, invalid initial heads and inconsistent durable phase evidence.
     pub fn validate(&self) -> Result<(), ValidationError> {
         use TableCreatePhase::{
-            Aborted, Aborting, Admitted, Admitting, Complete, FilesReady, Prepared, Published, Publishing,
-            Reserved,
+            Aborted, Aborting, Admitted, Admitting, Complete, FilesReady, Prepared, Reserved,
         };
         self.context.validate()?;
         self.candidate.validate()?;
@@ -136,10 +135,7 @@ impl TableCreateOperation {
             self.phase,
             Prepared | Reserved | FilesReady | TableCreatePhase::Staged
         ) && self.admission.is_some())
-            || (matches!(
-                self.phase,
-                Admitting | Admitted | Publishing | Published | Complete
-            ) && self.admission.is_none())
+            || (matches!(self.phase, Admitting | Admitted) && self.admission.is_none())
             || (matches!(self.phase, Complete | Aborting | Aborted) != self.outcome.is_some())
         {
             return Err(ValidationError::Record);

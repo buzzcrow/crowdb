@@ -11,27 +11,40 @@ use super::file_body::FileReadBody;
 use super::file_complete::FileCompleteBody;
 use super::metrics::RequestObservation;
 
-pub(super) struct SpoolPermit(Arc<AtomicUsize>);
+pub(super) struct SpoolPermit(Arc<AtomicUsize>, usize);
 
 impl SpoolPermit {
-    pub(super) fn acquire(active: &Arc<AtomicUsize>) -> Option<Self> {
+    const MAX_BUFFERED_BYTES: usize = 128 * 1024 * 1024;
+
+    pub(super) fn acquire(active: &Arc<AtomicUsize>, bytes: usize) -> Option<Self> {
         active
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < 4).then_some(count + 1)
+                count
+                    .checked_add(bytes)
+                    .filter(|total| *total <= Self::MAX_BUFFERED_BYTES)
             })
             .ok()?;
-        Some(Self(active.clone()))
+        Some(Self(active.clone(), bytes))
+    }
+
+    fn shrink_to(&mut self, bytes: usize) {
+        let released = self.1.saturating_sub(bytes);
+        if released != 0 {
+            self.0.fetch_sub(released, Ordering::AcqRel);
+            self.1 -= released;
+        }
     }
 }
 
 impl Drop for SpoolPermit {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        self.0.fetch_sub(self.1, Ordering::AcqRel);
     }
 }
 
 pub(super) struct IcebergBody {
     bytes: Bytes,
+    retained_bytes: usize,
     permit: Option<SpoolPermit>,
     file: Option<FileReadBody>,
     complete: Option<FileCompleteBody>,
@@ -44,13 +57,15 @@ impl IcebergBody {
         self
     }
 
-    pub(super) fn with_spool_permit(mut self, permit: SpoolPermit) -> Self {
+    pub(super) fn with_spool_permit(mut self, mut permit: SpoolPermit) -> Self {
+        permit.shrink_to(self.retained_bytes);
         self.permit = Some(permit);
         self
     }
 
     pub(super) fn new(bytes: Vec<u8>) -> Self {
         Self {
+            retained_bytes: bytes.capacity(),
             bytes: Bytes::from(bytes),
             permit: None,
             file: None,
@@ -59,18 +74,13 @@ impl IcebergBody {
         }
     }
     pub(super) fn with_permit(bytes: Vec<u8>, permit: SpoolPermit) -> Self {
-        Self {
-            bytes: Bytes::from(bytes),
-            permit: Some(permit),
-            file: None,
-            complete: None,
-            observation: None,
-        }
+        Self::new(bytes).with_spool_permit(permit)
     }
 
     pub(super) fn file(body: FileReadBody) -> Self {
         Self {
             bytes: Bytes::new(),
+            retained_bytes: 0,
             permit: None,
             file: Some(body),
             complete: None,
@@ -81,6 +91,7 @@ impl IcebergBody {
     pub(super) fn complete(body: FileCompleteBody) -> Self {
         Self {
             bytes: Bytes::new(),
+            retained_bytes: 0,
             permit: None,
             file: None,
             complete: Some(body),

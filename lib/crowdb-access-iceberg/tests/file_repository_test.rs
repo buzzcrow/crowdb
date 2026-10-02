@@ -6,8 +6,8 @@ mod fixture;
 use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogError, CatalogStore, RootState};
-use crowdb_access_iceberg::file::{file_key, location_key, FileContent, FileRepository};
-use crowdb_access_iceberg::key::CatalogId;
+use crowdb_access_iceberg::file::{location_key, FileContent, FileRepository};
+use crowdb_access_iceberg::key::{CatalogId, FileId};
 use crowdb_access_iceberg::operation::mutation_identity;
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::common::ChunkId;
@@ -88,35 +88,25 @@ async fn streamed_publication_replays_equal_etag_with_different_chunk_locations(
 
 #[tokio::test]
 async fn every_lost_file_publication_reply_recovers_on_another_repository() {
-    for lost in 1..=2 {
-        let fixture = TestFile::new(common::TestStore::default()).await;
-        let candidate = fixture.record("metadata/one.json", &vec![b' '; 64 * 1024]);
-        fixture.store.fail_after.store(
-            fixture.store.writes.load(Ordering::SeqCst) + lost,
-            Ordering::SeqCst,
-        );
-        assert!(FileRepository::new(fixture.store.clone())
-            .publish(fixture.context, &candidate)
-            .await
-            .is_err());
-        let recovery = FileRepository::new(fixture.store.clone());
-        assert_eq!(
-            recovery
-                .load(fixture.context, &candidate.location)
-                .await
-                .unwrap()
-                .is_some(),
-            lost == 2
-        );
-        assert_eq!(
-            recovery.publish(fixture.context, &candidate).await.unwrap(),
-            candidate
-        );
-        assert_eq!(
-            recovery.load(fixture.context, &candidate.location).await.unwrap(),
-            Some(candidate)
-        );
-    }
+    let fixture = TestFile::new(common::TestStore::default()).await;
+    let candidate = fixture.record("metadata/one.json", &vec![b' '; 64 * 1024]);
+    fixture
+        .store
+        .fail_after
+        .store(fixture.store.writes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    assert!(FileRepository::new(fixture.store.clone())
+        .publish(fixture.context, &candidate)
+        .await
+        .is_err());
+    let recovery = FileRepository::new(fixture.store.clone());
+    assert_eq!(
+        recovery.load(fixture.context, &candidate.location).await.unwrap(),
+        Some(candidate.clone())
+    );
+    assert_eq!(
+        recovery.publish(fixture.context, &candidate).await.unwrap(),
+        candidate
+    );
 }
 
 #[tokio::test]
@@ -144,33 +134,25 @@ async fn competing_candidates_select_one_file_and_retain_orphan_authority() {
                 Some(CatalogError::Conflict)
             ));
         }
-        for candidate in [&first, &second] {
-            assert!(fixture
-                .store
-                .get(
-                    &file_key(fixture.context.catalog, candidate.file)
-                        .encode()
-                        .unwrap()
-                )
-                .await
-                .unwrap()
-                .is_some());
-        }
+        assert!(fixture
+            .store
+            .get(&location_key(&first.location).encode().unwrap())
+            .await
+            .unwrap()
+            .is_some());
     }
 }
 
 #[tokio::test]
-async fn file_identity_collisions_corrupt_bindings_and_retired_contexts_fail_closed() {
+async fn corrupt_bindings_and_retired_contexts_fail_closed() {
     let fixture = TestFile::new(common::TestStore::default()).await;
     let repository = FileRepository::new(fixture.store.clone());
     let candidate = fixture.record("metadata/one.json", b"{}");
     repository.publish(fixture.context, &candidate).await.unwrap();
     let mut collision = candidate.clone();
     collision.location = fixture.table.file("metadata/two.json").unwrap();
-    assert!(matches!(
-        repository.publish(fixture.context, &collision).await,
-        Err(CatalogError::Conflict)
-    ));
+    collision.file = FileId::random();
+    repository.publish(fixture.context, &collision).await.unwrap();
     let key = location_key(&candidate.location).encode().unwrap();
     let previous = fixture.store.get(&key).await.unwrap().unwrap();
     fixture

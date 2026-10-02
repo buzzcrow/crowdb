@@ -97,9 +97,21 @@ async fn native_table_publication_recovers_before_and_after_every_durable_write(
                 drop(recovery);
             }
         }
-        assert!(labels
-            .iter()
-            .any(|label| label.starts_with("create-") || label.starts_with("commit-")));
+        if kind == "update" {
+            assert_eq!(
+                labels,
+                BTreeSet::from([
+                    "file-block".to_owned(),
+                    "journal-or-fence".to_owned(),
+                    "file-location-authority".to_owned(),
+                    "head-2".to_owned(),
+                ]),
+                "direct updates must publish immutable metadata through one head CAS"
+            );
+            assert_eq!(count, 4);
+        } else {
+            assert!(labels.iter().any(|label| label.starts_with("create-")));
+        }
         if kind != "stage" {
             assert!(
                 labels.contains("file-block"),

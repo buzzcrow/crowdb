@@ -166,8 +166,8 @@ impl TestRoot {
                 .replace("127.0.0.1:12200", &format!("127.0.0.1:{}", ports.chunkdb_rpc))
                 .replace("127.0.0.1:15100", &format!("127.0.0.1:{}", ports.chunk_kv_http))
                 .replace("127.0.0.1:15200", &format!("127.0.0.1:{}", ports.chunk_kv_rpc))
-                .replace("0.0.0.0:80", &format!("127.0.0.1:{}", ports.iceberg))
-                .replace("0.0.0.0:81", &format!("127.0.0.1:{}", ports.s3));
+                .replace("0.0.0.0:9092", &format!("127.0.0.1:{}", ports.iceberg))
+                .replace("0.0.0.0:9091", &format!("127.0.0.1:{}", ports.s3));
             fs::write(self.0.join("templates").join(name), body).unwrap();
         }
     }

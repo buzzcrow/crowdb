@@ -1,6 +1,6 @@
 use crowdb_access_iceberg::file::{FileOperation, TableLocation};
 use crowdb_access_iceberg::key::{CatalogId, TableId};
-use crowdb_access_server::iceberg::{FileRequest, FileRequestError, MultipartRequest};
+use crowdb_access_server::iceberg::{FileRequest, MultipartRequest};
 use hyper::Method;
 
 fn table() -> TableLocation {
@@ -39,7 +39,7 @@ fn native_object_routes_decode_once_and_preserve_plus_percent_and_repeated_slash
 }
 
 #[test]
-fn native_routes_expose_exact_multipart_operations_but_never_file_delete() {
+fn native_routes_distinguish_multipart_abort_from_object_cleanup() {
     let table = table();
     let create = FileRequest::parse(&Method::POST, &path(table, "file?uploads")).unwrap();
     assert_eq!(create.multipart, Some(MultipartRequest::Create));
@@ -76,10 +76,9 @@ fn native_routes_expose_exact_multipart_operations_but_never_file_delete() {
             .operation,
         FileOperation::AbortMultipart
     );
-    assert_eq!(
-        FileRequest::parse(&Method::DELETE, &path(table, "file")),
-        Err(FileRequestError::Unsupported)
-    );
+    let cleanup = FileRequest::parse(&Method::DELETE, &path(table, "file")).unwrap();
+    assert_eq!(cleanup.operation, FileOperation::DeleteObject);
+    assert!(cleanup.multipart.is_none());
 }
 
 #[test]

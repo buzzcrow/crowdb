@@ -110,7 +110,7 @@ async fn pending_commit_bodies_share_admission_and_errors_release_every_slot() {
     let fixture = fixture().await;
     let before = mutations(&fixture);
     let mut streams = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..64 {
         streams.push(pending_body(&fixture.endpoint()).await);
     }
     let response = fixture

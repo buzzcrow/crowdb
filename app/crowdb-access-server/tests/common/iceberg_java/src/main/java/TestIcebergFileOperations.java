@@ -27,7 +27,8 @@ public final class TestIcebergFileOperations {
     reject(400, "InvalidRequest", () -> client.putObjectTagging(request -> request.bucket(bucket).key(key)
         .tagging(tags -> tags.tagSet(Tag.builder().key("owner").value("changed").build()))));
     reject(400, "InvalidRequest", () -> client.deleteObjectTagging(request -> request.bucket(bucket).key(key)));
-    reject(400, "InvalidRequest", () -> client.deleteObject(request -> request.bucket(bucket).key(key)));
+    // Upload credentials do not include the separate cleanup permission.
+    reject(403, "AccessDenied", () -> client.deleteObject(request -> request.bucket(bucket).key(key)));
     reject(400, "InvalidRequest", () -> client.putObject(request -> request.bucket(bucket)
         .key(root + "../escape.json"), RequestBody.fromBytes(bytes)));
     String foreign = "t/" + (root.charAt(2) == '0' ? '1' : '0') + root.substring(3) + "metadata/foreign.json";

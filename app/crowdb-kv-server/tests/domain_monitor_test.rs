@@ -179,7 +179,7 @@ async fn chunkdb_driver_reads_and_writes_through_local_group_zero() {
         .await
         .unwrap();
 
-    ChunkdbRangeMonitorDriver::with_sub_range_count(4)
+    ChunkdbRangeMonitorDriver::new()
         .tick(&control, &descriptor)
         .await
         .unwrap();
@@ -187,7 +187,31 @@ async fn chunkdb_driver_reads_and_writes_through_local_group_zero() {
         .scan_all_prefix(Bytes::from(ChunkdbRangeBindingKey::text_prefix_all()), 16)
         .await
         .unwrap();
-    assert_eq!(bindings.len(), 4);
+    assert_eq!(bindings.len(), 12);
+    let mut values: Vec<crowdb_protocol::common::ChunkdbRangeBindingValue> = bindings
+        .iter()
+        .map(|entry| serde_json::from_slice(&entry.value).unwrap())
+        .collect();
+    values.sort_by_key(|binding| binding.sub_range_index);
+    assert_eq!(values[0].range_start, 0);
+    assert_eq!(values[11].range_end, u32::from(u16::MAX));
+    for (index, binding) in values.iter().enumerate() {
+        assert_eq!(binding.instance_id, 7);
+        assert!((5461..=5462).contains(&(binding.range_end - binding.range_start + 1)));
+        if index > 0 {
+            assert_eq!(values[index - 1].range_end + 1, binding.range_start);
+        }
+    }
+    // A different count must not overwrite an already populated layout.
+    assert!(ChunkdbRangeMonitorDriver::with_sub_range_count(4)
+        .tick(&control, &descriptor)
+        .await
+        .is_err());
+    let after = control
+        .scan_all_prefix(Bytes::from(ChunkdbRangeBindingKey::text_prefix_all()), 16)
+        .await
+        .unwrap();
+    assert_eq!(bindings, after);
 }
 
 #[tokio::test]

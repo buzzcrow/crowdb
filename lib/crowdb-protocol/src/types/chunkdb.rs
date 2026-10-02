@@ -337,6 +337,9 @@ pub struct ReserveStripGroupRequest {
     pub copy_count: u32,
     pub conversion_data_num: u32,
     pub conversion_code_num: u32,
+    /// Append position supplied by the exclusive writer, including hidden strips.
+    #[serde(default)]
+    pub reservation_offset_kb: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

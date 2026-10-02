@@ -72,9 +72,9 @@ impl GcRuntimeConfig {
         if limits.minimum_retention_ms < GcLimits::default().minimum_retention_ms {
             return Err("GC retention must be at least seven days".into());
         }
-        let interval_ms = setting_or("CROWDB_ICEBERG_GC_INTERVAL_MS", file.interval_ms, 60_000_u64)?;
-        if !(100..=60_000).contains(&interval_ms) {
-            return Err("GC interval must be between 100 and 60000 milliseconds".into());
+        let interval_ms = setting_or("CROWDB_ICEBERG_GC_INTERVAL_MS", file.interval_ms, 30 * 60_000_u64)?;
+        if !(100..=24 * 60 * 60_000).contains(&interval_ms) {
+            return Err("GC interval must be between 100 and 86400000 milliseconds".into());
         }
         let names = match &file.catalogs {
             Some(names) => names.clone(),
@@ -100,8 +100,8 @@ impl GcRuntimeConfig {
         let enabled = match file.enabled {
             Some(enabled) => enabled,
             None => match std::env::var("CROWDB_ICEBERG_GC_ENABLED").as_deref() {
-                Ok("1") => true,
-                Ok("0") | Err(std::env::VarError::NotPresent) => false,
+                Ok("0") => false,
+                Ok("1") | Err(std::env::VarError::NotPresent) => true,
                 _ => return Err("CROWDB_ICEBERG_GC_ENABLED must be 0 or 1".into()),
             },
         };
@@ -195,8 +195,11 @@ pub(super) async fn run(
     let mut index = 0_usize;
     loop {
         interval.tick().await;
-        let Ok(Ok((root, _))) =
-            tokio::time::timeout(Duration::from_millis(config.interval_ms), catalog.status()).await
+        let Ok(Ok((root, _))) = tokio::time::timeout(
+            Duration::from_millis(config.interval_ms.min(60_000)),
+            catalog.status(),
+        )
+        .await
         else {
             tracing::warn!("GC catalog status unavailable; retrying later");
             continue;
@@ -263,6 +266,11 @@ async fn scan_and_advance(
     } else {
         Vec::new()
     };
+    if let Some(context) = active {
+        GcRepository::new(store.clone())
+            .admit_multipart(context, super::runtime::now_ms()?, limits)
+            .await?;
+    }
     let (next_system, advanced_retired) = if active.is_some() && after.retired_turn {
         scan_retired(store.clone(), worker, after.system, limits).await?
     } else {

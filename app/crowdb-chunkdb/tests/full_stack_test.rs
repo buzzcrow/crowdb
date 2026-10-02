@@ -841,6 +841,9 @@ fn task_value() -> ChunkTaskValue {
     }
 }
 
+#[path = "common/reservation_prefetch.rs"]
+mod reservation_prefetch;
+
 struct CompleteTaskHandler;
 
 #[tokio::test]
@@ -909,6 +912,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
                     &group,
                     fence,
                     ReserveGroupSpec {
+                        reservation_offset_kb: None,
                         strip_size: 1,
                         strip_count: 1,
                         copy_count: copies,
@@ -954,6 +958,7 @@ async fn assert_single_node_reservation(handler: &LifecycleHandler, id: &ChunkId
             &group,
             fence,
             ReserveGroupSpec {
+                reservation_offset_kb: None,
                 strip_size: 1,
                 strip_count: 1,
                 copy_count: 1,
@@ -2886,6 +2891,7 @@ async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
             &group_id,
             fence,
             ReserveGroupSpec {
+                reservation_offset_kb: None,
                 strip_size: 1,
                 strip_count: 2,
                 copy_count: 3,
@@ -3073,6 +3079,7 @@ async fn expired_consumed_reservation_waits_for_reuse_grace() {
             &group_id,
             fence,
             ReserveGroupSpec {
+                reservation_offset_kb: None,
                 strip_size: 1,
                 strip_count: 2,
                 copy_count: 3,
@@ -3161,6 +3168,7 @@ async fn reservation_admission_rejects_overcommit_and_rebuilds_durable_usage() {
         lease_ms: 30_000,
     };
     let spec = ReserveGroupSpec {
+        reservation_offset_kb: None,
         strip_size: 1,
         strip_count: 2,
         copy_count: 3,
@@ -3234,6 +3242,7 @@ async fn completed_conversion_reservation_is_taken_over_as_a_durable_task() {
             &group_id,
             fence,
             ReserveGroupSpec {
+                reservation_offset_kb: None,
                 strip_size: 1,
                 strip_count: 8,
                 copy_count: 3,
@@ -3244,40 +3253,14 @@ async fn completed_conversion_reservation_is_taken_over_as_a_durable_task() {
         .await
         .unwrap();
     fence.expected_modify_ts = reserved.chunk.modify_ts;
-    for strip in &reserved.group.unwrap().strips {
-        let cursor = u64::from(strip.chunk_offset + strip.capacity) * 1024;
-        harness
-            .handler
-            .mutate_strip_reservation(
-                &chunk_id,
-                &group_id,
-                fence,
-                ReservationUpdate {
-                    strip_sequence: strip.strip_sequence,
-                    action: StripReservationAction::Consume,
-                    acknowledged_cursor: cursor,
-                    closed_strip_sequence: Some(strip.strip_sequence),
-                },
-            )
-            .await
-            .unwrap();
-        let confirmed = harness
-            .handler
-            .mutate_strip_reservation(
-                &chunk_id,
-                &group_id,
-                fence,
-                ReservationUpdate {
-                    strip_sequence: strip.strip_sequence,
-                    action: StripReservationAction::Confirm,
-                    acknowledged_cursor: cursor,
-                    closed_strip_sequence: Some(strip.strip_sequence),
-                },
-            )
-            .await
-            .unwrap();
-        fence.expected_modify_ts = confirmed.chunk.modify_ts;
-    }
+    reservation_prefetch::confirm_group(
+        &harness,
+        &chunk_id,
+        &group_id,
+        &mut fence,
+        reserved.group.unwrap(),
+    )
+    .await;
 
     let bindings = BindingCache::new();
     bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
@@ -3425,6 +3408,7 @@ async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail
                 &group_id,
                 fence,
                 ReserveGroupSpec {
+                    reservation_offset_kb: None,
                     strip_size: 1,
                     strip_count: 8,
                     copy_count: 3,

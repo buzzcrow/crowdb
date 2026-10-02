@@ -5,7 +5,7 @@ use crowdb_access_iceberg::{
     file::{FileBlockStore, FileTreeWriter, MultipartPhase, MultipartSession},
     gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{CatalogId, CatalogScope, IcebergKey, OperationId},
-    operation::mutation_identity,
+    operation::{mutation_identity, PayloadStore},
     record::StorageRecord,
 };
 
@@ -33,6 +33,10 @@ struct TestAssembly {
 
 impl TestAssembly {
     async fn new(phase: MultipartPhase) -> Self {
+        Self::new_with_catalog(phase, true).await
+    }
+
+    async fn new_with_catalog(phase: MultipartPhase, retire: bool) -> Self {
         let file = common::file::TestFile::new(common::TestStore::default()).await;
         let blocks = Arc::new(gc_blocks::TestReclaimBlocks::default());
         let mut session = multipart::session();
@@ -46,6 +50,13 @@ impl TestAssembly {
         let mut writer = FileTreeWriter::new(blocks.clone(), session.owner, 2).unwrap();
         writer.push(&vec![7; 600]).await.unwrap();
         let mut completion = multipart::completion(&session);
+        if !retire {
+            completion.selection = PayloadStore::new(file.store.clone())
+                .put(file.context.catalog, session.upload, b"selection")
+                .await
+                .unwrap();
+            completion.progress.selection = completion.selection.digest;
+        }
         completion.progress.writer = Some(writer.checkpoint().await.unwrap());
         completion.progress.completed_bytes = 600;
         completion.progress.next_part = 1;
@@ -58,7 +69,9 @@ impl TestAssembly {
         }
         session.completion = Some(completion);
         let mut authority = CatalogAuthority::new(file.context.catalog, "old".into()).unwrap();
-        authority.lifecycle = CatalogLifecycle::Retired;
+        if retire {
+            authority.lifecycle = CatalogLifecycle::Retired;
+        }
         let authority_key = IcebergKey::Catalog {
             catalog: file.context.catalog,
             scope: CatalogScope::Authority,
@@ -78,17 +91,28 @@ impl TestAssembly {
                 .await
                 .unwrap();
         }
-        file.root(
-            file.context.replacement(CatalogId::random()).unwrap(),
-            RootState::Ready,
-        )
-        .await;
+        if retire {
+            file.root(
+                file.context.replacement(CatalogId::random()).unwrap(),
+                RootState::Ready,
+            )
+            .await;
+        }
         let limits = GcLimits {
             minimum_retention_ms: 1,
             ..GcLimits::default()
         };
-        let task = GcTask::plan(file.context, OperationId::random(), None, 1000, limits).unwrap();
-        GcRepository::new(file.store.clone()).create(&task).await.unwrap();
+        let repository = GcRepository::new(file.store.clone());
+        let task = if retire {
+            let task = GcTask::plan(file.context, OperationId::random(), None, 1000, limits).unwrap();
+            repository.create(&task).await.unwrap();
+            task
+        } else {
+            repository
+                .admit_multipart(file.context, 1000, limits)
+                .await
+                .unwrap()
+        };
         Self {
             file,
             blocks,
@@ -117,6 +141,27 @@ impl TestAssembly {
         }
         panic!("assembly did not terminate: {:?}", self.task);
     }
+}
+
+#[tokio::test]
+async fn active_cleanup_reclaims_aborted_assembly_before_session_metadata() {
+    let mut fixture = TestAssembly::new_with_catalog(MultipartPhase::Aborted, false).await;
+    let key = fixture.session.key().encode().unwrap();
+    let selection = fixture
+        .session
+        .completion
+        .as_ref()
+        .unwrap()
+        .selection
+        .page_key(0)
+        .unwrap()
+        .encode()
+        .unwrap();
+    fixture.run().await;
+    assert_eq!(fixture.task.phase, GcPhase::Complete);
+    assert!(fixture.file.store.get(&key).await.unwrap().is_none());
+    assert!(fixture.file.store.get(&selection).await.unwrap().is_none());
+    assert!(fixture.blocks.blocks.values.load().is_empty());
 }
 
 #[tokio::test]

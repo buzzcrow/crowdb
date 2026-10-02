@@ -1,4 +1,3 @@
-use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -8,6 +7,7 @@ use crowdb_access_iceberg::file::{
     MultipartPhase, MultipartRepository, MultipartSession, TableLocation,
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
+use crowdb_protocol::port::namespace::RuntimeNamespace;
 use sha2::{Digest, Sha256};
 
 use crate::common::TestIcebergStack;
@@ -75,7 +75,10 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, table: Ta
     let mut worker = TestWorker::start(&stack.cluster.mgmt_endpoints);
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            assert!(worker.0.try_wait().unwrap().is_none(), "Iceberg worker exited");
+            assert!(
+                worker.child.try_wait().unwrap().is_none(),
+                "Iceberg worker exited"
+            );
             let current = repository.load(context, initial.upload).await.unwrap().unwrap();
             if current.phase == MultipartPhase::Aborted
                 && current.credit.is_some_and(|credit| credit.released)
@@ -98,18 +101,22 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, table: Ta
     .unwrap();
 }
 
-struct TestWorker(Child);
+struct TestWorker {
+    child: Child,
+    _ports: RuntimeNamespace,
+}
 
 impl TestWorker {
     fn start(seeds: &[String]) -> Self {
-        let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = reservation.local_addr().unwrap();
-        drop(reservation);
-        Self(
-            Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"))
+        let mut ports = RuntimeNamespace::ephemeral("iceberg-file-worker").unwrap();
+        let port = ports
+            .assign_port(crowdb_protocol::ServicePort::AccessServerIcebergHttp, 0)
+            .unwrap();
+        Self {
+            child: Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"))
                 .arg("iceberg")
                 .env("CROWDB_MANAGEMENT_SEEDS", seeds.join(","))
-                .env("CROWDB_ICEBERG_LISTEN", address.to_string())
+                .env("CROWDB_ICEBERG_LISTEN", format!("127.0.0.1:{port}"))
                 .env("CROWDB_ICEBERG_READ_TOKEN", "r".repeat(32))
                 .env("CROWDB_ICEBERG_WRITE_TOKEN", "w".repeat(32))
                 .env("CROWDB_ICEBERG_MANAGE_TOKEN", "m".repeat(32))
@@ -119,13 +126,14 @@ impl TestWorker {
                 .stderr(Stdio::inherit())
                 .spawn()
                 .unwrap(),
-        )
+            _ports: ports,
+        }
     }
 }
 
 impl Drop for TestWorker {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }

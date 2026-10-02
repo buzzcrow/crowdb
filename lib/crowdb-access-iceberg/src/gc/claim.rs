@@ -95,18 +95,19 @@ impl GcRepository {
             || previous
                 .head
                 .as_ref()
-                .map_or(true, |head| head.table != candidate.file.location.table().table)
+                .is_some_and(|head| head.table != candidate.file.location.table().table)
             || !matches!(
                 (task.kind, previous.kind),
                 (
                     GcTaskKind::RetiredCatalog,
                     GcTaskKind::PurgeTable | GcTaskKind::LiveTable
                 ) | (
-                    GcTaskKind::PurgeTable | GcTaskKind::LiveTable,
+                    GcTaskKind::PurgeTable | GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup,
                     GcTaskKind::LiveTable
                 )
             )
-            || (task.kind == GcTaskKind::LiveTable && previous.phase != GcPhase::Complete)
+            || (matches!(task.kind, GcTaskKind::LiveTable | GcTaskKind::MultipartCleanup)
+                && previous.phase != GcPhase::Complete)
             || candidate.phase == CandidatePhase::Complete
         {
             return Err(CatalogError::Busy);

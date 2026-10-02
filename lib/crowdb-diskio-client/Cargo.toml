@@ -23,6 +23,7 @@ crowdb-kv-client = { path = "../crowdb-kv-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }
 flatbuffers = { workspace = true }
+futures = "0.3"
 tokio = { workspace = true, features = ["sync", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }

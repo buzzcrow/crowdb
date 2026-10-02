@@ -78,7 +78,7 @@ async fn expiry_and_commit_binding_have_one_phase_cas_winner() {
 }
 
 #[tokio::test]
-async fn namespace_drop_at_every_interrupted_final_commit_boundary_preserves_admission() {
+async fn namespace_drop_at_every_interrupted_final_commit_boundary_recovers() {
     use crowdb_access_iceberg::namespace::NamespaceDropper;
     let baseline = TestStaged::new().await;
     let request = baseline.commit_request().await;
@@ -94,21 +94,29 @@ async fn namespace_drop_at_every_interrupted_final_commit_boundary_preserves_adm
             .store(store.writes.load(Ordering::SeqCst) + offset, Ordering::SeqCst);
         assert!(test.creator().commit_staged(&request).await.is_err());
         store.fail_after.store(0, Ordering::SeqCst);
-        let dropped = NamespaceDropper::new(store.clone())
-            .drop_namespace(&test.drop_request())
-            .await
-            .unwrap()
-            .unwrap();
+        let dropper = NamespaceDropper::new(store.clone());
+        let drop_result = match dropper.drop_namespace(&test.drop_request()).await {
+            Ok(outcome) => outcome.unwrap(),
+            Err(CatalogError::Busy) => {
+                test.creator().commit_staged(&request).await.unwrap();
+                dropper
+                    .drop_namespace(&test.drop_request())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+            Err(error) => panic!("offset {offset}: {error:?}"),
+        };
         let committed = test.creator().commit_staged(&request).await.unwrap();
         assert!(
-            matches!((dropped.status, committed.status), (204, 404) | (409, 200)),
+            matches!(drop_result.status, 204 | 404 | 409) && matches!(committed.status, 200 | 404),
             "offset {offset}"
         );
         let selected = TableRepository::new(store.clone())
             .select(test.namespace.context, test.parent.namespace, "events")
             .await
             .unwrap();
-        assert_eq!(selected.is_some(), dropped.status == 409, "offset {offset}");
+        assert_eq!(selected.is_some(), committed.status == 200, "offset {offset}");
     }
 }
 

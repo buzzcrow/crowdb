@@ -111,6 +111,7 @@ pub struct SmallWriteConfig {
     pub max_pipelines: usize,
     pub max_batch_bytes: usize,
     pub chunk_capacity_bytes: u64,
+    pub small_strip_prefetch_count: u32,
 }
 
 impl Default for SmallWriteConfig {
@@ -129,6 +130,7 @@ impl Default for SmallWriteConfig {
             max_pipelines: policy.max_pipelines,
             max_batch_bytes: policy.max_batch_bytes,
             chunk_capacity_bytes: policy.chunk_capacity,
+            small_strip_prefetch_count: policy.small_strip_prefetch_count,
         }
     }
 }
@@ -160,6 +162,7 @@ impl SmallWriteConfig {
             max_pipelines: self.max_pipelines,
             max_batch_bytes: self.max_batch_bytes,
             chunk_capacity: self.chunk_capacity_bytes,
+            small_strip_prefetch_count: self.small_strip_prefetch_count,
             ..SmallWritePolicy::default()
         }
     }

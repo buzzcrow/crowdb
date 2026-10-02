@@ -32,6 +32,9 @@ const MAX_SMALL: usize = MAX_FRAME_PAYLOAD_BYTES;
 #[path = "common/small_durable.rs"]
 mod durable;
 
+#[path = "common/small_native.rs"]
+mod native;
+
 fn frame_bytes(payload_bytes: usize) -> u64 {
     u64::try_from(payload_bytes).unwrap() + 34
 }
@@ -54,6 +57,10 @@ struct MockState {
 #[derive(Default)]
 struct MockAllocator {
     advance_gate: Option<Arc<tokio::sync::Notify>>,
+    refill_gate: Option<Arc<tokio::sync::Notify>>,
+    mismatched_refill_response: bool,
+    refill_entered: tokio::sync::Notify,
+    reserve_calls: AtomicUsize,
     advance_entered: tokio::sync::Notify,
     next_chunk: AtomicU64,
     advance_delay_ms: AtomicU64,
@@ -160,6 +167,13 @@ impl ChunkAllocator for MockAllocator {
     }
 
     async fn reserve_strip_group(&self, req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
+        self.reserve_calls.fetch_add(1, Ordering::Relaxed);
+        if req.reservation_offset_kb.is_some() {
+            if let Some(gate) = &self.refill_gate {
+                self.refill_entered.notify_one();
+                gate.notified().await;
+            }
+        }
         let chunk_id = req.chunk_id.unwrap();
         let group_id = req.group_id.unwrap();
         let mut state = self.state.lock().unwrap();
@@ -170,14 +184,14 @@ impl ChunkAllocator for MockAllocator {
             });
         }
         let chunk = state.chunks.get_mut(&(chunk_id.high, chunk_id.low)).unwrap();
-        if chunk.modify_ts != req.expected_modify_ts {
+        if req.reservation_offset_kb.is_none() && chunk.modify_ts != req.expected_modify_ts {
             return Err(IoError::MetadataConflict("stale reservation revision".into()));
         }
         let start_sequence = chunk.next_strip_sequence;
         let mut strips: Vec<_> = (0..req.strip_count)
             .map(|offset| make_strip(chunk_id, start_sequence + offset, req.copy_count.max(1)))
             .collect();
-        let mut chunk_offset = chunk.capacity;
+        let mut chunk_offset = req.reservation_offset_kb.unwrap_or(chunk.capacity);
         for strip in &mut strips {
             strip.chunk_offset = chunk_offset;
             chunk_offset += strip.capacity;
@@ -204,6 +218,10 @@ impl ChunkAllocator for MockAllocator {
         state
             .reservations
             .insert((group_id.high, group_id.low), group.clone());
+        let mut group = group;
+        if self.mismatched_refill_response && req.reservation_offset_kb.is_some() {
+            group.strips[0].chunk_offset = 0;
+        }
         Ok(ReserveStripGroupResponse {
             chunk: Some(chunk),
             group: Some(group),
@@ -468,6 +486,22 @@ impl DiskWriter for RecordingDiskWriter {
         Ok(())
     }
 
+    async fn write_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        // The recording seam materializes test evidence; production retains views.
+        let mut bytes = bytes::BytesMut::with_capacity(data.iter().map(Bytes::len).sum());
+        for view in data {
+            bytes.extend_from_slice(&view);
+        }
+        self.write_at_byte_offset(seg, unit_bytes, byte_offset, bytes.freeze())
+            .await
+    }
+
     async fn write_at_byte_offset(
         &self,
         seg: &Segment,
@@ -507,6 +541,22 @@ impl DiskWriter for FailFirstChunkDiskWriter {
         self.write_at_byte_offset(seg, unit_bytes, 0, data).await
     }
 
+    async fn write_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        // The recording seam materializes test evidence; production retains views.
+        let mut bytes = bytes::BytesMut::with_capacity(data.iter().map(Bytes::len).sum());
+        for view in data {
+            bytes.extend_from_slice(&view);
+        }
+        self.write_at_byte_offset(seg, unit_bytes, byte_offset, bytes.freeze())
+            .await
+    }
+
     async fn write_at_byte_offset(
         &self,
         seg: &Segment,
@@ -532,6 +582,22 @@ impl DiskWriter for SelectiveFailureDiskWriter {
         }
         self.writes.lock().unwrap().push((disk, data));
         Ok(())
+    }
+
+    async fn write_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        // The recording seam materializes test evidence; production retains views.
+        let mut bytes = bytes::BytesMut::with_capacity(data.iter().map(Bytes::len).sum());
+        for view in data {
+            bytes.extend_from_slice(&view);
+        }
+        self.write_at_byte_offset(seg, unit_bytes, byte_offset, bytes.freeze())
+            .await
     }
 
     async fn write_at_byte_offset(

@@ -125,7 +125,11 @@ fn protocol_small_write_overrides_are_independent() {
     assert_eq!(config.s3_small_write().policy().chunk_capacity, 32 * 1024 * 1024);
     assert_eq!(
         config.iceberg_small_write().policy().chunk_capacity,
-        1024 * 1024 * 1024
+        256 * 1024 * 1024
+    );
+    assert_eq!(
+        config.iceberg_small_write().policy().small_strip_prefetch_count,
+        32
     );
     assert_eq!(config.small_write.ec_data, 8);
 }

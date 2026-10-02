@@ -53,7 +53,7 @@ public final class TestIcebergCommitErrors {
       rejected(catalog, client, UpdateTableRequest.create(TableIdentifier.of("analytics", "other"),
           List.of(), List.of(property("wrong-path"))),
           400, "BadRequestException", BadRequestException.class);
-      unavailablePartitionStatistics(catalog, client);
+      partitionStatistics(catalog, client);
       counts(catalog, client, uuid);
       int oldSchema = catalog.loadTable(NAME).schema().schemaId();
       catalog.loadTable(NAME).updateSchema().addColumn("message", Types.StringType.get()).commit();
@@ -71,17 +71,39 @@ public final class TestIcebergCommitErrors {
     System.out.println("Official commit errors, atomic rejection and count boundaries passed");
   }
 
-  private static void unavailablePartitionStatistics(RESTCatalog catalog, HTTPClient client) {
+  private static void partitionStatistics(RESTCatalog catalog, HTTPClient client) {
     String location = catalog.loadTable(NAME).location();
     var snapshot = SnapshotParser.fromJson("{\"snapshot-id\":1,\"sequence-number\":1,"
         + "\"timestamp-ms\":" + System.currentTimeMillis()
         + ",\"schema-id\":0,\"summary\":{\"operation\":\"append\"},"
-        + "\"manifest-list\":\"" + location + "/metadata/disabled.avro\"}");
+        + "\"manifest-list\":\"" + location + "/metadata/statistics.avro\"}");
     var statistics = ImmutableGenericPartitionStatisticsFile.builder().snapshotId(1)
-        .path(location + "/metadata/disabled.parquet").fileSizeInBytes(8).build();
-    rejected(catalog, client, new UpdateTableRequest(List.of(), List.of(property("disabled"),
-        new MetadataUpdate.AddSnapshot(snapshot), new MetadataUpdate.SetPartitionStatistics(statistics))),
+        .path(location + "/metadata/statistics.parquet").fileSizeInBytes(8).build();
+    // This metadata fixture accepts supported statistics inventories. The native
+    // file validators exercise Parquet content separately from catalog publication.
+    String before = metadata(catalog);
+    LoadTableResponse selected = client.post(PATH, new UpdateTableRequest(List.of(),
+        List.of(property("partition-statistics"), new MetadataUpdate.AddSnapshot(snapshot),
+            new MetadataUpdate.SetPartitionStatistics(statistics))), LoadTableResponse.class,
+        Map.of(), ErrorHandlers.tableCommitHandler());
+    require(!before.equals(selected.metadataLocation()), "statistics commit publishes a new head");
+    require(selected.tableMetadata().partitionStatisticsFiles().equals(List.of(statistics)),
+        "selected metadata retains exact statistics inventory");
+    require(catalog.loadTable(NAME).partitionStatisticsFiles().equals(List.of(statistics)),
+        "official catalog reload retains statistics inventory");
+
+    var invalid = ImmutableGenericPartitionStatisticsFile.builder().snapshotId(1)
+        .path("s3://unrelated-bucket/statistics.parquet").fileSizeInBytes(8).build();
+    rejected(catalog, client, new UpdateTableRequest(List.of(), List.of(property("partial-statistics"),
+        new MetadataUpdate.SetPartitionStatistics(invalid))),
         400, "BadRequestException", BadRequestException.class);
+    require("partition-statistics".equals(catalog.loadTable(NAME).properties().get("boundary")),
+        "invalid statistics reject preceding property updates atomically");
+    client.post(PATH, new UpdateTableRequest(List.of(),
+        List.of(new MetadataUpdate.RemovePartitionStatistics(1))), LoadTableResponse.class,
+        Map.of(), ErrorHandlers.tableCommitHandler());
+    require(catalog.loadTable(NAME).partitionStatisticsFiles().isEmpty(),
+        "statistics removal publishes an empty inventory");
   }
 
   private static void counts(RESTCatalog catalog, HTTPClient client, String uuid) {

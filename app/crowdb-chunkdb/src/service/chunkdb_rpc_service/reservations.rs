@@ -39,6 +39,8 @@ impl ChunkdbRpcService {
                             lease_ms: value.lease_ms(),
                         },
                         ReserveGroupSpec {
+                            reservation_offset_kb: (value.reservation_offset_kb() != u32::MAX)
+                                .then(|| value.reservation_offset_kb()),
                             strip_size: value.strip_size(),
                             strip_count: value.strip_count(),
                             copy_count: value.copy_count(),

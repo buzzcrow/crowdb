@@ -180,6 +180,11 @@ table FBFileMapping {
     file_id:[ubyte] (required);
 }
 
+table FBDeletedFile {
+    file:FBFileRecord (required);
+    deleted_ms:ulong;
+}
+
 table FBFileIdentity {
     catalog:[ubyte] (required);
     table_id:[ubyte] (required);
@@ -296,6 +301,7 @@ table FBTableHead {
     table_uuid:[ubyte];
     operation_fence:ulong;
     pending_operation:[ubyte];
+  commit_binding:[ubyte];
 }
 
 table FBTableMapping {
@@ -379,6 +385,7 @@ table FBTableLifecycleOperation {
 table FBTablePurgeTask {
     activation_epoch:ulong;
     head:FBTableHead (required);
+    dropped_ms:ulong;
 }
 
 table FBGcTask {
@@ -470,7 +477,7 @@ table FBGcNode {
     complete:bool;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent }
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent, FBDeletedFile }
 
 table FBIcebergRecord {
     schema_version:ushort;

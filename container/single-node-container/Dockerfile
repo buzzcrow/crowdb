@@ -1,11 +1,10 @@
 FROM ubuntu:24.04@sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libcap2-bin && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 crowdb \
     && useradd --system --uid 10001 --gid 10001 --home-dir /opt/crowdb --shell /usr/sbin/nologin crowdb
 RUN --mount=type=bind,source=.,target=/staged,ro \
     mkdir -p /opt/crowdb \
     && cp -a /staged/bin /staged/lib /opt/crowdb/ \
-    && setcap cap_net_bind_service=+ep /opt/crowdb/bin/crowdb-access-server \
     && mkdir -p /opt/crowdb/data /opt/crowdb/run \
     && chown -R crowdb:crowdb /opt/crowdb/data /opt/crowdb/run
 COPY ui/ /opt/crowdb/ui/
@@ -39,7 +38,7 @@ ENV PATH="/opt/crowdb/bin:${PATH}" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"
 USER crowdb:crowdb
 VOLUME ["/opt/crowdb/data"]
-EXPOSE 80 81 8080
+EXPOSE 9090 9091 9092
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 CMD crowdb-monitor liveness && crowdb-monitor readiness
 ENTRYPOINT ["/opt/crowdb/bin/entrypoint"]

@@ -7,6 +7,7 @@ use crate::{
     record::StorageRecord,
     table::{head_key, name_key, TableMapping, TableMappingState},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 impl TableLifecycles {
     pub(super) async fn publish(&self, operation: &TableLifecycleOperation) -> Result<(), CatalogError> {
@@ -60,20 +61,37 @@ impl TableLifecycles {
         if operation.is_rename() {
             self.publish_name(operation).await?;
         } else if operation.purge_requested {
+            let dropped_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| ValidationError::Deadline)?
+                .as_millis()
+                .try_into()
+                .map_err(|_| ValidationError::Deadline)?;
             let task = TablePurgeTask {
                 activation_epoch: operation.context.activation_epoch,
                 head: operation.candidate.clone(),
+                dropped_ms,
             };
-            let key = task.key().encode()?;
-            let bytes = StorageRecord::TablePurgeTask(Box::new(task)).encode()?;
+            let task_key = task.key();
+            let key = task_key.encode()?;
+            let bytes = StorageRecord::TablePurgeTask(Box::new(task.clone())).encode()?;
             let result = self
                 .store
                 .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
                 .await?;
-            if !matches!(result, CasOutcome::Applied(_))
-                && !matches!(result, CasOutcome::Conflict(Some(value)) if value.bytes == bytes)
-            {
-                return Err(CatalogError::Busy);
+            match result {
+                CasOutcome::Applied(_) => {}
+                CasOutcome::Conflict(Some(value)) => {
+                    let StorageRecord::TablePurgeTask(existing) =
+                        StorageRecord::decode(&task_key, &value.bytes)?
+                    else {
+                        return Err(ValidationError::Record.into());
+                    };
+                    if existing.activation_epoch != task.activation_epoch || existing.head != task.head {
+                        return Err(CatalogError::Busy);
+                    }
+                }
+                CasOutcome::Conflict(None) => return Err(CatalogError::Busy),
             }
         }
         self.remove_mapping(&operation.source).await?;

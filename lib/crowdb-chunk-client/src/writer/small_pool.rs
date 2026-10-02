@@ -25,7 +25,7 @@ pub(crate) struct PendingObject {
     pub route_hash: u64,
     pub route: Arc<PipelineRoute>,
     pub fragments: Vec<Bytes>,
-    pub stream: Option<mpsc::Receiver<Bytes>>,
+    pub framed: Option<Box<dyn crate::FramedWriteBuffer>>,
     pub len: usize,
     pub enqueued_at: Instant,
     pub completion: oneshot::Sender<Result<Vec<Location>>>,
@@ -74,14 +74,24 @@ impl RouteCharge {
         true
     }
 
-    fn rebind(&mut self, route: Arc<PipelineRoute>) {
+    pub(crate) fn try_rebind(&mut self, route: Arc<PipelineRoute>) -> bool {
         if Arc::ptr_eq(&self.route, &route) {
-            return;
+            return true;
+        }
+        if route
+            .used_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(self.bytes)
+                    .filter(|next| *next <= route.capacity_bytes)
+            })
+            .is_err()
+        {
+            return false;
         }
         self.route.used_bytes.fetch_sub(self.bytes, Ordering::Release);
         self.route.capacity_changed.notify_waiters();
-        route.used_bytes.fetch_add(self.bytes, Ordering::Relaxed);
         self.route = route;
+        true
     }
 }
 
@@ -190,28 +200,31 @@ impl SmallPoolRuntime {
             if routes.is_empty() {
                 return Err(IoError::WriteFailed("small-write pipelines unavailable".into()));
             }
-            let route = Arc::clone(&object.route);
-            route.accepted(object.len);
-            match route.sender.try_send(object) {
-                Ok(()) => {
-                    self.metrics.submitted.fetch_add(1, Ordering::Relaxed);
-                    return Ok(());
+            let first = routes
+                .iter()
+                .position(|route| Arc::ptr_eq(route, &object.route))
+                .unwrap_or(object.route_hash as usize % routes.len());
+            for offset in 0..routes.len() {
+                let route = Arc::clone(&routes[(first + offset) % routes.len()]);
+                if route.sender.is_closed() || !object.charge.try_rebind(Arc::clone(&route)) {
+                    continue;
                 }
-                Err(error) => {
-                    let closed = matches!(&error, mpsc::error::TrySendError::Closed(_));
-                    object = error.into_inner();
-                    route.rejected(object.len);
-                    if closed {
-                        let replacement = choose_route(&routes, object.route_hash);
-                        object.charge.rebind(Arc::clone(&replacement));
-                        object.route = replacement;
+                object.route = Arc::clone(&route);
+                route.accepted(object.len);
+                match route.sender.try_send(object) {
+                    Ok(()) => {
+                        self.metrics.submitted.fetch_add(1, Ordering::Relaxed);
+                        return Ok(());
                     }
-                    let notified = route.capacity_changed.notified();
-                    tokio::select! {
-                        () = notified => {},
-                        () = tokio::time::sleep(self.policy.control_interval) => {},
+                    Err(error) => {
+                        object = error.into_inner();
+                        route.rejected(object.len);
                     }
                 }
+            }
+            tokio::select! {
+                () = object.route.capacity_changed.notified() => {},
+                () = tokio::time::sleep(self.policy.control_interval) => {},
             }
         }
     }

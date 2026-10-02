@@ -12,7 +12,6 @@ import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.data.parquet.GenericParquetWriter;
 import org.apache.iceberg.deletes.EqualityDeleteWriter;
-import org.apache.iceberg.exceptions.BadRequestException;
 import org.apache.iceberg.io.DataWriter;
 import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.rest.RESTCatalog;
@@ -36,19 +35,7 @@ public final class TestIcebergSelectedFiles {
       table.newAppend().appendFile(data).commit();
       long beforeDelete = table.currentSnapshot().snapshotId();
       TestIcebergVersionRows.rows(org.apache.iceberg.data.IcebergGenerics.read(table), java.util.List.of(1L));
-      DataFile wrongData = DataFiles.builder(table.spec()).withPath(equality.location())
-          .withFormat("PARQUET").withFileSizeInBytes(equality.fileSizeInBytes())
-          .withRecordCount(equality.recordCount()).build();
-      rejected(table, () -> table.newAppend().appendFile(wrongData).commit());
-      DeleteFile wrongPosition = FileMetadata.deleteFileBuilder(table.spec()).ofPositionDeletes()
-          .withPath(equality.location()).withFormat("PARQUET")
-          .withFileSizeInBytes(equality.fileSizeInBytes()).withRecordCount(equality.recordCount()).build();
-      rejected(table, () -> table.newRowDelta().addDeletes(wrongPosition).commit());
-      DeleteFile wrongEquality = FileMetadata.deleteFileBuilder(table.spec())
-          .ofEqualityDeletes(table.schema().findField("message").fieldId())
-          .withPath(equality.location()).withFormat("PARQUET")
-          .withFileSizeInBytes(equality.fileSizeInBytes()).withRecordCount(equality.recordCount()).build();
-      rejected(table, () -> table.newRowDelta().addDeletes(wrongEquality).commit());
+      opaqueUses(catalog, schema);
       table.newRowDelta().addDeletes(equality).commit();
       table.refresh();
       int files = 0;
@@ -60,11 +47,11 @@ public final class TestIcebergSelectedFiles {
           files++;
         }
       }
-      require(files == 1, "wrong uses never add files");
+      require(files == 1, "valid table retains exactly one data file");
       TestIcebergVersionRows.rows(org.apache.iceberg.data.IcebergGenerics.read(table), java.util.List.of());
       TestIcebergVersionRows.rows(org.apache.iceberg.data.IcebergGenerics.read(table).useSnapshot(beforeDelete),
           java.util.List.of(1L));
-      System.out.println("Official identical S3 uploads and selected data/delete validation passed");
+      System.out.println("Official opaque metadata publication and valid data/delete reads passed");
     }
   }
 
@@ -98,15 +85,38 @@ public final class TestIcebergSelectedFiles {
     return table.location() + "/objects/" + UUID.randomUUID() + ".parquet";
   }
 
-  private static void rejected(Table table, Runnable operation) {
-    String before = ((BaseTable) table).operations().current().metadataFileLocation();
-    try {
-      operation.run();
-      throw new AssertionError("wrong selected file use was accepted");
-    } catch (BadRequestException expected) {
+  private static void opaqueUses(RESTCatalog catalog, Schema schema) throws Exception {
+    // Commit accepts client manifests without interpreting their Parquet references.
+    // Keep these deliberately mismatched declarations out of the readable table.
+    for (String use : java.util.List.of("data", "position", "equality")) {
+      Table table = catalog.buildTable(TableIdentifier.of("analytics", "opaque_" + use), schema)
+          .withProperty("format-version", "2").create();
+      DeleteFile file = equality(table);
+      String before = ((BaseTable) table).operations().current().metadataFileLocation();
+      if (use.equals("data")) {
+        DataFile declaration = DataFiles.builder(table.spec()).withPath(file.location())
+            .withFormat("PARQUET").withFileSizeInBytes(file.fileSizeInBytes())
+            .withRecordCount(file.recordCount()).build();
+        table.newAppend().appendFile(declaration).commit();
+      } else {
+        var builder = FileMetadata.deleteFileBuilder(table.spec());
+        if (use.equals("position")) {
+          builder.ofPositionDeletes();
+        } else {
+          builder.ofEqualityDeletes(schema.findField("message").fieldId());
+        }
+        DeleteFile declaration = builder.withPath(file.location()).withFormat("PARQUET")
+            .withFileSizeInBytes(file.fileSizeInBytes()).withRecordCount(file.recordCount()).build();
+        table.newRowDelta().addDeletes(declaration).commit();
+      }
       table.refresh();
-      require(before.equals(((BaseTable) table).operations().current().metadataFileLocation()),
-          "rejection must preserve the exact selected metadata file");
+      require(!before.equals(((BaseTable) table).operations().current().metadataFileLocation()),
+          "opaque " + use + " metadata advances the selected head");
+      require(table.currentSnapshot() != null, "opaque declaration publishes a snapshot");
+      String count = use.equals("data") ? "total-data-files" : "total-delete-files";
+      require("1".equals(table.currentSnapshot().summary().get(count)),
+          "opaque snapshot retains exactly one " + use + " declaration");
+      require(table.io().newInputFile(file.location()).exists(), "referenced immutable bytes remain visible");
     }
   }
 

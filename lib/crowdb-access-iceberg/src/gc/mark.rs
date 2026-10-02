@@ -33,17 +33,21 @@ impl GcRepository {
             .get(&key.encode()?)
             .await?
             .ok_or(ValidationError::Record)?;
-        let StorageRecord::FileMapping(mapping) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        let key = file_key(location.table().catalog, mapping.file);
-        let value = self
-            .store
-            .get(&key.encode()?)
-            .await?
-            .ok_or(ValidationError::Record)?;
-        let StorageRecord::File(file) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
+        let file = match StorageRecord::decode(&key, &value.bytes)? {
+            StorageRecord::File(file) => file,
+            StorageRecord::FileMapping(mapping) => {
+                let key = file_key(location.table().catalog, mapping.file);
+                let value = self
+                    .store
+                    .get(&key.encode()?)
+                    .await?
+                    .ok_or(ValidationError::Record)?;
+                let StorageRecord::File(file) = StorageRecord::decode(&key, &value.bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                file
+            }
+            _ => return Err(ValidationError::Record.into()),
         };
         if file.location != *location {
             return Err(ValidationError::IdentityMismatch.into());

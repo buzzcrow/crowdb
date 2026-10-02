@@ -10,8 +10,8 @@ use common::TestIcebergStack;
 use crowdb_access_iceberg::{
     catalog::{CatalogContext, CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege},
     file::{
-        file_key, ContentFormat, FileContent, FileIdentity, FileKind, FileReader, FileRecord, FileRepository,
-        FileTreeWriter, NativeFileBlocks, TableLocation,
+        location_key, ContentFormat, FileContent, FileIdentity, FileKind, FileLocation, FileReader,
+        FileRecord, FileRepository, FileTreeWriter, NativeFileBlocks, TableLocation,
     },
     gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{FileId, OperationId, TableId},
@@ -160,7 +160,7 @@ async fn seed_gc_workspace_task(
     Arc<gc_capacity::TestGcWorkspace>,
     GcRepository,
     GcTask,
-    FileId,
+    FileLocation,
     GcLimits,
 ) {
     let store = stack.store().await;
@@ -182,6 +182,7 @@ async fn seed_gc_workspace_task(
         .publish(context, &metadata)
         .await
         .unwrap();
+    let gc_location = metadata.location.clone();
     let head = TableHead {
         catalog: context.catalog,
         table: table.table,
@@ -193,6 +194,7 @@ async fn seed_gc_workspace_task(
         metadata_file: metadata.file,
         metadata_location: metadata.location,
         metadata_digest: metadata.digest,
+        commit_binding: None,
         format_version: 1,
         table_uuid: None,
         operation_fence: 2,
@@ -207,6 +209,7 @@ async fn seed_gc_workspace_task(
     let marker = TablePurgeTask {
         activation_epoch: context.activation_epoch,
         head: head.clone(),
+        dropped_ms: 0,
     };
     let key = marker.key().encode().unwrap();
     let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();
@@ -229,13 +232,16 @@ async fn seed_gc_workspace_task(
     )
     .unwrap();
     repository.create(&task).await.unwrap();
-    (workspace, repository, task, metadata.file, limits)
+    (workspace, repository, task, gc_location, limits)
 }
 
 async fn run_gc_until_resource_stall(worker: &GcWorker, mut task: GcTask) -> GcTask {
     for _ in 0..20 {
         task = worker
-            .run(&task, common::now_ms().max(task.retry_at_ms))
+            .run(
+                &task,
+                common::now_ms().max(task.retry_at_ms).max(task.not_before_ms),
+            )
             .await
             .unwrap();
         if task.stalled == GcStalledReason::Resource {
@@ -251,7 +257,10 @@ async fn run_gc_until_resource_stall(worker: &GcWorker, mut task: GcTask) -> GcT
 async fn run_gc_until_complete(worker: &GcWorker, mut task: GcTask) -> GcTask {
     for _ in 0..300 {
         task = worker
-            .run(&task, common::now_ms().max(task.retry_at_ms))
+            .run(
+                &task,
+                common::now_ms().max(task.retry_at_ms).max(task.not_before_ms),
+            )
             .await
             .unwrap();
         if task.phase == GcPhase::Complete {
@@ -268,7 +277,7 @@ async fn assert_gc_workspace_stall(
     workspace: &Arc<gc_capacity::TestGcWorkspace>,
     repository: &GcRepository,
     task: GcTask,
-    file: FileId,
+    file: &FileLocation,
     limits: GcLimits,
 ) -> GcTask {
     workspace.deny(true);
@@ -282,7 +291,7 @@ async fn assert_gc_workspace_stall(
     assert!(stack
         .store()
         .await
-        .get(&file_key(stalled.context.catalog, file).encode().unwrap())
+        .get(&location_key(file).encode().unwrap())
         .await
         .unwrap()
         .is_some());
@@ -302,7 +311,7 @@ async fn assert_gc_workspace_recovered(
     workspace: &Arc<gc_capacity::TestGcWorkspace>,
     repository: GcRepository,
     task: GcTask,
-    file: FileId,
+    file: &FileLocation,
     limits: GcLimits,
 ) {
     workspace.deny(false);
@@ -313,7 +322,7 @@ async fn assert_gc_workspace_recovered(
     assert!(stack
         .store()
         .await
-        .get(&file_key(finished.context.catalog, file).encode().unwrap())
+        .get(&location_key(file).encode().unwrap())
         .await
         .unwrap()
         .is_none());
@@ -371,7 +380,7 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
         &workspace,
         &gc_repository,
         gc_task,
-        gc_file,
+        &gc_file,
         gc_limits,
     )
     .await;
@@ -407,7 +416,7 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
         &workspace,
         gc_repository,
         stalled,
-        gc_file,
+        &gc_file,
         gc_limits,
     )
     .await;

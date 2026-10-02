@@ -40,6 +40,41 @@ fn logical_assignment_is_stable_within_namespace() {
 }
 
 #[test]
+fn access_listener_allocations_skip_claimed_and_occupied_ports() {
+    for service in [
+        ServicePort::AccessServerHttp,
+        ServicePort::AccessServerIcebergHttp,
+        ServicePort::AccessServerDatasetHttp,
+    ] {
+        let mut first = RuntimeNamespace::ephemeral("access-claimed").unwrap();
+        let claimed = first.assign_port(service, 0).unwrap();
+        let mut second = RuntimeNamespace::ephemeral("access-next").unwrap();
+        let next = second.assign_port(service, 0).unwrap();
+        assert_ne!(claimed, next, "an unbound claimed port must be skipped");
+
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", claimed)).unwrap();
+        drop(first);
+        let mut third = RuntimeNamespace::ephemeral("access-occupied").unwrap();
+        let port = third.assign_port(service, 0).unwrap();
+        assert_ne!(port, occupied.local_addr().unwrap().port());
+        assert_ne!(port, next);
+        assert!((service.base()..service.base() + service.range_size()).contains(&port));
+    }
+}
+
+#[test]
+fn stopped_listener_namespaces_release_ports_before_process_exit() {
+    let service = ServicePort::AccessServerIcebergHttp;
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..=service.range_size() {
+        let mut listener = RuntimeNamespace::ephemeral("short-lived-access").unwrap();
+        let port = listener.assign_port(service, 0).unwrap();
+        seen.insert(port);
+    }
+    assert!(seen.len() <= usize::from(service.range_size()));
+}
+
+#[test]
 fn persistent_namespace_reopens_saved_assignments() {
     let ephemeral = RuntimeNamespace::ephemeral("persistent-parent").expect("create parent namespace");
     let root = ephemeral.root().join("durable");

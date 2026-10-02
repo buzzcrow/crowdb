@@ -11,13 +11,16 @@ mod child;
 mod fault;
 #[path = "common/iceberg_file_lifecycle.rs"]
 mod lifecycle;
+#[path = "common/iceberg_upload_profiles.rs"]
+mod profiles;
 #[path = "common/iceberg_file_recovery.rs"]
 mod recovery;
 
 use common::{now_ms, TestIcebergStack};
 use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds, ManagementPrivilege};
 use crowdb_access_iceberg::file::{
-    FileGrant, FileGrantIssuer, FileKind, FileOperation, FileOperations, FileRepository, TableLocation,
+    FileGrant, FileGrantIssuer, FileKind, FileLocation, FileOperation, FileOperations, FileRepository,
+    TableLocation,
 };
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
@@ -132,6 +135,9 @@ async fn setup_with_bounds_and_file_limit(
         .unwrap();
     assert_eq!(draft.status(), 200, "{}", draft.text().await.unwrap());
     let draft: serde_json::Value = draft.json().await.unwrap();
+    let ports = crowdb_protocol::ServicePort::AccessServerIcebergHttp;
+    assert!((ports.base()..ports.base() + ports.range_size()).contains(&process.address.port()));
+    assert_eq!(draft["config"]["s3.endpoint"], endpoint);
     let table: TableLocation = format!("{}/", draft["metadata"]["location"].as_str().unwrap())
         .parse()
         .unwrap();
@@ -174,8 +180,50 @@ fn path(table: TableLocation, key: &str) -> String {
     format!("/{}/{}", table.bucket(), table.file(key).unwrap().object_key())
 }
 
+async fn cleanup_client(
+    stack: &TestIcebergStack,
+    client: &TestFileClient,
+    table: TableLocation,
+) -> TestFileClient {
+    let context = CatalogRepository::new(
+        stack.store().await,
+        ClearBounds {
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+    )
+    .unwrap()
+    .status()
+    .await
+    .unwrap()
+    .0
+    .context;
+    let authenticator =
+        BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
+    let issuer = FileGrantIssuer::new(authenticator.namespace_token_key(), 15 * 60 * 1000).unwrap();
+    let started = now_ms();
+    TestFileClient {
+        client: client.client.clone(),
+        credentials: issuer
+            .issue(FileGrant {
+                context,
+                table: table.table,
+                principal: [9; 32],
+                nonce: OperationId::random(),
+                issued_ms: started - 1_000,
+                expires_ms: started + 10 * 60 * 1000,
+                operations: FileOperations::new(&[FileOperation::DeleteObject, FileOperation::DeleteObjects])
+                    .unwrap(),
+                max_request_bytes: 1024 * 1024,
+                max_file_bytes: 1024 * 1024,
+            })
+            .unwrap(),
+        address: client.address,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn concurrent_multipart_creates_share_admission() {
+async fn concurrent_multipart_creates_use_independent_sessions() {
     let (_stack, _process, client, table) = setup().await;
     let mut requests = tokio::task::JoinSet::new();
     for index in 0..24 {
@@ -187,6 +235,172 @@ async fn concurrent_multipart_creates_share_admission() {
         let response = result.unwrap();
         assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_cleanup_supports_single_batch_and_same_path_reupload() {
+    let (stack, _process, client, table) = setup().await;
+    let object = path(table, "data/cleanup.parquet");
+    let initial = client.send(Method::PUT, &object, "", b"first", false).await;
+    assert_eq!(initial.status(), 200, "{}", initial.text().await.unwrap());
+    let ordinary = client.send(Method::DELETE, &object, "", b"", false).await;
+    assert_eq!(ordinary.status(), 403);
+
+    let cleanup = cleanup_client(&stack, &client, table).await;
+    let deleted = cleanup.send(Method::DELETE, &object, "", b"", false).await;
+    assert_eq!(deleted.status(), 204, "{}", deleted.text().await.unwrap());
+    let missing = client.send(Method::GET, &object, "", b"", false).await;
+    assert_eq!(missing.status(), 404);
+    let recreated = client.send(Method::PUT, &object, "", b"second", false).await;
+    assert_eq!(recreated.status(), 200, "{}", recreated.text().await.unwrap());
+
+    let location = table.file("data/cleanup.parquet").unwrap();
+    let missing_key = table.file("data/unknown.parquet").unwrap();
+    let xml = format!(
+        "<Delete><Object><Key>{}</Key></Object><Object><Key>{}</Key></Object></Delete>",
+        location.object_key(),
+        missing_key.object_key()
+    );
+    let response = cleanup
+        .send(
+            Method::POST,
+            &format!("/{}", table.bucket()),
+            "delete=",
+            xml.as_bytes(),
+            true,
+        )
+        .await;
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("<Deleted>"), "{body}");
+    assert!(!body.contains("<Error>"), "{body}");
+    assert_eq!(
+        client.send(Method::GET, &object, "", b"", false).await.status(),
+        404
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_cleanup_rejects_a_retained_metadata_file() {
+    let (stack, _process, client, _) = setup().await;
+    let endpoint = format!("http://{}", client.address);
+    let created = client
+        .client
+        .post(format!("{endpoint}/v1/namespaces/analytics/tables"))
+        .bearer_auth("w".repeat(32))
+        .json(&serde_json::json!({"name":"protected", "schema":{"type":"struct","fields":[]}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
+    let created: serde_json::Value = created.json().await.unwrap();
+    let location: FileLocation = created["metadata-location"].as_str().unwrap().parse().unwrap();
+    let table = location.table();
+    let cleanup = cleanup_client(&stack, &client, table).await;
+    let object = format!("/{}/{}", table.bucket(), location.object_key());
+    let single = cleanup.send(Method::DELETE, &object, "", b"", false).await;
+    assert_eq!(single.status(), 409, "{}", single.text().await.unwrap());
+    let xml = format!(
+        "<Delete><Object><Key>{}</Key></Object></Delete>",
+        location.object_key()
+    );
+    let batch = cleanup
+        .send(
+            Method::POST,
+            &format!("/{}", table.bucket()),
+            "delete=",
+            xml.as_bytes(),
+            true,
+        )
+        .await;
+    let status = batch.status();
+    let body = batch.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("<Error>"), "{body}");
+    assert!(FileRepository::new(stack.store().await)
+        .load(cleanup.credentials.grant().context, &location)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn thirty_two_concurrent_direct_puts() {
+    let (_stack, _process, client, table) = setup().await;
+    let payload = vec![0x5a; 8 * 1024 * 1024];
+    let mut requests = tokio::task::JoinSet::new();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(33));
+    for index in 0..32 {
+        let object = path(table, &format!("data/parallel-{index}.parquet"));
+        let request = client.request(Method::PUT, &object, "", &payload, false, None);
+        let barrier = barrier.clone();
+        requests.spawn(async move {
+            barrier.wait().await;
+            let response = request.send().await.unwrap();
+            (index, response.status(), response.text().await.unwrap())
+        });
+    }
+    barrier.wait().await;
+    let mut failures = Vec::new();
+    while let Some(result) = requests.join_next().await {
+        let (index, status, body) = result.unwrap();
+        println!("upload {index}: {status} {body}");
+        if status != 200 {
+            failures.push((index, status, body));
+        }
+    }
+    assert!(failures.is_empty(), "failed uploads: {failures:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "manual TPC-H and TPC-DS loader stress on the small cluster"]
+async fn tpc_loader_parallel_stress() {
+    let (_stack, _process, client, _table) = setup().await;
+    let python = "/cpp/crowdb-tpc-loader/.venv/bin/python";
+    let endpoint = format!("http://{}", client.address);
+    let mut commands = Vec::new();
+    for (benchmark, workers) in [("tpch", "8"), ("tpcds", "24")] {
+        let mut command = tokio::process::Command::new("/home/cj/.pixi/bin/pixi");
+        command
+            .args([
+                "run",
+                "-e",
+                "iceberg-e2e",
+                "--",
+                python,
+                "-m",
+                "crowdb_tpc_loader",
+                "load",
+                "--benchmark",
+                benchmark,
+                "--sf",
+                "1",
+                "--namespace",
+                benchmark,
+                "--upload-workers",
+                workers,
+                "--no-download",
+                "--keep-files",
+            ])
+            .env("ICEBERG_URI", &endpoint)
+            .env("ICEBERG_TOKEN", "w".repeat(32))
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+        commands.push(command);
+    }
+    let mut tpcds = commands.pop().unwrap();
+    let mut tpch = commands.pop().unwrap();
+    let (tpch_result, tpcds_result) = tokio::join!(tpch.output(), tpcds.output());
+    let mut failures = Vec::new();
+    for (benchmark, output) in [("tpch", tpch_result.unwrap()), ("tpcds", tpcds_result.unwrap())] {
+        println!("{benchmark} status: {}", output.status);
+        println!("{benchmark} stdout: {}", String::from_utf8_lossy(&output.stdout));
+        println!("{benchmark} stderr: {}", String::from_utf8_lossy(&output.stderr));
+        if !output.status.success() {
+            failures.push(benchmark);
+        }
+    }
+    assert!(failures.is_empty(), "failed loaders: {failures:?}");
 }
 
 fn fixture_config() -> AccessConfig {
@@ -226,6 +440,24 @@ fn catalog_delta(before: (u64, u64, u64, u64), after: (u64, u64, u64, u64)) -> S
     )
 }
 
+async fn upload_route_counts(client: &TestFileClient) -> (u64, u64, u64) {
+    let metrics: serde_json::Value = client
+        .client
+        .get(format!("http://{}/_crowdb/metrics", client.address))
+        .bearer_auth("m".repeat(32))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    (
+        metrics["chunk_small_write"]["completed"].as_u64().unwrap(),
+        metrics["upload_flow"]["strip_write_successes"].as_u64().unwrap(),
+        metrics["upload_flow"]["writer_feeds"].as_u64().unwrap(),
+    )
+}
+
 async fn file_request_counts(client: &TestFileClient) -> (u64, u64) {
     let response: serde_json::Value = client
         .client
@@ -245,12 +477,20 @@ async fn file_request_counts(client: &TestFileClient) -> (u64, u64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "native small-file performance fixture; run during consolidated acceptance"]
+async fn native_small_file_profiles() {
+    profiles::small_file_profiles().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "native null-DiskIO release performance fixture"]
 async fn native_file_5_mib_profile() {
-    let (_stack, _process, client, table) = setup().await;
+    let (stack, _process, client, table) = setup().await;
     let bytes = vec![0x5a; 5 * 1024 * 1024];
+    assert!(bytes.len() >= fixture_config().iceberg_small_write().threshold_exclusive());
     let object = path(table, "data/profile-put.bin");
     let before = catalog_counts(&client).await;
+    let route_before = upload_route_counts(&client).await;
     let started = Instant::now();
     let put = client.send(Method::PUT, &object, "", &bytes, true).await;
     let put_ms = started.elapsed().as_millis();
@@ -259,6 +499,19 @@ async fn native_file_5_mib_profile() {
         "iceberg 5MiB PUT: {put_ms}ms {}",
         catalog_delta(before, catalog_counts(&client).await)
     );
+    let route_after = upload_route_counts(&client).await;
+    assert_eq!(route_after.0 - route_before.0, 0, "5MiB PUT entered small-write");
+    assert!(
+        route_after.1 > route_before.1,
+        "5MiB PUT did not write large strips"
+    );
+    println!(
+        "iceberg 5MiB PUT route: small_completed={} large_strips={} writer_feeds={}",
+        route_after.0 - route_before.0,
+        route_after.1 - route_before.1,
+        route_after.2 - route_before.2
+    );
+    profiles::assert_one_file_chunk(&stack, table).await;
 
     let multipart = path(table, "data/profile-mpu.bin");
     let created = client
@@ -275,6 +528,7 @@ async fn native_file_5_mib_profile() {
         .0;
     let query = format!("partNumber=1&uploadId={upload}");
     let before = catalog_counts(&client).await;
+    let route_before = upload_route_counts(&client).await;
     let started = Instant::now();
     let part = client.send(Method::PUT, &multipart, &query, &bytes, true).await;
     let part_ms = started.elapsed().as_millis();
@@ -283,6 +537,22 @@ async fn native_file_5_mib_profile() {
     println!(
         "iceberg 5MiB UploadPart: {part_ms}ms {}",
         catalog_delta(before, catalog_counts(&client).await)
+    );
+    let route_after = upload_route_counts(&client).await;
+    assert_eq!(
+        route_after.0 - route_before.0,
+        0,
+        "5MiB UploadPart entered small-write"
+    );
+    assert!(
+        route_after.1 > route_before.1,
+        "5MiB UploadPart did not write large strips"
+    );
+    println!(
+        "iceberg 5MiB UploadPart route: small_completed={} large_strips={} writer_feeds={}",
+        route_after.0 - route_before.0,
+        route_after.1 - route_before.1,
+        route_after.2 - route_before.2
     );
     let manifest = format!(
         "<CompleteMultipartUpload><Part><ETag>{etag}</ETag><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>"
@@ -803,20 +1073,7 @@ async fn repeated_100_mib_multipart_upload_profile() {
         "iceberg 100 MiB multipart create={create_elapsed:?} parts={parts_elapsed:?} complete={complete_elapsed:?} slowest_part={:?}",
         parts.iter().map(|part| part.2).max().unwrap()
     );
-    let metrics: serde_json::Value = Client::new()
-        .get(format!("http://{}/_crowdb/metrics", client.address))
-        .bearer_auth("m".repeat(32))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    println!("iceberg upload flow metrics={}", metrics["upload_flow"]);
-    assert_eq!(metrics["upload_flow"]["attempts"], PART_COUNT);
-    assert_eq!(metrics["upload_flow"]["completed"], PART_COUNT);
-    assert_eq!(metrics["upload_flow"]["logical_bytes"], 100 * BLOCK_BYTES);
-    assert_eq!(metrics["upload_flow"]["multipart_completions"], 1);
+    profiles::assert_multipart_metrics(&client, PART_COUNT, 100 * BLOCK_BYTES).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1022,7 +1279,7 @@ async fn run_catalog_sdk(endpoint: String, mode: &'static str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires native storage services, Maven and pinned Apache Iceberg dependencies"]
-async fn official_java_identical_s3_uploads_validate_selected_data_and_delete_uses() {
+async fn official_java_opaque_metadata_publication_preserves_valid_data_and_delete_reads() {
     let (_stack, process, _, _) = setup_with_bounds(ClearBounds {
         request_ms: 300_000,
         delegated_access_ms: 900_000,

@@ -47,6 +47,12 @@ impl std::fmt::Display for BufferChainError {
 impl std::error::Error for BufferChainError {}
 
 impl BufferChain {
+    /// Maximum number of immutable views supported by one transport frame.
+    #[must_use]
+    pub fn maximum_views() -> usize {
+        usize::from(unsafe { sys::crowdb_rpc_max_data_views() })
+    }
+
     /// Wrap owner-backed byte views without copying.
     pub fn from_owned_bytes(views: impl IntoIterator<Item = bytes::Bytes>) -> Result<Self, BufferChainError> {
         let buffers = views
@@ -70,7 +76,7 @@ impl BufferChain {
         if buffers.iter().any(Buffer::is_null_handle) {
             return Err(BufferChainError::EmptyView);
         }
-        let maximum = usize::from(unsafe { sys::crowdb_rpc_max_data_views() });
+        let maximum = Self::maximum_views();
         if buffers.len() > maximum {
             return Err(BufferChainError::TooManyViews {
                 maximum,

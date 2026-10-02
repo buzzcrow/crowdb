@@ -32,6 +32,17 @@ pub struct GcCandidate {
 }
 
 impl GcCandidate {
+    #[must_use]
+    pub fn deleted_key(file: &FileRecord) -> IcebergKey {
+        let mut suffix = file.location.table().table.as_bytes().to_vec();
+        suffix.extend_from_slice(&0_u64.to_be_bytes());
+        suffix.extend_from_slice(file.file.as_bytes());
+        IcebergKey::Catalog {
+            catalog: file.location.table().catalog,
+            scope: CatalogScope::GcCandidate,
+            suffix,
+        }
+    }
     pub(crate) fn assembly_claim_key(&self) -> Option<IcebergKey> {
         let session = self.assembly.as_ref()?;
         let mut suffix = session.owner.table.table.as_bytes().to_vec();

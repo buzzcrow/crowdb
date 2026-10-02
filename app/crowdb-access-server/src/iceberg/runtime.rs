@@ -64,7 +64,7 @@ impl IcebergRuntimeConfig {
             .listen
             .clone()
             .or_else(|| std::env::var("CROWDB_ICEBERG_LISTEN").ok())
-            .unwrap_or_else(|| "127.0.0.1:8181".into());
+            .unwrap_or_else(|| "127.0.0.1:9092".into());
         let _: std::net::SocketAddr = listen.parse()?;
         Ok(Self {
             listen,
@@ -163,7 +163,11 @@ async fn start_listener(
         .iceberg
         .native_budget_bytes
         .unwrap_or(256 * 1024 * 1024);
-    let native_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
+    let native_allocator = Arc::new(
+        NativeBodyAllocator::new(native_budget, 1024 * 1024)?.with_prefix_copy_metric(
+            crowdb_common::metrics::global_bandwidth("access.http.receive.prefix_copy.bw"),
+        ),
+    );
     let large_write = iceberg_large_write(&access_config)?;
     let mut service = IcebergHttpService::new(repository.clone(), authentication, timeout)
         .with_namespaces(store.clone())?

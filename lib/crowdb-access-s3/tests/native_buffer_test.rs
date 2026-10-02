@@ -364,3 +364,74 @@ async fn one_mib_owner_boundaries_follow_body_not_prefetched_header_size() {
     assert_eq!(parse_frame(&second_frame, chunk_id).unwrap().payload, b"34");
     assert_eq!(allocator.allocation_count(), 1);
 }
+
+#[tokio::test]
+async fn small_native_objects_keep_one_owner_across_socket_reads_and_frames() {
+    for length in [1024, 512 * 1024, MAX_FRAME_PAYLOAD_BYTES, 1_200_000] {
+        let allocator = NativeBodyAllocator::new(2 * 1024 * 1024, 1024 * 1024).unwrap();
+        let provider = allocator.object_receiver_for_payload(length).unwrap();
+        provider
+            .enable_owner_handoff_with_magic(FrameMagic::RepoSmallV1)
+            .unwrap();
+        let mut fragments = Vec::new();
+        let mut remaining = length;
+        while remaining > 0 {
+            let requested = remaining.min(7919);
+            let mut region = poll_fn(|cx| provider.poll_next_buffer(cx, requested))
+                .await
+                .unwrap();
+            let count = region.spare_capacity_mut().len().min(requested);
+            for byte in &mut region.spare_capacity_mut()[..count] {
+                byte.write(0x5a);
+            }
+            region.advance(count).unwrap();
+            fragments.push(provider.on_data_ready(region).unwrap());
+            remaining -= count;
+        }
+        let mut owner = provider
+            .take_ready_owner()
+            .unwrap_or_else(|| provider.finish_owner().unwrap().unwrap());
+        assert!(provider.take_ready_owner().is_none(), "owner is handed off once");
+        let count = length.div_ceil(MAX_FRAME_PAYLOAD_BYTES);
+        assert_eq!(owner.frame_count(), count);
+        owner.prepare_frames(FrameMagic::RepoSmallV1, 123).unwrap();
+        let chunk = ChunkId { high: 11, low: 31 };
+        let mut end = 0;
+        for index in 0..count {
+            let range = owner
+                .finalize_frame(index, FrameMagic::RepoSmallV1, chunk, 123)
+                .unwrap();
+            assert_eq!(range.start, end);
+            end = range.end;
+        }
+        let views = owner.views(0..end).unwrap();
+        assert_eq!(views.len(), 1, "one object must produce one contiguous view");
+        let bytes = &views[0];
+        assert_eq!(bytes.len(), length + count * 34);
+        assert_eq!(bytes.as_ptr().wrapping_add(14), fragments[0].as_ptr());
+        let mut offset = 0;
+        for index in 0..count {
+            let payload_len = owner.frame_payload_len(index).unwrap();
+            let frame_len = payload_len + 34;
+            let frame = parse_frame(&bytes[offset..offset + frame_len], chunk).unwrap();
+            assert!(frame.payload.iter().all(|byte| *byte == 0x5a));
+            offset += frame_len;
+        }
+        assert_eq!(allocator.metrics_snapshot().prefix_copy_bytes, 0);
+        assert_eq!(allocator.allocation_count(), 1);
+        assert_eq!(allocator.retained_bytes(), length + count * 34);
+        drop(views);
+        drop(owner);
+        drop(fragments);
+        drop(provider);
+        assert_eq!(allocator.retained_bytes(), 0);
+    }
+}
+
+#[test]
+fn exact_receive_owner_rejects_payload_larger_than_budget() {
+    let allocator = NativeBodyAllocator::new(1024 * 1024, 1024 * 1024).unwrap();
+    assert!(allocator.object_receiver_for_payload(1024 * 1024).is_err());
+    assert!(allocator.object_receiver_for_payload(usize::MAX).is_err());
+    assert_eq!(allocator.retained_bytes(), 0);
+}

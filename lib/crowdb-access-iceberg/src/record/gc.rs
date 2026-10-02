@@ -99,6 +99,7 @@ pub(super) fn decode_task(value: FBGcTask<'_>) -> Result<GcTask, ValidationError
             0 => GcTaskKind::RetiredCatalog,
             1 => GcTaskKind::PurgeTable,
             2 => GcTaskKind::LiveTable,
+            3 => GcTaskKind::MultipartCleanup,
             _ => return Err(ValidationError::Record),
         },
         phase: decode_phase(value.phase())?,

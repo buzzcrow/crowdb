@@ -36,6 +36,24 @@ pub trait DiskWriter: Send + Sync {
         ))
     }
 
+    /// Write immutable views at an arbitrary offset without coalescing payload.
+    async fn write_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        if data.len() == 1 {
+            return self
+                .write_at_byte_offset(seg, unit_bytes, byte_offset, data[0].clone())
+                .await;
+        }
+        Err(IoError::WriteFailed(
+            "disk writer does not support offset view writes".into(),
+        ))
+    }
+
     /// Write a conversion-data range without queueing behind ordinary writes.
     async fn write_priority_at_byte_offset(
         &self,

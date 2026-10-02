@@ -17,7 +17,7 @@ decisions (why sharding, why group-0, why hash buckets) live in the
 root design; this doc carries the implementation detail.
 
 The binding model is **non-contiguous sub-ranges**: the 16-bit bucket
-space (0-65535) is divided into `N` fixed sub-ranges (default 1024),
+space (0-65535) is divided into `N` fixed sub-ranges (default 12),
 and each sub-range is owned by exactly one chunkdb instance. Instances
 can own non-contiguous sets of sub-ranges, enabling fine-grained
 rebalancing by moving individual sub-ranges without touching
@@ -133,9 +133,13 @@ Both are wired into `key.rs` via `pub mod chunkdb;` + re-exports.
 ### 1.3 Sub-range space
 
 - The 16-bit bucket space (0-65535) is divided into `N` fixed
-  sub-ranges, where `N` is a power of 2: 1024 (default) or 4096.
-- Each sub-range is `[i * 65536 / N, (i+1) * 65536 / N - 1]`
-  (inclusive). For `N = 1024`: each sub-range is 64 buckets wide.
+  sub-ranges, with a temporary default of 12 pending partition redesign.
+- Each sub-range is `[floor(i * 65536 / N), floor((i+1) * 65536 / N) - 1]`
+  (inclusive). For `N = 12`, widths are 5461 or 5462 hash identifiers.
+  These identifiers do not allocate separate trees or workers.
+- The new default applies to empty binding tables. Existing populated tables
+  must not be resized by changing this constant; generation-fenced conversion
+  remains part of the partition redesign backlog.
 - Sub-ranges are the atomic unit of ownership — a sub-range is owned
   by exactly one instance. Instances can own non-contiguous sets of
   sub-ranges.
@@ -200,7 +204,7 @@ pub struct ChunkdbRangeBinding {
   `refresh()` first.
 - `route_bucket(bucket: u16) -> Result<ChunkdbRangeBinding, RangeRouteError>`
   — direct bucket lookup (no refresh). Linear scan over the cached
-  sub-ranges (1024 entries is small; binary search is a future
+  sub-ranges (12 entries by default; binary search is a future
   optimization).
 - `route_with_fallback(bucket) -> Result<RouteWithFallback, RangeRouteError>`
   — returns both the current owner and the original owner when
@@ -397,7 +401,7 @@ Routing is not part of the trait. It lives in `RangeBindingClient`
 
 ```rust
 pub struct ChunkdbRangeStrategy {
-    sub_range_count: u32,  // default 1024
+    sub_range_count: u32,  // default 12
 }
 
 impl BindingStrategy for ChunkdbRangeStrategy {

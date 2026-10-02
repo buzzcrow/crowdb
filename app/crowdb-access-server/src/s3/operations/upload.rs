@@ -46,7 +46,7 @@ pub(super) async fn write_object_body(
     let queued_peak = AtomicU64::new(0);
     let flow = WriteFlow::new(sender, &progress, &queued_peak);
     let mut digest = DigestPipe::start(expected_payload_sha256.is_some());
-    let receive = receive_body(body, native_receiver, declared_length, flow, &digest, metrics);
+    let receive = receive_body(body, native_receiver, declared_length, flow, &mut digest, metrics);
     let write = write_buffers(writer, receiver, &progress, |error| {
         failed(PutErrorCode::ChunkWrite, &error)
     });
@@ -80,7 +80,7 @@ async fn receive_body(
     native_receiver: Option<&NativeBodyReceiver>,
     declared_length: Option<u64>,
     flow: WriteFlow<'_>,
-    digest: &DigestPipe,
+    digest: &mut DigestPipe,
     metrics: Option<&S3Metrics>,
 ) -> Result<u64, PutOutcome> {
     let target = usize::try_from(declared_length.unwrap_or(TARGET_BUFFER_BYTES as u64))
@@ -155,7 +155,7 @@ async fn receive_body(
 async fn handoff_owner(
     mut owner: crowdb_access_s3::native_buffer::NativeFramedOwner,
     flow: &WriteFlow<'_>,
-    digest: &DigestPipe,
+    digest: &mut DigestPipe,
     payload: Vec<Bytes>,
 ) -> Result<(), PutOutcome> {
     let now_ms = SystemTime::now()
@@ -171,7 +171,7 @@ async fn handoff_owner(
 
 async fn handoff(
     flow: &WriteFlow<'_>,
-    digest: &DigestPipe,
+    digest: &mut DigestPipe,
     buffer: UploadBuffer,
     payload: Vec<Bytes>,
 ) -> Result<(), PutOutcome> {

@@ -21,6 +21,8 @@ use crate::client::{DiskIoRetCode, WireClient, WireError, WireWriteTarget};
 use crate::topology::{self, DiskRoute};
 use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 
+mod write_views;
+
 const TOPOLOGY_REFRESH_INTERVAL_MS: u64 = 5_000;
 
 fn unix_time_ms() -> u64 {
@@ -588,31 +590,6 @@ impl DiskioClient {
             target,
             offset,
             WritePayload::Contiguous(data),
-            durability,
-            options,
-        )
-        .await
-    }
-
-    /// Write caller-owned immutable views as one exact segment-relative range.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed input, topology, backpressure, disk, durability, or
-    /// ambiguous-outcome error. The RPC descriptor bound is checked before
-    /// submission.
-    pub async fn write_views(
-        &self,
-        target: SegmentTarget,
-        offset: u64,
-        data: Vec<Bytes>,
-        durability: Durability,
-        options: OperationOptions,
-    ) -> DiskioResult<()> {
-        self.write_payload(
-            target,
-            offset,
-            WritePayload::Views(data.into()),
             durability,
             options,
         )

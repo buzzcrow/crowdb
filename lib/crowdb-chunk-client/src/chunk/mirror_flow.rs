@@ -92,16 +92,36 @@ impl MirrorStripFlow {
         full_image: Bytes,
         pending_advance: &mut Option<JoinHandle<Result<Chunk>>>,
     ) -> Result<()> {
+        self.write_views(
+            chunk,
+            committed_cursor,
+            strip_sequence,
+            block_offset,
+            vec![data],
+            &[full_image],
+            pending_advance,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_views(
+        &self,
+        chunk: &mut Chunk,
+        committed_cursor: u64,
+        strip_sequence: u32,
+        block_offset: u64,
+        data: Vec<Bytes>,
+        full_image: &[Bytes],
+        pending_advance: &mut Option<JoinHandle<Result<Chunk>>>,
+    ) -> Result<()> {
+        let data_len: usize = data.iter().map(Bytes::len).sum();
         let expected_image_len = usize::try_from(block_offset)
             .ok()
-            .and_then(|offset| offset.checked_add(data.len()))
+            .and_then(|offset| offset.checked_add(data_len))
             .ok_or_else(|| IoError::WriteFailed("mirror image length overflows".into()))?;
-        if full_image.len() != expected_image_len
-            || full_image.slice(usize::try_from(block_offset).unwrap_or(usize::MAX)..) != data
-        {
-            return Err(IoError::Internal(
-                "mirror image does not contain the current write".into(),
-            ));
+        if data.is_empty() || data.iter().any(Bytes::is_empty) {
+            return Err(IoError::Internal("mirror image has invalid view geometry".into()));
         }
         let strip = chunk
             .strips
@@ -140,13 +160,29 @@ impl MirrorStripFlow {
                 })??;
             }
         }
+        if !failed.is_empty() && full_image.iter().map(Bytes::len).sum::<usize>() != expected_image_len {
+            return Err(IoError::Internal(
+                "mirror repair prefix has invalid geometry".into(),
+            ));
+        }
+        let repair_image = if failed.is_empty() {
+            Bytes::new()
+        } else if full_image.len() == 1 {
+            full_image[0].clone()
+        } else {
+            let mut image = bytes::BytesMut::with_capacity(expected_image_len);
+            for view in full_image {
+                image.extend_from_slice(view);
+            }
+            image.freeze()
+        };
         for segment in failed {
             self.repair(
                 chunk,
                 committed_cursor,
                 strip_sequence,
                 segment,
-                full_image.clone(),
+                repair_image.clone(),
                 unit_bytes,
             )
             .await?;
@@ -162,7 +198,7 @@ impl MirrorStripFlow {
         segments: &[Segment],
         unit_bytes: u64,
         block_offset: u64,
-        data: Bytes,
+        data: Vec<Bytes>,
     ) -> Result<Vec<Segment>> {
         let mut writes = JoinSet::new();
         for segment in segments {
@@ -171,7 +207,7 @@ impl MirrorStripFlow {
             let data = data.clone();
             writes.spawn(async move {
                 let result = disk_writer
-                    .write_at_byte_offset(&segment, unit_bytes, block_offset, data)
+                    .write_views_at_byte_offset(&segment, unit_bytes, block_offset, data)
                     .await;
                 (segment, result)
             });
