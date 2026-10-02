@@ -102,12 +102,6 @@ Caches, selected ORC and container engine workflows remain separate.
   writes are covered. Retain historical/batched/Polars reads, direct DuckDB REST
   verification, Spark/Flink/Trino interoperability and the executable client
   matrix. ORC is deferred independently under R186.
-- **[R194](R194-access-iceberg-object-listing.md)** — native object listing and
-  S3-style address semantics — Area: Iceberg / native FileIO / clients —
-  **Acceptance in progress.** Retain catalog-shaped buckets and explicit table
-  prefixes; support bounded authorized ListObjectsV2 alongside exact FileIO.
-  Official PyArrow native discovery passes; container and exact-file regression
-  gates are running.
 
 ### High Priority
 
