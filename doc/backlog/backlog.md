@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R203** — Bump this line in the same commit when adding a new item.
+**Next R number: R204** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -111,6 +111,11 @@ Caches, selected ORC and container engine workflows remain separate.
 
 ### High Priority
 
+- **[R203](R203-console-complete-ui.md)** — complete Web UI and Container
+  console — Area: console / KV / DiskDB / ChunkDB / Iceberg / S3 — High
+  priority, high complexity. Design five domains, standalone bootstrap and
+  recovery, Chunk/Strip placement inspection, native access CRUD, and one
+  Container UI with physical topology and deployment writes disabled.
 - **[R202](R202-chunkdb-key-partition-design.md)** — ChunkDB key partition
   model and storage ownership — Area: chunkdb / Paxos KV / chunk-kv — High
   priority, high complexity. **Deferred pending architecture review.** Retain
