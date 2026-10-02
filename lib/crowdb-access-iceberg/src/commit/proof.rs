@@ -3,17 +3,14 @@ mod rejection;
 pub(in crate::commit) use rejection::invalid_files;
 
 use super::{
-    evaluate_durable_commit, CandidateAuxiliaryLimits, CandidateFileSource, CandidateSnapshotLimits,
-    CommitPreparationError, CommitPreparationLimits, PriorManifestLimits, PriorManifestSource,
-    TableCommitJournal, TableCommitOperation,
+    evaluate_durable_commit, CandidateAuxiliaryLimits, CandidateSnapshotLimits, CommitPreparationError,
+    CommitPreparationLimits, PriorManifestLimits, TableCommitOperation,
 };
 use crate::{
     catalog::{CatalogError, CatalogStore},
-    file::{FileBlockStore, FileRepository},
+    file::FileBlockStore,
     manifest::{SnapshotManifestError, SnapshotValidationError},
-    table::{
-        read_table_metadata_document, SelectedTable, TableHead, TableMetadataDocument, TableMetadataError,
-    },
+    table::{TableHead, TableMetadataDocument, TableMetadataError},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -38,8 +35,7 @@ pub enum CommitProofError {
     Files(#[from] SnapshotValidationError),
 }
 
-/// Generation-bound evidence for the enabled canonical selected-file validation profile.
-/// Construction requires durable ordered evaluation and all retained snapshot checks.
+/// Generation-bound structural evaluation for one table update.
 pub struct PreparedTableCommit {
     pub(super) store: Arc<dyn CatalogStore>,
     pub(super) blocks: Arc<dyn FileBlockStore>,
@@ -56,7 +52,7 @@ impl PreparedTableCommit {
 
 /// Builds non-forgeable evidence without writing candidate bytes or changing the head.
 /// # Errors
-/// Rejects stale journal/head state, unsupported selected uses and any bounded file-check failure.
+/// Rejects stale journal/head state and invalid metadata updates.
 pub async fn prepare_table_commit(
     store: Arc<dyn CatalogStore>,
     blocks: Arc<dyn FileBlockStore>,
@@ -72,57 +68,10 @@ pub async fn prepare_table_commit(
         limits.preparation,
     )
     .await?;
-    let document = Arc::new(evaluated.document);
-    let selected = SelectedTable {
-        head: operation.before.clone(),
-        metadata: FileRepository::new(store.clone())
-            .load(operation.context, &operation.before.metadata_location)
-            .await?
-            .ok_or(TableMetadataError::Binding)?,
-    };
-    let prior_document =
-        read_table_metadata_document(blocks.clone(), &selected, limits.preparation.evaluation.metadata)
-            .await?;
-    let prior = Arc::new(
-        PriorManifestSource::build(
-            store.clone(),
-            blocks.clone(),
-            operation.context,
-            &selected,
-            &prior_document,
-            limits.prior,
-        )
-        .await?,
-    );
-    let source = Arc::new(CandidateFileSource::new(
-        store.clone(),
-        blocks.clone(),
-        operation.context,
-        prior,
-        document.clone(),
-        limits.prior.manifests.framing,
-    )?);
-    Box::pin(
-        source
-            .clone()
-            .validate_snapshots(&prior_document, limits.snapshots),
-    )
-    .await?;
-    source
-        .validate_auxiliary_files_with_prior(&prior_document, limits.auxiliary)
-        .await?;
-    if TableCommitJournal::new(store.clone())
-        .load(operation.context, operation.identity.operation)
-        .await?
-        .as_ref()
-        != Some(operation)
-    {
-        return Err(CatalogError::Conflict.into());
-    }
     Ok(PreparedTableCommit {
         store,
         blocks,
         operation: operation.clone(),
-        document,
+        document: Arc::new(evaluated.document),
     })
 }

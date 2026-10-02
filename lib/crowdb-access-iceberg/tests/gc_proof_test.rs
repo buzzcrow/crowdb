@@ -206,6 +206,7 @@ async fn purge_marker_admission_is_idempotent_and_head_bound() {
     let marker = TablePurgeTask {
         activation_epoch: task.context.activation_epoch,
         head: tombstone,
+        dropped_ms: 100,
     };
     put(
         &store,
@@ -216,10 +217,12 @@ async fn purge_marker_admission_is_idempotent_and_head_bound() {
     let repository = GcRepository::new(store.clone());
     let limits = GcLimits::default();
     let admitted = repository
-        .admit_purge(task.context, &marker, 100, limits)
+        .admit_purge(task.context, &marker, 500, limits)
         .await
         .unwrap();
     assert_eq!(admitted.kind, crowdb_access_iceberg::gc::GcTaskKind::PurgeTable);
+    assert_eq!(admitted.created_ms, marker.dropped_ms);
+    assert_eq!(admitted.not_before_ms, marker.dropped_ms + 20 * 60 * 1000);
     assert_eq!(
         repository
             .admit_purge(task.context, &marker, 200, limits)
@@ -403,15 +406,12 @@ async fn live_sweep_keeps_proven_files_and_removes_only_an_unreferenced_file() {
         .unwrap()
         .is_none());
     for file in files {
-        assert!(store
-            .get(
-                &crowdb_access_iceberg::file::file_key(task.context.catalog, file)
-                    .encode()
-                    .unwrap()
-            )
-            .await
-            .unwrap()
-            .is_some());
+        assert!(store.values.load().iter().any(|(key, value)| {
+            crowdb_access_iceberg::key::IcebergKey::decode(key)
+                .ok()
+                .and_then(|key| StorageRecord::decode(&key, &value.bytes).ok())
+                .is_some_and(|record| matches!(record, StorageRecord::File(record) if record.file == file))
+        }));
     }
 }
 

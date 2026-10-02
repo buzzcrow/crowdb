@@ -85,7 +85,7 @@ impl TableHttp {
             return Err(unsupported());
         }
         let mut parameters = parameters(request.uri().query())?;
-        let permit = SpoolPermit::acquire(&self.spools).ok_or_else(service_unavailable)?;
+        let permit = SpoolPermit::acquire(&self.spools, 2 * 1024 * 1024).ok_or_else(service_unavailable)?;
         let mut result = if let Some(name) = name {
             NameSuffix {
                 parent: None,

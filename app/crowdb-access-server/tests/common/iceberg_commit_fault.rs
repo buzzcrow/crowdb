@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use crowdb_access_iceberg::{
     catalog::{CasOutcome, CatalogStore, RoutedCatalogStore, StoreError, StoredValue},
     file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError, MultipartPartScan, MultipartPartStore},
+    gc::{GcScan, GcStore, GcSystemScan},
     key::IcebergKey,
     namespace::{ChildScan, NamespaceStore},
     record::StorageRecord,
@@ -58,6 +59,26 @@ pub struct TestCommitStore {
 impl MultipartPartStore for TestCommitStore {
     async fn scan_multipart_parts(&self, scan: MultipartPartScan) -> Result<MultiScanPage, StoreError> {
         self.inner.scan_multipart_parts(scan).await
+    }
+}
+
+#[async_trait]
+impl GcStore for TestCommitStore {
+    async fn scan_gc(&self, scan: GcScan) -> Result<MultiScanPage, StoreError> {
+        self.inner.scan_gc(scan).await
+    }
+
+    async fn scan_gc_system(&self, scan: GcSystemScan) -> Result<MultiScanPage, StoreError> {
+        self.inner.scan_gc_system(scan).await
+    }
+
+    async fn delete_gc_record(
+        &self,
+        key: &[u8],
+        expected: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        self.inner.delete_gc_record(key, expected, identity).await
     }
 }
 

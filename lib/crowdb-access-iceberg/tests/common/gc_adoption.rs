@@ -8,11 +8,12 @@ async fn retirement_adopts_a_purge_cursor_after_a_child_was_physically_deleted()
     };
     let (fixture, blocks, mut task, limits, file_id) = fixture(true).await;
     let repository = GcRepository::new(fixture.store.clone());
-    let key = file_key(fixture.context.catalog, file_id);
+    let key = crowdb_access_iceberg::file::location_key(&fixture.table.file("data/object.parquet").unwrap());
     let stored = fixture.store.get(&key.encode().unwrap()).await.unwrap().unwrap();
     let StorageRecord::File(file) = StorageRecord::decode(&key, &stored.bytes).unwrap() else {
         panic!()
     };
+    assert_eq!(file.file, file_id);
     let head = tombstone_head(&fixture);
     let mut old = GcTask::plan(fixture.context, OperationId::random(), Some(head), 500, limits).unwrap();
     old.paused = true;

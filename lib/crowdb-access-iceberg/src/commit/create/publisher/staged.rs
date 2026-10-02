@@ -9,8 +9,6 @@ use crate::{
 };
 
 mod binding;
-mod proof;
-pub(super) use proof::definite_validation_failure;
 
 #[derive(Clone, Copy, Debug)]
 pub struct StagedCommitLimits {

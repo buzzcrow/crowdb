@@ -2,7 +2,10 @@ use std::sync::{atomic::Ordering, Arc};
 
 use crowdb_access_iceberg::{
     catalog::{CatalogAuthority, CatalogLifecycle, CatalogStore, RootState},
-    file::{file_key, ContentFormat, FileContent, FileIdentity, FileKind, FileRepository, FileTreeWriter},
+    file::{
+        file_key, ContentFormat, FileContent, FileIdentity, FileKind, FileRepository, FileTreeWriter,
+        MultipartPart, MultipartPhase,
+    },
     gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{CatalogId, CatalogScope, FileId, IcebergKey, OperationId},
     operation::mutation_identity,
@@ -96,6 +99,77 @@ async fn fixture(
     (fixture, blocks, task, limits, file.file)
 }
 
+async fn published_file_exists(fixture: &common::file::TestFile, file: FileId) -> bool {
+    let key = crowdb_access_iceberg::file::location_key(&fixture.table.file("data/object.parquet").unwrap());
+    fixture.store.get(&key.encode().unwrap()).await.unwrap().is_some_and(|value| {
+        matches!(StorageRecord::decode(&key, &value.bytes), Ok(StorageRecord::File(record)) if record.file == file)
+    })
+}
+
+#[tokio::test]
+async fn active_multipart_cleanup_reclaims_expired_part_without_touching_published_file() {
+    let (fixture, blocks, _, limits, published) = fixture(false).await;
+    let mut session = multipart_fixtures::session();
+    session.context = fixture.context;
+    session.owner.table = fixture.table;
+    session.location = fixture.table.file("multipart/object.parquet").unwrap();
+    session.phase = MultipartPhase::Aborted;
+    session.part_count = 1;
+    session.staged_bytes = 20;
+    let owner = FileIdentity {
+        table: fixture.table,
+        file: FileId::random(),
+    };
+    let mut writer = FileTreeWriter::new(blocks.clone(), owner, 128).unwrap();
+    writer.push(&[7; 20]).await.unwrap();
+    let part = MultipartPart {
+        upload: session.upload,
+        number: 1,
+        revision: 1,
+        modified_ms: 100,
+        owner,
+        tree: Some(writer.finish().await.unwrap()),
+        stream: None,
+    };
+    let session_key = session.key().encode().unwrap();
+    for (key, record) in [
+        (session.key(), StorageRecord::MultipartSession(Box::new(session))),
+        (part.key(), StorageRecord::MultipartPart(Box::new(part.clone()))),
+    ] {
+        let key = key.encode().unwrap();
+        let bytes = record.encode().unwrap();
+        fixture
+            .store
+            .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
+            .await
+            .unwrap();
+    }
+    let repository = GcRepository::new(fixture.store.clone());
+    let mut task = repository
+        .admit_multipart(fixture.context, 2000, limits)
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
+        task = worker
+            .step(&task, (2_000 + 2 * GcTask::PURGE_DELAY_MS).max(task.retry_at_ms))
+            .await
+            .unwrap();
+        if task.phase == GcPhase::Complete {
+            break;
+        }
+    }
+    assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
+    assert!(fixture
+        .store
+        .get(&part.key().encode().unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(fixture.store.get(&session_key).await.unwrap().is_none());
+    assert!(published_file_exists(&fixture, published).await);
+}
+
 #[tokio::test]
 async fn retired_file_reclamation_survives_worker_restart_at_every_step() {
     let (fixture, blocks, mut task, limits, file) = fixture(true).await;
@@ -116,12 +190,7 @@ async fn retired_file_reclamation_survives_worker_restart_at_every_step() {
     assert_eq!(task.deleted, 1);
     assert_eq!(task.reclaimed_bytes, 4096);
     assert!(blocks.blocks.values.load().is_empty());
-    assert!(fixture
-        .store
-        .get(&file_key(fixture.context.catalog, file).encode().unwrap())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(!published_file_exists(&fixture, file).await);
 }
 
 #[tokio::test]
@@ -206,15 +275,16 @@ async fn inactive_discovery_preserves_file_when_gc_workspace_is_unavailable() {
     let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
     fixture.store.gc_workspace_denied.store(true, Ordering::SeqCst);
     let mut task = worker.run(&task, 1_000_000).await.unwrap();
+    for _ in 0..5 {
+        if task.stalled == GcStalledReason::Resource {
+            break;
+        }
+        task = worker.run(&task, 1_000_000).await.unwrap();
+    }
     assert_eq!(task.phase, GcPhase::Discover);
     assert_eq!(task.stalled, GcStalledReason::Resource);
     assert_eq!(task.deleted, 0);
-    assert!(fixture
-        .store
-        .get(&file_key(fixture.context.catalog, file).encode().unwrap())
-        .await
-        .unwrap()
-        .is_some());
+    assert!(published_file_exists(&fixture, file).await);
     fixture.store.gc_workspace_denied.store(false, Ordering::SeqCst);
     for _ in 0..300 {
         task = worker
@@ -467,12 +537,7 @@ async fn pending_retired_retry_binding_blocks_physical_deletion_until_result_exp
     }
     assert_eq!(task.phase, GcPhase::Waiting, "{task:?}");
     assert_eq!(blocks.deletes.load(Ordering::Relaxed), 0);
-    assert!(fixture
-        .store
-        .get(&file_key(fixture.context.catalog, file).encode().unwrap())
-        .await
-        .unwrap()
-        .is_some());
+    assert!(published_file_exists(&fixture, file).await);
     binding.status = 409;
     let mut result = binding.clone();
     result.body = b"conflict".to_vec();
@@ -550,12 +615,7 @@ async fn final_system_scan_catches_binding_arriving_after_initial_protection() {
     }
     assert_eq!(task.phase, GcPhase::Waiting, "{task:?}");
     assert_eq!(blocks.deletes.load(Ordering::Relaxed), 0);
-    assert!(fixture
-        .store
-        .get(&file_key(fixture.context.catalog, file).encode().unwrap())
-        .await
-        .unwrap()
-        .is_some());
+    assert!(published_file_exists(&fixture, file).await);
 }
 
 fn old_id_result_key(catalog: CatalogId, operation: OperationId) -> Vec<u8> {
@@ -925,12 +985,7 @@ async fn unsupported_shared_ranges_keep_durable_work_and_never_claim_reclaimed_b
     assert_eq!(task.stalled, GcStalledReason::UnsupportedRange);
     assert_eq!(task.reclaimed_bytes, 0);
     assert_eq!(blocks.deletes.load(Ordering::Relaxed), 0);
-    assert!(fixture
-        .store
-        .get(&file_key(fixture.context.catalog, file).encode().unwrap())
-        .await
-        .unwrap()
-        .is_some());
+    assert!(published_file_exists(&fixture, file).await);
     blocks.deferred.store(false, Ordering::Relaxed);
     for _ in 0..300 {
         task = worker.step(&task, 100_000).await.unwrap();

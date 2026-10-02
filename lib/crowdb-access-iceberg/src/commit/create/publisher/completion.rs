@@ -3,7 +3,6 @@ use crate::{
     catalog::{CasOutcome, CatalogError},
     commit::TableCommitOutcome,
     error::ValidationError,
-    file::{ContentFormat, FileKind, FileRepository},
     namespace::authority_key,
     operation::mutation_identity,
     record::StorageRecord,
@@ -13,20 +12,10 @@ use crate::{
 impl TableCreator {
     pub(super) async fn publish_head(&self, operation: &TableCreateOperation) -> Result<(), Error> {
         self.current(operation).await?;
-        self.check_admission(operation).await?;
-        let head = &operation.candidate;
-        let file = FileRepository::new(self.store.clone())
-            .load(operation.context, &head.metadata_location)
-            .await?
-            .ok_or(ValidationError::Record)?;
-        if file.file != head.metadata_file
-            || file.digest != head.metadata_digest
-            || file.length != operation.document.length as u64
-            || file.kind != FileKind::Metadata
-            || file.format != ContentFormat::Json
-        {
-            return Err(ValidationError::IdentityMismatch.into());
+        if operation.admission.is_some() {
+            self.check_admission(operation).await?;
         }
+        let head = &operation.candidate;
         let key = head_key(head.catalog, head.table).encode()?;
         let bytes = StorageRecord::TableHead(Box::new(head.clone())).encode()?;
         let result = self

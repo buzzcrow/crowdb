@@ -104,7 +104,7 @@ impl NamespaceHttp {
             }
             return Ok(response(200, bytes));
         }
-        let permit = SpoolPermit::acquire(&self.spools).ok_or_else(service_unavailable)?;
+        let permit = SpoolPermit::acquire(&self.spools, 2 * 1024 * 1024).ok_or_else(service_unavailable)?;
         let mut bytes = b"{\"namespaces\":[".to_vec();
         let mut token = String::new();
         let mut items = 0;

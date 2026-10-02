@@ -107,7 +107,7 @@ async fn claims_reject_changed_file_authority_and_mutable_progress_as_a_claim() 
 }
 
 #[tokio::test]
-async fn deleting_candidate_rejects_new_file_access_and_publication() {
+async fn candidate_progress_does_not_gate_published_file_reads() {
     let (fixture, candidate) = candidate().await;
     let files = FileRepository::new(fixture.store.clone());
     files.publish(fixture.context, &candidate.file).await.unwrap();
@@ -131,11 +131,17 @@ async fn deleting_candidate_rejects_new_file_access_and_publication() {
         .unwrap(),
         StorageRecord::GcCandidate(Box::new(deleting.clone()))
     );
-    assert!(files
-        .load(fixture.context, &deleting.file.location)
-        .await
-        .is_err());
-    assert!(files.publish(fixture.context, &deleting.file).await.is_err());
+    assert_eq!(
+        files
+            .load(fixture.context, &deleting.file.location)
+            .await
+            .unwrap(),
+        Some(deleting.file.clone())
+    );
+    assert_eq!(
+        files.publish(fixture.context, &deleting.file).await.unwrap(),
+        deleting.file
+    );
     let mut released = deleting.clone();
     released.phase = CandidatePhase::Retained;
     released.revision += 1;

@@ -11,6 +11,7 @@ pub enum GcTaskKind {
     RetiredCatalog,
     PurgeTable,
     LiveTable,
+    MultipartCleanup,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,7 +101,12 @@ impl GcTask {
         self.context.validate()?;
         self.proof.validate(self)?;
         if self.revision == 0
-            || self.discovery_scope > 2
+            || self.discovery_scope
+                > if self.kind == GcTaskKind::MultipartCleanup {
+                    2
+                } else {
+                    3
+                }
             || (self.discovery_scope != 0 && !matches!(self.phase, GcPhase::Discover | GcPhase::Rescan))
             || self.created_ms == 0
             || self.not_before_ms < self.created_ms
@@ -116,7 +122,10 @@ impl GcTask {
                     | GcPhase::VerifyCleanup
                     | GcPhase::CleanupGc
             ) && self.kind != GcTaskKind::RetiredCatalog)
-            || ((self.kind == GcTaskKind::RetiredCatalog) != self.head.is_none())
+            || (matches!(
+                self.kind,
+                GcTaskKind::RetiredCatalog | GcTaskKind::MultipartCleanup
+            ) != self.head.is_none())
             || (self.phase == GcPhase::Quarantined) != self.quarantined_from.is_some()
             || self
                 .quarantined_from

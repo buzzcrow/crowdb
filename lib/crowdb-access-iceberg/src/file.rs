@@ -87,7 +87,7 @@ pub use parquet::{
 pub use puffin::{read_puffin_metadata, PuffinBlob, PuffinMetadata, PuffinMetadataError};
 pub use range::{resolve_range, ByteRange, RangeError};
 pub use reader::{FileReader, MAX_READ_FRAME_BYTES};
-pub use record::{ContentFormat, FileKind, FileMapping, FileRecord, FormatHint};
+pub use record::{ContentFormat, DeletedFile, FileKind, FileMapping, FileRecord, FormatHint};
 pub use repository::FileRepository;
 pub use seal::{FileSealError, FileSealer};
 pub use writer::{FileTree, FileTreeWriter, FileWriterCheckpoint};

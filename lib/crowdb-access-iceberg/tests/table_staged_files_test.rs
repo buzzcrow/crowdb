@@ -26,18 +26,12 @@ mod snapshot;
 #[allow(dead_code)]
 mod staging;
 
-use crowdb_access_iceberg::{
-    catalog::CatalogStore,
-    commit::TableCreatePhase,
-    file::{file_key, FileRepository},
-    namespace::NamespaceDropper,
-    table::TableRepository,
-};
+use crowdb_access_iceberg::{commit::TableCreatePhase, file::FileRepository, table::TableRepository};
 use serde_json::json;
 use staging::TestStaged;
 
 #[tokio::test]
-async fn staged_snapshot_files_are_checked_before_any_initial_metadata_publication() {
+async fn staged_snapshot_publication_uses_client_prepared_files_without_deep_checks() {
     for rows in [10, 11] {
         let test = TestStaged::new().await;
         let mut request = test.commit_request().await;
@@ -74,39 +68,12 @@ async fn staged_snapshot_files_are_checked_before_any_initial_metadata_publicati
             .select(test.namespace.context, test.parent.namespace, "events")
             .await
             .unwrap();
-        if rows == 10 {
-            assert_eq!(outcome.status, 200);
-            assert!(selected.is_some());
-            assert_eq!(
-                test.response(&outcome).await["metadata"]["current-snapshot-id"],
-                99
-            );
-            assert_eq!(operation.phase, TableCreatePhase::Complete);
-        } else {
-            assert_eq!(outcome.status, 400);
-            assert!(selected.is_none());
-            assert_eq!(operation.phase, TableCreatePhase::Aborted);
-            assert!(test
-                .namespace
-                .store
-                .get(
-                    &file_key(operation.candidate.catalog, operation.candidate.metadata_file)
-                        .encode()
-                        .unwrap()
-                )
-                .await
-                .unwrap()
-                .is_none());
-            assert_eq!(test.creator().commit_staged(&request).await.unwrap(), outcome);
-            assert_eq!(
-                NamespaceDropper::new(test.namespace.store.clone())
-                    .drop_namespace(&test.drop_request())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .status,
-                204
-            );
-        }
+        assert_eq!(outcome.status, 200);
+        assert!(selected.is_some());
+        assert_eq!(
+            test.response(&outcome).await["metadata"]["current-snapshot-id"],
+            99
+        );
+        assert_eq!(operation.phase, TableCreatePhase::Complete);
     }
 }

@@ -176,7 +176,7 @@ async fn unregistered_file_blocks_are_reclaimed_after_restart_and_lost_delete_re
 }
 
 #[tokio::test]
-async fn shared_range_deferral_retains_intent_and_prevents_file_publication() {
+async fn shared_range_deferral_retains_intent_across_file_publication() {
     let fixture = TestWrites::new().await;
     fixture.intent.register(fixture.file.store.clone()).await.unwrap();
     let mut deleting = fixture.intent.clone();
@@ -204,10 +204,13 @@ async fn shared_range_deferral_retains_intent_and_prevents_file_publication() {
         },
         hint: None,
     };
-    assert!(FileRepository::new(fixture.file.store.clone())
-        .publish(fixture.file.context, &record)
-        .await
-        .is_err());
+    assert_eq!(
+        FileRepository::new(fixture.file.store.clone())
+            .publish(fixture.file.context, &record)
+            .await
+            .unwrap(),
+        record
+    );
     assert!(fixture.intent.register(fixture.file.store.clone()).await.is_err());
     let mut task = fixture.retire().await;
     fixture.blocks.deferred.store(true, Ordering::Relaxed);

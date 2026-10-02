@@ -2,15 +2,14 @@ use std::sync::Arc;
 
 use super::{CommitPublicationError as Error, Publisher};
 use crate::{
-    catalog::{CatalogContext, CatalogError, CatalogStore},
+    catalog::{CatalogContext, CatalogStore},
     commit::TableCommitOperation,
     error::ValidationError,
     file::{
-        file_key, ContentFormat, FileBlockStore, FileContent, FileIdentity, FileKind, FileReader, FileRecord,
-        FileRepository, FileTreeWriter,
+        ContentFormat, FileBlockStore, FileContent, FileIdentity, FileKind, FileRecord, FileRepository,
+        FileTreeWriter,
     },
     operation::MAX_PAYLOAD_BYTES,
-    record::StorageRecord,
     table::{TableHead, TableMetadataDocument},
 };
 
@@ -40,44 +39,38 @@ pub(in crate::commit) async fn write_metadata_file(
     document: &TableMetadataDocument,
 ) -> Result<(), Error> {
     let head = document.selected_head();
-    let key = file_key(head.catalog, head.metadata_file);
-    let record = if let Some(value) = store.get(&key.encode()?).await.map_err(CatalogError::from)? {
-        let StorageRecord::File(record) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        validate(&record, head, document.canonical().len())?;
-        let mut reader = FileReader::new(blocks.clone(), *record.clone(), None, 16 * 1024)?;
-        while reader.next().await?.is_some() {}
-        *record
+    let files = FileRepository::new(store);
+    let inline = FileContent::select_inline(FileKind::Metadata, document.canonical());
+    let content = if let Some(content) = inline {
+        content
     } else {
-        let content =
-            if let Some(content) = FileContent::select_inline(FileKind::Metadata, document.canonical()) {
-                content
-            } else {
-                let mut writer = FileTreeWriter::new(
-                    blocks.clone(),
-                    FileIdentity {
-                        table: head.metadata_location.table(),
-                        file: head.metadata_file,
-                    },
-                    64 * 1024,
-                )?;
-                writer.push(document.canonical()).await?;
-                let tree = writer.finish().await?;
-                FileContent::Chunks { root: tree.root }
-            };
-        FileRecord {
-            file: head.metadata_file,
-            location: head.metadata_location.clone(),
-            kind: FileKind::Metadata,
-            format: ContentFormat::Json,
-            length: document.canonical().len() as u64,
-            digest: head.metadata_digest,
-            content,
-            hint: None,
+        if let Some(existing) = files.load(domain, &head.metadata_location).await? {
+            validate(&existing, head, document.canonical().len())?;
+            return Ok(());
         }
+        let mut writer = FileTreeWriter::new(
+            blocks,
+            FileIdentity {
+                table: head.metadata_location.table(),
+                file: head.metadata_file,
+            },
+            64 * 1024,
+        )?;
+        writer.push(document.canonical()).await?;
+        let tree = writer.finish().await?;
+        FileContent::Chunks { root: tree.root }
     };
-    let selected = FileRepository::new(store).publish(domain, &record).await?;
+    let record = FileRecord {
+        file: head.metadata_file,
+        location: head.metadata_location.clone(),
+        kind: FileKind::Metadata,
+        format: ContentFormat::Json,
+        length: document.canonical().len() as u64,
+        digest: head.metadata_digest,
+        content,
+        hint: None,
+    };
+    let selected = files.publish(domain, &record).await?;
     validate(&selected, head, document.canonical().len())?;
     Ok(())
 }

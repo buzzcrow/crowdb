@@ -44,15 +44,12 @@ async fn a_changed_unfenced_head_terminates_the_old_live_proof_without_deleting_
     );
     assert_eq!(task.deleted, 0);
     for file in files {
-        assert!(store
-            .get(
-                &crowdb_access_iceberg::file::file_key(task.context.catalog, file)
-                    .encode()
-                    .unwrap()
-            )
-            .await
-            .unwrap()
-            .is_some());
+        assert!(store.values.load().iter().any(|(key, value)| {
+            IcebergKey::decode(key)
+                .ok()
+                .and_then(|key| StorageRecord::decode(&key, &value.bytes).ok())
+                .is_some_and(|record| matches!(record, StorageRecord::File(record) if record.file == file))
+        }));
     }
 }
 

@@ -2,7 +2,7 @@ use super::{Error, Phase, TableCreateOperation, TableCreator};
 use crate::{
     catalog::{CasOutcome, CatalogError},
     error::ValidationError,
-    namespace::{authority_key, NamespaceCreator, NamespaceLifecycle, NamespaceMutation},
+    namespace::{authority_key, NamespaceLifecycle},
     operation::mutation_identity,
     record::StorageRecord,
 };
@@ -17,61 +17,6 @@ impl TableCreator {
             return Err(ValidationError::Record.into());
         };
         Ok(parent.lifecycle == NamespaceLifecycle::Ready && parent.identifier == operation.namespace)
-    }
-
-    pub(super) async fn prepare_admission(
-        &self,
-        operation: &TableCreateOperation,
-        budget: &mut usize,
-    ) -> Result<(), Error> {
-        let key = authority_key(operation.context.catalog, operation.candidate.namespace);
-        let Some(value) = self.store.get(&key.encode()?).await.map_err(CatalogError::from)? else {
-            return self.abort(operation, 404).await;
-        };
-        let StorageRecord::NamespaceAuthority(mut parent) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        if parent.lifecycle != NamespaceLifecycle::Ready || parent.identifier != operation.namespace {
-            return self.abort(operation, 404).await;
-        }
-        if let Some(pending) = parent.pending_operation {
-            Box::pin(NamespaceCreator::help_table_parent(
-                self.store.clone(),
-                self.names.clone(),
-                operation.context,
-                parent.namespace,
-                pending,
-                budget,
-            ))
-            .await?;
-            return Ok(());
-        }
-        parent
-            .mutation_revision
-            .checked_add(2)
-            .ok_or(ValidationError::GenerationExhausted)?;
-        parent.mutation_revision += 1;
-        parent.pending_operation = Some(operation.identity.operation);
-        let after = StorageRecord::NamespaceAuthority(parent).encode()?;
-        let payloads = self.payloads();
-        let before = payloads
-            .put(
-                operation.context.catalog,
-                operation.identity.operation,
-                &value.bytes,
-            )
-            .await?;
-        let after = payloads
-            .put(operation.context.catalog, operation.identity.operation, &after)
-            .await?;
-        let mut next = operation.next(Phase::Admitting)?;
-        next.admission = Some(NamespaceMutation {
-            key: key.encode()?,
-            before: Some(before),
-            after,
-        });
-        self.journal().advance(operation, &next).await?;
-        Ok(())
     }
 
     pub(super) async fn admit(&self, operation: &TableCreateOperation) -> Result<(), Error> {

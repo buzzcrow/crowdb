@@ -547,8 +547,11 @@ the move publishes, and the old name never becomes an alias. Cleanup conditional
 removes only the captured mapping, preserving names recreated with another identity.
 
 Drop tombstones the selected head without traversing snapshots or deleting files.
-A purge request persists a `TablePurgeTask` containing the tombstoned head and
-activation epoch, indexed by table, generation and metadata file. This is pending
+A purge request persists a `TablePurgeTask` containing the tombstoned head,
+activation epoch and durable marker time, indexed by table, generation and metadata file.
+The purge task becomes eligible 20 minutes after that marker time; a delayed
+scheduler scan or restart does not restart the delay. A drop without an explicit
+purge request leaves the underlying files in place. This is pending
 reachability-proof work, not proof of deletion or permission to delete. Success is
 retained before releasing rename head/namespace markers. Retrying after response
 loss returns the original result without mutating a replacement table. The REST
@@ -567,13 +570,14 @@ mark root together; a missing page is an error, including during a nonmembership
 query. Physical deletion runs only for a tombstoned table or retired catalog;
 the worker rechecks inactive authority before sweeping. A Ready table may retain
 unreachable files until drop or clear rather than interrupt reads or commits.
-Retained operations and table-wide credentials conservatively defer reclamation.
-Background task advancement requires explicit activation;
+Unfinished table operations and active multipart work defer table purge.
+Completed operation retry records and terminal multipart sessions do not extend
+the 20-minute purge delay. Background task advancement is enabled by default;
 it uses a separate storage client pool, one-step concurrency admission, bounded
 KV and chunk request/byte budgets, and durable retry state. The enabled
 scheduler admits persisted table purge markers and completed catalog clears;
-management may also start inactive tasks. The scheduler is disabled by default
-and requires explicit operator activation with validated resource limits.
+management may also start inactive tasks. Operators can disable the scheduler
+or adjust validated resource limits.
 
 Provisioned disk capacity is the allocation boundary for both foreground files
 and GC durable workspace. A failed GC workspace write retains the last durable
@@ -606,12 +610,21 @@ candidates. Assembly checkpoints have separate claims and a durable frontier-roo
 index. Abandoned frontiers are authenticated before traversal; a conflicted final
 tree is traversed once instead of revisiting its shared frontier. Published
 sessions reclaim only the checkpoint block, preserving the assembled data tree.
+An active catalog has a separate multipart cleanup task that scans only expired,
+terminal parts and assembly checkpoints. It does not scan published file records
+for missing snapshot references or fence a Ready table. Candidate progress is
+durable across restarts. After every part and checkpoint is reclaimed, it removes
+the terminal session's payload pages and session record; pending part settlement
+or unreleased multipart credit keeps that session available for recovery.
 Streamed file and part candidates instead reclaim their exact Chunk location
 ranges after retention. A published selected part remains owned by the immutable
 file descriptor; part cleanup does not reclaim it a second time. Allocations
-abandoned before a file or part descriptor is published have no per-chunk catalog
-intent and remain for ChunkDB's orphan scanner to discover after checking
-published descriptors, frozen selections and active writers.
+abandoned before a file or part descriptor is published retain `FileWriteIntent`
+ownership. Active-catalog cleanup does not reclaim an intent merely because a
+file descriptor is absent: a multipart session in `Publishing` may still own
+those blocks. Retired-catalog and table-purge passes can reclaim intents after
+their authority and owner checks. The disk leak scanner alone does not establish
+Iceberg ownership.
 Each physical step rechecks the terminal session and retention. The checkpoint
 block is deleted after its children, and session cleanup requires its completed
 claim. Block intents are swept after tree candidates, preserving reachable owners
@@ -691,6 +704,23 @@ Dataset may consume data described by an Iceberg table through an explicit,
 generation-bound reference. That does not transfer snapshot, commit, file, or
 reclamation authority to Dataset.
 
+The native file endpoint exposes separately authorized S3 `DeleteObject` and
+`DeleteObjects` cleanup. A cleanup credential is requested through the table
+credentials endpoint with `cleanup=true`; ordinary FileIO credentials cannot
+delete objects. The server scans retained table metadata and refuses a path
+that is referenced or whose reference status is uncertain. Successful deletion
+records a logical tombstone, then queues bounded physical reclamation after
+20 minutes. A new PUT may reuse the path only after the old file's GC candidate
+is durable. Batch deletion returns individual errors inside HTTP 200, so callers
+must inspect every item.
+
+> **Warning:** Before deleting, the client must stop and resolve every writer
+> and retry that might still commit the path, including unpublished metadata.
+> The server cannot see a future commit during its reference scan. If a client
+> later commits a deleted path, the snapshot can reference missing data. Do not
+> use cleanup credentials in ordinary FileIO. A reader retaining old metadata
+> must finish before the 20-minute physical reclamation deadline.
+
 ## 7. Correctness invariants
 
 - **ICE-I1 — Native authority:** catalog, namespace, table, snapshot, commit,
@@ -708,3 +738,7 @@ reclamation authority to Dataset.
   mandatory semantics of the selected format version.
 - **ICE-I8 — Bounded operation:** table size and history do not determine one
   Access Server request's retained memory or unbounded work.
+- **ICE-I9 — Live file retention:** a Ready table's published file is not
+  reclaimed solely because no retained snapshot refers to it; active cleanup
+  handles expired multipart remnants and explicitly deleted files with durable
+  owner checks.

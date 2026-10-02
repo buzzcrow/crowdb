@@ -20,6 +20,7 @@ mod assembly;
 mod cleanup;
 mod inactive;
 mod live;
+mod multipart;
 mod sweep;
 mod system;
 mod terminal;
@@ -89,10 +90,19 @@ impl GcWorker {
             GcPhase::Discover => Ok(self.repository.discover_files(task, self.limits, now_ms).await?),
             GcPhase::Rescan => {
                 self.verify_inactive(task).await?;
-                if task.kind != GcTaskKind::RetiredCatalog {
+                if matches!(task.kind, GcTaskKind::LiveTable | GcTaskKind::PurgeTable) {
                     self.repository.verify_table_fence(task).await?;
                 }
                 Ok(self.repository.discover_files(task, self.limits, now_ms).await?)
+            }
+            GcPhase::Roots if task.kind == GcTaskKind::MultipartCleanup => {
+                self.verify_inactive(task).await?;
+                let mut next = task.progress()?;
+                next.phase = GcPhase::Rescan;
+                next.discovery_scope = 0;
+                next.scan_after.clear();
+                self.repository.update(task, &next).await?;
+                Ok(next)
             }
             GcPhase::Roots if task.kind == GcTaskKind::LiveTable => self.live_roots(task, now_ms).await,
             GcPhase::Mark if task.kind == GcTaskKind::LiveTable => self.live_mark(task).await,
@@ -100,6 +110,9 @@ impl GcWorker {
             GcPhase::Fence if task.kind == GcTaskKind::LiveTable => self.live_fence(task, now_ms).await,
             GcPhase::Fence => self.fence(task, now_ms).await,
             GcPhase::Sweep => self.sweep(task, now_ms).await,
+            GcPhase::SweepWrites if task.kind == GcTaskKind::MultipartCleanup => {
+                self.sweep_multipart_sessions(task, now_ms).await
+            }
             GcPhase::SweepWrites => self.sweep_writes(task, now_ms).await,
             GcPhase::CleanupSystem => self.cleanup_system(task, now_ms).await,
             GcPhase::CleanupCatalog => self.cleanup_catalog(task, now_ms).await,
@@ -170,11 +183,13 @@ impl GcWorker {
                 if root.context != task.context {
                     return Err(CatalogError::Conflict.into());
                 }
-                let purge = crate::table::TablePurgeTask {
+                let head = task.head.as_ref().ok_or(ValidationError::Record)?;
+                let key = crate::table::TablePurgeTask {
                     activation_epoch: task.context.activation_epoch,
-                    head: task.head.clone().ok_or(ValidationError::Record)?,
-                };
-                let key = purge.key();
+                    head: head.clone(),
+                    dropped_ms: task.created_ms,
+                }
+                .key();
                 let value = self
                     .repository
                     .store
@@ -182,8 +197,12 @@ impl GcWorker {
                     .await
                     .map_err(CatalogError::from)?
                     .ok_or(ValidationError::Record)?;
-                if StorageRecord::decode(&key, &value.bytes)?
-                    != StorageRecord::TablePurgeTask(Box::new(purge))
+                let StorageRecord::TablePurgeTask(purge) = StorageRecord::decode(&key, &value.bytes)? else {
+                    return Err(ValidationError::Record.into());
+                };
+                if purge.activation_epoch != task.context.activation_epoch
+                    || purge.head != *head
+                    || (purge.dropped_ms != 0 && purge.dropped_ms != task.created_ms)
                 {
                     return Err(ValidationError::Record.into());
                 }
@@ -191,6 +210,11 @@ impl GcWorker {
             GcTaskKind::LiveTable => {
                 if root.context != task.context || !task.fenced || !task.proof.complete {
                     return Err(CatalogError::Busy.into());
+                }
+            }
+            GcTaskKind::MultipartCleanup => {
+                if root.context != task.context {
+                    return Err(CatalogError::Conflict.into());
                 }
             }
         }

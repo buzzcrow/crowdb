@@ -2,12 +2,14 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crowdb_access_iceberg::catalog::{CatalogError, CatalogLifecycle, CatalogRepository, RootState};
+use crowdb_access_iceberg::catalog::{
+    CatalogError, CatalogLifecycle, CatalogRepository, CatalogStore, RootState,
+};
 use crowdb_access_iceberg::file::{
     resolve_range, FileBlockStore, FileGrantError, FileGrantIssuer, FileOperation, FileRecord,
-    FileRepository, FileSealer, MultipartAdmission, MultipartLister, MultipartPartStore, MultipartRepository,
-    RangeError,
+    FileRepository, FileSealer, MultipartLister, MultipartPartStore, MultipartRepository, RangeError,
 };
+use crowdb_access_iceberg::gc::{GcRepository, GcStore};
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::storage::{default_large_write, own_large_write};
 use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
@@ -26,6 +28,7 @@ use super::file_request::{FileRequest, FileRequestError};
 use super::file_response::{FileS3ErrorCode, MultipartResponses};
 use super::file_upload::FileUploadBudget;
 
+mod delete;
 mod metrics;
 mod multipart;
 mod stream;
@@ -35,8 +38,9 @@ pub use metrics::UploadFlowSnapshot;
 
 pub(super) struct FileHttp {
     repository: FileRepository,
+    store: Arc<dyn CatalogStore>,
+    gc: GcRepository,
     multipart: MultipartRepository,
-    admission: MultipartAdmission,
     lister: MultipartLister,
     blocks: Arc<dyn FileBlockStore>,
     issuer: FileGrantIssuer,
@@ -64,7 +68,7 @@ impl FileHttp {
         self.blocks.chunk_metrics()
     }
 
-    pub(super) fn new<Store: MultipartPartStore + 'static>(
+    pub(super) fn new<Store: MultipartPartStore + GcStore + 'static>(
         store: Arc<Store>,
         blocks: Arc<dyn FileBlockStore>,
         secret: [u8; 32],
@@ -81,8 +85,9 @@ impl FileHttp {
         }
         Ok(Self {
             repository: FileRepository::new(store.clone()),
+            store: store.clone(),
+            gc: GcRepository::new(store.clone()),
             multipart: MultipartRepository::new(store.clone()),
-            admission: MultipartAdmission::new(store.clone()),
             lister: MultipartLister::new(store),
             blocks,
             issuer: FileGrantIssuer::new(secret, 15 * 60 * 1000)?,
@@ -144,6 +149,9 @@ impl FileHttp {
         mut request: Request<Incoming>,
         request_timeout: Duration,
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
+        if request.method() == Method::POST && matches!(request.uri().query(), Some("delete" | "delete=")) {
+            return self.delete_objects(catalog, request, request_timeout).await;
+        }
         let file_request = FileRequest::parse(request.method(), request.uri()).map_err(request_error)?;
         let (root, authority) = catalog.status().await.map_err(catalog_error)?;
         if root.state != RootState::Ready
@@ -200,6 +208,10 @@ impl FileHttp {
                     native_receiver.as_deref(),
                 )
                 .await
+            }
+            FileOperation::DeleteObject => {
+                self.delete_object(&file_request.location, root.context, now_ms)
+                    .await
             }
             _ => {
                 Box::pin(self.multipart_request(

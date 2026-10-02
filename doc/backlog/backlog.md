@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R197** — Bump this line in the same commit when adding a new item.
+**Next R number: R198** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -79,6 +79,11 @@ conformance. Its contract and executable profile are retained in
 [Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
 Caches, selected ORC and container engine workflows remain separate.
 
+- **[R197](R197-iceberge-small-write.md)** — small writes and concurrent
+  publication — Area: access server / Iceberg / Chunk-KV / GC — Remove
+  foreground shared-key coordination and redundant recovery writes; publish
+  each table update once, reduce file and multipart metadata IO, retain
+  client-owned published files, and scan only incomplete physical writes.
 - **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded cache and
   invalidation — Area: access server / Iceberg / Group 0 / Chunk-KV — **Deferred
   pending focused cache measurements on the completed uncached baseline.** Add one budgeted

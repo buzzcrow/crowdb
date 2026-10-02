@@ -11,22 +11,26 @@ use super::file_body::FileReadBody;
 use super::file_complete::FileCompleteBody;
 use super::metrics::RequestObservation;
 
-pub(super) struct SpoolPermit(Arc<AtomicUsize>);
+pub(super) struct SpoolPermit(Arc<AtomicUsize>, usize);
 
 impl SpoolPermit {
-    pub(super) fn acquire(active: &Arc<AtomicUsize>) -> Option<Self> {
+    const MAX_BUFFERED_BYTES: usize = 128 * 1024 * 1024;
+
+    pub(super) fn acquire(active: &Arc<AtomicUsize>, bytes: usize) -> Option<Self> {
         active
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < 4).then_some(count + 1)
+                count
+                    .checked_add(bytes)
+                    .filter(|total| *total <= Self::MAX_BUFFERED_BYTES)
             })
             .ok()?;
-        Some(Self(active.clone()))
+        Some(Self(active.clone(), bytes))
     }
 }
 
 impl Drop for SpoolPermit {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        self.0.fetch_sub(self.1, Ordering::AcqRel);
     }
 }
 

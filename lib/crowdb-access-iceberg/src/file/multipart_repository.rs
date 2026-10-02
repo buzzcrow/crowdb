@@ -29,7 +29,7 @@ impl MultipartRepository {
         check_context(self.store.as_ref(), context).await
     }
 
-    /// Persists a session after the caller has reserved global admission credits.
+    /// Persists an independently bounded multipart session.
     /// # Errors
     /// Rejects noninitial sessions, expired admission and conflicting upload identities.
     pub async fn begin(
@@ -46,17 +46,19 @@ impl MultipartRepository {
             return Err(ValidationError::Record.into());
         }
         check_context(self.store.as_ref(), session.context).await?;
-        if let Some(existing) = self.load(session.context, session.upload).await? {
-            return matching_request(session, existing);
+        if check_live(session, now_ms).is_err() {
+            return self
+                .load(session.context, session.upload)
+                .await?
+                .ok_or(CatalogError::Conflict)
+                .and_then(|existing| matching_request(session, existing));
         }
-        check_live(session, now_ms)?;
         let key = session.key().encode()?;
         let value = encode(session)?;
         let outcome = self
             .store
             .compare_exchange(&key, None, &value, mutation_identity(&key, None, &value))
             .await?;
-        check_context(self.store.as_ref(), session.context).await?;
         match outcome {
             CasOutcome::Applied(_) => Ok(session.clone()),
             CasOutcome::Conflict(Some(value)) => {

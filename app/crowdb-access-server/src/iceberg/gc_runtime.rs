@@ -100,8 +100,8 @@ impl GcRuntimeConfig {
         let enabled = match file.enabled {
             Some(enabled) => enabled,
             None => match std::env::var("CROWDB_ICEBERG_GC_ENABLED").as_deref() {
-                Ok("1") => true,
-                Ok("0") | Err(std::env::VarError::NotPresent) => false,
+                Ok("0") => false,
+                Ok("1") | Err(std::env::VarError::NotPresent) => true,
                 _ => return Err("CROWDB_ICEBERG_GC_ENABLED must be 0 or 1".into()),
             },
         };
@@ -263,6 +263,11 @@ async fn scan_and_advance(
     } else {
         Vec::new()
     };
+    if let Some(context) = active {
+        GcRepository::new(store.clone())
+            .admit_multipart(context, super::runtime::now_ms()?, limits)
+            .await?;
+    }
     let (next_system, advanced_retired) = if active.is_some() && after.retired_turn {
         scan_retired(store.clone(), worker, after.system, limits).await?
     } else {

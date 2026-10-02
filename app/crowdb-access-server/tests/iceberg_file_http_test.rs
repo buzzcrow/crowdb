@@ -175,7 +175,7 @@ fn path(table: TableLocation, key: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn concurrent_multipart_creates_share_admission() {
+async fn concurrent_multipart_creates_use_independent_sessions() {
     let (_stack, _process, client, table) = setup().await;
     let mut requests = tokio::task::JoinSet::new();
     for index in 0..24 {
@@ -187,6 +187,162 @@ async fn concurrent_multipart_creates_share_admission() {
         let response = result.unwrap();
         assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_cleanup_supports_single_batch_and_same_path_reupload() {
+    let (stack, _process, client, table) = setup().await;
+    let object = path(table, "data/cleanup.parquet");
+    let initial = client.send(Method::PUT, &object, "", b"first", false).await;
+    assert_eq!(initial.status(), 200, "{}", initial.text().await.unwrap());
+    let ordinary = client.send(Method::DELETE, &object, "", b"", false).await;
+    assert_eq!(ordinary.status(), 403);
+
+    let context = CatalogRepository::new(
+        stack.store().await,
+        ClearBounds {
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+    )
+    .unwrap()
+    .status()
+    .await
+    .unwrap()
+    .0
+    .context;
+    let authenticator =
+        BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
+    let issuer = FileGrantIssuer::new(authenticator.namespace_token_key(), 15 * 60 * 1000).unwrap();
+    let started = now_ms();
+    let cleanup = TestFileClient {
+        client: client.client.clone(),
+        credentials: issuer
+            .issue(FileGrant {
+                context,
+                table: table.table,
+                principal: [9; 32],
+                nonce: OperationId::random(),
+                issued_ms: started - 1_000,
+                expires_ms: started + 10 * 60 * 1000,
+                operations: FileOperations::new(&[FileOperation::DeleteObject, FileOperation::DeleteObjects])
+                    .unwrap(),
+                max_request_bytes: 1024 * 1024,
+                max_file_bytes: 1024 * 1024,
+            })
+            .unwrap(),
+        address: client.address,
+    };
+    let deleted = cleanup.send(Method::DELETE, &object, "", b"", false).await;
+    assert_eq!(deleted.status(), 204, "{}", deleted.text().await.unwrap());
+    let missing = client.send(Method::GET, &object, "", b"", false).await;
+    assert_eq!(missing.status(), 404);
+    let recreated = client.send(Method::PUT, &object, "", b"second", false).await;
+    assert_eq!(recreated.status(), 200, "{}", recreated.text().await.unwrap());
+
+    let location = table.file("data/cleanup.parquet").unwrap();
+    let missing_key = table.file("data/unknown.parquet").unwrap();
+    let xml = format!(
+        "<Delete><Object><Key>{}</Key></Object><Object><Key>{}</Key></Object></Delete>",
+        location.object_key(),
+        missing_key.object_key()
+    );
+    let response = cleanup
+        .send(
+            Method::POST,
+            &format!("/{}", table.bucket()),
+            "delete=",
+            xml.as_bytes(),
+            true,
+        )
+        .await;
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("<Deleted>"), "{body}");
+    assert!(!body.contains("<Error>"), "{body}");
+    assert_eq!(
+        client.send(Method::GET, &object, "", b"", false).await.status(),
+        404
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn thirty_two_concurrent_direct_puts() {
+    let (_stack, _process, client, table) = setup().await;
+    let payload = vec![0x5a; 8 * 1024 * 1024];
+    let mut requests = tokio::task::JoinSet::new();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(33));
+    for index in 0..32 {
+        let object = path(table, &format!("data/parallel-{index}.parquet"));
+        let request = client.request(Method::PUT, &object, "", &payload, false, None);
+        let barrier = barrier.clone();
+        requests.spawn(async move {
+            barrier.wait().await;
+            let response = request.send().await.unwrap();
+            (index, response.status(), response.text().await.unwrap())
+        });
+    }
+    barrier.wait().await;
+    let mut failures = Vec::new();
+    while let Some(result) = requests.join_next().await {
+        let (index, status, body) = result.unwrap();
+        println!("upload {index}: {status} {body}");
+        if status != 200 {
+            failures.push((index, status, body));
+        }
+    }
+    assert!(failures.is_empty(), "failed uploads: {failures:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "manual TPC-H and TPC-DS loader stress on the small cluster"]
+async fn tpc_loader_parallel_stress() {
+    let (_stack, _process, client, _table) = setup().await;
+    let python = "/cpp/crowdb-tpc-loader/.venv/bin/python";
+    let endpoint = format!("http://{}", client.address);
+    let mut commands = Vec::new();
+    for (benchmark, workers) in [("tpch", "8"), ("tpcds", "24")] {
+        let mut command = tokio::process::Command::new("/home/cj/.pixi/bin/pixi");
+        command
+            .args([
+                "run",
+                "-e",
+                "iceberg-e2e",
+                "--",
+                python,
+                "-m",
+                "crowdb_tpc_loader",
+                "load",
+                "--benchmark",
+                benchmark,
+                "--sf",
+                "0.01",
+                "--namespace",
+                benchmark,
+                "--upload-workers",
+                workers,
+                "--no-download",
+                "--keep-files",
+            ])
+            .env("ICEBERG_URI", &endpoint)
+            .env("ICEBERG_TOKEN", "w".repeat(32))
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+        commands.push(command);
+    }
+    let mut tpcds = commands.pop().unwrap();
+    let mut tpch = commands.pop().unwrap();
+    let (tpch_result, tpcds_result) = tokio::join!(tpch.output(), tpcds.output());
+    let mut failures = Vec::new();
+    for (benchmark, output) in [("tpch", tpch_result.unwrap()), ("tpcds", tpcds_result.unwrap())] {
+        println!("{benchmark} status: {}", output.status);
+        println!("{benchmark} stdout: {}", String::from_utf8_lossy(&output.stdout));
+        println!("{benchmark} stderr: {}", String::from_utf8_lossy(&output.stderr));
+        if !output.status.success() {
+            failures.push(benchmark);
+        }
+    }
+    assert!(failures.is_empty(), "failed loaders: {failures:?}");
 }
 
 fn fixture_config() -> AccessConfig {

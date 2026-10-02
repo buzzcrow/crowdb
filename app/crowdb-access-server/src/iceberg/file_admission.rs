@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crowdb_access_iceberg::catalog::CatalogContext;
 use crowdb_access_iceberg::file::{
     ByteRange, FileBlockStore, FileGrant, FileGrantError, FileIdentity, FileLocation, FileOperation,
-    FileRecord, FileTree, MultipartAdmissionRecord, MultipartLimits, MultipartPhase, MultipartSession,
+    FileRecord, FileTree, MultipartLimits, MultipartPhase, MultipartSession,
 };
 use hyper::body::{Body, Bytes};
 
@@ -99,7 +99,7 @@ impl FileTransferAdmission {
 
     /// Intersects verified credentials with service and durable session bounds.
     /// # Errors
-    /// Rejects wrong table, principal, operation, upload, expiry or missing credit.
+    /// Rejects wrong table, principal, operation, upload, expiry or released legacy credit.
     pub fn authorize(
         grant: &FileGrant,
         request: &FileRequest,
@@ -146,7 +146,7 @@ impl FileTransferAdmission {
                 if now_ms < session.created_ms || now_ms >= session.expires_ms {
                     return Err(FileAdmissionError::State);
                 }
-                if session.credit.map_or(true, |credit| credit.released)
+                if session.credit.is_some_and(|credit| credit.released)
                     && !(request.operation == FileOperation::CompleteMultipart
                         && session.phase == MultipartPhase::Published)
                 {
@@ -175,18 +175,12 @@ impl FileTransferAdmission {
         })
     }
 
-    /// Preflights a new multipart reservation; the caller must still run durable
-    /// `MultipartAdmission::reserve` before exposing the upload ID.
+    /// Preflights a new multipart session before its per-upload durable write.
     /// # Errors
-    /// Rejects incompatible requested limits or exhausted admission snapshots.
-    pub fn check_create(
-        &self,
-        session: &MultipartSession,
-        policy: &MultipartAdmissionRecord,
-    ) -> Result<(), FileAdmissionError> {
+    /// Rejects incompatible requested limits or malformed session state.
+    pub fn check_create(&self, session: &MultipartSession) -> Result<(), FileAdmissionError> {
         if self.operation != FileOperation::CreateMultipart
             || session.validate().is_err()
-            || policy.validate().is_err()
             || session.phase != MultipartPhase::Open
             || session.revision != 1
             || session.part_count != 0
@@ -195,19 +189,12 @@ impl FileTransferAdmission {
             || session.context != self.context
             || session.principal != self.principal
             || session.location != self.location
-            || policy.context != self.context
-            || policy.pending.is_some()
         {
             return Err(FileAdmissionError::State);
         }
         if session.limits.max_part_bytes > self.request_bytes.min(self.file_bytes)
             || session.limits.max_file_bytes > self.file_bytes
             || session.limits.max_staged_bytes > self.staged_bytes
-            || policy.sessions >= policy.limits.max_sessions
-            || policy
-                .reserved_bytes
-                .checked_add(session.limits.max_staged_bytes)
-                .map_or(true, |total| total > policy.limits.max_reserved_bytes)
         {
             return Err(FileAdmissionError::Bounds);
         }
@@ -287,7 +274,7 @@ fn consistent(request: &FileRequest) -> bool {
     matches!(
         (request.operation, request.multipart.as_ref()),
         (
-            FileOperation::Head | FileOperation::Get | FileOperation::Put,
+            FileOperation::Head | FileOperation::Get | FileOperation::Put | FileOperation::DeleteObject,
             None
         ) | (FileOperation::CreateMultipart, Some(MultipartRequest::Create))
             | (FileOperation::UploadPart, Some(MultipartRequest::Upload { .. }))

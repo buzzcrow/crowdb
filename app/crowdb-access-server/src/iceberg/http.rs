@@ -69,7 +69,9 @@ impl IcebergHttpService {
 
     /// # Errors
     /// Rejects invalid native file listener limits or signing configuration.
-    pub fn with_fileio<Store: crowdb_access_iceberg::file::MultipartPartStore + 'static>(
+    pub fn with_fileio<
+        Store: crowdb_access_iceberg::file::MultipartPartStore + crowdb_access_iceberg::gc::GcStore + 'static,
+    >(
         mut self,
         store: Arc<Store>,
         blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,
@@ -82,7 +84,9 @@ impl IcebergHttpService {
     /// Installs native receive owners for authenticated file uploads.
     /// # Errors
     /// Rejects invalid native file listener limits or signing configuration.
-    pub fn with_fileio_native<Store: crowdb_access_iceberg::file::MultipartPartStore + 'static>(
+    pub fn with_fileio_native<
+        Store: crowdb_access_iceberg::file::MultipartPartStore + crowdb_access_iceberg::gc::GcStore + 'static,
+    >(
         mut self,
         store: Arc<Store>,
         blocks: Arc<dyn crowdb_access_iceberg::file::FileBlockStore>,

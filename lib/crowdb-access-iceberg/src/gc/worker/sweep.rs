@@ -26,7 +26,7 @@ impl GcWorker {
             return self.finish_sweep(task, next, now_ms).await;
         };
         let key = IcebergKey::decode(&item.key)?;
-        if task.kind != GcTaskKind::RetiredCatalog {
+        if matches!(task.kind, GcTaskKind::LiveTable | GcTaskKind::PurgeTable) {
             self.repository.verify_table_fence(task).await?;
         }
         let StorageRecord::GcCandidate(candidate) = StorageRecord::decode(&key, &item.value)? else {
@@ -89,7 +89,13 @@ impl GcWorker {
         } else if candidate.phase == CandidatePhase::Complete {
             next.scan_after.clone_from(&item.key);
         } else {
-            self.repository.adopt_candidate(task, &candidate).await?;
+            match self.repository.adopt_candidate(task, &candidate).await {
+                Ok(()) => {}
+                Err(CatalogError::Busy) if task.kind == GcTaskKind::MultipartCleanup => {
+                    next.scan_after.clone_from(&item.key);
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
         self.repository.update(task, &next).await?;
         Ok(next)
@@ -147,6 +153,7 @@ impl GcWorker {
             return Err(CatalogError::Busy.into());
         }
         self.verify_assembly(task, candidate, now_ms).await?;
+        self.verify_deleted_authority(task, candidate).await?;
         if let Some(part) = &candidate.part {
             let key = part.key();
             let stored = self
@@ -231,6 +238,35 @@ impl GcWorker {
         })
     }
 
+    async fn verify_deleted_authority(
+        &self,
+        task: &GcTask,
+        candidate: &GcCandidate,
+    ) -> Result<(), GcWorkError> {
+        if task.kind != GcTaskKind::MultipartCleanup
+            || candidate.part.is_some()
+            || candidate.assembly.is_some()
+        {
+            return Ok(());
+        }
+        let key = location_key(&candidate.file.location);
+        let value = self
+            .repository
+            .store
+            .get(&key.encode()?)
+            .await
+            .map_err(CatalogError::from)?;
+        if let Some(value) = value {
+            match StorageRecord::decode(&key, &value.bytes)? {
+                StorageRecord::DeletedFile(deleted) if deleted.file == candidate.file => {}
+                StorageRecord::File(current) if current.file != candidate.file.file => {}
+                StorageRecord::FileMapping(current) if current.file != candidate.file.file => {}
+                _ => return Err(CatalogError::Busy.into()),
+            }
+        }
+        Ok(())
+    }
+
     async fn delete_location_candidate(
         &self,
         candidate: &GcCandidate,
@@ -275,11 +311,32 @@ impl GcWorker {
             file: candidate.file.file,
             location: candidate.file.location.clone(),
         };
-        self.remove_record(
-            &location_key(&mapping.location),
-            &StorageRecord::FileMapping(mapping.clone()),
-        )
-        .await?;
+        let location = location_key(&mapping.location);
+        if let Some(value) = self
+            .repository
+            .store
+            .get(&location.encode()?)
+            .await
+            .map_err(CatalogError::from)?
+        {
+            match StorageRecord::decode(&location, &value.bytes)? {
+                StorageRecord::DeletedFile(deleted) if deleted.file == candidate.file => {
+                    return self
+                        .remove_record(&location, &StorageRecord::DeletedFile(deleted))
+                        .await;
+                }
+                StorageRecord::File(record) if *record == candidate.file => {
+                    return self.remove_record(&location, &StorageRecord::File(record)).await;
+                }
+                StorageRecord::FileMapping(existing) if existing == mapping => {
+                    self.remove_record(&location, &StorageRecord::FileMapping(mapping.clone()))
+                        .await?;
+                }
+                StorageRecord::File(record) if record.file != candidate.file.file => {}
+                StorageRecord::FileMapping(existing) if existing.file != candidate.file.file => {}
+                _ => return Err(CatalogError::Conflict.into()),
+            }
+        }
         self.remove_record(
             &file_key(mapping.location.table().catalog, mapping.file),
             &StorageRecord::File(Box::new(candidate.file.clone())),

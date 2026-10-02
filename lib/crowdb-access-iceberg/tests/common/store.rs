@@ -66,7 +66,7 @@ impl TestStore {
         matches!(
             crowdb_access_iceberg::key::IcebergKey::decode(key),
             Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                scope: crowdb_access_iceberg::key::CatalogScope::File,
+                scope: crowdb_access_iceberg::key::CatalogScope::FileLocation,
                 ..
             })
         ) && self.file_record_reply_loss.swap(false, Ordering::SeqCst)

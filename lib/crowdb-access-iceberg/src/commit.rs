@@ -1,6 +1,7 @@
 //! Bounded candidate evaluation and checks, separate from file proofs and publication.
 
 mod create;
+mod direct;
 mod evaluator;
 mod files;
 mod journal;
@@ -20,6 +21,7 @@ pub use create::{
     TableCreateOperation, TableCreatePhase, TableCreateStage, TableStageBinding,
 };
 pub use create::{StagedCommitLimits, StagedCommitRequest, TableCreationRequest, TableCreator};
+pub use direct::{publish_direct_commit, DirectCommitError};
 pub use evaluator::{
     evaluate_metadata_updates, evaluate_table_create_commit, EvaluatedMetadata, EvaluationError,
     EvaluationLimits,

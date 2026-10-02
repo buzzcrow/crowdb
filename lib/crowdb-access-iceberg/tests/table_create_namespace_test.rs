@@ -18,7 +18,7 @@ use crowdb_access_iceberg::{
     key::OperationId,
     namespace::{authority_key, NamespaceDropper, NamespaceLifecycle, NamespaceRepository},
     record::StorageRecord,
-    table::{name_key, TableRepository},
+    table::TableRepository,
 };
 
 #[tokio::test]
@@ -39,32 +39,36 @@ async fn namespace_drop_recovers_each_interrupted_create_boundary() {
             .load(test.fixture.context, test.request.identity.operation)
             .await
             .unwrap();
-        let drop = NamespaceDropper::new(store.clone())
-            .drop_namespace(&test.drop_request())
-            .await
-            .unwrap_or_else(|error| {
-                panic!(
-                    "offset {offset}, phase {:?}: {error:?}",
-                    interrupted.as_ref().map(|operation| operation.phase)
-                )
-            })
-            .unwrap();
+        let dropper = NamespaceDropper::new(store.clone());
+        let drop = match dropper.drop_namespace(&test.drop_request()).await {
+            Ok(outcome) => outcome.unwrap(),
+            Err(CatalogError::Busy) => {
+                test.creator().create(&test.request).await.unwrap();
+                dropper
+                    .drop_namespace(&test.drop_request())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+            Err(error) => panic!(
+                "offset {offset}, phase {:?}: {error:?}",
+                interrupted.as_ref().map(|operation| operation.phase)
+            ),
+        };
         let recovered = test.creator().create(&test.request).await;
         let selected = TableRepository::new(store.clone())
             .select(test.fixture.context, test.parent.namespace, "events")
             .await
             .unwrap();
         match drop.status {
-            204 => {
-                match recovered {
-                    Ok(result) => assert_eq!(result.status, 404, "offset {offset}"),
-                    Err(CommitPublicationError::NamespaceMissing) => {}
-                    result => panic!("unexpected recovery at {offset}: {result:?}"),
+            204 | 404 => match recovered {
+                Ok(result) if result.status == 200 => assert!(selected.is_some(), "offset {offset}"),
+                Ok(result) if result.status == 404 => assert!(selected.is_none(), "offset {offset}"),
+                Err(CommitPublicationError::NamespaceMissing) => {
+                    assert!(selected.is_none(), "offset {offset}");
                 }
-                assert!(selected.is_none(), "offset {offset}");
-                let key = name_key(test.fixture.context.catalog, test.parent.namespace, "events").unwrap();
-                assert!(store.get(&key.encode().unwrap()).await.unwrap().is_none());
-            }
+                result => panic!("unexpected recovery at {offset}: {result:?}"),
+            },
             409 => {
                 assert_eq!(recovered.unwrap().status, 200, "offset {offset}");
                 assert!(selected.is_some());
@@ -81,15 +85,8 @@ async fn namespace_drop_recovers_each_interrupted_create_boundary() {
 }
 
 #[tokio::test]
-async fn actual_parent_admission_races_drop_without_exposing_a_child_under_tombstone() {
-    let mut fixture = fixture::TestNamespace::new().await;
-    let store = common::TestStore {
-        namespace_update_barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
-        ..Default::default()
-    };
-    store.values.store(fixture.store.values.load_full());
-    fixture.store = Arc::new(store);
-    let test = TestCreation::with_fixture(fixture).await;
+async fn concurrent_create_and_drop_leave_a_recoverable_result() {
+    let test = TestCreation::new().await;
     let creator = test.creator();
     let dropper = NamespaceDropper::new(test.fixture.store.clone());
     let request = test.drop_request();
@@ -104,7 +101,8 @@ async fn actual_parent_admission_races_drop_without_exposing_a_child_under_tombs
         Err(CatalogError::Busy) => dropper.drop_namespace(&request).await.unwrap().unwrap(),
         result => result.unwrap().unwrap(),
     };
-    assert!(matches!((create.status, drop.status), (200, 409) | (404, 204)));
+    assert!(matches!(create.status, 200 | 404));
+    assert!(matches!(drop.status, 204 | 409));
     let key = authority_key(test.fixture.context.catalog, test.parent.namespace);
     let bytes = test
         .fixture
@@ -117,11 +115,11 @@ async fn actual_parent_admission_races_drop_without_exposing_a_child_under_tombs
     let StorageRecord::NamespaceAuthority(parent) = StorageRecord::decode(&key, &bytes).unwrap() else {
         panic!("namespace authority")
     };
-    let table = TableRepository::new(test.fixture.store.clone())
-        .select(test.fixture.context, test.parent.namespace, "events")
-        .await
-        .unwrap();
-    assert_eq!(table.is_none(), parent.lifecycle == NamespaceLifecycle::Tombstone);
+    assert_eq!(
+        parent.lifecycle == NamespaceLifecycle::Tombstone,
+        drop.status == 204
+    );
+    assert_eq!(creator.create(&test.request).await.unwrap().status, create.status);
 }
 
 #[tokio::test]

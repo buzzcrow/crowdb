@@ -159,9 +159,10 @@ impl GcWorker {
             return Err(CatalogError::Busy.into());
         }
         match &record {
-            StorageRecord::File(_) | StorageRecord::MultipartPart(_) | StorageRecord::FileWriteIntent(_) => {
-                Err(ValidationError::Record.into())
-            }
+            StorageRecord::File(_)
+            | StorageRecord::DeletedFile(_)
+            | StorageRecord::MultipartPart(_)
+            | StorageRecord::FileWriteIntent(_) => Err(ValidationError::Record.into()),
             StorageRecord::MultipartSession(session) => {
                 if !matches!(
                     session.phase,

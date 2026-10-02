@@ -159,3 +159,21 @@ pub struct FileMapping {
     pub location: FileLocation,
     pub file: FileId,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeletedFile {
+    pub file: FileRecord,
+    pub deleted_ms: u64,
+}
+
+impl DeletedFile {
+    /// # Errors
+    /// Rejects an invalid prior file or missing deletion time.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        self.file.validate()?;
+        if self.deleted_ms == 0 {
+            return Err(ValidationError::Record);
+        }
+        Ok(())
+    }
+}

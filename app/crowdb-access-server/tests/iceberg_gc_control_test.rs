@@ -173,6 +173,7 @@ async fn seed_purge_marker(store: &RoutedCatalogStore, context: CatalogContext, 
     let marker = TablePurgeTask {
         activation_epoch: context.activation_epoch,
         head: *head,
+        dropped_ms: 0,
     };
     let encoded = marker.key().encode().unwrap();
     let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();

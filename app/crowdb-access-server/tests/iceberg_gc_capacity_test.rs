@@ -207,6 +207,7 @@ async fn seed_gc_workspace_task(
     let marker = TablePurgeTask {
         activation_epoch: context.activation_epoch,
         head: head.clone(),
+        dropped_ms: 0,
     };
     let key = marker.key().encode().unwrap();
     let bytes = StorageRecord::TablePurgeTask(Box::new(marker)).encode().unwrap();
@@ -235,7 +236,10 @@ async fn seed_gc_workspace_task(
 async fn run_gc_until_resource_stall(worker: &GcWorker, mut task: GcTask) -> GcTask {
     for _ in 0..20 {
         task = worker
-            .run(&task, common::now_ms().max(task.retry_at_ms))
+            .run(
+                &task,
+                common::now_ms().max(task.retry_at_ms).max(task.not_before_ms),
+            )
             .await
             .unwrap();
         if task.stalled == GcStalledReason::Resource {
@@ -251,7 +255,10 @@ async fn run_gc_until_resource_stall(worker: &GcWorker, mut task: GcTask) -> GcT
 async fn run_gc_until_complete(worker: &GcWorker, mut task: GcTask) -> GcTask {
     for _ in 0..300 {
         task = worker
-            .run(&task, common::now_ms().max(task.retry_at_ms))
+            .run(
+                &task,
+                common::now_ms().max(task.retry_at_ms).max(task.not_before_ms),
+            )
             .await
             .unwrap();
         if task.phase == GcPhase::Complete {

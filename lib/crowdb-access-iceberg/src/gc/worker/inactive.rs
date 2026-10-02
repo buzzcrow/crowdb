@@ -131,7 +131,7 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
     match record {
         StorageRecord::TableCommitOperation(operation) => {
             owns(operation.before.table)
-                && (retained(operation.identity.issued_ms)
+                && ((task.kind == GcTaskKind::RetiredCatalog && retained(operation.identity.issued_ms))
                     || !matches!(
                         operation.phase,
                         crate::commit::TableCommitPhase::Complete | crate::commit::TableCommitPhase::Rejected
@@ -139,7 +139,7 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
         }
         StorageRecord::TableCreateOperation(operation) => {
             owns(operation.candidate.table)
-                && (retained(operation.identity.issued_ms)
+                && ((task.kind == GcTaskKind::RetiredCatalog && retained(operation.identity.issued_ms))
                     || !matches!(
                         operation.phase,
                         crate::commit::TableCreatePhase::Complete | crate::commit::TableCreatePhase::Aborted
@@ -147,7 +147,7 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
         }
         StorageRecord::TableLifecycleOperation(operation) => {
             owns(operation.before.table)
-                && (retained(operation.identity.issued_ms)
+                && ((task.kind == GcTaskKind::RetiredCatalog && retained(operation.identity.issued_ms))
                     || !matches!(
                         operation.phase,
                         crate::table::TableLifecyclePhase::Complete
@@ -155,14 +155,16 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
                     ))
         }
         StorageRecord::MultipartSession(session) => {
+            let terminal = matches!(
+                session.phase,
+                crate::file::MultipartPhase::Published
+                    | crate::file::MultipartPhase::Aborted
+                    | crate::file::MultipartPhase::Conflicted
+            );
             owns(session.owner.table.table)
-                && (now_ms < session.expires_ms.saturating_add(grace_ms)
-                    || !matches!(
-                        session.phase,
-                        crate::file::MultipartPhase::Published
-                            | crate::file::MultipartPhase::Aborted
-                            | crate::file::MultipartPhase::Conflicted
-                    ))
+                && (!terminal
+                    || (task.kind == GcTaskKind::RetiredCatalog
+                        && now_ms < session.expires_ms.saturating_add(grace_ms)))
         }
         StorageRecord::RetryResult(result) => {
             task.kind == GcTaskKind::RetiredCatalog

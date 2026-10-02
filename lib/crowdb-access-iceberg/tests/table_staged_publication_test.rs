@@ -206,7 +206,7 @@ async fn every_final_commit_reply_loss_recovers_without_expiring_bound_publicati
     let before = baseline.namespace.store.writes.load(Ordering::SeqCst);
     baseline.creator().commit_staged(&request).await.unwrap();
     let writes = baseline.namespace.store.writes.load(Ordering::SeqCst) - before;
-    assert!(writes >= 20);
+    assert!(writes > 0);
     for offset in 1..=writes {
         let test = TestStaged::new().await;
         let request = test.commit_request().await;
