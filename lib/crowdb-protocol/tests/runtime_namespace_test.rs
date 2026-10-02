@@ -63,6 +63,18 @@ fn access_listener_allocations_skip_claimed_and_occupied_ports() {
 }
 
 #[test]
+fn stopped_listener_namespaces_release_ports_before_process_exit() {
+    let service = ServicePort::AccessServerIcebergHttp;
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..=service.range_size() {
+        let mut listener = RuntimeNamespace::ephemeral("short-lived-access").unwrap();
+        let port = listener.assign_port(service, 0).unwrap();
+        seen.insert(port);
+    }
+    assert!(seen.len() <= usize::from(service.range_size()));
+}
+
+#[test]
 fn persistent_namespace_reopens_saved_assignments() {
     let ephemeral = RuntimeNamespace::ephemeral("persistent-parent").expect("create parent namespace");
     let root = ephemeral.root().join("durable");

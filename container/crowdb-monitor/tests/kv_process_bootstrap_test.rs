@@ -7,6 +7,8 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use crowdb_monitor::{kv_step_names, BootstrapSession, DeploymentProfile, KvBootstrap, Supervisor};
+use crowdb_protocol::port::namespace::RuntimeNamespace;
+use crowdb_protocol::ServicePort;
 use uuid::Uuid;
 
 struct TestRoot(PathBuf);
@@ -82,12 +84,9 @@ async fn monitor_creates_real_kv_groups_then_validates_after_restart() {
         return;
     };
     let root = TestRoot::new();
-    let management = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let management_port = management.local_addr().unwrap().port();
-    drop(management);
-    let rpc = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let rpc_port = rpc.local_addr().unwrap().port();
-    drop(rpc);
+    let mut ports = RuntimeNamespace::ephemeral("monitor-bootstrap-kv").unwrap();
+    let management_port = ports.assign_port(ServicePort::KvServerMgmt, 0).unwrap();
+    let rpc_port = ports.assign_port(ServicePort::KvServerListen, 0).unwrap();
     let profile = root.profile(&binary, management_port, rpc_port);
     let mut session = root.session(&profile);
     fs::create_dir_all(root.0.join("data/kv/node-1")).unwrap();

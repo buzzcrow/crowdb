@@ -18,15 +18,8 @@ use crowdb_console_shared::{
     topology, ConsoleConfig, ServerEntry,
 };
 
-fn pick_two_free_ports() -> (u16, u16) {
-    let l1 = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let l2 = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let p1 = l1.local_addr().unwrap().port();
-    let p2 = l2.local_addr().unwrap().port();
-    drop(l1);
-    drop(l2);
-    (p1, p2)
-}
+use crowdb_protocol::port::namespace::RuntimeNamespace;
+use crowdb_protocol::ServicePort;
 
 #[cfg(target_os = "linux")]
 async fn assert_reaped(pid: u32) {
@@ -84,7 +77,9 @@ async fn deploy_local_and_observe_topology() {
     .unwrap();
 
     let node = cfg.node(1).unwrap().clone();
-    let (rest_port, rpc_port) = pick_two_free_ports();
+    let mut ports = RuntimeNamespace::ephemeral("console-lifecycle-kv").unwrap();
+    let rest_port = ports.assign_port(ServicePort::KvServerMgmt, 0).unwrap();
+    let rpc_port = ports.assign_port(ServicePort::KvServerListen, 0).unwrap();
 
     let req = DeployRequest {
         server_id: "s1".into(),

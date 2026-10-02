@@ -15,6 +15,7 @@ use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
+use crowdb_protocol::port::namespace::RuntimeNamespace;
 
 use super::fault::{TestBoundary, TestCommitBlocks, TestCommitStore};
 
@@ -95,13 +96,15 @@ pub struct TestCommitChild {
     child: Child,
     pub address: SocketAddr,
     pub marker: PathBuf,
+    _ports: RuntimeNamespace,
 }
 
 impl TestCommitChild {
     pub async fn start(seeds: &[String], marker: PathBuf, target: usize, after: bool) -> Self {
-        let port = crowdb_protocol::port::alloc::alloc_test_port(
-            crowdb_protocol::ServicePort::AccessServerIcebergHttp,
-        );
+        let mut ports = RuntimeNamespace::ephemeral("iceberg-fault-listener").unwrap();
+        let port = ports
+            .assign_port(crowdb_protocol::ServicePort::AccessServerIcebergHttp, 0)
+            .unwrap();
         let address = SocketAddr::from(([127, 0, 0, 1], port));
         let configuration = serde_json::json!({"seeds":seeds,"address":address.to_string(),"marker":marker,"target":target,"after":after});
         let child = Command::new(std::env::current_exe().unwrap())
@@ -120,6 +123,7 @@ impl TestCommitChild {
             child,
             address,
             marker,
+            _ports: ports,
         };
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {

@@ -2,9 +2,12 @@ use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use crowdb_protocol::port::namespace::RuntimeNamespace;
+
 pub struct TestIcebergProcess {
     child: Child,
     pub address: SocketAddr,
+    _ports: RuntimeNamespace,
 }
 
 impl TestIcebergProcess {
@@ -21,9 +24,10 @@ impl TestIcebergProcess {
         gc_enabled: bool,
         settings: &[(&str, &str)],
     ) -> Self {
-        let port = crowdb_protocol::port::alloc::alloc_test_port(
-            crowdb_protocol::ServicePort::AccessServerIcebergHttp,
-        );
+        let mut ports = RuntimeNamespace::ephemeral("iceberg-listener").unwrap();
+        let port = ports
+            .assign_port(crowdb_protocol::ServicePort::AccessServerIcebergHttp, 0)
+            .unwrap();
         let address = SocketAddr::from(([127, 0, 0, 1], port));
         let mut launch = command(seeds);
         launch
@@ -39,7 +43,11 @@ impl TestIcebergProcess {
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
-        let mut process = Self { child, address };
+        let mut process = Self {
+            child,
+            address,
+            _ports: ports,
+        };
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 if let Some(status) = process.child.try_wait().unwrap() {

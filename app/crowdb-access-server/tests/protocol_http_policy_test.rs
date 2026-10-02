@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::net::{SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +22,8 @@ use crowdb_console_shared::{
     ops::s3,
 };
 use crowdb_protocol::chunkdb::rpc::{ChunkType, ListChunksRequest, Strip};
+use crowdb_protocol::port::namespace::RuntimeNamespace;
+use crowdb_protocol::ServicePort;
 use crowdb_test_harness::test_dirs::TestDir;
 use reqwest::{Client, Method};
 
@@ -43,17 +45,28 @@ fn now_ms() -> u64 {
         .unwrap()
 }
 
-fn free_address() -> SocketAddr {
-    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
-    reservation.local_addr().unwrap()
+fn listener_addresses() -> (RuntimeNamespace, SocketAddr, SocketAddr) {
+    let mut ports = RuntimeNamespace::ephemeral("combined-access-listeners").unwrap();
+    let s3 = ports.assign_port(ServicePort::AccessServerHttp, 0).unwrap();
+    let iceberg = ports
+        .assign_port(ServicePort::AccessServerIcebergHttp, 0)
+        .unwrap();
+    (
+        ports,
+        ([127, 0, 0, 1], s3).into(),
+        ([127, 0, 0, 1], iceberg).into(),
+    )
 }
 
-struct RunningAccess(Child);
+struct RunningAccess {
+    child: Child,
+    _ports: RuntimeNamespace,
+}
 
 impl Drop for RunningAccess {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -110,8 +123,9 @@ async fn start_access(
     seeds: &[String],
     s3_addr: SocketAddr,
     iceberg_addr: SocketAddr,
+    ports: RuntimeNamespace,
 ) -> RunningAccess {
-    start_access_with_fault(config, seeds, s3_addr, iceberg_addr, None).await
+    start_access_with_fault(config, seeds, s3_addr, iceberg_addr, ports, None).await
 }
 
 async fn start_access_with_fault(
@@ -119,6 +133,7 @@ async fn start_access_with_fault(
     seeds: &[String],
     s3_addr: SocketAddr,
     iceberg_addr: SocketAddr,
+    ports: RuntimeNamespace,
     stop_s3_manager_file: Option<&Path>,
 ) -> RunningAccess {
     let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"));
@@ -145,11 +160,11 @@ async fn start_access_with_fault(
         command.env("CROWDB_TEST_STOP_S3_MANAGER_FILE", path);
     }
     let child = command.spawn().unwrap();
-    let mut process = RunningAccess(child);
+    let mut process = RunningAccess { child, _ports: ports };
     let client = Client::new();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Some(status) = process.0.try_wait().unwrap() {
+            if let Some(status) = process.child.try_wait().unwrap() {
                 panic!("combined access process exited before readiness: {status}");
             }
             let s3_ready = client
@@ -189,20 +204,14 @@ async fn combined_http_listeners_keep_protocol_chunk_policies_separate() {
         .collect::<Vec<_>>();
     initialize_iceberg(seeds.clone()).await;
 
-    let s3_addr = free_address();
-    let iceberg_addr = loop {
-        let address = free_address();
-        if address != s3_addr {
-            break address;
-        }
-    };
+    let (ports, s3_addr, iceberg_addr) = listener_addresses();
     let config = dir.path().join("combined-access.toml");
     std::fs::write(
         &config,
         "[s3]\nec_data = 2\nec_code = 1\nlarge_prefetch_strips_per_chunk = 2\nlarge_memory_budget_bytes = 67108864\n[s3.small_write]\nconversion_enabled = false\nmirror_copies = 2\n[iceberg]\nec_data = 4\nec_code = 2\nlarge_prefetch_strips_per_chunk = 3\nlarge_memory_budget_bytes = 100663296\n[iceberg.small_write]\nconversion_enabled = false\nmirror_copies = 2\n",
     )
     .unwrap();
-    let _access = start_access(&config, &seeds, s3_addr, iceberg_addr).await;
+    let _access = start_access(&config, &seeds, s3_addr, iceberg_addr, ports).await;
     write_s3(s3_addr).await;
     write_iceberg(iceberg_addr, &seeds).await;
     assert_chunk_layouts(&cluster).await;
@@ -222,13 +231,7 @@ async fn terminal_s3_storage_failure_stops_both_access_listeners() {
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
     initialize_iceberg(seeds.clone()).await;
-    let s3_addr = free_address();
-    let iceberg_addr = loop {
-        let address = free_address();
-        if address != s3_addr {
-            break address;
-        }
-    };
+    let (ports, s3_addr, iceberg_addr) = listener_addresses();
     let config = dir.path().join("combined-access.toml");
     std::fs::write(
         &config,
@@ -236,7 +239,8 @@ async fn terminal_s3_storage_failure_stops_both_access_listeners() {
     )
     .unwrap();
     let sentinel = dir.path().join("stop-s3-manager");
-    let mut access = start_access_with_fault(&config, &seeds, s3_addr, iceberg_addr, Some(&sentinel)).await;
+    let mut access =
+        start_access_with_fault(&config, &seeds, s3_addr, iceberg_addr, ports, Some(&sentinel)).await;
     let s3_client = s3::S3HttpClient::new(format!("http://{s3_addr}")).unwrap();
     s3_client
         .request(Method::PUT, Some("failure"), None, &[], None, None)
@@ -256,7 +260,7 @@ async fn terminal_s3_storage_failure_stops_both_access_listeners() {
     std::fs::write(&sentinel, b"stop").unwrap();
     let status = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            if let Some(status) = access.0.try_wait().unwrap() {
+            if let Some(status) = access.child.try_wait().unwrap() {
                 break status;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

@@ -5,7 +5,8 @@
 //!
 //! Each service type gets a **1000-port block** with a shared prefix
 //! (same kind of server = same leading digits), all ports **>10000**.
-//! Within a block, listener kinds get separate sub-ranges. All
+//! Access protocols each have their own block. Other services split
+//! their block into listener sub-ranges. All
 //! services use **stride 1** — no paired-port logic. Port 0 is never
 //! used (rejected everywhere by CLI parse and the port allocator).
 //!
@@ -42,17 +43,16 @@
 //!   - `15100`–`15599` — HTTP management API (stride 1)
 //!   - `15200`–`15699` — crowdb-rpc listener (stride 1)
 //!   - `15700`–`15999` — spare
-//! - `16000`–`16999` — crowdb-access-server (prefix 16)
-//!   - `16000`–`16499` — S3 HTTP service (stride 1)
-//!   - `16500`–`16749` — Iceberg HTTP service (stride 1)
-//!   - `16750`–`16999` — Dataset HTTP service (stride 1)
+//! - `16000`–`16999` — crowdb-access-server S3 HTTP (prefix 16)
+//! - `17000`–`17999` — crowdb-access-server Iceberg HTTP (prefix 17)
+//! - `18000`–`18999` — crowdb-access-server Dataset HTTP (prefix 18)
 //!
 //! The group-0 kv-server mgmt port (`10000`) is the famous bootstrap
 //! discovery port — any client can contact group-0 to read the service
 //! registry and learn all living services' IP + port.
 //!
 //! Future service types should pick a base outside these ranges (next
-//! free prefix: 17xxx) and document it here.
+//! free prefix: 19xxx) and document it here.
 
 /// crowdb-kv-server HTTP management API — base port. Also the famous
 /// group-0 bootstrap discovery port.
@@ -100,10 +100,10 @@ pub const CHUNK_KV_RPC_BASE: u16 = 15200;
 pub const ACCESS_SERVER_HTTP_BASE: u16 = 16000;
 
 /// crowdb-access-server Iceberg HTTP service — base port.
-pub const ACCESS_SERVER_ICEBERG_HTTP_BASE: u16 = 16500;
+pub const ACCESS_SERVER_ICEBERG_HTTP_BASE: u16 = 17000;
 
 /// crowdb-access-server Dataset HTTP service — base port.
-pub const ACCESS_SERVER_DATASET_HTTP_BASE: u16 = 16750;
+pub const ACCESS_SERVER_DATASET_HTTP_BASE: u16 = 18000;
 
 /// CROWDB service type for default port allocation.
 ///
@@ -209,13 +209,11 @@ impl ServicePort {
     /// Sub-range size (number of ports) for this service type's
     /// listener kind. Most listener kinds get 500 ports — large enough
     /// for parallel E2E test suites that deploy 80+ nodes per service
-    /// type. Each service block is 1000 ports, so 500 fits with room
-    /// to spare. Iceberg and Dataset each get 250 ports within the shared
-    /// access-server block, following the existing 500-port S3 range.
+    /// type. Each access protocol gets a full independent 1000-port block.
     #[must_use]
     pub const fn range_size(self) -> u16 {
         match self {
-            Self::AccessServerIcebergHttp | Self::AccessServerDatasetHttp => 250,
+            Self::AccessServerHttp | Self::AccessServerIcebergHttp | Self::AccessServerDatasetHttp => 1000,
             _ => 500,
         }
     }

@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use crowdb_access_iceberg::{
-    catalog::CatalogContext,
-    commit::{TableCommitJournal, TableCommitPhase},
+    catalog::{CatalogContext, RoutedCatalogStore},
+    commit::TableCommitJournal,
     file::FileRepository,
     namespace::{NamespaceIdentifier, NamespaceRepository},
-    table::TableRepository,
+    table::{SelectedTable, TableRepository},
 };
 use serde_json::json;
 
@@ -35,19 +35,22 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory
     assert_eq!(loser.paused().await["label"], "head-2");
     let store = stack.store().await;
     let journal = TableCommitJournal::new(store.clone());
-    let operation = journal
+    assert!(journal
         .load(context, case.identity.parse().unwrap())
         .await
         .unwrap()
+        .is_none());
+    let before = selected(store.clone(), context, &case.name).await;
+    assert_eq!(before.head.generation, 1);
+    let operation: crowdb_access_iceberg::key::OperationId = case.identity.parse().unwrap();
+    let candidate_location = before
+        .head
+        .metadata_location
+        .table()
+        .file(&format!("metadata/{operation}.metadata.json"))
         .unwrap();
-    assert_eq!(operation.phase, TableCommitPhase::Publishing);
-    let candidate = operation.candidate.unwrap();
     let files = FileRepository::new(store.clone());
-    assert!(files
-        .load(context, &candidate.metadata_location)
-        .await
-        .unwrap()
-        .is_some());
+    let candidate = files.load(context, &candidate_location).await.unwrap().unwrap();
     let winner = TestCommitChild::start(
         &stack.cluster.mgmt_endpoints,
         directory.join("winner.json"),
@@ -55,7 +58,7 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory
         false,
     )
     .await;
-    case::success(
+    let winning_response = case::success(
         &format!("http://{}", winner.address),
         &case.path,
         &json!({"requirements":[],"updates":[{"action":"set-properties","updates":{"winner":"selected"}}]}),
@@ -69,26 +72,42 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory
     let first = case::post(&endpoint, &case.path, &case.identity, &case.body)
         .await
         .unwrap();
-    assert_eq!(first.status(), 409);
+    assert_eq!(first.status(), 503);
     let bytes = first.bytes().await.unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(error["error"]["type"], "ServiceUnavailableException");
     let replay = case::post(&endpoint, &case.path, &case.identity, &case.body)
         .await
         .unwrap();
-    assert_eq!(replay.status(), 409);
+    assert_eq!(replay.status(), 503);
     assert_eq!(replay.bytes().await.unwrap(), bytes);
     let changed = case::post(&endpoint, &case.path, &case.identity, &format!("{} ", case.body))
         .await
         .unwrap();
-    assert_eq!(changed.status(), 409);
+    assert_eq!(changed.status(), 503);
+    assert!(journal
+        .load(context, case.identity.parse().unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    let current = selected(store, context, &case.name).await;
+    assert_eq!(current.head.generation, 2);
+    assert_ne!(current.head.metadata_location, candidate_location);
     assert_eq!(
-        journal
-            .load(context, case.identity.parse().unwrap())
-            .await
-            .unwrap()
-            .unwrap()
-            .phase,
-        TableCommitPhase::Rejected
+        current.head.metadata_location.to_string(),
+        winning_response["metadata-location"].as_str().unwrap()
     );
+    assert_eq!(
+        files.load(context, &candidate_location).await.unwrap().unwrap(),
+        candidate
+    );
+}
+
+async fn selected(
+    store: std::sync::Arc<RoutedCatalogStore>,
+    context: CatalogContext,
+    name: &str,
+) -> SelectedTable {
     let parent = NamespaceRepository::new(store.clone())
         .load(
             context,
@@ -97,16 +116,9 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory
         .await
         .unwrap()
         .unwrap();
-    let selected = TableRepository::new(store)
-        .select(context, parent.namespace, &case.name)
+    TableRepository::new(store)
+        .select(context, parent.namespace, name)
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(selected.head.generation, 2);
-    assert_ne!(selected.head.metadata_location, candidate.metadata_location);
-    assert!(files
-        .load(context, &candidate.metadata_location)
-        .await
         .unwrap()
-        .is_some());
 }

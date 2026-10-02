@@ -56,8 +56,8 @@ fn known_base_ports() {
     assert_eq!(CHUNK_KV_HTTP_BASE, 15100);
     assert_eq!(CHUNK_KV_RPC_BASE, 15200);
     assert_eq!(ACCESS_SERVER_HTTP_BASE, 16000);
-    assert_eq!(ACCESS_SERVER_ICEBERG_HTTP_BASE, 16500);
-    assert_eq!(ACCESS_SERVER_DATASET_HTTP_BASE, 16750);
+    assert_eq!(ACCESS_SERVER_ICEBERG_HTTP_BASE, 17000);
+    assert_eq!(ACCESS_SERVER_DATASET_HTTP_BASE, 18000);
 }
 
 // ── stride (all stride 1 — no paired-port logic) ───────────────
@@ -185,7 +185,9 @@ fn range_sizes_match_listener_scopes() {
         ServicePort::AccessServerDatasetHttp,
     ] {
         let expected = match svc {
-            ServicePort::AccessServerIcebergHttp | ServicePort::AccessServerDatasetHttp => 250,
+            ServicePort::AccessServerHttp
+            | ServicePort::AccessServerIcebergHttp
+            | ServicePort::AccessServerDatasetHttp => 1000,
             _ => 500,
         };
         assert_eq!(svc.range_size(), expected, "{svc:?} range_size");
@@ -193,7 +195,7 @@ fn range_sizes_match_listener_scopes() {
 }
 
 #[test]
-fn access_listener_scopes_are_disjoint_and_within_access_server_block() {
+fn access_listener_scopes_have_disjoint_thousand_port_blocks() {
     let services = [
         ServicePort::AccessServerHttp,
         ServicePort::AccessServerIcebergHttp,
@@ -205,9 +207,9 @@ fn access_listener_scopes_are_disjoint_and_within_access_server_block() {
         assert!(names.insert(service.name()));
         for instance in 0..service.range_size() {
             let port = service.port(instance);
-            assert!((16000..17000).contains(&port));
+            assert!((16000..19000).contains(&port));
             assert!(seen.insert(port), "overlapping access listener port {port}");
         }
     }
-    assert_eq!(seen.len(), 1000);
+    assert_eq!(seen.len(), 3000);
 }
