@@ -113,11 +113,28 @@ async fn create_and_update_replay_exact_results_and_enforce_independent_writer()
         value(fixture.request(Method::GET, TABLE, "r", None).await, 200).await,
         committed
     );
+    let changed_update = json!({"requirements":[], "updates":[
+        {"action":"set-properties","updates":{"owner":"changed"}}]});
+    value(
+        fixture.post(TABLE, "w", Some(&identity), &changed_update).await,
+        409,
+    )
+    .await;
+    let later = value(fixture.post(TABLE, "w", None, &changed_update).await, 200).await;
+    let uncertain = value(fixture.post(TABLE, "w", Some(&identity), &update).await, 503).await;
+    assert!(uncertain["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("uncertain"));
+    assert_eq!(
+        value(fixture.request(Method::GET, TABLE, "r", None).await, 200).await,
+        later
+    );
     fixture.finish().await;
 }
 
 #[tokio::test]
-async fn failed_requirement_is_durable_and_does_not_publish_or_rebase() {
+async fn failed_requirement_does_not_publish_or_write_a_phase_journal() {
     let fixture = TestTableHttp::writable().await;
     let before = value(fixture.post(TABLES, "w", None, &create(false)).await, 200).await;
     let identity = key();
@@ -135,15 +152,7 @@ async fn failed_requirement_is_durable_and_does_not_publish_or_rebase() {
     );
     let operation: crowdb_access_iceberg::key::OperationId = identity.parse().unwrap();
     let journal = crowdb_access_iceberg::commit::TableCommitJournal::new(fixture.store.clone());
-    assert_eq!(
-        journal
-            .load(fixture.context, operation)
-            .await
-            .unwrap()
-            .unwrap()
-            .phase,
-        crowdb_access_iceberg::commit::TableCommitPhase::Rejected
-    );
+    assert!(journal.load(fixture.context, operation).await.unwrap().is_none());
     fixture.finish().await;
 }
 
@@ -216,7 +225,7 @@ async fn concurrent_identical_commit_keys_cannot_rebase_or_finalize_a_transient_
                 &body,
             )
             .await,
-        409,
+        404,
     )
     .await;
     fixture.finish().await;
@@ -241,7 +250,7 @@ async fn foreign_create_location_is_a_replayable_client_error() {
 }
 
 #[tokio::test]
-async fn missing_selected_file_rejection_survives_lost_durable_reply() {
+async fn commit_skips_manifest_proofs_and_recovers_a_lost_head_reply() {
     let fixture = TestTableHttp::writable().await;
     let created = value(fixture.post(TABLES, "w", None, &create(false)).await, 200).await;
     let identity = key();
@@ -256,13 +265,13 @@ async fn missing_selected_file_rejection_survives_lost_durable_reply() {
     fixture
         .store
         .lose_reply_kind
-        .store(4, std::sync::atomic::Ordering::SeqCst);
+        .store(5, std::sync::atomic::Ordering::SeqCst);
     value(fixture.post(TABLE, "w", Some(&identity), &body).await, 503).await;
-    let result = value(fixture.post(TABLE, "w", Some(&identity), &body).await, 400).await;
-    assert_eq!(result["error"]["type"], "BadRequestException");
+    let result = value(fixture.post(TABLE, "w", Some(&identity), &body).await, 200).await;
+    assert_eq!(result["metadata"]["current-snapshot-id"], 123);
     assert_eq!(
         value(fixture.request(Method::GET, TABLE, "r", None).await, 200).await,
-        created
+        result
     );
     fixture.finish().await;
 }

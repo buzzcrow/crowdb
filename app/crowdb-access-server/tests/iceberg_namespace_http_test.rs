@@ -157,11 +157,11 @@ async fn complete_list_spool_admission_is_bounded_and_released() {
     let (store, _, address, stop, server) = setup().await;
     store.scan_delay_ms.store(500, Ordering::SeqCst);
     let mut requests = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..64 {
         requests.push(tokio::spawn(send(address, "GET", "/v1/namespaces")));
     }
     tokio::time::timeout(Duration::from_secs(1), async {
-        while store.scans.load(Ordering::SeqCst) < 4 {
+        while store.scans.load(Ordering::SeqCst) < 64 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })

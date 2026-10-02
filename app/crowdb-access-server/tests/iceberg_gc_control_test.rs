@@ -100,6 +100,7 @@ async fn seed_head(store: &RoutedCatalogStore, context: CatalogContext) -> Table
         metadata_file: FileId::random(),
         metadata_location: location.file("metadata/first.json").unwrap(),
         metadata_digest: [7; 32],
+        commit_binding: None,
         format_version: 1,
         table_uuid: None,
         operation_fence: 1,

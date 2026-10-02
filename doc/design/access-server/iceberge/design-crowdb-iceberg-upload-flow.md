@@ -19,26 +19,25 @@ Depends on: [Native Iceberg Storage](design-crowdb-iceberg.md) and
 
 ## 1. Client and server flow
 
-The TPC loader writes one local Parquet part at a time through `CrowdbFileIO`.
-It copies bounded input buffers into the PyArrow output stream while computing
-a local SHA-256 digest. It does not read the uploaded object back. Closing the
-stream waits for the FileIO transfer to finish. Only after all files for a
-table are uploaded does the loader import them and commit the table once.
+The TPC loader hashes each local Parquet file through bounded reads, checks
+that its unique target is absent, then sends a known-size S3 request using the
+vended native credentials. Below 256 MiB it uses a single PUT; larger files
+use bounded multipart parts aligned to complete frame payloads. The upload
+finishes before the loader imports its files and commits the table. Other
+Iceberg FileIO clients can select their own multipart thresholds; PyArrow
+output streams may use multipart even for small files.
 
-PyArrow currently uses multipart FileIO even for the measured 64-KiB object:
-
-1. FileIO checks whether the exact target exists, then starts a multipart
-   session. Neither step publishes a table snapshot.
-2. Each `UploadPart` authenticates and validates its body, prepares a chunk
-   writer, streams bytes to Chunk I/O, finishes the writer, and persists the
-   part's locations and session progress. The write path verifies the supplied
-   body integrity information before accepting it.
-3. `CompleteMultipart` freezes the selected parts and assembles their chunk
-   locations into one file record. Native stream parts are composed logically;
-   completion does not copy the object payload. The file mapping is then
-   published. Recovery can resume an interrupted completion.
-4. A later Iceberg table commit publishes metadata that references this file.
-   Uploaded files remain outside the table snapshot until that commit.
+1. An optional client existence probe publishes nothing. Direct PUT validates
+   the request body, completes the Chunk writer and publishes one immutable
+   location descriptor with create-only CAS.
+2. Multipart starts an independent session. Each UploadPart authenticates and
+   validates its body, finishes its writer and persists that part's locations.
+   Streamed parts update their own key without a session write for each part.
+3. CompleteMultipart freezes the selected parts and composes their locations
+   into one descriptor without copying payload. Location publication is
+   create-only. Recovery can resume interrupted completion.
+4. A later table-head CAS publishes Iceberg metadata referencing the uploaded
+   files. File uploads themselves do not publish a table snapshot.
 
 Writer selection uses the decoded length of each HTTP request, when available.
 Payloads below the small-object threshold can use the small-object writer for

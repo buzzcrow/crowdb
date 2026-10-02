@@ -29,6 +29,7 @@ async fn fixture() -> (common::file::TestFile, GcTask) {
         metadata_file: file.file,
         metadata_location: file.location,
         metadata_digest: file.digest,
+        commit_binding: None,
         format_version: 1,
         table_uuid: None,
         operation_fence: 1,

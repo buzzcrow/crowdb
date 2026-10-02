@@ -58,7 +58,19 @@ impl OwnedChunk {
         let metrics = Arc::clone(&self.metrics);
         self.prefetched_group = Some(tokio::spawn(async move {
             let started = std::time::Instant::now();
-            let result = allocator.reserve_strip_group(request).await;
+            let result = allocator.reserve_strip_group(request).await.and_then(|response| {
+                let returned_offset = response
+                    .group
+                    .as_ref()
+                    .and_then(|group| group.strips.first())
+                    .map(|strip| strip.chunk_offset);
+                if returned_offset != Some(append_offset) {
+                    return Err(IoError::MetadataConflict(
+                        "prefetch append offset mismatch".into(),
+                    ));
+                }
+                Ok(response)
+            });
             metrics.record_reservation_wait(started.elapsed());
             result
         }));

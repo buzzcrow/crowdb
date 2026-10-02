@@ -68,6 +68,10 @@ impl TableWrites {
             }
             version = target;
         }
+        let mut binding = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut binding, (record.principal.len() as u64).to_be_bytes());
+        sha2::Digest::update(&mut binding, record.principal.as_bytes());
+        sha2::Digest::update(&mut binding, record.digest);
         let response = publish_direct_commit(
             self.store.clone(),
             self.blocks.clone(),
@@ -75,6 +79,7 @@ impl TableWrites {
             selected.head,
             &parsed,
             record.identity,
+            sha2::Digest::finalize(binding).into(),
             super::now_ms()?,
             self.limits,
         )
@@ -149,7 +154,7 @@ impl TableWrites {
                 .await
                 .map_err(creation_error);
         }
-        self.update(
+        Box::pin(self.update(
             record,
             capabilities,
             &target.namespace,
@@ -159,7 +164,7 @@ impl TableWrites {
                 body: &body,
             },
             timestamp_ms,
-        )
+        ))
         .await
     }
 

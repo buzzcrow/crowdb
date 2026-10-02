@@ -47,6 +47,7 @@ pub async fn publish_direct_commit(
     before: TableHead,
     request: &CommitRequest,
     identity: RequestIdentity,
+    binding: [u8; 32],
     now_ms: u64,
     limits: CommitProofLimits,
 ) -> Result<Vec<u8>, DirectCommitError> {
@@ -58,8 +59,13 @@ pub async fn publish_direct_commit(
         return Err(DirectCommitError::Uncertain);
     }
     let file = FileId::from_bytes(identity.operation.as_bytes())?;
-    if before.metadata_file == file {
-        return Err(DirectCommitError::Uncertain);
+    let replay = before.metadata_file == file;
+    if replay && before.commit_binding != Some(binding) {
+        return Err(if before.commit_binding.is_some() {
+            DirectCommitError::Conflict
+        } else {
+            DirectCommitError::Uncertain
+        });
     }
     let metadata = FileRepository::new(store.clone())
         .load(context, &before.metadata_location)
@@ -74,7 +80,11 @@ pub async fn publish_direct_commit(
         limits.preparation.evaluation.metadata,
     )
     .await?;
+    if replay {
+        return Ok(publication::metadata_response(&before, prior.canonical())?);
+    }
     let mut candidate = before.clone();
+    candidate.commit_binding = Some(binding);
     candidate.generation = candidate
         .generation
         .checked_add(1)

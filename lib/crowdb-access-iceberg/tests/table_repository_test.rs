@@ -26,6 +26,7 @@ fn head(record: &FileRecord) -> TableHead {
         metadata_file: record.file,
         metadata_location: record.location.clone(),
         metadata_digest: record.digest,
+        commit_binding: None,
         format_version: 2,
         table_uuid: Some(uuid::Uuid::new_v4()),
         operation_fence: 1,

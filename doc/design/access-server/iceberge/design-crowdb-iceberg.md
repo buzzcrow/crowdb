@@ -76,7 +76,8 @@ fences admission, records a maintenance observation after the durable fence,
 publishes an empty replacement under maintenance, and persists the grace proof
 before reopening admission. Completion uses persisted lease, request, delegated
 access and clock-skew limits, never shorter restart configuration. Retired
-authorities remain unreachable; physical deletion is not implemented.
+authorities remain unreachable; bounded retired-catalog cleanup follows the
+persisted retention and owner proofs.
 
 Format capability bits are durable catalog authority. Zero means no advertised
 table format service; startup never rewrites or widens a legacy zero profile.
@@ -191,7 +192,10 @@ scanned key. A stale-only page can therefore be empty while retaining a token.
 Unpaginated lists build a complete in-memory spool before success headers, capped
 independently at 2 MiB, 1024 results and 4096 scanned mappings. A shared
 128 MiB byte budget admits response spools, reserving each operation's maximum
-2 MiB while that buffer is owned. Atomic admission rejects excess work without waiting. The request
+while constructing the response (2 MiB for namespace lists and 4 MiB for table
+responses). Serialization shrinks the reservation to the retained buffer capacity;
+the response releases it on cancellation or completion. Atomic admission rejects
+excess work without waiting. The request
 deadline bounds construction before success headers. Dispatch stops before that
 deadline, reserving the smaller of 100 ms or 10% of the request timeout for
 emitting a bounded error response. Header receipt does not restart this budget.
@@ -517,7 +521,10 @@ merge implicitly.
 Ordinary commits prepare immutable metadata and publish with one TableHead CAS.
 They do not write a phase journal, per-file committed state or post-publication
 head settlement. No server instance is a table leader or lock owner. A current
-head can identify a successful retry; after a later generation hides that result,
+head carries the operation-named metadata pointer and an optional 32-byte digest
+binding principal, route and request bytes. A matching visible retry returns that
+metadata; changed input conflicts and old heads without this binding remain
+uncertain. After a later generation hides that result,
 an old request may return uncertain rather than silently reapplying its update.
 
 The library's immediate table creator records its immutable input, candidate

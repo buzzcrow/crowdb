@@ -26,6 +26,14 @@ impl SpoolPermit {
             .ok()?;
         Some(Self(active.clone(), bytes))
     }
+
+    fn shrink_to(&mut self, bytes: usize) {
+        let released = self.1.saturating_sub(bytes);
+        if released != 0 {
+            self.0.fetch_sub(released, Ordering::AcqRel);
+            self.1 -= released;
+        }
+    }
 }
 
 impl Drop for SpoolPermit {
@@ -36,6 +44,7 @@ impl Drop for SpoolPermit {
 
 pub(super) struct IcebergBody {
     bytes: Bytes,
+    retained_bytes: usize,
     permit: Option<SpoolPermit>,
     file: Option<FileReadBody>,
     complete: Option<FileCompleteBody>,
@@ -48,13 +57,15 @@ impl IcebergBody {
         self
     }
 
-    pub(super) fn with_spool_permit(mut self, permit: SpoolPermit) -> Self {
+    pub(super) fn with_spool_permit(mut self, mut permit: SpoolPermit) -> Self {
+        permit.shrink_to(self.retained_bytes);
         self.permit = Some(permit);
         self
     }
 
     pub(super) fn new(bytes: Vec<u8>) -> Self {
         Self {
+            retained_bytes: bytes.capacity(),
             bytes: Bytes::from(bytes),
             permit: None,
             file: None,
@@ -63,18 +74,13 @@ impl IcebergBody {
         }
     }
     pub(super) fn with_permit(bytes: Vec<u8>, permit: SpoolPermit) -> Self {
-        Self {
-            bytes: Bytes::from(bytes),
-            permit: Some(permit),
-            file: None,
-            complete: None,
-            observation: None,
-        }
+        Self::new(bytes).with_spool_permit(permit)
     }
 
     pub(super) fn file(body: FileReadBody) -> Self {
         Self {
             bytes: Bytes::new(),
+            retained_bytes: 0,
             permit: None,
             file: Some(body),
             complete: None,
@@ -85,6 +91,7 @@ impl IcebergBody {
     pub(super) fn complete(body: FileCompleteBody) -> Self {
         Self {
             bytes: Bytes::new(),
+            retained_bytes: 0,
             permit: None,
             file: None,
             complete: Some(body),

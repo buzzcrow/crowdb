@@ -138,7 +138,8 @@ impl CatalogStore for TestStore {
         if matches!(
             crowdb_access_iceberg::key::IcebergKey::decode(key),
             Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                scope: crowdb_access_iceberg::key::CatalogScope::File,
+                scope: crowdb_access_iceberg::key::CatalogScope::File
+                    | crowdb_access_iceberg::key::CatalogScope::FileLocation,
                 ..
             })
         ) && self.pause_file_read.swap(false, Ordering::SeqCst)

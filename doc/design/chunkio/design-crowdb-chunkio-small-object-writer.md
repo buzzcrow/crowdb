@@ -139,6 +139,9 @@ bounded batch of already attached mirror strips. Seal cancels never-consumed
 reservations and removes attached strips beyond the written length. Objects and batches may straddle strips, but never chunks. Mirror-only groups
 contain 32 strips by default; at 16 remaining strips a new group is allocated
 asynchronously after the full preceding reservation, including hidden strips.
+The client verifies the returned append offset before accepting a refill; an
+older backend that ignores this field fails safely rather than overlapping
+hidden strips. Upgrade ChunkDB before enabling this client prefetch behavior.
 Resource allocation releases the existing chunk lifecycle guard; publication
 reacquires it and revalidates ownership and sequence. No extra persistent
 high-water record is required.

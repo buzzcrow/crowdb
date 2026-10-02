@@ -301,6 +301,7 @@ table FBTableHead {
     table_uuid:[ubyte];
     operation_fence:ulong;
     pending_operation:[ubyte];
+  commit_binding:[ubyte];
 }
 
 table FBTableMapping {

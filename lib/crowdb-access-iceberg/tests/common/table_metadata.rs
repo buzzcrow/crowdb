@@ -57,6 +57,7 @@ pub fn head(bytes: &[u8], version: u8, uuid: Option<uuid::Uuid>) -> TableHead {
         metadata_file: FileId::random(),
         metadata_location: table().file("metadata/one.metadata.json").unwrap(),
         metadata_digest: Sha256::digest(bytes).into(),
+        commit_binding: None,
         format_version: version,
         table_uuid: uuid,
         operation_fence: 1,

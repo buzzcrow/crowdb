@@ -194,6 +194,7 @@ async fn seed_gc_workspace_task(
         metadata_file: metadata.file,
         metadata_location: metadata.location,
         metadata_digest: metadata.digest,
+        commit_binding: None,
         format_version: 1,
         table_uuid: None,
         operation_fence: 2,

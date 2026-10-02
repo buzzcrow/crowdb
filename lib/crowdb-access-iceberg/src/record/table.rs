@@ -19,6 +19,7 @@ pub(super) fn encode_head<'buffer>(
     let metadata_file = builder.create_vector(head.metadata_file.as_bytes());
     let metadata_location = builder.create_string(&head.metadata_location.to_string());
     let metadata_digest = builder.create_vector(&head.metadata_digest);
+    let commit_binding = head.commit_binding.map(|bytes| builder.create_vector(&bytes));
     let table_uuid = head
         .table_uuid
         .map(|value| builder.create_vector(value.as_bytes()));
@@ -42,6 +43,7 @@ pub(super) fn encode_head<'buffer>(
             metadata_file: Some(metadata_file),
             metadata_location: Some(metadata_location),
             metadata_digest: Some(metadata_digest),
+            commit_binding,
             format_version: head.format_version,
             table_uuid,
             operation_fence: head.operation_fence,
@@ -71,6 +73,10 @@ pub(super) fn decode_head(value: FBTableHead<'_>) -> Result<TableHead, Validatio
             .bytes()
             .try_into()
             .map_err(|_| ValidationError::Record)?,
+        commit_binding: value
+            .commit_binding()
+            .map(|bytes| bytes.bytes().try_into().map_err(|_| ValidationError::Record))
+            .transpose()?,
         format_version: value.format_version(),
         table_uuid: value
             .table_uuid()

@@ -58,6 +58,7 @@ struct MockState {
 struct MockAllocator {
     advance_gate: Option<Arc<tokio::sync::Notify>>,
     refill_gate: Option<Arc<tokio::sync::Notify>>,
+    mismatched_refill_response: bool,
     refill_entered: tokio::sync::Notify,
     reserve_calls: AtomicUsize,
     advance_entered: tokio::sync::Notify,
@@ -166,8 +167,8 @@ impl ChunkAllocator for MockAllocator {
     }
 
     async fn reserve_strip_group(&self, req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
-        let call = self.reserve_calls.fetch_add(1, Ordering::Relaxed);
-        if call > 0 {
+        self.reserve_calls.fetch_add(1, Ordering::Relaxed);
+        if req.reservation_offset_kb.is_some() {
             if let Some(gate) = &self.refill_gate {
                 self.refill_entered.notify_one();
                 gate.notified().await;
@@ -217,6 +218,10 @@ impl ChunkAllocator for MockAllocator {
         state
             .reservations
             .insert((group_id.high, group_id.low), group.clone());
+        let mut group = group;
+        if self.mismatched_refill_response && req.reservation_offset_kb.is_some() {
+            group.strips[0].chunk_offset = 0;
+        }
         Ok(ReserveStripGroupResponse {
             chunk: Some(chunk),
             group: Some(group),

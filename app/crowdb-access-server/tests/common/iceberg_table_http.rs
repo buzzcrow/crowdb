@@ -185,6 +185,7 @@ impl TestTableHttp {
             metadata_file: FileId::random(),
             metadata_location: location.file("metadata/one.json").unwrap(),
             metadata_digest: Sha256::digest(&bytes).into(),
+            commit_binding: None,
             format_version: 3,
             table_uuid: Some("12345678-1234-1234-1234-123456789abc".parse().unwrap()),
             operation_fence: 1,

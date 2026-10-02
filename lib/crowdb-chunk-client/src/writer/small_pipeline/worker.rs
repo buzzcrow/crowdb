@@ -45,6 +45,7 @@ impl PipelineWorker {
             }
             let fit = self.ensure_object_fits(frame_bytes(first.len)?).await;
             if let Err(error) = fit {
+                self.receiver.close();
                 fail_one(first, &error.to_string(), &self.runtime.metrics);
                 self.fail_remaining(&error.to_string()).await;
                 let _ = self.finish_chunks().await;

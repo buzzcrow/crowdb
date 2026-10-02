@@ -109,24 +109,24 @@ owner slicing, asynchronous prefetch and exact receive allocation.
   Files: `lib/crowdb-access-iceberg/src/table/lifecycle/`,
   `lib/crowdb-access-iceberg/src/gc/`,
   `app/crowdb-access-server/src/iceberg/gc_runtime.rs`.
-- [ ] **Resource and read audit**: replace the fixed four-request spool gate
+- [x] **Resource and read audit**: replace the fixed four-request spool gate
   with a budget for its actual resource and remove repeated root, head,
   session, journal, and post-success GETs. Record any indispensable extra
   read with its concrete failing interleaving before retaining it. Files:
   `app/crowdb-access-server/src/iceberg/`,
   `lib/crowdb-access-iceberg/src/`.
-- [ ] **Cleanup verification**: test retained references, mixed S3 deletion,
+- [x] **Cleanup verification**: test retained references, mixed S3 deletion,
   expired multipart sessions and unpublished parts, assembly restart,
   active reads, drop purge, retry, restart, and same-name re-creation. Files:
   `lib/crowdb-access-iceberg/tests/`, `app/crowdb-access-server/tests/`.
 
 ## Phase 5: Measurement, gates, and cleanup
 
-- [ ] **Measured comparison**: use real HTTP and TPC-H/TPC-DS loader
+- [x] **Measured comparison**: use real HTTP and TPC-H/TPC-DS loader
   profiles at 1 and 32 clients; compare KV reads/writes, 503s, throughput,
   and p50/p95/p99 by phase. Files: focused workload/test artifacts and this
   plan.
-- [ ] **Architecture and gates**: update the permanent Iceberg design, run
+- [~] **Architecture and gates**: update the permanent Iceberg design, run
   `pixi run rs-fmt-check`, `pixi run rs-lint`, affected test tasks, and the
   focused cluster workload separately. Files:
   `doc/design/access-server/iceberge/`, touched Rust files.
@@ -328,3 +328,53 @@ owner slicing, asynchronous prefetch and exact receive allocation.
 - Commit the native small-object implementation before consolidated service,
   shared-writer and loader acceptance. Any acceptance fixes become separate
   commits so they can be compared to this implementation snapshot.
+
+- Native implementation snapshot is c27f6fce. Consolidated service acceptance
+  is running with iceberg-e2e enabled and serial test execution. Minor permanent
+  document reconciliation remains in the final cleanup commit.
+
+- Protocol audit found that an older or inconsistent reservation backend could
+  ignore the appended offset and return a group overlapping hidden strips.
+  The client now verifies the returned first offset against its request in
+  memory before accepting the group, without an extra KV read. An injected
+  old-backend reply must fail before any overlapping object write/publication.
+
+- Service HTTP acceptance completed nine real-process cases, including 32 direct
+  PUTs, multipart restart, explicit cleanup, size routing and slow sockets. The
+  next parser test still expected all object DELETE routes to be unsupported;
+  it now distinguishes object cleanup from multipart abort. Authorization is
+  verified by the existing native HTTP cleanup cases. Continue remaining server
+  targets without repeating the already passed long HTTP matrix.
+- The injected bad-refill test blocks resource allocation until the preceding
+  group is fully confirmed, then corrupts only the returned offset. This avoids
+  the mock's strict metadata-revision fence causing an unrelated stale-writer
+  failure before the intended offset-validation assertion.
+
+- Consolidated acceptance fixes: updated DELETE parsing and the file-read barrier
+  to include complete location-key records; the barrier now again verifies that
+  concurrent table commits cannot return mixed metadata. Request construction
+  reserves the bounded response budget, then shrinks to the retained Vec capacity
+  after serialization; table reads reserve their actual 4 MiB response ceiling.
+  Namespace/list/commit-body tests exhaust byte budgets rather than four slots.
+- The bad-refill regression now fills the initial strip plus all four reserved
+  strips before accepting the injected response. Its first true failure exposed
+  a worker shutdown hang: the pre-batch error path drained an open receiver.
+  Closing the receiver first terminates admission and safely fails queued work.
+  The focused regression and all 42 small-pool tests pass.
+
+- Full default server acceptance exposed current-head retries incorrectly returning
+  uncertain despite a visible successful operation. Added one optional 32-byte
+  binding to the existing TableHead, hashing principal plus route/body digest.
+  The sole head CAS stores it; visible matching retries read the selected immutable
+  metadata and replay, changed input conflicts, hidden old outcomes remain uncertain.
+  No phase journal, extra commit KV write or existence GET is added. Old heads
+  without a binding remain conservatively uncertain. Failed requirements leave no
+  journal, and manifest proofs remain absent as designed.
+
+- Post-fix complete default Access Server and complete Iceberg library suites pass.
+  Native file storage restart passes. With the pinned Python environment, all three
+  native catalog/namespace restart and operation-budget cases pass; all nonignored
+  GC control cases and simulated-full-disk capacity recovery pass. Existing
+  malformed-record injection and retry deferrals are retained in the GC suite.
+  Remaining final acceptance: 18 shared-writer E2E cases and final loader/5 MiB
+  routing runs. The baseline worktree has been archived with its snapshot.
