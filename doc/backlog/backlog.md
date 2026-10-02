@@ -40,10 +40,6 @@ R152–R166 delivered the limited basic S3 service, including the restart
 acceptance baseline. Multipart upload is available; R168–R169 defer
 shared-storage GC without blocking basic large-object deletion. R170 adds
 optional cuObject/RDMA acceleration after the TCP baseline is correct and measured.
-- **[R198](R198-s3-server-side-copy.md)** — server-side object and multipart
-  copy — Area: S3 / access server / chunk IO — Medium priority, high complexity.
-  Add CopyObject and UploadPartCopy with authorized stable source generations,
-  bounded streaming, atomic publication, and durable multipart replacement.
 - **[R199](R199-s3-batch-delete.md)** — multi-object deletion — Area: S3 /
   access server — Medium priority, medium complexity. Add bounded DeleteObjects
   parsing, per-key outcomes, Quiet responses, and existing logical deletion
@@ -52,7 +48,7 @@ optional cuObject/RDMA acceleration after the TCP baseline is correct and measur
   default checksum coverage — Area: S3 / clients / container — High priority,
   high complexity. Verify default boto3, AWS CLI, rclone, and FUSE-enabled s3fs
   workflows; trace gaps and gate published compatibility recipes. Research can
-  start independently; copy/batch-delete recipes depend on R198/R199 as needed.
+  start independently; copy is available and batch-delete recipes depend on R199.
 - **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
   upload benchmark regression — Area: CLI / access server / benchmark — Add a
   shared real-protocol CLI workload and retained local regression scripts for
