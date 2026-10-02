@@ -20,7 +20,7 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 
 ## Phase 1 — startup and shell
 
-- [~] **Standalone recovery**: finish atomic local persistence and process recovery,
+- [x] **Standalone recovery**: finish atomic local persistence and process recovery,
   validate Group 0 authority and multi-node/DiskDB behavior, retain configured
   process identity. Files: `app/crowdb-web/src/{main,state,standalone}.rs`,
   `src/standalone/recovery.rs`, `src/diskdb/lifecycle.rs`, `src/mgmt/cluster_init.rs`,
@@ -80,6 +80,14 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
   UI suite unless specifically needed/authorized; focused specs first.
 
 ## Results
+
+- Focused standalone/managed/DiskDB startup verification: 10 passed, including
+  three-member Group 0 recovery, DiskDB replay with preserved custom ports, and
+  stale local Rack cache replacement from Group 0. Invalid test profile corrected
+  from `fast-test` to existing `e2e`; built missing DiskDB binary before rerun.
+- Shell baseline on installed `/usr/bin/microsoft-edge`: embedding 1.6s,
+  domain transition 0.372s, Docker writes 0.377s; all 5 tests passed. An initial
+  attempt pointed at absent Google Chrome; no browser installation was needed.
 
 - Initial `pixi run cargo test -p crowdb-web --test standalone_startup_test --
   --nocapture`: 3 passed; later sealed-intent/DiskDB recovery edits still need

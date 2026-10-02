@@ -25,6 +25,7 @@ pub mod mgmt;
 pub mod owner_assignment;
 pub mod physical;
 pub mod spa;
+mod standalone;
 pub mod state;
 
 pub use state::AppState;

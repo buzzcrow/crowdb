@@ -135,7 +135,7 @@ pub async fn http_deploy_diskdb(
         auto_start: true,
         binary: None,
         election_profile: None,
-        pid: None,
+        pid: Some(deployed.pid),
         service_type: ServiceType::Diskdb,
         rpc_workers: None,
         no_fsync: false,
@@ -143,6 +143,7 @@ pub async fn http_deploy_diskdb(
     state.set_diskdb_runtime_pid(node_id, deployed.pid);
     {
         let mut cfg = state.config.write().unwrap();
+        cfg.local_launches.insert(entry.id.clone(), deployed.launch);
         cfg.add_server(entry).map_err(|e| err_500(format!("{e}")))?;
     }
     state.persist().map_err(|e| err_500(format!("{e}")))?;
@@ -277,7 +278,7 @@ pub async fn http_restart_diskdb(
         auto_start: entry.auto_start,
         binary: None,
         election_profile: None,
-        pid: None,
+        pid: Some(deployed.pid),
         service_type: ServiceType::Diskdb,
         rpc_workers: None,
         no_fsync: false,
@@ -294,6 +295,7 @@ pub async fn http_restart_diskdb(
         if let Some(p) = pos {
             cfg.servers.remove(p);
         }
+        cfg.local_launches.insert(new_entry.id.clone(), deployed.launch);
         cfg.add_server(new_entry).map_err(|e| err_500(format!("{e}")))?;
     }
     state.persist().map_err(|e| err_500(format!("{e}")))?;
