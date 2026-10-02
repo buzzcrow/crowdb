@@ -48,7 +48,7 @@ inferring broad S3 compatibility from one SDK.
 
 #### Dependencies
 
-- R198 supplies server-side copy; R199 supplies batch deletion where traces
+- Server-side copy and batch deletion are available where traces
   demonstrate those APIs are required. Research and existing-core tests can
   proceed first; copy/delete recipes cannot be declared accepted until their
   required capabilities land.
