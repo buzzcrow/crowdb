@@ -5,7 +5,31 @@
 
 #### Status
 
-Deferred until the client-use and address-model research below is complete. Exact-object FileIO already supports the small TPC-H and TPC-DS loader flow; listing is not a prerequisite for that flow.
+Client research started; native listing remains unimplemented. Exact-object FileIO already supports the small TPC-H and TPC-DS loader flow; listing is not a prerequisite for that flow. The scope decision below remains necessary before changing addresses or exposing prefix discovery.
+
+Observed with PyIceberg 0.11.1 and PyArrow 25.0.0 using
+`pixi run -e iceberg-e2e test-iceberg-listing-client`:
+
+- Existing exact-file `exists`, length and open: HEAD, HEAD, HEAD, ranged GET;
+  no `ListObjectsV2`.
+- Missing exact-file `exists`: HEAD returns 404, then GET bucket with
+  `list-type=2` and prefix `<exact-key>/`. This is incidental directory
+  fallback, also reached by `create(overwrite=False)` before upload.
+- Explicit Arrow `FileSelector` on a table data prefix: GET bucket with
+  `list-type=2` and the requested prefix. This is intentional discovery.
+- The probe uses an isolated HTTP fixture and tests official client request
+  selection, not a passing native/container listing implementation.
+- Existing Java 1.11.0 FileIO fixtures exercise exact PUT, multipart, HEAD,
+  GET and seek. They do not accept a native prefix-discovery workflow.
+- Direct DuckDB REST attachment and Spark/Flink/Trino workflows remain pending
+  under the ecosystem requirement. No native-listing conclusion is inferred
+  from their unrelated static-file or in-memory query checks.
+
+The [base Iceberg FileIO interface](https://github.com/apache/iceberg/blob/main/api/src/main/java/org/apache/iceberg/io/FileIO.java)
+addresses exact input/output files. Prefix enumeration is a separate optional
+[SupportsPrefixOperations interface](https://github.com/apache/iceberg/blob/main/api/src/main/java/org/apache/iceberg/io/SupportsPrefixOperations.java).
+This distinction does not certify an engine's maintenance workflow; its actual
+request sequence still needs acceptance.
 
 #### Problem
 
