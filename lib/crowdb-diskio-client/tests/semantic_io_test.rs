@@ -152,7 +152,9 @@ async fn semantic_client_owns_route_transport_payload_and_durability() {
     assert!(status.fsync_average_us > 0);
 
     assert_large_view_range(&client, target).await;
-    assert_view_frames_overlap(&cluster, target).await;
+    assert_independent_strip_writes_overlap(&cluster).await;
+    assert_view_frames_are_ordered(&cluster, target, false).await;
+    assert_view_frames_are_ordered(&cluster, target, true).await;
 
     let saturated_client = Arc::clone(&client);
     let saturated_normal = tokio::spawn(async move {
@@ -343,7 +345,7 @@ async fn assert_large_view_range(client: &DiskioClient, target: SegmentTarget) {
     assert_eq!(client.status().write_operations - writes_before, 3);
 }
 
-async fn assert_view_frames_overlap(cluster: &KvCluster, target: SegmentTarget) {
+async fn assert_independent_strip_writes_overlap(cluster: &KvCluster) {
     let client = Arc::new(
         DiskioClient::connect_with_clients(
             cluster.make_service_registry_client(),
@@ -358,13 +360,87 @@ async fn assert_view_frames_overlap(cluster: &KvCluster, target: SegmentTarget) 
     );
     let writing = client.clone();
     let count = crowdb_rpc_ffi::BufferChain::maximum_views() * 2;
-    let payload = vec![Bytes::from_static(b"parallel-view"); count];
+    // Distinct allocated disk blocks belong to independently owned strips.
+    let targets =
+        [8, 12].map(|unit| SegmentTarget::new(DiskId::new(0, 1), 0, unit, 1, UNIT_SIZE_BYTES).unwrap());
+    let payload = vec![Bytes::from_static(b"independent-strip"); count];
+    let expected = payload.concat();
+    let pending = tokio::spawn(async move {
+        let first = writing.write_views(
+            targets[0],
+            0,
+            payload.clone(),
+            Durability::Fsync,
+            writing.normal_options(),
+        );
+        let second = writing.write_views(
+            targets[1],
+            0,
+            payload,
+            Durability::Fsync,
+            writing.normal_options(),
+        );
+        let (first, second) = tokio::join!(first, second);
+        first.unwrap();
+        second.unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while client.status().inflight < 2 {
+            assert!(!pending.is_finished(), "independent strip writes were serialized");
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    pending.await.unwrap();
+    assert_eq!(client.status().write_operations, 4);
+    assert_eq!(client.status().fsync_operations, 2);
+    for target in targets {
+        let read = client
+            .read(
+                target,
+                0,
+                u32::try_from(expected.len()).unwrap(),
+                client.normal_options(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.as_ref(), expected);
+    }
+}
+
+async fn assert_view_frames_are_ordered(cluster: &KvCluster, target: SegmentTarget, aligned: bool) {
+    let client = Arc::new(
+        DiskioClient::connect_with_clients(
+            cluster.make_service_registry_client(),
+            cluster.make_hardware_client(),
+            DiskioClientConfig {
+                max_pending_calls: 2,
+                ..DiskioClientConfig::default()
+            },
+        )
+        .await
+        .unwrap(),
+    );
+    let writing = client.clone();
+    let count = crowdb_rpc_ffi::BufferChain::maximum_views() * 2;
+    // Alignment does not relax the ordering contract within one strip block.
+    let payload = if aligned {
+        vec![Bytes::from(vec![0x5a; UNIT_SIZE_BYTES as usize / (count / 2)]); count]
+    } else {
+        vec![Bytes::from_static(b"partial-view"); count]
+    };
+    let offset = if aligned {
+        2 * u64::from(UNIT_SIZE_BYTES)
+    } else {
+        32768
+    };
     let expected = payload.concat();
     let pending = tokio::spawn(async move {
         writing
             .write_views(
                 target,
-                32768,
+                offset,
                 payload,
                 Durability::Fsync,
                 writing.normal_options(),
@@ -372,8 +448,11 @@ async fn assert_view_frames_overlap(cluster: &KvCluster, target: SegmentTarget) 
             .await
     });
     tokio::time::timeout(Duration::from_secs(2), async {
-        while client.status().inflight < 2 {
-            assert!(!pending.is_finished(), "view frames were serialized");
+        while !pending.is_finished() {
+            assert!(
+                client.status().inflight <= 1,
+                "same-strip disk-block frames overlapped"
+            );
             tokio::task::yield_now().await;
         }
     })
@@ -385,7 +464,7 @@ async fn assert_view_frames_overlap(cluster: &KvCluster, target: SegmentTarget) 
     let read = client
         .read(
             target,
-            32768,
+            offset,
             u32::try_from(expected.len()).unwrap(),
             client.normal_options(),
         )

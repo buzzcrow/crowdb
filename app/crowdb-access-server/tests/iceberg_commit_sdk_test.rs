@@ -9,11 +9,7 @@ mod common;
 #[allow(dead_code)]
 mod fixture;
 
-use crowdb_access_iceberg::{
-    commit::{TableCommitJournal, TableCommitPhase},
-    key::{IcebergKey, OperationId},
-    record::StorageRecord,
-};
+use crowdb_access_iceberg::key::IcebergKey;
 use serde_json::{json, Value};
 use std::{sync::atomic::Ordering, time::Duration};
 
@@ -21,7 +17,7 @@ const TABLE: &str = "/v1/namespaces/analytics/tables/events";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Maven and pinned Apache Iceberg Java dependencies"]
-async fn official_commit_loses_real_head_cas_without_rebase_and_replays_conflict() {
+async fn official_commit_loses_real_head_cas_without_rebase_and_keeps_hidden_retry_uncertain() {
     let fixture = fixture::TestTableHttp::writable().await;
     let initial = value(
         fixture
@@ -36,22 +32,20 @@ async fn official_commit_loses_real_head_cas_without_rebase_and_replays_conflict
     )
     .await;
     let identity = request_key();
-    let operation: OperationId = identity.parse().unwrap();
     fixture.store.pause_head_cas.store(true, Ordering::SeqCst);
     let endpoint = fixture.endpoint();
+    let operation_name = identity.clone();
     let client = tokio::task::spawn_blocking(move || run_sdk(&endpoint, &identity));
     tokio::time::timeout(Duration::from_secs(60), fixture.store.head_cas_entered.notified())
         .await
         .expect("SDK did not reach head publication");
-    let journal = TableCommitJournal::new(fixture.store.clone());
-    let paused = journal.load(fixture.context, operation).await.unwrap().unwrap();
-    assert_eq!(paused.phase, TableCommitPhase::Publishing);
+    // Ordinary commits publish through one head CAS without a phase journal.
+    // Observe the selected head while the losing candidate is still unpublished.
+    let paused = value(fixture.request(reqwest::Method::GET, TABLE, "r", None).await).await;
     assert_eq!(
-        paused.before.metadata_location.to_string(),
-        initial["metadata-location"]
+        paused, initial,
+        "unpublished candidate must not change the selected table"
     );
-    let candidate = paused.candidate.as_ref().unwrap();
-    assert_eq!(candidate.generation, paused.before.generation + 1);
     let winner = value(
         fixture
             .post(
@@ -69,38 +63,23 @@ async fn official_commit_loses_real_head_cas_without_rebase_and_replays_conflict
         client.await.unwrap().success(),
         "official SDK CAS conflict acceptance failed"
     );
-    let rejected = journal.load(fixture.context, operation).await.unwrap().unwrap();
-    assert_eq!(rejected.phase, TableCommitPhase::Rejected);
-    assert_eq!(rejected.before, paused.before);
-    assert_eq!(rejected.candidate, paused.candidate);
-    assert_eq!(rejected.outcome.as_ref().unwrap().status, 409);
-    let commits: Vec<_> = fixture
-        .store
-        .values
-        .load()
-        .iter()
-        .filter_map(|(key, stored)| {
-            let key = IcebergKey::decode(key).unwrap();
-            match StorageRecord::decode(&key, &stored.bytes).unwrap() {
-                StorageRecord::TableCommitOperation(commit) => Some(commit),
-                _ => None,
-            }
-        })
-        .collect();
-    assert_eq!(commits.len(), 2, "replay and changed input create no new commit");
-    let completed = commits
-        .iter()
-        .find(|commit| commit.phase == TableCommitPhase::Complete)
-        .unwrap();
-    assert_eq!(completed.before, paused.before);
-    assert_eq!(
-        completed.candidate.as_ref().unwrap().generation,
-        candidate.generation
+    assert!(
+        fixture.store.values.load().keys().all(|key| {
+            !matches!(
+                IcebergKey::decode(key).unwrap(),
+                IcebergKey::Catalog {
+                    scope: crowdb_access_iceberg::key::CatalogScope::TableCommitOperation,
+                    ..
+                }
+            )
+        }),
+        "ordinary commits must not write a phase journal"
     );
-    assert_ne!(
-        candidate.metadata_location.to_string(),
-        winner["metadata-location"]
-    );
+    assert_ne!(initial["metadata-location"], winner["metadata-location"]);
+    assert!(!winner["metadata-location"]
+        .as_str()
+        .unwrap()
+        .contains(&operation_name));
     let selected = value(fixture.request(reqwest::Method::GET, TABLE, "r", None).await).await;
     assert_eq!(selected, winner);
     let listed = value(

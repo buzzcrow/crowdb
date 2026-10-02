@@ -4,7 +4,6 @@
 use super::{
     Bytes, DiskioClient, DiskioError, DiskioResult, Durability, OperationOptions, SegmentTarget, WritePayload,
 };
-use futures::{stream::FuturesUnordered, StreamExt};
 
 impl DiskioClient {
     /// Write caller-owned immutable views as one exact segment-relative range.
@@ -13,7 +12,8 @@ impl DiskioClient {
     ///
     /// Returns a typed input, topology, backpressure, disk, durability, or
     /// ambiguous-outcome error. Larger view lists use consecutive bounded RPC
-    /// frames without copying payload; requested fsync follows the whole range.
+    /// frames without copying payload. Frames complete in byte order; requested
+    /// fsync follows the whole range.
     pub async fn write_views(
         &self,
         target: SegmentTarget,
@@ -47,37 +47,30 @@ impl DiskioClient {
         }
         let mut position = offset;
         let mut views = data.into_iter();
-        let mut pending = FuturesUnordered::new();
-        let mut failure = None;
-        let depth = self.config.max_pending_calls.min(4);
+        // All frames belong to one strip's disk block. Wait for each reply
+        // before submitting the next frame, even at aligned boundaries: RPC
+        // arrival order across connections is not guaranteed, and server-side
+        // partial-block padding can overwrite a later frame's stored bytes.
+        // Callers may overlap independent strip blocks and different disks
+        // holding the same strip's shards or mirror replicas.
         loop {
-            while failure.is_none() && pending.len() < depth {
-                let batch: Vec<_> = views
-                    .by_ref()
-                    .take(crowdb_rpc_ffi::BufferChain::maximum_views())
-                    .collect();
-                if batch.is_empty() {
-                    break;
-                }
-                let length: usize = batch.iter().map(Bytes::len).sum();
-                pending.push(self.write_payload(
-                    target,
-                    position,
-                    WritePayload::Views(batch.into()),
-                    Durability::Buffered,
-                    options,
-                ));
-                position += length as u64;
-            }
-            let Some(result) = pending.next().await else {
+            let batch: Vec<_> = views
+                .by_ref()
+                .take(crowdb_rpc_ffi::BufferChain::maximum_views())
+                .collect();
+            if batch.is_empty() {
                 break;
-            };
-            if let Err(error) = result {
-                failure.get_or_insert(error);
             }
-        }
-        if let Some(error) = failure {
-            return Err(error);
+            let length: usize = batch.iter().map(Bytes::len).sum();
+            self.write_payload(
+                target,
+                position,
+                WritePayload::Views(batch.into()),
+                Durability::Buffered,
+                options,
+            )
+            .await?;
+            position += length as u64;
         }
         if durability == Durability::Fsync {
             self.fsync(target.disk_id, options).await?;

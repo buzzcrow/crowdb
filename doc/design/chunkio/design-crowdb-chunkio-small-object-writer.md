@@ -114,12 +114,20 @@ prefix is released, so memory headroom includes a maximum-sized owner per pipe.
 
 A strip aggregate may retain more views than one RPC frame permits. The DiskIO
 semantic client validates the entire segment range, then submits consecutive
-bounded scatter/gather frames at increasing offsets. Disjoint ranges within
-one batch overlap at depth at most four, limited by semantic admission. An
-error stops further submissions and drains pending completions before repair.
-Views keep their original owners; this does not coalesce payload. Requested fsync follows the complete
-range once, and cursor publication follows successful completion of all frames.
-A descriptor bound cannot be treated as a disk failure or trigger repair.
+bounded scatter/gather frames at increasing offsets. Within one strip's disk
+block, each frame must finish successfully before the next is submitted, even
+when the boundary is aligned or the logical byte ranges are disjoint. Different
+connections can reorder arrivals; a partial-block tail's zero padding can then
+overwrite a later frame and corrupt stored chunk headers or payload.
+
+Independent strips' disk blocks may overlap. Different disks holding one strip's
+EC shards or mirror replicas may also overlap; they do not share the padded
+physical block. Callers preserve ordering between separate writes to the same
+strip block. An error stops subsequent frame submissions before repair. Views
+keep their original owners without coalescing payload. Requested fsync follows
+the complete range once, and cursor publication follows successful completion
+of all frames. A descriptor bound cannot be treated as a disk failure or trigger
+repair.
 
 
 A caller can attach a `SmallWriteIntent` to durable completion. Once the batch

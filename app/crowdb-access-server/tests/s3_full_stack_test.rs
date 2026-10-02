@@ -278,6 +278,7 @@ impl FullStackSetup {
             &self.access_key,
             &self.secret_key,
             &self.cluster.runtime().artifacts_dir(),
+            &self.second_access_server,
         );
         case.pass();
     }
@@ -628,7 +629,14 @@ fn run_restart_phase(phase: &str, listen: &str, access_key: &str, secret_key: &s
     );
 }
 
-fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &str, artifacts_dir: &Path) {
+fn run_benchmark(
+    listen: &str,
+    server_pid: u32,
+    access_key: &str,
+    secret_key: &str,
+    artifacts_dir: &Path,
+    access_server: &AccessServerProcess,
+) {
     let python_binary = std::env::var_os("CROWDB_S3_E2E_PYTHON").unwrap_or_else(|| "python".into());
     let result = Command::new(python_binary)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/benchmark.py"))
@@ -649,8 +657,9 @@ fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &s
         .expect("run S3 baseline benchmark");
     assert!(
         result.status.success(),
-        "S3 baseline benchmark failed: {}",
-        String::from_utf8_lossy(&result.stderr)
+        "S3 baseline benchmark failed: {}\naccess-server log:\n{}",
+        String::from_utf8_lossy(&result.stderr),
+        access_server.log_content()
     );
     assert!(result.stdout.starts_with(b"{\n"), "benchmark did not emit JSON");
     assert!(

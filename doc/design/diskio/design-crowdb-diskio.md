@@ -705,6 +705,16 @@ continue directly into `IoEngine::write`. Other writes are copied once into
 the server-owned aligned buffer that supplies padding and satisfies the
 `O_DIRECT` address-alignment requirement.
 
+`write_views` splits oversized view lists into bounded RPC frames without
+copying their payload. Frames within one strip's disk block complete serially
+in byte order, including aligned boundaries. Logical non-overlap does not
+permit concurrent submission: connections can reorder arrivals, and the
+aligned writer's partial-tail padding can overwrite a later frame. Separate
+caller operations on that block must obey the same ordering. Independently
+owned strip blocks and different disks holding EC shards or mirror replicas
+may run concurrently. Requested fsync runs once after every frame succeeds;
+a frame error stops the remaining submissions.
+
 Input arithmetic, segment bounds, and wire-size limits are checked before RPC
 admission. Reads retry transient transport outcomes within the original
 deadline. Writes can retry only the same immutable bytes at the same allocated
@@ -754,6 +764,11 @@ the crate's `test-util` feature.
   zero-padded and cached for the next continuation.
 - **I9 (backend alignment)**: Every backend write to a disk with block size
   greater than one has aligned address, offset, and length.
+
+- **I10 (strip-block write ordering)**: Only one write frame may be in flight
+  for a strip's disk block. Its successful completion precedes submission of
+  the next frame, regardless of alignment. Parallel writes require independent
+  strip blocks or different disks holding shards or replicas.
 
 ## 11. Configuration
 

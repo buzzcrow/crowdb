@@ -2,6 +2,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.MetadataUpdate;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.rest.ErrorHandler;
 import org.apache.iceberg.rest.ErrorHandlers;
 import org.apache.iceberg.rest.HTTPClient;
@@ -19,10 +20,10 @@ public final class TestIcebergCommitRace {
         HTTPClient client = root.withAuthSession(AuthSession.EMPTY)) {
       UpdateTableRequest request = new UpdateTableRequest(List.of(),
           List.of(new MetadataUpdate.SetProperties(Map.of("loser-only", "never-visible"))));
-      String first = conflict(client, request, args[1]);
-      require(first.equals(conflict(client, request, args[1])), "exact durable conflict replay");
-      conflict(client, new UpdateTableRequest(List.of(),
-          List.of(new MetadataUpdate.SetProperties(Map.of("changed-input", "rejected")))), args[1]);
+      reject(client, request, args[1], 409);
+      reject(client, request, args[1], 503);
+      reject(client, new UpdateTableRequest(List.of(),
+          List.of(new MetadataUpdate.SetProperties(Map.of("changed-input", "rejected")))), args[1], 503);
       LoadTableResponse loaded = client.get(PATH, LoadTableResponse.class,
           Map.of(), ErrorHandlers.tableErrorHandler());
       require("visible".equals(loaded.tableMetadata().properties().get("winner-only")),
@@ -30,10 +31,10 @@ public final class TestIcebergCommitRace {
       require(!loaded.tableMetadata().properties().containsKey("loser-only"), "loser never selected");
       require(!loaded.tableMetadata().properties().containsKey("changed-input"), "identity cannot rebind");
     }
-    System.out.println("Official SDK head CAS conflict and durable replay passed");
+    System.out.println("Official SDK head CAS conflict and uncertain hidden retry passed");
   }
 
-  private static String conflict(HTTPClient client, UpdateTableRequest request, String identity) {
+  private static void reject(HTTPClient client, UpdateTableRequest request, String identity, int status) {
     ErrorHandler official = (ErrorHandler) ErrorHandlers.tableCommitHandler();
     String[] body = {null};
     try {
@@ -41,21 +42,24 @@ public final class TestIcebergCommitRace {
           new ErrorHandler() {
             @Override
             public ErrorResponse parseResponse(int code, String json) {
-              require(code == 409, "HTTP conflict status");
+              require(code == status, "HTTP conflict status");
               body[0] = json;
               return official.parseResponse(code, json);
             }
 
             @Override
             public void accept(ErrorResponse error) {
-              require(error.code() == 409, "wire conflict status");
-              require("CommitFailedException".equals(error.type()), "wire conflict type");
+              require(error.code() == status, "wire conflict status");
+              require((status == 409 ? "CommitFailedException" : "ServiceUnavailableException")
+                  .equals(error.type()), "wire failure type");
               official.accept(error);
             }
           });
-    } catch (CommitFailedException expected) {
+    } catch (CommitFailedException | CommitStateUnknownException expected) {
       require(body[0] != null, "server-originated conflict");
-      return body[0];
+      require(status == 409 ? expected instanceof CommitFailedException
+          : expected instanceof CommitStateUnknownException, "official exception type");
+      return;
     }
     throw new AssertionError("CAS loser must fail, not rebase or succeed");
   }
