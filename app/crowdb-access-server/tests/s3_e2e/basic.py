@@ -435,6 +435,129 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         self.assertEqual(absent.exception.response["ResponseMetadata"]["HTTPStatusCode"], 404)
         self.client.delete_bucket(Bucket=bucket)
 
+    def test_server_side_copy_preserves_bytes_and_supported_metadata(self):
+        source_bucket = f"{self.bucket}-copy-source"
+        target_bucket = f"{self.bucket}-copy-target"
+        source_key = "encoded/雪 %?+&.json"
+        payload = b'{"copy":"immutable"}'
+        self.client.create_bucket(Bucket=source_bucket)
+        self.client.create_bucket(Bucket=target_bucket)
+        source = self.client.put_object(Bucket=source_bucket, Key=source_key, Body=payload,
+                                        ContentType="application/json")
+        self.client.put_object(Bucket=target_bucket, Key="copy", Body=b"predecessor")
+        copied = self.client.copy_object(Bucket=target_bucket, Key="copy",
+                                         CopySource={"Bucket": source_bucket, "Key": source_key},
+                                         CopySourceIfMatch=source["ETag"])
+        self.assertEqual(copied["CopyObjectResult"]["ETag"], source["ETag"])
+        self.assertIn("LastModified", copied["CopyObjectResult"])
+        self.assertEqual(self.client.get_object(Bucket=target_bucket, Key="copy")["Body"].read(), payload)
+        self.assertEqual(self.client.head_object(Bucket=target_bucket, Key="copy")["ContentType"], "application/json")
+        for options, code in [({"CopySourceIfMatch": '"wrong"'}, "PreconditionFailed"),
+                              ({"CopySourceIfNoneMatch": source["ETag"]}, "PreconditionFailed"),
+                              ({"MetadataDirective": "INVALID"}, "InvalidRequest"),
+                              ({"MetadataDirective": "REPLACE", "Metadata": {"unsupported": "value"}}, "NotImplemented")]:
+            with self.assertRaises(ClientError) as error:
+                self.client.copy_object(Bucket=target_bucket, Key="copy",
+                                        CopySource={"Bucket": source_bucket, "Key": source_key}, **options)
+            self.assertEqual(error.exception.response["Error"]["Code"], code)
+            self.assertEqual(self.client.get_object(Bucket=target_bucket, Key="copy")["Body"].read(), payload)
+        with self.assertRaises(ClientError) as error:
+            self.client.copy_object(Bucket=source_bucket, Key=source_key,
+                                    CopySource={"Bucket": source_bucket, "Key": source_key})
+        self.assertEqual(error.exception.response["Error"]["Code"], "InvalidRequest")
+        self.client.copy_object(Bucket=source_bucket, Key=source_key,
+                                CopySource={"Bucket": source_bucket, "Key": source_key},
+                                MetadataDirective="REPLACE", ContentType="text/plain")
+        self.assertEqual(self.client.head_object(Bucket=source_bucket, Key=source_key)["ContentType"], "text/plain")
+        self.assertEqual(self.client.get_object(Bucket=source_bucket, Key=source_key)["Body"].read(), payload)
+        with self.assertRaises(ClientError) as error:
+            self.client.copy_object(Bucket=target_bucket, Key="copy",
+                                    CopySource={"Bucket": source_bucket, "Key": source_key, "VersionId": "old"})
+        self.assertEqual(error.exception.response["Error"]["Code"], "NotImplemented")
+        with self.assertRaises(ClientError) as error:
+            self.client.copy_object(Bucket=target_bucket, Key="copy",
+                                    CopySource={"Bucket": source_bucket, "Key": "missing"})
+        self.assertEqual(error.exception.response["Error"]["Code"], "NoSuchKey")
+        self.client.delete_object(Bucket=source_bucket, Key=source_key)
+        self.client.delete_object(Bucket=target_bucket, Key="copy")
+        self.client.delete_bucket(Bucket=source_bucket)
+        self.client.delete_bucket(Bucket=target_bucket)
+
+    def test_multipart_copy_selects_ranges_and_replaces_parts(self):
+        bucket = f"{self.bucket}-part-copy"
+        payload = bytes(range(256)) * (24 * 1024)
+        replacement = b"replacement" * (5 * 1024 * 1024 // 11 + 1)
+        self.client.create_bucket(Bucket=bucket)
+        self.client.put_object(Bucket=bucket, Key="source", Body=payload)
+        self.client.put_object(Bucket=bucket, Key="replacement", Body=replacement)
+        upload = self.client.create_multipart_upload(Bucket=bucket, Key="target")["UploadId"]
+        options = dict(Bucket=bucket, Key="target", UploadId=upload, CopySource={"Bucket": bucket, "Key": "source"})
+        first = self.client.upload_part_copy(**options, PartNumber=1,
+                                            CopySourceRange="bytes=0-5242879")["CopyPartResult"]["ETag"]
+        tail = self.client.upload_part_copy(**options, PartNumber=2,
+                                           CopySourceRange=f"bytes=5242880-{len(payload)-1}")["CopyPartResult"]["ETag"]
+        for invalid in ["bytes=4-3", "bytes=0-999999999", "bytes=0-", "bytes=-1"]:
+            with self.assertRaises(ClientError) as error:
+                self.client.upload_part_copy(**options, PartNumber=1, CopySourceRange=invalid)
+            self.assertEqual(error.exception.response["Error"]["Code"], "InvalidRange")
+            self.assertEqual(self.client.list_parts(Bucket=bucket, Key="target", UploadId=upload)["Parts"][0]["ETag"], first)
+        first = self.client.upload_part_copy(Bucket=bucket, Key="target", UploadId=upload, PartNumber=1,
+                                             CopySource={"Bucket": bucket, "Key": "replacement"})["CopyPartResult"]["ETag"]
+        self.client.complete_multipart_upload(Bucket=bucket, Key="target", UploadId=upload,
+                                              MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": first}, {"PartNumber": 2, "ETag": tail}]})
+        self.assertEqual(self.client.get_object(Bucket=bucket, Key="target")["Body"].read(), replacement + payload[5242880:])
+        self.assertEqual(self.client.get_object(Bucket=bucket, Key="source")["Body"].read(), payload)
+        with self.assertRaises(ClientError) as error:
+            self.client.upload_part_copy(**options, PartNumber=1)
+        self.assertEqual(error.exception.response["Error"]["Code"], "NoSuchUpload")
+        for key in ["source", "replacement", "target"]:
+            self.client.delete_object(Bucket=bucket, Key=key)
+        self.client.delete_bucket(Bucket=bucket)
+
+    def test_copy_captures_source_before_overwrite_and_delete(self):
+        bucket = f"{self.bucket}-copy-generation"
+        payload = bytes(range(256)) * (64 * 1024)
+        self.client.create_bucket(Bucket=bucket)
+        self.client.put_object(Bucket=bucket, Key="source", Body=payload)
+        parsed = urlsplit(self.endpoint)
+        path = f"/{bucket}/target"
+        request = AWSRequest(method="PUT", url=self.endpoint + path, data=b"", headers={
+            "Host": parsed.netloc, "x-amz-content-sha256": sha256(b"").hexdigest(),
+            "x-amz-copy-source": f"/{bucket}/source", "Content-Length": "0"})
+        credentials = Credentials(os.environ["CROWDB_S3_E2E_ACCESS_KEY"], os.environ["CROWDB_S3_E2E_SECRET_KEY"])
+        S3SigV4Auth(credentials, "s3", "us-east-1").add_auth(request)
+        connection = HTTPConnection(parsed.hostname, parsed.port, timeout=60)
+        try:
+            connection.request("PUT", path, body=b"", headers=dict(request.headers.items()))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.client.put_object(Bucket=bucket, Key="source", Body=b"new generation")
+            self.client.delete_object(Bucket=bucket, Key="source")
+            root = ElementTree.fromstring(response.read())
+            self.assertTrue(root.tag.endswith("CopyObjectResult"), root.tag)
+            self.assertEqual(self.client.get_object(Bucket=bucket, Key="target")["Body"].read(), payload)
+        finally:
+            connection.close()
+        self.client.delete_object(Bucket=bucket, Key="target")
+        self.client.put_object(Bucket=bucket, Key="source", Body=payload)
+        connection = HTTPConnection(parsed.hostname, parsed.port, timeout=60)
+        try:
+            connection.request("PUT", path, body=b"", headers=dict(request.headers.items()))
+            self.assertEqual(connection.getresponse().status, 200)
+        finally:
+            connection.close()
+        try:
+            selected = self.client.get_object(Bucket=bucket, Key="target")
+        except ClientError as error:
+            self.assertEqual(error.response["Error"]["Code"], "NoSuchKey")
+        else:
+            self.assertEqual(selected["Body"].read(), payload)
+        self.client.copy_object(Bucket=bucket, Key="target", CopySource={"Bucket": bucket, "Key": "source"})
+        self.assertEqual(self.client.get_object(Bucket=bucket, Key="target")["Body"].read(), payload)
+        self.client.delete_object(Bucket=bucket, Key="source")
+        self.client.delete_object(Bucket=bucket, Key="target")
+        self.client.delete_bucket(Bucket=bucket)
+
     def test_basic_bucket_object_matrix(self):
         client = self.client
         bucket = self.bucket

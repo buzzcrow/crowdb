@@ -73,6 +73,32 @@ reused.
 Listings are ordered and continuation-safe within their documented consistency
 model. Continuation state is opaque and bound to the original request scope.
 
+Server-side CopyObject and UploadPartCopy resolve source and destination through
+the configured S3 tenant. Copy selects one immutable source record before
+returning response headers; subsequent source overwrite or logical deletion
+does not select new bytes. The source is streamed through bounded readers and
+writers, respecting writer capacity, and publication uses the ordinary object
+or multipart-part fences. No source reference is shared with the destination.
+Copy never deletes the source. Unpublished candidates use ordinary reclamation.
+
+CopyObject supports at most 5 GiB and copies the entire payload. COPY preserves
+the supported Content-Type metadata; REPLACE selects the supplied Content-Type
+or application/octet-stream. A self-copy requires REPLACE. User metadata,
+cache/disposition/encoding/language/expiry metadata, version selectors, tags,
+encryption, storage-class changes and destination conditions are unsupported
+and rejected. Source ETag/date conditions apply to the captured generation;
+their failure returns PreconditionFailed. Copy selectors must be signed.
+
+UploadPartCopy supports complete objects and explicit inclusive byte ranges
+from source objects larger than 5 MiB, with the session's normal part bounds.
+It replaces a part using the durable generation-selection protocol below.
+Neither interrupted copy path publishes partial bytes. After request validation
+and source selection, the HTTP 200 response carries whitespace keepalives and
+ends with CopyObjectResult, CopyPartResult, or an embedded Error. Clients must
+consume and validate the whole response. The body owns the copy future, cancels
+it on disconnect, and caps execution at 300 seconds. A retry after response loss
+can select a newer source generation; copy is not an exactly-once operation.
+
 Multipart uploads keep a durable session, current part pointers, and immutable
 part generations under one upload prefix. Replacing a part number advances its
 generation while retaining the previous generation as reference evidence for

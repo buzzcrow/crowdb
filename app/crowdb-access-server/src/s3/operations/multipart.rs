@@ -66,11 +66,14 @@ impl ProductionS3Operations {
         Ok(expired)
     }
 
-    fn multipart(&self) -> MultipartRepository {
+    pub(super) fn multipart(&self) -> MultipartRepository {
         MultipartRepository::new(self.storage.metadata.clone(), self.config.tenant.clone())
     }
 
-    async fn multipart_identity(&self, route: &S3Route) -> Result<MultipartSessionRecord, S3ErrorCode> {
+    pub(super) async fn multipart_identity(
+        &self,
+        route: &S3Route,
+    ) -> Result<MultipartSessionRecord, S3ErrorCode> {
         let bucket = self.resolve_bucket(required_bucket(route)?).await?;
         let key = required_key(route)?;
         let upload_id = route.upload_id.ok_or(S3ErrorCode::InvalidRequest)?;
@@ -347,7 +350,7 @@ impl ProductionS3Operations {
     }
 }
 
-fn map_multipart_error(error: &MultipartRepositoryError) -> S3ErrorCode {
+pub(super) fn map_multipart_error(error: &MultipartRepositoryError) -> S3ErrorCode {
     match error {
         MultipartRepositoryError::Key(_) | MultipartRepositoryError::Record(_) => S3ErrorCode::InvalidRequest,
         MultipartRepositoryError::Store(_) => S3ErrorCode::ServiceUnavailable,
@@ -395,7 +398,7 @@ fn parse_upload_id(value: &str) -> Result<[u8; 16], S3ErrorCode> {
     (id != [0; 16]).then_some(id).ok_or(S3ErrorCode::InvalidRequest)
 }
 
-fn parse_md5(value: &str) -> Result<[u8; 16], S3ErrorCode> {
+pub(super) fn parse_md5(value: &str) -> Result<[u8; 16], S3ErrorCode> {
     if value.len() != 32 {
         return Err(S3ErrorCode::InternalError);
     }

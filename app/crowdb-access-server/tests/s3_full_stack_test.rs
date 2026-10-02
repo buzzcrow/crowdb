@@ -32,8 +32,13 @@ use hyper::body::Bytes;
 use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const TEST_COUNT: usize = 19;
+const TEST_COUNT: usize = 22;
 const SKIPPED_CASE: &str = "test_slow_signed_upload_releases_native_buffers";
+const COPY_CASES: &[&str] = &[
+    "test_server_side_copy_preserves_bytes_and_supported_metadata",
+    "test_multipart_copy_selects_ranges_and_replaces_parts",
+    "test_copy_captures_source_before_overwrite_and_delete",
+];
 const BOTO3_CASES: &[&str] = &[
     "test_signed_raw_http_wire_contract",
     "test_multipart_replaces_parts_and_publishes_selected_bytes",
@@ -133,7 +138,7 @@ async fn run_suite() {
     let mut stack = start_full_stack().await;
     if let Ok(method) = std::env::var("CROWDB_S3_E2E_ONLY") {
         assert!(
-            BOTO3_CASES.contains(&method.as_str()),
+            BOTO3_CASES.contains(&method.as_str()) || COPY_CASES.contains(&method.as_str()),
             "unknown focused S3 case: {method}"
         );
         stack.run_one_boto3_case(&method);
@@ -171,6 +176,16 @@ impl FullStackSetup {
     }
 
     fn run_boto3_cases(&self) {
+        for method in COPY_CASES {
+            self.run_one_boto3_case(method);
+        }
+        // Storage-to-storage streaming copies use the ordinary writer's bounded
+        // payload copy path. HTTP uploads must add no further payload copies.
+        let copy_baseline = metric_value(
+            &http_get(&self.listen, "/_crowdb/metrics"),
+            "crowdb_s3_large_write_payload_copy_operations_total",
+        );
+        assert!(copy_baseline > 0);
         let context = Boto3CaseContext {
             listen: &self.listen,
             second_listen: &self.second_listen,
@@ -188,9 +203,9 @@ impl FullStackSetup {
             run_boto3_case(method, &context);
             case.pass();
         }
+        assert_native_write_metrics(&self.listen, copy_baseline);
         let case = TestCase::start("boto3::lost_put_and_multipart_replies_are_idempotent");
         run_restart_phase("lost-reply", &self.listen, &self.access_key, &self.secret_key);
-        assert_native_write_metrics(&self.listen);
         case.pass();
     }
 
@@ -485,7 +500,7 @@ fn assert_access_ready(listen: &str) {
     );
 }
 
-fn assert_native_write_metrics(listen: &str) {
+fn assert_native_write_metrics(listen: &str, copy_baseline: u64) {
     let exported = http_get(listen, "/_crowdb/metrics");
     let native_body_bytes = metric_value(&exported, "crowdb_s3_native_direct_bytes_total")
         + metric_value(&exported, "crowdb_s3_native_prefix_copy_bytes_total");
@@ -495,7 +510,7 @@ fn assert_native_write_metrics(listen: &str) {
     assert!(metric_value(&exported, "crowdb_s3_small_write_completed_total") > 0);
     assert_eq!(
         metric_value(&exported, "crowdb_s3_large_write_payload_copy_operations_total"),
-        0
+        copy_baseline
     );
     assert!(metric_value(&exported, "crowdb_s3_chunk_read_location_normalizations_total") > 0);
     assert!(metric_value(&exported, "crowdb_s3_chunk_read_range_locations_examined_total") > 0);

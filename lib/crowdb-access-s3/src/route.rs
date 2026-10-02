@@ -28,6 +28,8 @@ pub enum S3Operation {
     CompleteMultipartUpload,
     AbortMultipartUpload,
     ListMultipartUploads,
+    CopyObject,
+    UploadPartCopy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,6 +105,13 @@ pub fn classify(method: &Method, uri: &Uri) -> Result<S3Route, RouteError> {
 /// Returns `NotImplemented` for an excluded header and otherwise delegates to
 /// [`classify`].
 pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Result<S3Route, RouteError> {
+    if !headers.contains_key("x-amz-copy-source")
+        && headers.keys().any(|name| {
+            name.as_str().starts_with("x-amz-copy-source") || name.as_str() == "x-amz-metadata-directive"
+        })
+    {
+        return Err(RouteError::Invalid);
+    }
     if headers.keys().any(|name| {
         matches!(
             name.as_str(),
@@ -124,8 +133,15 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
         return Err(RouteError::NotImplemented);
     }
     if let Some(multipart) = classify_multipart(method, uri)? {
+        if headers.contains_key("x-amz-copy-source") && multipart.operation != MultipartOperation::UploadPart
+        {
+            return Err(RouteError::Invalid);
+        }
         let operation = match multipart.operation {
             MultipartOperation::Create => S3Operation::CreateMultipartUpload,
+            MultipartOperation::UploadPart if headers.contains_key("x-amz-copy-source") => {
+                S3Operation::UploadPartCopy
+            }
             MultipartOperation::UploadPart => S3Operation::UploadPart,
             MultipartOperation::ListParts => S3Operation::ListParts,
             MultipartOperation::Complete => S3Operation::CompleteMultipartUpload,
@@ -140,7 +156,14 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
             part_number: multipart.part_number,
         });
     }
-    classify(method, uri)
+    let mut route = classify(method, uri)?;
+    if headers.contains_key("x-amz-copy-source") {
+        if route.operation != S3Operation::PutObject {
+            return Err(RouteError::Invalid);
+        }
+        route.operation = S3Operation::CopyObject;
+    }
+    Ok(route)
 }
 
 fn decode(value: &str) -> Vec<u8> {

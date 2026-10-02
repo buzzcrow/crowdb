@@ -49,7 +49,7 @@ def swallow_reply(listener, endpoint, expected_status):
             return bytes(response)
 
 
-def drop_reply(endpoint, credentials, method, path, payload, expected_status):
+def drop_reply(endpoint, credentials, method, path, payload, expected_status, headers=None):
     parsed = urlsplit(endpoint)
     request = AWSRequest(
         method=method,
@@ -60,6 +60,7 @@ def drop_reply(endpoint, credentials, method, path, payload, expected_status):
             "Content-Length": str(len(payload)),
             "Connection": "close",
             "x-amz-content-sha256": sha256(payload).hexdigest(),
+            **(headers or {}),
         },
     )
     S3SigV4Auth(credentials, "s3", os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1")).add_auth(request)
@@ -107,6 +108,14 @@ def main():
     assert client.get_object(Bucket=bucket, Key=key)["Body"].read() == payload
     listed = client.list_objects_v2(Bucket=bucket, Prefix="retry/")
     assert [item["Key"] for item in listed["Contents"]] == [key]
+    copied = "retry/copied-response-loss.bin"
+    drop_reply(endpoint, credentials, "PUT", f"/{bucket}/{copied}", b"", 200,
+               {"x-amz-copy-source": f"/{bucket}/{key}"})
+    assert client.get_object(Bucket=bucket, Key=copied)["Body"].read() == payload
+    result = client.copy_object(Bucket=bucket, Key=copied, CopySource={"Bucket": bucket, "Key": key})
+    assert result["CopyObjectResult"]["ETag"] == etag
+    assert client.get_object(Bucket=bucket, Key=copied)["Body"].read() == payload
+    client.delete_object(Bucket=bucket, Key=copied)
     client.delete_object(Bucket=bucket, Key=key)
 
     multipart_key = "retry/multipart.bin"
@@ -118,6 +127,13 @@ def main():
     assert f"\r\netag: {part_etag}\r\n".lower().encode() in response.lower(), response[:512]
     assert client.upload_part(Bucket=bucket, Key=multipart_key, UploadId=upload_id,
                               PartNumber=1, Body=part)["ETag"] == part_etag
+    copy_source = "retry/part-copy-source.bin"
+    client.put_object(Bucket=bucket, Key=copy_source, Body=part)
+    drop_reply(endpoint, credentials, "PUT", f"/{bucket}/{multipart_key}{query}", b"", 200,
+               {"x-amz-copy-source": f"/{bucket}/{copy_source}"})
+    assert client.upload_part_copy(Bucket=bucket, Key=multipart_key, UploadId=upload_id,
+                                   PartNumber=1, CopySource={"Bucket": bucket, "Key": copy_source})["CopyPartResult"]["ETag"] == part_etag
+    client.delete_object(Bucket=bucket, Key=copy_source)
     assert len(client.list_parts(Bucket=bucket, Key=multipart_key, UploadId=upload_id)["Parts"]) == 1
 
     complete = (

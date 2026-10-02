@@ -205,6 +205,22 @@ fn xml_start(root: &str) -> String {
     )
 }
 
+#[must_use]
+pub fn copy_result(etag: &str, modified_ms: u64, part: bool) -> String {
+    let root = if part {
+        "CopyPartResult"
+    } else {
+        "CopyObjectResult"
+    };
+    let mut output = xml_start(root);
+    element(&mut output, "LastModified", &iso8601(modified_ms));
+    element(&mut output, "ETag", &format!("\"{etag}\""));
+    output.push_str("</");
+    output.push_str(root);
+    output.push('>');
+    output
+}
+
 fn element(output: &mut String, name: &str, value: &str) {
     output.push('<');
     output.push_str(name);

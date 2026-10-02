@@ -36,6 +36,7 @@ use crate::storage::S3StorageClients;
 use super::{error_response, full_body, install_body_receive_provider, BoxError, ResponseBody};
 use crowdb_access_s3::wire;
 
+mod copy;
 mod multipart;
 mod upload;
 
@@ -126,7 +127,7 @@ impl ProductionS3Operations {
     }
 
     async fn dispatch(
-        &self,
+        self: &Arc<Self>,
         route: S3Route,
         request: Request<Incoming>,
         request_id: String,
@@ -145,6 +146,8 @@ impl ProductionS3Operations {
             S3Operation::GetObject => self.get_object(route, &request, &request_id).await,
             S3Operation::ListObjectsV2 => self.list_objects(route, &request).await,
             S3Operation::DeleteObject => self.delete_object(route).await,
+            S3Operation::CopyObject => self.copy_object(route, &request).await,
+            S3Operation::UploadPartCopy => self.upload_part_copy(route, &request).await,
             S3Operation::CreateMultipartUpload => self.create_multipart_upload(route, &request).await,
             S3Operation::UploadPart => self.upload_part(route, request).await,
             S3Operation::ListParts => self.list_parts(route, &request).await,
@@ -169,7 +172,11 @@ impl ProductionS3Operations {
         };
         let uses_chunks = matches!(
             operation,
-            S3Operation::PutObject | S3Operation::GetObject | S3Operation::UploadPart
+            S3Operation::PutObject
+                | S3Operation::GetObject
+                | S3Operation::UploadPart
+                | S3Operation::CopyObject
+                | S3Operation::UploadPartCopy
         );
         match result {
             Ok(_) => {

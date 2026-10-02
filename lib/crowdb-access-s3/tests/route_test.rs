@@ -41,6 +41,41 @@ fn rejects_extensions_before_dispatch() {
 }
 
 #[test]
+fn copy_headers_select_only_object_or_multipart_part_puts() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-amz-copy-source", HeaderValue::from_static("source/key"));
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers)
+            .unwrap()
+            .operation,
+        S3Operation::CopyObject
+    );
+    let uri = format!("/bucket/key?uploadId={}&partNumber=2", "ab".repeat(16))
+        .parse()
+        .unwrap();
+    assert_eq!(
+        classify_request(&Method::PUT, &uri, &headers).unwrap().operation,
+        S3Operation::UploadPartCopy
+    );
+    for (method, uri) in [
+        (Method::GET, "/bucket/key"),
+        (Method::PUT, "/bucket"),
+        (Method::POST, "/bucket/key?uploads"),
+    ] {
+        assert_eq!(
+            classify_request(&method, &uri.parse().unwrap(), &headers),
+            Err(RouteError::Invalid)
+        );
+    }
+    headers.remove("x-amz-copy-source");
+    headers.insert("x-amz-copy-source-if-match", HeaderValue::from_static("abc"));
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers),
+        Err(RouteError::Invalid)
+    );
+}
+
+#[test]
 fn rejects_headers_that_select_excluded_behavior() {
     let mut headers = HeaderMap::new();
     headers.insert("x-amz-storage-class", HeaderValue::from_static("GLACIER"));
