@@ -3,7 +3,7 @@
 
 # Changelog
 
-CROWDB is preparing `0.2.0`. This is a development version, not a
+CROWDB is preparing `0.2.1`. This is a development version, not a
 production release or a compatibility promise.
 
 CROWDB does not yet maintain compatibility for persisted data, WAL, metadata,
@@ -21,7 +21,7 @@ policy.
 
 ## [Unreleased]
 
-### 0.2.0 preparation
+### 0.2.1 preparation
 
 - S3 and Iceberg own separate chunk types, storage policies, and write pools
   behind one access-server process.
