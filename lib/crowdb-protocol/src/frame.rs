@@ -245,6 +245,41 @@ pub fn prepare_frame_regions(
     Ok(())
 }
 
+/// Frame payload views without copying their bytes into a contiguous allocation.
+///
+/// # Errors
+/// Returns an error when the total payload cannot fit one canonical frame.
+pub fn encode_frame_views(
+    magic: FrameMagic,
+    chunk_id: ChunkId,
+    payload: Vec<bytes::Bytes>,
+    write_time_ms: u64,
+) -> Result<Vec<bytes::Bytes>, FrameError> {
+    let length = payload.iter().try_fold(0usize, |total, view| {
+        total.checked_add(view.len()).ok_or(FrameError::LengthOverflow)
+    })?;
+    let header = FrameHeaderPrefix {
+        magic,
+        payload_offset: FRAME_HEADER_PREFIX_BYTES_U16,
+        payload_size: u16::try_from(length).map_err(|_| FrameError::PayloadTooLarge)?,
+        write_time_ms,
+    };
+    frame_length(header)?;
+    let mut header_region = [0; FRAME_HEADER_PREFIX_BYTES];
+    let mut footer_region = [0; FRAME_FOOTER_BYTES];
+    write_header_region(&mut header_region, header);
+    let checksum = crc32c_parts(
+        std::iter::once(header_region.as_slice()).chain(payload.iter().map(bytes::Bytes::as_ref)),
+    );
+    footer_region[..4].copy_from_slice(&checksum.to_le_bytes());
+    set_frame_chunk_id(chunk_id, &mut footer_region)?;
+    let mut views = Vec::with_capacity(payload.len() + 2);
+    views.push(bytes::Bytes::copy_from_slice(&header_region));
+    views.extend(payload);
+    views.push(bytes::Bytes::copy_from_slice(&footer_region));
+    Ok(views)
+}
+
 /// Set the destination chunk after the frame header and CRC are prepared.
 ///
 /// # Errors

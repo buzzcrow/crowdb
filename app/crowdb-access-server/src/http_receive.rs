@@ -51,3 +51,16 @@ pub(crate) fn install_native_body_receive_provider(
         .set_http1_body_receive_provider(receiver.clone());
     receiver
 }
+
+/// Select a receive owner sized for one complete small object.
+pub(crate) fn install_small_body_receive_provider(
+    request: &mut Request<Incoming>,
+    allocator: &NativeBodyAllocator,
+    payload_bytes: usize,
+) -> Option<Arc<NativeBodyReceiver>> {
+    let receiver = Arc::new(allocator.object_receiver_for_payload(payload_bytes).ok()?);
+    request
+        .body_mut()
+        .set_http1_body_receive_provider(receiver.clone());
+    Some(receiver)
+}

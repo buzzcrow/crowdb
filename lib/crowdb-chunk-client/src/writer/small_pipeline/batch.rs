@@ -1,109 +1,147 @@
+use std::collections::VecDeque;
+
 use super::{
-    batch_shape, encode_frame, BytesMut, FrameMagic, IoError, Location, MirrorBatchStats, OwnedChunk,
-    PendingObject, Result, SmallWriteMetrics, SystemTime, UNIX_EPOCH,
+    batch_shape, Bytes, FrameMagic, IoError, Location, OwnedChunk, PendingObject, Result, SmallWriteMetrics,
+    SystemTime, UNIX_EPOCH,
 };
 
 impl OwnedChunk {
     pub(super) async fn try_write_batch(
         &mut self,
-        batch: &[PendingObject],
+        batch: &mut [PendingObject],
         metrics: &SmallWriteMetrics,
     ) -> Result<Vec<Location>> {
         let (physical_bytes, logical_bytes, buffer_count) = batch_shape(batch)?;
-        let planned_cursor = self.cursor.saturating_add(physical_bytes as u64);
-        self.consume_staged_reservation(planned_cursor).await?;
-        let strip = self.current_strip()?.clone();
-        let unit_bytes = u64::from(strip.unit_kb) * 1024;
-        if physical_bytes as u64 > self.remaining_in_strip()
-            || physical_bytes as u64 > self.remaining_in_chunk()
-        {
-            return Err(IoError::Internal(
-                "assembled batch crosses mirror strip or chunk".into(),
-            ));
+        if physical_bytes as u64 > self.remaining_in_chunk() {
+            return Err(IoError::Internal("assembled batch crosses chunk".into()));
         }
         let start = self.cursor;
-        let strip_bytes = usize::try_from(strip.capacity)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(1024);
-        let strip_start = u64::from(strip.chunk_offset) * 1024;
-        let block_offset = start.saturating_sub(strip_start);
-        let block_offset_us = usize::try_from(block_offset).unwrap_or(usize::MAX);
-
-        // Single shadow buffer: allocated once with full strip capacity, no
-        // zeroing. Fragments are copied in sequentially; each batch sends a
-        // view (slice) of the written portion, not the whole buffer.
-        let mut shadow = self.take_shadow(strip_bytes, block_offset_us);
-
         let chunk_id = self
             .chunk
             .id
             .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
-        let locations = pack_batch(batch, chunk_id, start, &mut shadow)?;
-        let written_end = block_offset_us + physical_bytes;
-        debug_assert_eq!(shadow.len(), written_end);
-
-        // Freeze the buffer, take a view of the written portion, and send
-        // views to mirrors. After all mirrors complete, reclaim the buffer.
-        for (object, location) in batch.iter().zip(&locations) {
+        let (locations, views) = pack_batch(batch, chunk_id, start)?;
+        for (object, location) in batch.iter_mut().zip(&locations) {
             if let Some(intent) = &object.intent {
                 intent.before_write(location).await?;
             }
         }
-        let frozen = shadow.freeze();
-        let view = frozen.slice(block_offset_us..written_end);
-        let full_image = frozen.slice(0..written_end);
-        let (_, write_result) = self
-            .write_mirrors_with_repair(
-                &strip,
-                view,
-                full_image,
-                unit_bytes,
-                block_offset,
-                MirrorBatchStats {
-                    object_count: batch.len(),
-                    buffer_count,
-                    logical_bytes,
+        let mut remaining: VecDeque<Bytes> = views.into();
+        let mut first = true;
+        while !remaining.is_empty() {
+            self.ensure_strip().await?;
+            let views = take_views(&mut remaining, self.remaining_in_strip() as usize);
+            self.write_view_strip(
+                views,
+                if first {
+                    (batch.len(), logical_bytes, buffer_count)
+                } else {
+                    (0, 0, 0)
                 },
+                metrics,
+            )
+            .await?;
+            first = false;
+            self.prefetch_at_half();
+        }
+        if self.cursor != start + physical_bytes as u64 {
+            return Err(IoError::Internal("shared batch physical length mismatch".into()));
+        }
+        self.confirm_batch_publication(batch, self.cursor).await?;
+        metrics.record_batch(batch.len(), logical_bytes);
+        Ok(locations)
+    }
+
+    async fn write_view_strip(
+        &mut self,
+        views: Vec<Bytes>,
+        counts: (usize, usize, usize),
+        metrics: &SmallWriteMetrics,
+    ) -> Result<()> {
+        let strip = self.current_strip()?.clone();
+        let written: usize = views.iter().map(Bytes::len).sum();
+        let end = self.cursor + written as u64;
+        self.consume_staged_reservation(end).await?;
+        let strip_start = u64::from(strip.chunk_offset) * 1024;
+        let block_offset = self.cursor - strip_start;
+        if let Some(shadow) = self.shadow.take() {
+            self.metrics
+                .shadow_bytes
+                .fetch_sub(shadow.capacity() as u64, std::sync::atomic::Ordering::Relaxed);
+            self.retained_views.push(shadow.freeze());
+        }
+        let retained_count = self.retained_views.len();
+        self.retained_views.extend(views.iter().cloned());
+        let Some(super::Strip::MirrorStrip(mirror)) = &strip.strip else {
+            return Err(IoError::Internal("shared strip is not mirrored".into()));
+        };
+        metrics.record_aggregate_write(
+            mirror.segments.len() as u64,
+            counts.0,
+            counts.2,
+            counts.1,
+            written,
+        );
+        let result = self
+            .mirror_flow
+            .write_views(
+                &mut self.chunk,
+                self.cursor,
+                strip.strip_sequence,
+                block_offset,
+                views,
+                &self.retained_views,
+                &mut self.pending_advance,
             )
             .await;
-        self.shadow = Some(
-            frozen
-                .try_into_mut()
-                .unwrap_or_else(|shared| BytesMut::from(shared.as_ref())),
-        );
-        write_result?;
-        let end = start + physical_bytes as u64;
-        let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
-        let closed = (end == strip_end).then_some(strip.strip_sequence);
+        if result.is_err() {
+            self.retained_views.truncate(retained_count);
+        }
+        result?;
         self.cursor = end;
-        if let Some(sequence) = closed {
-            let closed_strip = self
+        let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
+        if end == strip_end {
+            let closed = self
                 .chunk
                 .strips
                 .iter()
-                .find(|current| current.strip_sequence == sequence)
+                .find(|current| current.strip_sequence == strip.strip_sequence)
                 .cloned()
                 .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
-            self.schedule_closed_advance(end, sequence);
-            if let Err(error) = self.retain_closed_strip(closed_strip).await {
+            self.schedule_closed_advance(end, strip.strip_sequence);
+            if let Err(error) = self.retain_closed_strip(closed).await {
                 tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
             }
         } else {
             self.refresh_pending_advance().await?;
             self.start_pending_advance(end)?;
         }
-        self.confirm_batch_publication(batch, end).await?;
-        metrics.record_batch(batch.len(), logical_bytes);
-        Ok(locations)
+        Ok(())
     }
 }
 
+fn take_views(source: &mut VecDeque<Bytes>, mut length: usize) -> Vec<Bytes> {
+    let mut views = Vec::new();
+    while length > 0 {
+        let Some(mut view) = source.pop_front() else {
+            break;
+        };
+        let take = length.min(view.len());
+        views.push(view.split_to(take));
+        if !view.is_empty() {
+            source.push_front(view);
+        }
+        length -= take;
+    }
+    views
+}
+
 fn pack_batch(
-    batch: &[PendingObject],
+    batch: &mut [PendingObject],
     chunk_id: super::ChunkId,
     start: u64,
-    shadow: &mut BytesMut,
-) -> Result<Vec<Location>> {
+) -> Result<(Vec<Location>, Vec<Bytes>)> {
+    let mut views = Vec::new();
     let mut copied = 0usize;
     let mut locations = Vec::with_capacity(batch.len());
     let write_time_ms = SystemTime::now()
@@ -112,14 +150,58 @@ fn pack_batch(
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         });
     for object in batch {
-        let mut payload = Vec::with_capacity(object.len);
-        for fragment in &object.fragments {
-            payload.extend_from_slice(fragment);
-        }
-        let frame = encode_frame(FrameMagic::RepoSmallV1, chunk_id, &payload, write_time_ms)
-            .map_err(|error| IoError::WriteFailed(error.to_string()))?;
-        let frame_length = frame.len();
-        shadow.extend_from_slice(&frame);
+        let frame_length = if let Some(owner) = &mut object.framed {
+            let mut end = 0;
+            let mut logical = 0usize;
+            for index in 0..owner.frame_count() {
+                logical += owner
+                    .frame_payload_len(index)
+                    .ok_or_else(|| IoError::WriteFailed("missing frame payload".into()))?;
+                let range = owner
+                    .finalize_frame(index, FrameMagic::RepoSmallV1, chunk_id, write_time_ms)
+                    .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+                if range.start != end {
+                    return Err(IoError::WriteFailed(
+                        "small object frames are not contiguous".into(),
+                    ));
+                }
+                end = range.end;
+            }
+            if logical != object.len || end != super::frame_bytes(object.len)? {
+                return Err(IoError::WriteFailed(
+                    "small object frame geometry mismatch".into(),
+                ));
+            }
+            views.extend(
+                owner
+                    .views(0..end)
+                    .map_err(|error| IoError::WriteFailed(error.to_string()))?,
+            );
+            end
+        } else {
+            let mut fragments: VecDeque<Bytes> = object.fragments.iter().cloned().collect();
+            let mut remaining = object.len;
+            while remaining > 0 {
+                let length = remaining.min(crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES);
+                let payload = take_views(&mut fragments, length);
+                if payload.iter().map(Bytes::len).sum::<usize>() != length {
+                    return Err(IoError::SourceRead(
+                        "small object fragments are incomplete".into(),
+                    ));
+                }
+                views.extend(
+                    crowdb_protocol::frame::encode_frame_views(
+                        FrameMagic::RepoSmallV1,
+                        chunk_id,
+                        payload,
+                        write_time_ms,
+                    )
+                    .map_err(|error| IoError::WriteFailed(error.to_string()))?,
+                );
+                remaining -= length;
+            }
+            super::frame_bytes(object.len)?
+        };
         locations.push(Location {
             chunk_id: Some(chunk_id),
             offset: start + copied as u64,
@@ -129,5 +211,5 @@ fn pack_batch(
         });
         copied += frame_length;
     }
-    Ok(locations)
+    Ok((locations, views))
 }

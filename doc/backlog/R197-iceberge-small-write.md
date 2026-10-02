@@ -56,6 +56,48 @@ table purge from starting after a 20-minute delay.
 
 #### Solution
 
+Small-object transfer also follows the native large-object buffer ownership
+model. In single-node mirror mode the routing boundary is strictly below
+`disk_block_bytes * threshold_ratio` (normally 1 MiB * 0.9). A per-object
+small writer owns checksum computation and retains the received owner until
+completion. Receive calls may fill it incrementally; frame boundaries never
+create independent object submissions. Reserve header/footer space before
+receiving payload, prepare checksums in place, and hand the entire framed
+owner to the shared pipeline once. The worker sets every frame's destination
+chunk ID after placement and aggregates immutable owner views without copying
+payload into a strip shadow. Receive owners allocate the exact object payload plus its frame overhead.
+Retained owner views provide the strip prefix for recovery; repair or EC
+conversion may materialize an image off the ordinary mirror write path.
+HTTP header parsing may copy a prefetched body prefix; preserve that library
+behavior and observe each copy with one bandwidth metric recording count
+and bytes. Preserve whole-object placement, durable
+readability, bounded retained owners, and terminal completion.
+
+Shared chunk capacity and the number of strips prefetched per group are
+service configuration, defaulting to 256 MiB chunks and 32 strips per group.
+Start the next batched prefetch when half the current group remains. Append
+each new group after the full preceding reservation, including its hidden
+strips; confirmed readable capacity does not define the append position.
+Keep batched allocation and refill ahead of demand;
+do not allocate a strip per object. Multi-frame objects that fit a strip
+must share its remaining capacity with other objects. Queue draining sends
+available work promptly, bounded by strip space; it must not wait indefinitely
+for a full strip. Treat the hash as a preferred pipeline hint; probe other pipelines with atomic
+capacity reservation before applying backpressure. Preserve one pipeline's
+write -> readable-cursor confirmation -> next batch ordering. Queued requests
+aggregate naturally while publication is in flight; multiple pipelines provide
+concurrency. Across strip boundaries, split immutable owner views rather than
+copying payload or forcing a fresh strip. Resource allocation runs in background
+prefetch tasks and outside chunk lifecycle guards; only publication retains the
+existing short metadata guard.
+
+The current gaps include small uploads bypassing native owner handoff,
+per-frame payload/frame/shadow copies, forced strip rotation for multi-frame
+objects, a blocking checksum task per tiny upload, and strip-prefetch settings
+not exposed by the service. Benchmark 1 KiB and 512 KiB payloads separately.
+Add a labelled aligned profile with 65,502-byte payloads, whose 34-byte frame
+overhead yields exactly 64 KiB; it supplements rather than replaces those sizes.
+
 Use one durable publication update for each independently mutable logical
 resource. Prepare data and metadata outside the visible state, then publish
 the result through that resource's key. A conditional update is needed only
@@ -371,6 +413,20 @@ Implement the following work as one measured requirement:
   KV operation counts, conflicts, throughput, and p50/p95/p99 latency by
   phase; assert the common path uses fewer metadata operations and the
   report exposes any throughput or latency regression (I1–I3). E2E test.
+
+- Given single-node one-mirror mode and 1 KiB, 512 KiB, and labelled
+  65,502-byte payloads, receive each over multiple socket reads; assert one
+  object owner handoff with respectively 1, 9, and 1 contiguous frames, correct
+  checksums and late chunk ID assignment, no payload coalescing on native
+  mirror success, and correct readback. Integration test.
+- Given a shared chunk with small and multi-frame objects, drain queued work;
+  assert multi-frame objects reuse remaining strip capacity, exact locations
+  remain independent, and completion never exposes unreadable bytes.
+  Integration test.
+- Given default small-write configuration, fill half a strip reservation group;
+  assert 256 MiB chunk capacity, a 32-strip initial prefetch, next-group prefetch
+  at 16 remaining strips, and cancellation of unused reservations on retirement.
+  Integration test.
 
 Run `pixi run rs-fmt-check`, `pixi run rs-lint`, `pixi run test-access-iceberg`,
 `pixi run test-access-server`, and the focused small-cluster Iceberg loader and

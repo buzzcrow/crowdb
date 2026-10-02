@@ -10,7 +10,6 @@ use crowdb_access_iceberg::file::{
     FileBlockStore, FileIdentity, FileLocation, FileRecord, FileRepository, MultipartPart,
     MultipartRepository, MultipartSession, MultipartStreamPart,
 };
-use crowdb_access_iceberg::storage::IcebergFileWriter;
 use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use crowdb_chunk_client::{FramedWriteBuffer, LargeWritePolicy};
 use crowdb_protocol::frame::{FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
@@ -33,8 +32,8 @@ const TARGET_BUFFER_BYTES: usize = 16 * MAX_FRAME_PAYLOAD_BYTES;
 
 struct WriteObject<'a> {
     body: FileUploadBody<Incoming>,
-    writer: IcebergFileWriter,
-    digest: DigestPipe,
+    object: object::ObjectWriter,
+    frame_magic: FrameMagic,
     held_buffers: usize,
     admission: &'a FileTransferAdmission,
     receiver: Option<&'a NativeBodyReceiver>,
@@ -85,20 +84,33 @@ pub(super) async fn upload(
     let small = declared_length
         .and_then(|length| usize::try_from(length).ok())
         .filter(|length| *length < small_threshold_exclusive);
-    let receiver = native_receiver.filter(|_| small.is_none() && body.native_handoff_eligible());
+    let native_small = small.is_some_and(|length| length > 0);
+    let receiver =
+        native_receiver.filter(|_| (small.is_none() || native_small) && body.native_handoff_eligible());
     let writer = blocks
         .prepare_upload_writer(&location.to_string(), small, declared_length, large_write)
         .await
         .map_err(|_| FileS3ErrorCode::SlowDown)?
         .ok_or(FileS3ErrorCode::SlowDown)?;
     if let Some(receiver) = receiver {
-        receiver.enable_owner_handoff();
+        receiver
+            .enable_owner_handoff_with_magic(if small.is_some() {
+                FrameMagic::RepoSmallV1
+            } else {
+                FrameMagic::RepoLargeV1
+            })
+            .map_err(|_| FileS3ErrorCode::InternalError)?;
     }
     body.defer_md5();
-    WriteObject {
+    let object = WriteObject {
         body,
-        writer,
-        digest: DigestPipe::start(expected_sha256.is_some()),
+        object: object::ObjectWriter::new(writer, small.is_some(), expected_sha256.is_some())
+            .map_err(|()| FileS3ErrorCode::InternalError)?,
+        frame_magic: if small.is_some() {
+            FrameMagic::RepoSmallV1
+        } else {
+            FrameMagic::RepoLargeV1
+        },
         held_buffers: large_write.client.large_held_buffers,
         admission,
         receiver,
@@ -109,42 +121,21 @@ pub(super) async fn upload(
         observation: metrics.start(),
         publication,
         metrics,
-    }
-    .run()
-    .await
+    };
+    object.run().await
 }
+
+mod object;
+mod small_receive;
 
 impl WriteObject<'_> {
     async fn run(mut self) -> Result<UploadedObject, FileS3ErrorCode> {
-        // One upload task polls both sides before yielding.
-        let (sender, receiver) = mpsc::channel(self.held_buffers);
-        let progress = AtomicU64::new(0);
-        let queued_peak = AtomicU64::new(0);
-        let flow = WriteFlow::new(sender, &progress, &queued_peak);
-        let target_buffer = usize::try_from(self.declared_length.unwrap_or(TARGET_BUFFER_BYTES as u64))
-            .unwrap_or(TARGET_BUFFER_BYTES)
-            .clamp(1, TARGET_BUFFER_BYTES);
-        let receive = receive_body(
-            &mut self.body,
-            &mut self.digest,
-            self.admission,
-            self.receiver,
-            self.declared_length,
-            target_buffer,
-            flow,
-            &mut self.observation,
-        );
-        let write = write_buffers(&mut self.writer, receiver, &progress, |_| {
-            FileS3ErrorCode::SlowDown
-        });
-        let transfer = drive_transfer(receive, write, &progress).await;
-        self.observation
-            .queued_buffers_peak(queued_peak.load(Ordering::Relaxed));
+        let transfer = self.transfer().await;
         let (length, written) = match transfer {
             Ok(result) => result,
             Err(error) => {
-                let _ = self.digest.finish().await;
-                let _ = self.writer.on_error().await;
+                let _ = self.object.digest_mut().finish().await;
+                let _ = self.object.writer_mut().on_error().await;
                 self.observation.complete(false);
                 return Err(error);
             }
@@ -154,7 +145,8 @@ impl WriteObject<'_> {
             .writer_capacity_waits(written.capacity_waits, written.capacity_wait_time);
         let digest_started = Instant::now();
         let digest = self
-            .digest
+            .object
+            .digest_mut()
             .finish()
             .await
             .map_err(|()| FileS3ErrorCode::InternalError);
@@ -163,25 +155,26 @@ impl WriteObject<'_> {
         let etag = match etag {
             Ok(etag) => etag,
             Err(error) => {
-                let _ = self.writer.on_error().await;
+                let _ = self.object.writer_mut().on_error().await;
                 self.observation.complete(false);
                 return Err(error);
             }
         };
         let started = Instant::now();
         let locations = self
-            .writer
+            .object
+            .writer_mut()
             .on_finish()
             .await
             .map_err(|_| FileS3ErrorCode::SlowDown);
         self.observation.writer_finish(started.elapsed());
-        if let Some(timing) = self.writer.write_timing() {
+        if let Some(timing) = self.object.writer_mut().write_timing() {
             self.observation.chunk_write_timing(timing);
         }
         let locations = match locations {
             Ok(locations) => locations,
             Err(error) => {
-                let _ = self.writer.on_error().await;
+                let _ = self.object.writer_mut().on_error().await;
                 self.observation.complete(false);
                 return Err(error);
             }
@@ -204,6 +197,49 @@ impl WriteObject<'_> {
         let published = self.publish(record).await;
         self.observation.complete(published.is_ok());
         published
+    }
+
+    async fn transfer(&mut self) -> Result<(u64, crate::upload_flow::WriteStats), FileS3ErrorCode> {
+        if self.frame_magic == FrameMagic::RepoSmallV1 {
+            if let Some(receiver) = self.receiver {
+                let (writer, digest) = self.object.parts_mut();
+                return small_receive::receive(
+                    &mut self.body,
+                    writer,
+                    digest,
+                    self.admission,
+                    receiver,
+                    self.declared_length,
+                    &mut self.observation,
+                )
+                .await;
+            }
+        }
+        // One upload task polls both sides before yielding.
+        let (sender, receiver) = mpsc::channel(self.held_buffers);
+        let progress = AtomicU64::new(0);
+        let queued_peak = AtomicU64::new(0);
+        let flow = WriteFlow::new(sender, &progress, &queued_peak);
+        let target_buffer = usize::try_from(self.declared_length.unwrap_or(TARGET_BUFFER_BYTES as u64))
+            .unwrap_or(TARGET_BUFFER_BYTES)
+            .clamp(1, TARGET_BUFFER_BYTES);
+        let (writer, digest) = self.object.parts_mut();
+        let receive = receive_body(
+            &mut self.body,
+            digest,
+            self.admission,
+            self.receiver,
+            self.declared_length,
+            target_buffer,
+            self.frame_magic,
+            flow,
+            &mut self.observation,
+        );
+        let write = write_buffers(writer, receiver, &progress, |_| FileS3ErrorCode::SlowDown);
+        let result = drive_transfer(receive, write, &progress).await;
+        self.observation
+            .queued_buffers_peak(queued_peak.load(Ordering::Relaxed));
+        result
     }
 
     fn validate_digest(&mut self, digest: &Digests) -> Result<String, FileS3ErrorCode> {
@@ -270,6 +306,7 @@ async fn receive_body(
     native_receiver: Option<&NativeBodyReceiver>,
     declared_length: Option<u64>,
     target_buffer: usize,
+    frame_magic: FrameMagic,
     flow: WriteFlow<'_>,
     observation: &mut UploadObservation,
 ) -> Result<u64, FileS3ErrorCode> {
@@ -317,7 +354,7 @@ async fn receive_body(
             if let Some(mut owner) = receiver.take_ready_owner() {
                 let started = Instant::now();
                 owner
-                    .prepare_frames(FrameMagic::RepoLargeV1, super::now_ms()?)
+                    .prepare_frames(frame_magic, super::now_ms()?)
                     .map_err(|_| FileS3ErrorCode::InternalError)?;
                 observation.frame_prepare(owner.frame_count(), started.elapsed());
                 handoff(
@@ -359,7 +396,7 @@ async fn receive_body(
         {
             let started = Instant::now();
             owner
-                .prepare_frames(FrameMagic::RepoLargeV1, super::now_ms()?)
+                .prepare_frames(frame_magic, super::now_ms()?)
                 .map_err(|_| FileS3ErrorCode::InternalError)?;
             observation.frame_prepare(owner.frame_count(), started.elapsed());
             handoff(
@@ -389,7 +426,7 @@ async fn receive_body(
 }
 
 async fn handoff(
-    digest: &DigestPipe,
+    digest: &mut DigestPipe,
     flow: &WriteFlow<'_>,
     buffer: UploadBuffer,
     payload: Vec<Bytes>,

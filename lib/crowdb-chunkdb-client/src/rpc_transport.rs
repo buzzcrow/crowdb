@@ -388,6 +388,7 @@ impl ChunkdbRpcTransport {
                 copy_count: req.copy_count,
                 conversion_data_num: req.conversion_data_num,
                 conversion_code_num: req.conversion_code_num,
+                reservation_offset_kb: req.reservation_offset_kb.unwrap_or(u32::MAX),
             },
         );
         builder.finish(request, None);

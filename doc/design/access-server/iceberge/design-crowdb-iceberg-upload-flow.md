@@ -64,9 +64,19 @@ field and writes the frame without an object-sized copy. The receiver offers
 the owner to a bounded channel with four held-buffer slots. A full channel
 pauses further body reads until the consumer removes an owner. The digest
 worker receives borrowed payload views after the write offer, so checksum work
-can overlap receive and DiskIO without controlling write backpressure. Small
-objects use this same handoff, then enter the shared small-write pipeline;
-their data path does not submit independent large-write strip tasks.
+can overlap receive and DiskIO without controlling write backpressure. Small objects have a per-object writer owning inline MD5/SHA-256 state. The
+native receiver allocates exact payload plus frame overhead, updates the digest
+as socket payload views arrive, and hands one complete owner directly to that
+writer without a per-object handoff channel. The shared small-write pipeline
+sets destination Chunk IDs and slices the owner across strip boundaries without
+payload copies. Each pipeline confirms readable cursor publication before its
+next batch; queued arrivals naturally aggregate during that wait. Hash routing
+is a hint and can select another pipe with capacity. Shared chunks default to
+256 MiB, with 32-strip mirror groups refilled asynchronously at half consumption.
+EC conversion is disabled in single-node mode; enabled multi-node conversion
+can materialize a strip image to compute parity. HTTP header parsing retains
+its prefetched-body copy and reports its count and bytes through one bandwidth
+metric, `access.http.receive.prefix_copy.bw`.
 
 The large chunk writer prepares strips ahead of demand. For a known object
 size, it batches up to the configured strip-prefetch limit and requests the
@@ -112,8 +122,9 @@ also counts repair-driven rotations, replayed bytes, and rotation time.
 
 ## 3. Integrity and durable publication
 
-The object-scoped OpenSSL worker computes MD5 over ordered logical payload
-views. It also computes SHA-256 when a signed payload requires it. It never
+The per-object OpenSSL digest state computes MD5 over ordered logical payload
+views. Small objects update it synchronously in the receive task; large objects
+use a checksum worker. It also computes SHA-256 when a signed payload requires it. It never
 hashes frame headers or footers. The writer fills placement-dependent chunk
 IDs after the receiver has calculated placement-independent CRC32C. Digest
 failure, declared-length mismatch, failed DiskIO, or seal failure prevents
@@ -230,3 +241,68 @@ four active mirror writes. Previous runs on this host took about 50 s and
 232 s, respectively. These single-run totals show a material end-to-end
 improvement, but they do not isolate upload-only wall time or constitute a
 repeatable benchmark distribution.
+
+### Native small-object profiles
+
+A 2026-10-02 comparison used the same local single-node, one-mirror,
+1-MiB-strip null-DiskIO fixture. EC conversion and Iceberg GC were disabled.
+Every measured group uploaded 128 distinct paths with Content-MD5, then read
+back every file. Concurrency was one or 32; the 32-client groups followed
+128 warmup uploads at that concurrency. The reference revision was cd5bede8;
+the measured implementation uses exact native owners, inline checksums,
+owner-view packing, 32-strip prefetch and bounded concurrent transport frames.
+These are individual process runs, not a throughput distribution or physical
+SSD benchmark. Sequential readback and background maintenance change pipeline
+state between groups; keep that limitation when comparing workloads.
+
+**Reference**
+
+| Payload      | Clients | Elapsed s | p50 ms   | p95 ms   | p99 ms   | GET / CAS / scan |
+| ------------ | ------- | --------- | -------- | -------- | -------- | ---------------- |
+| 1KiB         | 1       | 5.264     | 40.451   | 45.914   | 58.831   | 501 / 128 / 18   |
+| 1KiB         | 32      | 0.393     | 79.955   | 100.023  | 106.175  | 384 / 128 / 0    |
+| 512KiB       | 1       | 14.434    | 109.813  | 151.723  | 157.257  | 658 / 128 / 42   |
+| 512KiB       | 32      | 9.575     | 2242.789 | 3572.333 | 3905.036 | 581 / 128 / 30   |
+| aligned64KiB | 1       | 11.569    | 88.975   | 104.206  | 154.668  | 618 / 128 / 36   |
+| aligned64KiB | 32      | 1.083     | 209.547  | 306.681  | 337.257  | 403 / 128 / 3    |
+
+**Native owner implementation**
+
+| Payload      | Clients | Elapsed s | p50 ms  | p95 ms   | p99 ms   | GET / CAS / scan |
+| ------------ | ------- | --------- | ------- | -------- | -------- | ---------------- |
+| 1KiB         | 1       | 5.268     | 40.650  | 45.195   | 51.810   | 483 / 128 / 15   |
+| 1KiB         | 32      | 0.421     | 85.970  | 103.340  | 112.044  | 384 / 128 / 0    |
+| 512KiB       | 1       | 11.665    | 88.193  | 117.547  | 125.175  | 609 / 128 / 33   |
+| 512KiB       | 32      | 4.337     | 956.139 | 1515.353 | 1716.117 | 464 / 128 / 12   |
+| aligned64KiB | 1       | 9.606     | 71.214  | 118.007  | 125.484  | 560 / 128 / 27   |
+| aligned64KiB | 32      | 0.986     | 191.480 | 298.624  | 317.061  | 403 / 128 / 3    |
+
+The 512-KiB 32-client sample is 2.21 times faster; the 1-KiB 32-client
+sample is 7.1% slower, while its sequential sample is essentially unchanged.
+The aligned 32-client sample improves by 9.0%. These samples establish neither
+universal improvement nor a stable tiny-object regression distribution.
+All 768 measured uploads and readbacks succeeded. Each group recorded 128
+small completions, zero large strips and 128 writer handoffs. Actual native
+frame preparation was 128 frames for 1 KiB and aligned payloads, and 1,152
+frames for 512 KiB; all cases allocated exactly 128 receive owners.
+
+For 128 512-KiB uploads, socket-direct payload bytes plus accepted HTTP prefix
+copies sum to 67,108,864 bytes. Prefix copies were about 927 KiB per group;
+all 1-KiB payloads arrived in the parser's prefetched prefix, totaling 131,072
+copied bytes. These are the accepted HTTP parser copies, not strip coalescing.
+Pointer-identity tests independently check owner views and frame layout.
+
+The 1-KiB concurrent group used one pipeline and eleven batches, with no
+reservation or scale-out during timing. Summed writer-finish time was 1.685 s;
+summed file-publication time was 5.851 s. These concurrent stage sums are not
+wall time. File publication and transport latency remain material even after
+payload copies and per-object digest tasks are removed. The common-path
+location publication still performs exactly one CAS per file. Cluster-wide
+GET and scan deltas include maintenance; the quiet 1-KiB window observed
+384 GETs and 128 CAS operations for 128 files.
+
+A complete zero-copy aggregate can exceed the transport's 16-view descriptor
+bound. DiskIO submits its disjoint ranges at bounded concurrent depth within
+the same batch and drains outcomes before one fsync and cursor publication.
+Waiting for each subdivision separately doubled tiny-object concurrent time
+in a diagnostic run; bounded overlap removed that doubled regression.

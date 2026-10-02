@@ -5,7 +5,7 @@ use super::{OwnedChunk, PendingObject};
 impl OwnedChunk {
     pub(super) async fn confirm_batch_publication(
         &mut self,
-        batch: &[PendingObject],
+        batch: &mut [PendingObject],
         end: u64,
     ) -> Result<()> {
         if !batch.iter().any(|object| object.durable_completion) {

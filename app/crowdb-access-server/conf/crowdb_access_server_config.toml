@@ -27,7 +27,8 @@ queue_capacity = 1024
 min_pipelines = 1
 max_pipelines = 32
 max_batch_bytes = 1048576
-chunk_capacity_bytes = 1073741824
+chunk_capacity_bytes = 268435456
+small_strip_prefetch_count = 32
 
 [s3]
 listen = "127.0.0.1:8081"

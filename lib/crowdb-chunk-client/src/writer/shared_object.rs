@@ -8,8 +8,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use crowdb_protocol::chunkdb::rpc::Location as ProtoLocation;
-use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use crate::io::{ChunkIoWriter, FeedStatus};
 use crate::{IoError, Result};
@@ -31,8 +30,7 @@ pub struct SharedObjectWriter {
     retained_size: usize,
     full_reservation: bool,
     fragments: Vec<Bytes>,
-    stream_tx: Option<mpsc::Sender<Bytes>>,
-    stream_result: Option<oneshot::Receiver<Result<Vec<ProtoLocation>>>>,
+    framed: Option<Box<dyn crate::FramedWriteBuffer>>,
     finished: bool,
     durable_completion: bool,
     intent: Option<Arc<dyn SmallWriteIntent>>,
@@ -55,8 +53,7 @@ impl SharedObjectWriter {
             retained_size: 0,
             full_reservation: false,
             fragments: Vec::new(),
-            stream_tx: None,
-            stream_result: None,
+            framed: None,
             finished: false,
             durable_completion: false,
             intent: None,
@@ -73,8 +70,7 @@ impl SharedObjectWriter {
             retained_size: 0,
             full_reservation: false,
             fragments: Vec::new(),
-            stream_tx: None,
-            stream_result: None,
+            framed: None,
             finished: false,
             durable_completion: false,
             intent: None,
@@ -89,20 +85,36 @@ impl SharedObjectWriter {
         }
     }
 
-    pub(crate) fn try_reserve_declared(&mut self) -> bool {
-        if self
-            .charge
-            .as_mut()
-            .is_some_and(|charge| charge.try_reserve(self.declared_size))
-        {
-            self.full_reservation = true;
-            true
-        } else {
-            false
+    pub(crate) fn try_reserve_declared(&mut self) -> Result<bool> {
+        let Some(runtime) = &self.runtime else {
+            return Err(IoError::Finished);
+        };
+        if runtime.closed.load(std::sync::atomic::Ordering::Acquire) || runtime.manager_tx.is_closed() {
+            return Err(IoError::Finished);
         }
+        let Some(charge) = &mut self.charge else {
+            return Err(IoError::Finished);
+        };
+        let routes = runtime.routes.load_full();
+        if routes.is_empty() {
+            return Ok(false);
+        }
+        let first = self.route_hash as usize % routes.len();
+        for offset in 0..routes.len() {
+            let route = Arc::clone(&routes[(first + offset) % routes.len()]);
+            if route.sender.is_closed() || !charge.try_rebind(Arc::clone(&route)) {
+                continue;
+            }
+            self.route = Some(route);
+            if charge.try_reserve(self.declared_size) {
+                self.full_reservation = true;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
-    pub(crate) async fn wait_for_route_capacity(&self) {
+    pub(crate) async fn wait_for_route_capacity(&mut self) {
         if let Some(route) = &self.route {
             tokio::select! {
                 () = route.capacity_changed.notified() => {},
@@ -132,11 +144,6 @@ impl SharedObjectWriter {
         intent: Arc<dyn SmallWriteIntent>,
     ) -> Result<Vec<ProtoLocation>> {
         self.ensure_open()?;
-        if self.stream_tx.is_some() {
-            return Err(IoError::Internal(
-                "a streaming shared object cannot register an intent after writing starts".into(),
-            ));
-        }
         self.intent = Some(intent);
         self.finish_durable().await
     }
@@ -144,8 +151,7 @@ impl SharedObjectWriter {
     fn fail_size(&mut self, actual: usize) -> IoError {
         self.finished = true;
         self.fragments.clear();
-        self.stream_tx.take();
-        self.stream_result.take();
+        self.framed.take();
         self.charge.take();
         IoError::ObjectSizeMismatch {
             declared: self.declared_size,
@@ -172,51 +178,30 @@ impl ChunkIoWriter for SharedObjectWriter {
                 .ok_or_else(|| IoError::Internal("shared writer missing route charge".into()))?
                 .add(buffer.len());
         }
-        if self.declared_size > MAX_FRAME_PAYLOAD_BYTES && self.full_reservation {
-            if self.stream_tx.is_none() {
-                let runtime = self
-                    .runtime
-                    .take()
-                    .ok_or_else(|| IoError::Internal("small writer missing shared pool".into()))?;
-                let charge = self
-                    .charge
-                    .take()
-                    .ok_or_else(|| IoError::Internal("shared writer missing route charge".into()))?;
-                let (sender, receiver) = mpsc::channel(2);
-                let (completion, result) = oneshot::channel();
-                let object = PendingObject {
-                    intent: self.intent.take(),
-                    durable_completion: true,
-                    route_hash: self.route_hash,
-                    route: self
-                        .route
-                        .take()
-                        .ok_or_else(|| IoError::Internal("shared writer missing route".into()))?,
-                    fragments: Vec::new(),
-                    stream: Some(receiver),
-                    len: self.declared_size,
-                    enqueued_at: Instant::now(),
-                    completion,
-                    charge,
-                };
-                runtime.submit(object).await?;
-                self.stream_tx = Some(sender);
-                self.stream_result = Some(result);
-            }
-            self.stream_tx
-                .as_ref()
-                .ok_or_else(|| IoError::Internal("shared object stream missing sender".into()))?
-                .send(buffer)
-                .await
-                .map_err(|_| IoError::WriteFailed("shared object pipeline stopped".into()))?;
-        } else {
-            self.fragments.push(buffer);
-        }
+        self.fragments.push(buffer);
         Ok(if self.retained_size == self.declared_size {
             FeedStatus::Pause
         } else {
             FeedStatus::Continue
         })
+    }
+
+    async fn on_framed_data(&mut self, buffer: Box<dyn crate::FramedWriteBuffer>) -> Result<FeedStatus> {
+        self.ensure_open()?;
+        let actual = usize::try_from(buffer.logical_len())
+            .map_err(|_| IoError::WriteFailed("framed object length exceeds usize".into()))?;
+        if self.retained_size != 0 || self.framed.is_some() || actual != self.declared_size {
+            return Err(self.fail_size(actual));
+        }
+        if !self.full_reservation {
+            self.charge
+                .as_mut()
+                .ok_or_else(|| IoError::Internal("shared writer missing route charge".into()))?
+                .add(actual);
+        }
+        self.retained_size = actual;
+        self.framed = Some(buffer);
+        Ok(FeedStatus::Pause)
     }
 
     async fn on_finish(&mut self) -> Result<Vec<ProtoLocation>> {
@@ -227,15 +212,6 @@ impl ChunkIoWriter for SharedObjectWriter {
         self.finished = true;
         if self.declared_size == 0 {
             return Ok(Vec::new());
-        }
-        if let Some(sender) = self.stream_tx.take() {
-            drop(sender);
-            return self
-                .stream_result
-                .take()
-                .ok_or_else(|| IoError::Internal("shared object stream missing completion".into()))?
-                .await
-                .map_err(|_| IoError::WriteFailed("small-write completion was lost".into()))?;
         }
         let runtime = self
             .runtime
@@ -255,7 +231,7 @@ impl ChunkIoWriter for SharedObjectWriter {
                 .take()
                 .ok_or_else(|| IoError::Internal("shared writer missing route".into()))?,
             fragments: std::mem::take(&mut self.fragments),
-            stream: None,
+            framed: self.framed.take(),
             len: self.declared_size,
             enqueued_at: Instant::now(),
             completion,
@@ -271,8 +247,7 @@ impl ChunkIoWriter for SharedObjectWriter {
         self.ensure_open()?;
         self.finished = true;
         self.fragments.clear();
-        self.stream_tx.take();
-        self.stream_result.take();
+        self.framed.take();
         self.charge.take();
         Ok(Vec::new())
     }

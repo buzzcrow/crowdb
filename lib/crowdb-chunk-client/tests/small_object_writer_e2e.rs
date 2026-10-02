@@ -56,6 +56,22 @@ impl DiskWriter for FailSelectedDiskWrite {
         self.inner.write(segment, unit_bytes, data).await
     }
 
+    async fn write_views_at_byte_offset(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) + 1 == self.fail_on {
+            *self.failed_disk.lock().unwrap() = segment.disk_id;
+            return Err(IoError::WriteFailed("injected first replica failure".into()));
+        }
+        self.inner
+            .write_views_at_byte_offset(segment, unit_bytes, byte_offset, data)
+            .await
+    }
+
     async fn write_at_byte_offset(
         &self,
         segment: &Segment,
@@ -80,6 +96,21 @@ impl DiskWriter for FailWritesFromCall {
             return Err(IoError::WriteFailed("injected persistent disk failure".into()));
         }
         self.inner.write(segment, unit_bytes, data).await
+    }
+
+    async fn write_views_at_byte_offset(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) + 1 >= self.first_failed_call {
+            return Err(IoError::WriteFailed("injected persistent disk failure".into()));
+        }
+        self.inner
+            .write_views_at_byte_offset(segment, unit_bytes, byte_offset, data)
+            .await
     }
 
     async fn write_at_byte_offset(
@@ -146,7 +177,7 @@ async fn shared_object_spans_mirror_strips_with_one_location() {
     for (index, fragment) in data.chunks(1024 * 1024).enumerate() {
         writer.on_data(Bytes::copy_from_slice(fragment)).await.unwrap();
         if index == 0 {
-            assert_eq!(stack.client.small_write_metrics().submitted, submitted_before + 1);
+            assert_eq!(stack.client.small_write_metrics().submitted, submitted_before);
         }
     }
     let locations = writer.on_finish().await.unwrap();
@@ -169,7 +200,7 @@ async fn shared_object_spans_mirror_strips_with_one_location() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cancelled_streaming_shared_object_keeps_pipeline_available() {
+async fn cancelled_shared_object_keeps_pipeline_available() {
     if !all_binaries_available() {
         return;
     }

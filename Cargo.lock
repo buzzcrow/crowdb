@@ -1035,6 +1035,7 @@ dependencies = [
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "flatbuffers",
+ "futures",
  "reqwest",
  "serde_json",
  "thiserror 2.0.18",

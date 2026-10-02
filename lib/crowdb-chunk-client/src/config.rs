@@ -38,7 +38,7 @@ pub struct SmallWritePolicy {
     /// Compatibility setting retained for callers; it is not a scaling signal.
     pub cooldown: Duration,
     pub chunk_capacity: u64,
-    /// Mirror strips attached per allocation/prefetch RPC. Default 4.
+    /// Mirror strips attached per allocation/prefetch RPC. Default 32.
     pub small_strip_prefetch_count: u32,
     pub mirror_copies: u32,
     pub conversion_enabled: bool,
@@ -71,8 +71,8 @@ impl Default for SmallWritePolicy {
             scale_in_delay: Duration::from_secs(30),
             control_interval: Duration::from_millis(10),
             cooldown: Duration::from_millis(100),
-            chunk_capacity: 1024 * 1024 * 1024,
-            small_strip_prefetch_count: 4,
+            chunk_capacity: 256 * MIB as u64,
+            small_strip_prefetch_count: 32,
             mirror_copies: 2,
             conversion_enabled: true,
             conversion_data_num: 8,
@@ -92,7 +92,9 @@ impl SmallWritePolicy {
                 "small object limit must be in 1..=8 MiB".into(),
             ));
         }
-        let shadow_budget = self.max_pipelines.saturating_mul(1024 * 1024);
+        let shadow_budget = self
+            .max_pipelines
+            .saturating_mul(self.object_limit.max(1024 * 1024));
         let conversion_budget = if self.conversion_enabled {
             self.conversion_data_num
                 .saturating_add(self.conversion_code_num)
@@ -136,12 +138,14 @@ impl SmallWritePolicy {
         Ok(())
     }
 
-    /// Retained request bytes available to one stable hash route.  The sum
-    /// across all possible routes stays within `memory_budget`; fixed chunk
-    /// shadows and one conversion group are excluded first.
+    /// Retained request bytes available to one pipeline.  The sum
+    /// across all possible routes stays within `memory_budget`; retained strip owners
+    /// and one conversion group are excluded first.
     pub fn route_buffer_capacity(&self) -> usize {
         const HARD_LIMIT: usize = 1024 * 1024;
-        let shadows = self.max_pipelines.saturating_mul(HARD_LIMIT);
+        let shadows = self
+            .max_pipelines
+            .saturating_mul(self.object_limit.max(HARD_LIMIT));
         let conversion = if self.conversion_enabled {
             self.conversion_data_num
                 .saturating_add(self.conversion_code_num)

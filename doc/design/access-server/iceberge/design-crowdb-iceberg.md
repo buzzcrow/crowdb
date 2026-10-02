@@ -169,9 +169,11 @@ revision. Only completion of both ranges permits the fenced tombstone CAS.
 Terminal replay and conditional cleanup cannot delete a recreated NamespaceId.
 Table-child probes resolve published mappings against the selected table head.
 Unpublished table reservations are helped through their creation or lifecycle
-journal; an unadmitted creator or rename beneath the drop fence is aborted, while
-an admitted publisher is completed before the parent can be fenced. Corrupt table authority
-blocks the emptiness proof rather than being treated as absence.
+journal. Ordinary table creation does not modify the namespace authority. A
+concurrent drop scan may miss a creator; later mapping reconciliation resolves
+the leftover state. Stable namespace identity prevents that state from becoming
+visible under a recreated namespace. Rename retains its lifecycle admission
+protocol. Corrupt table authority blocks the emptiness proof.
 Each listener runs a namespace-journal sweep with bounded pages, per-operation
 phase budgets and a wall-clock deadline. The sweep resumes abandoned operations
 and their conditional mapping cleanup without requiring a client retry. Catalog
@@ -187,8 +189,9 @@ entries are omitted; corruption fails the page. HMAC-authenticated continuations
 bind the catalog activation, stable parent identity, spelling, page size and last
 scanned key. A stale-only page can therefore be empty while retaining a token.
 Unpaginated lists build a complete in-memory spool before success headers, capped
-independently at 2 MiB, 1024 results, 4096 scanned mappings and four concurrent
-spools. Atomic admission rejects excess work without waiting. The request
+independently at 2 MiB, 1024 results and 4096 scanned mappings. A shared
+128 MiB byte budget admits response spools, reserving each operation's maximum
+2 MiB while that buffer is owned. Atomic admission rejects excess work without waiting. The request
 deadline bounds construction before success headers. Dispatch stops before that
 deadline, reserving the smaller of 100 ms or 10% of the request timeout for
 emitting a bounded error response. Header receipt does not restart this budget.
@@ -227,9 +230,11 @@ support for upload permission, while staged drafts require create support.
 Runtime table routes require a persisted delegation bound of at least fifteen
 minutes. Legacy catalogs below that bound retain foundation-only service; activation
 requires an explicit clear with expanded bounds and a listener restart after the
-maintenance grace. Namespace and table mutations advertise a 24-hour UUIDv7
-idempotency window, bind canonical route, exact request input, principal and catalog
-activation, and retain large results in immutable payload pages. Server errors
+maintenance grace. Namespace mutations, table creation and lifecycle operations
+use retained UUIDv7 retry identities bound to route, input, principal and catalog
+activation. Ordinary existing-table commits publish through one head CAS without
+a separate durable retry-result ledger; a retry whose result is hidden by a later
+generation may report an uncertain outcome. Server errors
 remain retryable, never terminal ledger outcomes. Exhausting the configured request
 deadline leaves durable recovery evidence; subsecond completion is not guaranteed.
 Static bearer credentials
@@ -260,17 +265,22 @@ metadata stores at most 16 KiB inline; bounded LZ4
 compression considers at most 64 KiB original input, and decoding verifies the
 canonical length and digest. Location vectors are validated for exact logical
 coverage and bounded by the record limit. Hints are non-authoritative and out-of-bounds
-hints are ignored. The publication primitive stages an immutable authority before
-the exact-location CAS; equal-content retries return the selected FileId, while
-conflicts retain losing candidates without overwriting or physical deletion.
+hints are ignored. One exact-location key stores the complete file descriptor.
+Publication uses one create-only CAS without a preliminary existence GET; equal
+content is resolved from the CAS conflict value. Losing candidates cannot
+overwrite the selected bytes. Legacy file-ID/mapping pairs remain readable for
+recovery. Prefix scans of current records require no file-ID join.
 An SDK upload supplies a path and bytes, not the eventual Iceberg data/delete
 use. FileIO treats client-supplied bytes as opaque. It verifies the declared
 transport checksum and durable frame writes before publishing the descriptor;
 format interpretation belongs to the client or to a CROWDB component that
-constructs those bytes. Selected metadata and manifests validate their declared
-uses during table publication.
-The isolated native HTTP surface exposes signed immutable object reads/writes
-and multipart operations, but no general S3 bucket authority or file DELETE.
+constructs those bytes. Commit validates the selected table metadata and request
+requirements in memory; it does not traverse client manifests or perform
+per-file reference checks. Format validators remain available to components
+that explicitly construct or examine those files.
+The isolated native HTTP surface exposes signed immutable object reads/writes,
+multipart operations and separately authorized single/batch cleanup, without
+a general S3 bucket authority.
 
 Legacy chunk-backed files use bounded leaf blocks and immutable chunk-resident directory
 pages, with at most 256 children per page and eight directory levels. Each page
@@ -316,13 +326,10 @@ require a selected FileId, and abort retains completion evidence without claimin
 publication. Their FlatBuffers envelopes bind session and part identities to
 separate catalog key scopes, retaining only bounded checkpoint references and
 current-part digest state. Unknown phases and invalid revisions fail closed.
-Catalog-scoped admission reserves an upload's entire staged-byte ceiling and one
-session credit before creating its authority. Independent persisted limits cannot
-be widened by another server's local configuration. A bounded CAS journal stores
-immutable before/after session references; policy-bound sequence receipts make
-create and terminal release recoverable without double accounting. Released
-receipts remain in terminal sessions. These logical credits are not physical disk
-reclamation or accounting for retained orphan bytes.
+New multipart sessions publish their own authority without a catalog-wide
+credit reserve or release. Persisted per-session limits bound staged bytes and
+part count. Legacy admission journals and credit receipts remain recoverable in
+the background; ordinary new sessions never contend on those shared records.
 The legacy tree multipart repository reserves one part mutation in the session before
 changing its part authority. A bounded before/after snapshot and monotonically
 increasing revisions make the write and fence release recoverable across servers.
@@ -374,7 +381,8 @@ session by the persisted catalog request deadline. Timeout defers only that sess
 allowing later entries in the page to progress. A separate outer budget bounds the
 whole page and context/scan work. One separately bounded admission-journal recovery
 step runs before scanning, including a reservation whose session is not yet present.
-Terminal sessions return their credits on a later visit while retaining all parts.
+Legacy terminal sessions settle retained credits on a later recovery visit;
+new sessions have no global credit release.
 The HTTP driver composes this durable state machine with physical sealing;
 recovery remains the authority for abandoned or uncertain work.
 
@@ -384,15 +392,25 @@ number. Current-session checks bracket each scan; concurrent mutations invalidat
 the page rather than mixing pending counters with old part records. Expired or
 terminal sessions and malformed storage pages are not reported as successful lists.
 
-Native HTTP upload staging holds an independent concurrency credit and bounded
-1-MiB receive owners. A body below 1 MiB enters its write pipeline in one push;
-larger bodies push each filled owner while the next owner receives. The Chunk
-writer frames data at 64 KiB and chooses shared chunks only below the configured
-fraction of one strip's data capacity. Unknown-length bodies choose a dedicated
-chunk. PUT and UploadPart require a verified request checksum or signed payload;
-SHA-256 is calculated only when declared. Durable completion and exact length
-precede metadata publication. Failed or cancelled uploads leave unpublished
-allocations for orphan scanning without exposing partial file authority.
+Native HTTP upload staging holds a bounded concurrency credit. Known small
+bodies receive an owner sized to payload plus 34 bytes per 64-KiB storage frame.
+A per-object small writer computes declared MD5/SHA-256 synchronously as socket
+views arrive, then hands the complete framed owner to the shared pipeline once.
+The worker assigns chunk IDs and slices immutable views across strip boundaries;
+ordinary mirror writes do not copy payload. The HTTP parser's prefetched-body
+copy is measured by one bandwidth counter with count and bytes.
+Large and unknown-length bodies receive through bounded 1-MiB owners. Routing
+uses the configured fraction of a strip's data capacity, not socket frame size.
+Unknown-length bodies choose a dedicated chunk. Per-pipeline disk completion and
+readable-cursor publication finish before the next batch; requests accumulating
+while publication waits form the next batch. Hash selects a preferred pipeline,
+with atomic alternate-route admission before backpressure. Shared chunks default
+to 256 MiB with 32-strip groups, asynchronously refilled at half remaining.
+Allocation appends after reserved capacity, including hidden strips, and runs
+outside the existing chunk publication guard. Exact length, declared checksum and
+durable completion precede file publication. Failed uploads leave unpublished
+allocation ownership to lower-layer recovery and applicable cleanup tasks.
+See the [upload flow](design-crowdb-iceberg-upload-flow.md) for transfer details.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner
@@ -424,8 +442,8 @@ exact offset/length and referenced-file/cardinality agreement. The deletion-vect
 reader then streams Roaring array, bitset and run containers, validates their
 directories and cardinalities, and checks the blob's framing and CRC-32. It retains
 one bounded container directory, not the deleted-position set; byte and bitmap
-limits independently bound work. Snapshot-wide uniqueness and referenced data-file
-row-count checks remain commit-level validation stages.
+limits independently bound work. Snapshot-wide uniqueness and referenced data-file row-count checks belong to
+explicit selected-file validation; normal metadata commit does not run them.
 ORC probing retains at most 255 postscript bytes, checks protobuf wire framing
 and resolves footer/metadata spans without decoding stripe directories. It accepts
 legacy header-only magic and skips bounded unknown protobuf fields.
@@ -452,7 +470,8 @@ Delegation tokens carry catalog activation epoch, table, principal fingerprint,
 nonce, exact operation set, issue/expiry times and independent request/file byte
 limits. Domain-separated HMAC authenticates bounded claims and derives per-grant
 S3 credential material without a mutable credential registry. Verification requires
-a freshly checked Ready context; file DELETE is not representable. These token
+a freshly checked Ready context. Ordinary FileIO grants exclude DELETE;
+explicit cleanup grants include the separate delete operation. These token
 primitives feed native request-signature verification through a request-local
 credential provider. Only the shared SigV4 algorithm is reused; general S3
 credentials and metadata are never consulted. Header and presigned requests have
@@ -476,14 +495,16 @@ Routed operation checks and streamed
 request/response limits already enforce signed scopes and server budgets.
 A session token alone never authenticates a request.
 The native path-style request parser preserves decoded object-key bytes and limits
-operations to immutable object reads/writes and multipart subresources. Unknown
+operations to immutable object reads/writes, multipart subresources and
+explicitly authorized cleanup. Unknown
 query operations, duplicate parameters and general buckets fail closed. HTTP
-DELETE can identify an upload abort only; it cannot identify physical file deletion.
+DELETE identifies either an upload abort or separately authorized object cleanup;
+batch cleanup uses the S3 DeleteObjects request and per-key response contract.
 These request primitives are attached to the native listener.
 
 Writes and reads stream through bounded CROWDB storage clients. Delegated FileIO
 access may move immutable ranges without an Access Server payload bounce, but
-cannot overwrite published files or bypass table reachability.
+cannot overwrite published files or bypass its operation-specific authorization.
 
 ## 4. Commit and lifecycle
 
@@ -493,17 +514,18 @@ atomically publishes one new table head. Concurrent commits either publish from
 the generation they validated or fail for the client to reconcile; they never
 merge implicitly.
 
-Retries are idempotent across response loss. Any healthy Access Server can
-recover the durable operation outcome, so no server instance is a table leader
-or lock owner.
+Ordinary commits prepare immutable metadata and publish with one TableHead CAS.
+They do not write a phase journal, per-file committed state or post-publication
+head settlement. No server instance is a table leader or lock owner. A current
+head can identify a successful retry; after a later generation hides that result,
+an old request may return uncertain rather than silently reapplying its update.
 
 The library's immediate table creator records its immutable input, candidate
 identity, canonical metadata and response before reserving the namespace/name.
-It writes and verifies the initial metadata before acquiring a parent admission
-marker. Parent helpers therefore resolve the remaining publication using catalog
-records without requiring a file block reader. The initial head is selected once,
-then the reservation becomes a published mapping. The durable terminal result
-precedes conditional cleanup of parent and table markers. REST write admission
+It writes initial metadata before selecting the initial head and replacing the
+name reservation with a published mapping. Creation does not acquire a parent
+admission marker or modify the namespace authority. The durable terminal result
+precedes conditional cleanup of table markers. REST write admission
 binds the principal, route and exact body in the shared retry ledger before invoking
 these operations. Recovery reloads an existing operation before resolving the name
 or current head and never rebases an uncertain request. Response headroom is checked
@@ -514,10 +536,9 @@ Its native table location resolves the draft without a client-specific token.
 The final assert-create request initializes an empty metadata builder using the
 retained UUID, preserving the field IDs already used by staged files. One journal
 CAS binds its request identity, input bytes, evaluation clock and candidate before
-the ordinary name-reservation and parent-admission sequence begins. Initial file
-validation is fenced by that exact reservation and journal revision, never by a
-fabricated prior head. Publication checks all selected initial snapshots and the
-enabled auxiliary-file profile before writing canonical table metadata.
+the ordinary name-reservation sequence begins. Publication evaluates initial
+table metadata and requirements, then writes canonical metadata; it does not
+scan staged data files or client manifest chains.
 
 Draft expiry and final binding compete on the same phase CAS. Only an unbound
 draft may expire; bound operations recover their original publication outcome
@@ -526,8 +547,8 @@ error and release their reservation. Uncertain storage outcomes remain recoverab
 The draft response and final commit response are retained separately for exact
 replay.
 
-Bounded background scans rotate creation, update and lifecycle journals, four records per
-page, with independent continuations reset on catalog activation changes. Recovery
+Bounded background scans rotate creation, legacy update and lifecycle journals,
+four records per page, with independent continuations reset on catalog activation changes. Recovery
 expires only unbound drafts, reconstructs fixed candidate proofs, settles published
 markers and retains uncertain storage errors. Known semantic validation failures
 become durable client outcomes before any candidate is published. Recovery deadlines
@@ -551,17 +572,19 @@ A purge request persists a `TablePurgeTask` containing the tombstoned head,
 activation epoch and durable marker time, indexed by table, generation and metadata file.
 The purge task becomes eligible 20 minutes after that marker time; a delayed
 scheduler scan or restart does not restart the delay. A drop without an explicit
-purge request leaves the underlying files in place. This is pending
-reachability-proof work, not proof of deletion or permission to delete. Success is
+purge request leaves the underlying files in place. Purge reclaims table-scoped
+files after the delay and owner checks, without snapshot reachability scans
+inside the dropped table. Success is
 retained before releasing rename head/namespace markers. Retrying after response
 loss returns the original result without mutating a replacement table. The REST
 drop/rename routes require independent writer credentials and return empty success
 responses; stale table names fail normal load, exists, commit and credential refresh.
 
-Drop, replacement, and snapshot expiration remove logical reachability first.
-Physical reclamation follows a proof that no live metadata, snapshot, reference,
-lease, or retained operation can reach the file. General S3 deletion and
-lifecycle rules cannot reclaim Iceberg-owned data.
+Drop and replacement remove logical authority first. Purge and retired-catalog
+cleanup reclaim only their captured inactive identities after retention and
+owner checks. Snapshot expiration alone does not delete published files.
+Explicit single/batch cleanup scans retained references under the caller's
+no-future-reference contract described below.
 
 The reclamation proof binds current and retained historical metadata to their
 captured heads. Its immutable traversal stack and compressed binary file-ID index
@@ -588,11 +611,12 @@ authorizes deletion. Committed files remain readable when new chunk allocation
 fails. Progress resumes after capacity is restored through the normal storage
 flow. Shared-chunk ranges remain pending while range deletion is unsupported.
 
-Metadata readers, direct FileIO, file publication and credentials recheck their
-authority without writing request-level pins. Physical reclamation observes a
+Request entry checks catalog and table or draft authority without request-level
+pins. Selected context and records flow through normal publication and reads;
+PUT and GET do not perform deletion-fence or GC-claim GETs. Physical reclamation observes a
 minimum retention interval that covers admitted request lifetimes. Once a file's canonical
-deletion intent has started, ordinary resolution and publication reject it even
-if physical range reclamation is deferred. Legacy live tasks are retired without
+logical deletion has started, its location-key tombstone rejects resolution
+until cleanup state permits reuse, even if physical range reclamation is deferred. Legacy live tasks are retired without
 further deletion, releasing an owned table fence. Retained and deferred
 candidates remain durable work for later inactive passes.
 
@@ -620,9 +644,10 @@ the terminal session's payload pages and session record; pending part settlement
 or unreleased multipart credit keeps that session available for recovery.
 Streamed file and part candidates instead reclaim their exact Chunk location
 ranges after retention. A published selected part remains owned by the immutable
-file descriptor; part cleanup does not reclaim it a second time. Allocations
-abandoned before a file or part descriptor is published retain `FileWriteIntent`
-ownership. Active-catalog cleanup does not reclaim an intent merely because a
+file descriptor; part cleanup does not reclaim it a second time. Legacy tree allocations
+abandoned before publication retain FileWriteIntent ownership. Native streamed
+writes rely on Chunk-KV WAL and chunk allocation lifecycle rather than a
+per-frame Iceberg intent record. Active-catalog cleanup does not reclaim an intent merely because a
 file descriptor is absent: a multipart session in `Publishing` may still own
 those blocks. Retired-catalog and table-purge passes can reclaim intents after
 their authority and owner checks. The disk leak scanner alone does not establish
@@ -665,9 +690,10 @@ but selected ORC validation and compute-engine certification are separate work.
   and the official create/update/snapshot fixtures compare canonical metadata.
   `TestIcebergVersionRows` reads actual rows before and after adjacent upgrades,
   reads historical snapshots, expires them logically, and reloads after restart.
-- **Selected data and deletes:** `TestIcebergSelectedFiles` rejects mismatched
-  selected uses of identical uploaded bytes, reads the original row, verifies
-  equality-delete visibility and reads the historical snapshot. Canonical file
+- **Selected data and deletes:** client-generated fixtures exercise original
+  rows, equality-delete visibility and historical snapshots. Commit treats client
+  manifests as opaque references; selected-use probes are explicit validator
+  tests rather than a normal publication gate. Canonical file
   validators separately cover position deletes, v3 lineage, deletion vectors,
   defaults, nested/variant types, integer encodings and nullable values.
 - **Statistics:** `TestIcebergCatalogWrites` and the official partition-statistics

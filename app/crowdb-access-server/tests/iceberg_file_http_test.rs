@@ -11,6 +11,8 @@ mod child;
 mod fault;
 #[path = "common/iceberg_file_lifecycle.rs"]
 mod lifecycle;
+#[path = "common/iceberg_upload_profiles.rs"]
+mod profiles;
 #[path = "common/iceberg_file_recovery.rs"]
 mod recovery;
 
@@ -472,6 +474,12 @@ async fn file_request_counts(client: &TestFileClient) -> (u64, u64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "native small-file performance fixture; run during consolidated acceptance"]
+async fn native_small_file_profiles() {
+    profiles::small_file_profiles().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "native null-DiskIO release performance fixture"]
 async fn native_file_5_mib_profile() {
     let (stack, _process, client, table) = setup().await;
@@ -500,22 +508,7 @@ async fn native_file_5_mib_profile() {
         route_after.1 - route_before.1,
         route_after.2 - route_before.2
     );
-    let store = stack.store().await;
-    let context = CatalogRepository::new(store.clone(), ClearBounds::default())
-        .unwrap()
-        .status()
-        .await
-        .unwrap()
-        .0
-        .context;
-    let published = FileRepository::new(store)
-        .load(context, &table.file("data/profile-put.bin").unwrap())
-        .await
-        .unwrap()
-        .unwrap();
-    let chunks = published.content.locations(published.length).unwrap().unwrap();
-    assert_eq!(chunks.len(), 1, "5MiB file should fit one configured chunk");
-    println!("iceberg 5MiB PUT chunks={}", chunks.len());
+    profiles::assert_one_file_chunk(&stack, table).await;
 
     let multipart = path(table, "data/profile-mpu.bin");
     let created = client
@@ -1077,20 +1070,7 @@ async fn repeated_100_mib_multipart_upload_profile() {
         "iceberg 100 MiB multipart create={create_elapsed:?} parts={parts_elapsed:?} complete={complete_elapsed:?} slowest_part={:?}",
         parts.iter().map(|part| part.2).max().unwrap()
     );
-    let metrics: serde_json::Value = Client::new()
-        .get(format!("http://{}/_crowdb/metrics", client.address))
-        .bearer_auth("m".repeat(32))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    println!("iceberg upload flow metrics={}", metrics["upload_flow"]);
-    assert_eq!(metrics["upload_flow"]["attempts"], PART_COUNT);
-    assert_eq!(metrics["upload_flow"]["completed"], PART_COUNT);
-    assert_eq!(metrics["upload_flow"]["logical_bytes"], 100 * BLOCK_BYTES);
-    assert_eq!(metrics["upload_flow"]["multipart_completions"], 1);
+    profiles::assert_multipart_metrics(&client, PART_COUNT, 100 * BLOCK_BYTES).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

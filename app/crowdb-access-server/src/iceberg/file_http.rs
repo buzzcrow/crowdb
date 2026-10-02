@@ -55,6 +55,14 @@ pub(super) struct FileHttp {
 }
 
 impl FileHttp {
+    pub(super) fn native_receive_metrics(
+        &self,
+    ) -> Option<crowdb_access_s3::native_buffer::NativeBufferMetricsSnapshot> {
+        self.native_allocator
+            .as_ref()
+            .map(|allocator| allocator.metrics_snapshot())
+    }
+
     pub(super) fn upload_metrics_snapshot(&self) -> UploadFlowSnapshot {
         self.upload_metrics.snapshot()
     }
@@ -186,10 +194,25 @@ impl FileHttp {
         let native_receiver = if matches!(
             file_request.operation,
             FileOperation::Put | FileOperation::UploadPart
-        ) && declared_receive.map_or(true, |length| length >= 1024 * 1024)
+        ) && streaming.is_none()
+            && !request
+                .headers()
+                .get("content-encoding")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.split(',').any(|part| part.trim() == "aws-chunked"))
         {
-            self.native_allocator.as_ref().map(|allocator| {
-                crate::http_receive::install_native_body_receive_provider(&mut request, allocator)
+            self.native_allocator.as_ref().and_then(|allocator| {
+                if let Some(length) = declared_receive
+                    .and_then(|length| usize::try_from(length).ok())
+                    .filter(|length| *length > 0 && *length < self.small_threshold_exclusive)
+                {
+                    crate::http_receive::install_small_body_receive_provider(&mut request, allocator, length)
+                } else {
+                    Some(crate::http_receive::install_native_body_receive_provider(
+                        &mut request,
+                        allocator,
+                    ))
+                }
             })
         } else {
             None

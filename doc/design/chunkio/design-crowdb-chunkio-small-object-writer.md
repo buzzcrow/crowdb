@@ -43,11 +43,13 @@ can be completed by later background conversion.
 
 ## 2. Admission and Object Handles
 
-`prepare_small_write_for_key(object_size, key)` validates the policy and hashes
-the complete tenant/bucket/object identity to one stable pipeline. Admission
-only reads that route's atomic queued-byte state. It does not reserve the
-declared object size and does not acquire a global or per-tenant semaphore.
-The writer charges bytes as immutable input frames arrive.
+`prepare_small_write_for_key(object_size, key)` validates the policy and uses
+the complete tenant/bucket/object identity as a preferred pipeline hint. The
+single-frame interface charges bytes as immutable input fragments arrive.
+`prepare_shared_object_write_for_key` atomically reserves the complete declared
+payload on an available pipeline before receiving it. It probes the other
+routes when the preferred route cannot reserve enough capacity. Neither path
+uses a global or per-tenant semaphore.
 
 The returned single-use writer retains caller-owned byte fragments. Successful
 input is never partially accepted. Overflow or underflow is terminal, drops
@@ -62,16 +64,17 @@ and an undeliverable result leaves a reclaimable range in the shared chunk.
 
 ## 3. Routing and Pipeline Ownership
 
-Admission reads an immutable `ArcSwap` route snapshot. One stable hash selects
-one route using the full object identity. Each route contains a bounded MPSC
-sender, atomic queued bytes, and a notification; the submission path takes no
-mutex, read-write lock, semaphore, or multi-route selection.
+Admission reads an immutable `ArcSwap` route snapshot. The hash selects the
+first candidate; a full or closed route causes probing of other candidates
+before waiting. Moving a retained byte charge reserves capacity on the target
+atomically before releasing the previous route's charge. Failed transfers keep
+the object intact. The submission path adds no mutex or read-write lock.
 
-Before polling another HTTP frame, the caller checks the selected route's
-approximate byte capacity. A full route waits for its notification with a
-short control-interval fallback, leaving the socket unread so TCP applies
-backpressure. A closed route selects its replacement from a fresh snapshot.
-Slight accounting races are accepted; bounded queues remain the hard limit.
+When all routes are unavailable, the caller waits for a capacity notification
+with a control-interval fallback that also observes newly published routes.
+Socket admission leaves the body unread until retained-byte capacity is
+reserved, so TCP applies backpressure. Queue capacity and byte reservations
+bound pending work independently.
 
 For retirement, the manager publishes a snapshot without the route before it
 signals the worker. The worker closes its receiver, establishing the acceptance
@@ -82,37 +85,63 @@ therefore either accepted and drained or rejected intact for rerouting.
 
 A pipeline waits for the first object only while it has no work. After the
 previous batch completes, it immediately drains whole objects that are already
-queued until reaching the byte limit, object-count limit, or strip space. It
+queued until reaching the byte limit, object-count limit, or remaining chunk space. It
 never delays an admitted object to wait for a batching timer. Concurrent work
 naturally accumulates behind the in-flight batch and is aggregated on the next
 completion-driven drain. An object larger than the normal batch target is
 written alone as long as it is within the object limit.
 
-Each pipeline reserves and retains one uninitialized-capacity 1 MiB shadow for its open
-mirror strip. Object fragments are packed contiguously at exact logical
-offsets. Each physical update sends only the newly written byte range to every
-mirror; DiskIO aligns partial physical blocks and preserves their prior bytes.
-The retained prefix remains available for repair and mirror-to-EC conversion.
-`Bytes` clones shared by concurrent writes are reference-counted; the worker
-recovers the unique mutable shadow after completion without another
-steady-state copy.
-Each returned location covers only its object's exact bytes.
+Native small uploads allocate one exact-sized receive owner containing payload
+and all frame regions. The receive task can fill it across multiple socket
+reads, prepares frame checksums in place, and submits the complete owner once.
+The worker sets each frame's Chunk ID after placement. Generic immutable input
+fragments are framed with separate header/footer views without copying payload.
+
+Objects are packed consecutively and may span mirror strips within one chunk.
+The worker slices shared `Bytes` views at strip boundaries and sends only each
+new range to DiskIO through scatter/gather writes. It does not rotate merely
+because a frame or object reaches the strip boundary. Every returned location
+covers one object's consecutive physical frames.
+
+The current strip retains immutable prefix views for repair. Ordinary mirror
+success creates no continuous strip shadow. Repair materializes the complete
+prefix only after a failure; EC conversion materializes the closed strip image
+for parity computation. Closing a strip releases its retained views. A view
+crossing the boundary can retain its object's owner until the final open-strip
+prefix is released, so memory headroom includes a maximum-sized owner per pipe.
+
+### Transport descriptor bound
+
+A strip aggregate may retain more views than one RPC frame permits. The DiskIO
+semantic client validates the entire segment range, then submits consecutive
+bounded scatter/gather frames at increasing offsets. Disjoint ranges within
+one batch overlap at depth at most four, limited by semantic admission. An
+error stops further submissions and drains pending completions before repair.
+Views keep their original owners; this does not coalesce payload. Requested fsync follows the complete
+range once, and cursor publication follows successful completion of all frames.
+A descriptor bound cannot be treated as a disk failure or trigger repair.
+
 
 A caller can attach a `SmallWriteIntent` to durable completion. Once the batch
 has assigned exact locations, every attached callback completes before any of
 the batch's DiskIO. Failure aborts the batch and its pipeline; cancellation of
 the caller does not detach ownership registration from the physical operation.
-The callback has no default storage policy: FileIO uses it to persist its own
-catalog-sharded block ledger. Range reclamation defers active shared-chunk ranges
+The callback has no default storage policy. Legacy tree FileIO uses it for a
+catalog-sharded block ledger; native streamed files rely on chunk allocation
+ownership and Chunk-KV WAL. Range reclamation defers active shared-chunk ranges
 that extend beyond the acknowledged cursor, preserving uncertain writes.
 
 Chunk allocation reserves a bounded group of hidden strips. A reserved strip
 becomes `Consumed` immediately before its first DiskIO and is confirmed into
-the readable layout only after its mirror write succeeds. Confirmation and
-refill run on the background metadata chain; reserve failures fall back to a
+the readable layout only after its mirror write succeeds. Confirmation runs on the ordered metadata chain. Allocation/refill has its
+own background task and does not delay that chain; reserve failures fall back to a
 bounded batch of already attached mirror strips. Seal cancels never-consumed
-reservations and removes attached strips beyond the written length. Objects
-and batches never straddle a strip or chunk.
+reservations and removes attached strips beyond the written length. Objects and batches may straddle strips, but never chunks. Mirror-only groups
+contain 32 strips by default; at 16 remaining strips a new group is allocated
+asynchronously after the full preceding reservation, including hidden strips.
+Resource allocation releases the existing chunk lifecycle guard; publication
+reacquires it and revalidates ownership and sequence. No extra persistent
+high-water record is required.
 
 When automatic conversion is enabled and at least eight strips remain, one
 special reservation allocates eight mirror sets with the configured copy
@@ -124,7 +153,7 @@ one healthy survivor per mirror set against current topology and atomically
 publishes the 8+4 EC strip. If optimal publication is unavailable, mirrors stay
 authoritative and the ordinary durable conversion task is admitted.
 
-The configured pool memory budget subtracts one 1 MiB shadow per maximum
+The configured pool memory budget subtracts one maximum-sized retained owner (at least 1 MiB) per maximum
 pipeline and one foreground conversion group, then divides the remaining
 buffer capacity between possible routes. Conversion is a cold-path bounded
 operation and may use its own permit; ordinary object admission never does.
@@ -149,9 +178,9 @@ epochs or revisions conflict; backward or out-of-range cursors are invalid.
 
 The response barrier is:
 
-1. Append the object bytes to the open-strip shadow and write that byte range
-   concurrently to every mirror.
-2. Repair each failed replica from that shadow and fence the new segment into
+1. Frame the owner in place and write immutable slices concurrently to every
+   mirror, splitting views at strip boundaries when necessary.
+2. Repair each failed replica from the retained prefix and fence the new segment into
    chunk metadata or, while it remains hidden, into its durable reservation.
 3. Publish all object-specific locations together.
 4. Coalesce cursor progress in the background metadata chain. Strip close and
@@ -160,7 +189,7 @@ The response barrier is:
 The physical mirror-strip flow is shared with chunk streams: it writes mirrors
 in parallel, excludes failed disks, writes a prefix-complete replacement image,
 and publishes the fenced strip swap. Each single-owner caller retains its own
-current-strip shadow and controls its publication barrier. Journal streams also
+current-strip prefix and controls its publication barrier. Journal streams also
 fsync the final mirror set before advancing their durable cursor and resolve an
 uncertain replacement result against chunk metadata before retrying it.
 
@@ -173,7 +202,10 @@ Callers publishing immediately readable immutable authorities use
 `SharedObjectWriter::finish_durable`. A batch containing a durable-completion
 request waits for the existing metadata chain, then confirms any remaining
 cursor suffix before delivering locations. Metadata failure fails that batch
-instead of exposing an unreadable reference. Ordinary `on_finish` retains its
+instead of exposing an unreadable reference. The pipeline does not start its
+next batch before this barrier completes. Arrivals queue during the wait and
+form the next batch; multiple pipelines provide concurrency. Shared-object
+writers require this barrier by default. The single-frame `on_finish` retains its
 asynchronous cursor behavior; no additional lock or reader-side retry is needed.
 
 ## 6. Chunk Lifecycle and Recovery
@@ -181,10 +213,14 @@ asynchronous cursor behavior; no additional lock or reader-side retry is needed.
 A pipeline allocates its first chunk and its initial strip batch before
 publication. The worker owns the write cursor while one background metadata
 chain owns revision-ordered cursor commits and batched strip appends. When
-remaining chunk capacity falls below the object limit, it prepares at most one
-replacement so ordinary rotation does not wait for allocation.
+remaining chunk capacity falls below the larger of one prefetch group and the
+object limit, it starts at most one asynchronous replacement allocation so ordinary rotation does not wait for allocation.
 
-Closing a strip releases its shadow immediately. Retirement seals a non-empty
+Idle workers renew the current chunk and any ready replacement at half the
+writer lease interval. A matching live chunk writer lease also protects hidden
+reservation groups, avoiding a separate renewal write for every group.
+
+Closing a strip releases its prefix views immediately. Retirement seals a non-empty
 current chunk at its acknowledged cursor and deletes an empty current or
 replacement chunk. A write or metadata failure
 fails the affected batch and every already accepted queued object, removes the
@@ -204,8 +240,8 @@ I/O and does not validate allocation ownership.
 
 One manager owns pipeline membership. It publishes a scale-out candidate only
 after the candidate's first chunk is ready; initialization failure leaves the
-old snapshot intact. A route whose queued bytes or queued object count reaches
-its configured high-water mark can add one pipeline, up to 32 by default.
+old snapshot intact. When all routes reach their queue or byte-capacity high-water marks, the
+manager can add one pipeline, up to 32 by default.
 Scale-out depends only on queued work, not worker utilization, request age, or
 elapsed idle time. When the whole pool has no queued or active work, an extra
 route can be unpublished and drained while preserving the configured minimum.
@@ -228,16 +264,19 @@ acknowledged prefix, and retires the pipeline for background recovery.
 
 ## 8. Policy and Metrics
 
-Defaults accept objects and batches up to 1 MiB, budget 1.25 GiB pool-wide, use
-one to 32 pipelines, allow 1,024 queued objects per pipeline, and scale out
-when one route queues at least 4 MiB or 128 objects. Shared chunks have a 1 GiB
-client-side capacity and write three mirrors. Configuration validates nonzero
-bounds, reachable queue high-water marks, ordered pipeline limits, and a
-budget covering one 1 MiB shadow per maximum pipeline, one conversion group,
-and route buffers for about 1,000 concurrent maximum-size objects. Deployments
-expecting about 3,000 or 5,000 such objects configure roughly 3.25 GiB or
-5.25 GiB respectively. The retained `scale_in_delay` and `cooldown` fields are
-configuration-compatible but do not participate in scale decisions.
+Defaults accept objects up to 8 MiB and target batches up to 1 MiB, budget
+1.25 GiB pool-wide, use one to 32 pipelines, and allow 1,024 queued objects per
+pipeline. Queue high-water marks are 4 MiB or 128 objects. Shared chunks have
+a 256 MiB client-side capacity, prefetch 32 strips per ordinary group, and use
+two mirrors. Foreground conversion uses the configured data-width group and
+its joint parity placement; single-node deployments disable conversion and
+select one mirror explicitly. The access service routes by the logical data
+capacity of a strip multiplied by its threshold ratio, not socket read size.
+
+Configuration validates nonzero bounds, reachable queue high-water marks,
+ordered pipeline limits, and a budget covering retained owners, one conversion
+group, and request buffers. The retained `scale_in_delay` and `cooldown` fields
+are configuration-compatible but do not participate in scale decisions.
 
 Foreground parity writes use a dedicated connection per DiskIO endpoint and
 64 KiB byte-range requests, followed by a parity-only fsync barrier. Ordinary
@@ -259,21 +298,23 @@ maxima. Snapshots compute aggregates without locking submission.
 ## 9. Correctness Invariants
 
 - **SW-I1 — Incremental bounded input.** Received object frames are charged to
-  one stable route; declared object size is never globally reserved.
+  one route at a time; shared-object admission atomically reserves its declared
+  payload, and rerouting preserves bounded accounting.
 - **SW-I2 — Single acceptance.** A submission racing retirement is accepted by
   exactly one draining receiver or returned intact for rerouting.
 - **SW-I3 — Exclusive ownership.** Exactly one live pipeline epoch can advance
   a shared chunk.
-- **SW-I4 — Whole placement.** No object or batch crosses a strip or chunk
-  boundary.
+- **SW-I4 — Whole placement.** An object remains in one chunk; views can cross strips without
+  introducing padding or changing its consecutive frame layout.
 - **SW-I5 — Physical completion.** Object locations are published only after
-  every mirror write succeeds; metadata availability advances asynchronously.
+  every mirror write succeeds. Native FileIO additionally waits for readable
+  cursor publication; generic callers can select physical-only completion.
 - **SW-I6 — Monotonic prefix.** The acknowledged cursor moves strictly forward,
   and recovery seals only at that persisted prefix.
 - **SW-I7 — Terminal completion.** Every accepted object completes or fails
   exactly once; caller cancellation may discard delivery but not batch work.
 - **SW-I8 — Repair publication.** A replacement segment is written from the
-  complete shadow and fenced into metadata before any affected location is
+  complete retained prefix and fenced into metadata before any affected location is
   published.
 - **SW-I9 — Queue-only elasticity.** Pipeline membership changes are driven by
   queued bytes, queued objects, and empty/non-busy state, never elapsed time.

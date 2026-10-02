@@ -10,57 +10,83 @@ Upstream: [R197](../backlog/R197-iceberge-small-write.md),
 Goal: remove shared and repeated KV work from normal Iceberg operations while
 retaining one safe publication point per table or file and explicit cleanup.
 
+## Current focus: Native small-object transfer
+
+The user resumed consolidated acceptance and GC verification after the current
+implementation. Preserve per-pipeline publication ordering; optimize routing,
+owner slicing, asynchronous prefetch and exact receive allocation.
+
+- [x] **Owner-backed small batches**: accept complete framed owners in the
+  shared object writer; place multi-frame objects without forced rotation;
+  set chunk IDs in the worker; send owner views through offset-aware DiskIO
+  scatter/gather; retain views for repair and release them on strip close.
+  Files: `lib/crowdb-chunk-client/src/writer/`, `io.rs`, `disk_io/`,
+  `chunk/mirror_flow.rs`, `client.rs`.
+- [x] **Small receive and checksums**: enable native owner handoff for small
+  Iceberg uploads, use small frame magic, and compute checksums synchronously
+  within the per-object upload writer without a blocking task or digest queue.
+  Files: `app/crowdb-access-server/src/iceberg/file_http/stream.rs`,
+  `upload_flow/`, `lib/crowdb-access-s3/src/native_buffer.rs`.
+- [x] **Configured prefetch**: expose `small_strip_prefetch_count` alongside
+  256 MiB `chunk_capacity_bytes` and 32-strip groups refilled at half; audit refill and metadata barriers
+  for unnecessary demand-path waits. Files: service `config.rs`, chunk-client
+  `writer/small_pipeline.rs`.
+- [x] **Small profiles**: prepare 1 KiB, 512 KiB, and labelled 65,502-byte
+  aligned cases with one object handoff, expected frame count, zero payload
+  copying on native mirror success, shared-strip packing, and batch metrics.
+  Compare the implementation with the preceding committed snapshot.
+
 ## Phase 1: Baseline and independent table creation
 
-- [~] **Baseline and work preservation**: inventory the current partial edits,
+- [x] **Baseline and work preservation**: inventory the current partial edits,
   run focused tests, and record KV counts and the 32-worker failure before
   changing semantics. Files: `app/crowdb-access-server/tests/iceberg_file_http_test.rs`,
   this plan.
-- [~] **Create authority**: remove per-create namespace admission writes and
+- [x] **Create authority**: remove per-create namespace admission writes and
   repair the in-progress `FilesReady` transition; keep same-name publication
   conditional and prevent stale namespace identity from becoming visible.
   Files: `lib/crowdb-access-iceberg/src/commit/create/`,
   `lib/crowdb-access-iceberg/src/namespace/`.
-- [ ] **Create verification**: race same-name and distinct-name creates,
+- [x] **Create verification**: race same-name and distinct-name creates,
   namespace drop, retry, and crash recovery. Files:
   `lib/crowdb-access-iceberg/tests/`,
   `app/crowdb-access-server/tests/iceberg_file_http_test.rs`.
 
 ## Phase 2: One table commit point
 
-- [ ] **Commit publication**: remove the steady-state phase journal and
+- [x] **Commit publication**: remove the steady-state phase journal and
   post-publication head settlement where the published head and operation
   identity determine the outcome. Keep CAS on the table head and exact
   uncertain-response recovery. Files: `lib/crowdb-access-iceberg/src/commit/`,
   `lib/crowdb-access-iceberg/src/table/`.
-- [ ] **Commit validation**: remove normal-path manifest and per-file proofs;
+- [x] **Commit validation**: remove normal-path manifest and per-file proofs;
   keep request and base-version checks in memory. Files:
   `lib/crowdb-access-iceberg/src/commit/`,
   `app/crowdb-access-server/src/iceberg/table_write.rs`.
-- [ ] **Commit verification**: exercise same-head races, lost responses,
+- [x] **Commit verification**: exercise same-head races, lost responses,
   retries, and no per-file GET/write on publication. Files:
   `lib/crowdb-access-iceberg/tests/`, `app/crowdb-access-server/tests/`.
 
 ## Phase 3: File publication and multipart
 
-- [ ] **Single location record**: store the complete `FileRecord` at its
+- [x] **Single location record**: store the complete `FileRecord` at its
   location key, CAS only when absent, use the conflict value for same-content
   retries, and read with one file GET. Migrate GC and multipart callers from
   the file-ID record and mapping pair without losing old-record recovery.
   Files: `lib/crowdb-access-iceberg/src/file/`,
   `lib/crowdb-access-iceberg/src/record/`,
   `lib/crowdb-access-iceberg/src/gc/`.
-- [ ] **Multipart admission**: remove catalog-wide credit reserve/release;
+- [x] **Multipart admission**: remove catalog-wide credit reserve/release;
   keep per-session state, capacity limits, completion idempotency, and
   create-only publication. Files: `lib/crowdb-access-iceberg/src/file/`.
-- [ ] **File verification**: direct PUT, GET, multipart, same-path races,
+- [x] **File verification**: direct PUT, GET, multipart, same-path races,
   restart, and prefix enumeration with KV-operation assertions. Files:
   `lib/crowdb-access-iceberg/tests/`,
   `app/crowdb-access-server/tests/iceberg_file_http_test.rs`.
 
 ## Phase 4: Cleanup and resource budgets
 
-- [~] **Live GC split**: retire automatic deletion of published files solely
+- [x] **Live GC split**: retire automatic deletion of published files solely
   for missing snapshot references. Retain the scanner and recovery for
   expired multipart sessions, unpublished parts, and abandoned assembly
   blocks; remove foreground deletion-fence/claim GETs only where the new
@@ -69,14 +95,14 @@ retaining one safe publication point per table or file and explicit cleanup.
   `lib/crowdb-access-iceberg/src/file/`,
   `lib/crowdb-access-iceberg/src/gc/`,
   `app/crowdb-access-server/src/iceberg/gc_runtime.rs`.
-- [ ] **Explicit object cleanup**: add separately authorized S3
+- [x] **Explicit object cleanup**: add separately authorized S3
   `DeleteObject` and `DeleteObjects` with bounded retained-reference scans,
   per-key results, conditional deletion state, and deferred block reclaim.
   The client no-future-reference contract is documented in R197. Files:
   `lib/crowdb-access-iceberg/src/file/`,
   `lib/crowdb-access-iceberg/src/gc/`,
   `app/crowdb-access-server/src/iceberg/file_*.rs`.
-- [~] **Drop purge scheduling**: preserve `purgeRequested=false`; for true,
+- [x] **Drop purge scheduling**: preserve `purgeRequested=false`; for true,
   persist drop time in the existing marker and start bounded purge work after
   20 minutes, even across restart or delayed admission. Separate this from
   other GC retention and keep the worker active without live orphan sweep.
@@ -209,3 +235,96 @@ retaining one safe publication point per table or file and explicit cleanup.
   catalog-wide credit reservation or terminal release. Legacy credit records
   still recover in the background. Re-run the loader to distinguish the
   remaining table-create failure from this removed contention point.
+
+## Current implementation checkpoint
+
+- Native small-object receipt directly hands one complete framed owner to the
+  object writer without the generic transfer channel. MD5/SHA-256 is computed
+  inline. Exact owners are 1,058 bytes for 1 KiB and 524,594 bytes for 512 KiB.
+  Receive admission refuses physical sizes larger than its aggregate budget.
+- Owner views cross strip boundaries without payload copying or forced strip
+  rotation. Per-pipeline disk -> readable cursor -> next batch remains ordered.
+- Hash admission probes other routes atomically. Default shared capacity is
+  256 MiB; mirror refill allocates 32 strips at 16 remaining, appending after
+  the entire previous group. Allocation runs independently of cursor updates
+  and outside the existing lifecycle guard. Active chunk lease renewal protects
+  prefetched reservations and prepared replacement chunks.
+- HTTP parser prefix copies remain unchanged and use one bandwidth metric
+  recording count and bytes. AWS chunk encoding keeps its decoding fallback.
+- Production rs-lint and feature-enabled Access Server clippy passed. The initial
+  61 focused tests passed; the 18 real-process shared writer cases passed,
+  covering crossing strips, repair, rotation, EC conversion and restart.
+  The real ChunkDB hidden-reservation append/lease test passed.
+- The baseline snapshot is cd5bede8, measured in a separate managed worktree.
+  Identical HTTP profiles use 128 uploads each, 1 and 32 concurrent requests,
+  1 KiB, 512 KiB and 65,502-byte aligned payloads, with every file read back.
+  Baseline results are retained under target/r197-validation/baseline-small.log.
+  Baseline setup required explicit native binary paths and the harness FFI
+  library; these were environment failures before request execution.
+- Next: run current matching HTTP profiles, consolidate library/GC acceptance,
+  update permanent architecture and performance evidence, commit implementation,
+  then remove completed backlog and plan entries only after all required gates.
+
+## Remaining flow constraints
+
+- EC conversion reserves a complete data-width group with parity ownership;
+  halfway 32-strip refill applies to mirror-only pipelines. Conversion stays
+  disabled in the single-node fixture and is tested with multiple nodes.
+- Legacy tree multipart assembly retains bounded copying and durable checkpoint
+  ownership. Streamed native files compose locations rather than assembling
+  another payload. Published unreferenced files are never automatically swept.
+- Full chunk metadata publication still uses the existing lifecycle guard;
+  allocation is outside it and revalidates before publishing. No new lock was
+  added. Ambiguous publication retains physical allocations for recovery.
+
+## Real-protocol aggregation failure and fix
+
+- First current HTTP profile passed 1 KiB at concurrency one, then failed at
+  concurrency 32: a 29-object aggregate reached the RPC transport's fixed
+  16-view bound, was misreported as an ambiguous disk write and entered repair.
+  The first divergence was descriptor admission before DiskIO submission.
+- DiskIO semantic view writes now validate the whole range before any IO and
+  submit consecutive at-most-16-view frames by reference, with one final fsync
+  when requested. This retains payload owners, uses no payload coalescing,
+  changes no KV or cursor publication, and preserves the transport's existing
+  descriptor memory bound. The strip batch completes only after every frame.
+- Regression exercises 33 views, contiguous readback, exactly three writes and
+  one fsync, and oversized-range rejection before any write. HTTP profiles
+  additionally assert measured native frame count and one receive allocation
+  per object, and report accepted prefix-copy bytes separately.
+
+- The first successful current matrix improved 512 KiB at 32 clients from
+  7.074 s to 3.369 s, but regressed 1 KiB from 0.388 s to 0.816 s. Baseline
+  repeat after route warmup still used one pipeline, with no reservation in the
+  1 KiB measurement. The 128 queued-object scale-out threshold exceeds this
+  32-client case, so this is not extra pipeline initialization.
+- Sequential transport subdivision adds a completion round trip per 16 views.
+  Disjoint ranges within one strip batch now overlap at bounded depth four,
+  respecting a lower configured semantic admission limit. An error stops new
+  subdivision and drains submitted writes before returning; fsync and cursor
+  publication still follow the complete batch. A regression test observes two
+  simultaneous operations with artificial DiskIO latency and exact readback.
+- Consolidated server acceptance found one stale configuration assertion for
+  the former 1 GiB default; it now checks 256 MiB and 32 strips. This is an
+  expected contract update, not a weakened runtime assertion.
+
+- Final matching warmup matrix passes all six groups with 768 measured PUTs
+  and readbacks, expected frame/allocation/handoff counters, and zero large
+  routes. At 32 clients, 512 KiB improves 9.575 -> 4.337 s, aligned payloads
+  1.083 -> 0.986 s; 1 KiB is 0.393 -> 0.421 s (7.1% sample regression).
+  The 1 KiB sequential sample is unchanged. The permanent upload-flow report
+  records all percentiles, aggregate KV counts and limitations. No claim of
+  universal speedup is made. File publication remains the dominant summed
+  1 KiB stage. Pending shared admission now terminates on pool shutdown rather
+  than polling closed routes indefinitely, with a focused regression test.
+
+## Implementation commit checkpoint
+
+- Full Iceberg library acceptance passed. Current quality gates passed production
+  rs-lint and feature-enabled service clippy. Focused gates passed 12 native
+  receive tests, 10 frame tests, 41 small-pool tests, RPC owner-buffer tests and
+  real DiskIO semantic overlap/readback, five reservation/GC lease cases and
+  five real ChunkDB append/seal/delete concurrency cases.
+- Commit the native small-object implementation before consolidated service,
+  shared-writer and loader acceptance. Any acceptance fixes become separate
+  commits so they can be compared to this implementation snapshot.
