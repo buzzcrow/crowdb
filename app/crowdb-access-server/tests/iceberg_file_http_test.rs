@@ -372,7 +372,7 @@ async fn tpc_loader_parallel_stress() {
                 "--benchmark",
                 benchmark,
                 "--sf",
-                "0.01",
+                "1",
                 "--namespace",
                 benchmark,
                 "--upload-workers",
