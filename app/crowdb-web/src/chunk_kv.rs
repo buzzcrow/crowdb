@@ -3,6 +3,9 @@
 
 //! Bounded catalog observations for the Chunk-KV workbench.
 
+mod runtime;
+pub(crate) use runtime::runtime;
+
 use std::time::Duration;
 
 use axum::{

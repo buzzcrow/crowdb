@@ -99,6 +99,7 @@ async function openKvPanel(page: import('@playwright/test').Page, storeId: numbe
   // options to reappear.
   await page.goto('/');
   await page.getByTestId('domain-kv').click();
+  await page.getByTestId('kv-view-data').click();
   await page.getByTestId('kv-store-select').selectOption(String(storeId));
   await page.getByTestId('kv-group-select').selectOption(String(groupId));
 }

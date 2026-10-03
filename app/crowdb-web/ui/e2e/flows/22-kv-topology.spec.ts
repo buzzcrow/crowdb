@@ -319,6 +319,7 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
     await step('iso-stores: scan UI', async () => {
       await page.goto('/');
       await page.getByTestId('domain-kv').click();
+      await page.getByTestId('kv-view-data').click();
       // Uncheck auto-scan: group selection triggers an auto-scan whose
       // response waitForResponse would race with the explicit Scan
       // click's response, causing the auto-scan's discarded result to
@@ -357,6 +358,7 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
     await step('overlap: KV ops UI', async () => {
       await page.goto('/');
       await page.getByTestId('domain-kv').click();
+      await page.getByTestId('kv-view-data').click();
       await page.getByTestId('kv-store-select').selectOption('390');
 
       // Group A (3900): put + get g39a-key.

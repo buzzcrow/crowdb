@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{ChunkKvService, ServerLifecycle, ServerMetricsSnapshot};
 
@@ -40,7 +40,45 @@ pub fn management_router(state: ManagementState) -> Router {
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
+        .route("/partitions/:id/observation", get(partition_observation))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct ObservationQuery {
+    generation: u64,
+    epoch: u64,
+}
+
+async fn partition_observation(
+    State(state): State<ManagementState>,
+    Path(id): Path<String>,
+    Query(query): Query<ObservationQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let failure = |status, error| (status, Json(serde_json::json!({ "error": error })));
+    if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(failure(StatusCode::BAD_REQUEST, "invalid_partition_id"));
+    }
+    let id = crowdb_protocol::chunk_kv::Id128 {
+        high: u64::from_str_radix(&id[..16], 16)
+            .map_err(|_| failure(StatusCode::BAD_REQUEST, "invalid_partition_id"))?,
+        low: u64::from_str_radix(&id[16..], 16)
+            .map_err(|_| failure(StatusCode::BAD_REQUEST, "invalid_partition_id"))?,
+    };
+    state
+        .service
+        .observe_partition(id, query.generation, query.epoch)
+        .map(Json)
+        .map_err(|error| {
+            failure(
+                if matches!(error, "partition_not_found" | "partition_not_hosted") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::CONFLICT
+                },
+                error,
+            )
+        })
 }
 
 async fn health(State(state): State<ManagementState>) -> Json<HealthResponse> {

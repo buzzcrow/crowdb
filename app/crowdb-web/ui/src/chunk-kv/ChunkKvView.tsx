@@ -19,7 +19,7 @@ export function ChunkKvView({ active, racks, nodes, servers }: { active: boolean
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('');
   const [owner, setOwner] = useState('');
-  const [selected, setSelected] = useState<{ partition: Partition; generation: string } | null>(null);
+  const [selected, setSelected] = useState<{ partition: Partition; generation: string; catalogPage: number; catalogOffset: number } | null>(null);
   useEffect(() => {
     if (!active) return;
     const abort = new AbortController();
@@ -55,7 +55,7 @@ export function ChunkKvView({ active, racks, nodes, servers }: { active: boolean
     return [...groups.entries()];
   }, [owners]);
   const entries = (page?.entries ?? []).filter(entry => (!owner || entry.owner_id === owner) && entry.id.includes(filter.trim().toLowerCase()));
-  const select = (partition: Partition) => setSelected({ partition, generation: page!.generation });
+  const select = (partition: Partition) => setSelected({ partition, generation: page!.generation, catalogPage: page!.page, catalogOffset: page!.offset });
   return <Workbench sidebar={<>
     <h2 className="tw-font-semibold">Chunk-KV</h2>
     <p className="tw-text-xs tw-text-muted">Assigned partitions on the loaded catalog page</p>
@@ -88,6 +88,6 @@ export function ChunkKvView({ active, racks, nodes, servers }: { active: boolean
       {!entries.length && <p>No matches in the loaded catalog window.</p>}
       {page.next && <button className={buttonClass} disabled={busy || !!error} onClick={() => { setOwner(''); setCursor({ ...page.next!, generation: page.generation }); }}>Next partitions</button>}
     </>}
-    {selected && <PartitionDetail key={selected.partition.id} {...selected} currentGeneration={page?.generation} onBack={() => setSelected(null)} />}
+    {selected && <PartitionDetail key={`${selected.partition.id}/${selected.generation}`} {...selected} active={active && !error && selected.generation === page?.generation} currentGeneration={page?.generation} onBack={() => setSelected(null)} />}
   </Workbench>;
 }
