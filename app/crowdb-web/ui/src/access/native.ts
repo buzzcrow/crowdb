@@ -5,8 +5,8 @@ import { parseIcebergJson } from '../iceberg/json';
 import { getApiBase } from '../api';
 
 export interface Connections { iceberg: string | null; iceberg_ready: boolean; s3: string | null; configurable: boolean; max_request_bytes: number }
-export async function connections(): Promise<Connections> {
-  return readJson(await fetch(`${getApiBase()}/access/connections`));
+export async function connections(signal?: AbortSignal): Promise<Connections> {
+  return readJson(await fetch(`${getApiBase()}/access/connections`, { signal }));
 }
 export async function configure(protocol: 'iceberg' | 's3', origin: string): Promise<Connections> {
   return readJson(await fetch(`${getApiBase()}/access/connections`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ protocol, origin }) }));
@@ -47,7 +47,7 @@ async function boundedText(response: Response): Promise<string> {
     for (;;) {
       const chunk = await reader.read(); if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > limit) throw new Error('Catalog response exceeds the 4 MiB inspection budget. Select a smaller page.');
+      if (bytes > limit) throw new Error('Metadata response exceeds the 4 MiB budget. Select a smaller page.');
       text += decoder.decode(chunk.value, { stream: true });
     }
     return text + decoder.decode();
@@ -91,7 +91,7 @@ export async function s3(origin: string, credentials: S3Credentials, method: str
   return response;
 }
 export async function xml(response: Response): Promise<Document> {
-  const document = new DOMParser().parseFromString(await response.text(), 'application/xml');
+  const document = new DOMParser().parseFromString(await boundedText(response), 'application/xml');
   if (document.querySelector('parsererror')) throw new Error('Invalid S3 XML response');
   return document;
 }

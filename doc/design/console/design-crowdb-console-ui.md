@@ -689,6 +689,13 @@ crowdb-rpc; no direct talk to `crowdb-diskdb`.
   WebCrypto. Secrets remain session inputs, excluded from persisted config and
   activity. Large uploads use serial 8 MiB parts, bounded by the proxy's 16 MiB
   request cap. Cancellation leaves the UploadId available for inspection/abort.
+- The S3 workbench resolves its origin from this deployment on entry, without
+  an endpoint editor. Missing deployment bindings offer retry and direct users
+  to Cluster. Credentials remain native session inputs. Metadata XML is capped
+  at 4 MiB; the bucket tree renders 100 entries per page with a loaded-bucket
+  filter. Object and multipart lists retain at most 1,000 entries. Object users
+  narrow their prefix at that limit; later multipart entries require a native
+  client. These display bounds do not claim complete population coverage.
 - Downloads stream into a supported browser file writer. The compatibility
   fallback permits only known sizes at most 16 MiB. Preview consumes at most
   4 KiB even when an upstream ignores Range.
@@ -948,7 +955,8 @@ The remaining integration boundaries are:
   128 MiB budget. Oversized metadata returns an explicit bound error. Parent
   reference validation is bounded to 100,000 entries and can rescan ancestry;
   independently paged column metadata and direct parent proofs remain incomplete.
-- S3 fixed-cluster authentication/signing integration remains incomplete.
+- S3 uses the deployment's Access origin with native SigV4 credentials; credential
+  provisioning remains separate from automatic endpoint selection.
 - Verify large populations, partial owners, stale generations, unavailable
   dependencies, and cross-domain return navigation. Validate against the same
   cluster used by the Console, with isolated fixtures clearly distinguished.
