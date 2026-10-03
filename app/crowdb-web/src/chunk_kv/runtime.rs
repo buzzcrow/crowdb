@@ -30,6 +30,9 @@ pub(crate) struct RuntimeQuery {
     generation: u64,
     id: String,
     epoch: u64,
+    stream_generation: Option<u64>,
+    #[serde(default)]
+    stream_offset: usize,
 }
 
 pub(crate) async fn runtime(
@@ -38,6 +41,9 @@ pub(crate) async fn runtime(
 ) -> Result<Json<Value>, Failure> {
     if query.id.len() != 32 || !query.id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(err_400("Invalid partition identity"));
+    }
+    if query.stream_offset > 0 && query.stream_generation.is_none() {
+        return Err(err_400("Extent continuation requires a stream generation"));
     }
     tokio::time::timeout(Duration::from_secs(5), inspect(&state, &query))
         .await
@@ -85,8 +91,22 @@ async fn inspect(state: &AppState, query: &RuntimeQuery) -> Result<Json<Value>, 
     url.query_pairs_mut()
         .append_pair("generation", &query.generation.to_string())
         .append_pair("epoch", &query.epoch.to_string());
+    if let Some(generation) = query.stream_generation {
+        url.query_pairs_mut()
+            .append_pair("stream_generation", &generation.to_string());
+    }
+    url.query_pairs_mut()
+        .append_pair("stream_offset", &query.stream_offset.to_string());
     let observation = request(url).await?;
     validate_identity(&observation, entry, query)?;
+    if query
+        .stream_generation
+        .is_some_and(|generation| integer(&observation["journal"]["generation"]) != Some(generation))
+        || (query.stream_offset > 0
+            && observation["journal"]["offset"].as_u64() != Some(query.stream_offset as u64))
+    {
+        return Err(err_409("Stream manifest changed during observation"));
+    }
     let kv = state.kv_client().await;
     let current: ChunkKvRangeCatalogHead =
         read(&kv, &ChunkKvRangeCatalogHeadKey.to_path(), 1024 * 1024).await?;

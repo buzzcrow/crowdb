@@ -952,8 +952,23 @@ The remaining integration boundaries are:
   Runtime responses are capped at 64 KiB with a five-second overall deadline;
   no key scan or journal data read occurs. Lifecycle, admission, serving grant,
   durable sequence/offset and applied sequence are independently sampled.
-  A Serving lifecycle does not prove a live serving grant. Tree-page, checkpoint,
-  stream-extent and transition inspection remain to be implemented.
+  A Serving lifecycle does not prove a live serving grant.
+- Tree observations expose the opened checkpoint, native page/buffer-pool
+  counters when supported, and partition maintenance/materialization counters.
+  They do not flush pending mutations. These are independent samples; a local
+  checkpoint does not establish published recovery references or retention
+  watermarks. Root-catalog layouts and pin enumeration require a separate
+  bounded API: the existing full chunk-statistics path can enumerate manifests
+  and packs, so it is not called by the browser observation endpoint.
+- Journal observations copy at most 100 extent-page fences from one in-memory
+  published manifest. They show trim/sealed logical offsets, writer epoch,
+  metadata group, and the active chunk's physical cursor/capacity. Replacement
+  pages are pinned to stream generation in addition to catalog/owner fences;
+  a changed manifest clears the runtime result and requires explicit refresh.
+  Selecting a page fence shows its exact logical bounds without reading extent
+  records or payloads. The browser rejects more than 100 returned fences.
+  Actual Tree page expansion, individual extent records/chunk navigation,
+  retention and transition inspection remain incomplete.
 - Iceberg inspection follows authoritative table identity and snapshot
   references through Avro manifest lists and manifests to selected files.
   Canonical table identity is independent of a location's trailing slash.

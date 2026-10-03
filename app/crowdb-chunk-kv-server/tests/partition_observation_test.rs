@@ -143,6 +143,11 @@ async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_a
     assert_eq!(body["live_grant"], false);
     assert_eq!(body["journal_durable_offset"], "0");
     assert_eq!(body["applied_seq"], "0");
+    assert_eq!(body["tree"]["checkpoint_manifest"], "0");
+    assert!(body["tree"]["runtime"].is_null());
+    assert_eq!(body["tree"]["maintenance"]["checkpoints"], "0");
+    assert_eq!(body["journal"]["writer_epoch"], u64::MAX.to_string());
+    assert_eq!(body["journal"]["trim_offset"], "0");
     assert_eq!(get(app.clone(), &id, 8, u64::MAX).await.0, StatusCode::CONFLICT);
     assert_eq!(get(app.clone(), &id, 9, 1).await.0, StatusCode::CONFLICT);
     partition
@@ -163,6 +168,24 @@ async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_a
     let (_, advanced) = get(app.clone(), &id, 9, u64::MAX).await;
     assert_eq!(advanced["journal_durable_seq"], "1");
     assert_eq!(advanced["applied_seq"], "1");
+    assert_eq!(advanced["tree"]["checkpoint_applied_seq"], "1");
+    assert_eq!(advanced["journal"]["extent_pages"].as_array().unwrap().len(), 1);
+    assert!(advanced["journal"]["active"]["chunk_id"].is_string());
+    assert_eq!(advanced["data_pages_read"], 0);
+    let stale = app
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/partitions/{id}/observation?generation=9&epoch={}&stream_generation={}",
+                u64::MAX,
+                body["journal"]["generation"].as_str().unwrap()
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
     assert!(
         advanced["journal_durable_offset"]
             .as_str()
@@ -173,4 +196,47 @@ async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_a
     );
     service.begin_drain();
     assert_eq!(get(app, &id, 9, u64::MAX).await.1["admitting"], false);
+}
+
+#[tokio::test]
+async fn native_tree_observation_does_not_flush_pending_mutations() {
+    let partition = Partition::open(
+        PartitionId {
+            high: ID.high,
+            low: ID.low,
+        },
+        PartitionRange {
+            start: None,
+            end: None,
+        },
+        u64::MAX,
+        PartitionConfig::default(),
+        Arc::new(crowdb_chunk_kv::CrowdbPartitionTree::open(1, &crowdb_tree_ffi::Config::default()).unwrap()),
+        Arc::new(journal().await),
+    )
+    .unwrap();
+    partition
+        .mutate(
+            u64::MAX,
+            crowdb_chunk_kv::RequestId {
+                client_high: 1,
+                client_low: 1,
+                client_sequence: 1,
+            },
+            crowdb_chunk_kv::MutationOperation::Put {
+                key: b"pending".to_vec(),
+                value: b"value".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let first = partition.observe_tree().unwrap();
+    assert_eq!(partition.snapshot().applied_seq, 1);
+    assert_eq!(first.checkpoint_applied_seq, 0);
+    assert!(first.runtime.is_some());
+    let second = partition.observe_tree().unwrap();
+    assert_eq!(second.checkpoint_manifest, first.checkpoint_manifest);
+    assert_eq!(second.runtime, first.runtime);
+    assert_eq!(second.maintenance, first.maintenance);
+    assert_eq!(second.maintenance.checkpoints, 0);
 }

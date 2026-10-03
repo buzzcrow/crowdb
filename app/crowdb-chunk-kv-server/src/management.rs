@@ -48,6 +48,9 @@ pub fn management_router(state: ManagementState) -> Router {
 struct ObservationQuery {
     generation: u64,
     epoch: u64,
+    stream_generation: Option<u64>,
+    #[serde(default)]
+    stream_offset: usize,
 }
 
 async fn partition_observation(
@@ -67,7 +70,13 @@ async fn partition_observation(
     };
     state
         .service
-        .observe_partition(id, query.generation, query.epoch)
+        .observe_partition(
+            id,
+            query.generation,
+            query.epoch,
+            query.stream_generation,
+            query.stream_offset,
+        )
         .map(Json)
         .map_err(|error| {
             failure(

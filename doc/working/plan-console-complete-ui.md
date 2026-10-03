@@ -91,7 +91,7 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
   endpoints; unmatched placement remains explicit. Head/page limits: 1/2 MiB;
   at most 100 returned partitions; five-second observation deadline.
   Files: Web `chunk_kv.rs`, UI `chunk-kv/`, `chunk_kv_catalog_test.rs`, E2E 55.
-- [ ] **Chunk-KV runtime observation**: add authoritative server placement and runtime
+- [~] **Chunk-KV runtime observation**: add authoritative server placement and runtime
   observations, then bounded tree/journal inspection without reading all pages.
   Files: Web `chunk_kv/`, UI `chunk-kv/`, protocol/client observation adapters.
 - [x] **Paxos overview**: default KV to Group/Replica management; retain Data
@@ -140,6 +140,30 @@ Baseline before domain separation: shell embedding 5 tests passed; Chunk layout
   UI suite unless specifically needed/authorized; focused specs first.
 
 ## Results
+
+- Chunk-KV storage checkpoint: added opened Tree checkpoint and constant-cost
+  native memory/page plus maintenance counters; bounded Journal manifest views
+  show trim, sealed tail, active chunk, and 100 extent-page fences per window.
+  Continuations require stream generation and replace the rendered window.
+  Root-catalog/pack statistics were excluded because the existing native API
+  traverses retained metadata; it is not a bounded diagnostic read.
+- Chunk-KV baseline: 2 browser cases, 0.918/0.236 s. Updated 3 cases passed
+  (1.3/0.217/0.509 s), including exact u64 counters, 100+5 replacement windows,
+  selected-fence clearing, stale manifest rejection, oversize rejection and
+  refresh from head. TypeScript passed. Stream inspection test passed without
+  changing read/publication counters; 2 owner tests passed, including a real
+  native Tree with pending mutations remaining unflushed. Group 0/Web integration
+  passed generation/offset forwarding and mismatched continuation rejection.
+- Remaining Chunk-KV work: management endpoint discovery for managed profiles,
+  actual bounded Tree page and extent-record inspection, chunk links, retention
+  and transition inspection. Extent-page fences are not decoded journal records.
+- Rust fmt and all-target Clippy passed for Web, Chunk-KV Server, Chunk-KV and
+  Chunk Stream. Release Web/Chunk-KV Server built successfully. Only Web was
+  restarted on 9090; its health check passed and all six original KV/DiskDB
+  process identities remained unchanged.
+- Read-only live Capacity verification found a misleading global failure badge
+  for unavailable scan status. Capacity now reports the missing observation
+  source and Degraded status; focused scanner regression passed (0.751 s).
 
 - Capacity checkpoint: shared inventory/usage coverage determines known totals
   at every scope and in the Inspector. Missing reports retain hardware and show

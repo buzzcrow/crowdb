@@ -7,12 +7,14 @@
 
 mod frame;
 mod journal;
+mod observation;
 mod split;
 mod transfer;
 mod tree;
 
 pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
 pub use journal::{PartitionJournal, StreamPartitionJournal};
+pub use observation::TreeObservation;
 pub use split::{PreparedSplit, PreparedSplitWriter, SplitSessionTargets, SplitWriterTarget};
 pub use tree::{CrowdbPartitionTree, PartitionTree};
 

@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: partition/overlay 0.743s, unavailable 0.230s (2026-10-03).
+// Baseline: partition/overlay 0.918s, unavailable 0.236s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
 
 test('Chunk-KV preserves exact partition identity and separates inherited journal tracks', async ({ page }) => {
@@ -20,10 +20,17 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   let runtimeConflict = false;
   await page.route('**/api/chunk-kv/runtime**', route => {
     runtimeRequests.push(route.request().url());
+    const offset = Number(new URL(route.request().url()).searchParams.get('stream_offset') || 0);
     return route.fulfill({ status: runtimeConflict ? 409 : 200, json: runtimeConflict ? { error: 'Owner has a different catalog or writer' } : {
       lifecycle: 'Serving', admitting: true, live_grant: false,
       journal_durable_seq: '9007199254740998', applied_seq: '9007199254740997',
       journal_durable_offset: '18446744073709551615', stream_id: id, observed_at_monotonic_ms: '1234',
+      tree: { checkpoint_manifest: '9007199254740995', checkpoint_applied_seq: '9007199254740996',
+        runtime: { buffer_pool_resident: '12', buffer_pool_dirty: '3', snapshot_pages_total: '105' }, maintenance: { reclaimed_tree_bytes: '4096', materialization_passes: '2', split_pages_reused: '7' } },
+      journal: { generation: '9007199254740999', writer_epoch: entry.epoch, metadata_group_id: '7', trim_offset: '4096', sealed_tail: '8192', closed: false,
+        active: { chunk_id: id, physical_start: '64', logical_start: '8192', acknowledged_cursor: '128', capacity: '4096' },
+        offset, next_offset: offset === 0 ? 100 : null,
+        extent_pages: Array.from({ length: offset === 0 ? 100 : 5 }, (_, i) => ({ page_index: String(offset + i), first_logical: String((offset + i) * 64), end_logical: String((offset + i + 1) * 64) })) },
     } });
   });
   await page.route('**/api/chunk-kv/catalog**', route => {
@@ -43,12 +50,28 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   await expect(runtime).toContainText('Absent at observation');
   expect(new URL(runtimeRequests[0]).searchParams.get('epoch')).toBe('9007199254740993');
   expect(new URL(runtimeRequests[0]).searchParams.get('generation')).toBe('9007199254740997');
+  await page.getByRole('tab', { name: 'Tree', exact: true }).click();
+  const tree = page.getByRole('region', { name: 'Tree storage', exact: true });
+  await expect(tree).toContainText('9007199254740996');
+  await expect(tree).toContainText('buffer pool resident');
+  await expect(tree).toContainText('split pages reused');
   await page.getByRole('tab', { name: 'Journal', exact: true }).click();
   const journal = page.getByRole('tabpanel', { name: 'Journal' });
   await expect(journal.getByRole('heading', { name: 'Inherited parent stream' })).toBeVisible();
   await expect(journal.getByRole('heading', { name: 'Partition journal stream' })).toBeVisible();
   await expect(journal).toContainText('ffffffffffffffff0000000000000003');
   await expect(journal).toContainText('ffffffffffffffff0000000000000002');
+  await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(100);
+  await journal.getByRole('button', { name: 'Extent page 0 [0, 64)', exact: true }).click();
+  await expect(journal.getByLabel('Selected extent page')).toContainText('64');
+  await journal.getByRole('button', { name: 'Next extent pages', exact: true }).click();
+  await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(5);
+  expect(new URL(runtimeRequests[runtimeRequests.length - 1]).searchParams.get('stream_generation')).toBe('9007199254740999');
+  expect(new URL(runtimeRequests[runtimeRequests.length - 1]).searchParams.get('stream_offset')).toBe('100');
+  await expect(journal.getByLabel('Selected extent page')).toHaveCount(0);
+  await expect(journal.getByRole('button', { name: 'Next extent pages', exact: true })).toBeDisabled();
+  await journal.getByRole('button', { name: 'Previous extent pages', exact: true }).click();
+  await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(100);
   await page.getByTestId('domain-capacity').click();
   await page.getByTestId('domain-chunk-kv').click();
   await expect(journal).toBeVisible();
@@ -72,4 +95,37 @@ test('Chunk-KV unavailable catalog is explicit and can be retried', async ({ pag
   await expect(page.getByRole('alert').filter({ hasText: 'Group 0 is unavailable' })).toBeVisible();
   await expect(page.getByLabel('Partition range map')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Refresh catalog', exact: true })).toBeEnabled();
+});
+
+test('Chunk-KV rejects stale or oversized journal windows and refreshes from the head', async ({ page }) => {
+  const id = '00000000000000010000000000000002';
+  let oversized = false;
+  await page.route('**/api/chunk-kv/catalog**', route => route.fulfill({ json: {
+    generation: '9', page: 0, offset: 0, catalog_pages: 1, next: null, entries: [{
+      id, start: '', end: null, owner_id: '7', endpoint: '127.0.0.1:45200', epoch: '2', state: 'Serving', transition_id: null,
+      artifact: { tree_id: '1', stream_name: { high: '1', low: '2' }, tail_overlay: null },
+    }],
+  } }));
+  await page.route('**/api/chunk-kv/runtime**', route => {
+    const continued = new URL(route.request().url()).searchParams.has('stream_generation');
+    return route.fulfill({ json: {
+      lifecycle: 'Serving', admitting: true, live_grant: true, journal_durable_seq: '1', applied_seq: '1', journal_durable_offset: '64', stream_id: id, observed_at_monotonic_ms: '1',
+      journal: { generation: continued ? '18' : '17', writer_epoch: '2', metadata_group_id: '7', trim_offset: '0', sealed_tail: '64', closed: false, active: null,
+        offset: continued ? 100 : 0, next_offset: 100, extent_pages: Array.from({ length: oversized ? 101 : 1 }, (_, i) => ({ page_index: String(i), first_logical: '0', end_logical: '64' })) },
+    } });
+  });
+  await page.goto('/?domain=Chunk-KV');
+  await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${id}`, exact: true }).click();
+  await page.getByRole('tab', { name: 'Journal', exact: true }).click();
+  await page.getByRole('button', { name: 'Next extent pages', exact: true }).click();
+  const runtime = page.getByRole('region', { name: 'Partition runtime', exact: true });
+  await expect(runtime).toContainText('Stream manifest changed; refresh runtime');
+  await expect(page.getByLabel('Extent page map')).toHaveCount(0);
+  oversized = true;
+  await runtime.getByRole('button', { name: 'Refresh runtime', exact: true }).click();
+  await expect(runtime).toContainText('Extent index exceeds 100 entries');
+  oversized = false;
+  await runtime.getByRole('button', { name: 'Refresh runtime', exact: true }).click();
+  await expect(page.getByLabel('Extent page map').getByRole('button')).toHaveCount(1);
+  await expect(runtime).not.toContainText('Runtime unavailable');
 });

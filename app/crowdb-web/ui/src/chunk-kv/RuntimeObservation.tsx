@@ -1,41 +1,15 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useEffect, useState } from 'react';
-import { getApiBase, getManagementToken } from '../api';
-import { readJson } from '../access/native';
 import { buttonClass } from '../access/Workbench';
-import type { Partition } from './catalog';
+import type { Observation } from './useRuntimeObservation';
 
-interface Observation {
-  lifecycle: string; admitting: boolean; live_grant: boolean;
-  journal_durable_seq: string; journal_durable_offset: string; applied_seq: string;
-  stream_id: string; observed_at_monotonic_ms: string;
-}
-
-export function RuntimeObservation({ active, partition, generation, catalogPage, catalogOffset }: {
-  active: boolean; partition: Partition; generation: string; catalogPage: number; catalogOffset: number;
+export function RuntimeObservation({ active, value, busy, error, refresh }: {
+  active: boolean; value: Observation | null; busy: boolean; error: string; refresh: () => void;
 }) {
-  const [value, setValue] = useState<Observation | null>(null);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [refresh, setRefresh] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const abort = new AbortController();
-    setValue(null); setError(''); setBusy(true);
-    const token = getManagementToken();
-    const query = new URLSearchParams({ id: partition.id, epoch: partition.epoch, generation, page: String(catalogPage), offset: String(catalogOffset) });
-    fetch(`${getApiBase()}/chunk-kv/runtime?${query}`, { signal: abort.signal, headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then(response => readJson<Observation>(response))
-      .then(value => { if (!abort.signal.aborted) setValue(value); })
-      .catch(error => { if (!abort.signal.aborted) setError(String(error)); })
-      .finally(() => { if (!abort.signal.aborted) setBusy(false); });
-    return () => abort.abort();
-  }, [active, partition.id, partition.epoch, generation, catalogPage, catalogOffset, refresh]);
   return <section aria-label="Partition runtime" className="tw-rounded tw-border tw-border-border tw-p-3 tw-space-y-3">
     <div className="tw-flex tw-items-center tw-justify-between"><h3 className="tw-font-semibold">Owner runtime observation</h3>
-      <button className={buttonClass} disabled={busy || !active} onClick={() => setRefresh(value => value + 1)}>Refresh runtime</button></div>
+      <button className={buttonClass} disabled={busy || !active} onClick={refresh}>Refresh runtime</button></div>
     {busy && <p role="status">Reading partition state…</p>}
     {error && <p role="status" className="tw-text-degraded">Runtime unavailable: {error}</p>}
     {value && <>

@@ -101,6 +101,10 @@ pub trait PartitionTree: Send + Sync {
         self.checkpoint_state().map(|checkpoint| checkpoint.0)
     }
     fn last_applied_seq(&self) -> u64;
+    /// Independently sampled native counters, without scanning keys or pages.
+    fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
+        None
+    }
     /// Returns chunk-backend counters, or `None` for another backend.
     ///
     /// # Errors
@@ -468,6 +472,10 @@ impl PartitionTree for CrowdbPartitionTree {
 
     fn last_applied_seq(&self) -> u64 {
         self.tree.stats().contiguous_slot
+    }
+
+    fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
+        Some(self.tree.stats())
     }
 
     fn checkpoint_state(&self) -> Result<(u64, u64)> {
