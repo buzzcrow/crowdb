@@ -162,7 +162,13 @@ fn matching_pid(entry: &ServerEntry, launch: &LocalLaunchSpec) -> Result<Option<
     let program = std::fs::canonicalize(&launch.program).map_err(|error| err_409(error.to_string()))?;
     let executable =
         std::fs::read_link(format!("/proc/{pid}/exe")).map_err(|error| err_409(error.to_string()))?;
-    if executable != program
+    // Linux retains the original executable mapping after an atomic upgrade.
+    // Keep verifying the exact workspace and arguments before signalling it.
+    let replaced_program = executable
+        .to_str()
+        .and_then(|path| path.strip_suffix(" (deleted)"))
+        .is_some_and(|path| std::path::Path::new(path) == program);
+    if (executable != program && !replaced_program)
         || arguments.get(1..).map_or(true, |args| {
             args.len() != launch.args.len()
                 || args

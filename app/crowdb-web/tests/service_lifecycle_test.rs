@@ -153,6 +153,66 @@ async fn auxiliary_lifecycle_keeps_exact_identity_and_preserves_data() {
 }
 
 #[tokio::test]
+async fn upgraded_executable_can_restart_without_relaxing_pid_identity() {
+    let workdir = crowdb_test_harness::test_dirs::tempdir_in_test_data("upgraded-service");
+    let program = workdir.path().join("service");
+    std::fs::copy("/bin/sleep", &program).unwrap();
+    let mut child = std::process::Command::new(&program)
+        .arg("600")
+        .current_dir(workdir.path())
+        .spawn()
+        .unwrap();
+    let old_pid = child.id();
+    std::fs::remove_file(&program).unwrap();
+    std::fs::copy("/bin/sleep", &program).unwrap();
+    let mut cfg = config();
+    let mut entry = ServerEntry::new("chunkdb-1", "http://127.0.0.1:43000");
+    entry.service_type = ServiceType::Chunkdb;
+    entry.node_id = Some(1);
+    entry.pid = Some(old_pid);
+    cfg.servers.push(entry);
+    cfg.local_launches.insert(
+        "chunkdb-1".into(),
+        LocalLaunchSpec {
+            program: program.to_string_lossy().into_owned(),
+            args: vec!["600".into()],
+            workdir: workdir.path().to_string_lossy().into_owned(),
+            env: std::collections::BTreeMap::new(),
+            env_file: None,
+            readiness_url: None,
+        },
+    );
+    let state = AppState::with_runtime_root(cfg, workdir.path().join("runtime"));
+    let app = router(state.clone());
+    // Matching executable path alone must not permit a different command.
+    state
+        .config
+        .write()
+        .unwrap()
+        .local_launches
+        .get_mut("chunkdb-1")
+        .unwrap()
+        .args = vec!["601".into()];
+    let (status, _) = request(&app, "POST", "/api/services/chunkdb-1/stop", Value::Null).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(crowdb_console_shared::lifecycle::process_is_alive(old_pid));
+    state
+        .config
+        .write()
+        .unwrap()
+        .local_launches
+        .get_mut("chunkdb-1")
+        .unwrap()
+        .args = vec!["600".into()];
+    let (status, result) = request(&app, "POST", "/api/services/chunkdb-1/restart", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_ne!(result["pid"].as_u64().unwrap(), u64::from(old_pid));
+    child.wait().unwrap();
+    let (status, result) = request(&app, "POST", "/api/services/chunkdb-1/stop", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+}
+
+#[tokio::test]
 async fn stale_pid_cannot_signal_an_unrelated_process() {
     let workspace = crowdb_test_harness::test_dirs::tempdir_in_test_data("typed-service");
     let mut config = config();
