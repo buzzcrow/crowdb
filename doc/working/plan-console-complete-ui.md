@@ -115,9 +115,9 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 - [x] **Capacity and Access**: distinguish unknown usage, suspend inactive
   polling, connect S3 and Iceberg to the same cluster's Access deployment;
   finish bounded native file inspection and real data acceptance.
-- [ ] **Capacity population bounds**: replace eager node/disk topology fanout
-  with bounded scoped reads and rendering. The current usage poll is still a
-  cluster-wide observation while Cluster or Capacity is visible.
+- [x] **Capacity population bounds**: shared lazy inventory reads only opened
+  Node/DiskGroup branches with four workers; runtime usage follows the selected
+  Disk/DiskGroup. The 200-Node request-budget regression passes.
 - [ ] **Integration acceptance**: scope restoration, layout-to-disk/node
   navigation, split parent/child overlays, owner movement, stale cursors, large
   populations, unavailable backend, and capability restrictions. Verify every
@@ -811,3 +811,9 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   and unit gate pass: 115 unit cases in 2.44s; 11 browser cases in 21.2s
   command time. KV source return 1.2s, Zone/window return 1.5s and canvas
   cases 0.436–1.6s.
+
+- Chunk-KV return checkpoint: parent-owned Split/Journal query, selected extent,
+  graph window/collapse and sidebar expansion snapshots revalidate catalog and
+  stream generations. The five affected browser tests pass; the extended Journal
+  source-return case takes 1.7s against its 1.4s baseline. Build and TypeScript
+  gates pass. Explicit catalog refresh clears pending stale restoration.

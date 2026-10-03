@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState } from 'react';
+import type { GraphQuery } from './query';
 import ReactFlow, { Background, Controls, Handle, Position, type Node, type Edge, type NodeProps } from 'reactflow';
 import 'reactflow/dist/style.css';
 import type { ServerSummary } from '../api';
@@ -43,13 +43,16 @@ function GraphNode({ data }: NodeProps<Card>) {
 }
 const nodeTypes = { chunkKv: GraphNode };
 
-export function PartitionGraph({ entries, servers, selectedId, disabled, onSelect, onTree }: {
+export function PartitionGraph({ entries, servers, selectedId, disabled, onSelect, onTree, query, onQuery }: {
+  query: GraphQuery; onQuery: (query: GraphQuery) => void;
   entries: Partition[]; servers: ServerSummary[]; selectedId?: string; disabled: boolean;
   onSelect: (partition: Partition) => void; onTree: (partition: Partition) => void;
 }) {
-  const [serverPage, setServerPage] = useState(0);
-  const [offsets, setOffsets] = useState<Record<string, number>>({});
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const { serverPage, offsets } = query;
+  const collapsed = new Set(query.collapsed);
+  const setServerPage = (serverPage: number) => onQuery({ ...query, serverPage });
+  const setOffsets = (update: (value: Record<string, number>) => Record<string, number>) => onQuery({ ...query, offsets: update(offsets) });
+  const setCollapsed = (update: (value: Set<string>) => Set<string>) => onQuery({ ...query, collapsed: [...update(collapsed)] });
   const groups = servers.map(server => ({
     id: `server-${server.id ?? server.rpc_url ?? server.endpoint}`,
     label: serviceInstanceLabel('chunk-kv', server.id ?? String(server.node_id)),

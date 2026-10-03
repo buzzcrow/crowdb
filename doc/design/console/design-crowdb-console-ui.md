@@ -471,6 +471,11 @@ Unsupported features are explicit rather than represented as working controls.
   checkpoint and selected journal extent. Root/child KV Pages must come from a
   real bounded page-inspection API; journal fences are not KV Pages. Byte keys
   default to hex with an optional validated text interpretation.
+- Returning from Chunk inspection restores the selected Split, Tree/Journal tab,
+  catalog generation/window, graph server/split windows, collapsed branches and
+  selected journal extent. History stores identities and cursors, not runtime
+  payloads. Return revalidates the catalog and stream generations; stale state
+  stays explicit until Refresh catalog/runtime starts a new observation.
 - **CKV-04:** Tree and journal observations have bounded replacement pages.
   Continuation pins catalog/stream generation. Stale generation requires refresh
   from the first page; parent/child recovery dependencies retain separate stream

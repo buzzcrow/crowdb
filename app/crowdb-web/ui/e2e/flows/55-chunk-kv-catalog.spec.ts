@@ -74,7 +74,7 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   });
   await page.route('**/api/chunk-kv/catalog**', route => {
     requests.push(route.request().url());
-    const next = new URL(route.request().url()).searchParams.has('generation');
+    const next = new URL(route.request().url()).searchParams.get('page') === '1';
     return route.fulfill({ status: next ? 409 : 200, json: next ? { error: 'Chunk-KV catalog changed; refresh the range map' } : {
       generation: '9007199254740997', page: 0, offset: 0, catalog_pages: 2, entries: [entry], next: { page: 1, offset: 0 }, source: 'group0',
     } });
@@ -116,6 +116,16 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   expect(new URL(runtimeRequests[runtimeRequests.length - 1]).searchParams.get('stream_offset')).toBe('100');
   await expect(page.getByLabel('Chunk-KV properties').getByLabel('Selected extent page')).toHaveCount(0);
   await expect(journal.getByRole('button', { name: 'Next extent pages', exact: true })).toBeDisabled();
+  await journal.getByRole('button', { name: 'Extent page 100 [6400, 6464)', exact: true }).click();
+  await expect(page.getByLabel('Chunk-KV properties').getByLabel('Selected extent page')).toContainText('6464');
+  await journal.getByRole('button', { name: 'Inspect active Chunk' }).click();
+  await expect(page.getByTestId('domain-chunk')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(journal).toBeVisible();
+  await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(5);
+  await expect(page.getByLabel('Chunk-KV properties').getByLabel('Selected extent page')).toContainText('6464');
+  expect(new URL(runtimeRequests[runtimeRequests.length - 1]).searchParams.get('stream_offset')).toBe('100');
+  expect(new URL(requests[requests.length - 1]).searchParams.get('generation')).toBe('9007199254740997');
   await journal.getByRole('button', { name: 'Previous extent pages', exact: true }).click();
   await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(100);
   await page.getByTestId('domain-capacity').click();

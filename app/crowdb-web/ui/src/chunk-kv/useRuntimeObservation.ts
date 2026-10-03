@@ -24,14 +24,14 @@ export interface Observation {
   tree?: TreeObservation; journal?: JournalObservation | null;
 }
 
-export function useRuntimeObservation({ active, partition, generation, catalogPage, catalogOffset }: {
+export function useRuntimeObservation({ active, partition, generation, catalogPage, catalogOffset, cursor, onCursor }: {
+  cursor: { generation?: string; offset: number }; onCursor: (value: { generation?: string; offset: number }) => void;
   active: boolean; partition: Partition; generation: string; catalogPage: number; catalogOffset: number;
 }) {
   const [value, setValue] = useState<Observation | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [cursor, setCursor] = useState<{ generation?: string; offset: number }>({ offset: 0 });
   useEffect(() => {
     if (!active) return;
     const abort = new AbortController();
@@ -51,7 +51,7 @@ export function useRuntimeObservation({ active, partition, generation, catalogPa
     return () => abort.abort();
   }, [active, partition.id, partition.epoch, generation, catalogPage, catalogOffset, cursor, revision]);
   return { value, error, busy,
-    refresh: () => { setCursor({ offset: 0 }); setRevision(value => value + 1); },
-    pageStream: (offset: number) => { if (value?.journal) setCursor({ generation: value.journal.generation, offset }); },
+    refresh: () => { onCursor({ offset: 0 }); setRevision(value => value + 1); },
+    pageStream: (offset: number) => { if (value?.journal) onCursor({ generation: value.journal.generation, offset }); },
   };
 }

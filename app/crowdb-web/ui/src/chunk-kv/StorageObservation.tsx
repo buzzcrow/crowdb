@@ -1,7 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { buttonClass } from '../access/Workbench';
 import type { JournalObservation, TreeObservation } from './useRuntimeObservation';
@@ -24,8 +23,7 @@ export function TreeStorage({ value }: { value?: TreeObservation }) {
   </section>;
 }
 
-export function JournalStorage({ value, disabled, onPage, onChunk, propertyHost }: { propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; value?: JournalObservation | null; disabled: boolean; onPage: (offset: number) => void }) {
-  const [selected, setSelected] = useState<string | null>(null);
+export function JournalStorage({ value, disabled, onPage, onChunk, propertyHost, selected, onSelected }: { selected: string | null; onSelected: (index: string) => void; propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; value?: JournalObservation | null; disabled: boolean; onPage: (offset: number) => void }) {
   if (!value) return <p role="status">Journal storage observation unavailable.</p>;
   const extent = value.extent_pages.find(page => page.page_index === selected);
   return <section aria-label="Journal storage" className="tw-space-y-4">
@@ -38,7 +36,7 @@ export function JournalStorage({ value, disabled, onPage, onChunk, propertyHost 
     </div>
     <h3 className="tw-font-semibold">Published extent index</h3>
     <p className="tw-text-xs tw-text-muted">{value.extent_pages.length} loaded page fences · offset {value.offset}. Ordered blocks show logical byte ranges; widths do not represent sizes. Extent records and journal payloads are not read.</p>
-    <div aria-label="Extent page map" className="tw-grid tw-grid-cols-[repeat(auto-fill,minmax(180px,1fr))] tw-gap-2">{value.extent_pages.map(page => <button key={page.page_index} className={`${buttonClass} tw-text-left`} aria-pressed={selected === page.page_index} onClick={() => setSelected(page.page_index)}>
+    <div aria-label="Extent page map" className="tw-grid tw-grid-cols-[repeat(auto-fill,minmax(180px,1fr))] tw-gap-2">{value.extent_pages.map(page => <button key={page.page_index} className={`${buttonClass} tw-text-left`} aria-pressed={selected === page.page_index} onClick={() => onSelected(page.page_index)}>
       <span className="tw-block">Extent page {page.page_index}</span><span className="tw-font-mono tw-break-all">[{page.first_logical}, {page.end_logical})</span>
     </button>)}</div>
     {!value.extent_pages.length && <p>No published extent pages in this window.</p>}
