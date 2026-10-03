@@ -435,3 +435,13 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
 - Capacity steering: retain Disk overview, select a Zone below it, inspect a
   bounded block bitmap with blue used / green free / gray unknown, and return
   to the parent Disk without changing domain.
+
+- Capacity Zone detail implemented in the Disk view with parent return, explicit
+  refresh, 64-zone navigation pages and a 4096-block canvas window. Corrected
+  the native little-endian bitmap interpretation; absent bytes remain Unknown.
+  Inactive/changed selections cancel requests and disk changes reset Zone state.
+- Zone E2E passed in 1.1 s (measured baseline 0.656 s). It verifies native bit
+  colors, missing-byte gray, bounded Zone/block pages, direct selection and
+  parent return. Two decoder unit tests and TypeScript passed. The existing
+  backend still sends one full selected-zone snapshot; block-range transport
+  pagination is not implemented by this UI checkpoint.

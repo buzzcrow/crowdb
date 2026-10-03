@@ -497,11 +497,9 @@ Edge cases:
 
 ## 15. Capacity Panel (Canvas Visualization)
 
-The Capacity domain renders capacity visualization
-that scales to thousands of zones per disk and tens of thousands of
-blocks per zone. Canvas with offscreen double-buffering handles 84×84
-zone grids and 181×181 bitmap grids without flicker. DOM/SVG
-rendering at that scale causes layout thrash and jank.
+The Capacity domain renders disk and zone observations without allocating a DOM
+node for every block. Zone navigation displays 64 entries per page; a selected
+zone uses a canvas window of at most 4096 allocation blocks.
 
 `CapacityPanel` renders in the independent Capacity domain. A shared observation
 hook supplies Capacity and Cluster properties; the panel does not start its own
@@ -524,11 +522,10 @@ content depends on the selected entity (from `SelectionContext`):
   busy% gradient fill (green → amber → red, red = busy) + inline `%`
   label + tooltip (disk id + busy%). Data from
   `GET /api/diskdb/usage?dg=<id>`.
-- **Disk selected** — zone grid + per-disk actions. Each zone is a
-  box in a square grid (side = ceil(sqrt(zone_count))) with a
-  green→amber→red gradient based on busy%. Hover shows a tooltip
-  with zone id + usage %. A "jump to zone #" input handles direct
-  navigation (7000 zones cannot be a dropdown). All disk-scoped
+- **Disk selected** — paged zone buttons and per-disk actions. Each zone shows
+  its index and reported busy percentage, or Unknown when usage is missing.
+  Zone identity comes from the disk's zone count, so an unreported zone remains
+  selectable for an on-demand query. All disk-scoped
   actions are inline in the disk header: Scan and Recalc target the
   disk's parent DG (`triggerDiskdbScan` / `recalcDiskdbUsage` with
   the DG id); Compact, Rebuild, Up, and Down target the disk itself
@@ -537,26 +534,25 @@ content depends on the selected entity (from `SelectionContext`):
   here, scoped to the parent DG. Data from
   `GET /api/diskdb/usage?dg=<id>&disk=<disk_id>` (brief per-zone
   entries, no bitmap).
-- **Zone selected (in-panel, within the Disk view)** — zone bitmap.
-  Canvas grid of the zone's `usage_bitmap`
-  (side = ceil(sqrt(unit_count))). Busy block = red filled cell, free
-  block = green filled cell. Zone is not a sidebar entity; it is an
-  in-panel click state inside the Disk view. Data from
-  `GET /api/diskdb/usage?dg=<id>&disk=<disk_id>&zone=<zi>` (full
-  bitmap, on-demand only).
+- **Zone selected (in-panel, within the Disk view)** — the Disk overview remains
+  visible and Zone details appear below it. The detail header identifies the
+  parent Disk, offers a return button that clears Zone selection, and allows
+  explicit bitmap refresh. Zone selection is local to that Disk; changing disks
+  cannot retain a different disk's Zone or bitmap.
+- The selected-zone API returns a full snapshot only on demand. Inactive or
+  changed selections cancel in-flight requests. Late responses are ignored.
+  The existing snapshot transport is not block-range paginated.
 
 ### 15.1 Rendering
 
-Canvas, not SVG/DOM, for all levels:
-- Offscreen canvas double-buffering: draw to an offscreen canvas,
-  then `drawImage` blit to the visible canvas in one call. The
-  visible canvas is never cleared-then-slowly-drawn (that flickers).
-- Single `requestAnimationFrame` sync redraw for grids up to 181×181
-  (32K cells) — fast enough to not flicker.
-- On data refresh (3 s poll), retain the previous frame until the
-  new one is fully drawn, then swap. No blank intermediate state.
-- No DOM reflow. The canvas is a single element; only its bitmap
-  content changes.
+- Zone navigation uses 64 accessible buttons per page.
+- Bitmap drawing decodes only the current window of at most 4096 blocks,
+  directly from the hex-encoded little-endian byte snapshot. Block zero is
+  the least significant bit of the first byte; no expanded whole-zone bit array
+  is allocated. Previous/next windows and a block-offset input support large zones.
+- Missing, truncated, or malformed bitmap bytes render Unknown instead of Free.
+  The canvas keeps a fixed 64-column width and scales pointer coordinates with
+  its displayed size. Hover identifies the exact block and allocation state.
 
 ### 15.2 Color encoding
 
@@ -569,9 +565,9 @@ Hardware remains browsable without a registered DiskDB. An unavailable scanner
 observation is distinct from a confirmed scanner that has never run.
 
 Green (free) → amber → red (busy):
-- Zone/disk boxes: gradient fill based on `busy_blocks /
+- Disk boxes: gradient fill based on `busy_blocks /
   unit_capacity` ratio. 0% = green, ~50% = amber, 100% = red.
-- Bitmap cells: binary — busy = red filled, free = green filled.
+- Bitmap cells: used = blue, free = green, unknown = gray, with a text legend.
 - Redundant encoding: each zone/disk box shows a `%` text label on
   hover (zone id + usage %) or inline so the information is not
   color-only (color-blind friendly).

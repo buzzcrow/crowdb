@@ -50,6 +50,7 @@ function scopeFromEntity(entity: SelectedEntity | null | undefined): CapacitySco
 }
 
 export function CapacityPanel({
+  active = true,
   instances,
   usage,
   hardwareCapacity,
@@ -230,7 +231,7 @@ export function CapacityPanel({
         />
       )}
       {scope === 'Disk' && dgId !== undefined && diskId !== undefined && (
-        <DiskView
+        <DiskView key={`${dgId}/${diskId}`} active={active}
           dgId={dgId}
           diskId={diskId}
           usage={usage}

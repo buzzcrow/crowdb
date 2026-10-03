@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: split from 50-capacity-diskdb.spec.ts (2026-09-01)
+// Baseline: zone detail 0.656s (2026-10-03)
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import {
@@ -99,7 +99,7 @@ test.describe('chunk · capacity · zone', () => {
             capacity_units: 1000,
             zone_size_units: 100,
             unit_size_bytes: 4096,
-            zone_count: 10,
+            zone_count: 130,
             status: 1,
             busy_units: 100,
             free_units: 900,
@@ -144,7 +144,7 @@ test.describe('chunk · capacity · zone', () => {
             capacity_units: 1000,
             zone_size_units: 100,
             unit_size_bytes: 4096,
-            zone_count: 10,
+            zone_count: 130,
             status: 1,
             busy_units: 100,
             free_units: 900,
@@ -157,10 +157,10 @@ test.describe('chunk · capacity · zone', () => {
               capacity_bytes: 409600,
               busy_bytes: 40960,
               free_bytes: 368640,
-              busy_block_count: 10,
-              free_block_count: 90,
+              busy_block_count: zoneIdx === 1 ? 1 : 10,
+              free_block_count: zoneIdx === 1 ? 8192 : 90,
               alloc_state: 0,
-              usage_bitmap: 'A'.repeat(40), // bitmap present at zone level
+              usage_bitmap: zoneIdx === 1 ? '01' + '00'.repeat(1024) : '0100',
             }],
           }],
           capacity_bytes: 4096000,
@@ -244,23 +244,40 @@ test.describe('chunk · capacity · zone', () => {
       await expect(panel.getByText(/Capacity — Disk/)).toBeVisible({ timeout: 3_000 });
 
       // Zone grid should be visible with 10 zones.
-      await expect(panel.getByText(/Zone grid.*10 zones/)).toBeVisible({ timeout: 5_000 });
+      await expect(panel.getByText(/Zone grid.*130 zones/)).toBeVisible({ timeout: 5_000 });
 
       // Before clicking a zone, no bitmap section should be visible.
       await expect(panel.getByText(/Zone \d+ bitmap/)).toHaveCount(0);
 
-      // Click the first zone in the grid — triggers useZoneBitmap fetch.
-      // The ZoneGrid renders zones as cells on a <canvas>; zone 0 is at
-      // the top-left corner. Cell size=10, gap=1, so zone 0 center is
-      // at (6, 6) relative to the canvas.
-      const canvas = panel.locator('canvas').first();
-      await canvas.click({ position: { x: 6, y: 6 } });
+      const zones = panel.getByRole('group', { name: 'Disk zones' });
+      await expect(zones.getByRole('button', { name: /^Zone \d+$/ })).toHaveCount(64);
+      await panel.getByRole('button', { name: 'Zone 0', exact: true }).click();
 
       // The zone bitmap section should appear with the zone index.
       await expect(panel.getByText(/Zone 0 bitmap/)).toBeVisible({ timeout: 5_000 });
 
       // The bitmap section should show busy/free block counts.
       await expect(panel.getByText(/10 busy.*90 free blocks/)).toBeVisible({ timeout: 5_000 });
+      const bitmap = panel.getByLabel('Zone block usage');
+      const pixel = (block: number) => bitmap.evaluate((canvas: HTMLCanvasElement, index) =>
+        Array.from(canvas.getContext('2d')!.getImageData((index % 64) * 6 + 2, Math.floor(index / 64) * 6 + 2, 1, 1).data), block);
+      await expect.poll(() => pixel(0), { timeout: 3000, intervals: [100] }).toEqual([59, 130, 246, 255]);
+      expect(await pixel(1)).toEqual([34, 197, 94, 255]);
+      expect(await pixel(16)).toEqual([107, 114, 128, 255]);
+      await expect(panel.getByText(/Capacity — Disk/)).toBeVisible();
+      await panel.getByRole('button', { name: 'Zone 1', exact: true }).click();
+      await expect(panel.getByText('Blocks 0–4095 of 8193', { exact: false })).toBeVisible();
+      await panel.getByRole('button', { name: 'Next blocks' }).click();
+      await expect(panel.getByText('Blocks 4096–8191 of 8193', { exact: false })).toBeVisible();
+      await panel.getByRole('button', { name: 'Next blocks' }).click();
+      await expect(panel.getByText('Blocks 8192–8192 of 8193', { exact: false })).toBeVisible();
+      await panel.getByRole('button', { name: 'Back to parent Disk' }).click();
+      await expect(panel.getByTestId('zone-bitmap')).toHaveCount(0);
+      await expect(panel.getByText(/Capacity — Disk/)).toBeVisible();
+      await panel.getByRole('button', { name: 'Next zones' }).click();
+      await panel.getByRole('button', { name: 'Zone 64', exact: true }).click();
+      await expect(panel.getByRole('region', { name: 'Zone 64 detail' })).toBeVisible();
+
     } finally {
       await removeDisk(baseURL!, nodeId, dgId, diskId).catch(() => {});
       await apiRemoveDiskGroup(baseURL!, nodeId, dgId).catch(() => {});
