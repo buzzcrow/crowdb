@@ -80,10 +80,10 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
   endpoints; unmatched placement remains explicit. Head/page limits: 1/2 MiB;
   at most 100 returned partitions; five-second observation deadline.
   Files: Web `chunk_kv.rs`, UI `chunk-kv/`, `chunk_kv_catalog_test.rs`, E2E 55.
-- [ ] **Chunk-KV runtime observation**: add authoritative server placement and runtime
+- [~] **Chunk-KV runtime observation**: add authoritative server placement and runtime
   observations, then bounded tree/journal inspection without reading all pages.
   Files: Web `chunk_kv/`, UI `chunk-kv/`, protocol/client observation adapters.
-- [ ] **Paxos overview**: default KV to Group/Replica management; retain Data
+- [x] **Paxos overview**: default KV to Group/Replica management; retain Data
   subview with explicit scope and Group 0 protection. Files: `views/KvView`,
   KV panels and corresponding topology/data E2E specs.
 - [ ] **Typed services**: consolidate all six service lifecycle operations in
@@ -254,3 +254,29 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
   with a config backup. `/healthz` returns 200, and the real Chunk-KV catalog
   route returns an explicit 404 because this cluster has no initialized catalog.
   Browser inspection confirms seven visible top-level domains and that state.
+
+## Paxos overview and fenced runtime observations
+
+- KV now defaults to Overview; Data mounts on first use and inherits Store,
+  Group and Replica selections. Ordinary Put requires an explicit group.
+  Scans abort on scope/view changes; continuations cannot overwrite a later
+  scope. All Groups is bounded to 10 groups and displayed rows to 1,000.
+- Baseline KV topology/basic/advanced browser selection: 11 passed. Updated
+  selection: 12 passed. Final shell/reconfiguration/basic/catalog selection:
+  16 passed. New overview case: 0.609 s; bounded continuation/cancellation:
+  6.5 s. The first bound test incorrectly exhausted its fixture after counting
+  initial auto-scans; its unlimited source now tests the actual display cap.
+- Chunk-KV owner observation verifies catalog generation, owner epoch,
+  partition/tree/stream identity and returns independently sampled runtime
+  counters. Web accepts only a matching configured Chunk-KV RPC/HTTP mapping,
+  caps owner responses at 64 KiB and rechecks Group 0 generation. No new locks,
+  key scans, data-page reads or journal reads are introduced.
+- Service management tests: 3 passed, including durable/applied progression
+  after a real journal mutation and Serving without a live authority grant.
+  Web Group 0 integration passed missing endpoints, stale epoch, wrong owner,
+  wrong stream and oversized owner responses. Updated Chunk-KV E2E: 2 passed
+  (0.771 s / 0.208 s). TypeScript, focused selection/topology unit tests,
+  Rust fmt and Web/Chunk-KV all-target Clippy passed.
+- Runtime page/tree/extent inspection and discovery of management origins from
+  managed deployments remain open. The catalog/runtime observation is not a
+  claim of complete Chunk-KV diagnostics or a completed seven-domain rollout.

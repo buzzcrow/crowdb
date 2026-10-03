@@ -19,6 +19,7 @@ interface ScanRow extends KvScanItem {
 }
 
 interface KvOperatorPanelProps {
+  active?: boolean;
   stores: EnrichedStoreView[];
   selectedEntity: SelectedEntity | null;
   readonly?: boolean;
@@ -28,7 +29,7 @@ interface KvOperatorPanelProps {
   loading?: boolean;
 }
 
-export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError, loading }: KvOperatorPanelProps) {
+export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError, loading, active = true }: KvOperatorPanelProps) {
   const { success, error } = useToast();
   const { log } = useActivity();
 
@@ -60,6 +61,10 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   const [demoCount, setDemoCount] = useState(20);
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoSession] = useState(() => crypto.randomUUID().replace(/-/g, ''));
+  const scanReqIdRef = useRef(0);
+  const scanAbortRef = useRef<AbortController>();
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   const groupsInStore = useMemo(() => {
     if (!storeId) return [] as GroupView[];
@@ -98,13 +103,12 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   }, [groupIdsInStore, groupId, storeId]);
 
   useEffect(() => {
-    if (selectedEntity?.type === 'Group' && selectedEntity.domain === 'KV') {
-      const sid = selectedEntity.parentIds?.store_id;
-      const gid = selectedEntity.id;
-      if (sid && stores.some((s) => String(s.store_id) === sid)) {
-        if (sid === storeId && gid === groupId) return;
+    if (selectedEntity?.domain === 'KV') {
+      const sid = selectedEntity.type === 'Store' ? selectedEntity.id : selectedEntity.parentIds?.store_id;
+      const gid = selectedEntity.type === 'Group' ? selectedEntity.id : selectedEntity.parentIds?.group_id;
+      if (sid != null) {
         setStoreId(String(sid));
-        setGroupId(gid);
+        setGroupId(gid == null ? '' : String(gid));
         setScanRows([]);
         setAutoScanned(false);
         setScanDone(false);
@@ -112,7 +116,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         setErrorMsg(null);
       }
     }
-  }, [selectedEntity, stores, storeId, groupId]);
+  }, [selectedEntity]);
 
   const handleStoreChange = useCallback((sid: string) => {
     setStoreId(sid);
@@ -139,10 +143,26 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   // store/group changes, a new handleScan closure is created but the old
   // one's await kvScan may still be in flight; without this guard the old
   // response silently overwrites the table with wrong-store data.
-  const scanReqIdRef = useRef(0);
+  useEffect(() => {
+    ++scanReqIdRef.current;
+    scanAbortRef.current?.abort();
+    setScanLoading(false);
+    setLoadingMore(false);
+    setAutoScanned(false);
+    setGetResult(null);
+    setConfirmDelete(null);
+    return () => { ++scanReqIdRef.current; scanAbortRef.current?.abort(); };
+  }, [storeId, groupId, scanPrefix, active]);
 
   const handleScan = useCallback(async () => {
-    if (!storeId || !groupId) return;
+    if (!storeId || !groupId || !activeRef.current) return;
+    if (groupId === ALL_GROUPS && groupIdsInStore.length > 10) {
+      setErrorMsg('All Groups is limited to 10 groups. Select a specific group.');
+      return;
+    }
+    scanAbortRef.current?.abort();
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
     const reqId = ++scanReqIdRef.current;
     setScanLoading(true);
     setErrorMsg(null);
@@ -153,7 +173,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         const cursors = new Map<string, { lastKey: string; truncated: boolean }>();
         let anyTruncated = false;
         for (const gid of groupIdsInStore) {
-          const result = await kvScan(storeId, gid, scanPrefix);
+          const result = await kvScan(storeId, gid, scanPrefix, 100, undefined, { signal: controller.signal });
           if (reqId !== scanReqIdRef.current) return;
           allRows.push(...result.items.map((item) => ({ ...item, groupId: gid, selected: false })));
           if (result.items.length > 0) {
@@ -167,7 +187,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         setScanDone(true);
         scannedCount = allRows.length;
       } else {
-        const result = await kvScan(storeId, groupId, scanPrefix);
+        const result = await kvScan(storeId, groupId, scanPrefix, 100, undefined, { signal: controller.signal });
         if (reqId !== scanReqIdRef.current) return;
         setScanRows(result.items.map((item) => ({ ...item, groupId, selected: false })));
         setScanTruncated(result.truncated);
@@ -206,14 +226,18 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   useEffect(() => { autoScanRef.current = autoScan; }, [autoScan]);
 
   useEffect(() => {
-    if (storeId && groupId && autoScan && !autoScanned && !scanLoading && scanRows.length === 0) {
+    if (active && storeId && groupId && autoScan && !autoScanned && !scanLoading && scanRows.length === 0) {
       setAutoScanned(true);
       handleScan();
     }
-  }, [storeId, groupId, autoScan, autoScanned, scanLoading, scanRows.length, handleScan]);
+  }, [active, storeId, groupId, autoScan, autoScanned, scanLoading, scanRows.length, handleScan]);
 
   const handleLoadMore = useCallback(async () => {
-    if (!storeId || !groupId || scanCursors.size === 0) return;
+    if (!storeId || !groupId || scanCursors.size === 0 || scanRows.length >= 1000 || !activeRef.current) return;
+    const reqId = ++scanReqIdRef.current;
+    scanAbortRef.current?.abort();
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
     setLoadingMore(true);
     setErrorMsg(null);
     try {
@@ -224,7 +248,10 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       for (const gid of gids) {
         const cursor = updatedCursors.get(gid);
         if (!cursor || !cursor.truncated) continue;
-        const result = await kvScan(storeId, gid, scanPrefix, 100, cursor.lastKey);
+        const remaining = 1000 - scanRows.length - newRows.length;
+        if (remaining <= 0) { anyTruncated = true; break; }
+        const result = await kvScan(storeId, gid, scanPrefix, Math.min(100, remaining), cursor.lastKey, { signal: controller.signal });
+        if (reqId !== scanReqIdRef.current) return;
         newRows.push(...result.items.map((item) => ({ ...item, groupId: gid, selected: false })));
         if (result.items.length > 0) {
           updatedCursors.set(gid, { lastKey: result.items[result.items.length - 1].key_utf8, truncated: result.truncated });
@@ -239,14 +266,15 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       log({ action: 'KV Scan', target: targetLabel, status: 'Success', message: `Loaded ${newRows.length} more keys` });
       success(`Loaded ${newRows.length} more keys`);
     } catch (err) {
+      if (reqId !== scanReqIdRef.current) return;
       const msg = err instanceof Error ? err.message : 'Load more failed';
       setErrorMsg(msg);
       log({ action: 'KV Scan', target: targetLabel, status: 'Failed', message: msg });
       error(msg);
     } finally {
-      setLoadingMore(false);
+      if (reqId === scanReqIdRef.current) setLoadingMore(false);
     }
-  }, [storeId, groupId, scanCursors, groupIdsInStore, scanPrefix, targetLabel, log, success, error]);
+  }, [storeId, groupId, scanCursors, scanRows.length, groupIdsInStore, scanPrefix, targetLabel, log, success, error]);
 
   const handleGet = useCallback(async () => {
     if (!getKey || !storeId || !groupId || groupId === ALL_GROUPS) return;
@@ -268,11 +296,9 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   }, [getKey, storeId, groupId, log, success, error]);
 
   const handlePut = useCallback(async () => {
-    if (!putKey || !putValue || !storeId || !groupId) return;
+    if (!putKey || !putValue || !storeId || !groupId || groupId === ALL_GROUPS) return;
     if (isSystemGroup) return;
-    const targetGid = groupId === ALL_GROUPS
-      ? writableGroupIds[Math.floor(Math.random() * writableGroupIds.length)]
-      : groupId;
+    const targetGid = groupId;
     if (!targetGid) return;
     setPutLoading(true);
     setErrorMsg(null);
@@ -668,12 +694,13 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
               />
               <button
                 onClick={handlePut}
-                disabled={putLoading || !putKey || !putValue}
+                disabled={putLoading || !putKey || !putValue || groupId === ALL_GROUPS}
                 className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-bg-accent tw-text-bg tw-rounded tw-text-xs disabled:tw-opacity-50"
               >
                 {putLoading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Database className="tw-h-3 tw-w-3" />}
                 Put
               </button>
+              {groupId === ALL_GROUPS && <span className="tw-text-xs tw-text-muted">Select a specific group to use Put</span>}
               <label className="tw-flex tw-items-center tw-gap-1 tw-text-xs tw-text-muted">
                 <input type="checkbox" checked={autoScan} onChange={(e) => setAutoScan(e.target.checked)} />
                 auto-scan
@@ -832,12 +859,13 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
             {scanTruncated && (
               <button
                 onClick={handleLoadMore}
-                disabled={loadingMore}
+                disabled={loadingMore || scanRows.length >= 1000}
                 className="tw-w-full tw-py-1.5 tw-text-xs tw-text-muted tw-border tw-border-border tw-rounded hover:tw-bg-panel tw-transition-colors disabled:tw-opacity-50"
               >
                 {loadingMore ? 'Loading...' : 'Load more'}
               </button>
             )}
+            {scanRows.length >= 1000 && <p className="tw-text-xs tw-text-muted">Display limit: 1,000 rows. Narrow the prefix or select a single group.</p>}
           </div>
         )}
 

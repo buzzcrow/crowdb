@@ -894,8 +894,13 @@ The remaining integration boundaries are:
 - Extend typed Cluster lifecycle dispatch beyond KV/DiskDB. Reuse existing
   deployment capabilities where present; unsupported types must not fall
   through to another service's operation.
-- Make Paxos overview the KV default and scope data operations to its Data
-  subview. Keep Group 0 protections and bounded reads.
+- KV opens on the Paxos overview, with group membership, replica placement,
+  election terms and read frontiers. Data mounts on first use, inherits a
+  selected Store/Group/Replica scope, and cancels scans when hidden or when
+  scope changes. Ordinary Put requires a specific group. Group 0 is read-only.
+  Group/replica tables render 100-row windows; data retains at most 1,000 rows
+  and All Groups scans accept at most 10 groups. These limits do not yet bound
+  the logical topology loader's aggregate response or detail-fetch fanout.
 - Resolve the authoritative Repo and other Chunk-KV metadata records and
   their query paths. The inspected `ChunkStore` currently uses Paxos KV bucket
   bindings; the current Web list queries ChunkDB owners and post-filters scan
@@ -905,10 +910,16 @@ The remaining integration boundaries are:
   entries. It reads the head again before responding. Budgets are 1 MiB per
   head, 2 MiB per page, 4096 page references, and a five-second request deadline.
   Validation covers the referenced page, not a full global catalog audit.
-- Join Chunk-KV catalog, runtime health, and transition observations. Existing
-  `HostedPartitionHealth` contains identity, epoch, lifecycle, durable sequence,
-  and applied sequence; it is not a tree-page or stream-extent inspector.
-  Add bounded observation APIs for the missing detail rather than fabricate it.
+- Selecting a Chunk-KV partition reads one owner runtime observation, fenced
+  by catalog generation and owner epoch. Web resolves its HTTP origin only from
+  the current cluster's configured Chunk-KV service with the matching RPC
+  endpoint, verifies partition/owner/tree/stream identities, and rechecks Group 0
+  generation. Missing management endpoints remain explicitly unavailable.
+  Runtime responses are capped at 64 KiB with a five-second overall deadline;
+  no key scan or journal data read occurs. Lifecycle, admission, serving grant,
+  durable sequence/offset and applied sequence are independently sampled.
+  A Serving lifecycle does not prove a live serving grant. Tree-page, checkpoint,
+  stream-extent and transition inspection remain to be implemented.
 - Complete S3 fixed-cluster authentication/signing integration and keep native
   privileges explicit. Complete real Iceberg reference-chain and footer
   acceptance; browser fixtures alone do not establish parser coverage.

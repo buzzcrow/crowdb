@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import { buttonClass } from '../access/Workbench';
 import { identity, range, type Partition } from './catalog';
+import { RuntimeObservation } from './RuntimeObservation';
 
 function Properties({ values }: { values: Record<string, string | null> }) {
   return <dl className="tw-grid tw-grid-cols-[auto_minmax(0,1fr)] tw-gap-x-6 tw-gap-y-2 tw-text-sm">
@@ -11,7 +12,7 @@ function Properties({ values }: { values: Record<string, string | null> }) {
   </dl>;
 }
 
-export function PartitionDetail({ partition: p, generation, currentGeneration, onBack }: { partition: Partition; generation: string; currentGeneration?: string; onBack: () => void }) {
+export function PartitionDetail({ partition: p, generation, currentGeneration, active, catalogPage, catalogOffset, onBack }: { partition: Partition; generation: string; currentGeneration?: string; active: boolean; catalogPage: number; catalogOffset: number; onBack: () => void }) {
   const [tab, setTab] = useState('Overview');
   const overlay = p.artifact.tail_overlay;
   return <section aria-label="Partition detail" className="tw-space-y-4 tw-border-t tw-border-border tw-pt-4">
@@ -19,16 +20,17 @@ export function PartitionDetail({ partition: p, generation, currentGeneration, o
     <h2 className="tw-text-lg tw-font-semibold tw-break-all">Partition {p.id}</h2>
     <p className="tw-text-xs tw-text-muted">Catalog generation {generation} · metadata observation</p>
     {currentGeneration !== generation && <p role="status" className="tw-text-degraded">This selection belongs to an earlier catalog observation. Select its current entry to refresh ownership and dependencies.</p>}
+    <RuntimeObservation active={active} partition={p} generation={generation} catalogPage={catalogPage} catalogOffset={catalogOffset} />
     <div role="tablist" aria-label="Partition views" className="tw-flex tw-gap-2">{['Overview', 'Tree', 'Journal', 'Dependencies'].map(name => <button key={name} role="tab" aria-selected={tab === name} className={buttonClass} onClick={() => setTab(name)}>{name}</button>)}</div>
     <div role="tabpanel" aria-label={tab} className="tw-space-y-4">
       {tab === 'Overview' && <><Properties values={{ Range: range(p), 'Assigned server': p.owner_id, Endpoint: p.endpoint, 'Owner epoch': p.epoch, 'Catalog state': p.state, Transition: p.transition_id }} />
-        <p className="tw-text-sm tw-text-muted">Runtime serving authority and progress are not available in this catalog observation.</p></>}
+        <p className="tw-text-sm tw-text-muted">Catalog assignment and owner runtime are separate observations, checked against the same generation and owner epoch.</p></>}
       {tab === 'Tree' && <><Properties values={{ 'Tree ID': p.artifact.tree_id, 'Overlay base tree manifest': overlay?.base_tree_manifest ?? null, 'Overlay root generation': overlay?.base_root_manifest_generation ?? null, 'Overlay base applied sequence': overlay?.base_applied_seq ?? null }} />
         <p className="tw-text-sm tw-text-muted">Tree page inspection is not yet available. The catalog identifies the tree; it does not contain its live root, page layout, or memory statistics.</p></>}
       {tab === 'Journal' && <>
         {overlay && <div className="tw-rounded tw-border tw-border-degraded tw-p-4 tw-space-y-3"><h3 className="tw-font-semibold">Inherited parent stream</h3><Properties values={{ Stream: identity(overlay.source_stream_name), 'Source partition': identity(overlay.source_partition_id), 'Manifest generation': overlay.source_stream_manifest_generation, 'Replay offset (bytes)': overlay.replay_offset, 'Cutover offset (bytes)': overlay.cutover_offset, 'Cutover sequence': overlay.cutover_seq }} /></div>}
         <div className="tw-rounded tw-border tw-border-accent tw-p-4 tw-space-y-3"><h3 className="tw-font-semibold">Partition journal stream</h3><Properties values={{ Stream: identity(p.artifact.stream_name), 'Start sequence from overlay': overlay?.target_stream_start_seq ?? null }} /></div>
-        <p className="tw-text-sm tw-text-muted">Streams have independent byte offsets. Live durable/applied/checkpoint frontiers and active/sealed extents require stream inspection and are not available here.</p>
+        <p className="tw-text-sm tw-text-muted">Streams have independent byte offsets. The runtime observation reports this partition's durable/applied frontiers; checkpoint and active/sealed extent inspection is not yet available.</p>
       </>}
       {tab === 'Dependencies' && (overlay ? <><p className="tw-text-sm">Parent recovery dependency is retained in this catalog generation. Serving does not imply that materialization has completed.</p><Properties values={{ 'Source partition': identity(overlay.source_partition_id), 'Source epoch': overlay.source_epoch, 'Parent stream': identity(overlay.source_stream_name), 'Pinned base root generation': overlay.base_root_manifest_generation, 'Inheritance cutover sequence': overlay.cutover_seq }} /></> : <p className="tw-text-sm">No parent-tail overlay is recorded in this catalog entry. Runtime readiness and other retention pins require separate observations.</p>)}
     </div>

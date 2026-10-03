@@ -17,6 +17,7 @@ const apiBase = consoleBaseURL();
 async function openKvPanel(page: any, storeId: string, groupId?: string) {
   await step('kv: goto', () => page.goto('/'));
   await page.getByTestId('domain-kv').click();
+  await page.getByTestId('kv-view-data').click();
   await page.getByTestId('kv-store-select').selectOption(storeId);
   if (groupId !== undefined) {
     await page.getByTestId('kv-group-select').selectOption(groupId);
@@ -259,6 +260,9 @@ test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
 
     // Get should be disabled in All Groups mode
     await expect(page.getByRole('button', { name: /^Get$/ })).toBeDisabled();
+    await page.getByLabel('Put key').fill('requires-explicit-group');
+    await page.getByLabel('Put value').fill('value');
+    await expect(page.getByRole('button', { name: /^Put$/ })).toBeDisabled();
 
     // Scan should aggregate keys from both groups
     await step('kv: all-groups scan', async () => {

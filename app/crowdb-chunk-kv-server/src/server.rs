@@ -28,6 +28,8 @@ use crate::{
     ServerMetrics, ServingAuthority,
 };
 
+mod observation;
+
 const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
 const DEFAULT_INITIALIZATION_WAITERS: usize = 1_024;
 const DEFAULT_INITIALIZATION_WAIT_MS: u64 = 250;

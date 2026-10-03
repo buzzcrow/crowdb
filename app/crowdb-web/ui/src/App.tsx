@@ -565,7 +565,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           /></div></>
         )}
         {kvEnabled && (
-          <div hidden={domain !== Domain.KV} className="tw-flex-1 tw-min-h-0"><KvView stores={stores} selectedEntity={selectionForDomain(Domain.KV)} readonly={logicalReadonly} backendError={!!logError} loading={logLoading} /></div>
+          <div hidden={domain !== Domain.KV} className="tw-flex-1 tw-min-h-0"><KvView active={domain === Domain.KV} stores={stores} selectedEntity={selectionForDomain(Domain.KV)} readonly={logicalReadonly} backendError={!!logError} loading={logLoading} /></div>
         )}
         <div hidden={domain !== Domain.Capacity} className="tw-flex-1 tw-min-h-0"><CapacityView
             active={domain === Domain.Capacity}

@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: partition/overlay 0.676s, unavailable 0.238s (2026-10-03).
+// Baseline: partition/overlay 0.743s, unavailable 0.230s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
 
 test('Chunk-KV preserves exact partition identity and separates inherited journal tracks', async ({ page }) => {
@@ -16,6 +16,16 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
     } },
   };
   const requests: string[] = [];
+  const runtimeRequests: string[] = [];
+  let runtimeConflict = false;
+  await page.route('**/api/chunk-kv/runtime**', route => {
+    runtimeRequests.push(route.request().url());
+    return route.fulfill({ status: runtimeConflict ? 409 : 200, json: runtimeConflict ? { error: 'Owner has a different catalog or writer' } : {
+      lifecycle: 'Serving', admitting: true, live_grant: false,
+      journal_durable_seq: '9007199254740998', applied_seq: '9007199254740997',
+      journal_durable_offset: '18446744073709551615', stream_id: id, observed_at_monotonic_ms: '1234',
+    } });
+  });
   await page.route('**/api/chunk-kv/catalog**', route => {
     requests.push(route.request().url());
     const next = new URL(route.request().url()).searchParams.has('generation');
@@ -28,6 +38,11 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   await expect(page.getByTestId('domain-chunk-kv')).toHaveAttribute('aria-pressed', 'true');
   await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${id}`, exact: true }).click();
   await expect(page.getByRole('tabpanel', { name: 'Overview' })).toContainText('9007199254740993');
+  const runtime = page.getByRole('region', { name: 'Partition runtime', exact: true });
+  await expect(runtime).toContainText('18446744073709551615');
+  await expect(runtime).toContainText('Absent at observation');
+  expect(new URL(runtimeRequests[0]).searchParams.get('epoch')).toBe('9007199254740993');
+  expect(new URL(runtimeRequests[0]).searchParams.get('generation')).toBe('9007199254740997');
   await page.getByRole('tab', { name: 'Journal', exact: true }).click();
   const journal = page.getByRole('tabpanel', { name: 'Journal' });
   await expect(journal.getByRole('heading', { name: 'Inherited parent stream' })).toBeVisible();
@@ -45,6 +60,10 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   await expect(page.getByRole('alert').filter({ hasText: 'catalog changed' })).toHaveCount(0);
   await page.getByRole('tab', { name: 'Dependencies', exact: true }).click();
   await expect(page.getByRole('tabpanel', { name: 'Dependencies' })).toContainText('Parent recovery dependency');
+  runtimeConflict = true;
+  await runtime.getByRole('button', { name: 'Refresh runtime', exact: true }).click();
+  await expect(runtime).toContainText('Owner has a different catalog or writer');
+  await expect(runtime).not.toContainText('18446744073709551615');
 });
 
 test('Chunk-KV unavailable catalog is explicit and can be retried', async ({ page }) => {

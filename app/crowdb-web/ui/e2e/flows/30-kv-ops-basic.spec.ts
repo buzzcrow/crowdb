@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 1.2s (2026-08-16)
+// Baseline: CRUD 1.2s, delete 0.742s, auto-scan 0.560s (2026-10-03).
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { addGroup, createStore, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/consoleSetup';
@@ -13,6 +13,7 @@ const apiBase = consoleBaseURL();
 async function openKvPanel(page: any) {
   await step('kv: goto', () => page.goto('/'));
   await page.getByTestId('domain-kv').click();
+  await page.getByTestId('kv-view-data').click();
   await page.getByTestId('kv-store-select').selectOption('99');
   await page.getByTestId('kv-group-select').selectOption('990');
 }
@@ -52,6 +53,60 @@ test.describe('kv ops · put/get/scan/delete', () => {
 
   test.afterAll(async () => {
     await step('kv: stop server', () => stopNodeServer(apiBase, 9));
+  });
+
+  test('Overview selects a replica without scanning; Data inherits its group', async ({ page }) => {
+    const scans: string[] = [];
+    page.on('request', request => { if (request.url().includes('/kv/scan')) scans.push(request.url()); });
+    await page.goto('/?domain=KV');
+    await expect(page.getByTestId('kv-view-overview')).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('table', { name: 'Paxos groups', exact: true }).getByRole('button', { name: '99 / 990', exact: true }).click();
+    const detail = page.getByTestId('paxos-group-detail');
+    await expect(detail).toContainText('Healthy');
+    await detail.getByRole('button', { name: '9900', exact: true }).click();
+    expect(scans).toEqual([]);
+    await page.getByTestId('kv-view-data').click();
+    await expect(page.getByTestId('kv-store-select')).toHaveValue('99');
+    await expect(page.getByTestId('kv-group-select')).toHaveValue('990');
+    await expect(page.getByTestId('kv-scan-table')).toBeVisible();
+    await page.getByTestId('kv-view-overview').click();
+    await detail.getByRole('button', { name: 'Node 9', exact: true }).click();
+    await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('scan window is bounded and leaving Data cancels in-flight continuation', async ({ page }) => {
+    let pageNumber = 0;
+    await page.route('**/kv/scan**', route => {
+      ++pageNumber;
+      return route.fulfill({ json: {
+        items: Array.from({ length: 100 }, (_, index) => ({ key_utf8: `bounded-${pageNumber}-${index}`, value_utf8: 'value' })),
+        truncated: true,
+      } });
+    });
+    await openKvPanel(page);
+    const more = page.getByRole('button', { name: 'Load more', exact: true });
+    for (let count = 200; count <= 1000; count += 100) {
+      await expect(more).toBeEnabled();
+      await more.click();
+      await expect(page.getByTestId('kv-scan-table').locator('tbody tr')).toHaveCount(count);
+    }
+    await expect(more).toBeDisabled();
+    await expect(page.getByText('Display limit: 1,000 rows.', { exact: false })).toBeVisible();
+    await page.unroute('**/kv/scan**');
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    await page.route('**/kv/scan**', async route => {
+      await gate;
+      await route.fulfill({ json: { items: [{ key_utf8: 'stale-result', value_utf8: 'old' }], truncated: false } });
+    });
+    const pending = page.waitForRequest('**/kv/scan**');
+    await page.getByRole('button', { name: /^Scan$/ }).click();
+    const request = await pending;
+    await page.getByTestId('kv-view-overview').click();
+    release();
+    await expect.poll(() => request.failure(), { intervals: [100], timeout: 3000 }).not.toBeNull();
+    await page.getByTestId('kv-view-data').click();
+    await expect(page.getByTestId('kv-scan-table')).not.toContainText('stale-result');
   });
 
   test('put/get/overwrite, prefix scan, and graceful not-found', async ({ page }) => {
@@ -190,6 +245,7 @@ test.describe('kv ops · put/get/scan/delete', () => {
     await step('kv: goto + select G-0', async () => {
       await page.goto('/');
       await page.getByTestId('domain-kv').click();
+  await page.getByTestId('kv-view-data').click();
       // Select store 0 (system store) and group 0. The auto-scan
       // checkbox is ON by default, so selecting the group must
       // trigger a scan automatically — no manual Scan click needed.

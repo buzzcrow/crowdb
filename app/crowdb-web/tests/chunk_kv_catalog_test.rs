@@ -44,7 +44,7 @@ async fn catalog_windows_pin_generation_validate_checksums_and_keep_exact_ids() 
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
     let state = AppState::new(cluster.mgmt_endpoints.clone());
     *state.kv_client.write().await = Some(Arc::clone(&kv));
-    let app = router(state);
+    let app = router(state.clone());
     assert_eq!(get(app.clone(), "?page=1").await.0, StatusCode::BAD_REQUEST);
     assert_eq!(get(app.clone(), "").await.0, StatusCode::NOT_FOUND);
     let (head, mut page) = catalog_fixture();
@@ -93,6 +93,7 @@ async fn catalog_windows_pin_generation_validate_checksums_and_keep_exact_ids() 
         get(app.clone(), "?generation=9&offset=105").await.0,
         StatusCode::BAD_REQUEST
     );
+    verify_runtime(&state, &app).await;
     page.entries[0].owner_epoch = 1;
     kv.put(
         0,
@@ -104,6 +105,63 @@ async fn catalog_windows_pin_generation_validate_checksums_and_keep_exact_ids() 
     .await
     .unwrap();
     assert_eq!(get(app, "").await.0, StatusCode::BAD_GATEWAY);
+}
+
+async fn runtime_get(app: axum::Router, query: &str) -> StatusCode {
+    app.oneshot(
+        Request::get(format!(
+            "/api/chunk-kv/runtime?page=0&offset=0&generation=9&id=ffffffffffffffff0000000000000001&{query}"
+        ))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+async fn verify_runtime(state: &AppState, app: &axum::Router) {
+    use axum::{extract::State, routing::get, Json};
+    use crowdb_console_shared::config::{ServerEntry, ServiceType};
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let query = format!("epoch={}", u64::MAX);
+    assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::NOT_FOUND);
+    assert_eq!(runtime_get(app.clone(), "epoch=1").await, StatusCode::CONFLICT);
+    let mode = Arc::new(AtomicU8::new(0));
+    let owner = axum::Router::new()
+        .route(
+            "/partitions/:id/observation",
+            get(|State(mode): State<Arc<AtomicU8>>| async move {
+                let mut value = serde_json::json!({ "partition_id":"ffffffffffffffff0000000000000001",
+            "catalog_generation":"9", "owner_epoch":u64::MAX.to_string(), "instance_id":u64::MAX.to_string(),
+            "tree_id":"1", "stream_id":"ffffffffffffffff0000000000000001" });
+                match mode.load(Ordering::Acquire) {
+                    1 => value["instance_id"] = "wrong-owner".into(),
+                    2 => value["stream_id"] = "wrong-stream".into(),
+                    3 => value["oversized"] = "x".repeat(65_537).into(),
+                    _ => (),
+                }
+                Json(value)
+            }),
+        )
+        .with_state(mode.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, owner).await.unwrap();
+    });
+    let mut entry = ServerEntry::new("test-chunk-kv", &origin);
+    entry.service_type = ServiceType::ChunkKv;
+    entry.rpc_url = Some("127.0.0.1:41000".into());
+    state.config.write().unwrap().add_server(entry).unwrap();
+    assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::OK);
+    mode.store(1, Ordering::Release);
+    assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::CONFLICT);
+    mode.store(2, Ordering::Release);
+    assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::CONFLICT);
+    mode.store(3, Ordering::Release);
+    assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::BAD_GATEWAY);
+    server.abort();
 }
 
 fn catalog_fixture() -> (ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage) {
