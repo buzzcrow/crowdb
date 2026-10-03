@@ -213,7 +213,7 @@ export function Sidebar({
       })))]
     }
 
-    if (domain === Domain.Chunk) {
+    if (domain === Domain.Capacity) {
       // Chunk domain: datacenter → rack → node → physical disk groups/disks
       // plus a separate DiskDB service item.
       if (racks.length === 0) return [];
@@ -369,7 +369,7 @@ export function Sidebar({
         <h3 className="tw-text-xs tw-font-semibold tw-text-muted tw-uppercase tw-tracking-wider">
           {domain === Domain.Cluster ? 'Cluster' : domain === Domain.KV ? 'KV' : 'Capacity'}
         </h3>
-        {!readonly && onAdd && domain !== Domain.Chunk && (
+        {!readonly && onAdd && domain !== Domain.Capacity && (
           domain === Domain.KV && !clusterInitialized ? (
             <Button
               variant="secondary"
@@ -415,7 +415,7 @@ export function Sidebar({
             ? 'No matching items'
             : domain === Domain.Cluster
               ? 'No racks registered'
-              : domain === Domain.Chunk
+              : domain === Domain.Capacity
                 ? 'No racks registered'
                 : clusterInitialized
                   ? 'No stores yet'

@@ -34,11 +34,12 @@
 
 ##### 1. Shared Shell and Information Architecture
 
-- Five top-level tabs: `Cluster | KV | Capacity | Iceberg | S3`. The user-facing
+- Seven top-level tabs: `Cluster | KV | Capacity | Chunk | Chunk-KV | Iceberg | S3`. The user-facing
   name is Iceberg; existing `iceberge` documentation paths are not renamed here.
 - Share the Header, left resource tree/filter, central domain panel, and right
   Inspector. The Inspector provides collapsible Details and Activity views.
-  Both sidebars have adjustable widths.
+  Both sidebars have adjustable widths where present. Iceberg uses only the left
+  tree and central content; it does not reserve space for a right Inspector.
 - Selection within a domain synchronizes the left tree, central content, and
   Inspector. Switching domains clears inapplicable selected entities. Navigation
   across domains carries the target identity, expands it after loading, and
@@ -47,7 +48,8 @@
   toolbar, query results, and an editor for the selected item. Each domain shows
   its own operation semantics; resources must not all become generic JSON editors.
 - Each tab has its own scope: physical entities for Cluster; Store/Group for KV;
-  hardware capacity or Chunk prefix/ID for Capacity; Catalog/Namespace/Table for
+  hardware capacity for Capacity; type/source/ID for Chunk; Server/Partition for
+  Chunk-KV; Catalog/Namespace/Table for
   Iceberg; authorized scope/Bucket/prefix for S3. The corresponding panel clearly
   displays its scope. Refresh, filters, and writes apply only to that scope.
   Domain switches may retain filters, but must not reuse another domain's write
@@ -104,7 +106,7 @@
   failure. Partial service failures affect only related features. When an
   initialized Group 0 is unreachable, show configuration as unavailable, disable
   dependent mutations, and retain diagnostics and managed recovery operations.
-- Container provides the same five tabs and resource views. Disable Rack, Node,
+- Container provides the same seven tabs and resource views. Disable Rack, Node,
   and Server deployment/deletion; process start/stop/restart; and DiskGroup/Disk
   addition, deletion, movement, and status changes. Do not allow manual Init/Reset
   of a cluster already managed by Container.
@@ -180,7 +182,7 @@ restart -> local launch hints -> restore Servers/Group 0 -> confirmed config
   deployed, reachable KV nodes and show the Store 0/Group 0 to be created and
   selected members. With no available nodes, guide users to Cluster Deploy.
 - After initialization, manage Stores, Groups, and Replicas. Selecting a Store
-  can scan all Groups; selecting a Group opens its KV operations panel; selecting
+  shows its groups; selecting a Group opens its Paxos overview with a Data subview; selecting
   a Replica shows details while retaining its Group scope. Replica management
   invokes the existing membership change flow, rather than editing raw
   configuration as a substitute.
@@ -207,11 +209,19 @@ restart -> local launch hints -> restore Servers/Group 0 -> confirmed config
 +-------------------+---------------------------------------+----------------+
 ```
 
-##### 5. Capacity: DiskDB Capacity and ChunkDB Inspection
+##### 5. Capacity, Chunk, and Chunk-KV Inspection
 
-- Retain the secondary `Capacity | Chunk` tabs. Capacity's left tree represents
-  physical capacity scopes; Chunk's left tree groups Chunk types/prefixes.
-  Manage their filters and selected entities separately.
+- Capacity, Chunk, and Chunk-KV are independent top-level domains with separate
+  filters and selections. Implement the agreed navigation, observation, and
+  bounded-query contracts in [Console UI design](../design/console/design-crowdb-console-ui.md)
+  §§18–21. Chunk type and metadata source are independent filters; unavailable
+  sources are partial coverage, not empty results.
+- Chunk-KV navigation is Rack → Node → Server → Partition. The center provides
+  a range distribution map and selected Partition Overview/Tree/Journal/
+  Dependencies. Split lineage and transfer state are distinct from current
+  placement. Parent and child stream offsets remain separate; an active child
+  can retain a parent recovery dependency. Manual split/repair is outside this
+  observation scope.
 - Capacity retains hierarchical Cluster/Rack/Node/DiskGroup/Disk capacity,
   DiskDB instance status, Zone grids, and Bitmaps. Scan/Recalc/Compact/Rebuild
   show their exact scope. DiskGroup/Disk management remains in this domain.
@@ -282,46 +292,40 @@ Strip seq 8: EC 4+2 (example only; profile determines allowed placement)
   D3 -> N4 / DG401 / Disk d
 ```
 
-##### 6. Iceberg: Catalog, Namespace, and Table Operations
+##### 6. Iceberg: Reference Tree and File Inspection
 
-- Left panel: currently accessible Catalog → Namespace → Table. The Header/toolbar
-  shows the current Catalog and permissions. Enter directly when there is only
-  one Catalog; do not fabricate support for multiple Catalogs.
-- Namespace supports list/load/create/update properties/drop. Table supports
-  list/load/create/rename/drop and structured metadata commits advertised by the
-  service. Requests retain native Iceberg REST Catalog semantics and show
-  validation failures, conflicts, and unknown outcomes.
-- Selecting a Table divides the central panel into `Overview | Schema | Snapshots |
-  Files`. Overview shows UUID, location, format version, and current snapshot;
-  Schema shows field IDs, types, required flags, and partition/sort specs;
-  Snapshots shows parent relationships, times, and summaries; Files shows
-  supported metadata references and file information for that Table, with
-  authorized downloads.
-- Files requires a supported source for table-associated references/manifest
-  reads. Do not treat arbitrary native FileIO listing across all prefixes as an
-  implemented capability; explicitly show the capability gap when no source exists.
-- Create Table uses Schema and property forms. Schema/property changes use
-  structured operations and an explicit prerequisite version. After a concurrent
-  commit conflict, retain input and require reconfirmation. Drop distinguishes
-  Catalog deregistration from physical cleanup semantics supported by the service;
-  it must not imply immediate release of all underlying space. Editing JSON files
-  cannot bypass metadata commits.
-- REST Catalog does not automatically provide row queries or Insert/Update/Delete
-  within a Table. Their UI design and execution path belong to Open Questions
-  below; do not publish fabricated row CRUD while unresolved. Known Chunk references
-  may link to Chunk details; without references, do not guess object-to-Chunk mappings.
-
-```text
-+-------------------+---------------------------------------+----------------+
-| ICEBERG           | Catalog / Namespace / Table           | Table details  |
-| Catalog           | [Create] [Rename] [Properties] [Drop] | UUID / head    |
-|  analytics        +---------------------------------------+----------------+
-|   events          | Overview | Schema | Snapshots | Files | Format / state |
-|   users           | field ID / name / type / required     | Catalog links  |
-|  staging          | snapshot ID / parent / time / summary | Chunk links    |
-| [Add Namespace]   | selected item details / commit form   | Activity       |
-+-------------------+---------------------------------------+----------------+
-```
+- Entering Iceberg automatically loads the current cluster Catalog. Do not show
+  endpoint/token inputs or a connection wizard. Deployment supplies the fixed
+  Catalog origin and server-held reader credential. Show unavailable/retry when
+  that service is absent; do not substitute another cluster. Catalog mutations
+  retain native authorization through the existing management session.
+- Use a two-column layout. Keep file properties and footer fields in the central
+  content, and show selected column details below the Parquet layout. Put refresh
+  and table actions in the center; do not duplicate metadata in a right panel.
+- The left panel expands Catalog → Namespace → Table → Snapshot → Manifest List
+  → Manifest → File. It follows immutable references, including shared files,
+  data/delete manifests, branch/tag labels and historical snapshots.
+- Selecting each entity shows structured fields and tables, never raw JSON as
+  the primary content. Table views show schema, partition/sort specifications,
+  properties and snapshot ancestry. Manifest lists show manifest descriptors;
+  manifests show entry status, partition values, inherited sequences and metrics.
+- File inspection is read-only and bound to the selected table metadata generation
+  and snapshot. Reject foreign references, expired files and stale generations;
+  changing credentials or scope cancels pending work and clears previous results.
+- Parquet inspection reads framing and footer metadata only. Show file size,
+  physical rows, schema, writer and footer fields; visualize actual column-chunk
+  byte ranges and bounded Row Group pages. Selecting a column shows its path,
+  field ID, type, codec, encodings, compressed/uncompressed sizes, offsets, value
+  count and optional statistics. Missing statistics remain unknown; bounds retain
+  exactness flags. Footer-only inspection does not claim page boundaries or live
+  row counts after deletes.
+- Expand reference children lazily, use bounded server pages, and retain explicit
+  partial/unsupported states. Other file formats expose supported metadata only.
+  Native Catalog management remains available alongside the inspector.
+- Use crowdb-tpc-loader in an isolated namespace for real Parquet/manifest
+  acceptance; independently verify footer-only reads and large integer identities.
+  Row queries and row DML are outside this delivery; the user selected metadata
+  and file-layout inspection as this iteration's scope.
 
 ##### 7. S3: Bucket and Object CRUD
 
@@ -523,7 +527,12 @@ Work items:
   switch while a query is pending → keep old responses out of the new scope,
   exclude secrets from responses/Group 0/Activity logs, and reject every
   unauthorized request in the backend. Integration test
-- **A21 / Shared Container UI**: Start single-node Container → visit all five
+- **A20a / Fixed cluster Catalog**: Configured Catalog and server reader → enter
+  Iceberg without browser credentials → load the resource tree automatically,
+  keep the credential server-side, refuse endpoint changes and unauthenticated
+  mutations; an unavailable Catalog shows retry without connection inputs.
+  Integration test and E2E test
+- **A21 / Shared Container UI**: Start single-node Container → visit all seven
   domains, perform authorized user data CRUD, and directly request physical
   mutations/deployment/Init/Reset → provide the shared UI, reject all hardware
   and process management writes, and apply logical/data capabilities according
@@ -537,6 +546,27 @@ Work items:
   accurate, clean up only the relevant sample resources, leave system metadata
   unchanged, and never substitute fabricated Chunk/Capacity data for real
   results. E2E test
+
+Additional acceptance for the seven-domain design:
+
+- **A24 / Independent domains**: Existing Capacity and Chunk selections → switch
+  among all seven tabs and follow a Chunk-to-Disk link → Capacity and Chunk have
+  independent scopes, the link selects Capacity, and no nested domain toggle is
+  required (I1, I10). E2E test
+- **A25 / Chunk metadata provenance**: Types span Paxos KV and Chunk-KV sources,
+  one source fails → filter and page → results identify actual metadata location
+  and partial coverage without treating type as backend (I7, I8). Integration test
+- **A26 / Partition observation**: Multiple partition owners and a split overlay
+  exist → select Server then Partition → ordered ranges, owner epoch, tree,
+  distinct journal tracks, and parent dependency match authoritative records
+  (I9). E2E test
+- **A27 / Catalog movement and scale**: A catalog changes between bounded pages
+  → continue or refresh → stale generation is explicit, rendered/requested data
+  stay bounded, and stable selection survives when still present (I7, I9, I10).
+  Integration test
+- **A28 / Service type isolation**: All six service types are registered → invoke
+  lifecycle operations → dispatch targets the exact instance/type and an
+  unsupported action cannot invoke KV lifecycle (I4, I6). Integration test
 
 #### Delivery status — 2026-10-03
 
@@ -570,12 +600,6 @@ Work items:
 
 #### Open Questions
 
-- **Row operations within Iceberg Tables**: Should the first version provide only
-  Namespace/Table metadata CRUD, or also sample row reads and writes? Recommend
-  completing metadata CRUD first. Row queries require a real engine/client
-  execution path; Insert/Update/Delete also involve file generation, delete
-  semantics, and atomic commits. Do not hide this decision inside the Catalog
-  API implementation.
 - **Business references from Iceberg/S3 to Chunk**: Should the first version show
   only references already queryable, or add authorized object-to-Chunk diagnostic
   queries? The former has a smaller scope but leaves some objects without links;

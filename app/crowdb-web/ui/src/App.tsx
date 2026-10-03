@@ -42,7 +42,9 @@ import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
 import { toUiHealth } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
 import { KvView } from './views/KvView';
-import { ChunkView } from './views/ChunkView';
+import { CapacityView } from './views/CapacityView';
+import { ChunkBrowser } from './chunk/ChunkBrowser';
+import { ChunkKvView } from './chunk-kv/ChunkKvView';
 import { IcebergView } from './views/IcebergView';
 import { S3View } from './views/S3View';
 import { ManagementSession } from './managed/ManagementSession';
@@ -109,9 +111,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const [managementAuthorized, setManagementAuthorized] = useState(false);
   const topologyReadonly = readonly || managed;
   const logicalReadonly = readonly || (managed && !managementAuthorized);
-  const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk && centerPanel === 'chunk');
+  const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
-  const capacityActive = domain === Domain.Chunk;
+  const capacityActive = domain === Domain.Capacity;
   const { racks, nodes, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
     enabled: true,
     managed,
@@ -127,7 +129,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     pollIntervalInactive: 30000,
   });
   const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity, nodeDiskGroups: capNodeDiskGroups, fetchNodeDiskGroups } = useCapacityTree({
-    enabled: domain === Domain.Chunk || domain === Domain.Cluster,
+    enabled: domain === Domain.Capacity || domain === Domain.Cluster,
     pollIntervalActive: 5000,
     pollIntervalInactive: 30000,
   });
@@ -153,7 +155,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   );
 
   const loading = physLoading || logLoading || capLoading;
-  const dataError = (domain === Domain.Cluster ? physError : domain === Domain.KV ? logError : domain === Domain.Chunk ? capError : null);
+  const dataError = (domain === Domain.Cluster ? physError : domain === Domain.KV ? logError : domain === Domain.Capacity ? capError : null);
   const servers = useMemo(() => buildCrowdbKVServers(nodes, racks), [nodes, racks]);
   const serverNodeIds = useMemo(() => crowdbKvServerNodeIds(servers), [servers]);
   const [allServers, setAllServers] = useState<import('./api').ServerSummary[]>([]);
@@ -565,30 +567,18 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         {kvEnabled && (
           <div hidden={domain !== Domain.KV} className="tw-flex-1 tw-min-h-0"><KvView stores={stores} selectedEntity={selectionForDomain(Domain.KV)} readonly={logicalReadonly} backendError={!!logError} loading={logLoading} /></div>
         )}
-        <div hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkView
-            centerPanel={centerPanel}
-            onCenterPanelChange={setCenterPanel}
-            onPlacement={entity => { if (entity.domain === Domain.Chunk) { setCenterPanel('capacity'); selectEntity(entity); } else { pendingSelectionRef.current = entity; setDomain(entity.domain); } }}
-            instances={diskdbInstances}
-            usage={capacityUsage}
-            hardwareCapacity={hardwareCapacity}
-            scanStatus={capacityScanStatus}
-            loading={capLoading}
-            readonly={logicalReadonly}
-            onRefresh={refreshCapacity}
-            selectedEntity={selectionForDomain(Domain.Chunk)}
-            racks={racks}
-            nodes={nodes}
-            servers={servers}
-            stores={stores}
-            nodeStores={nodeStores}
-            nodeHealthById={nodeHealthById}
-            diskdbNodeIds={diskdbNodeIds}
-            nodeDiskGroups={nodeDiskGroups}
-            refreshToken={lastRefreshTime.getTime()}
-            focusRequest={canvasFocusRequest}
-            onEntityContextMenu={onCanvasContextMenu}
+        <div hidden={domain !== Domain.Capacity} className="tw-flex-1 tw-min-h-0"><CapacityView
+            active={domain === Domain.Capacity}
+            instances={diskdbInstances} usage={capacityUsage} hardwareCapacity={hardwareCapacity}
+            scanStatus={capacityScanStatus} loading={capLoading} readonly={logicalReadonly}
+            onRefresh={refreshCapacity} selectedEntity={selectionForDomain(Domain.Capacity)}
           /></div>
+        <div hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser
+          onPlacement={entity => { pendingSelectionRef.current = entity; setDomain(entity.domain); }}
+        /></div>
+        <div hidden={domain !== Domain.ChunkKV} className="tw-flex-1 tw-min-h-0"><ChunkKvView
+          active={domain === Domain.ChunkKV} racks={racks} nodes={nodes} servers={allServers}
+        /></div>
         <div hidden={domain !== Domain.Iceberg} className="tw-flex-1 tw-min-h-0"><IcebergView active={domain === Domain.Iceberg} readonly={readonly} /></div>
         <div hidden={domain !== Domain.S3} className="tw-flex-1 tw-min-h-0"><S3View active={domain === Domain.S3} readonly={readonly} /></div>
       </main>

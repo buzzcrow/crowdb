@@ -12,6 +12,7 @@
 mod access;
 mod auth;
 mod chunk;
+mod chunk_kv;
 pub mod corr_id;
 pub mod diskdb;
 pub mod error;
@@ -45,6 +46,7 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/mode", get(health::mode))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
+            .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
             .route("/api/chunks", get(chunk::list))
             .route("/api/chunks/:id", get(chunk::detail))
             .merge(access::read_router())
@@ -175,6 +177,7 @@ pub fn router(state: AppState) -> axum::Router {
     }
 
     axum::Router::new()
+        .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
         .route("/api/chunks", get(chunk::list))
         .route("/api/chunks/:id", get(chunk::detail))
         .merge(access::read_router())

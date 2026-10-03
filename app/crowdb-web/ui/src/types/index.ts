@@ -202,7 +202,9 @@ export enum GroupHealth {
 export enum Domain {
   Cluster = 'Cluster',
   KV = 'KV',
+  Capacity = 'Capacity',
   Chunk = 'Chunk',
+  ChunkKV = 'Chunk-KV',
   Iceberg = 'Iceberg',
   S3 = 'S3'
 }

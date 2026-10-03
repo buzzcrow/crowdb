@@ -74,7 +74,7 @@ export function ChunkBrowser({ onPlacement }: { onPlacement: (entity: SelectedEn
         <div className="tw-font-semibold">{role} {unavailable ? '· unavailable' : '· allocated'}</div><p className="tw-font-mono tw-break-all">Disk {id ?? 'Unknown'}</p>
         <p>Zone {segment.zone_index} · unit offset {segment.unit_offset} · {segment.unit_count} units</p>
         {placement ? <><p>Rack {placement.rack_id} / Node {placement.node_id} / DG {placement.disk_group_id}</p><p>Unit {placement.unit_size} bytes · offset within zone {(BigInt(segment.unit_offset) * BigInt(placement.unit_size)).toString()} bytes</p>
-          <button className={buttonClass} onClick={() => onPlacement({ domain: Domain.Chunk, type: 'Disk', id: placement.disk_id, parentIds: { rack_id: placement.rack_id, node_id: placement.node_id, disk_group_id: placement.disk_group_id, disk_id: placement.disk_id } })}>Show disk capacity</button>
+          <button className={buttonClass} onClick={() => onPlacement({ domain: Domain.Capacity, type: 'Disk', id: placement.disk_id, parentIds: { rack_id: placement.rack_id, node_id: placement.node_id, disk_group_id: placement.disk_group_id, disk_id: placement.disk_id } })}>Show disk capacity</button>
           <button className={buttonClass} onClick={() => onPlacement({ domain: Domain.Cluster, type: 'Node', id: placement.node_id, parentIds: { rack_id: placement.rack_id } })}>Show node</button></> : <p className="tw-text-muted">Placement unknown; Disk ID retained.</p>}
       </div>;
     })}

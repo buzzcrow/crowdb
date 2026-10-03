@@ -121,7 +121,7 @@ test.describe('chunk · capacity · disk-group', () => {
 
   test('capacity tree, node context menu, and Deploy DiskDB dialog', async ({ page }) => {
     await page.goto('/');
-    await page.getByTestId('domain-chunk').click();
+    await page.getByTestId('domain-capacity').click();
 
     const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 
@@ -212,7 +212,7 @@ test.describe('chunk · capacity · disk-group', () => {
 
     try {
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${DISKDB_RACK}` }).locator('button[aria-label="Expand"]');
@@ -479,7 +479,7 @@ test.describe('chunk · capacity · disk-group', () => {
       // the API response before asserting DG visibility.
       const dgResponse = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
       await dgResponse;
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
@@ -546,7 +546,7 @@ test.describe('chunk · capacity · disk-group', () => {
         // --- Verify the capacity panel shows non-zero ---
         const dgResponse2 = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
         await page.goto('/');
-        await page.getByTestId('domain-chunk').click();
+        await page.getByTestId('domain-capacity').click();
         await dgResponse2;
         await expect(aside.getByText(/DG-590/, { exact: true })).toBeVisible({ timeout: 10_000 });
         // The Total Capacity card should show a non-zero value (not "0 B").
@@ -594,7 +594,7 @@ test.describe('chunk · capacity · disk-group', () => {
       }
 
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${DISKDB_RACK}` }).locator('button[aria-label="Expand"]');
@@ -907,7 +907,7 @@ test.describe('chunk · capacity · disk-group', () => {
       await expect(aside.getByText(/DG-593/, { exact: true })).not.toBeVisible({ timeout: 5_000 });
 
       // Switch to Capacity domain — the DG should be visible there.
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
       const capAside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const capDgResponse = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
       await capDgResponse;

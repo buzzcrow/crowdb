@@ -165,7 +165,7 @@ test.describe('chunk · capacity · disk', () => {
 
     try {
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
@@ -449,7 +449,7 @@ test.describe('chunk · capacity · disk', () => {
       });
 
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const expandRackAgain = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
       if (await expandRackAgain.count() > 0) await expandRackAgain.click();
@@ -641,7 +641,7 @@ test.describe('chunk · capacity · disk', () => {
       });
 
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
@@ -844,7 +844,7 @@ test.describe('chunk · capacity · disk', () => {
 
       // --- Verify the Inspector shows disk list when DG is selected ---
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');

@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+// Baseline: layout 0.888s, bounded strips 0.814s (2026-10-03)
 import { test, expect } from '../fixtures/realBackend';
 
 test('Chunk browser renders stable Mirror and EC sequences with exact placement identities', async ({ page }) => {
@@ -17,7 +18,6 @@ test('Chunk browser renders stable Mirror and EC sequences with exact placement 
   });
   await page.goto('/');
   await page.getByTestId('domain-chunk').click();
-  await page.getByTestId('chunk-tab-chunk').click();
   await page.getByLabel('Chunk ID prefix').fill('05');
   await page.getByRole('button', { name: 'Query chunks', exact: true }).click();
   await page.getByRole('table', { name: 'Chunks' }).getByRole('button', { name: id, exact: true }).click();
@@ -32,6 +32,11 @@ test('Chunk browser renders stable Mirror and EC sequences with exact placement 
   await page.getByTestId('domain-chunk').click();
   await expect(page.getByLabel('Chunk ID prefix')).toHaveValue('05');
   await expect(layout.getByRole('button', { name: /Sequence 9/ })).toBeVisible();
+  await page.getByRole('button', { name: 'Show disk capacity', exact: true }).nth(0).click();
+  await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('domain-chunk').click();
+  await expect(page.getByLabel('Chunk ID prefix')).toHaveValue('05');
+  await expect(page.getByTestId('chunk-tab-chunk')).toHaveCount(0);
 });
 
 
@@ -40,7 +45,6 @@ test('Large Chunk renders bounded strip pages and retains selected sequence', as
   const strips = Array.from({ length: 45 }, (_, index) => ({ strip_sequence: index * 3, chunk_offset: index * 1024, capacity: 1024, unit_kb: 4, sealed_length: 0, strip_type: 0, strip: { MirrorStrip: { segments: [] } }, unavailable_segments: [], placement_repair_required: false }));
   await page.route('**/api/chunks/**', route => route.fulfill({ json: { chunk: { id_hex: id, chunk_type: 5, state: 1, strips }, observed_at_ms: 1000, placement_observed_at_ms: 1000, layout_validity_ms: 1000, placements: [], placement_error: null } }));
   await page.goto('/?domain=Chunk');
-  await page.getByTestId('chunk-tab-chunk').click();
   await page.getByLabel('Exact Chunk ID').fill(id);
   await page.getByRole('button', { name: 'Lookup ID', exact: true }).click();
   const layout = page.getByLabel('Chunk strips');
