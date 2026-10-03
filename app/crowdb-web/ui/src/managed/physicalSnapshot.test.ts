@@ -21,4 +21,13 @@ describe('confirmed physical snapshot', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ source: 'local' }))));
     await expect(physicalSnapshot()).rejects.toThrow('Confirmed Group 0 snapshot unavailable');
   });
+  it('projects Chunk-KV instance and node identities independently with its advertised management origin', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      source: 'group0', racks: [{ id: 3 }], nodes: [{ id: 7, rack_id: 3 }], disk_groups: [], disks: [],
+      services: [{ kind: 'chunk-kv', instance_id: '9007199254740993', node_id: 7, endpoint: '127.0.0.1:15201', http_endpoint: 'http://127.0.0.1:15101', monitor: null }],
+    }))));
+    const snapshot = await physicalSnapshot();
+    expect(snapshot.servers).toEqual([{ id: 'chunk-kv-9007199254740993', node_id: 7, service_type: 'chunk-kv',
+      endpoint: '127.0.0.1:15201', rpc_url: '127.0.0.1:15201', mgmt_url: 'http://127.0.0.1:15101', health: 'unknown', pid: undefined }]);
+  });
 });

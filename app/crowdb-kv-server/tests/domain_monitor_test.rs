@@ -684,6 +684,7 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
                         ],
                         independently_recoverable: true,
                     }],
+                    ..ChunkKvExtra::default()
                 }),
                 ..ServiceExtra::default()
             }),
@@ -910,6 +911,7 @@ async fn put_balance_fixture(control: &Group0ControlPlane) {
                     })
                     .collect(),
                 partition_loads: source_loads,
+                ..ChunkKvExtra::default()
             },
         ),
         (

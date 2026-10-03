@@ -1,7 +1,9 @@
 instance_id = 1
+node_id = {{node.0.id}}
 rpc_listen_addr = "127.0.0.1:15200"
 rpc_advertise_addr = "127.0.0.1:15200"
 http_listen_addr = "127.0.0.1:15100"
+http_advertise_addr = "127.0.0.1:15100"
 group0_mgmt_seeds = ["http://127.0.0.1:10000"]
 catalog_refresh_interval_ms = 200
 rpc_workers = 1

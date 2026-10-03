@@ -320,11 +320,42 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
         .unwrap();
     assert_eq!(diskio["monitor"]["pid"], 123, "{snapshot}");
     assert_eq!(diskio["monitor"]["generation"], 2);
+    verify_chunk_kv_placement(&app, &sysmd).await;
     verify_managed_store_lifecycle(&app, &sysmd, &cluster.mgmt_endpoints[0], &token).await;
 
     drop(cluster);
     verify_unavailable_snapshot(app, &store, &mut status, &run_root).await;
     std::fs::remove_dir_all(run_root).unwrap();
+}
+
+async fn verify_chunk_kv_placement(app: &axum::Router, sysmd: &CrowdbSysmdClient) {
+    sysmd
+        .register_service(
+            "chunk-kv",
+            42,
+            "127.0.0.1:15201",
+            &ServiceExtra {
+                chunk_kv: Some(crowdb_protocol::common::ChunkKvExtra {
+                    node_id: Some(1),
+                    http_endpoint: Some("http://127.0.0.1:15101".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let (code, snapshot) = get_json(app.clone(), "/api/preview").await;
+    assert_eq!(code, StatusCode::OK, "{snapshot}");
+    let chunk_kv = snapshot["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|service| service["kind"] == "chunk-kv")
+        .unwrap();
+    assert_eq!(chunk_kv["instance_id"], "42");
+    assert_eq!(chunk_kv["node_id"], 1);
+    assert_eq!(chunk_kv["http_endpoint"], "http://127.0.0.1:15101");
 }
 
 async fn verify_unavailable_snapshot(

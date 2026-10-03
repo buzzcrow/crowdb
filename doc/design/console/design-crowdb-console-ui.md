@@ -946,9 +946,12 @@ The remaining integration boundaries are:
   Validation covers the referenced page, not a full global catalog audit.
 - Selecting a Chunk-KV partition reads one owner runtime observation, fenced
   by catalog generation and owner epoch. Web resolves its HTTP origin only from
-  the current cluster's configured Chunk-KV service with the matching RPC
-  endpoint, verifies partition/owner/tree/stream identities, and rechecks Group 0
-  generation. Missing management endpoints remain explicitly unavailable.
+  a configured Chunk-KV service with the matching RPC endpoint, or the exact
+  owner registration in Group 0. Registrations must match the instance and RPC
+  identity, have a heartbeat within 15 seconds, and declare an HTTP origin.
+  Registry records are capped at 256 KiB. Web verifies partition/owner/tree/stream
+  identities and rechecks Group 0 generation. Managed navigation uses explicit
+  registered Node IDs; instance IDs never imply physical placement. Missing management endpoints remain explicitly unavailable.
   Runtime responses are capped at 64 KiB with a five-second overall deadline;
   no key scan or journal data read occurs. Lifecycle, admission, serving grant,
   durable sequence/offset and applied sequence are independently sampled.

@@ -115,7 +115,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
   const capacityActive = domain === Domain.Capacity;
-  const { racks, nodes, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
+  const { racks, nodes, services: managedServers, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
     enabled: true,
     managed,
     recursive: 2,
@@ -159,7 +159,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const dataError = (domain === Domain.Cluster ? physError : domain === Domain.KV ? logError : domain === Domain.Capacity ? capError : null);
   const servers = useMemo(() => buildCrowdbKVServers(nodes, racks), [nodes, racks]);
   const serverNodeIds = useMemo(() => crowdbKvServerNodeIds(servers), [servers]);
-  const [allServers, setAllServers] = useState<import('./api').ServerSummary[]>([]);
+  const [standaloneServers, setAllServers] = useState<import('./api').ServerSummary[]>([]);
+  const allServers = managed ? managedServers : standaloneServers;
   const serverErrorShownRef = useRef(false);
   const refreshAllServers = useCallback(async () => {
     try {

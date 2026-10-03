@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { listRacks, listNodes, listNodeStores, pingNode, listNodeDiskGroups, listDisksInGroup } from '../api';
+import { listRacks, listNodes, listNodeStores, pingNode, listNodeDiskGroups, listDisksInGroup, type ServerSummary } from '../api';
 import { NodeHealth } from '../types';
 import type { Rack, Node, NodeStore, DiskGroupEntry, DiskEntry } from '../types';
 import { physicalSnapshot } from '../managed/physicalSnapshot';
@@ -21,6 +21,7 @@ interface UseClusterTreeOptions {
 }
 
 interface UseClusterTreeResult {
+  services: ServerSummary[];
   racks: Rack[];
   nodes: Node[];
   nodeStores: Record<string, NodeStore[]>;
@@ -47,6 +48,7 @@ export function useClusterTree({
   managed = false,
 }: UseClusterTreeOptions = {}): UseClusterTreeResult {
   const [racks, setRacks] = useState<Rack[]>([]);
+  const [services, setServices] = useState<ServerSummary[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [nodeStores, setNodeStores] = useState<Record<string, NodeStore[]>>({});
   const [nodeHealthById, setNodeHealthById] = useState<Record<string, NodeHealth>>({});
@@ -67,7 +69,7 @@ export function useClusterTree({
 
       if (managed) {
         const snapshot = await physicalSnapshot();
-        setRacks(snapshot.racks); setNodes(snapshot.nodes); setNodeDiskGroups(snapshot.diskGroups);
+        setRacks(snapshot.racks); setNodes(snapshot.nodes); setNodeDiskGroups(snapshot.diskGroups); setServices(snapshot.servers);
         setNodeStores({}); setNodeHealthById({}); setError(null);
         return;
       }
@@ -122,7 +124,7 @@ export function useClusterTree({
       setError(null);
     } catch (err) {
       console.error('Failed to fetch cluster tree:', err);
-      if (managed) { setRacks([]); setNodes([]); setNodeDiskGroups({}); }
+      if (managed) { setRacks([]); setNodes([]); setNodeDiskGroups({}); setServices([]); }
       setError(err instanceof Error ? err : new Error('Unknown error fetching cluster tree'));
     } finally {
       hasLoadedRef.current = true;
@@ -233,6 +235,7 @@ export function useClusterTree({
   );
 
   return {
+    services,
     racks,
     nodes,
     nodeStores,

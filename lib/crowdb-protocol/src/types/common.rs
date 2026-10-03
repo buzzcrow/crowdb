@@ -265,6 +265,10 @@ pub struct ServiceExtra {
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ChunkKvExtra {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_endpoint: Option<String>,
     pub capacity_bytes: u64,
     pub durable_bytes: u64,
     pub request_rate: u64,

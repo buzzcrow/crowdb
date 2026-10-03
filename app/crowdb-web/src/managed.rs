@@ -44,6 +44,7 @@ struct ServiceView {
     last_heartbeat_ms: u64,
     monitor: Option<ServiceStatus>,
     node_id: Option<u64>,
+    http_endpoint: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -156,7 +157,8 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
                 None
             };
             services.extend(instances.into_iter().map(|(instance_id, record)| ServiceView {
-                node_id: record.extra.as_ref().and_then(|extra| extra.kv_server.as_ref().and_then(|server| server.node_id).or_else(|| extra.diskdb.as_ref().and_then(|server| server.node_id))),
+                node_id: record.extra.as_ref().and_then(|extra| extra.kv_server.as_ref().and_then(|server| server.node_id).or_else(|| extra.diskdb.as_ref().and_then(|server| server.node_id)).or_else(|| extra.chunk_kv.as_ref().and_then(|server| server.node_id))),
+                http_endpoint: record.extra.as_ref().and_then(|extra| extra.chunk_kv.as_ref()).and_then(|server| server.http_endpoint.clone()),
                 kind,
                 instance_id: instance_id.to_string(),
                 endpoint: record.rpc_endpoint,

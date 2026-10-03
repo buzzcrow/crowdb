@@ -186,7 +186,43 @@ async fn verify_runtime(state: &AppState, app: &axum::Router) {
     assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::CONFLICT);
     mode.store(3, Ordering::Release);
     assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::BAD_GATEWAY);
+    mode.store(0, Ordering::Release);
+    state.config.write().unwrap().servers.clear();
+    verify_discovered_runtime(state, app, &query, &origin).await;
     server.abort();
+}
+
+async fn verify_discovered_runtime(state: &AppState, app: &axum::Router, query: &str, origin: &str) {
+    let client = state.kv_client().await;
+    let key = crowdb_protocol::key::InstanceKey {
+        service: "chunk-kv".into(),
+        instance_id: u64::MAX,
+    }
+    .to_path();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let base = serde_json::json!({ "instance_id":u64::MAX, "rpc_endpoint":"127.0.0.1:41000", "last_heartbeat_ms":u64::try_from(now).unwrap(),
+        "extra":{"chunk_kv":{"node_id":7,"http_endpoint":origin,"capacity_bytes":0,"durable_bytes":0,"request_rate":0,"hosted":[]}} });
+    for (field, changed, expected) in [
+        ("", Value::Null, StatusCode::OK),
+        ("rpc_endpoint", "127.0.0.1:41001".into(), StatusCode::CONFLICT),
+        ("last_heartbeat_ms", 0.into(), StatusCode::CONFLICT),
+        ("instance_id", 7.into(), StatusCode::CONFLICT),
+        ("extra", Value::Null, StatusCode::NOT_FOUND),
+        ("padding", "x".repeat(256 * 1024).into(), StatusCode::BAD_GATEWAY),
+    ] {
+        let mut value = base.clone();
+        if !field.is_empty() {
+            value[field] = changed;
+        }
+        client
+            .put(0, 0, key.as_bytes(), &serde_json::to_vec(&value).unwrap(), None)
+            .await
+            .unwrap();
+        assert_eq!(runtime_get(app.clone(), query).await, expected, "{field}");
+    }
 }
 
 fn catalog_fixture() -> (ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage) {

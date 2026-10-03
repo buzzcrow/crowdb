@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-import { getApiBase } from '../api';
+import { getApiBase, type ServerSummary } from '../api';
 import { readJson } from '../access/native';
 import { NodeHealth, ProcState, type Node, type Rack } from '../types';
 import type { NodeDiskGroups } from '../data/useClusterTree';
@@ -11,7 +11,7 @@ interface Snapshot {
   nodes: Array<{ id: number; rack_id: number; management_host?: string }>;
   disk_groups: Array<{ rack_id: number; node_id: number; dg_id: number; value?: { name?: string } }>;
   disks: Array<{ rack_id: number; node_id: number; disk_group_id: number; disk_id: { high: string | number; low: string | number }; value: { capacity_units: number; zone_size_units: number; unit_size_bytes: number; disk_type: number; device_path: string } }>;
-  services: Array<{ kind: string; node_id?: number; endpoint: string; monitor?: { healthy: boolean; pid: number | null } | null }>;
+  services: Array<{ kind: string; instance_id?: string; node_id?: number; endpoint: string; http_endpoint?: string; monitor?: { healthy: boolean; pid: number | null } | null }>;
 }
 export async function physicalSnapshot() {
   const snapshot = await readJson<Snapshot>(await fetch(`${getApiBase()}/preview`, { cache: 'no-store' }));
@@ -40,5 +40,13 @@ export async function physicalSnapshot() {
     }));
     diskGroups[group.node_id] = entry;
   }
-  return { racks, nodes, diskGroups };
+  const servers: ServerSummary[] = snapshot.services.map(service => ({
+    id: `${service.kind}-${service.instance_id ?? service.endpoint}`, node_id: service.node_id,
+    service_type: service.kind === 'kv-server' ? 'kv' : service.kind,
+    endpoint: service.endpoint, rpc_url: service.kind === 'kv-server' ? undefined : service.endpoint,
+    mgmt_url: service.http_endpoint ?? (service.kind === 'kv-server' ? service.endpoint : undefined),
+    pid: service.monitor?.pid ?? undefined,
+    health: service.monitor ? service.monitor.healthy ? 'up' : 'down' : 'unknown',
+  }));
+  return { racks, nodes, diskGroups, servers };
 }

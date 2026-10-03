@@ -339,7 +339,12 @@ async fn main() {
     let capacity_bytes = u64::try_from(config.max_hosted_partitions)
         .unwrap_or(u64::MAX)
         .saturating_mul(config.balance.target_partition_bytes);
-    let initial_observation = service.registry_observation(capacity_bytes, 0);
+    let mut initial_observation = service.registry_observation(capacity_bytes, 0);
+    initial_observation.node_id = config.node_id;
+    initial_observation.http_endpoint = config
+        .http_advertise_addr
+        .as_ref()
+        .map(|address| format!("http://{address}"));
     if let Err(error) = service_registry
         .register_chunk_kv(
             config.instance_id,
@@ -386,7 +391,7 @@ async fn main() {
             let request_rate = requests.saturating_sub(previous_requests).saturating_mul(1_000) / elapsed_ms;
             previous_requests = requests;
             previous_ms = now_ms;
-            let observation = match heartbeat_service
+            let mut observation = match heartbeat_service
                 .registry_observation_with_load_samples(capacity_bytes, request_rate, 256)
                 .await
             {
@@ -396,6 +401,11 @@ async fn main() {
                     heartbeat_service.registry_observation(capacity_bytes, request_rate)
                 }
             };
+            observation.node_id = heartbeat_config.node_id;
+            observation.http_endpoint = heartbeat_config
+                .http_advertise_addr
+                .as_ref()
+                .map(|address| format!("http://{address}"));
             if let Err(error) = heartbeat_registry
                 .heartbeat_chunk_kv(heartbeat_config.instance_id, &heartbeat_endpoint, &observation)
                 .await
