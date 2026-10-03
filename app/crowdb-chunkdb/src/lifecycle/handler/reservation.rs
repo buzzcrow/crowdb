@@ -521,8 +521,7 @@ impl LifecycleHandler {
             topology.generation(),
             usage_fresh,
         );
-        let placement_repair_required =
-            !assessment.rack_protected || !assessment.node_protected || !assessment.disk_protected;
+        let placement_repair_required = !assessment.node_protected || !assessment.disk_protected;
         let exceeds_recovery_budget = !assessment.node_protected || !assessment.disk_protected;
         if exceeds_recovery_budget && !(self.allow_unsafe_ec && self.allow_degraded_failure_domains) {
             let error = if assessment.node_protected {

@@ -344,8 +344,11 @@ Each strip tracks:
 - **Placement intent and assessment**: The selected `rack_first` or
   `node_first` priority and the creation-time maximum fragment count for each
   rack, node, and physical disk. The assessment records whether each domain
-  satisfies the strip loss budget. EC strips that do not do so carry a durable
-  placement-repair marker.
+  satisfies the strip loss budget. EC strips that violate the node or disk
+  loss budget carry a durable placement-repair marker. Rack diversity is a
+  preference: missing rack protection alone does not require repair. Existing
+  markers are cleared after physical reassessment confirms node and disk
+  protection; the rack-protection assessment remains truthful.
 
 ### 5.3 Chunk
 

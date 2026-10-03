@@ -817,8 +817,7 @@ fn assemble_strip(
             usage_bitmap: Vec::new(),
             unavailable_segments: Vec::new(),
             placement_priority: placement_priority as i32,
-            placement_repair_required: !placement_assessment.rack_protected
-                || !placement_assessment.node_protected
+            placement_repair_required: !placement_assessment.node_protected
                 || !placement_assessment.disk_protected,
             placement_assessment: Some(placement_assessment),
         },

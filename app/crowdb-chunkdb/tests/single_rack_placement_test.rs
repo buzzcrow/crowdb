@@ -35,15 +35,25 @@ async fn production_single_rack_allocates_mirror_ec_and_publishes_conversion() {
     )));
     for kind in [StripType::Mirror, StripType::Ec] {
         let chunk = handler
-            .allocate_chunk(None, 1024, 1, kind, 2, 1, 3, ChunkType::Repo, 0, 0)
+            .allocate_chunk(None, 1024, 1, kind, 2, 1, 3, ChunkType::S3, 0, 0)
             .await
             .expect("single-rack production allocation");
         let assessment = chunk.strips[0].placement_assessment.as_ref().unwrap();
         assert!(!assessment.rack_protected);
+        assert!(!chunk.strips[0].placement_repair_required);
         assert!(assessment.node_protected);
         assert!(assessment.disk_protected);
         assert_eq!(assessment.max_fragments_per_node, 1);
     }
+    let ec = handler
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 8, 4, 0, ChunkType::S3, 0, 0)
+        .await
+        .expect("three nodes support EC 8+4 within one rack");
+    let assessment = ec.strips[0].placement_assessment.as_ref().unwrap();
+    assert_eq!(assessment.max_fragments_per_node, 4);
+    assert!(!assessment.rack_protected);
+    assert!(assessment.node_protected && assessment.disk_protected);
+    assert!(!ec.strips[0].placement_repair_required);
     publish_conversion(&handler).await;
 }
 
@@ -57,7 +67,7 @@ async fn publish_conversion(handler: &LifecycleHandler) {
             0,
             0,
             3,
-            ChunkType::Repo,
+            ChunkType::S3,
             1,
             30_000,
         )
@@ -126,4 +136,5 @@ async fn publish_conversion(handler: &LifecycleHandler) {
     let assessment = published.chunk.strips[0].placement_assessment.as_ref().unwrap();
     assert!(!assessment.rack_protected);
     assert!(assessment.node_protected && assessment.disk_protected);
+    assert!(!published.chunk.strips[0].placement_repair_required);
 }

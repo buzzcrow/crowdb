@@ -14,9 +14,13 @@ export interface TreeNode {
   /** Unprefixed backend id (e.g. `r1`, `7`). API calls must use this. */
   rawId?: string | number;
   label: string;
-  type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk';
+  title?: string;
+  type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition';
   icon?: React.ReactNode;
   children?: TreeNode[];
+  /** Load children when this branch is first opened. */
+  onExpand?: () => void;
+  expandable?: boolean;
   health?: 'Healthy' | 'Degraded' | 'Failed' | 'Unknown';
   role?: 'Leader' | 'Follower' | 'Remote' | 'Unknown';
   parentIds?: Record<string, string | number>;
@@ -53,7 +57,7 @@ function TreeNodeComponent({
 }: TreeNodeProps) {
   const { isSelected, selectEntity } = useSelection();
   const { domain } = useDomain();
-  const hasChildren = !!node.children && node.children.length > 0;
+  const hasChildren = node.expandable || (!!node.children && node.children.length > 0);
   const isExpanded = expandedIds.has(node.id);
   const entityId = node.rawId ?? node.id;
   const isNodeSelected = isSelected(String(entityId));
@@ -79,9 +83,10 @@ function TreeNodeComponent({
   const handleChevron = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
+      if (!isExpanded) node.onExpand?.();
       toggleExpanded(node.id);
     },
-    [node.id, toggleExpanded],
+    [node, isExpanded, toggleExpanded],
   );
 
   return (
@@ -118,6 +123,7 @@ function TreeNodeComponent({
         <button
           type="button"
           onClick={handleSelectClick}
+          title={node.title ?? node.label}
           className="tw-flex-1 tw-min-w-0 tw-truncate tw-text-left tw-cursor-pointer"
         >
           {node.label}

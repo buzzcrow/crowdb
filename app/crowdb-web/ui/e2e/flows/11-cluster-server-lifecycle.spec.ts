@@ -357,7 +357,7 @@ test('auxiliary deployments use typed parameters, identities and lifecycle menus
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await expect(sidebar.getByText('N-495', { exact: true })).toBeVisible({ timeout: 3000 });
-  for (const [kind, label] of [['chunkdb', 'CDB (ChunkDB)'], ['diskio', 'DiskIO'], ['chunk-kv', 'Chunk-KV'], ['access-server', 'Access Server']]) {
+  for (const [kind, label, prefix] of [['chunkdb', 'CDB (ChunkDB)', 'CDB'], ['diskio', 'DiskIO', 'DIO'], ['chunk-kv', 'Chunk-KV', 'CKV'], ['access-server', 'Access Server', 'AS']]) {
     await sidebar.getByText('N-495', { exact: true }).click({ button: 'right' });
     await page.getByRole('menuitem', { name: `Deploy ${label}`, exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Deploy ${label}`, exact: true });
@@ -367,13 +367,13 @@ test('auxiliary deployments use typed parameters, identities and lifecycle menus
     if (kind === 'chunk-kv') await dialog.getByLabel('Metadata store', { exact: true }).selectOption('7');
     await dialog.getByRole('button', { name: 'Deploy service', exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    const item = sidebar.getByText(`${label} · ${kind}-9007199254740993`, { exact: true });
+    const item = sidebar.getByText(`${prefix}-9007199254740993`, { exact: true });
     await expect(item).toBeVisible();
     await item.click();
     await expect(page.getByRole('complementary', { name: 'Entity inspector' }).getByText(label, { exact: true })).toBeVisible();
-    await expect(page.locator(`[data-id="SERVICE-${kind}-9007199254740993"]`)).toBeVisible();
+    await expect(page.locator(`[data-id="SERVICE-${kind}-9007199254740993"]`)).toContainText(`${prefix}-9007199254740993`);
     await sidebar.getByText('N-495', { exact: true }).click({ button: 'right' });
-    await page.getByRole('menuitem', { name: `${label} · ${kind}-9007199254740993 Running`, exact: true }).hover();
+    await page.getByRole('menuitem', { name: `${prefix}-9007199254740993 Running`, exact: true }).hover();
     await expect(page.getByRole('menuitem', { name: 'Stop CrowDB Storage', exact: true })).toHaveCount(0);
     await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
     await expect.poll(() => stopped.includes(`/api/services/${kind}-9007199254740993/stop`), { timeout: 3000, intervals: [100] }).toBe(true);

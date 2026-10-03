@@ -7,7 +7,7 @@ test('Chunk browser renders stable Mirror and EC sequences with exact placement 
   const id = '0500000000000000ffffffffffffffff';
   const segment = { disk_id: { high: '18446744073709551615', low: '18446744073709551615' }, zone_index: 2, unit_offset: '9007199254740993', unit_count: 1, allocation_ts: '18446744073709551615' };
   const strips = [
-    { strip_sequence: 9, chunk_offset: 1024, capacity: 1024, unit_kb: 4, sealed_length: 0, strip_type: 1, strip: { EcStrip: { segments: [segment, { ...segment, zone_index: 3 }], data_num: 1, code_num: 1, ec_state: 1 } }, unavailable_segments: [segment], placement_repair_required: true },
+    { strip_sequence: 9, chunk_offset: 1024, capacity: 1024, unit_kb: 4, sealed_length: 0, strip_type: 1, strip: { EcStrip: { segments: Array.from({ length: 12 }, (_, index) => ({ ...segment, zone_index: index + 2 })), data_num: 8, code_num: 4, ec_state: 1 } }, unavailable_segments: [segment], placement_repair_required: true },
     { strip_sequence: 3, chunk_offset: 0, capacity: 1024, unit_kb: 4, sealed_length: 1024, strip_type: 0, strip: { MirrorStrip: { segments: [segment] } }, unavailable_segments: [], placement_repair_required: false },
     ...[2, 3].map(copies => ({ strip_sequence: 10 + copies, chunk_offset: copies * 1024, capacity: 1024, unit_kb: 4, sealed_length: 0, strip_type: 0, strip: { MirrorStrip: { segments: Array.from({ length: copies }, (_, index) => ({ ...segment, zone_index: index })) } }, unavailable_segments: [], placement_repair_required: false })),
   ];
@@ -25,17 +25,20 @@ test('Chunk browser renders stable Mirror and EC sequences with exact placement 
   await expect(layout.getByTestId('chunk-strip')).toHaveCount(4);
   await expect(layout.getByTestId('chunk-strip').nth(0)).toContainText('Strip 3');
   const mirror = layout.getByTestId('chunk-strip').filter({ hasText: 'Strip 3' });
-  await expect(mirror.getByTestId('chunk-disk-block')).toContainText('Copy 1');
+  await expect(mirror.getByTestId('chunk-disk-block')).toContainText('Mirror 1');
+  await expect(mirror.locator('.chunk-strip-heading')).toHaveText('Strip 3 · Mirror[0M, 1M)');
+  expect(await mirror.evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(65);
   for (const copies of [2, 3]) {
     const blocks = layout.getByTestId('chunk-strip').filter({ hasText: `Strip ${10 + copies}` }).getByTestId('chunk-disk-block');
     await expect(blocks).toHaveCount(copies);
-    await expect(blocks.nth(copies - 1)).toContainText(`Copy ${copies}`);
+    await expect(blocks.nth(copies - 1)).toContainText(`Mirror ${copies}`);
   }
   const ec = layout.getByTestId('chunk-strip').filter({ hasText: 'Strip 9' });
-  await expect(ec.getByTestId('chunk-disk-block')).toHaveCount(2);
-  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Data 0 · unavailable');
-  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('N1 / DG3');
-  await expect(ec.getByTestId('chunk-disk-block').nth(1)).toContainText('Parity 0');
+  await expect(ec.getByTestId('chunk-disk-block')).toHaveCount(12);
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toHaveAccessibleName('Data 0 · unavailable');
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toHaveText('Data 0');
+  expect(await ec.locator('.chunk-blocks').evaluate(el => el.scrollWidth === el.clientWidth)).toBe(true);
+  await expect(ec.getByTestId('chunk-disk-block').nth(8)).toContainText('Parity 0');
   await ec.getByTestId('chunk-disk-block').nth(0).click();
   const properties = page.getByLabel('Chunk properties');
   await expect(properties).toContainText('ffffffffffffffffffffffffffffffff');
@@ -83,24 +86,28 @@ test('Chunk auto scan stays bounded and type changes replace the current window'
   await page.route('**/api/chunks?**', route => {
     const url = new URL(route.request().url());
     requests.push(url);
-    const offset = url.searchParams.has('after') ? 20 : 0;
+    const offset = url.searchParams.has('after') ? 10 : 0;
     const kind = url.searchParams.get('chunk_type') ?? '0';
-    const chunks = Array.from({ length: 20 }, (_, index) => ({ id_hex: Number(kind).toString(16).padStart(2, '0') + (offset + index).toString(16).padStart(30, '0'), chunk_type: Number(kind), state: 1, strips: [] }));
-    return route.fulfill({ json: { chunks, scanned: 20, next: chunks[19].id_hex, owners: 1, failures: [], observed_at_ms: 1000 } });
+    const chunks = Array.from({ length: 10 }, (_, index) => ({ id_hex: Number(kind).toString(16).padStart(2, '0') + (offset + index).toString(16).padStart(30, '0'), chunk_type: Number(kind), state: 1, strips: [] }));
+    return route.fulfill({ json: { chunks, scanned: 10, next: chunks[9].id_hex, owners: 1, failures: [], observed_at_ms: 1000 } });
   });
   await page.goto('/?domain=Cluster');
   await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
   expect(requests).toHaveLength(0);
   await page.getByTestId('domain-chunk').click();
   const rows = page.getByRole('table', { name: 'Chunks' }).getByRole('button');
-  await expect(rows).toHaveCount(20);
+  await expect(rows).toHaveCount(10);
+  await expect(page.getByRole('navigation', { name: 'Chunk hierarchy' }).getByLabel('Exact Chunk ID')).toHaveCount(0);
+  await expect(page.getByRole('form', { name: 'Exact chunk lookup' })).toBeVisible();
+  expect(await page.locator('.chunk-list').evaluate(el => el.scrollHeight === el.clientHeight)).toBe(true);
+  await expect(page.getByTestId('chunk-page').getByText('Session activity', { exact: true })).not.toBeVisible();
   expect(requests[0].searchParams.has('prefix')).toBe(false);
-  expect(requests[0].searchParams.get('limit')).toBe('20');
+  expect(requests[0].searchParams.get('limit')).toBe('10');
   const pagination = page.getByRole('navigation', { name: 'Chunk page window' });
   await expect(pagination.getByRole('button', { name: 'Prev', exact: true })).toBeDisabled();
   await pagination.getByRole('button', { name: 'Next', exact: true }).click();
-  await expect(rows.nth(0)).toHaveText('00000000000000000000000000000014');
-  await expect(rows).toHaveCount(20);
+  await expect(rows.nth(0)).toHaveText('0000000000000000000000000000000a');
+  await expect(rows).toHaveCount(10);
   await expect(pagination).toContainText('Window 2');
   await pagination.getByRole('button', { name: 'Prev', exact: true }).click();
   await expect(rows.nth(0)).toHaveText('00000000000000000000000000000000');
@@ -112,9 +119,33 @@ test('Chunk auto scan stays bounded and type changes replace the current window'
   expect(requests[3].searchParams.get('chunk_type')).toBe('4');
   await page.getByTestId('domain-capacity').click();
   await page.getByTestId('domain-chunk').click();
-  await expect(rows).toHaveCount(20);
+  await expect(rows).toHaveCount(10);
   expect(requests).toHaveLength(4);
   await page.getByLabel('Filter current window').fill('04000000000000000000000000000000');
   await expect(rows).toHaveCount(1);
   expect(requests).toHaveLength(4);
+});
+
+
+test('Chunk hierarchy expands stores and groups without replicas or range filtering', async ({ page }) => {
+  await page.route('**/api/racks*', route => route.fulfill({ json: [{ id: 1, name: '' }] }));
+  await page.route('**/api/nodes?*', route => route.fulfill({ json: [{ id: 1, rack_id: 1, host: '127.0.0.1' }] }));
+  await page.route('**/api/nodes', route => route.fulfill({ json: [{ id: 1, rack_id: 1, host: '127.0.0.1' }] }));
+  await page.route('**/api/servers', route => route.fulfill({ json: [{ id: '1', node_id: 1, service_type: 'kv', health: 'healthy' }, { id: 'chunkdb-1', node_id: 1, service_type: 'chunkdb', health: 'healthy' }] }));
+  let reads = 0;
+  await page.route('**/api/nodes/1/stores?*', route => { reads++; return route.fulfill({ json: [{ node_id: 1, store_id: 0, groups: [] }] }); });
+  await page.route('**/api/nodes/1/stores/0/groups?*', route => route.fulfill({ json: [{ node_id: 1, store_id: 0, group_id: 1 }] }));
+  await page.route('**/api/chunks?*', route => route.fulfill({ json: { chunks: [], scanned: 0, next: null, owners: 1, failures: [], observed_at_ms: 1000 } }));
+  await page.goto('/?domain=Chunk');
+  const tree = page.getByRole('navigation', { name: 'Chunk hierarchy' });
+  await expect(tree.getByRole('button', { name: 'datacenter', exact: true })).toBeVisible();
+  await tree.getByTestId('tree-node-chunk-node-1').getByRole('button', { name: 'Expand', exact: true }).click();
+  expect(reads).toBe(0);
+  await expect(tree.getByRole('button', { name: 'CDB-1', exact: true })).toBeVisible();
+  await tree.getByTestId('tree-node-chunk-server-1').getByRole('button', { name: 'Expand', exact: true }).click();
+  await tree.getByTestId('tree-node-chunk-store-1-0').getByRole('button', { name: 'Expand', exact: true }).click();
+  await expect(tree.getByRole('button', { name: 'G-1', exact: true })).toBeVisible();
+  await expect(tree).not.toContainText('Chunk placement');
+  await expect(tree).not.toContainText('Replica');
+  expect(reads).toBe(1);
 });

@@ -1,7 +1,40 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: partition/overlay 1.2s, unavailable 0.243s (2026-10-03).
+// Baseline: partition/overlay 1.4s, unavailable 0.208s, journal 0.534s, placement 0.321s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
+
+test('Chunk-KV graph bounds expanded split windows', async ({ page }) => {
+  const entries = Array.from({ length: 12 }, (_, i) => ({
+    id: i.toString(16).padStart(32, '0'), start: '', end: null, owner_id: '1',
+    endpoint: '127.0.0.1:15201', epoch: '2', state: 'Serving', transition_id: null,
+    artifact: { tree_id: String(100 + i), stream_name: { high: '1', low: String(i) }, tail_overlay: null },
+  }));
+  await page.route('**/api/servers', route => route.fulfill({ json: [{ id: 'chunk-kv-1', node_id: 1, rpc_url: '127.0.0.1:15201', service_type: 'chunk-kv' }] }));
+  await page.route('**/api/chunk-kv/catalog**', route => route.fulfill({ json: {
+    generation: '9', page: 0, offset: 0, catalog_pages: 1, next: null, entries,
+  } }));
+  await page.route('**/api/chunk-kv/runtime**', route => route.fulfill({ status: 502, json: { error: 'Runtime unavailable in graph fixture' } }));
+  await page.goto('/?domain=Chunk-KV');
+  const graph = page.getByTestId('chunk-kv-graph');
+  await expect(graph.getByRole('button', { name: /^Partition / })).toHaveCount(5);
+  await expect(graph.getByRole('button', { name: /^KV Tree for / })).toHaveCount(5);
+  await expect(graph.locator('.react-flow__edge')).toHaveCount(11);
+  const canvas = await graph.boundingBox();
+  expect(canvas!.height).toBeGreaterThanOrEqual(640);
+  const root = await graph.getByRole('button', { name: 'Chunk-KV', exact: true }).boundingBox();
+  const server = await graph.getByRole('button', { name: 'CKV-1', exact: true }).boundingBox();
+  expect(server!.y - root!.y - root!.height).toBeGreaterThan(40);
+  await graph.getByRole('button', { name: `KV Tree for ${entries[0].id}`, exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Tree', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tabpanel', { name: 'Tree' })).toContainText('KV Page tree and key/value inspection are not yet available');
+  await graph.getByRole('button', { name: 'Next splits for CKV-1', exact: true }).click();
+  await expect(graph.getByRole('button', { name: `Partition ${entries[5].id}`, exact: true })).toBeVisible();
+  await expect(graph.getByRole('button', { name: `Partition ${entries[0].id}`, exact: true })).toHaveCount(0);
+  await graph.getByRole('button', { name: 'CKV-1', exact: true }).click();
+  await expect(graph.getByRole('button', { name: /^Partition / })).toHaveCount(0);
+  await graph.getByRole('button', { name: 'CKV-1', exact: true }).click();
+  await expect(graph.getByRole('button', { name: /^Partition / })).toHaveCount(5);
+});
 
 test('Chunk-KV preserves exact partition identity and separates inherited journal tracks', async ({ page }) => {
   const id = 'ffffffffffffffff0000000000000002';
@@ -76,12 +109,12 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   await page.getByTestId('domain-chunk-kv').click();
   await expect(journal).toBeVisible();
   await journal.getByRole('button', { name: 'Extent page 0 [0, 64)', exact: true }).click();
-  await expect(journal.getByLabel('Selected extent page')).toContainText('64');
+  await expect(page.getByLabel('Chunk-KV properties').getByLabel('Selected extent page')).toContainText('64');
   await journal.getByRole('button', { name: 'Next extent pages', exact: true }).click();
   await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(5);
   expect(new URL(runtimeRequests[runtimeRequests.length - 1]).searchParams.get('stream_generation')).toBe('9007199254740999');
   expect(new URL(runtimeRequests[runtimeRequests.length - 1]).searchParams.get('stream_offset')).toBe('100');
-  await expect(journal.getByLabel('Selected extent page')).toHaveCount(0);
+  await expect(page.getByLabel('Chunk-KV properties').getByLabel('Selected extent page')).toHaveCount(0);
   await expect(journal.getByRole('button', { name: 'Next extent pages', exact: true })).toBeDisabled();
   await journal.getByRole('button', { name: 'Previous extent pages', exact: true }).click();
   await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(100);
@@ -148,7 +181,7 @@ test('Managed Chunk-KV placement uses registered node identity instead of instan
   await page.route('**/api/mode', route => route.fulfill({ json: { mode: 'docker' } }));
   await page.route('**/api/preview', route => route.fulfill({ json: {
     source: 'group0', racks: [{ id: 3 }], nodes: [{ id: 7, rack_id: 3 }], disk_groups: [], disks: [], stores: [], groups: [], replicas: [],
-    services: [{ kind: 'chunk-kv', instance_id: '9007199254740993', node_id: 7, endpoint: '127.0.0.1:15201', http_endpoint: 'http://127.0.0.1:15101', monitor: null }],
+    services: [{ kind: 'chunk-kv', instance_id: '9007199254740993', node_id: 7, endpoint: '127.0.0.1:15201', http_endpoint: 'http://127.0.0.1:15101', monitor: null }, { kind: 'chunk-kv', instance_id: '3', node_id: 7, endpoint: '127.0.0.1:15203', http_endpoint: 'http://127.0.0.1:15103', monitor: null }],
   } }));
   await page.route('**/api/chunk-kv/catalog**', route => route.fulfill({ json: {
     generation: '9', page: 0, offset: 0, catalog_pages: 1, next: null, entries: [{
@@ -158,10 +191,24 @@ test('Managed Chunk-KV placement uses registered node identity instead of instan
   } }));
   await page.goto('/?domain=Chunk-KV');
   const placement = page.getByRole('navigation', { name: 'Partition placement', exact: true });
-  await expect(placement).toContainText('Rack 3', { timeout: 3000 });
-  await expect(placement).toContainText('Node 7');
-  await expect(placement.getByRole('button', { name: 'Chunk-KV Server 9007199254740993', exact: true })).toBeVisible();
+  await expect(placement.getByTestId('tree-node-ckv-datacenter').getByRole('button', { name: 'datacenter', exact: true })).toBeVisible();
+  await expect(placement).toContainText('R-3', { timeout: 3000 });
+  await expect(placement).toContainText('N-7');
+  await expect(placement.getByRole('button', { name: 'CKV-9007199254740993', exact: true })).toBeVisible();
   await expect(placement).not.toContainText('Unresolved placement');
+  await expect(placement.getByRole('heading')).toHaveCount(0);
+  const emptyServer = placement.getByRole('button', { name: 'CKV-3', exact: true });
+  await expect(emptyServer).toBeVisible();
+  await emptyServer.click();
+  await expect(page.getByRole('button', { name: 'All loaded servers', exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Filter loaded partition IDs')).toHaveCount(0);
+  await expect(page.getByTestId('chunk-kv-graph').getByRole('button', { name: 'CKV-3', exact: true })).toBeVisible();
+  const server = placement.getByTestId('tree-node-ckv-server-chunk-kv-9007199254740993');
+  await server.getByRole('button', { name: 'Expand', exact: true }).click();
+  const split = server.getByRole('button', { name: 'Split 0000…0002', exact: true });
+  await expect(split).toHaveAttribute('title', /00000000000000010000000000000002/);
+  await split.click();
+  await expect(page.getByRole('region', { name: 'Split properties', exact: true })).toContainText(id);
   await page.getByTestId('domain-cluster').click();
   await expect(page.getByRole('button', { name: 'Add Rack', exact: true })).toHaveCount(0);
 });

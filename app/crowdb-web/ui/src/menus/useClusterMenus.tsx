@@ -9,7 +9,7 @@ import type { MenuTarget } from '../topology/TopologyCanvas';
 import type { MenuItemOrSeparator } from '../components/ContextMenu';
 import { buildStatusSubmenu } from './status';
 import type { MenuContext } from './context';
-import { isAuxiliaryKind, serviceNames, type AuxiliaryKind } from '../services/client';
+import { isAuxiliaryKind, serviceNames, serviceInstanceLabel, type AuxiliaryKind } from '../services/client';
 export function useClusterMenus({ readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog }: MenuContext) {
   /** Build per-layer context menu items for a normalized target. */
   return useCallback(
@@ -75,8 +75,8 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
           }
           items.push({ id: 'default-services', label: 'Deploy default services', icon: <Server size={16} />, onSelect: () => setDialog(dialog => ({ ...dialog, defaultServices: { nodeId } })) });
           for (const server of allServers?.filter(server => server.node_id === nodeId) ?? []) {
-            const label = isAuxiliaryKind(server.service_type) ? serviceNames[server.service_type] : server.service_type === 'diskdb' ? 'DiskDB' : 'CrowDB Storage';
-            items.push({ id: `manage-${server.id}`, label: `${label} · ${server.id}`, hint: server.pid ? 'Running' : 'Stopped', submenu: serviceLifecycle(server, runMutation, requestDelete) });
+            if (!server.id) continue;
+            items.push({ id: `manage-${server.id}`, label: serviceInstanceLabel(server.service_type, server.id), hint: server.pid ? 'Running' : 'Stopped', submenu: serviceLifecycle(server, runMutation, requestDelete) });
           }
           items.push({
             id: 'ping',

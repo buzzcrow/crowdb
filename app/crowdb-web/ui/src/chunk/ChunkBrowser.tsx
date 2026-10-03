@@ -7,7 +7,9 @@ import { readJson } from '../access/native';
 import { Workbench, JsonView, inputClass, buttonClass } from '../access/Workbench';
 import './chunk-browser.css';
 import type { SelectedEntity } from '../contexts/SelectionContext';
-import { Domain } from '../types';
+import { Domain, type Rack, type Node } from '../types';
+import type { ServerSummary } from '../api';
+import { ChunkHierarchy } from './ChunkHierarchy';
 
 interface Segment { disk_id: { high: string | number; low: string | number } | null; zone_index: number; unit_offset: string | number; unit_count: number; allocation_ts: string | number }
 interface Strip { strip_sequence: number; chunk_offset: number; capacity: number; unit_kb: number; sealed_length: number; strip_type: number; strip: { MirrorStrip?: { segments: Segment[] }; EcStrip?: { segments: Segment[]; data_num: number; code_num: number; ec_state: number } } | null; unavailable_segments: Segment[]; placement_repair_required: boolean; placement_assessment: unknown }
@@ -20,7 +22,7 @@ const states = ['Init', 'Active', 'Sealed', 'Deleted'];
 const diskId = (segment: Segment): string | null => segment.disk_id ? BigInt(segment.disk_id.high).toString(16).padStart(16, '0') + BigInt(segment.disk_id.low).toString(16).padStart(16, '0') : null;
 const identity = (segment: Segment): string => `${diskId(segment)}/${segment.zone_index}/${segment.unit_offset}/${segment.allocation_ts}`;
 
-export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest?: { id: string; nonce: number }; active: boolean; onPlacement: (entity: SelectedEntity) => void }) {
+export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, servers }: { racks: Rack[]; nodes: Node[]; servers: ServerSummary[]; openRequest?: { id: string; nonce: number }; active: boolean; onPlacement: (entity: SelectedEntity) => void }) {
   const [blockIndex, setBlockIndex] = useState<number | null>(null);
   const [filter, setFilter] = useState('');
   const [kind, setKind] = useState('');
@@ -46,7 +48,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
     setBusy(true); setError('');
     if (!after) { setRows([]); setPage(null); setDetail(null); }
     try {
-      const search = new URLSearchParams({ limit: '20', ...(kind ? { chunk_type: kind } : {}), ...(after ? { after } : {}) });
+      const search = new URLSearchParams({ limit: '10', ...(kind ? { chunk_type: kind } : {}), ...(after ? { after } : {}) });
       const result = await readJson<ChunkPage>(await fetch(`${getApiBase()}/chunks?${search}`, { signal: request.signal }));
       if (version === revision.current) {
         loadedKind.current = kind; setPage(result); setRows(result.chunks); setDetail(null);
@@ -87,18 +89,14 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
   const layout = (strip: Strip) => strip.strip?.MirrorStrip ? `Mirror ×${strip.strip.MirrorStrip.segments.length}` : strip.strip?.EcStrip ? `EC ${strip.strip.EcStrip.data_num}+${strip.strip.EcStrip.code_num} · ${strip.strip.EcStrip.ec_state === 1 ? 'Parity' : 'No parity'}` : `Unknown layout (${strip.strip_type})`;
   const visibleRows = rows.filter(value => `${value.id_hex} ${kinds[value.chunk_type]} ${states[value.state]}`.toLowerCase().includes(filter.toLowerCase()));
   const fields = (values: Record<string, unknown>) => <dl className="chunk-properties">{Object.entries(values).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value == null ? 'Unknown' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>;
-  return <Workbench sidebar={<>
-    <h2 className="tw-font-semibold">Chunks</h2>
-    <p className="tw-text-xs tw-text-muted">Browse allocation and physical placement.</p>
-    <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void inspect(lookup.toLowerCase()); }}><label className="tw-block tw-text-xs">Exact Chunk ID<input className={`${inputClass} tw-w-full tw-font-mono`} required pattern="[0-9a-fA-F]{32}" value={lookup} onChange={event => setLookup(event.target.value)} /></label><button className={buttonClass} disabled={busy}>Lookup ID</button></form>
-  </>} detail={chunk && detail ? <section aria-label="Chunk properties" className="tw-space-y-3">
+  return <Workbench showActivity={false} sidebar={<ChunkHierarchy active={active} racks={racks} nodes={nodes} servers={servers} />} detail={chunk && detail ? <section aria-label="Chunk properties" className="tw-space-y-3">
     <h3 className="tw-font-semibold">{strip ? blockIndex === null ? `Strip sequence ${strip.strip_sequence}` : `${layout(strip)} · Block ${blockIndex + 1}` : 'Chunk properties'}</h3>
     {strip ? <>
       {fields({ Sequence: strip.strip_sequence, Layout: layout(strip), 'Logical offset (KiB)': strip.chunk_offset, 'Capacity (KiB)': strip.capacity, 'Sealed (KiB)': strip.sealed_length, 'Unit (KiB)': strip.unit_kb, 'Repair required': strip.placement_repair_required })}
       {fragments(strip).map((segment, index) => {
         if (blockIndex !== null && blockIndex !== index) return null;
         const id = diskId(segment); const placement = detail.placements.find(value => value.disk_id.replace(/-/g, '').toLowerCase() === id);
-        const ec = strip.strip?.EcStrip; const role = ec ? index < ec.data_num ? `Data ${index}` : `Parity ${index - ec.data_num}` : `Copy ${index + 1}`;
+        const ec = strip.strip?.EcStrip; const role = ec ? index < ec.data_num ? `Data ${index}` : `Parity ${index - ec.data_num}` : `Mirror ${index + 1}`;
         const unavailable = strip.unavailable_segments.some(value => identity(value) === identity(segment));
         return <section key={identity(segment)} className="tw-border-t tw-border-border tw-pt-3 tw-space-y-2">
           <h4 className="tw-text-sm tw-font-semibold">{role} · {unavailable ? 'unavailable' : 'allocated'}</h4>
@@ -114,6 +112,10 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
       <input aria-label="Filter current window" placeholder="Filter this window" className={inputClass} value={filter} onChange={event => setFilter(event.target.value)} />
       <button className={buttonClass} disabled={busy} onClick={() => void query()}>Refresh chunks</button>
     </div>
+    <form className="chunk-toolbar" aria-label="Exact chunk lookup" onSubmit={event => { event.preventDefault(); void inspect(lookup.toLowerCase()); }}>
+      <label className="tw-flex tw-items-center tw-gap-2 tw-text-xs">Exact Chunk ID<input className={`${inputClass} tw-font-mono`} style={{ width: '34ch' }} required pattern="[0-9a-fA-F]{32}" value={lookup} onChange={event => setLookup(event.target.value)} placeholder="32-digit chunk ID" /></label>
+      <button className={buttonClass} disabled={busy}>Lookup ID</button>
+    </form>
     {busy && <p role="status" className="tw-text-xs tw-text-muted">Querying ChunkDB…</p>}{error && <p role="alert" className="tw-text-sm tw-text-failed">{error}</p>}
     {page && <p className="tw-text-xs tw-text-muted">{page.owners} owners · scanned {page.scanned} records this page · observed {new Date(page.observed_at_ms).toLocaleTimeString()}</p>}
     {page?.owners === 0 && <p className="tw-text-sm tw-text-muted">No live ChunkDB service is registered. Deploy ChunkDB in Cluster before browsing chunks.</p>}
@@ -123,7 +125,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
     {page && !rows.length && !busy && <p className="tw-text-xs tw-text-muted">No matching chunks in this scan window.{page.next && ' Continue scanning to find later matches.'}</p>}
     {page && <nav aria-label="Chunk page window" className="tw-flex tw-items-center tw-gap-3">
       <button className={buttonClass} disabled={busy || windowIndex === 0} onClick={() => void query(windowStarts[windowIndex - 1], windowIndex - 1)}>Prev</button>
-      <span className="tw-text-xs tw-text-muted">Window {windowIndex + 1} · {rows.length} chunks · at most 20 scanned</span>
+      <span className="tw-text-xs tw-text-muted">Window {windowIndex + 1} · {rows.length} chunks · at most 10 scanned</span>
       <button className={buttonClass} disabled={busy || !page.next} onClick={() => void query(page.next!, windowIndex + 1)}>Next</button>
     </nav>}
     {chunk && detail && <section aria-label="Chunk layout" className="tw-space-y-3 tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4">
@@ -131,19 +133,15 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
       {detail.placement_error && <p className="tw-text-xs tw-text-degraded">Placement unavailable: {detail.placement_error}</p>}
       <div className="chunk-strip-list" aria-label="Chunk strips">{ordered.slice(stripStart, stripStart + 16).map(strip => <section key={strip.strip_sequence} data-testid="chunk-strip" className={`chunk-strip ${stripSequence === strip.strip_sequence ? 'is-selected' : ''}`}>
         <button className="chunk-strip-heading" aria-label={`Sequence ${strip.strip_sequence} · ${layout(strip)}`} onClick={() => { setStripSequence(strip.strip_sequence); setBlockIndex(null); }}>
-          <strong>Strip {strip.strip_sequence}</strong><span>{layout(strip)}</span><span>{strip.chunk_offset / 1024}–{(strip.chunk_offset + strip.capacity) / 1024} MiB</span>{strip.placement_repair_required && <span className="tw-text-degraded">Repair required</span>}
+          <strong>Strip {strip.strip_sequence} · {strip.strip?.MirrorStrip ? 'Mirror' : strip.strip?.EcStrip ? `EC ${strip.strip.EcStrip.data_num}+${strip.strip.EcStrip.code_num}` : 'Unknown'}</strong><span>[{strip.chunk_offset / 1024}M, {(strip.chunk_offset + strip.capacity) / 1024}M){strip.placement_repair_required && <span className="tw-text-degraded" title="Placement repair required" aria-label="Placement repair required"> ⚠</span>}</span>
         </button>
         <div className="chunk-blocks">{fragments(strip).slice(0, 32).map((fragment, index) => {
-          const id = diskId(fragment);
-          const placement = detail.placements.find(value => value.disk_id.replace(/-/g, '').toLowerCase() === id);
           const ec = strip.strip?.EcStrip;
           const parity = ec && index >= ec.data_num;
-          const role = ec ? parity ? `Parity ${index - ec.data_num}` : `Data ${index}` : `Copy ${index + 1}`;
+          const role = ec ? parity ? `Parity ${index - ec.data_num}` : `Data ${index}` : `Mirror ${index + 1}`;
           const unavailable = strip.unavailable_segments.some(value => identity(value) === identity(fragment));
-          return <button key={identity(fragment)} data-testid="chunk-disk-block" aria-pressed={stripSequence === strip.strip_sequence && blockIndex === index} className={`chunk-block ${ec ? parity ? 'parity' : 'data' : 'mirror'} ${unavailable ? 'unavailable' : ''}`} onClick={() => { setStripSequence(strip.strip_sequence); setBlockIndex(index); }}>
-            <strong>{role}{unavailable && ' · unavailable'}</strong>
-            <span>N{placement?.node_id ?? '?'} / DG{placement?.disk_group_id ?? '?'}</span>
-            <span className="tw-font-mono">Disk {id ? `…${id.slice(-8)}` : 'Unknown'} · Z{fragment.zone_index}</span>
+          return <button key={identity(fragment)} data-testid="chunk-disk-block" aria-label={`${role}${unavailable ? ' · unavailable' : ''}`} title={`${role}${unavailable ? ' · unavailable' : ''} — click for properties`} aria-pressed={stripSequence === strip.strip_sequence && blockIndex === index} className={`chunk-block ${ec ? parity ? 'parity' : 'data' : 'mirror'} ${unavailable ? 'unavailable' : ''}`} onClick={() => { setStripSequence(strip.strip_sequence); setBlockIndex(index); }}>
+            <strong>{role}</strong>
           </button>;
         })}</div>
         {fragments(strip).length === 0 && <span className="tw-text-xs tw-text-muted">No allocated disk blocks</span>}

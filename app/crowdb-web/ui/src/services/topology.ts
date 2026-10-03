@@ -5,7 +5,7 @@ import type { Node, Edge } from 'reactflow';
 import type { ServerSummary } from '../api';
 import { Domain, type Node as PhysicalNode } from '../types';
 import type { FlowNodeData } from '../topology/buildFlow';
-import { isAuxiliaryKind, serviceNames } from './client';
+import { isAuxiliaryKind, serviceInstanceLabel } from './client';
 
 export function addServiceNodes(domain: Domain, flow: { nodes: Node[]; edges: Edge[] }, services: ServerSummary[], nodes: PhysicalNode[]) {
   if (domain !== Domain.Cluster) return flow;
@@ -16,7 +16,7 @@ export function addServiceNodes(domain: Domain, flow: { nodes: Node[]; edges: Ed
     if (!owner) continue;
     const id = `SERVICE-${service.id}`;
     const data: FlowNodeData = {
-      kind: 'Server', label: service.id, sublabel: `${serviceNames[service.service_type]} · ${service.pid ? 'Running' : 'Stopped'}`,
+      kind: 'Server', label: serviceInstanceLabel(service.service_type, service.id), sublabel: service.pid ? 'Running' : 'Stopped',
       health: service.health, layer: 3,
       entity: { type: 'Server', id: service.id, serviceType: service.service_type, parentIds: { rack_id: owner.rack_id, node_id: owner.id } },
     };

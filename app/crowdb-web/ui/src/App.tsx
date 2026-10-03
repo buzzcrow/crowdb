@@ -181,10 +181,10 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     }
   }, [error]);
   useEffect(() => {
-    if (!managed && (physicalActive || capacityActive)) {
+    if (!managed && (physicalActive || capacityActive || domain === Domain.Chunk || domain === Domain.ChunkKV)) {
       refreshAllServers();
     }
-  }, [managed, physicalActive, capacityActive, diskdbInstances, refreshAllServers]);
+  }, [managed, physicalActive, capacityActive, domain, diskdbInstances, refreshAllServers]);
   const diskdbNodeIds = useMemo(
     () => new Set([...allServers.filter((s) => s.service_type === 'diskdb' && s.node_id != null).map((s) => s.node_id!), ...nodes.filter(node => node.diskdb_server).map(node => node.id)]),
     [allServers, nodes],
@@ -583,7 +583,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             scanStatus={capacityScanStatus} loading={capLoading} readonly={topologyReadonly}
             onRefresh={refreshCapacity} selectedEntity={selectionForDomain(Domain.Capacity)}
           /></div>
-        <div hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser active={domain === Domain.Chunk} openRequest={chunkRequest}
+        <div data-testid="chunk-page" hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser racks={racks} nodes={nodes} servers={allServers} active={domain === Domain.Chunk} openRequest={chunkRequest}
           onPlacement={entity => { pendingSelectionRef.current = entity; setDomain(entity.domain); }}
         /></div>
         <div hidden={domain !== Domain.ChunkKV} className="tw-flex-1 tw-min-h-0"><ChunkKvView

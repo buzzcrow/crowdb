@@ -12,7 +12,7 @@ import { DEFAULT_DC_ID, DEFAULT_DC_NAME } from '../data/defaultDatacenter';
 import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, serverLabel, storeLabel, toUiHealth, toUiReplicaRole, toUiRole } from '../utils/entityDisplay';
 import type { NodeDiskGroups } from '../data/useCapacityTree';
 import type { ServerSummary } from '../api';
-import { isAuxiliaryKind, serviceNames } from '../services/client';
+import { isAuxiliaryKind, serviceInstanceLabel } from '../services/client';
 
 /** Fixed UI-only datacenter root wrapping the rack/store children. */
 function datacenterRoot(children: TreeNode[]): TreeNode {
@@ -120,7 +120,7 @@ export function Sidebar({
 
           for (const service of allServers.filter(service => service.node_id === nodeId)) {
             if (!service.id || !isAuxiliaryKind(service.service_type)) continue;
-            children.push({ id: `SERVICE-${service.id}`, rawId: service.id, label: `${serviceNames[service.service_type]} · ${service.id}`,
+            children.push({ id: `SERVICE-${service.id}`, rawId: service.id, label: serviceInstanceLabel(service.service_type, service.id),
               type: 'Server', serviceType: service.service_type, icon: <Cog className="tw-h-4 tw-w-4 tw-text-muted" />,
               health: toUiHealth(service.health), parentIds: { rack_id: rack.id, node_id: nodeId },
             });

@@ -166,8 +166,7 @@ impl RelocateSegmentTaskHandler {
         if weakens_protection(&current, &next) {
             return Ok(false);
         }
-        replacement.placement_repair_required =
-            !(next.rack_protected && next.node_protected && next.disk_protected);
+        replacement.placement_repair_required = !(next.node_protected && next.disk_protected);
         replacement.placement_assessment = Some(next);
         Ok(true)
     }

@@ -10,7 +10,7 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 ## Baseline and scope
 
 - User approved the seven-domain design and authorized planning and implementation.
-  The formal UI design §§18–21 defines the expanded scope and known gaps.
+  The Console UI specification defines the interaction contracts and acceptance scenarios; this plan records implementation gaps.
 - Commit each tab's verified implementation separately before proceeding to the
   next tab. Shared adapters belong with the tab that introduces them; remaining
   acceptance gaps stay explicit in this plan.
@@ -620,3 +620,64 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
 - Live Group 0 initialization automatically deployed CDB on each of Nodes 1–3.
   Access currently fails because `/chunk-kv/catalog-head` is not initialized;
   make this a waiting dependency instead of attempting startup early.
+
+
+## Current handoff and UI-first execution
+
+- Current fixture update (2026-10-03): the API bring-up below is now complete.
+  All six service types run on each of Nodes 1–3; Store 0 / Groups 0 and 1
+  report healthy three-replica groups. Three disks and DiskIO instances exist.
+  Iceberg `ui_demo` has eight TPC-H tables / 8,695 rows; S3 `ui-iceberg-demo`
+  has 32 copied objects verified by read-back. Console proxy listings and a
+  bounded Chunk list/exact detail succeed. Manual binding, owner and catalog
+  repairs were required: these are open bugs, not completed flow fixes.
+  The consolidated current issue list and fixture details are in
+  [ui-todo.md](ui-todo.md); older bring-up observations below are historical.
+- Latest direction: prepare one Rack / three Nodes, Group 0 and ordinary Group 1
+  with scripts/CLI, inject Iceberg and S3 data, then prioritize the main UI.
+  Do not spend the next pass on exhaustive manual click-through acceptance.
+- Live workspace: `.crowdb-runtime/persistent/console/default`, web port 9090.
+  Node KV HTTP ports 19910/19911/19912, RPC 20010/20011/20012; DiskDB bases
+  29920/29923/29926. All are normal multi-node services. Three CDB instances
+  now exist (instance 3 on Node 1, instance 1 on Node 2, instance 2 on Node 3).
+- Group 0 has three replicas. Store 1 / Group 1 was created with three replicas.
+  DiskGroup binding currently requires an ordinary group in Store 0, so also
+  provision Store 0 / Group 1 before storage setup; do not assume Store 1 suffices.
+- Create Disk Group on Node 1 is currently waiting on Group-0 RPC, not merely
+  rendering. Read-only disk-group and instance requests time out too; `/healthz`
+  still succeeds. Latest web log reports retries exhausted to 127.0.0.1:20012.
+  Node 3 KV log reports watch push send queue full and `std::bad_alloc` in RPC
+  transport around 10:45 UTC. Root cause is not established. Preserve logs;
+  check actual RPC liveness before retrying creation or claiming success.
+- Three dedicated sparse disk files exist under `acceptance-disks/node-N.img`,
+  each logically 1 TiB; none has yet been registered. Use explicit paths and
+  matching geometry; never use a physical device implicitly.
+- Fix service labels uniformly: KV-N, DDB-N, CDB-N, DIO-N, CKV-N, AS-N in tree,
+  topology and instance menus. Keep full service type and exact backend ID in
+  properties. Preserve IDs as strings. This request is not yet implemented.
+- Scripted bring-up sequence: verify three KV nodes and quorum → ordinary data
+  group → DiskGroup/data binding/owner and disk registration → DiskIO on all
+  three nodes → Chunk-KV bootstrap/catalog → Access catalog initialization and
+  endpoints → small Iceberg dataset → copy representative objects into S3.
+- Validate data with bounded reads: Chunk ALL first page and exact detail,
+  Iceberg table/snapshot/manifest/data-file footer, S3 bucket/prefix/object.
+  Record actual counts, source and any incomplete results. Range redesign stays
+  deferred. No full-cluster scans or data-page loads for Parquet inspection.
+- Main UI priorities: consistent service identity and readiness; one-window
+  create progress/errors; bounded Chunk windows and compact colored strip/block
+  layout; structured Iceberg content; usable S3 object list/details; Capacity
+  32-zone pages with inline zone bitmap. The four data-browser page designs remain pending discussion.
+- Recent commits: e701caa6 single-dialog service plans; af7fb4df rack preference;
+  da04706f restart after binary replacement; ccbdbbee dependency-aware startup.
+  Focused checks passed. Service plans are session-only and need resuming via
+  Node menu after reload. Access catalog initialization still needs verification.
+
+- User clarified the permanent UI design is the specification itself. Rewrote
+  `doc/design/console/design-crowdb-console-ui.md` as observable contracts;
+  do not create a duplicate UI-spec document. The current spec covers Cluster,
+  Capacity, KV, and shared interactions only. Chunk, Iceberg, Chunk-KV, and S3
+  page designs and acceptance remain pending discussion; earlier task notes
+  for those pages are not approved specification contracts.
+- Restarting KV Node 3 through the API restored Group-0 RPC: disk-group list and
+  DiskDB instance list now return HTTP 200. No DiskGroup remained on Node 1.
+  The original RPC failure root cause is still unverified; recovery is not a fix.

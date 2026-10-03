@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { buttonClass } from '../access/Workbench';
 import type { JournalObservation, TreeObservation } from './useRuntimeObservation';
 
@@ -23,7 +24,7 @@ export function TreeStorage({ value }: { value?: TreeObservation }) {
   </section>;
 }
 
-export function JournalStorage({ value, disabled, onPage, onChunk }: { onChunk: (id: string) => void; value?: JournalObservation | null; disabled: boolean; onPage: (offset: number) => void }) {
+export function JournalStorage({ value, disabled, onPage, onChunk, propertyHost }: { propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; value?: JournalObservation | null; disabled: boolean; onPage: (offset: number) => void }) {
   const [selected, setSelected] = useState<string | null>(null);
   if (!value) return <p role="status">Journal storage observation unavailable.</p>;
   const extent = value.extent_pages.find(page => page.page_index === selected);
@@ -41,7 +42,7 @@ export function JournalStorage({ value, disabled, onPage, onChunk }: { onChunk: 
       <span className="tw-block">Extent page {page.page_index}</span><span className="tw-font-mono tw-break-all">[{page.first_logical}, {page.end_logical})</span>
     </button>)}</div>
     {!value.extent_pages.length && <p>No published extent pages in this window.</p>}
-    {extent && <aside aria-label="Selected extent page"><Fields values={{ 'Page index': extent.page_index, 'First logical byte': extent.first_logical, 'End logical byte (exclusive)': extent.end_logical }} /></aside>}
+    {extent && propertyHost && createPortal(<aside aria-label="Selected extent page" className="tw-mt-5 tw-space-y-3"><h3 className="tw-font-semibold">Journal extent page</h3><Fields values={{ 'Page index': extent.page_index, 'First logical byte': extent.first_logical, 'End logical byte (exclusive)': extent.end_logical }} /></aside>, propertyHost)}
     <div className="tw-flex tw-gap-2"><button className={buttonClass} disabled={disabled || value.offset === 0} onClick={() => onPage(Math.max(0, value.offset - 100))}>Previous extent pages</button>
       <button className={buttonClass} disabled={disabled || value.next_offset === null} onClick={() => onPage(value.next_offset!)}>Next extent pages</button></div>
   </section>;
