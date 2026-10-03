@@ -37,6 +37,7 @@ async fn journal() -> StreamPartitionJournal {
             metadata_group_id: 7,
             binding_generation: 1,
             state: StreamBindingState::Active,
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             owner_kind: Some("chunk-kv-partition".into()),
         },
         u64::MAX,
@@ -47,7 +48,7 @@ async fn journal() -> StreamPartitionJournal {
     )
     .await
     .unwrap();
-    StreamPartitionJournal::new(stream, stream_name)
+    StreamPartitionJournal::new(stream, stream_name).unwrap()
 }
 
 fn catalog() -> (ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage) {

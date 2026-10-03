@@ -890,7 +890,7 @@ fn resolve_diskdb_config_path(
     std::fs::create_dir_all(&conf).map_err(Error::Io)?;
     let path = conf.join("crowdb_diskdb_config.toml");
     if path.exists() && request.kv_server_mgmt_seeds.is_empty() {
-        if let Some(workers) = request.rpc_workers {
+        if request.rpc_workers.is_some() || request.keepalive_interval_secs.is_some() {
             let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
             let mut config = toml::from_str::<toml::Value>(&content)
                 .map_err(|error| Error::Config(format!("failed to parse {}: {error}", path.display())))?;
@@ -898,7 +898,21 @@ fn resolve_diskdb_config_path(
                 .get_mut("server")
                 .and_then(toml::Value::as_table_mut)
                 .ok_or_else(|| Error::Config(format!("{} has no [server] table", path.display())))?;
-            server.insert("rpc_workers".into(), toml::Value::Integer(i64::from(workers)));
+            if let Some(workers) = request.rpc_workers {
+                server.insert("rpc_workers".into(), toml::Value::Integer(i64::from(workers)));
+            }
+            if let Some(interval) = request.keepalive_interval_secs {
+                let root = config
+                    .as_table_mut()
+                    .ok_or_else(|| Error::Config("DiskDB configuration must be a table".into()))?;
+                let heartbeat = root
+                    .entry("heartbeat")
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::default()));
+                heartbeat
+                    .as_table_mut()
+                    .ok_or_else(|| Error::Config("DiskDB heartbeat must be a table".into()))?
+                    .insert("interval_secs".into(), toml::Value::Integer(i64::from(interval)));
+            }
             let content = toml::to_string_pretty(&config)
                 .map_err(|error| Error::Config(format!("failed to serialize {}: {error}", path.display())))?;
             std::fs::write(&path, content).map_err(Error::Io)?;
@@ -921,6 +935,11 @@ fn resolve_diskdb_config_path(
     let instance_id = request
         .instance_id
         .map_or_else(String::new, |id| format!("instance_id = \"{id}\"\n"));
+    let heartbeat = request
+        .keepalive_interval_secs
+        .map_or_else(String::new, |interval| {
+            format!("\n[heartbeat]\ninterval_secs = {interval}\n")
+        });
     let persistence = if request.free_batch_enabled.is_some() || request.free_flush_max_batch.is_some() {
         format!(
             "\n[persistence]\nfree_batch_enabled = {}\nfree_flush_max_batch = {}\n",
@@ -938,7 +957,7 @@ fn resolve_diskdb_config_path(
          rpc_listen_addr = \"0.0.0.0:{}\"\n\
          {instance_id}\
          kv_server_mgmt_seeds = [{seeds}]\n\
-         {persistence}",
+         {persistence}{heartbeat}",
         request.rpc_workers.unwrap_or(2),
         request.listen_port,
         request.http_port,

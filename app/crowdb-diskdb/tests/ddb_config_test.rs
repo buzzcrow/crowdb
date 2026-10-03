@@ -231,3 +231,18 @@ fn tracked_config_file_loads_and_validates() {
     let config = crowdb_common::config::load_from_file::<DdbConfig>(&path).expect("load tracked config");
     assert_eq!(config.server.rpc_workers, 2);
 }
+
+#[test]
+fn partial_heartbeat_override_retains_other_liveness_defaults() {
+    let config: DdbConfig = toml::from_str("[server]\nrpc_workers = 2\nlisten_addr = \"127.0.0.1:38123\"\nhttp_listen_addr = \"127.0.0.1:38124\"\nrpc_listen_addr = \"127.0.0.1:38125\"\nkv_server_mgmt_seeds = []\n[heartbeat]\ninterval_secs = 1\n").unwrap();
+    assert_eq!(config.heartbeat.interval_secs, 1);
+    assert_eq!(
+        config.heartbeat.miss_threshold,
+        DdbConfig::default().heartbeat.miss_threshold
+    );
+    assert_eq!(
+        config.heartbeat.temp_failure_timeout_secs,
+        DdbConfig::default().heartbeat.temp_failure_timeout_secs
+    );
+    validate(&config).unwrap();
+}

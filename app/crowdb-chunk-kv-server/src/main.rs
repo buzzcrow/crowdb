@@ -60,7 +60,7 @@ struct Cli {
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
-async fn main() {
+async fn main() -> std::process::ExitCode {
     let args = Cli::parse();
     let log_dir = args.log_dir.clone().unwrap_or_else(|| {
         crowdb_protocol::port::namespace::runtime_root()
@@ -106,7 +106,7 @@ async fn main() {
         Ok(config) => config,
         Err(error) => {
             error!(path = %args.config.display(), %error, "failed to load configuration");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     if let Some(http_addr) = args.http_addr {
@@ -117,7 +117,7 @@ async fn main() {
     }
     if let Err(error) = config.validate() {
         error!(%error, "configuration overrides are invalid");
-        return;
+        return std::process::ExitCode::FAILURE;
     }
 
     let http_addr: SocketAddr = config
@@ -144,14 +144,14 @@ async fn main() {
         Ok(storage) => Arc::new(storage),
         Err(error) => {
             error!(%error, "failed to connect production chunk storage");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     let service = match ChunkKvService::new(config.instance_id, config.max_hosted_partitions) {
         Ok(service) => Arc::new(service),
         Err(error) => {
             error!(%error, "failed to initialize chunk KV service");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     let control_store = Arc::new(Group0ControlStore::from_client(Arc::clone(storage.kv())));
@@ -170,11 +170,11 @@ async fn main() {
         Ok(EnsureDomainMonitorOutcome::Created | EnsureDomainMonitorOutcome::AlreadyExists) => {}
         Ok(outcome) => {
             error!(?outcome, "chunk KV monitor registration was rejected");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
         Err(error) => {
             error!(%error, "failed to persist chunk KV monitor registration");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     }
 
@@ -186,12 +186,12 @@ async fn main() {
                     Ok(recovered) => recovered,
                     Err(error) => {
                         error!(%error, "failed to recover an assigned chunk KV partition");
-                        return;
+                        return std::process::ExitCode::FAILURE;
                     }
                 };
             if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &recovered) {
                 error!(%error, "failed to install initial chunk KV catalog and partitions");
-                return;
+                return std::process::ExitCode::FAILURE;
             }
             info!(
                 generation = head.generation,
@@ -214,7 +214,7 @@ async fn main() {
                         if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &[partition])
                         {
                             error!(%error, "failed to install bootstrapped chunk KV catalog");
-                            return;
+                            return std::process::ExitCode::FAILURE;
                         }
                         info!(
                             generation = head.generation,
@@ -223,7 +223,7 @@ async fn main() {
                     }
                     Err(error) => {
                         error!(%error, "failed to bootstrap initial chunk KV partition");
-                        return;
+                        return std::process::ExitCode::FAILURE;
                     }
                 }
             } else {
@@ -232,7 +232,7 @@ async fn main() {
         }
         Err(error) => {
             error!(%error, "failed to load initial chunk KV catalog");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     }
     let refresh_service = Arc::clone(&service);
@@ -288,7 +288,7 @@ async fn main() {
         Err(error) => {
             error!(%error, "failed to initialize transition worker");
             refresh_task.abort();
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     let transition_processor = TransitionProcessor::new(
@@ -356,7 +356,7 @@ async fn main() {
         error!(%error, "failed to register chunk KV instance");
         transition_task.abort();
         refresh_task.abort();
-        return;
+        return std::process::ExitCode::FAILURE;
     }
     install_latest_grant(&control_store, &service, &config).await;
     let materialization_service = Arc::clone(&service);
@@ -423,7 +423,7 @@ async fn main() {
     ));
     if let Err(error) = rpc_server.listen(&rpc_addr.ip().to_string(), i32::from(rpc_addr.port())) {
         error!(%rpc_addr, %error, "data RPC bind failed");
-        return;
+        return std::process::ExitCode::FAILURE;
     }
     let rpc_service = Arc::new(ChunkKvRpcService::new(
         Arc::clone(&service),
@@ -437,7 +437,7 @@ async fn main() {
         Ok(listener) => listener,
         Err(error) => {
             error!(%http_addr, %error, "HTTP management bind failed");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     info!(%http_addr, "HTTP management server listening");
@@ -445,15 +445,15 @@ async fn main() {
     let shutdown_service = Arc::clone(&service);
     let shutdown_rpc = Arc::clone(&rpc_server);
     let app = management_router(ManagementState::new(Arc::clone(&service)));
-    if let Err(error) = axum::serve(listener, app)
+    let serving = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             shutdown_service.begin_drain();
             shutdown_rpc.stop();
             info!("chunk KV service admission drained");
         })
-        .await
-    {
+        .await;
+    if let Err(error) = &serving {
         error!(%error, "HTTP management server failed");
     }
     heartbeat_task.abort();
@@ -462,6 +462,11 @@ async fn main() {
     refresh_task.abort();
     if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
         warn!(%error, "failed to unregister chunk KV instance");
+    }
+    if serving.is_ok() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
     }
 }
 
