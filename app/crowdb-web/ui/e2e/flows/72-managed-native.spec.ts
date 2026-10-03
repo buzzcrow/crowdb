@@ -2,6 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
 
+test.use({ actionTimeout: 3000 });
+
 test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries', async ({ page, request }) => {
   const token = process.env.CROWDB_ICEBERG_MANAGE_TOKEN!;
   expect(token).toMatch(/^[a-f0-9]{64}$/);
@@ -16,6 +18,7 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
     expect(response.status(), path).toBe(503);
   }
   await page.getByTestId('domain-kv').click();
+  await page.getByTestId('kv-view-data').click();
   await page.getByTestId('kv-store-select').selectOption('0');
   await page.getByTestId('kv-group-select').selectOption('1');
   await page.getByLabel('Put key').fill('console_native_ui_demo');
@@ -28,15 +31,16 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
   await expect(page.getByTestId('kv-get-result')).toHaveText('native-value', { timeout: 3000 });
 
   await page.getByTestId('domain-iceberg').click();
-  await page.getByLabel('Catalog bearer token').fill(process.env.ICEBERG_TOKEN!);
-  await page.getByRole('button', { name: 'Load catalog', exact: true }).click();
+  await page.getByText('Catalog write authorization', { exact: true }).click();
+  await page.getByLabel('Catalog write token', { exact: true }).fill(process.env.CROWDB_ICEBERG_WRITE_TOKEN!);
+  await page.getByRole('button', { name: 'Use catalog write token', exact: true }).click();
   await page.getByRole('button', { name: 'Create metadata demo', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Demo namespace and table created' })).toBeVisible({ timeout: 3000 });
   await page.getByRole('navigation', { name: 'Iceberg namespaces' }).getByRole('button', { name: /^console_demo_/ }).click();
   await page.getByRole('navigation', { name: 'Iceberg tables' }).getByRole('button', { name: 'example', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Refresh table' })).toBeVisible({ timeout: 3000 });
   await page.getByRole('button', { name: 'Schema', exact: true }).click();
-  await expect(page.locator('main section pre')).toContainText('"schema-id"');
+  await expect(page.getByRole('navigation', { name: 'Table sections' }).locator('..')).toContainText('schema-id');
   page.on('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Clean metadata demo', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Iceberg namespaces' })).not.toContainText('console_demo_');
@@ -46,13 +50,14 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
   await page.getByLabel('Secret key', { exact: true }).fill(process.env.AWS_SECRET_ACCESS_KEY!);
   await page.getByRole('button', { name: 'Create object demo', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Demo bucket and object created' })).toBeVisible({ timeout: 3000 });
-  await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: /^console-demo-/ }).click();
+  const demoScope = await page.getByText(/^Demo scope: console-demo-/).textContent();
+  const demoBucket = demoScope!.match(/console-demo-[a-f0-9]+/)![0];
+  await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: demoBucket, exact: true }).click();
   await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'example.txt', exact: true }).click();
   await page.getByRole('button', { name: 'Preview first 4 KiB' }).click();
   await expect(page.locator('main aside pre')).toContainText('CROWDB console demo', { timeout: 3000 });
 
   await page.getByTestId('domain-chunk').click();
-  await page.getByTestId('chunk-tab-chunk').click();
   await page.getByLabel('Chunk type').selectOption('5');
   await page.getByRole('button', { name: 'Query chunks', exact: true }).click();
   const chunks = page.getByRole('table', { name: 'Chunks' }).getByRole('button');
@@ -64,5 +69,5 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
   await expect(page.locator('main aside').filter({ hasText: 'Strip sequence' })).toContainText('Rack 1 / Node 1 / DG 101', { timeout: 3000 });
   await page.getByTestId('domain-s3').click();
   await page.getByRole('button', { name: 'Clean object demo', exact: true }).click();
-  await expect(page.getByRole('navigation', { name: 'S3 buckets' })).not.toContainText('console-demo-');
+  await expect(page.getByRole('navigation', { name: 'S3 buckets' })).not.toContainText(demoBucket);
 });

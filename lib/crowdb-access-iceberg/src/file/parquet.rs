@@ -5,6 +5,8 @@ use super::{
 };
 
 mod compact;
+mod inspection;
+pub use inspection::{ParquetColumnStatistics, ParquetFooterInfo};
 mod logical;
 mod metadata;
 mod pages;
@@ -45,6 +47,7 @@ pub enum ParquetMetadataError {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ParquetMetadata {
+    pub footer: ParquetFooterInfo,
     pub rows: u64,
     pub row_groups: usize,
     pub schema: Vec<ParquetSchemaElement>,
@@ -67,6 +70,10 @@ pub struct ParquetColumnChunk {
     pub data_offset: u64,
     pub compression: i32,
     pub values: u64,
+    pub uncompressed: u64,
+    pub encodings: Vec<i32>,
+    pub statistics: Option<ParquetColumnStatistics>,
+    pub path: Vec<String>,
 }
 
 /// Decodes bounded plaintext footer metadata from canonical bytes, ignoring cached hints.

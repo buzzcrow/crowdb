@@ -153,6 +153,10 @@ impl TestTableHttp {
     }
 
     pub async fn install(&self, name: &str) -> (TableHead, Vec<u8>) {
+        self.install_with_location(name, true).await
+    }
+
+    pub async fn install_with_location(&self, name: &str, trailing_slash: bool) -> (TableHead, Vec<u8>) {
         let location = TableLocation {
             catalog: self.context.catalog,
             table: TableId::random(),
@@ -163,7 +167,7 @@ impl TestTableHttp {
         })).collect();
         let metadata = json!({
             "format-version":3,"table-uuid":"12345678-1234-1234-1234-123456789abc",
-            "location":location.to_string(),"last-updated-ms":1000,"last-column-id":1,
+            "location":if trailing_slash { location.to_string() } else { location.to_string().trim_end_matches('/').to_owned() },"last-updated-ms":1000,"last-column-id":1,
             "schemas":[{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","type":"long","required":true}]}],
             "current-schema-id":0,"partition-specs":[{"spec-id":0,"fields":[]}],"default-spec-id":0,
             "last-partition-id":999,"sort-orders":[{"order-id":0,"fields":[]}],"default-sort-order-id":0,

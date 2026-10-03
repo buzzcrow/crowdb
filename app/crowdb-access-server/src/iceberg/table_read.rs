@@ -28,7 +28,10 @@ struct TableReadAccess<'a> {
 }
 
 pub(super) struct TableHttp {
-    loader: TableLoader,
+    pub(super) loader: TableLoader,
+    pub(super) files: crowdb_access_iceberg::file::FileRepository,
+    pub(super) blocks: Arc<dyn FileBlockStore>,
+    pub(super) inspection_key: [u8; 32],
     lister: TableLister,
     spools: Arc<AtomicUsize>,
     pub(super) file_config: Option<super::table_credentials::TableFileConfig>,
@@ -41,6 +44,9 @@ impl TableHttp {
         secret: &[u8; 32],
     ) -> Result<Self, ValidationError> {
         Ok(Self {
+            files: crowdb_access_iceberg::file::FileRepository::new(store.clone()),
+            blocks: blocks.clone(),
+            inspection_key: *secret,
             loader: TableLoader::new(
                 store.clone(),
                 blocks,
@@ -81,13 +87,35 @@ impl TableHttp {
             return Err(bad_request());
         }
         let name = parts.next().map(decode_path).transpose()?;
-        if parts.next().is_some() {
+        let operation = parts.next();
+        if parts.next().is_some() || operation.is_some_and(|value| value != "inspect") {
             return Err(unsupported());
         }
         let mut parameters = parameters(request.uri().query())?;
-        let permit =
-            SpoolPermit::acquire(&self.spools, MAX_RESPONSE_BYTES).ok_or_else(service_unavailable)?;
-        let mut result = if let Some(name) = name {
+        // Include parser allocations in admission, not just the serialized response.
+        let reserve = if operation == Some("inspect") {
+            64 * 1024 * 1024
+        } else {
+            MAX_RESPONSE_BYTES
+        };
+        let permit = SpoolPermit::acquire(&self.spools, reserve).ok_or_else(service_unavailable)?;
+        let mut result = if operation == Some("inspect") {
+            if request.method() != Method::GET {
+                return Err(unsupported());
+            }
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.inspect(
+                    context,
+                    authority,
+                    &namespace,
+                    &name.ok_or_else(bad_request)?,
+                    parameters,
+                ),
+            )
+            .await
+            .map_err(|_| service_unavailable())??
+        } else if let Some(name) = name {
             NameSuffix {
                 parent: None,
                 name: &name,

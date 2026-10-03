@@ -681,9 +681,10 @@ crowdb-rpc; no direct talk to `crowdb-diskdb`.
   refuses redirects. Request URLs cannot select arbitrary upstream hosts.
 - Iceberg mutations use catalog REST requirements and updates. UUID assertions
   identify the table; concurrent commits retain forms and require metadata
-  refresh. They use the existing authorized management session; automatic read
-  access does not authorize mutations. Reader/manager/writer authorization remains
-  native service policy.
+  refresh. An optional central authorization form retains a native write token
+  only in page memory, independently of Console management authorization.
+  Clearing it clears selected metadata and returns to automatic reading.
+  Reader/manager/writer authorization remains native service policy.
 - S3 signs canonical upstream host/path/query/payload in the browser using
   WebCrypto. Secrets remain session inputs, excluded from persisted config and
   activity. Large uploads use serial 8 MiB parts, bounded by the proxy's 16 MiB
@@ -933,9 +934,21 @@ The remaining integration boundaries are:
   durable sequence/offset and applied sequence are independently sampled.
   A Serving lifecycle does not prove a live serving grant. Tree-page, checkpoint,
   stream-extent and transition inspection remain to be implemented.
-- Complete S3 fixed-cluster authentication/signing integration and keep native
-  privileges explicit. Complete real Iceberg reference-chain and footer
-  acceptance; browser fixtures alone do not establish parser coverage.
+- Iceberg inspection follows authoritative table identity and snapshot
+  references through Avro manifest lists and manifests to selected files.
+  Canonical table identity is independent of a location's trailing slash.
+  Parquet inspection reads footer metadata and renders row groups and column
+  chunks without reading data pages. Snapshot identities remain exact 64-bit
+  values in the browser. Unsupported formats retain explicit metadata-only views.
+- Manifest pages contain at most 100 records and use signed block continuations
+  bound to metadata and file identity. The browser retains four branch pages
+  and 32 previous cursors; row-group pages contain 20 groups and column layouts
+  render 12 columns at a time. Inspection responses are capped at 4 MiB and
+  requests at five seconds. Parser admission reserves 64 MiB from a shared
+  128 MiB budget. Oversized metadata returns an explicit bound error. Parent
+  reference validation is bounded to 100,000 entries and can rescan ancestry;
+  independently paged column metadata and direct parent proofs remain incomplete.
+- S3 fixed-cluster authentication/signing integration remains incomplete.
 - Verify large populations, partial owners, stale generations, unavailable
   dependencies, and cross-domain return navigation. Validate against the same
   cluster used by the Console, with isolated fixtures clearly distinguished.

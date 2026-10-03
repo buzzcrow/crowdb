@@ -714,6 +714,7 @@ dependencies = [
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "futures",
+ "hex",
  "hmac",
  "http-body-util",
  "hyper",
