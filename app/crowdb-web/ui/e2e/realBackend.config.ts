@@ -39,6 +39,7 @@ export default defineConfig({
   testDir: './flows',
   testIgnore: ['**/fixtures/**', '**/71-s3-native.spec.ts', '**/72-managed-native.spec.ts'],
   globalSetup: './globalSetup.ts',
+  globalTeardown: './globalTeardown.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
@@ -61,7 +62,8 @@ export default defineConfig({
   webServer: {
     command: `npm run build && cargo run -p crowdb-web -- --bind 127.0.0.1 --port ${port} --test-mode`,
     url: `${baseURL}/healthz`,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 60_000 },
     timeout: 120_000,
     stdout: 'pipe',
     stderr: 'pipe',

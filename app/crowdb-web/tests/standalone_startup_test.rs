@@ -316,3 +316,75 @@ async fn standalone_recovers_three_member_group0_and_diskdb() {
     let launch = &saved["local_launches"]["diskdb-1"];
     assert!(!launch.is_null(), "DiskDB launch inputs must survive Web restart");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_mode_termination_reaps_children_and_preserves_persistent_runtime() {
+    let root = tempdir_in_test_data("console-test-shutdown");
+    let sentinel = root.path().join("persistent/console/N-1/operator-data");
+    std::fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+    std::fs::write(&sentinel, "preserve").unwrap();
+    let port = alloc_test_port(ServicePort::Web);
+    let child = Command::new(env!("CARGO_BIN_EXE_crowdb-web"))
+        .args(["--bind", "127.0.0.1", "--port", &port.to_string(), "--test-mode"])
+        .env("CROWDB_RUNTIME_ROOT", root.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut web = TestWeb {
+        child,
+        base: format!("http://127.0.0.1:{port}"),
+    };
+    let http = Client::new();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while http.get(format!("{}/healthz", web.base)).send().await.is_err() {
+            assert!(web.child.try_wait().unwrap().is_none());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    post(&web, &http, "/api/racks", json!({"id": 1})).await;
+    post(
+        &web,
+        &http,
+        "/api/nodes",
+        json!({"id": 1, "rack_id": 1, "host": "127.0.0.1", "ssh_user": ""}),
+    )
+    .await;
+    let deployed = post(
+        &web,
+        &http,
+        "/api/nodes/1/server/deploy",
+        json!({
+            "rest_port": alloc_test_port(ServicePort::KvServerMgmt),
+            "rpc_port": alloc_test_port(ServicePort::KvServerListen),
+            "election_profile": "test"
+        }),
+    )
+    .await;
+    let pid = u32::try_from(deployed["pid"].as_u64().unwrap()).unwrap();
+    let mut servers = TestServers(vec![pid]);
+    assert!(root.path().join("ephemeral").read_dir().unwrap().next().is_some());
+    assert!(Command::new("kill")
+        .args(["-TERM", &web.child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let exited = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(status) = web.child.try_wait().unwrap() {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(exited.success());
+    assert!(!crowdb_console_shared::lifecycle::process_is_alive(pid));
+    assert!(root.path().join("ephemeral").read_dir().unwrap().next().is_none());
+    assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "preserve");
+    servers.0.clear();
+}

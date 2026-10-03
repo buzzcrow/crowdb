@@ -4,6 +4,7 @@ import config from './realBackend.config';
 export default {
   ...config,
   globalSetup: undefined,
+  globalTeardown: undefined,
   webServer: undefined,
   testMatch: '**/72-managed-native.spec.ts',
   testIgnore: [],

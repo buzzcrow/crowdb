@@ -979,7 +979,7 @@ pub async fn http_internal_reset(
     //   6-8. config cleanup — remove nodes, racks, caches, workspaces.
     crate::services::remove_for_reset(&state).await?;
     let mut stopped = shutdown_kv_data(&state).await;
-    stopped.extend(stop_all_services(&state).await);
+    stopped.extend(stop_all_services(&state).await?);
 
     // 6. Remove all nodes from config + drop monitor cache entries.
     let node_ids: Vec<NodeId> = {
@@ -1024,16 +1024,8 @@ pub async fn http_internal_reset(
 
     // 8. Clear caches and workspace directories.
     state.clear_cluster_clients().await;
-    // Defer workspace cleanup to a background task — the KV server
-    // processes are still shutting down (async SIGTERM in
-    // stop_all_services), and removing their WAL/engine files while
-    // they are open would fail or race. The background task removes
-    // the dirs best-effort; the next deploy recreates them as needed.
-    // Defer workspace cleanup — processes may still be shutting down.
-    let state_clone = state.clone();
-    tokio::task::spawn_blocking(move || {
-        let _ = state_clone.clear_workspaces();
-    });
+    // Every child has exited before deleting its open WAL and engine files.
+    state.clear_workspaces().map_err(map_persist_err)?;
     state.persist().map_err(map_persist_err)?;
 
     Ok(Json(ResetResult { stopped }))
@@ -1221,7 +1213,7 @@ async fn shutdown_kv_data(state: &AppState) -> Vec<String> {
 /// Step 5: graceful stop all KV server + DDB processes (SIGTERM →
 /// graceful shutdown). Clears runtime PIDs. Returns the list of node
 /// IDs whose KV server process was stopped.
-async fn stop_all_services(state: &AppState) -> Vec<String> {
+async fn stop_all_services(state: &AppState) -> Result<Vec<String>, (StatusCode, Json<ErrorBody>)> {
     use crowdb_console_shared::lifecycle;
 
     let node_ids: Vec<NodeId> = {
@@ -1229,14 +1221,11 @@ async fn stop_all_services(state: &AppState) -> Vec<String> {
         cfg.nodes.iter().map(|n| n.id).collect()
     };
     let mut stopped: Vec<String> = Vec::new();
+    let mut stopping = tokio::task::JoinSet::new();
+    let mut failures = Vec::new();
 
     for nid in &node_ids {
-        // Stop the KV server process if a PID is tracked.
-        // Send SIGTERM and reap in the background — the server's
-        // graceful shutdown can take up to 10s (shutdown_timeout_ms),
-        // and blocking here serializes N nodes × 10s = N×10s delays.
-        // The process is reaped in the background (SIGKILL after 15s
-        // if needed) so ports/WAL files are released for reuse.
+        // Stop children concurrently; workspace cleanup waits for all of them.
         if let Some(pid) = state.runtime_pid(nid) {
             let ssh = state
                 .config
@@ -1246,26 +1235,55 @@ async fn stop_all_services(state: &AppState) -> Vec<String> {
                 .is_some_and(crowdb_console_shared::config::NodeEntry::ssh_enabled);
             if ssh {
                 let node = state.config.read().unwrap().node(*nid).cloned().unwrap();
-                let _ = crowdb_console_shared::ssh::stop_via_ssh(&node, pid).await;
+                if let Err(error) = crowdb_console_shared::ssh::stop_via_ssh(&node, pid).await {
+                    failures.push(error.to_string());
+                }
             } else {
-                tokio::task::spawn_blocking(move || {
-                    let _ = lifecycle::stop_pid(pid);
+                stopping.spawn_blocking(move || {
+                    lifecycle::stop_pid(pid)?;
+                    if lifecycle::process_is_alive(pid) {
+                        return Err(crowdb_console_shared::error::Error::Config(format!(
+                            "child {pid} remains alive after stop"
+                        )));
+                    }
+                    Ok(())
                 });
             }
             stopped.push(nid.to_string());
-            state.clear_runtime_pid(nid);
         }
 
         // Stop the DDB process if a PID is tracked.
         if let Some(pid) = state.diskdb_runtime_pid(nid) {
-            tokio::task::spawn_blocking(move || {
-                let _ = lifecycle::stop_pid(pid);
+            stopping.spawn_blocking(move || {
+                lifecycle::stop_pid(pid)?;
+                if lifecycle::process_is_alive(pid) {
+                    return Err(crowdb_console_shared::error::Error::Config(format!(
+                        "child {pid} remains alive after stop"
+                    )));
+                }
+                Ok(())
             });
-            state.clear_diskdb_runtime_pid(nid);
         }
     }
 
-    stopped
+    while let Some(result) = stopping.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failures.push(error.to_string()),
+            Err(error) => failures.push(error.to_string()),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(err_500(format!(
+            "reset child stop failed: {}",
+            failures.join("; ")
+        )));
+    }
+    for nid in &node_ids {
+        state.clear_runtime_pid(nid);
+        state.clear_diskdb_runtime_pid(nid);
+    }
+    Ok(stopped)
 }
 
 #[derive(Serialize)]

@@ -482,3 +482,51 @@ async fn deploy_then_restart_local_server() {
     // Cleanup via API, then guard handles any survivors.
     let _ = json_post(&client, &format!("{base}/api/nodes/1/server/stop"), json!({})).await;
 }
+
+#[tokio::test]
+async fn reset_waits_for_owned_children_before_removing_workspaces() {
+    let bin = crowdb_kv_server_bin().expect("build crowdb-kv-server before acceptance");
+    assert!(bin.exists());
+    let dir = tempdir("reset-waits");
+    let addr = spawn_web_with_path(dir.join("console.toml")).await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    let mut guard = ProcessGuard {
+        pids: BTreeMap::new(),
+    };
+    let (status, body) = json_post(&client, &format!("{base}/api/racks"), json!({"id": 1})).await;
+    assert_eq!(status.as_u16(), 201, "{body}");
+    for node in [1, 2] {
+        let (status, body) = json_post(
+            &client,
+            &format!("{base}/api/nodes"),
+            json!({"id": node, "rack_id": 1, "host": "127.0.0.1", "ssh_user": ""}),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 201, "{body}");
+        let (status, body) = json_post(
+            &client,
+            &format!("{base}/api/nodes/{node}/server/deploy"),
+            json!({"rest_port": pick_free_port(), "rpc_port": pick_free_port(),
+                "binary": bin, "election_profile": "test"}),
+        )
+        .await;
+        assert!(status.is_success(), "{status}: {body}");
+        let pid = u32::try_from(body["pid"].as_u64().unwrap()).unwrap();
+        guard.pids.insert(node.to_string(), pid);
+        assert!(dir.join(format!("N-{node}")).exists());
+    }
+    let (status, body) = json_post(&client, &format!("{base}/internal/reset"), json!({})).await;
+    assert!(status.is_success(), "{status}: {body}");
+    for (node, pid) in &guard.pids {
+        assert!(
+            !crowdb_console_shared::lifecycle::process_is_alive(*pid),
+            "child {pid} survived reset"
+        );
+        assert!(
+            !dir.join(format!("N-{node}")).exists(),
+            "workspace survived reset"
+        );
+    }
+    guard.pids.clear();
+}

@@ -263,3 +263,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   outbound connection collided with a later test listener. Add teardown and
   isolated runtime ownership, fail unknown mutation outcomes without blind
   retries, and verify failed-run cleanup without touching the live cluster.
+  Ephemeral test-mode runtime, awaited parallel stop, SIGTERM cleanup and
+  global teardown now pass real regressions. Forced SIGKILL child recovery
+  remains to be verified before removing this item.

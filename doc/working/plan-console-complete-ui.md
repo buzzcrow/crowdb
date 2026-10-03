@@ -740,3 +740,14 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   connection. Use native fixture ports outside the ephemeral client range;
   add deterministic teardown and remove mutation retries before accepting the
   routine management fixture. Preserve the user's live 9090 services.
+
+- Routine E2E mutations now fail on the first response instead of repeating
+  uncertain sysdata writes. Six KV browser cases pass with stable 0.527–1.2 s
+  case durations; explicit teardown took 8 ms. Native configs disable destructive
+  global setup/teardown. Routine config cannot reuse an unrelated Web process.
+- Test-mode Web now owns an ephemeral runtime and handles SIGTERM before reset.
+  Reset stops children concurrently, waits for exit, and only then removes WAL
+  directories; stop errors preserve configuration/workspace for diagnosis.
+  Two-child reset regression passed (0.32 s), SIGTERM/persistent sentinel
+  regression passed (0.24 s). Lifecycle routes 6 and standalone startup 6 passed.
+  Forced SIGKILL recovery still needs durable child ownership evidence.

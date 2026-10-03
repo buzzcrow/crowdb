@@ -88,8 +88,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     info!(%addr, "crowdb-web starting");
 
-    let mut state = if args.test_mode || process_config.is_some() {
-        crowdb_web::AppState::default().with_test_mode(args.test_mode)
+    let mut test_namespace = if args.test_mode {
+        Some(crowdb_protocol::port::namespace::RuntimeNamespace::ephemeral(
+            "console-ui",
+        )?)
+    } else {
+        None
+    };
+    let mut state = if let Some(namespace) = &test_namespace {
+        crowdb_web::AppState::with_runtime_root(
+            crowdb_console_shared::ConsoleConfig::default(),
+            namespace.root().to_path_buf(),
+        )
+        .with_test_mode(true)
+    } else if process_config.is_some() {
+        crowdb_web::AppState::default()
     } else {
         let directory = crowdb_protocol::port::namespace::runtime_root()
             .join("persistent")
@@ -126,7 +139,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, crowdb_web::router(state)).await?;
+    if args.test_mode {
+        let cleanup_state = state.clone();
+        axum::serve(listener, crowdb_web::router(state))
+            .with_graceful_shutdown(test_shutdown())
+            .await?;
+        if let Err((status, body)) =
+            crowdb_web::lifecycle::http_internal_reset(axum::extract::State(cleanup_state)).await
+        {
+            if let Some(namespace) = test_namespace.as_mut() {
+                namespace.preserve();
+            }
+            return Err(format!("test runtime cleanup failed: {status}: {}", body.error).into());
+        }
+    } else {
+        axum::serve(listener, crowdb_web::router(state)).await?;
+    }
+    drop(test_namespace);
     Ok(())
 }
 
@@ -191,4 +220,18 @@ fn init_logging(
         crowdb_rpc_ffi::add_log_stderr(stderr_level);
     }
     Ok(guards)
+}
+
+async fn test_shutdown() {
+    #[cfg(unix)]
+    {
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install test runtime termination handler");
+        tokio::select! {
+            _ = terminate.recv() => {},
+            _ = tokio::signal::ctrl_c() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }

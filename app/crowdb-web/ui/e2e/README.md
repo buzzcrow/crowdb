@@ -12,7 +12,8 @@ Behavior authority: [Console UI specification](../../../../doc/design/console/de
   Chunk-KV, Iceberg and S3 page-function specs. These establish browser behavior,
   not native parser, routing or data durability acceptance.
 - Real management/data: `realBackend.config.ts` owns one isolated mutable Web
-  runtime and one worker. Cluster lifecycle, KV membership/CRUD, Capacity and
+  runtime and one worker. Test-mode children live in a disposable namespace;
+  global teardown and SIGTERM await stop before deleting their files. Cluster lifecycle, KV membership/CRUD, Capacity and
   cross-links use actual APIs; fixture-specific observation mocks remain explicit.
 - Native service chain: `managedNative.config.ts` uses an explicitly supplied,
   isolated populated deployment. It verifies shared UI against actual KV,
@@ -64,6 +65,12 @@ pixi run bash -c 'cd app/crowdb-web/ui && npx playwright test --config=e2e/pageB
 
 ```sh
 pixi run bash -c 'cd app/crowdb-web/ui && npx playwright test --config=e2e/managedNative.config.ts'
+```
+
+- Multipart acceptance uses the same explicit disposable deployment:
+
+```sh
+pixi run bash -c 'cd app/crowdb-web/ui && npx playwright test --config=e2e/nativeS3.config.ts'
 ```
 
 Do not point reset or destructive lifecycle suites at the user's persistent UI.
