@@ -1,9 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { parseIcebergJson } from '../iceberg/json';
 import { getApiBase } from '../api';
 
-export interface Connections { iceberg: string | null; s3: string | null; configurable: boolean; max_request_bytes: number }
+export interface Connections { iceberg: string | null; iceberg_ready: boolean; s3: string | null; configurable: boolean; max_request_bytes: number }
 export async function connections(): Promise<Connections> {
   return readJson(await fetch(`${getApiBase()}/access/connections`));
 }
@@ -16,7 +17,7 @@ export async function readJson<T>(response: Response): Promise<T> {
 }
 export async function check(response: Response): Promise<void> {
   if (response.ok) return;
-  const text = (await response.text()).slice(0, 4096);
+  const text = new TextDecoder().decode(await previewBytes(response));
   let message = text;
   try {
     const body = JSON.parse(text);
@@ -27,12 +28,30 @@ export async function check(response: Response): Promise<void> {
   }
   throw new Error(`HTTP ${response.status}: ${message || response.statusText}`);
 }
-export async function iceberg(path: string, token: string, method = 'GET', body?: object): Promise<any> {
+export async function iceberg(path: string, token: string, method = 'GET', body?: object, signal?: AbortSignal): Promise<any> {
   const response = await fetch(`${getApiBase()}/access/iceberg${path}`, {
-    method, headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    method, signal, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-  return readJson(response);
+  await check(response);
+  return response.status === 204 ? undefined : parseIcebergJson(await boundedText(response));
+}
+
+async function boundedText(response: Response): Promise<string> {
+  const limit = 4 * 1024 * 1024;
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let bytes = 0; let text = '';
+  try {
+    for (;;) {
+      const chunk = await reader.read(); if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > limit) throw new Error('Catalog response exceeds the 4 MiB inspection budget. Select a smaller page.');
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally { await reader.cancel(); }
 }
 
 export interface S3Credentials { accessKey: string; secretKey: string; region: string; sessionToken: string }

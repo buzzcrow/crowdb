@@ -81,8 +81,9 @@ pub use parquet::{
     read_parquet_scalar_column_for_tests,
 };
 pub use parquet::{
-    read_parquet_metadata, ParquetColumnChunk, ParquetLogicalType, ParquetMetadata, ParquetMetadataError,
-    ParquetMetadataLimits, ParquetRowGroup, ParquetSchemaElement, ParquetTimeUnit,
+    read_parquet_metadata, ParquetColumnChunk, ParquetColumnStatistics, ParquetFooterInfo,
+    ParquetLogicalType, ParquetMetadata, ParquetMetadataError, ParquetMetadataLimits, ParquetRowGroup,
+    ParquetSchemaElement, ParquetTimeUnit,
 };
 pub use puffin::{read_puffin_metadata, PuffinBlob, PuffinMetadata, PuffinMetadataError};
 pub use range::{resolve_range, ByteRange, RangeError};

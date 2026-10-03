@@ -94,3 +94,27 @@ impl AvroRecords {
         Ok(result)
     }
 }
+
+impl AvroRecords {
+    /// Current next-block offset, suitable for an authenticated inspection cursor.
+    #[must_use]
+    pub fn position(&self) -> u64 {
+        self.blocks.position()
+    }
+
+    /// Seeks to a previously authenticated block boundary for this exact immutable file.
+    /// # Errors
+    /// Rejects out-of-file positions and poisoned readers. Callers must bind the offset
+    /// to file identity; this method alone does not validate an untrusted continuation.
+    pub fn seek(
+        &mut self,
+        store: Arc<dyn FileBlockStore>,
+        record: FileRecord,
+        position: u64,
+    ) -> Result<(), AvroContainerError> {
+        if self.failed {
+            return Err(AvroContainerError::Failed);
+        }
+        self.blocks.seek(store, record, position)
+    }
+}

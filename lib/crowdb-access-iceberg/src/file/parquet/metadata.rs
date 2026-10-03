@@ -36,6 +36,7 @@ pub(super) fn decode(
         return Err(Error::Invalid);
     }
     Ok(ParquetMetadata {
+        footer: super::inspection::footer(fields, footer_start, bytes.len())?,
         rows,
         row_groups: groups.len(),
         schema,
@@ -133,6 +134,17 @@ fn column_metadata(
             data_offset: data,
             compression: i32::try_from(required(fields, 4)?.integer(5)?).map_err(|_| Error::Invalid)?,
             values,
+            uncompressed,
+            encodings: encodings
+                .iter()
+                .map(|value| {
+                    value
+                        .integer(5)
+                        .and_then(|v| i32::try_from(v).map_err(|_| Error::Invalid))
+                })
+                .collect::<Result<_, _>>()?,
+            statistics: fields.get(&12).map(super::inspection::statistics).transpose()?,
+            path: leaf.path.iter().map(|s| (*s).to_owned()).collect(),
         },
         uncompressed,
     ))

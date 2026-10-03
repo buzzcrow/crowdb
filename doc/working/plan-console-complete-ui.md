@@ -89,17 +89,18 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 - [x] **Paxos overview**: default KV to Group/Replica management; retain Data
   subview with explicit scope and Group 0 protection. Files: `views/KvView`,
   KV panels and corresponding topology/data E2E specs.
-- [~] **Typed services**: consolidate all six service lifecycle operations in
+- [x] **Typed services**: consolidate all six service lifecycle operations in
   Cluster, eliminate non-KV fallthrough, add validated deployment forms and
   current-cluster dependency inputs. Files: Web lifecycle domain, shared launch
   adapters, `useClusterMenus`, deploy dialogs, physical server projections.
-  Local deployment/lifecycle and UI dispatch are implemented and tested. Native
-  Chunk-KV/Access deployment through these routes still needs integration
-  acceptance; remote auxiliary deployment is explicitly unsupported.
+  Local deployment/lifecycle and UI dispatch are implemented and tested;
+  remote auxiliary deployment is explicitly unsupported.
+- [ ] **Native deployment acceptance**: exercise Chunk-KV/Access deployment
+  through the new routes and close launch/publication crash-recovery gaps.
 - [ ] **Chunk sources**: establish actual Repo metadata routing and implement
   source/type filters, bounded per-source cursors and partial coverage. Files:
   Web `chunk`, ChunkDB/Chunk-KV metadata adapters, UI `chunk`.
-- [ ] **Capacity and Access**: distinguish unknown usage, suspend inactive
+- [~] **Capacity and Access**: distinguish unknown usage, suspend inactive
   polling, connect S3 and Iceberg to the same cluster's Access deployment;
   finish bounded native file inspection and real data acceptance.
 - [ ] **Integration acceptance**: scope restoration, layout-to-disk/node
@@ -124,6 +125,32 @@ Baseline before domain separation: shell embedding 5 tests passed; Chunk layout
   UI suite unless specifically needed/authorized; focused specs first.
 
 ## Results
+
+- Iceberg file-inspection checkpoint: Avro manifest lists/entries and Parquet
+  footer, row-group and column metadata are rendered as fields and layouts.
+  Four Iceberg browser cases passed (0.576/0.952/0.321/0.521 s), including
+  exact snapshot IDs, replacement pages, no right property panel, automatic
+  reader entry and separate native write-token authorization/clearing.
+- Native acceptance used the user's TPC loader in the isolated persistent
+  preview: TPC-H SF 0.001, eight tables. All eight chains reached their actual
+  Parquet footers through snapshots, manifest lists and deflate manifests.
+  Lineitem contains 6,005 rows and 16 columns; its 218,725-byte file has a
+  2,319-byte footer. Inspection reported zero logical data-page bytes.
+  The SDK's location without a trailing slash exposed an identity-check bug;
+  authoritative Table ID now determines membership, with a regression test.
+- Loader acceptance used an isolated PyArrow FileIO adapter to check exact
+  object existence with a read because its default missing-path fallback uses
+  unsupported directory listing. Normal credentials, upload checksums and
+  footer verification were retained. A failed preflight probe was retained as
+  a cleanup candidate in the loader report; this is not a fully clean loader run.
+- Managed native browser flow passed in 4.5 s: KV, Iceberg create/inspect/clean,
+  S3 object preview, Chunk physical placement and object cleanup. The first run
+  still selected the removed Chunk subtab; the test now uses the top-level
+  domain and 3-second action deadlines. Its exact leftover S3 demo was removed.
+- Iceberg Rust gates: 9 Parquet metadata tests, 10 schema/statistics tests and
+  2 HTTP inspection tests passed; all-target Clippy and formatting passed.
+  Parent-proof rescans and independent backend column pagination remain bounded
+  limitations; the TPC run is functional acceptance, not large-population proof.
 
 - Cluster typed-service checkpoint: local CDB, DiskIO, Chunk-KV and Access
   deployment forms, stable service identities, tree/canvas/properties and

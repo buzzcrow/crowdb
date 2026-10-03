@@ -27,6 +27,7 @@ pub(super) enum Route {
     TableList,
     TableCreate,
     TableLoad,
+    TableInspect,
     TableExists,
     TableUpdate,
     TableDrop,
@@ -101,6 +102,11 @@ impl Route {
                 Method::DELETE => Some(Self::TableDrop),
                 _ => None,
             },
+            (Some("tables"), Some(table), Some("inspect"), None, None)
+                if !table.is_empty() && method == Method::GET =>
+            {
+                Some(Self::TableInspect)
+            }
             (Some("tables"), Some(table), Some("credentials"), None, None)
                 if !table.is_empty() && method == Method::GET =>
             {
@@ -119,7 +125,7 @@ impl Route {
             | Self::NamespaceExists
             | Self::NamespaceProperties
             | Self::NamespaceDrop => installed.contains(InstalledRoutes::NAMESPACES),
-            Self::TableList | Self::TableLoad | Self::TableExists => {
+            Self::TableInspect | Self::TableList | Self::TableLoad | Self::TableExists => {
                 installed.contains(InstalledRoutes::NAMESPACES | InstalledRoutes::TABLES)
             }
             Self::TableCreate | Self::TableUpdate | Self::TableDrop | Self::TableRename => {
@@ -134,9 +140,11 @@ impl Route {
     pub(super) fn supported(self, capabilities: Capabilities) -> bool {
         let any = |action| (1..=3).any(|version| capabilities.supports(version, action));
         match self {
-            Self::TableList | Self::TableLoad | Self::TableExists | Self::TableCredentials => {
-                any(FormatAction::Read)
-            }
+            Self::TableInspect
+            | Self::TableList
+            | Self::TableLoad
+            | Self::TableExists
+            | Self::TableCredentials => any(FormatAction::Read),
             Self::TableCreate => any(FormatAction::Create),
             Self::TableUpdate => {
                 any(FormatAction::Write) || capabilities.upgrade_v1_v2 || capabilities.upgrade_v2_v3
@@ -157,7 +165,7 @@ impl Route {
 
     fn template(self) -> Option<&'static str> {
         match self {
-            Self::Config | Self::AdminMetrics => None,
+            Self::Config | Self::AdminMetrics | Self::TableInspect => None,
             Self::NamespaceList => Some("GET /v1/{prefix}/namespaces"),
             Self::NamespaceCreate => Some("POST /v1/{prefix}/namespaces"),
             Self::NamespaceLoad => Some("GET /v1/{prefix}/namespaces/{namespace}"),

@@ -1,21 +1,26 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useCallback, useEffect } from 'react';
-import { Connection, Workbench, JsonView, inputClass, buttonClass } from '../access/Workbench';
-import { iceberg } from '../access/native';
+import { useState, useEffect } from 'react';
+import { Workbench, inputClass, buttonClass } from '../access/Workbench';
+import { connections, iceberg } from '../access/native';
+import { Fields, Structured } from '../iceberg/Fields';
+import { ReferenceTree, InspectionView } from '../iceberg/ReferenceExplorer';
+import { useInspection } from '../iceberg/useInspection';
 import { useActivity } from '../contexts/ActivityContext';
 
 const namespacePath = (namespace: string[]): string => `/v1/namespaces/${encodeURIComponent(namespace.join('\x1f'))}`;
 const initialFields = '[{"id":1,"name":"id","required":true,"type":"long"}]';
 const sections = ['Overview', 'Schema', 'Snapshots', 'Files'] as const;
-export function IcebergView({ active, readonly }: { active: boolean; readonly: boolean }) {
+export function IcebergView({ active, readonly: domainReadonly }: { active: boolean; readonly: boolean }) {
   const { log } = useActivity();
   const [demoNamespace, setDemoNamespace] = useState<string | null>(null);
   const [removals, setRemovals] = useState('[]');
   const [origin, setOrigin] = useState<string | null>(null);
-  const onOrigin = useCallback((value: string | null) => setOrigin(value), []);
   const [token, setToken] = useState('');
+  const [writeToken, setWriteToken] = useState('');
+  const readonly = domainReadonly || !token;
+  const [retry, setRetry] = useState(0);
   const [catalog, setCatalog] = useState<any>(null);
   const [namespaces, setNamespaces] = useState<string[][]>([]);
   const [namespace, setNamespace] = useState<string[] | null>(null);
@@ -35,8 +40,25 @@ export function IcebergView({ active, readonly }: { active: boolean; readonly: b
   const [outcome, setOutcome] = useState('');
   useEffect(() => {
     setCatalog(null); setNamespaces([]); setNamespace(null); setTables([]); setTable(''); setLoaded(null); setProperties(null); setDemoNamespace(null); setError(''); setOutcome('');
-  }, [origin, token]);
-  const connected = !!origin && !!token;
+  }, [token]);
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    setBusy(true); setError('');
+    void (async () => {
+      const deployment = await connections();
+      if (controller.signal.aborted) return;
+      if (!deployment.iceberg_ready || !deployment.iceberg) throw new Error('The cluster Catalog is not ready. Check the Console deployment and retry.');
+      setOrigin(deployment.iceberg);
+      const [config, listed] = await Promise.all([
+        iceberg('/v1/config', '', 'GET', undefined, controller.signal),
+        iceberg('/v1/namespaces', '', 'GET', undefined, controller.signal),
+      ]);
+      if (!controller.signal.aborted) { setCatalog(config); setNamespaces(listed.namespaces ?? []); }
+    })().catch(error => { if (!controller.signal.aborted) setError(String(error)); })
+      .finally(() => { if (!controller.signal.aborted) setBusy(false); });
+    return () => controller.abort();
+  }, [active, token, retry]);
   const path = namespace ? namespacePath(namespace) : '';
   const tablePath = `${path}/tables/${encodeURIComponent(table)}`;
   const run = async (operation: () => Promise<void>, label: string) => {
@@ -53,45 +75,54 @@ export function IcebergView({ active, readonly }: { active: boolean; readonly: b
   const loadTable = async (name: string) => { setLoaded(await iceberg(`${path}/tables/${encodeURIComponent(name)}`, token)); };
   const selectNamespace = (value: string[]) => { setNamespace(value); setTable(''); setLoaded(null); setTables([]); void run(() => loadNamespace(value), `Namespace ${value.join('.')} loaded`); };
   const selectTable = (name: string) => { setTable(name); setLoaded(null); setSection('Overview'); void run(() => loadTable(name), `Table ${name} loaded`); };
+  const inspector = useInspection(loaded, tablePath, token, origin);
   const metadata = loaded?.metadata;
   const supported = (method: string, template: string) => !catalog?.endpoints || catalog.endpoints.some((entry: string) => entry === `${method} ${template}` || entry === `${method} ${template.replace('/v1/', '/v1/{prefix}/')}`);
   const overview = metadata ? { uuid: metadata['table-uuid'], location: metadata.location, 'format-version': metadata['format-version'], 'metadata-location': loaded['metadata-location'], 'current-snapshot-id': metadata['current-snapshot-id'], 'last-updated-ms': metadata['last-updated-ms'], properties: metadata.properties } : null;
   const schema = metadata ? { 'current-schema-id': metadata['current-schema-id'], schemas: metadata.schemas, 'default-spec-id': metadata['default-spec-id'], 'partition-specs': metadata['partition-specs'], 'default-sort-order-id': metadata['default-sort-order-id'], 'sort-orders': metadata['sort-orders'] } : null;
   const files = metadata ? { 'metadata-location': loaded['metadata-location'], 'metadata-log': metadata['metadata-log'], 'manifest-lists': (metadata.snapshots ?? []).map((snapshot: any) => ({ 'snapshot-id': snapshot['snapshot-id'], 'manifest-list': snapshot['manifest-list'] })) } : null;
   return <Workbench sidebar={<>
-    <h2 className="tw-font-semibold">Iceberg</h2><p className="tw-text-xs tw-text-muted">Catalog → namespace → table</p>
-    <Connection protocol="iceberg" active={active} onOrigin={onOrigin} readonly={readonly} busy={busy} />
-    <label className="tw-block tw-text-xs">Catalog bearer token<input className={`${inputClass} tw-w-full tw-mt-1`} type="password" autoComplete="off" value={token} disabled={busy} onChange={event => setToken(event.target.value)} /></label>
-    <p className="tw-text-xs tw-text-muted">Token stays in this browser session. Catalog permissions check every action.</p>
-    <button className={buttonClass} disabled={!connected || busy} onClick={() => void run(async () => { const config = await iceberg('/v1/config', token); setCatalog(config); await loadNamespaces(); }, 'Catalog loaded')}>Load catalog</button>
-    {catalog && <button className={buttonClass} disabled={busy} onClick={() => { setNamespace(null); setTable(''); setLoaded(null); void run(loadNamespaces, 'Catalog root refreshed'); }}>Catalog root</button>}
+    <h2 className="tw-font-semibold">Iceberg</h2>
+    <p className="tw-text-xs tw-text-muted">Current cluster catalog</p>
+    {busy && !catalog && <p role="status" className="tw-text-xs">Loading catalog…</p>}
+    {catalog && <button className={`${buttonClass} tw-w-full tw-text-left`} disabled={busy} onClick={() => { setNamespace(null); setTable(''); setLoaded(null); void run(loadNamespaces, 'Catalog refreshed'); }}>Catalog</button>}
+    {catalog && !namespaces.length && <p className="tw-text-xs tw-text-muted">No namespaces in this catalog.</p>}
     {namespace && <button className={buttonClass} disabled={busy} onClick={() => void run(async () => { const response = await iceberg(`/v1/namespaces?parent=${encodeURIComponent(namespace.join('\x1f'))}`, token); setNamespaces(response.namespaces ?? []); }, 'Child namespaces loaded')}>Browse child namespaces</button>}
     <nav aria-label="Iceberg namespaces" className="tw-space-y-1">{namespaces.map(value => <div key={JSON.stringify(value)}>
       <button className={`${buttonClass} tw-w-full tw-text-left`} aria-pressed={JSON.stringify(namespace) === JSON.stringify(value)} disabled={busy} onClick={() => selectNamespace(value)}>{value.join('.')}</button>
-      {JSON.stringify(namespace) === JSON.stringify(value) && <nav aria-label="Iceberg tables" className="tw-pl-4 tw-flex tw-flex-col">{tables.map(identifier => <button key={identifier.name} className={`${buttonClass} tw-text-left`} aria-pressed={table === identifier.name} disabled={busy} onClick={() => selectTable(identifier.name)}>{identifier.name}</button>)}</nav>}
+      {JSON.stringify(namespace) === JSON.stringify(value) && <nav aria-label="Iceberg tables" className="tw-pl-4 tw-flex tw-flex-col">{tables.map(identifier => <div key={identifier.name}><button className={`${buttonClass} tw-text-left`} aria-pressed={table === identifier.name} disabled={busy} onClick={() => selectTable(identifier.name)}>{identifier.name}</button>{table === identifier.name && loaded && <ReferenceTree loaded={loaded} inspector={inspector} />}</div>)}</nav>}
     </div>)}</nav>
-  </>} detail={loaded ? <>
-    <h3 className="tw-font-semibold tw-break-all">{namespace?.join('.')} / {table}</h3>
-    <JsonView value={overview} />
-    <button className={buttonClass} disabled={busy} onClick={() => void run(() => loadTable(table), 'Metadata refreshed')}>Refresh table</button>
-    {!readonly && <>
+  </>}>
+    <div><h1 className="tw-text-lg tw-font-semibold">{namespace ? `Catalog / ${namespace.join('.')}${table ? ` / ${table}` : ''}` : 'Iceberg catalog'}</h1><p className="tw-text-xs tw-text-muted">Current cluster · {readonly ? 'Read only' : 'Native REST metadata operations'}</p></div>
+    {!domainReadonly && <details className="tw-text-xs tw-space-y-2"><summary className="tw-cursor-pointer">Catalog write authorization</summary>
+      <p>Use a native Iceberg write token for catalog changes. The service checks its privileges on each operation. The token is kept only in this page session.</p>
+      {token ? <button className={buttonClass} disabled={busy} onClick={() => setToken('')}>Clear catalog write token</button>
+        : <form className="tw-flex tw-gap-2 tw-items-end" onSubmit={event => { event.preventDefault(); setToken(writeToken.trim()); setWriteToken(''); }}>
+          <label>Catalog write token<input type="password" autoComplete="off" required className={`${inputClass} tw-block`} value={writeToken} onChange={event => setWriteToken(event.target.value)} /></label>
+          <button className={buttonClass} disabled={busy || !writeToken.trim()}>Use catalog write token</button>
+        </form>}
+    </details>}
+    {loaded && <div className="tw-space-y-3">
+      <button className={buttonClass} disabled={busy} onClick={() => void run(() => loadTable(table), 'Metadata refreshed')}>Refresh table</button>
+      {!readonly && <details className="tw-space-y-2"><summary className="tw-text-xs tw-cursor-pointer">Table actions</summary>
       <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void run(async () => { await iceberg('/v1/tables/rename', token, 'POST', { source: { namespace, name: table }, destination: { namespace, name: rename } }); setTable(rename); await loadNamespace(namespace!); await loadTable(rename); }, 'Table renamed'); }}>
         <label className="tw-text-xs">New table name<input className={`${inputClass} tw-w-full`} value={rename} required onChange={event => setRename(event.target.value)} /></label><button className={buttonClass} disabled={busy || !supported('POST', '/v1/tables/rename')}>Rename table</button>
       </form>
       <button className={buttonClass} disabled={busy || !supported('DELETE', '/v1/namespaces/{namespace}/tables/{table}')} onClick={() => { if (confirm(`Drop table ${namespace?.join('.')}.${table}?`)) void run(async () => { await iceberg(tablePath, token, 'DELETE'); setTable(''); setLoaded(null); await loadNamespace(namespace!); }, 'Table dropped'); }}>Drop table</button>
       <p className="tw-text-xs tw-text-muted">Drop removes the catalog reference. Physical reclamation follows service GC.</p>
-    </>}
-  </> : undefined}>
-    <div><h1 className="tw-text-lg tw-font-semibold">{namespace ? `Catalog / ${namespace.join('.')}${table ? ` / ${table}` : ''}` : 'Iceberg catalog'}</h1><p className="tw-text-xs tw-text-muted">{origin || 'Configure an endpoint to begin'} · {readonly ? 'Read only' : 'Native REST metadata operations'}</p></div>
+      </details>}
+    </div>}
     {error && <p role="alert" className="tw-text-sm tw-text-failed tw-break-all">{error}</p>}{outcome && <p role="status" className="tw-text-xs tw-text-muted">{outcome}</p>}
-    {!catalog && <p className="tw-text-sm tw-text-muted">Load a catalog using an authorized token to browse its namespaces and tables.</p>}
-    {catalog && !namespace && <JsonView value={catalog} />}
-    {namespace && !table && <><h2 className="tw-font-semibold">Namespace properties</h2><JsonView value={properties} />{!tables.length && <p className="tw-text-xs tw-text-muted">No tables in this namespace.</p>}</>}
-    {loaded && <><nav className="tw-flex tw-gap-2" aria-label="Table sections">{sections.map(value => <button key={value} className={buttonClass} aria-pressed={section === value} onClick={() => setSection(value)}>{value}</button>)}</nav>
-      <JsonView value={section === 'Overview' ? overview : section === 'Schema' ? schema : section === 'Snapshots' ? { snapshots: metadata?.snapshots, refs: metadata?.refs, 'snapshot-log': metadata?.['snapshot-log'] } : files} />
-      {section === 'Files' && <p className="tw-text-xs tw-text-muted">These are catalog metadata references. Manifest contents and file downloads require a supported table FileIO session; catalog listing does not enumerate data files.</p>}
+    {error && <button className={buttonClass} disabled={busy} onClick={() => setRetry(value => value + 1)}>Retry catalog</button>}
+    {!catalog && !error && <p className="tw-text-sm tw-text-muted">Loading the current cluster catalog…</p>}
+    {catalog && !namespace && <Fields values={catalog} />}
+    {namespace && !table && <><h2 className="tw-font-semibold">Namespace properties</h2><Fields values={properties ?? {}} />{!tables.length && <p className="tw-text-xs tw-text-muted">No tables in this namespace.</p>}</>}
+    {loaded && <><nav className="tw-flex tw-gap-2" aria-label="Table sections">{sections.map(value => <button key={value} className={buttonClass} aria-pressed={section === value} onClick={() => { inspector.clear(); setSection(value); }}>{value}</button>)}</nav>
+      {!inspector.selection && <Structured value={section === 'Overview' ? overview : section === 'Schema' ? schema : section === 'Snapshots' ? { snapshots: metadata?.snapshots, refs: metadata?.refs, 'snapshot-log': metadata?.['snapshot-log'] } : files} />}
+      <InspectionView inspector={inspector} />
+      {section === 'Files' && !inspector.selection && <p className="tw-text-xs tw-text-muted">Select a snapshot in the reference tree to inspect its manifest list, manifests and file metadata.</p>}
     </>}
-    {!readonly && catalog && <section className="tw-space-y-3 tw-rounded tw-border tw-border-border tw-p-4">
+    {!readonly && catalog && !inspector.selection && <section className="tw-space-y-3 tw-rounded tw-border tw-border-border tw-p-4">
       <div className="tw-flex tw-gap-2 tw-items-center tw-flex-wrap"><button className={buttonClass} disabled={busy || !!demoNamespace} onClick={() => void run(async () => {
         const demo = `console_demo_${crypto.randomUUID().replace(/-/g, '')}`;
         await iceberg('/v1/namespaces', token, 'POST', { namespace: [demo], properties: { purpose: 'console demo' } }); setDemoNamespace(demo);

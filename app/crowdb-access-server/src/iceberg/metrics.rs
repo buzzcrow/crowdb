@@ -261,7 +261,7 @@ pub(super) fn route_index(method: &hyper::Method, path: &str) -> usize {
         Some(Route::AdminMetrics) => 7,
         Some(Route::NamespaceList | Route::NamespaceLoad | Route::NamespaceExists) => 1,
         Some(Route::NamespaceCreate | Route::NamespaceProperties | Route::NamespaceDrop) => 2,
-        Some(Route::TableList | Route::TableLoad | Route::TableExists) => 3,
+        Some(Route::TableInspect | Route::TableList | Route::TableLoad | Route::TableExists) => 3,
         Some(Route::TableCreate | Route::TableUpdate | Route::TableDrop | Route::TableRename) => 4,
         Some(Route::TableCredentials) => 5,
         None => 8,

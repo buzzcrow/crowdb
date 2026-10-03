@@ -49,3 +49,28 @@ impl AvroBlocks {
             .ok_or(AvroContainerError::Failed)
     }
 }
+
+impl AvroBlocks {
+    /// Seeks to an OCF block boundary authenticated by the caller for this immutable file.
+    /// This range reader does not establish a whole-file digest proof.
+    /// # Errors
+    /// Rejects offsets outside the data block region or a failed reader.
+    pub(super) fn seek(
+        &mut self,
+        store: Arc<dyn FileBlockStore>,
+        record: FileRecord,
+        position: u64,
+    ) -> Result<(), AvroContainerError> {
+        if self.failed || position < self.header.length || position > record.length {
+            return Err(AvroContainerError::Framing);
+        }
+        let end = record.length;
+        let reader = FileReader::new(store, record, Some(ByteRange { start: position, end }), 16 * 1024)?;
+        self.input = Input::new(reader, end);
+        self.input.position = position;
+        Ok(())
+    }
+    pub(super) fn position(&self) -> u64 {
+        self.input.position
+    }
+}

@@ -47,6 +47,7 @@ pub fn metadata(children: usize, nodes: Vec<ParquetSchemaElement>) -> ParquetMet
     let mut schema = vec![root];
     schema.extend(nodes);
     ParquetMetadata {
+        footer: crowdb_access_iceberg::file::ParquetFooterInfo::default(),
         groups: vec![],
         rows: 0,
         row_groups: 0,
