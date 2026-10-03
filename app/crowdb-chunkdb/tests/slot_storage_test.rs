@@ -6,73 +6,15 @@ use std::sync::Arc;
 use crowdb_chunkdb::routing::{BindingCache, BindingTable};
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::task::TaskStore;
-use crowdb_kv::cluster::group::PxGroup;
-use crowdb_kv::cluster::kv_server::KvServer;
-use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv_client::{ChunkSlotMapClient, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_kv_client::{ChunkSlotMapClient, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_slot::{ChunkSlot, ChunkSlotBootstrap, ChunkStorageGroup};
-use crowdb_protocol::chunk_task::{
-    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_FINALIZE_CHUNK,
-};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, ChunkType};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::key::{BinaryKey, ChunkTaskKey, FinalizeChunkTaskKey};
 
-struct TestGroups {
-    server: Arc<PxKvStore>,
-    kv: Arc<CrowdbKvClient>,
-}
-
-impl TestGroups {
-    async fn start() -> Self {
-        let server = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
-        for group in 0..=3 {
-            server.add_group(PxGroup::new(
-                group,
-                PxLocalReplica::new(group + 1, PxLocalReplicaRole::Leader),
-            ));
-        }
-        server.start().await.unwrap();
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new())));
-        for group in 0..=3 {
-            kv.seed_leader(0, group, server.listen_addr().unwrap().to_string());
-        }
-        Self { server, kv }
-    }
-}
-
-impl Drop for TestGroups {
-    fn drop(&mut self) {
-        self.server.stop();
-    }
-}
-
-fn finalize(id: ChunkId) -> ChunkTaskValue {
-    ChunkTaskValue {
-        schema_version: CHUNK_TASK_SCHEMA_VERSION,
-        task_id: id,
-        partition_id: id,
-        kind: TASK_KIND_FINALIZE_CHUNK,
-        kind_version: 1,
-        state: ChunkTaskState::Pending,
-        priority: u8::MAX,
-        revision: 1,
-        operation_id: id,
-        source_revision: 1,
-        created_at_ms: 1,
-        updated_at_ms: 1,
-        eligible_at_ms: 100,
-        attempt: 0,
-        max_attempts: u32::MAX,
-        estimated_queue_bytes: 0,
-        claim_owner: 0,
-        claim_generation: 0,
-        claim_deadline_ms: 0,
-        last_error_code: 0,
-        last_error: String::new(),
-        payload: Vec::new(),
-    }
-}
+#[path = "common/slot_groups.rs"]
+mod slot_groups;
+use slot_groups::{finalize, TestGroups};
 
 #[tokio::test]
 async fn chunk_task_and_index_commit_together_only_in_selected_group() {

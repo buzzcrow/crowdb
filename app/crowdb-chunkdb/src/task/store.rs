@@ -3,18 +3,21 @@
 
 //! KV persistence for canonical task values and runnable/lease indexes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::range_guard::RangeGuard;
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, Error as KvError, GetOutcome, ReadMode, ScanOutcome};
+use crowdb_kv_client::{BatchOp, CrowdbKvClient, Error as KvError, GetOutcome, ReadMode};
+use crowdb_protocol::chunk_domain::ChunkDomain;
 use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue, TASK_KIND_FINALIZE_CHUNK};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::{
     decode_chunk_task_value, encode_chunk_task_value, BinaryKey, ChunkTaskKey, ChunkTaskValueError,
     FinalizeChunkTaskKey, KeyError, LeasedChunkTaskKey, ReadyChunkTaskKey,
 };
-use tracing::warn;
+
+mod scans;
 
 use crate::routing::{route, BindingCache, Route};
 
@@ -34,6 +37,8 @@ pub enum TaskStoreError {
     KeyMismatch,
     #[error("task transition lost its compare-and-write race")]
     Conflict,
+    #[error("task is outside this runtime domain or service slot authority")]
+    Authority,
 }
 
 /// Persistent task storage. It is lock-free and relies on the caller's
@@ -41,12 +46,33 @@ pub enum TaskStoreError {
 pub struct TaskStore {
     kv: Arc<CrowdbKvClient>,
     bindings: BindingCache,
+    scope: Option<(Arc<RangeGuard>, ChunkDomain)>,
 }
 
 impl TaskStore {
     #[must_use]
     pub fn new(kv: Arc<CrowdbKvClient>, bindings: BindingCache) -> Self {
-        Self { kv, bindings }
+        Self {
+            kv,
+            bindings,
+            scope: None,
+        }
+    }
+
+    /// Bind admission, publication, and scans to one maintenance domain.
+    #[must_use]
+    pub fn with_scope(mut self, guard: Arc<RangeGuard>, domain: ChunkDomain) -> Self {
+        self.scope = Some((guard, domain));
+        self
+    }
+
+    fn check_authority(&self, id: &ChunkId) -> Result<(), TaskStoreError> {
+        if let Some((guard, domain)) = &self.scope {
+            if ChunkDomain::for_chunk(id) != Some(*domain) || guard.check(id).is_err() {
+                return Err(TaskStoreError::Authority);
+            }
+        }
+        Ok(())
     }
 
     /// Persist a canonical task and update its secondary index atomically.
@@ -100,6 +126,7 @@ impl TaskStore {
             task_id: *task_id,
         };
         let key = task_key.to_bytes();
+        self.check_authority(partition_id)?;
         let task_route = route(&self.bindings, partition_id)?;
         if let Some((value, _)) = self.read_raw(&task_route, &key).await? {
             return decode_for_key(&task_key, &value).map(Some);
@@ -114,6 +141,7 @@ impl TaskStore {
         &self,
         partition_id: &ChunkId,
     ) -> Result<Vec<ChunkTaskValue>, TaskStoreError> {
+        self.check_authority(partition_id)?;
         let task_route = route(&self.bindings, partition_id)?;
         let prefix = ChunkTaskKey::prefix_for_partition(partition_id);
         let records = self.scan_partition_route(&task_route, &prefix).await?;
@@ -153,82 +181,6 @@ impl TaskStore {
         Ok(renewed)
     }
 
-    /// Scan runnable indexes whose retry eligibility has arrived.
-    ///
-    /// # Errors
-    /// Returns an error if any routed KV scan fails.
-    pub async fn scan_ready(
-        &self,
-        now_ms: u64,
-        max_keys: u32,
-    ) -> Result<Vec<ReadyChunkTaskKey>, TaskStoreError> {
-        let mut keys = self.scan_index(ReadyChunkTaskKey::prefix_all(), max_keys).await?;
-        let mut decoded = Vec::with_capacity(keys.len());
-        for key in keys.drain(..) {
-            match ReadyChunkTaskKey::from_bytes(&key) {
-                Ok(task) if task.eligible_at_ms <= now_ms => decoded.push(task),
-                Ok(_) => {}
-                Err(error) => warn!(%error, "skipping malformed ready task index"),
-            }
-        }
-        decoded.sort_unstable_by_key(BinaryKey::to_bytes);
-        decoded.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
-        Ok(decoded)
-    }
-
-    /// Scan only FinalizeChunk liveness indexes that have expired. Their key
-    /// starts with the fixed-width deadline, so no chunk or generic-task scan
-    /// is required.
-    pub async fn scan_finalize_due(
-        &self,
-        now_ms: u64,
-        max_keys: u32,
-    ) -> Result<Vec<ReadyChunkTaskKey>, TaskStoreError> {
-        let keys = self
-            .scan_index(FinalizeChunkTaskKey::prefix_all(), max_keys)
-            .await?;
-        let mut due = Vec::with_capacity(keys.len());
-        for key in keys {
-            match FinalizeChunkTaskKey::from_bytes(&key) {
-                Ok(task) if task.expires_at_ms <= now_ms => due.push(ReadyChunkTaskKey {
-                    priority_inverse: 0,
-                    eligible_at_ms: task.expires_at_ms,
-                    partition_id: task.partition_id,
-                    kind: TASK_KIND_FINALIZE_CHUNK,
-                    task_id: task.task_id,
-                }),
-                Ok(_) => break,
-                Err(error) => warn!(%error, "skipping malformed finalize task index"),
-            }
-        }
-        Ok(due)
-    }
-
-    /// Scan claimed indexes whose lease has expired.
-    ///
-    /// # Errors
-    /// Returns an error if any routed KV scan fails.
-    pub async fn scan_expired_leases(
-        &self,
-        now_ms: u64,
-        max_keys: u32,
-    ) -> Result<Vec<LeasedChunkTaskKey>, TaskStoreError> {
-        let keys = self
-            .scan_index(LeasedChunkTaskKey::prefix_all(), max_keys)
-            .await?;
-        let mut decoded = Vec::with_capacity(keys.len());
-        for key in keys {
-            match LeasedChunkTaskKey::from_bytes(&key) {
-                Ok(task) if task.lease_deadline_ms <= now_ms => decoded.push(task),
-                Ok(_) => {}
-                Err(error) => warn!(%error, "skipping malformed leased task index"),
-            }
-        }
-        decoded.sort_unstable_by_key(BinaryKey::to_bytes);
-        decoded.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
-        Ok(decoded)
-    }
-
     async fn write_routed(
         &self,
         partition_id: &ChunkId,
@@ -236,6 +188,7 @@ impl TaskStore {
         previous: Option<&ChunkTaskValue>,
         ops: &[BatchOp],
     ) -> Result<(), TaskStoreError> {
+        self.check_authority(partition_id)?;
         let task_route = route(&self.bindings, partition_id)?;
         let expected_revision = match previous {
             Some(previous) => {
@@ -310,34 +263,6 @@ impl TaskStore {
             .await
             .map_err(|error| TaskStoreError::Kv(error.to_string()))?;
         Ok(result.items)
-    }
-
-    async fn scan_index(&self, prefix: Vec<u8>, max_keys: u32) -> Result<Vec<Bytes>, TaskStoreError> {
-        let table = self.bindings.snapshot();
-        if table.is_empty() {
-            return Err(TaskStoreError::Route(crate::routing::RouteError::NoBinding));
-        }
-        let mut unique = HashSet::new();
-        for binding in table.bindings() {
-            let result: ScanOutcome = self
-                .kv
-                .scan(
-                    binding.kv_store_id,
-                    binding.kv_group_id,
-                    &prefix,
-                    &[],
-                    &[],
-                    max_keys,
-                    ReadMode::Linearizable,
-                    None,
-                    false,
-                    None,
-                )
-                .await
-                .map_err(|error| TaskStoreError::Kv(error.to_string()))?;
-            unique.extend(result.items.into_iter().map(|(key, _)| key));
-        }
-        Ok(unique.into_iter().collect())
     }
 }
 

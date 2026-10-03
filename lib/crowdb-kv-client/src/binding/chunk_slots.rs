@@ -187,6 +187,10 @@ impl ChunkSlotMapClient {
         for prefix in [
             b"/chunk/".to_vec(),
             b"/reservation/".to_vec(),
+            // Retired task indexes must not be mistaken for an empty layout.
+            vec![0xC0, 0, 0x0E],
+            vec![0xC0, 0, 0x0F],
+            vec![0xC0, 0, 0x10],
             ChunkTaskKey::prefix_all(),
             FinalizeChunkTaskKey::prefix_all(),
             ReadyChunkTaskKey::prefix_all(),

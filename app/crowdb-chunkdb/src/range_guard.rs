@@ -97,6 +97,15 @@ impl RangeGuard {
         self.install(&map, instance_id)
     }
 
+    /// Immutable fixed-layout authority used to bound maintenance scans.
+    #[must_use]
+    pub fn owned_slots(&self) -> ChunkSlotBitmap {
+        self.owned
+            .load()
+            .as_ref()
+            .map_or_else(ChunkSlotBitmap::default, |owned| owned.slots.clone())
+    }
+
     #[must_use]
     pub fn owned_bucket_count(&self) -> u64 {
         self.owned

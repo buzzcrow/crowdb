@@ -41,9 +41,8 @@ implementation and verified requirement completion.
 - R207 integration is excluded. Do not replace direct-KV conditional atomic
   writes with chunk-kv batches.
 - [R201](../backlog/R201-tree-memtable-write-handoff.md) is a known tree
-  correctness dependency for final concurrent-write/recovery acceptance. Its
-  working-tree changes are in progress and unverified here. Preserve them;
-  coordinate overlapping tree edits when coding resumes. Routing unit work can
+  correctness dependency for final concurrent-write/recovery acceptance. The workspace was clean when implementation started; its acceptance
+  remains a separate dependency to verify when tree changes are exercised. Routing unit work can
   proceed independently, but affected acceptance cannot be declared passed by
   reducing load or suppressing the known failure.
 
@@ -246,3 +245,10 @@ implementation and verified requirement completion.
 - Source review found reusable group-local conditional atomic writes, task claim
   generations, lock-free binding caches and group-0 batch publication.
 - Remaining work is tracked above; no implementation completion is implied.
+
+- Task index codecs now use new tags and include maintenance domain plus chunk
+  slot. Scoped stores paginate within owned slot runs before selecting eligible
+  work, preserve global priority/deadline order and reject out-of-scope reads,
+  claims and writes. Three new integration cases and the three-group atomicity
+  regression pass. Production runtime split is still pending; the new scope
+  API alone does not complete operation-domain isolation.

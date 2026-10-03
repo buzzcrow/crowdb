@@ -3,6 +3,8 @@
 
 //! Persistent chunk task keys and runnable/lease indexes.
 
+use crate::chunk_domain::ChunkDomain;
+use crate::chunk_slot::ChunkSlot;
 use crate::common::ChunkId;
 
 use super::encoding::{
@@ -56,7 +58,7 @@ impl ChunkTaskKey {
     }
 }
 
-/// Runnable task index ordered by inverse priority and eligibility.
+/// Runnable task index: domain, slot, inverse priority, eligibility, identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReadyChunkTaskKey {
     pub priority_inverse: u8,
@@ -67,10 +69,11 @@ pub struct ReadyChunkTaskKey {
 }
 
 impl BinaryKey for ReadyChunkTaskKey {
-    const TYPE_TAG: u16 = 0x000E;
+    const TYPE_TAG: u16 = 0x0013;
 
     fn encode_to(&self, out: &mut Vec<u8>) {
         encode_header(out, Self::TYPE_TAG);
+        encode_scope(out, &self.partition_id);
         encode_u8(out, self.priority_inverse);
         encode_u64(out, self.eligible_at_ms);
         encode_chunk_id(out, &self.partition_id);
@@ -80,12 +83,13 @@ impl BinaryKey for ReadyChunkTaskKey {
 
     fn decode(buf: &[u8]) -> Result<Self, KeyError> {
         let fields = decode_header(buf, Self::TYPE_TAG)?;
-        let (priority_inverse, offset) = decode_u8(fields, 0)?;
+        let (priority_inverse, offset) = decode_u8(fields, 3)?;
         let (eligible_at_ms, offset) = decode_u64(fields, offset)?;
         let (partition_id, offset) = decode_chunk_id(fields, offset)?;
         let (kind, offset) = decode_u16(fields, offset)?;
         let (task_id, offset) = decode_chunk_id(fields, offset)?;
         check_exact(fields, offset)?;
+        check_scope(fields, &partition_id)?;
         Ok(Self {
             priority_inverse,
             eligible_at_ms,
@@ -103,9 +107,8 @@ impl ReadyChunkTaskKey {
     }
 }
 
-/// Liveness index ordered by expiry before every other field. It is separate
-/// from generic work priority so finalization never requires scanning the
-/// chunk table or unrelated task kinds.
+/// Liveness index: domain, slot, expiry, identity. Independent of generic
+/// work priority so finalization never scans unrelated task kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FinalizeChunkTaskKey {
     pub expires_at_ms: u64,
@@ -114,10 +117,11 @@ pub struct FinalizeChunkTaskKey {
 }
 
 impl BinaryKey for FinalizeChunkTaskKey {
-    const TYPE_TAG: u16 = 0x0010;
+    const TYPE_TAG: u16 = 0x0015;
 
     fn encode_to(&self, out: &mut Vec<u8>) {
         encode_header(out, Self::TYPE_TAG);
+        encode_scope(out, &self.partition_id);
         encode_u64(out, self.expires_at_ms);
         encode_chunk_id(out, &self.partition_id);
         encode_chunk_id(out, &self.task_id);
@@ -125,10 +129,11 @@ impl BinaryKey for FinalizeChunkTaskKey {
 
     fn decode(buf: &[u8]) -> Result<Self, KeyError> {
         let fields = decode_header(buf, Self::TYPE_TAG)?;
-        let (expires_at_ms, offset) = decode_u64(fields, 0)?;
+        let (expires_at_ms, offset) = decode_u64(fields, 3)?;
         let (partition_id, offset) = decode_chunk_id(fields, offset)?;
         let (task_id, offset) = decode_chunk_id(fields, offset)?;
         check_exact(fields, offset)?;
+        check_scope(fields, &partition_id)?;
         Ok(Self {
             expires_at_ms,
             partition_id,
@@ -144,7 +149,7 @@ impl FinalizeChunkTaskKey {
     }
 }
 
-/// Claimed task index ordered by lease deadline.
+/// Claimed task index: domain, slot, lease deadline, identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LeasedChunkTaskKey {
     pub lease_deadline_ms: u64,
@@ -154,10 +159,11 @@ pub struct LeasedChunkTaskKey {
 }
 
 impl BinaryKey for LeasedChunkTaskKey {
-    const TYPE_TAG: u16 = 0x000F;
+    const TYPE_TAG: u16 = 0x0014;
 
     fn encode_to(&self, out: &mut Vec<u8>) {
         encode_header(out, Self::TYPE_TAG);
+        encode_scope(out, &self.partition_id);
         encode_u64(out, self.lease_deadline_ms);
         encode_chunk_id(out, &self.partition_id);
         encode_u16(out, self.kind);
@@ -166,11 +172,12 @@ impl BinaryKey for LeasedChunkTaskKey {
 
     fn decode(buf: &[u8]) -> Result<Self, KeyError> {
         let fields = decode_header(buf, Self::TYPE_TAG)?;
-        let (lease_deadline_ms, offset) = decode_u64(fields, 0)?;
+        let (lease_deadline_ms, offset) = decode_u64(fields, 3)?;
         let (partition_id, offset) = decode_chunk_id(fields, offset)?;
         let (kind, offset) = decode_u16(fields, offset)?;
         let (task_id, offset) = decode_chunk_id(fields, offset)?;
         check_exact(fields, offset)?;
+        check_scope(fields, &partition_id)?;
         Ok(Self {
             lease_deadline_ms,
             partition_id,
@@ -191,4 +198,18 @@ fn prefix(type_tag: u16) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(3);
     encode_header(&mut bytes, type_tag);
     bytes
+}
+
+fn encode_scope(out: &mut Vec<u8>, id: &ChunkId) {
+    encode_u8(out, ChunkDomain::for_chunk(id).map_or(0, |domain| domain as u8));
+    encode_u16(out, ChunkSlot::for_chunk(id).value());
+}
+
+fn check_scope(fields: &[u8], id: &ChunkId) -> Result<(), KeyError> {
+    let mut expected = Vec::with_capacity(3);
+    encode_scope(&mut expected, id);
+    if fields.get(..3) != Some(expected.as_slice()) {
+        return Err(KeyError::BadTag);
+    }
+    Ok(())
 }

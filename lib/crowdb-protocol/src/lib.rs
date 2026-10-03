@@ -309,6 +309,7 @@ pub use crate::types::diskdb_util::{
 pub mod common_type;
 pub use common_type::{DiskGroupId, GroupId, InstanceId, NodeId, RackId, ReplicaId, StoreId};
 
+pub mod chunk_domain;
 pub mod chunk_id;
 pub mod chunk_slot;
 pub use chunk_id::{
