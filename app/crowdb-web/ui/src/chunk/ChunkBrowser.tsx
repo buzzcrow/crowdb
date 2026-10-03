@@ -24,6 +24,8 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
   const [lookup, setLookup] = useState('');
   const [page, setPage] = useState<ChunkPage | null>(null);
   const [rows, setRows] = useState<Chunk[]>([]);
+  const [windowStarts, setWindowStarts] = useState<Array<string | undefined>>([undefined]);
+  const [windowIndex, setWindowIndex] = useState(0);
   const [detail, setDetail] = useState<ChunkDetail | null>(null);
   const [stripSequence, setStripSequence] = useState<number | null>(null);
   const [stripStart, setStripStart] = useState(0);
@@ -33,7 +35,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
   const controller = useRef<AbortController | null>(null);
   const loadedKind = useRef<string | null>(null);
   const openedRequest = useRef<number | null>(null);
-  const query = useCallback(async (after?: string) => {
+  const query = useCallback(async (after?: string, index = 0) => {
     controller.current?.abort();
     const request = new AbortController();
     controller.current = request;
@@ -43,7 +45,11 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
     try {
       const search = new URLSearchParams({ limit: '100', ...(kind ? { chunk_type: kind } : {}), ...(after ? { after } : {}) });
       const result = await readJson<ChunkPage>(await fetch(`${getApiBase()}/chunks?${search}`, { signal: request.signal }));
-      if (version === revision.current) { loadedKind.current = kind; setPage(result); setRows(result.chunks); setDetail(null); }
+      if (version === revision.current) {
+        loadedKind.current = kind; setPage(result); setRows(result.chunks); setDetail(null);
+        setWindowIndex(index);
+        setWindowStarts(previous => [...previous.slice(0, index), after]);
+      }
     } catch (error) { if (version === revision.current) setError(String(error)); }
     finally { if (version === revision.current) setBusy(false); }
   }, [kind]);
@@ -104,16 +110,42 @@ export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest
     {page && <p className="tw-text-xs tw-text-muted">{page.owners} owners · scanned {page.scanned} records this page · observed {new Date(page.observed_at_ms).toLocaleTimeString()}</p>}
     {page?.owners === 0 && <p className="tw-text-sm tw-text-muted">No live ChunkDB service is registered. Deploy ChunkDB in Cluster before browsing chunks.</p>}
     {!!page?.failures.length && <div role="alert" className="tw-text-xs tw-text-failed">Partial result. Retry this scope after owner recovery; no continuation is issued while an owner is missing.<JsonView value={page.failures} /></div>}
-    <table className="tw-w-full tw-text-sm" aria-label="Chunks"><thead className="tw-text-left tw-text-muted"><tr><th>Chunk ID</th><th>Type</th><th>State</th><th>Strips</th></tr></thead><tbody>{rows.map(chunk => <tr key={chunk.id_hex} className="tw-border-t tw-border-border"><td><button className="tw-py-2 tw-font-mono tw-text-xs tw-text-accent" disabled={busy} onClick={() => void inspect(chunk.id_hex)}>{chunk.id_hex}</button></td><td>{kinds[chunk.chunk_type] ?? `Unknown (${chunk.chunk_type})`}{parseInt(chunk.id_hex.slice(0, 2), 16) !== chunk.chunk_type && ' · type mismatch'}</td><td>{states[chunk.state] ?? chunk.state}</td><td>{chunk.strips.length}</td></tr>)}</tbody></table>
+    <details open={!chunk}>
+      <summary className="tw-cursor-pointer tw-text-xs tw-text-muted tw-pb-2">Chunk list · {rows.length} records in this window</summary>
+      <div className="tw-max-h-64 tw-overflow-auto tw-rounded tw-border tw-border-border"><table className="tw-w-full tw-text-sm" aria-label="Chunks"><thead className="tw-text-left tw-text-muted"><tr><th>Chunk ID</th><th>Type</th><th>State</th><th>Strips</th></tr></thead><tbody>{rows.map(chunk => <tr key={chunk.id_hex} className="tw-border-t tw-border-border"><td><button className="tw-py-2 tw-font-mono tw-text-xs tw-text-accent" disabled={busy} onClick={() => void inspect(chunk.id_hex)}>{chunk.id_hex}</button></td><td>{kinds[chunk.chunk_type] ?? `Unknown (${chunk.chunk_type})`}{parseInt(chunk.id_hex.slice(0, 2), 16) !== chunk.chunk_type && ' · type mismatch'}</td><td>{states[chunk.state] ?? chunk.state}</td><td>{chunk.strips.length}</td></tr>)}</tbody></table></div>
+    </details>
     {page && !rows.length && !busy && <p className="tw-text-xs tw-text-muted">No matching chunks in this scan window.{page.next && ' Continue scanning to find later matches.'}</p>}
-    {page?.next && <button className={buttonClass} disabled={busy} onClick={() => void query(page.next!)}>Scan next window</button>}
-    {chunk && detail && <section className="tw-space-y-3 tw-border-t tw-border-border tw-pt-4">
-      <div className="tw-flex tw-justify-between"><h2 className="tw-font-semibold tw-font-mono tw-text-sm">{chunk.id_hex}</h2><button className={buttonClass} disabled={busy} onClick={() => void inspect(chunk.id_hex)}>Refresh layout</button></div>
-      <JsonView value={{ state: states[chunk.state] ?? chunk.state, revision: chunk.modify_ts, capacity_kib: chunk.capacity, sealed_length_kib: chunk.sealed_length, acknowledged_cursor_bytes: chunk.acknowledged_cursor, writer_epoch: chunk.writer_epoch, strips: chunk.strips.length }} />
+    {page && <nav aria-label="Chunk page window" className="tw-flex tw-items-center tw-gap-3">
+      <button className={buttonClass} disabled={busy || windowIndex === 0} onClick={() => void query(windowStarts[windowIndex - 1], windowIndex - 1)}>Prev</button>
+      <span className="tw-text-xs tw-text-muted">Window {windowIndex + 1} · {rows.length} chunks · at most 100 scanned</span>
+      <button className={buttonClass} disabled={busy || !page.next} onClick={() => void query(page.next!, windowIndex + 1)}>Next</button>
+    </nav>}
+    {chunk && detail && <section aria-label="Chunk layout" className="tw-space-y-3 tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4">
+      <div className="tw-flex tw-justify-between tw-gap-3"><h2 aria-label={chunk.id_hex} className="tw-font-semibold tw-font-mono tw-text-sm tw-break-all">Chunk {chunk.id_hex}</h2><button className={`${buttonClass} tw-shrink-0`} disabled={busy} onClick={() => void inspect(chunk.id_hex)}>Refresh layout</button></div>
+      <dl className="tw-grid tw-grid-cols-2 tw-gap-2 tw-text-xs sm:tw-grid-cols-4">
+        {Object.entries({ State: states[chunk.state] ?? chunk.state, Revision: chunk.modify_ts, 'Capacity (KiB)': chunk.capacity, 'Sealed (KiB)': chunk.sealed_length, 'Acknowledged (bytes)': chunk.acknowledged_cursor, 'Writer epoch': chunk.writer_epoch, Strips: chunk.strips.length }).map(([name, value]) => <div key={name}><dt className="tw-text-muted">{name}</dt><dd className="tw-font-mono tw-break-all">{value ?? 'Unknown'}</dd></div>)}
+      </dl>
       <p className="tw-text-xs tw-text-muted">Layout observed {new Date(detail.observed_at_ms).toLocaleTimeString()} · validity {detail.layout_validity_ms} ms. Placement observed separately at {new Date(detail.placement_observed_at_ms).toLocaleTimeString()}. Refresh during conversion or migration.</p>
       {detail.placement_error && <p className="tw-text-xs tw-text-degraded">Placement unavailable: {detail.placement_error}</p>}
       <div className="tw-space-y-2" aria-label="Chunk strips">{ordered.slice(stripStart, stripStart + 20).map(strip => <button key={strip.strip_sequence} className={`${buttonClass} tw-w-full tw-text-left tw-space-y-2 ${stripSequence === strip.strip_sequence ? 'tw-border-accent' : ''}`} onClick={() => setStripSequence(strip.strip_sequence)}>
-        <div>Sequence {strip.strip_sequence} · offset {strip.chunk_offset} KiB · {layout(strip)} {strip.placement_repair_required && '· repair required'}</div><div className="tw-flex tw-gap-2 tw-flex-wrap">{fragments(strip).slice(0, 32).map((fragment, index) => <span key={identity(fragment)} className="tw-rounded tw-border tw-border-border tw-px-3 tw-py-2 tw-bg-accent/10">{strip.strip?.EcStrip ? index < strip.strip.EcStrip.data_num ? `D${index}` : `P${index - strip.strip.EcStrip.data_num}` : `Copy ${index}`} · {diskId(fragment)?.slice(0, 8) ?? 'Unknown'}</span>)}</div>
+        <div className="tw-font-semibold">Sequence {strip.strip_sequence} · offset {strip.chunk_offset} KiB · {layout(strip)} {strip.placement_repair_required && '· repair required'}</div>
+        <div className="tw-text-muted">Capacity {strip.capacity} KiB · sealed {strip.sealed_length} KiB · unit {strip.unit_kb} KiB</div>
+        <div className="tw-flex tw-gap-2 tw-overflow-x-auto tw-pb-1">{fragments(strip).slice(0, 32).map((fragment, index) => {
+          const id = diskId(fragment);
+          const placement = detail.placements.find(value => value.disk_id.replace(/-/g, '').toLowerCase() === id);
+          const ec = strip.strip?.EcStrip;
+          const role = ec ? index < ec.data_num ? `Data ${index}` : `Parity ${index - ec.data_num}` : `Mirror ${index + 1}`;
+          const unavailable = strip.unavailable_segments.some(value => identity(value) === identity(fragment));
+          return <span key={identity(fragment)} data-testid="chunk-disk-block" className={`tw-block tw-w-56 tw-shrink-0 tw-rounded tw-border tw-p-3 tw-bg-bg tw-space-y-1 ${unavailable ? 'tw-border-failed/50' : ec && index >= ec.data_num ? 'tw-border-degraded/40' : 'tw-border-accent/30'}`}>
+            <span className="tw-block tw-font-semibold">{role} · {unavailable ? 'unavailable' : 'allocated'}</span>
+            <span className="tw-block">Node {placement?.node_id ?? 'Unknown'} · Diskgroup {placement?.disk_group_id ?? 'Unknown'}</span>
+            <span className="tw-block tw-font-mono tw-break-all">Disk {id ?? 'Unknown'}</span>
+            <span className="tw-block">Zone {fragment.zone_index} · offset {fragment.unit_offset} units</span>
+            <span className="tw-block">{fragment.unit_count} units{placement && ` · ${(BigInt(fragment.unit_offset) * BigInt(placement.unit_size)).toString()} bytes offset`}</span>
+          </span>;
+        })}</div>
+        {fragments(strip).length === 0 && <div className="tw-text-muted">No allocated disk blocks</div>}
+        {fragments(strip).length > 32 && <div className="tw-text-muted">First 32 blocks shown; select strip for all block details.</div>}
       </button>)}</div>
       {stripStart > 0 && <button className={buttonClass} onClick={() => setStripStart(value => Math.max(0, value - 20))}>Previous strips</button>}
       {ordered.length > stripStart + 20 && <button className={buttonClass} onClick={() => setStripStart(value => value + 20)}>Next 20 strips</button>}

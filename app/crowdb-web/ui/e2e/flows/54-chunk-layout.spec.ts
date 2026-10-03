@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: layout 1.0s, bounded strips 0.525s (2026-10-03)
+// Baseline: layout 0.932s, bounded strips 0.519s, scan 0.667s (2026-10-03)
 import { test, expect } from '../fixtures/realBackend';
 
 test('Chunk browser renders stable Mirror and EC sequences with exact placement identities', async ({ page }) => {
@@ -9,6 +9,7 @@ test('Chunk browser renders stable Mirror and EC sequences with exact placement 
   const strips = [
     { strip_sequence: 9, chunk_offset: 1024, capacity: 1024, unit_kb: 4, sealed_length: 0, strip_type: 1, strip: { EcStrip: { segments: [segment, { ...segment, zone_index: 3 }], data_num: 1, code_num: 1, ec_state: 1 } }, unavailable_segments: [segment], placement_repair_required: true },
     { strip_sequence: 3, chunk_offset: 0, capacity: 1024, unit_kb: 4, sealed_length: 1024, strip_type: 0, strip: { MirrorStrip: { segments: [segment] } }, unavailable_segments: [], placement_repair_required: false },
+    ...[2, 3].map(copies => ({ strip_sequence: 10 + copies, chunk_offset: copies * 1024, capacity: 1024, unit_kb: 4, sealed_length: 0, strip_type: 0, strip: { MirrorStrip: { segments: Array.from({ length: copies }, (_, index) => ({ ...segment, zone_index: index })) } }, unavailable_segments: [], placement_repair_required: false })),
   ];
   const chunk = { id_hex: id, chunk_type: 5, state: 1, modify_ts: '18446744073709551615', capacity: 2048, sealed_length: 1024, acknowledged_cursor: '9007199254740993', writer_epoch: '18446744073709551615', strips };
   await page.route('**/api/chunks**', route => {
@@ -21,8 +22,23 @@ test('Chunk browser renders stable Mirror and EC sequences with exact placement 
   await expect(page.getByLabel('Chunk ID prefix')).toHaveCount(0);
   await page.getByRole('table', { name: 'Chunks' }).getByRole('button', { name: id, exact: true }).click();
   const layout = page.getByLabel('Chunk strips');
-  await expect(layout.getByRole('button')).toHaveCount(2);
+  await expect(layout.getByRole('button')).toHaveCount(4);
   await expect(layout.getByRole('button').nth(0)).toContainText('Sequence 3');
+  const mirror = layout.getByRole('button', { name: /Sequence 3/ });
+  await expect(mirror.getByTestId('chunk-disk-block')).toContainText('Mirror 1');
+  for (const copies of [2, 3]) {
+    const blocks = layout.getByRole('button', { name: new RegExp(`Sequence ${10 + copies} ·`) }).getByTestId('chunk-disk-block');
+    await expect(blocks).toHaveCount(copies);
+    await expect(blocks.nth(copies - 1)).toContainText(`Mirror ${copies}`);
+  }
+  const ec = layout.getByRole('button', { name: /Sequence 9/ });
+  await expect(ec.getByTestId('chunk-disk-block')).toHaveCount(2);
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Data 0 · unavailable');
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Node 1 · Diskgroup 3');
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Disk ffffffffffffffffffffffffffffffff');
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Zone 2 · offset 9007199254740993 units');
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('36893488147419107328 bytes offset');
+  await expect(ec.getByTestId('chunk-disk-block').nth(1)).toContainText('Parity 0');
   await layout.getByRole('button', { name: /Sequence 9/ }).click();
   await expect(page.locator('main aside').filter({ hasText: 'Strip sequence 9' })).toContainText('Data 0 · unavailable');
   await expect(page.locator('main aside').filter({ hasText: 'Strip sequence 9' })).toContainText('36893488147419107328 bytes');
@@ -79,15 +95,22 @@ test('Chunk auto scan stays bounded and type changes replace the current window'
   await expect(rows).toHaveCount(100);
   expect(requests[0].searchParams.has('prefix')).toBe(false);
   expect(requests[0].searchParams.get('limit')).toBe('100');
-  await page.getByRole('button', { name: 'Scan next window' }).click();
+  const pagination = page.getByRole('navigation', { name: 'Chunk page window' });
+  await expect(pagination.getByRole('button', { name: 'Prev', exact: true })).toBeDisabled();
+  await pagination.getByRole('button', { name: 'Next', exact: true }).click();
   await expect(rows.nth(0)).toHaveText('00000000000000000000000000000064');
   await expect(rows).toHaveCount(100);
+  await expect(pagination).toContainText('Window 2');
+  await pagination.getByRole('button', { name: 'Prev', exact: true }).click();
+  await expect(rows.nth(0)).toHaveText('00000000000000000000000000000000');
+  await expect(pagination).toContainText('Window 1');
+  expect(requests[2].searchParams.has('after')).toBe(false);
   await page.getByLabel('Chunk type').selectOption('4');
   await expect(rows.nth(0)).toHaveText('04000000000000000000000000000000');
-  expect(requests[2].searchParams.has('after')).toBe(false);
-  expect(requests[2].searchParams.get('chunk_type')).toBe('4');
+  expect(requests[3].searchParams.has('after')).toBe(false);
+  expect(requests[3].searchParams.get('chunk_type')).toBe('4');
   await page.getByTestId('domain-capacity').click();
   await page.getByTestId('domain-chunk').click();
   await expect(rows).toHaveCount(100);
-  expect(requests).toHaveLength(3);
+  expect(requests).toHaveLength(4);
 });

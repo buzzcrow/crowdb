@@ -795,12 +795,24 @@ logical chunks across metadata stores and explain their physical placement.
 - Entering Chunk scans the first 100-record window automatically. Type selection
   refreshes that bounded window; exact Chunk ID lookup remains available. There
   is no ID-prefix form or additional filter requiring a wider scan.
-- Continuations replace the displayed window instead of accumulating rows.
+- Prev and Next navigate bounded scan windows using remembered start cursors.
+  Changing type or refreshing starts a new cursor history. Continuations
+  replace the displayed window instead of accumulating rows; window numbers
+  do not imply a global total or a snapshot across requests.
   Returning from another domain retains the list and selected detail; inactive
   requests are cancelled and late responses cannot overwrite the selection.
 - Results expose full ID, type, state, capacity/length, metadata location, and
   business owner when known. Selecting a result opens structured metadata and
   Strip/Mirror/EC layout. Stable Strip sequence identifies selection.
+- The layout is one vertical Chunk box containing horizontal Strip rows in
+  logical-offset order. Each row contains disk blocks: one per Mirror replica,
+  or separate EC data and parity blocks. Every block displays its complete
+  disk ID, Node, Diskgroup, Zone, unit offset and, when unit size is known,
+  byte offset. Missing placement remains explicitly unknown.
+- Strip rows use 20-entry pages. Disk blocks remain on a horizontal scroll row
+  rather than wrapping into ambiguous strip boundaries. The central diagram
+  shows at most 32 blocks per strip and identifies truncation; selecting the
+  strip exposes the remaining details. The list has its own bounded viewport.
 - The property panel describes the selected strip/fragment and provides
   links to Capacity Disk, Cluster Node, owning Tree/Journal, or metadata
   Group/Partition. Placement observations retain their own timestamps.

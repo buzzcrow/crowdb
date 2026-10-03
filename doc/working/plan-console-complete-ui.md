@@ -536,3 +536,20 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
   Chunk browser baseline three passed, Rust fmt and affected all-target Clippy
   passed, and C++ tree-lint exited successfully. Live browser acceptance covered
   all three data tabs. Runtime reports and private credentials remain outside Git.
+
+## Chunk window and physical-layout refinement
+
+- Chunk listing provides Prev / Next with remembered scan start cursors;
+  type changes and refresh reset the history. One window replaces another,
+  and the list scrolls independently of the selected layout.
+- A vertical Chunk container holds horizontal Strip rows. Mirror replica and
+  EC data/parity blocks display complete disk IDs and Node, Diskgroup, Zone,
+  unit offset and exact byte offset directly in the diagram. Structured Chunk
+  fields replace the central JSON dump. Strip detail retains navigation links.
+- Focused browser regression: three passed (0.942 s layout, 0.589 s strip
+  paging, 0.785 s scan paging). Coverage includes one/two/three Mirror copies,
+  EC data/parity blocks, complete placement fields and returning to the first
+  scan window. TypeScript checks and production build passed; the live Iceberg
+  Chunk shows Node 3 / Diskgroup 3 / Zone 2 with its exact byte offset.
+- Combined Chunk and Chunk-KV browser verification: seven passed, including
+  Journal-to-Chunk exact lookup and preserved partition selection on return.
