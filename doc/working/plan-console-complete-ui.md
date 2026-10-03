@@ -507,3 +507,32 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
 - Actual Tree page structure and decoded extent records still require bounded
   native inspection interfaces. Current checkpoint/counter and extent-fence
   views do not claim those records are already available.
+
+## Current-cluster data acceptance
+
+- Deployed CDB, three DiskIO instances, Chunk-KV and Access into the current
+  Console cluster. Chunk-KV readiness now probes `/ready`; the old `/health`
+  input became `/health/health` in the shared readiness helper and terminated
+  an otherwise healthy deployment.
+- Disk discovery preserves unsigned 64-bit identity words as decimal strings
+  across the Rust FFI JSON boundary. DiskIO accepts those strings and legacy
+  nonnegative integers; malformed identities retain the existing disk set.
+- Published `crowdb-tpc-loader` 0.1.1 loaded SF 0.001 into
+  `console_tpch_demo`: eight tables, 8,695 rows and eight Parquet files.
+  The live Iceberg tree exposes snapshots, manifest lists, manifests and files;
+  Parquet inspection shows footer, row groups and columns with zero data-page
+  bytes read.
+- Copied the 32 source Iceberg objects into S3 bucket `console-iceberg-demo`,
+  with an additional `README.json` index. Every copied object was read back and
+  compared byte-for-byte. Live S3 listing and metadata preview passed.
+- Chunk ALL lists 12 real records. Their metadata is currently in Store 0,
+  Group 0; Group 1 has no chunk records. Clicking an Iceberg chunk shows its
+  strip, disk and zone. ChunkDB range redesign remains deferred.
+- This is a development data deployment: one rack uses the debug CDB unsafe
+  placement mode and one-copy writes. DiskIO uses memory disks, so this demo
+  data does not survive a DiskIO process restart. Access catalog initialization
+  was performed with the supported management CLI before startup.
+- Verification: DiskIO CTest 130 passed, lifecycle tests four passed, focused
+  Chunk browser baseline three passed, Rust fmt and affected all-target Clippy
+  passed, and C++ tree-lint exited successfully. Live browser acceptance covered
+  all three data tabs. Runtime reports and private credentials remain outside Git.

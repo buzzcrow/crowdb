@@ -100,7 +100,7 @@ async fn native(
         Kind::ChunkKv => (
             chunk_kv_config(body, seeds, node).await?,
             None,
-            format!("{http}/health"),
+            format!("{http}/ready"),
         ),
         Kind::AccessServer => {
             // One cluster key set survives removal/redeployment of individual Access instances.

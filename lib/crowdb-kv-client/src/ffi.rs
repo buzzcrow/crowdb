@@ -168,7 +168,7 @@ pub unsafe extern "C" fn crowdb_hw_list_disks_in_group(
             .into_iter()
             .map(|(did, val)| {
                 serde_json::json!({
-                    "disk_id": {"high": did.high, "low": did.low},
+                    "disk_id": {"high": did.high.to_string(), "low": did.low.to_string()},
                     "value": val,
                 })
             })
@@ -339,9 +339,9 @@ pub unsafe extern "C" fn crowdb_svc_heartbeat_diskio_at(
     });
 }
 
-unsafe fn parse_json_or_default<T: serde::de::DeserializeOwned>(value: *const c_char) -> T
+unsafe fn parse_json_or_default<T>(value: *const c_char) -> T
 where
-    T: Default,
+    T: serde::de::DeserializeOwned + Default,
 {
     if value.is_null() {
         return T::default();
