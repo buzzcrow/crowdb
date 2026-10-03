@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { getApiBase } from '../api';
 import { readJson } from '../access/native';
 import { Workbench, JsonView, inputClass, buttonClass } from '../access/Workbench';
@@ -19,9 +19,8 @@ const states = ['Init', 'Active', 'Sealed', 'Deleted'];
 const diskId = (segment: Segment): string | null => segment.disk_id ? BigInt(segment.disk_id.high).toString(16).padStart(16, '0') + BigInt(segment.disk_id.low).toString(16).padStart(16, '0') : null;
 const identity = (segment: Segment): string => `${diskId(segment)}/${segment.zone_index}/${segment.unit_offset}/${segment.allocation_ts}`;
 
-export function ChunkBrowser({ onPlacement }: { onPlacement: (entity: SelectedEntity) => void }) {
+export function ChunkBrowser({ active, onPlacement }: { active: boolean; onPlacement: (entity: SelectedEntity) => void }) {
   const [kind, setKind] = useState('');
-  const [prefix, setPrefix] = useState('');
   const [lookup, setLookup] = useState('');
   const [page, setPage] = useState<ChunkPage | null>(null);
   const [rows, setRows] = useState<Chunk[]>([]);
@@ -31,22 +30,34 @@ export function ChunkBrowser({ onPlacement }: { onPlacement: (entity: SelectedEn
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const revision = useRef(0);
-  const query = async (after?: string) => {
+  const controller = useRef<AbortController | null>(null);
+  const loadedKind = useRef<string | null>(null);
+  const query = useCallback(async (after?: string) => {
+    controller.current?.abort();
+    const request = new AbortController();
+    controller.current = request;
     const version = ++revision.current;
     setBusy(true); setError('');
     if (!after) { setRows([]); setPage(null); setDetail(null); }
     try {
-      const search = new URLSearchParams({ prefix, limit: '100', ...(kind ? { chunk_type: kind } : {}), ...(after ? { after } : {}) });
-      const result = await readJson<ChunkPage>(await fetch(`${getApiBase()}/chunks?${search}`));
-      if (version === revision.current) { setPage(result); setRows(previous => after ? [...previous, ...result.chunks] : result.chunks); }
+      const search = new URLSearchParams({ limit: '100', ...(kind ? { chunk_type: kind } : {}), ...(after ? { after } : {}) });
+      const result = await readJson<ChunkPage>(await fetch(`${getApiBase()}/chunks?${search}`, { signal: request.signal }));
+      if (version === revision.current) { loadedKind.current = kind; setPage(result); setRows(result.chunks); setDetail(null); }
     } catch (error) { if (version === revision.current) setError(String(error)); }
     finally { if (version === revision.current) setBusy(false); }
-  };
+  }, [kind]);
+  useEffect(() => {
+    if (active && loadedKind.current !== kind) void query();
+    return () => { controller.current?.abort(); ++revision.current; setBusy(false); };
+  }, [active, kind, query]);
   const inspect = async (id: string) => {
+    controller.current?.abort();
+    const request = new AbortController();
+    controller.current = request;
     const version = ++revision.current;
     setDetail(null); setStripSequence(null); setStripStart(0); setBusy(true); setError('');
     try {
-      const result = await readJson<ChunkDetail>(await fetch(`${getApiBase()}/chunks/${encodeURIComponent(id)}`));
+      const result = await readJson<ChunkDetail>(await fetch(`${getApiBase()}/chunks/${encodeURIComponent(id)}`, { signal: request.signal }));
       if (version === revision.current) setDetail(result);
     } catch (error) { if (version === revision.current) setError(String(error)); }
     finally { if (version === revision.current) setBusy(false); }
@@ -57,13 +68,13 @@ export function ChunkBrowser({ onPlacement }: { onPlacement: (entity: SelectedEn
   const fragments = (strip: Strip) => strip.strip?.MirrorStrip?.segments ?? strip.strip?.EcStrip?.segments ?? [];
   const layout = (strip: Strip) => strip.strip?.MirrorStrip ? `Mirror ×${strip.strip.MirrorStrip.segments.length}` : strip.strip?.EcStrip ? `EC ${strip.strip.EcStrip.data_num}+${strip.strip.EcStrip.code_num} · ${strip.strip.EcStrip.ec_state === 1 ? 'Parity' : 'No parity'}` : `Unknown layout (${strip.strip_type})`;
   return <Workbench sidebar={<>
-    <h2 className="tw-font-semibold">ChunkDB</h2><p className="tw-text-xs tw-text-muted">Type and hexadecimal ID prefix</p>
+    <h2 className="tw-font-semibold">Chunks</h2><p className="tw-text-xs tw-text-muted">Browse existing chunks or look up an exact ID.</p>
     <form className="tw-space-y-3" onSubmit={event => { event.preventDefault(); void query(); }}>
       <label className="tw-block tw-text-xs">Chunk type<select className={`${inputClass} tw-w-full`} value={kind} onChange={event => setKind(event.target.value)}><option value="">All types</option>{kinds.map((name, type) => <option key={name} value={type}>{name} (0x{type.toString(16).padStart(2, '0')})</option>)}</select></label>
-      <label className="tw-block tw-text-xs">Chunk ID prefix<input className={`${inputClass} tw-w-full tw-font-mono`} value={prefix} onChange={event => setPrefix(event.target.value)} pattern="[0-9a-fA-F]{0,32}" maxLength={32} /></label><button className={buttonClass} disabled={busy}>Query chunks</button>
+      <button className={buttonClass} disabled={busy}>Refresh chunks</button>
     </form>
     <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void inspect(lookup.toLowerCase()); }}><label className="tw-block tw-text-xs">Exact Chunk ID<input className={`${inputClass} tw-w-full tw-font-mono`} required pattern="[0-9a-fA-F]{32}" value={lookup} onChange={event => setLookup(event.target.value)} /></label><button className={buttonClass} disabled={busy}>Lookup ID</button></form>
-    <p className="tw-text-xs tw-text-muted">Read-only diagnostics. Type prefixes classify content; range ownership uses a separate hash.</p>
+    <p className="tw-text-xs tw-text-muted">Up to 100 records per scan window. Type selection applies to this window; continue manually for later matches.</p>
   </>} detail={strip && detail ? <>
     <h3 className="tw-font-semibold">Strip sequence {strip.strip_sequence}</h3><p className="tw-text-xs">{layout(strip)}</p><JsonView value={{ offset_kib: strip.chunk_offset, capacity_kib: strip.capacity, unit_kib: strip.unit_kb, sealed_length_kib: strip.sealed_length, placement_assessment: strip.placement_assessment }} />
     {fragments(strip).map((segment, index) => {
@@ -79,7 +90,7 @@ export function ChunkBrowser({ onPlacement }: { onPlacement: (entity: SelectedEn
       </div>;
     })}
   </> : undefined}>
-    <h1 className="tw-text-lg tw-font-semibold">Chunks / {kind ? kinds[Number(kind)] : 'All types'} / {prefix || 'All prefixes'}</h1>
+    <h1 className="tw-text-lg tw-font-semibold">Chunks / {kind ? kinds[Number(kind)] : 'All types'}</h1>
     {busy && <p role="status" className="tw-text-xs tw-text-muted">Querying ChunkDB…</p>}{error && <p role="alert" className="tw-text-sm tw-text-failed">{error}</p>}
     {page && <p className="tw-text-xs tw-text-muted">{page.owners} owners · scanned {page.scanned} records this page · observed {new Date(page.observed_at_ms).toLocaleTimeString()}</p>}
     {page?.owners === 0 && <p className="tw-text-sm tw-text-muted">No live ChunkDB service is registered. Deploy ChunkDB in Cluster before browsing chunks.</p>}

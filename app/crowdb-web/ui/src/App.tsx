@@ -577,7 +577,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             scanStatus={capacityScanStatus} loading={capLoading} readonly={logicalReadonly}
             onRefresh={refreshCapacity} selectedEntity={selectionForDomain(Domain.Capacity)}
           /></div>
-        <div hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser
+        <div hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser active={domain === Domain.Chunk}
           onPlacement={entity => { pendingSelectionRef.current = entity; setDomain(entity.domain); }}
         /></div>
         <div hidden={domain !== Domain.ChunkKV} className="tw-flex-1 tw-min-h-0"><ChunkKvView

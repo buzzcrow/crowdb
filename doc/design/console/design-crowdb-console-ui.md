@@ -796,9 +796,12 @@ logical chunks across metadata stores and explain their physical placement.
 - Left navigation starts with All types and individual types, then optionally
   scopes by metadata source and Store/Group or Partition. Large populations
   remain paged lists rather than one tree node per chunk.
-- Central filters include type, exact ID or prefix, state, metadata source,
-  Store/Group or Partition, business owner, and physical node/disk when that
-  relationship is queryable. Unsupported filters are identified explicitly.
+- Entering Chunk scans the first 100-record window automatically. Type selection
+  refreshes that bounded window; exact Chunk ID lookup remains available. There
+  is no ID-prefix form or additional filter requiring a wider scan.
+- Continuations replace the displayed window instead of accumulating rows.
+  Returning from another domain retains the list and selected detail; inactive
+  requests are cancelled and late responses cannot overwrite the selection.
 - Results expose full ID, type, state, capacity/length, metadata location, and
   business owner when known. Selecting a result opens structured metadata and
   Strip/Mirror/EC layout. Stable Strip sequence identifies selection.
