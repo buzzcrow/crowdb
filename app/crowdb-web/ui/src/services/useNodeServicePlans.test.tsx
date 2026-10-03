@@ -28,11 +28,13 @@ describe('node service plans', () => {
     rerender({ value: stores });
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(result.current.plans[1].chunkdb.state).toBe('deployed');
-    expect(result.current.plans[1]['access-server'].state).toBe('deployed');
+    expect(result.current.plans[1]['access-server'].state).toBe('waiting');
     expect(result.current.plans[1].diskio.state).toBe('waiting');
     expect(result.current.plans[1]['chunk-kv'].state).toBe('waiting');
     expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/services/deploy', 'POST', expect.objectContaining({ kind: 'chunkdb', test_single_node: false }));
+    vi.mocked(listServers).mockResolvedValue([{ node_id: 2, service_type: 'chunk-kv', pid: 100 }] as Awaited<ReturnType<typeof listServers>>);
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(result.current.plans[1]['access-server'].state).toBe('deployed');
     expect(vi.mocked(serviceRequest).mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(2);
   });
   it('does not retry failures automatically and stops queued deployments before reset', async () => {

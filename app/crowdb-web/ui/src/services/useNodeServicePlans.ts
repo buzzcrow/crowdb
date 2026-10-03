@@ -71,11 +71,13 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               const { stores: currentStores, groups: currentGroups } = input.current;
               const metadata = currentStores.flatMap(store => store.groups.filter(group => String(group.group_id) !== '0').map(group => ({ store: store.store_id, group: group.group_id })))[0];
               const disks = currentGroups[id];
-              const diskGroup = disks?.diskGroups.find(group => disks.disksByDg[group.id]?.some(disk => disk.device_path?.trim()));
+              const diskGroup = disks?.diskGroups.find(group => disks.disksByDg[group.id]?.length && disks.disksByDg[group.id].every(disk => disk.device_path?.trim()));
               let waiting = '';
               if (kind !== 'kv' && kind !== 'diskdb' && !currentStores.some(store => String(store.store_id) === '0')) waiting = 'Waiting: initialize Group 0 in KV';
               else if (kind === 'diskio' && !diskGroup) waiting = 'Waiting: add disks with device paths in Capacity';
               else if (kind === 'chunk-kv' && !metadata) waiting = 'Waiting: create a non-system metadata group in KV';
+              else if (kind === 'chunk-kv' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < 2) waiting = 'Waiting: deploy DiskIO on at least two nodes for journal mirrors';
+              else if (kind === 'access-server' && plan['chunk-kv'].state !== 'deployed' && !existing.some(server => server.service_type === 'chunk-kv' && server.pid)) waiting = 'Waiting: deploy Chunk-KV and initialize its catalog';
               if (waiting) { write(kind, { state: 'waiting', detail: waiting }); continue; }
               write(kind, { state: 'deploying' });
               try {
