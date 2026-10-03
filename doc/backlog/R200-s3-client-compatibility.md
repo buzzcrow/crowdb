@@ -5,9 +5,8 @@
 
 #### Status
 
-Partially implemented. Default SDK and configured AWS CLI acceptance proceed
-independently. Positive rclone compatibility remains pending
-[R204](R204-s3-client-metadata.md): the client requires persisted user metadata.
+Partially implemented. Default SDK and configured AWS CLI/rclone recipes pass,
+including persisted user metadata, service recovery and container restart.
 No compatibility claim substitutes for a failing positive gate. Default concurrent CLI
 progress is tracked by [R205](R205-s3-concurrent-client-progress.md).
 The accumulated full-stack regression also remains unaccepted because of the
@@ -60,8 +59,8 @@ inferring broad S3 compatibility from one SDK.
   required capabilities land.
 - Existing `test-boto3-e2e`, container S3 client, and container release verification
   remain regression baselines. R196 owns performance benchmarks, not this gate.
-- R204 owns mandatory client metadata and multipart metadata persistence. The
-  retained positive rclone gate resumes after it lands.
+- User metadata and multipart metadata persistence are available. The retained
+  positive rclone task and container recovery/restart checks pass.
 - Current recipes use the configured shared listener namespace.
 - R205 retains default concurrent multipart progress diagnostics. A documented
   single-concurrency development recipe does not certify default concurrency.

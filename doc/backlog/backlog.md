@@ -44,8 +44,8 @@ optional cuObject/RDMA acceleration after the TCP baseline is correct and measur
   default checksum coverage — Area: S3 / clients / container — High priority,
   high complexity. Verify default boto3, AWS CLI, and rclone
   workflows; trace gaps and gate published compatibility recipes. **Partially
-  implemented:** SDK and configured AWS recipe coverage is available; positive
-  rclone waits on R204 and accumulated storage regression on R205.
+  implemented:** SDK and configured AWS/rclone recipes pass, including metadata
+  and container recovery; accumulated storage regression remains under R205.
 - **[R206](R206-s3-manual-sdk-verification.md)** — manual Java 2.x,
   JavaScript v3 and Go v2 SDK verification — Area: S3 / clients / CI.
   Independent local Pixi tasks and workflow_dispatch jobs only; excluded from
@@ -102,10 +102,6 @@ Caches, selected ORC and container engine workflows remain separate.
 
 ### High Priority
 
-- **[R204](R204-s3-client-metadata.md)** — client user metadata — Area: S3 /
-  clients — High priority. Persist bounded
-  metadata through PUT, multipart and copy; accept rclone
-  without silently discarding requested metadata.
 - **[R205](R205-s3-concurrent-client-progress.md)** — concurrent client
   admission and storage progress — Area: S3 / KV / DiskIO — High priority.
   Diagnose default CLI multipart resource rejection, storage stalls and the

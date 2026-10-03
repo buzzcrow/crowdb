@@ -5,8 +5,8 @@
 
 #### Problem
 
-The current general S3 client acceptance covers boto3 and a configured AWS CLI
-recipe, with rclone coverage under active implementation. These workflows do
+The current general S3 client acceptance covers boto3 and configured AWS CLI
+and rclone recipes. These workflows do
 not establish compatibility with independent language SDK request construction,
 checksum defaults, streaming, retries and multipart transfer behavior. The
 finite [S3 design](../design/access-server/s3/design-crowdb-access-s3.md)
@@ -53,12 +53,12 @@ Actions, following the existing Iceberg SDK verification pattern.
 
 #### Dependencies
 
-- R200 supplies the general S3 fixture and core client contract. R204 supplies
-  user-metadata persistence; metadata scenarios remain visibly incomplete until
-  it lands. R205 tracks known storage correctness and progress failures; retain
+- R200 supplies the general S3 fixture and core client contract. User-metadata
+  persistence is available and verified through recovery/restart. R205 tracks
+  known storage correctness and progress failures; retain
   failures when reproduced rather than weakening assertions or hiding skips.
 - This manual verification is independent of R200 completion and normal release
-  acceptance. Implementation follows the current metadata work sequentially.
+  acceptance. Implement the SDK suites sequentially.
 - Use the current shared listener namespace. No additional permission model,
   filesystem mounting or old-version data migration is included.
 

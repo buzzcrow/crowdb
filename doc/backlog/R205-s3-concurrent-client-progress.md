@@ -42,7 +42,10 @@ past earlier pending apply calls. A delayed write is then rejected below the
 flush durable floor, although Paxos already chose it. A deterministic
 out-of-order NoOp test reproduces the premature frontier; recording an empty
 batch marks only the NoOp slot and retains earlier gaps. Engine, group and
-store regressions pass with this fix; full-stack verification is in progress.
+store regressions pass with this fix. Rebuilt full-stack verification still
+fails after 89.461 seconds with expected=118611, new=118818, durable=118197;
+directory corruption does not recur. The private default-suite-ordered-noop
+fixture retains this evidence. The remaining cursor regression is unresolved.
 
 The [S3 data path](../design/access-server/s3/design-crowdb-access-s3.md)
 requires bounded admission and continued progress under concurrent peers.
