@@ -37,6 +37,7 @@ let captured: CapturedRequest[] = [];
 function installFetchMock(response: any = {}, status = 200) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
+    if (url.endsWith('/deployment-defaults')) return new Response(JSON.stringify({ kv: { instance_id: '1', http_port: 19911, rpc_port: 19921 }, diskdb: { instance_id: '1', rpc_port: 29921 } }), { status: 200 });
     const method = (init?.method || 'GET').toUpperCase();
     const bodyText = typeof init?.body === 'string' ? init.body : '';
     captured.push({
@@ -125,6 +126,8 @@ describe('Add Node dialog', () => {
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
     fireEvent.click(screen.getByLabelText('Enable CrowDB Storage on this node'));
+    fireEvent.click(screen.getByLabelText('Enable DiskDB on this node'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
@@ -155,6 +158,8 @@ describe('Add Node dialog', () => {
       target: { value: '/keys/id_rsa' },
     });
     fireEvent.click(screen.getByLabelText('Enable CrowDB Storage on this node'));
+    fireEvent.click(screen.getByLabelText('Enable DiskDB on this node'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
@@ -182,6 +187,8 @@ describe('Add Node dialog', () => {
     );
 
     fireEvent.click(screen.getByLabelText('Enable CrowDB Storage on this node'));
+    fireEvent.click(screen.getByLabelText('Enable DiskDB on this node'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
@@ -213,6 +220,7 @@ describe('Add Node dialog', () => {
     fireEvent.click(screen.getByLabelText('Enable DiskDB on this node'));
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     await waitFor(() => expect(captured.length).toBe(2));
@@ -236,10 +244,12 @@ describe('Add Node dialog', () => {
 
   it('closes the dialog after node creation even when DiskDB deployment fails', async () => {
     let onCloseCalled = false;
+    const onDefaultServices = vi.fn();
     // Custom mock: success for addNode and deployServer, 502 for deployDiskdb.
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
-      const method = (init?.method || 'GET').toUpperCase();
+      if (url.endsWith('/deployment-defaults')) return new Response(JSON.stringify({ kv: { instance_id: '1', http_port: 19911, rpc_port: 19921 }, diskdb: { instance_id: '1', rpc_port: 29921 } }), { status: 200 });
+    const method = (init?.method || 'GET').toUpperCase();
       const bodyText = typeof init?.body === 'string' ? init.body : '';
       captured.push({ url, method, body: bodyText ? JSON.parse(bodyText) : null });
       const isDiskdbDeploy = url.includes('/diskdb/deploy');
@@ -254,6 +264,7 @@ describe('Add Node dialog', () => {
       <AddNodeDialog
         isOpen
         onClose={() => { onCloseCalled = true; }}
+        onDefaultServices={onDefaultServices}
         racks={[mockRack]}
         defaultRackId="1"
         defaultRestPort="19911"
@@ -266,6 +277,7 @@ describe('Add Node dialog', () => {
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
     // Both KV and DiskDB are enabled by default.
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     // The dialog must close after node creation, before service results.
@@ -275,8 +287,8 @@ describe('Add Node dialog', () => {
     expect(captured[0].url).toBe('/api/nodes');
     expect(captured[1].url).toBe('/api/nodes/1/server/deploy');
     expect(captured[2].url).toBe('/api/nodes/1/diskdb/deploy');
-    // The error toast surfaces the partial failure.
-    await waitFor(() => expect(screen.queryByText(/DiskDB/)).toBeTruthy());
+    // A failed prerequisite must not start the dependent service plan.
+    expect(onDefaultServices).not.toHaveBeenCalled();
   });
 });
 
@@ -287,6 +299,7 @@ describe('Deploy Server dialog', () => {
 
     fireEvent.change(screen.getByLabelText('REST Port'), { target: { value: '19911' } });
     fireEvent.change(screen.getByLabelText('RPC Port'), { target: { value: '19921' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /deploy/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /deploy/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
@@ -298,7 +311,7 @@ describe('Deploy Server dialog', () => {
     expect(captured[0].body.binary).toBeUndefined();
   });
 
-  it('submits immediately with provided default ports', async () => {
+  it('uses freshly checked defaults instead of stale supplied ports', async () => {
     installFetchMock({ node_id: 1, pid: 1234, mgmt_url: 'x', rpc_url: 'y' });
     render(
       <DeployServerDialog
@@ -311,10 +324,11 @@ describe('Deploy Server dialog', () => {
       { wrapper },
     );
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /deploy/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /deploy/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
-    expect(captured[0].body).toEqual({ rest_port: 19915, rpc_port: 19925 });
+    expect(captured[0].body).toEqual({ rest_port: 19911, rpc_port: 19921 });
   });
 
   it('increments ports only when the same node already uses them', () => {
@@ -865,6 +879,7 @@ describe('end-to-end create flow', () => {
     fireEvent.click(screen.getByLabelText('Enable DiskDB on this node'));
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
     await waitFor(() => expect(captured.length).toBe(3));
     node.unmount();

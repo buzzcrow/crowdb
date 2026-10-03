@@ -63,6 +63,7 @@ pub async fn http_deploy_diskdb(
     Json(body): Json<DeployDiskdbBody>,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), (StatusCode, Json<ErrorBody>)> {
     let (listen_port, http_port, rpc_listen_port) = validate_diskdb_ports(&body)?;
+    let _ports = crate::services::defaults::claim_ports(&state, &[listen_port, http_port, rpc_listen_port])?;
     let node = {
         let cfg = state.config.read().unwrap();
         // Check for existing diskdb instance on this node.

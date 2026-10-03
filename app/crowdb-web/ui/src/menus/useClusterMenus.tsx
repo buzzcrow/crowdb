@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { serviceLifecycle } from './serviceLifecycle';
 import { useCallback } from 'react';
 import { Server, Database, Plus, Trash2, Activity, RotateCw, Square, HardDrive } from 'lucide-react';
 import { removeRack, removeNode, removeStore, removeGroup, removeReplica, stopServer, restartServer, pingNode, setDiskStatus, setDiskGroupStatus, restartDiskdb, stopDiskdb, removeServer, removeDiskdb, removeDiskGroup, removeDisk } from '../api';
@@ -8,7 +9,7 @@ import type { MenuTarget } from '../topology/TopologyCanvas';
 import type { MenuItemOrSeparator } from '../components/ContextMenu';
 import { buildStatusSubmenu } from './status';
 import type { MenuContext } from './context';
-import { isAuxiliaryKind, serviceNames, serviceRequest, type AuxiliaryKind } from '../services/client';
+import { isAuxiliaryKind, serviceNames, type AuxiliaryKind } from '../services/client';
 export function useClusterMenus({ readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog }: MenuContext) {
   /** Build per-layer context menu items for a normalized target. */
   return useCallback(
@@ -17,13 +18,8 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
       const items: MenuItemOrSeparator[] = [];
       const p = t.parentIds || {};
       if (physicalActive && t.type === 'Server' && isAuxiliaryKind(t.serviceType)) {
-        const label = serviceNames[t.serviceType];
         const id = String(t.rawId ?? t.id);
-        return [
-          { id: 'aux-restart', label: `Start / Restart ${label}`, onSelect: () => runMutation(`Restart ${label}`, id, () => serviceRequest(`/services/${encodeURIComponent(id)}/restart`, 'POST')) },
-          { id: 'aux-stop', label: `Stop ${label}`, onSelect: () => runMutation(`Stop ${label}`, id, () => serviceRequest(`/services/${encodeURIComponent(id)}/stop`, 'POST')) },
-          { id: 'aux-delete', label: `Remove ${label}`, destructive: true, onSelect: () => requestDelete(label, id, () => runMutation(`Remove ${label}`, id, () => serviceRequest(`/services/${encodeURIComponent(id)}`, 'DELETE')), 'Stops this instance and removes its deployment record. Stored data is preserved.') },
-        ];
+        return serviceLifecycle(allServers?.find(server => server.id === id) ?? { id, node_id: Number(p.node_id), service_type: t.serviceType, health: 'unknown' }, runMutation, requestDelete);
       }
 
       if (physicalActive) {
@@ -76,6 +72,11 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
             items.push({ id: `deploy-${kind}`, label: `Deploy ${serviceNames[kind]}`, icon: <Server className="tw-h-4 tw-w-4" />,
               onSelect: () => setDialog(dialog => ({ ...dialog, deployAuxiliary: { nodeId, kind } })),
             });
+          }
+          items.push({ id: 'default-services', label: 'Deploy default services', icon: <Server size={16} />, onSelect: () => setDialog(dialog => ({ ...dialog, defaultServices: { nodeId } })) });
+          for (const server of allServers?.filter(server => server.node_id === nodeId) ?? []) {
+            const label = isAuxiliaryKind(server.service_type) ? serviceNames[server.service_type] : server.service_type === 'diskdb' ? 'DiskDB' : 'CrowDB Storage';
+            items.push({ id: `manage-${server.id}`, label: `${label} · ${server.id}`, hint: server.pid ? 'Running' : 'Stopped', submenu: serviceLifecycle(server, runMutation, requestDelete) });
           }
           items.push({
             id: 'ping',

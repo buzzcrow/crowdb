@@ -4,6 +4,7 @@
 //! Typed deployment identity and local service lifecycle.
 
 pub(crate) mod access;
+pub(crate) mod defaults;
 mod deployment;
 mod lifecycle;
 pub(crate) mod observation;
@@ -11,8 +12,9 @@ mod operation;
 mod publication;
 
 pub(crate) fn routes() -> axum::Router<crate::state::AppState> {
-    use axum::routing::{delete, post};
+    use axum::routing::{delete, get, post};
     axum::Router::new()
+        .route("/api/deployment-defaults", get(defaults::get))
         .route("/api/nodes/:id/services/deploy", post(deployment::deploy))
         .route("/api/services/:id/restart", post(lifecycle::restart))
         .route("/api/services/:id/stop", post(lifecycle::stop))

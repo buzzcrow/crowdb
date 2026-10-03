@@ -4,6 +4,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import type { Domain, CapacityUsageResponse } from '../types';
 import type { CrowdbConsoleProps } from '../App';
 export interface ConsoleDialogState {
+    defaultServices?: { nodeId: number };
     addRack?: boolean;
     addNode?: { rackId: number };
     addStore?: boolean;

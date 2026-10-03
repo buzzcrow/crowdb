@@ -329,6 +329,7 @@ test.describe('cluster · server lifecycle', () => {
   });
 });
 
+// Baseline: auxiliary deployment 2.4s (2026-10-03)
 test('auxiliary deployments use typed parameters, identities and lifecycle menus', async ({ page, baseURL }) => {
   page.setDefaultTimeout(3000);
   await seedRackAndNode(baseURL!, 495, 495);
@@ -336,6 +337,12 @@ test('auxiliary deployments use typed parameters, identities and lifecycle menus
   const requests: { kind: string; instance_id: string; [key: string]: unknown }[] = [];
   const stopped: string[] = [];
   await page.route('**/api/servers', route => route.fulfill({ json: services }));
+  await page.route('**/api/deployment-defaults', route => route.fulfill({ json: {
+    chunkdb: { instance_id: '1', http_port: 12010, rpc_port: 12110 },
+    diskio: { instance_id: '1', rpc_port: 13010 },
+    'chunk-kv': { instance_id: '1', http_port: 15010, rpc_port: 15110 },
+    'access-server': { instance_id: '1', http_port: 9092, s3_port: 9091 },
+  } }));
   await page.route('**/api/stores?*', route => route.fulfill({ json: [{ store_id: '7', nodes: [], groups: [] }] }));
   await page.route('**/api/nodes/495/disk-groups', route => route.fulfill({ json: [{ id: 8, node_id: 495, rack_id: 495, name: 'Capacity disks', status: 'active' }] }));
   await page.route('**/api/nodes/495/services/deploy', route => {
@@ -354,6 +361,7 @@ test('auxiliary deployments use typed parameters, identities and lifecycle menus
     await sidebar.getByText('N-495', { exact: true }).click({ button: 'right' });
     await page.getByRole('menuitem', { name: `Deploy ${label}`, exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Deploy ${label}`, exact: true });
+    await expect(dialog.getByRole('button', { name: 'Deploy service', exact: true })).toBeEnabled();
     await dialog.getByLabel('Instance ID', { exact: true }).fill('9007199254740993');
     if (kind === 'diskio') await dialog.getByLabel('Disk group', { exact: true }).selectOption('8');
     if (kind === 'chunk-kv') await dialog.getByLabel('Metadata store', { exact: true }).selectOption('7');
@@ -364,7 +372,8 @@ test('auxiliary deployments use typed parameters, identities and lifecycle menus
     await item.click();
     await expect(page.getByRole('complementary', { name: 'Entity inspector' }).getByText(label, { exact: true })).toBeVisible();
     await expect(page.locator(`[data-id="SERVICE-${kind}-9007199254740993"]`)).toBeVisible();
-    await item.click({ button: 'right' });
+    await sidebar.getByText('N-495', { exact: true }).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: `${label} · ${kind}-9007199254740993 Running`, exact: true }).hover();
     await expect(page.getByRole('menuitem', { name: 'Stop CrowDB Storage', exact: true })).toHaveCount(0);
     await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
     await expect.poll(() => stopped.includes(`/api/services/${kind}-9007199254740993/stop`), { timeout: 3000, intervals: [100] }).toBe(true);
@@ -376,4 +385,22 @@ test('auxiliary deployments use typed parameters, identities and lifecycle menus
   expect(requests[2]).toMatchObject({ metadata_store_id: 7 });
   expect(requests[3]).toMatchObject({ s3_port: 9091, http_port: 9092 });
   expect(requests[3]).not.toHaveProperty('rpc_port');
+});
+
+test('default service plan waits for Group 0 without using single-node mode', async ({ page, baseURL }) => {
+  await seedRackAndNode(baseURL!, 496, 496);
+  const services = [{ id: '496', node_id: 496, service_type: 'kv', pid: 123, health: 'up' }, { id: 'diskdb-496', node_id: 496, service_type: 'diskdb', pid: 124, health: 'up' }];
+  let deployments = 0;
+  await page.route('**/api/servers', route => route.fulfill({ json: services }));
+  await page.route('**/api/stores?*', route => route.fulfill({ json: [] }));
+  await page.route('**/api/nodes/496/services/deploy', route => { deployments++; return route.fulfill({ status: 500, json: { error: 'must not deploy before Group 0' } }); });
+  await page.goto('/?domain=Cluster');
+  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByText('N-496', { exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Deploy default services', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Node 496 services', exact: true });
+  await expect(dialog.getByRole('listitem')).toHaveCount(6);
+  await dialog.getByRole('button', { name: 'Deploy missing services', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('initialize Group 0');
+  await expect(dialog.getByRole('button', { name: 'Deploy missing services', exact: true })).toBeEnabled();
+  expect(deployments).toBe(0);
 });

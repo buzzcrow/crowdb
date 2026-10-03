@@ -553,3 +553,40 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
   Chunk shows Node 3 / Diskgroup 3 / Zone 2 with its exact byte offset.
 - Combined Chunk and Chunk-KV browser verification: seven passed, including
   Journal-to-Chunk exact lookup and preserved partition selection on return.
+
+## Multi-node UI rebuild follow-ups
+
+- [ ] **Default node service set**: each new Node should default to one KV,
+  DiskDB, ChunkDB, DiskIO, Chunk-KV and Access Server instance. Stage startup
+  by prerequisites (Group 0, disk groups/disks, metadata groups and catalog),
+  expose pending/failed phases and retry without recreating the Node. Use
+  normal multi-node deployment and protected placement, never silently select
+  single-node or unsafe placement. Deferred by the user while the current
+  manual UI rebuild is validated. Files: AddNodeDialog, service deployment.
+- [x] **Per-service Node menu**: Node context menus must independently manage
+  each service type and instance (deploy/start/stop/restart/remove), showing
+  existing instances and lifecycle status. Keep this alongside whole-node
+  defaults. Deferred with the default service-set work. Files: useClusterMenus,
+  DeployServiceDialog. Verified Node submenus and exact instance lifecycle routing.
+- Reset regression discovered during live rebuild: auxiliary processes and
+  launch records survived while UI reported success. Fixed auxiliary teardown
+  before KV shutdown and removal of retained launches; five lifecycle tests
+  and affected Clippy passed. Old runtime isolated; fresh default workspace
+  now has three logical racks and rebuilding nodes through UI is in progress.
+- [ ] **One-click valid create defaults**: every Create/Deploy dialog pre-fills
+  valid, conflict-free IDs, listener ports and parent/dependency references.
+  With prerequisites satisfied, accepting defaults creates the resource.
+  Check conflicts across service types on the same host, not only within the
+  current form. Missing prerequisites must be explicit rather than supplying
+  defaults that inevitably fail. Include repeated creation and reopened-dialog
+  coverage. Deferred with the other creation-flow refinements.
+
+- Creation-flow implementation: backend deployment defaults now choose unused
+  instance IDs and ports across service types, including DiskDB listener ranges,
+  Access S3 endpoints and active local sockets. Deployment revalidates and
+  claims listener ports. Add Node defaults to the six-service plan; prerequisites
+  are explicit and the Node menu can resume missing deployments without
+  duplicating existing services. Complete live multi-node acceptance remains.
+- Verification: six service integration tests, 39 create-form unit tests, two
+  focused service-menu/plan browser tests, frontend build/lint and affected
+  Rust fmt/Clippy passed. Auxiliary browser case 2.7s versus 2.4s baseline.

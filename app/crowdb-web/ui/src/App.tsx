@@ -12,6 +12,7 @@ import { useLogicalTree } from './data/useLogicalTree';
 import { useCapacityTree } from './data/useCapacityTree';
 import { Header, ClusterHealth } from './shell/Header';
 import { Sidebar } from './shell/Sidebar';
+import { NodeServicesDialog } from './services/NodeServicesDialog';
 import { DeployServiceDialog } from './services/DeployServiceDialog';
 import { ToastContainer } from './components/ToastContainer';
 import { TreeNode } from './components/Tree';
@@ -613,6 +614,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       />
       {dialog.addNode && (
         <AddNodeDialog
+        onDefaultServices={nodeId => setDialog(dialog => ({ ...dialog, defaultServices: { nodeId } }))}
           isOpen
           onClose={closeDialogs}
           racks={racks}
@@ -748,6 +750,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           await handleRefresh();
         }}
       />
+      {dialog.defaultServices && <NodeServicesDialog nodeId={dialog.defaultServices.nodeId} servers={allServers} stores={stores} diskGroups={nodeDiskGroups[dialog.defaultServices.nodeId]?.diskGroups ?? []} onClose={closeDialogs} onSuccess={handleRefresh} />}
       {dialog.deployAuxiliary && <DeployServiceDialog key={`${dialog.deployAuxiliary.kind}/${dialog.deployAuxiliary.nodeId}`} {...dialog.deployAuxiliary}
         servers={allServers} stores={stores} diskGroups={nodeDiskGroups[dialog.deployAuxiliary.nodeId]?.diskGroups ?? []}
         onClose={closeDialogs} onSuccess={handleRefresh} />}

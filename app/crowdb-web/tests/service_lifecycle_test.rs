@@ -292,3 +292,47 @@ async fn reset_removes_auxiliary_launches_before_nodes_and_racks() {
     assert!(config.nodes.is_empty());
     assert!(config.racks.is_empty());
 }
+
+#[tokio::test]
+async fn deployment_defaults_avoid_cross_service_and_live_listener_conflicts() {
+    let mut config = config();
+    let occupied = std::net::TcpListener::bind("0.0.0.0:12010").ok();
+    let mut access = ServerEntry::new("access-server-7", "http://127.0.0.1:9092");
+    access.service_type = ServiceType::AccessServer;
+    config.servers.push(access);
+    config.local_launches.insert(
+        "access-server-7".into(),
+        LocalLaunchSpec {
+            env: [("CROWDB_S3_PUBLIC_URI".into(), "http://127.0.0.1:9091".into())].into(),
+            ..Default::default()
+        },
+    );
+    let app = router(AppState::with_config(config, None));
+    let (status, body) = request(&app, "GET", "/api/deployment-defaults", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["access-server"]["instance_id"], "8");
+    let mut ports = std::collections::HashSet::new();
+    for (kind, values) in body.as_object().unwrap() {
+        for name in ["http_port", "rpc_port", "s3_port"] {
+            if let Some(port) = values[name].as_u64() {
+                assert!(![9091, 9092, 19191].contains(&port));
+                if occupied.is_some() {
+                    assert_ne!(port, 12010);
+                }
+                assert!(ports.insert(port));
+                if kind == "diskdb" {
+                    assert!(ports.insert(port + 1));
+                    assert!(ports.insert(port + 2));
+                }
+            }
+        }
+    }
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/nodes/1/services/deploy",
+        json!({"kind":"chunkdb","instance_id":"1","http_port":9091,"rpc_port":12110}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}

@@ -620,6 +620,7 @@ pub async fn http_deploy_node_server(
     Json(body): Json<DeployNodeServerBody>,
 ) -> Result<(StatusCode, Json<DeployResult>), (StatusCode, Json<ErrorBody>)> {
     use crowdb_console_shared::lifecycle::DeployRequest;
+    let _ports = crate::services::defaults::claim_ports(&state, &[body.rest_port, body.rpc_port])?;
 
     let workspace_dir = state
         .prepare_node_workspace(node_id)

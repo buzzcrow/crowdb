@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useEffect, useState } from 'react';
+import { useDeploymentDefaults } from '../../services/useDeploymentDefaults';
 import { Dialog } from '../Dialog';
 import { Input, Select } from '../ui/Input';
 import { useToast } from '../../contexts/ToastContext';
@@ -19,6 +20,7 @@ export interface AddNodeDialogProps {
   defaultRestPort?: string;
   defaultRpcPort?: string;
   defaultDiskdbRpcPort?: string;
+  onDefaultServices?: (nodeId: number) => void;
   onCreatedRackId?: (rackId: number) => void;
   onDiskdbPortReserved?: (port: number) => void;
   onSuccess?: () => void | Promise<void>;
@@ -37,6 +39,7 @@ export function AddNodeDialog({
   defaultRestPort = '19910',
   defaultRpcPort = '19920',
   defaultDiskdbRpcPort = '29920',
+  onDefaultServices,
   onCreatedRackId,
   onDiskdbPortReserved,
   onSuccess,
@@ -53,17 +56,29 @@ export function AddNodeDialog({
   const [rpcPort, setRpcPort] = useState(defaultRpcPort);
   const [enableDiskdb, setEnableDiskdb] = useState(true);
   const [diskdbRpcPort, setDiskdbRpcPort] = useState(defaultDiskdbRpcPort);
+  const [completeSet, setCompleteSet] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const { success, error } = useToast();
 
   useEffect(() => {
     if (!isOpen) return;
+    setNodeId(nextIdFromSuffix(existingNodeIds, 1));
+    setRackId(initialRackId);
+    setCompleteSet(true);
     setRestPort(defaultRestPort);
     setRpcPort(defaultRpcPort);
     setEnableCrowdbKV(true);
     setEnableDiskdb(true);
     setDiskdbRpcPort(defaultDiskdbRpcPort);
   }, [defaultRpcPort, defaultRestPort, defaultDiskdbRpcPort, isOpen]);
+
+  const defaults = useDeploymentDefaults(isOpen);
+  useEffect(() => {
+    if (!defaults.values) return;
+    setRestPort(String(defaults.values.kv.http_port));
+    setRpcPort(String(defaults.values.kv.rpc_port));
+    setDiskdbRpcPort(String(defaults.values.diskdb.rpc_port));
+  }, [defaults.values]);
 
   const isPort = (value: string) => /^\d+$/.test(value) && Number(value) > 0 && Number(value) < 65536;
   const deployPortsValid = isPort(restPort) && isPort(rpcPort) && restPort !== rpcPort;
@@ -133,6 +148,7 @@ export function AddNodeDialog({
         success(parts.join(', '));
       }
       await onSuccess?.();
+      if (completeSet && serviceErrors.length === 0) onDefaultServices?.(numericNodeId);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create node';
       error(message);
@@ -163,10 +179,14 @@ export function AddNodeDialog({
       description="Add a new physical node to your infrastructure"
       confirmLabel="Create Node"
       onConfirm={handleSubmit}
-      confirmDisabled={!rackId || !nodeId.trim() || !host.trim() || isLoading || (enableCrowdbKV && !deployPortsValid) || (enableDiskdb && !diskdbPortsValid)}
+      confirmDisabled={!defaults.values || !rackId || !nodeId.trim() || !host.trim() || isLoading || (enableCrowdbKV && !deployPortsValid) || (enableDiskdb && !diskdbPortsValid)}
       confirmLoading={isLoading}
     >
       <div className="tw-space-y-4">
+        {defaults.error && <p role="alert">{defaults.error}</p>}
+        {!defaults.values && !defaults.error && <p role="status">Finding available ports…</p>}
+        <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={completeSet} onChange={event => setCompleteSet(event.target.checked)} />Deploy complete service set</label>
+        {completeSet && <p className="tw-text-xs tw-text-muted">KV and DiskDB start first. Continue with CDB, DiskIO, Chunk-KV and Access Server after Group 0 and storage prerequisites are ready.</p>}
         {racks.length > 0 ? (
           <Select
             label="Rack"
@@ -214,7 +234,7 @@ export function AddNodeDialog({
           <input
             type="checkbox"
             checked={enableCrowdbKV}
-            onChange={(e) => setEnableCrowdbKV(e.target.checked)}
+            onChange={(e) => { setEnableCrowdbKV(e.target.checked); if (!e.target.checked) setCompleteSet(false); }}
             className="tw-h-4 tw-w-4 tw-rounded tw-border tw-border-border tw-bg-bg tw-text-accent focus:tw-ring-accent"
           />
           <span>Enable CrowDB Storage on this node</span>
@@ -240,7 +260,7 @@ export function AddNodeDialog({
           <input
             type="checkbox"
             checked={enableDiskdb}
-            onChange={(e) => setEnableDiskdb(e.target.checked)}
+            onChange={(e) => { setEnableDiskdb(e.target.checked); if (!e.target.checked) setCompleteSet(false); }}
             className="tw-h-4 tw-w-4 tw-rounded tw-border tw-border-border tw-bg-bg tw-text-accent focus:tw-ring-accent"
           />
           <span>Enable DiskDB on this node</span>

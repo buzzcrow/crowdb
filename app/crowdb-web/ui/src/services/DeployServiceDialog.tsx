@@ -1,12 +1,13 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Dialog } from '../components/Dialog';
 import { Input } from '../components/ui/Input';
 import { inputClass } from '../access/Workbench';
 import type { EnrichedStoreView, DiskGroupEntry } from '../types';
 import type { ServerSummary } from '../api';
+import { useDeploymentDefaults } from './useDeploymentDefaults';
 import { serviceNames, serviceRequest, type AuxiliaryKind } from './client';
 
 export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups, onClose, onSuccess }: {
@@ -24,9 +25,19 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
   const [s3Port, setS3Port] = useState('9091');
   const [diskGroup, setDiskGroup] = useState(String(diskGroups[0]?.id ?? ''));
   const [store, setStore] = useState(String(stores.find(store => String(store.store_id) !== '0')?.store_id ?? stores[0]?.store_id ?? ''));
-  const [bootstrap, setBootstrap] = useState(false);
-  const [group, setGroup] = useState('');
+  const firstGroup = stores.find(entry => String(entry.store_id) === store)?.groups.find(entry => String(entry.group_id) !== '0');
+  const [bootstrap, setBootstrap] = useState(!!firstGroup);
+  const [group, setGroup] = useState(String(firstGroup?.group_id ?? ''));
   const [testMode, setTestMode] = useState(false);
+  const defaults = useDeploymentDefaults(true);
+  useEffect(() => {
+    const value = defaults.values?.[kind];
+    if (!value) return;
+    setInstance(value.instance_id);
+    setHttpPort(String(value.http_port ?? ''));
+    setRpcPort(String(value.rpc_port ?? ''));
+    setS3Port(String(value.s3_port ?? ''));
+  }, [defaults.values, kind]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const ports = kind === 'diskio' ? [rpcPort] : kind === 'access-server' ? [httpPort, s3Port] : [httpPort, rpcPort];
@@ -48,7 +59,7 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
       await onSuccess(); onClose();
     } catch (error) { setError(String(error)); } finally { setBusy(false); }
   }
-  return <Dialog isOpen onClose={onClose} title={`Deploy ${serviceNames[kind]}`} confirmLabel="Deploy service" onConfirm={submit} confirmDisabled={!valid || busy} confirmLoading={busy}>
+  return <Dialog isOpen onClose={onClose} title={`Deploy ${serviceNames[kind]}`} confirmLabel="Deploy service" onConfirm={submit} confirmDisabled={!valid || busy || !defaults.values} confirmLoading={busy}>
     <div className="tw-space-y-3">
       <p className="tw-text-sm">Node {nodeId} · uses this cluster's KV management seeds.</p>
       <Input label="Instance ID" inputMode="numeric" value={instance} onChange={event => setInstance(event.target.value)} />
@@ -69,6 +80,8 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
       </>}
       <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={testMode} onChange={event => setTestMode(event.target.checked)} />Single-node test deployment (reduced redundancy)</label>
       {kind === 'diskio' && <p className="tw-text-xs tw-text-muted">Production requires disks with device paths. Test deployments may use in-memory disks.</p>}
+      {defaults.error && <p role="alert">{defaults.error}</p>}
+      {!defaults.values && !defaults.error && <p role="status">Finding available IDs and ports…</p>}
       {error && <p role="alert" className="tw-text-sm tw-text-failed">{error}</p>}
     </div>
   </Dialog>;

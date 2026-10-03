@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useEffect, useRef, useState } from 'react';
+import { useDeploymentDefaults } from '../../services/useDeploymentDefaults';
 import { Dialog } from '../Dialog';
 import { Input } from '../ui/Input';
 import { useToast } from '../../contexts/ToastContext';
@@ -43,6 +44,13 @@ export function DeployServerDialog({
     wasOpenRef.current = isOpen;
   }, [defaultRpcPort, defaultRestPort, isOpen, nodeId]);
 
+  const defaults = useDeploymentDefaults(isOpen);
+  useEffect(() => {
+    if (!defaults.values) return;
+    setRestPort(String(defaults.values.kv.http_port));
+    setRpcPort(String(defaults.values.kv.rpc_port));
+  }, [defaults.values]);
+
   const isPort = (v: string) => /^\d+$/.test(v) && Number(v) > 0 && Number(v) < 65536;
   const valid = isPort(restPort) && isPort(rpcPort) && restPort !== rpcPort;
 
@@ -77,10 +85,12 @@ export function DeployServerDialog({
       description="Spawn a CrowDB Storage instance on this node. Required before stores or replicas can be created."
       confirmLabel="Deploy"
       onConfirm={handleSubmit}
-      confirmDisabled={!valid || isLoading}
+      confirmDisabled={!defaults.values || !valid || isLoading}
       confirmLoading={isLoading}
     >
       <div className="tw-space-y-4">
+        {defaults.error && <p role="alert">{defaults.error}</p>}
+        {!defaults.values && !defaults.error && <p role="status">Finding available ports…</p>}
         <Input
           label="REST Port"
           inputMode="numeric"

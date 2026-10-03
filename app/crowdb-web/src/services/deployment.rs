@@ -94,10 +94,16 @@ pub(super) async fn deploy(
         claims.push("access-credentials".into());
     }
     let operation = Operation::claim(&state, claims)?;
+    let ports: Vec<_> = [body.http_port, body.rpc_port, body.s3_port]
+        .into_iter()
+        .flatten()
+        .collect();
+    let port_claim = super::defaults::claim_ports(&state, &ports)?;
     let (node, seeds) = inputs(&state, node_id, &id, &body)?;
     // Request cancellation cannot abandon a spawned process before its registration.
     tokio::spawn(async move {
         let _operation = operation;
+        let _ports = port_claim;
         run(&state, &node, &id, &seeds, &body).await
     })
     .await
