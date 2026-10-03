@@ -7,12 +7,11 @@
 
 Partially implemented. Default SDK and configured AWS CLI/rclone recipes pass,
 including persisted user metadata, service recovery and container restart.
-No compatibility claim substitutes for a failing positive gate. Default concurrent CLI
-progress is tracked by [R205](R205-s3-concurrent-client-progress.md).
-After the storage repairs, focused reproductions and two accumulated full-stack
-runs pass all 32 cases, including the thousand-key case and restart recovery.
-The third accumulated run and default-concurrency client verification remain
-with this client task; the user excluded CLI/SDK reruns from MemTable completion.
+Accumulated full-stack runs pass all 32 cases, including the thousand-key case
+and restart recovery. Session contention and orphan generation poisoning are
+repaired; concurrency-10 CLI passes on the original receive budget, independently
+and within a complete accumulated suite. The final container gate also passes.
+Optional language SDK verification is in progress, with Java and Go passing.
 
 #### Problem
 
@@ -63,8 +62,9 @@ inferring broad S3 compatibility from one SDK.
 - User metadata and multipart metadata persistence are available. The retained
   positive rclone task and container recovery/restart checks pass.
 - Current recipes use the configured shared listener namespace.
-- R205 retains default concurrent multipart progress diagnostics. A documented
-  single-concurrency development recipe does not certify default concurrency.
+- Multipart session contention and orphan generation recovery are verified by
+  concurrent repository tests and the concurrency-10 CLI recipe. The container
+  recipe retains one worker; broader client transport defaults are not implied.
 
 #### Acceptance
 
