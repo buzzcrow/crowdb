@@ -10,7 +10,7 @@ interface ZoneGridProps {
   selectedZone: number | null;
   onZoneClick: (index: number) => void;
 }
-const PAGE_SIZE = 64;
+const PAGE_SIZE = 32;
 
 export function ZoneGrid({ zones, zoneCount, selectedZone, onZoneClick }: ZoneGridProps) {
   const [page, setPage] = useState(0);
@@ -27,6 +27,9 @@ export function ZoneGrid({ zones, zoneCount, selectedZone, onZoneClick }: ZoneGr
         </button>;
       })}
     </div>
+    <label className="tw-block tw-text-xs">Go to zone <input aria-label="Go to zone" type="number" min={0} max={Math.max(0, zoneCount - 1)}
+      className="tw-w-28 tw-bg-bg tw-border tw-border-border tw-rounded tw-p-1" placeholder={`0–${Math.max(0, zoneCount - 1)}`}
+      onChange={event => { if (!event.target.value) return; const index = Number(event.target.value); if (Number.isSafeInteger(index) && index >= 0 && index < zoneCount) { setPage(Math.floor(index / PAGE_SIZE)); onZoneClick(index); } }} /></label>
     {zoneCount > PAGE_SIZE && <div className="tw-flex tw-gap-4 tw-text-xs">
       <button disabled={start === 0} onClick={() => setPage(start / PAGE_SIZE - 1)}>Previous zones</button>
       <span>Zones {start}–{Math.min(start + PAGE_SIZE, zoneCount) - 1} of {zoneCount}</span>

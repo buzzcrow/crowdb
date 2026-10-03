@@ -11,7 +11,7 @@ interface ZoneBitmapProps {
 const PAGE_SIZE = 4096;
 const COLUMNS = 64;
 const CELL = 6;
-const colors = { used: '#3b82f6', free: '#22c55e', unknown: '#6b7280' };
+const colors = { used: '#557fa5', free: '#527d68', unknown: '#6b7280' };
 
 /** Draw only one block window; the API snapshot is little-endian by byte. */
 export function ZoneBitmap({ usageBitmap, totalUnits }: ZoneBitmapProps) {

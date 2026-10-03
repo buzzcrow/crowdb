@@ -16,6 +16,7 @@ import {
   deployDiskdb as apiDeployDiskdb,
   deployNodeServer,
   clusterInit,
+  addGroup,
   waitForLeader,
 } from '../fixtures/consoleSetup';
 
@@ -56,6 +57,7 @@ test.describe('chunk · capacity · zone', () => {
     // but in the full suite the refresh may lag behind the server's
     // readiness — poll until build_hardware_client can resolve an endpoint.
     await waitForLeader(baseURL, 0, 0, 15_000);
+    await addGroup(baseURL, 0, 1, 1, [DISKDB_NODE]);
     // Deploy a diskdb instance so addDiskGroup auto-assigns ownership
     // (required since diskdb ownership enforcement — a3d39f0e).
     await apiDeployDiskdb(baseURL, DISKDB_NODE, freePort());
@@ -94,7 +96,7 @@ test.describe('chunk · capacity · zone', () => {
             rack_id: rackId,
             node_id: nodeId,
             disk_group_id: dgId,
-            disk_id: diskIdDashed,
+            disk_id: diskId,
             disk_type: 1,
             capacity_units: 1000,
             zone_size_units: 100,
@@ -139,7 +141,7 @@ test.describe('chunk · capacity · zone', () => {
             rack_id: rackId,
             node_id: nodeId,
             disk_group_id: dgId,
-            disk_id: diskIdDashed,
+            disk_id: diskId,
             disk_type: 1,
             capacity_units: 1000,
             zone_size_units: 100,
@@ -233,6 +235,10 @@ test.describe('chunk · capacity · zone', () => {
       if (await expandNode.count() > 0) await expandNode.click();
       await expect(aside.getByText(/DG-582/, { exact: true })).toBeVisible({ timeout: 5_000 });
 
+      await aside.getByRole('button', { name: 'test-dg-bitmap (DG-582)', exact: true }).click({ timeout: 3000 });
+      const diskTile = page.getByRole('button').filter({ hasText: `${diskId.slice(0, 8)}…` });
+      await expect(diskTile.locator('[style]')).toHaveCSS('background-color', 'rgb(82, 125, 104)');
+
       // Expand DG and click the disk to enter Disk view.
       const expandDg = aside.getByRole('treeitem').filter({ hasText: /DG-582/ }).locator('button[aria-label="Expand"]');
       if (await expandDg.count() > 0) await expandDg.click();
@@ -243,14 +249,18 @@ test.describe('chunk · capacity · zone', () => {
       const panel = page.locator('.tw-h-full.tw-overflow-auto');
       await expect(panel.getByText(/Capacity — Disk/)).toBeVisible({ timeout: 3_000 });
 
-      // Zone grid should be visible with 10 zones.
+      const recalc = panel.getByRole('button', { name: 'Run Recalc', exact: true });
+      await expect(recalc).toHaveCSS('background-color', 'rgb(54, 94, 120)');
+      await expect(recalc).toHaveCSS('color', 'rgb(255, 255, 255)');
+
+      // Zone grid renders only the current page.
       await expect(panel.getByText(/Zone grid.*130 zones/)).toBeVisible({ timeout: 5_000 });
 
       // Before clicking a zone, no bitmap section should be visible.
       await expect(panel.getByText(/Zone \d+ bitmap/)).toHaveCount(0);
 
       const zones = panel.getByRole('group', { name: 'Disk zones' });
-      await expect(zones.getByRole('button', { name: /^Zone \d+$/ })).toHaveCount(64);
+      await expect(zones.getByRole('button', { name: /^Zone \d+$/ })).toHaveCount(32);
       await panel.getByRole('button', { name: 'Zone 0', exact: true }).click();
 
       // The zone bitmap section should appear with the zone index.
@@ -261,8 +271,8 @@ test.describe('chunk · capacity · zone', () => {
       const bitmap = panel.getByLabel('Zone block usage');
       const pixel = (block: number) => bitmap.evaluate((canvas: HTMLCanvasElement, index) =>
         Array.from(canvas.getContext('2d')!.getImageData((index % 64) * 6 + 2, Math.floor(index / 64) * 6 + 2, 1, 1).data), block);
-      await expect.poll(() => pixel(0), { timeout: 3000, intervals: [100] }).toEqual([59, 130, 246, 255]);
-      expect(await pixel(1)).toEqual([34, 197, 94, 255]);
+      await expect.poll(() => pixel(0), { timeout: 3000, intervals: [100] }).toEqual([85, 127, 165, 255]);
+      expect(await pixel(1)).toEqual([82, 125, 104, 255]);
       expect(await pixel(16)).toEqual([107, 114, 128, 255]);
       await expect(panel.getByText(/Capacity — Disk/)).toBeVisible();
       await panel.getByRole('button', { name: 'Zone 1', exact: true }).click();
@@ -271,12 +281,16 @@ test.describe('chunk · capacity · zone', () => {
       await expect(panel.getByText('Blocks 4096–8191 of 8193', { exact: false })).toBeVisible();
       await panel.getByRole('button', { name: 'Next blocks' }).click();
       await expect(panel.getByText('Blocks 8192–8192 of 8193', { exact: false })).toBeVisible();
-      await panel.getByRole('button', { name: 'Back to parent Disk' }).click();
+      await panel.getByRole('button', { name: 'Close zone detail' }).click();
       await expect(panel.getByTestId('zone-bitmap')).toHaveCount(0);
       await expect(panel.getByText(/Capacity — Disk/)).toBeVisible();
       await panel.getByRole('button', { name: 'Next zones' }).click();
-      await panel.getByRole('button', { name: 'Zone 64', exact: true }).click();
-      await expect(panel.getByRole('region', { name: 'Zone 64 detail' })).toBeVisible();
+      await panel.getByRole('button', { name: 'Zone 32', exact: true }).click();
+      await expect(panel.getByRole('region', { name: 'Zone 32 detail' })).toBeVisible();
+      await panel.getByLabel('Go to zone', { exact: true }).fill('129');
+      await expect(panel.getByRole('region', { name: 'Zone 129 detail' })).toBeVisible();
+      await expect(zones.getByRole('button', { name: /^Zone \d+$/ })).toHaveCount(2);
+      await expect(panel.getByRole('button', { name: 'Back to parent Disk' })).toHaveCount(0);
 
     } finally {
       await removeDisk(baseURL!, nodeId, dgId, diskId).catch(() => {});

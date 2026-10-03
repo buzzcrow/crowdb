@@ -536,7 +536,7 @@ content depends on the selected entity (from `SelectionContext`):
   entries, no bitmap).
 - **Zone selected (in-panel, within the Disk view)** — the Disk overview remains
   visible and Zone details appear below it. The detail header identifies the
-  parent Disk, offers a return button that clears Zone selection, and allows
+  parent Disk, offers a close-detail button that clears Zone selection, and allows
   explicit bitmap refresh. Zone selection is local to that Disk; changing disks
   cannot retain a different disk's Zone or bitmap.
 - The selected-zone API returns a full snapshot only on demand. Inactive or
@@ -545,7 +545,7 @@ content depends on the selected entity (from `SelectionContext`):
 
 ### 15.1 Rendering
 
-- Zone navigation uses 64 accessible buttons per page.
+- Zone navigation uses 32 accessible buttons per page and a direct Zone-number input.
 - Bitmap drawing decodes only the current window of at most 4096 blocks,
   directly from the hex-encoded little-endian byte snapshot. Block zero is
   the least significant bit of the first byte; no expanded whole-zone bit array
@@ -564,7 +564,7 @@ capacity minus busy bytes; reserved space may make those values different.
 Hardware remains browsable without a registered DiskDB. An unavailable scanner
 observation is distinct from a confirmed scanner that has never run.
 
-Green (free) → amber → red (busy):
+Low-saturation green (free) → amber → red (busy):
 - Disk boxes: gradient fill based on `busy_blocks /
   unit_capacity` ratio. 0% = green, ~50% = amber, 100% = red.
 - Bitmap cells: used = blue, free = green, unknown = gray, with a text legend.

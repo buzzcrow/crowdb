@@ -67,7 +67,7 @@ export function RecalcPanel({ dgId, readonly }: RecalcPanelProps) {
           <button
             onClick={handleRecalc}
             disabled={loading}
-            className="tw-flex tw-items-center tw-gap-1 tw-px-3 tw-py-1 tw-text-xs tw-bg-accent tw-text-white tw-rounded-md disabled:tw-opacity-50"
+            className="tw-flex tw-items-center tw-gap-1 tw-px-3 tw-py-1 tw-text-xs tw-bg-[#365e78] tw-text-white hover:tw-bg-[#406d89] tw-rounded-md disabled:tw-opacity-50"
           >
             {loading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <RotateCw className="tw-h-3 tw-w-3" />}
             Run Recalc
@@ -110,7 +110,7 @@ export function RecalcPanel({ dgId, readonly }: RecalcPanelProps) {
                           <button
                             onClick={() => handleRebuild(z)}
                             disabled={rebuildLoading === key}
-                            className="tw-px-2 tw-py-0.5 tw-text-xs tw-bg-accent tw-text-white tw-rounded disabled:tw-opacity-50"
+                            className="tw-px-2 tw-py-0.5 tw-text-xs tw-bg-[#365e78] tw-text-white hover:tw-bg-[#406d89] tw-rounded disabled:tw-opacity-50"
                           >
                             {rebuildLoading === key ? '…' : 'Rebuild'}
                           </button>
