@@ -220,10 +220,10 @@ impl S3HttpHandler for S3Dispatcher {
                 }
             };
             let operation = route.operation;
-            if streaming_requires_upload(&request, operation) {
+            if let Err(code) = prepare_authenticated_upload(&mut request, operation) {
                 metrics.finish_predispatch(OutcomeClass::ClientError, elapsed_ns(started));
                 return Ok(error_response(
-                    &S3Error::new(S3ErrorCode::InvalidRequest, resource, request_id, host_id),
+                    &S3Error::new(code, resource, request_id, host_id),
                     head_only,
                 ));
             }
@@ -289,6 +289,22 @@ async fn authenticate_request(
         .await?;
     if let Some(verifier) = streaming {
         request.extensions_mut().insert(Arc::new(verifier));
+    }
+    Ok(())
+}
+
+fn prepare_authenticated_upload(
+    request: &mut Request<Incoming>,
+    operation: S3Operation,
+) -> Result<(), S3ErrorCode> {
+    let query = request.uri().query().map(str::to_owned);
+    crowdb_access_s3::integrity::merge_presigned_upload_checksums(
+        operation,
+        query.as_deref(),
+        request.headers_mut(),
+    )?;
+    if streaming_requires_upload(request, operation) {
+        return Err(S3ErrorCode::InvalidRequest);
     }
     Ok(())
 }

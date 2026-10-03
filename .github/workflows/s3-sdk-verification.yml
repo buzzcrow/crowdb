@@ -1,0 +1,47 @@
+name: S3 language SDK verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: SDK recipe to run (all runs sequentially)
+        type: choice
+        required: true
+        default: all
+        options: [java, js, go, all]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: latest
+      - uses: Swatinem/rust-cache@v2
+      - name: Run selected SDK recipe
+        env:
+          SDK: ${{ inputs.sdk }}
+        run: |
+          case "$SDK" in
+            java|js|go) pixi run "test-s3-$SDK-sdk" ;;
+            all) pixi run test-s3-sdks ;;
+            *) echo 'Unknown SDK selection' >&2; exit 2 ;;
+          esac
+      # Client stage/code diagnostics are in the job log. Runtime files contain
+      # fixture credentials and must not be uploaded as unrestricted artifacts.
+      - name: Clean subprocesses
+        if: always()
+        run: pixi run clean-env

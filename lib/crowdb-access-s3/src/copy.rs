@@ -94,6 +94,7 @@ pub fn validate_headers(headers: &HeaderMap, signed_headers: &str, part: bool) -
         let supported = matches!(
             name,
             "x-amz-date"
+                | "x-amz-user-agent"
                 | "x-amz-content-sha256"
                 | "x-amz-security-token"
                 | "x-amz-copy-source"

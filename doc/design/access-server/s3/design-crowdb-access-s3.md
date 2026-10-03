@@ -72,6 +72,13 @@ or corrupt bodies cannot replace a selected object. Checksum calculation on
 requests is supported; arbitrary response checksum negotiation is outside the
 installed surface.
 
+Presigned PUT and UploadPart also accept those checksum values and their SDK
+algorithm declaration in the signed query. Authentication verifies the original
+URI first; normalized checksum fields then enter the same upload verifier.
+Duplicate query fields, header/query overlap and declarations on other
+operations are rejected before publication. Signed query values cannot bypass
+body integrity checks.
+
 The ordinary HTTP path is always available. An optional direct data plane may
 move an authenticated object range between DiskIO and registered client memory
 without relaying payload through Access Server memory. HTTP remains the control

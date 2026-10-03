@@ -104,7 +104,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/rpc/design-crowdb-rpc-tcp.md`                                     | TCP engines, worker loop, zero-copy I/O, scaling.       |
 | `doc/design/rpc/design-crowdb-rpc-rdma.md`                                    | RDMA setup, CQ polling, registered buffers.             |
 | `doc/design/rpc/design-crowdb-rpc-diskdb-migration.md`                        | Diskdb RPC migration, rollout, connection lifetime.     |
-| `doc/design/access-server/s3/design-crowdb-access-s3.md`                      | S3 namespace, publication, TCP streaming, list, delete. |
+| `doc/design/access-server/s3/design-crowdb-access-s3.md`                      | S3 namespace, publication, integrity, list, delete.     |
 | `doc/design/access-server/s3/design-crowdb-access-s3-rdma.md`                 | Optional RDMA and direct-to-GPU data planes.            |
 | `doc/design/access-server/iceberge/design-crowdb-iceberg.md`                  | Native Iceberg authority, commits, files, and recovery. |
 | `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification. |

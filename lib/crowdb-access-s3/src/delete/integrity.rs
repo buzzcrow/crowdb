@@ -25,6 +25,7 @@ pub fn validate_integrity(headers: &HeaderMap, bytes: &Bytes) -> Result<(), S3Er
             && !matches!(
                 name.as_str(),
                 "x-amz-content-sha256"
+                    | "x-amz-user-agent"
                     | "x-amz-date"
                     | "x-amz-security-token"
                     | "x-amz-checksum-crc32"

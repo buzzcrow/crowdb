@@ -181,6 +181,9 @@ available.
   enabled. Run `pixi run -e s3-e2e test-rclone-e2e`. Container acceptance runs
   this recipe alongside AWS CLI and verifies both after recovery/restart.
 - Mounting the endpoint as a filesystem with s3fs-fuse is unsupported.
+- Optional [Java, JavaScript and Go SDK recipes](../../app/crowdb-access-server/tests/common/s3_sdks/README.md)
+  run independently through manual Pixi tasks and workflow dispatch. Their
+  isolated language toolchains and checks are outside container/release gates.
 - User metadata supports lowercase keys and printable ASCII values, with a
   combined key/value size up to 2 KiB. PUT, multipart initiation and COPY/REPLACE
   persist the attributes; HEAD and GET return them. Duplicate names and invalid

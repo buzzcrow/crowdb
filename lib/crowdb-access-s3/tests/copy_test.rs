@@ -128,6 +128,10 @@ fn part_ranges_are_explicit_bounded_and_require_a_large_source() {
 #[test]
 fn copy_selectors_must_be_signed_and_unsupported_metadata_is_rejected() {
     let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-amz-user-agent",
+        HeaderValue::from_static("aws-sdk-js/3.1146.0"),
+    );
     headers.insert("x-amz-copy-source", HeaderValue::from_static("bucket/key"));
     assert_eq!(
         copy::validate_headers(&headers, "host", false),

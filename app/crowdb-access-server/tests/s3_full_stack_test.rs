@@ -31,6 +31,9 @@ use crowdb_test_harness::test_dirs::TestRuntime;
 use hyper::body::Bytes;
 use serde_json::json;
 
+#[path = "common/s3_sdks.rs"]
+mod s3_sdks;
+
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const TEST_COUNT: usize = 32;
 const CLIENT_CASES: &[&str] = &["test_aws_cli_workflow", "test_rclone_workflow"];
@@ -145,6 +148,11 @@ fn main() {
 
 async fn run_suite() {
     let mut stack = start_full_stack().await;
+    if let Ok(language) = std::env::var("CROWDB_S3_E2E_SDK") {
+        s3_sdks::run(&language, &stack.listen, &stack.access_key, &stack.secret_key);
+        stack.rpc.stop();
+        return;
+    }
     if std::env::var("CROWDB_S3_E2E_ONLY").is_ok_and(|method| method == "restart") {
         stack.run_restart_cases().await;
         stack.cleanup();

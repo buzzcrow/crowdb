@@ -91,6 +91,10 @@ fn integrity_requires_and_checks_every_declared_supported_digest() {
         .unwrap(),
     );
     headers.insert("x-amz-sdk-checksum-algorithm", HeaderValue::from_static("CRC32"));
+    headers.insert(
+        "x-amz-user-agent",
+        HeaderValue::from_static("aws-sdk-js/3.1146.0"),
+    );
     assert!(validate_integrity(&headers, &bytes).is_ok());
     headers.remove("content-md5");
     assert!(validate_integrity(&headers, &bytes).is_ok());

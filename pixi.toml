@@ -83,6 +83,23 @@ test-rclone-e2e = "bash tools/pixi-tasks/test-s3-client.sh rclone"
 [environments]
 s3-e2e = { features = ["s3-e2e"], no-default-feature = true }
 iceberg-e2e = { features = ["iceberg-e2e"], no-default-feature = true }
+s3-java-sdk = { features = ["s3-java-sdk"], no-default-feature = true }
+s3-js-sdk = { features = ["s3-js-sdk"], no-default-feature = true }
+s3-go-sdk = { features = ["s3-go-sdk"], no-default-feature = true }
+
+[feature.s3-go-sdk.dependencies]
+go = "1.25.*"
+
+[feature.s3-go-sdk.activation.env]
+GOTOOLCHAIN = "local"
+CGO_ENABLED = "0"
+
+[feature.s3-js-sdk.dependencies]
+nodejs = "22.*"
+
+[feature.s3-java-sdk.dependencies]
+openjdk = "21.*"
+maven = "3.9.*"
 
 [feature.iceberg-e2e.dependencies]
 python = "3.12.*"
@@ -106,6 +123,10 @@ test-java-iceberg-fileio-e2e = { cmd = "bash tools/pixi-tasks/test-java-iceberg-
 test-pyiceberg-e2e = { cmd = "bash tools/pixi-tasks/test-pyiceberg-e2e.sh" }
 
 [tasks]
+test-s3-java-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh java"
+test-s3-js-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh js"
+test-s3-go-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh go"
+test-s3-sdks = "bash tools/pixi-tasks/test-s3-sdks.sh"
 
 # ── Build ────────────────────────────────────────────────────────
 # C++ libraries only (crowdb-tree, crowdb-rpc, crowdb-diskio). Needed by C++
