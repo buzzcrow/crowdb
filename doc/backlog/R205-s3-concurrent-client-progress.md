@@ -3,6 +3,16 @@
 
 ### R205: access-s3 — Concurrent client admission and storage progress
 
+#### Status
+
+Cursor-regression diagnosis now identifies an R201 visibility defect in frozen
+MemTable relocation. At the user's direction, retain this evidence and defer
+the affected accumulated acceptance while proceeding to R206. No test is marked
+passing or silently skipped. Apply a minimal correctness repair only if this
+defect blocks subsequent work. Default-concurrency admission/stall observations
+remain separately unresolved; this diagnosis does not prove every failure has
+the same cause.
+
 #### Problem
 
 AWS CLI 2.36.47 default concurrent multipart failed on the real-storage fixture
@@ -47,6 +57,38 @@ fails after 89.461 seconds with expected=118611, new=118818, durable=118197;
 directory corruption does not recur. The private default-suite-ordered-noop
 fixture retains this evidence. The remaining cursor regression is unresolved.
 
+Temporary chunk-key diagnostics reproduced the same failure class in the full
+suite during default boto3 MPU, after the three copy cases. The client failed
+after 66.080 seconds. The first causal sequence on 2026-10-03 (UTC) is:
+
+- 01:54:20.775: tree accepts slot 853 in MemTable 18; ChunkDB confirms that
+  revision at .776651, with modify_ts=60 and acknowledged_cursor=24040.
+- At the next flush pass, the contiguous frontier is 852. Slot 853 is therefore
+  a leftover for relocation, not eligible for L1 publication.
+- At .793, point reads find the key absent in both MemTable 18 and new table
+  19, and return L1 slot 843. ChunkDB observes revision=843, modify_ts=58,
+  cursor=23039 while attempting modify_ts=61/cursor=24643. It correctly rejects
+  the stale precondition; the subsequent durable-state read sees the old cursor.
+- At .798, flush finally inserts the removed slot 853 into table 19. At .799,
+  a subsequent flush publishes it to L1 and reads return 853 again.
+
+The implementation first calls drain_up_to(UINT64_MAX), which unlinks leftover
+nodes, materializes their cells and retires their old storage, and only then
+upserts the returned entries into the destination. Keeping the source table
+in frozen_ does not keep its already-unlinked entries visible. This is a
+confirmed remove-before-publish gap, violating R201 I3, independent of a late
+writer into an unpublished table. The previous apply-end table-presence check
+could not detect this gap. CAS acknowledgement and tree apply agree on the new
+revision, excluding a false CAS success as the cause of this reproduction.
+
+The complete private fixture and removed diagnostic patch are retained under
+.crowdb-runtime/persistent/s3-client-failures/default-suite-relocation-gap.
+Diagnostic logging perturbs timing and exposed the failure earlier than the
+historical thousand-key case; the old 414-byte regression is consistent with
+this cause but lacks equivalent per-version logs. Do not claim that every prior
+MPU/resource failure is thereby resolved. R201 must cover point reads during
+leftover relocation, not only writer admission/completion.
+
 The [S3 data path](../design/access-server/s3/design-crowdb-access-s3.md)
 requires bounded admission and continued progress under concurrent peers.
 Single-concurrency recipes pass but do not certify defaults or resolve stalls.
@@ -70,9 +112,9 @@ Single-concurrency recipes pass but do not certify defaults or resolve stalls.
 #### Dependencies
 
 - R200 retains the concurrent reproducer and verified single-concurrency recipe.
-- Deferred MemTable handoff work is related only if evidence confirms it.
-- R201 remains user-deferred. Do not apply its stashed implementation or assign
-  this snapshot failure to its handoff race without first-divergence evidence.
+- R201 owns safe MemTable handoff and relocation visibility. The new diagnostic
+  reproduction confirms the relocation gap; its stashed implementation remains
+  unapplied and no concurrency mechanism is selected here.
 
 #### Acceptance
 
