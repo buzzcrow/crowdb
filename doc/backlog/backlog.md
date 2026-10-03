@@ -46,10 +46,6 @@ optional cuObject/RDMA acceleration after the TCP baseline is correct and measur
   workflows; trace gaps and gate published compatibility recipes. **Partially
   implemented:** SDK and configured AWS/rclone recipes pass, including metadata
   and container recovery; accumulated storage regression remains under R205.
-- **[R206](R206-s3-manual-sdk-verification.md)** — manual Java 2.x,
-  JavaScript v3 and Go v2 SDK verification — Area: S3 / clients / CI.
-  Independent local Pixi tasks and workflow_dispatch jobs only; excluded from
-  routine tests, container acceptance and release gates.
 - **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
   upload benchmark regression — Area: CLI / access server / benchmark — Add a
   shared real-protocol CLI workload and retained local regression scripts for
