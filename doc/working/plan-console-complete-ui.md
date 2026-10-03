@@ -425,3 +425,13 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
 - Entering Chunk automatically scans one bounded page. Preserve exact ID lookup
   and type selection, remove the ID-prefix form and additional filters. Never
   automatically exhaust continuations to find matches.
+
+- Default Chunk browsing implemented: active-only initial scan, automatic type
+  selection, exact lookup retained, prefix form removed, 100-row window
+  replacement and cancelled stale requests. Type filtering remains limited to
+  the current scan window; it does not exhaust the database to fill a page.
+- Chunk browser E2E: three passed (0.804 s, 0.530 s, 0.646 s), compared with
+  the measured two-case baseline of 1.0 s / 0.525 s. TypeScript passed.
+- Capacity steering: retain Disk overview, select a Zone below it, inspect a
+  bounded block bitmap with blue used / green free / gray unknown, and return
+  to the parent Disk without changing domain.
