@@ -422,7 +422,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
         .with_placement_policy(FailureDomainPriority::RackFirst, true),
     );
     let chunk_id = ChunkId {
-        high: 97,
+        high: (5_u64 << 56) | 0x61,
         low: u64::from(data_num),
     };
     let chunk = handler
@@ -731,7 +731,7 @@ async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_g
         let chunk = handler
             .allocate_chunk(
                 Some(ChunkId {
-                    high: 970,
+                    high: (5_u64 << 56) | 0x03ca,
                     low: u64::try_from(index).unwrap(),
                 }),
                 1,

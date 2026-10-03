@@ -10,10 +10,8 @@ Follow-ups: [R103](../backlog/R103-chunkdb-range-migration.md),
 Implement typed chunk operations and isolated tasks over two independent slot
 maps, with all chunk metadata in fixed nonzero direct KV groups.
 
-Status: Implementation started on 2026-10-03 at the user's request.
-Fixed-map startup and Rust routing are implemented and focused tests pass.
-Task scope isolation and fixed-owner recovery are implemented; native routing is active. Delete this temporary plan after
-implementation and verified requirement completion.
+Status: All implementation phases and fixed-layout acceptance passed on
+2026-10-03. Final documentation and requirement cleanup remain.
 
 ## Delivery boundary and readiness
 
@@ -170,17 +168,17 @@ implementation and verified requirement completion.
 
 ## Phase 5: Verification and documentation
 
-- [ ] **Focused verification**: implement and run the unit and integration cases
+- [x] **Focused verification**: implement and run the unit and integration cases
   below with failure injection appropriate to each changed boundary. Resolve
   R201 overlap before claiming concurrent tree acceptance.
   Files: affected crate `tests/`, tree `tests/{unit,integration}/`.
-- [ ] **Three-node acceptance**: extend the existing harness with three selected
+- [x] **Three-node acceptance**: extend the existing harness with three selected
   nonzero groups and independently distributed service/storage slots; record
   allocation, task recovery, tree/WAL and S3/Iceberg results. Prove group 0 has
   binding/configuration records but no per-chunk maintenance state.
   Files: `lib/crowdb-test-harness/src/cluster.rs`,
   `app/crowdb-chunkdb/tests/common/cluster.rs`, focused new integration tests.
-- [ ] **Permanent contract update**: update implemented architecture, actual
+- [x] **Permanent contract update**: update implemented architecture, actual
   initialization/route/task costs and fixed-layout limits. Mark R103 integration
   cases deferred rather than passed; keep R207 separate. Remove this plan only
   after verified completion under the implementation workflow.
@@ -303,3 +301,34 @@ implementation and verified requirement completion.
   killing a leader. Actual production restart and S3/Iceberg acceptance remain
   pending; this is not a claim that the independent concurrent MemTable race is
   fixed.
+
+- Real-process business Stream restart and both DiskIO failure cases pass
+  with actual service binaries (3 tests). Protected production S3/Iceberg
+  small/large writes and readback pass on three service instances and three
+  storage groups. The same acceptance asserts actual native bootstrap Wal,
+  BtreePage and PageIndex records, hash-selected placement and no group-0
+  chunk metadata. The old policy fixture budget was corrected to cover the
+  existing default pipeline shadow requirement without reducing workload.
+- Permanent architecture now documents fixed maps, independent client/storage
+  routing, domain authority/capacity, current publication and scan costs,
+  retained native routes, typed stream recovery and PageIndex bootstrap/reclaim.
+  Dynamic handoff/migration and chunk-kv integration remain separate follow-ups.
+
+- Final ChunkDB full-stack regression passes all 38 cases, followed by the
+  three-node slot/failover acceptance. Two old EC fixtures now supply the S3
+  ID prefix expected by their allocation requests. Both exact regressions also
+  pass, including degraded repair admission and expanded-topology convergence.
+- Typed page staging coalesces adjacent equal-purpose ranges; pack-span lookup
+  no longer walks all redundant historical write boundaries. Formatting and
+  changed tree-lint pass; the complete C++ gate is being repeated after this
+  header change.
+
+- Final repeated C++ gate passes after boundary coalescing: 611 tree cases,
+  common/RPC/DiskIO suites and Rust tree/RPC FFI suites. Real S3 restart
+  acceptance passes group-0, access-server, ChunkDB, DiskDB, DiskIO and chunk-kv
+  restarts with acknowledged object readback. The existing dedicated s3-e2e
+  Python environment supplies boto3; no test was skipped for a missing binary.
+- All-target clippy with both access-server E2E features, focused changed C++
+  lint/format, and workspace Rust format checks pass. The independent R201
+  concurrent MemTable redesign remains explicitly deferred; passing these
+  fixed-layout regressions does not claim that redesign is implemented.
