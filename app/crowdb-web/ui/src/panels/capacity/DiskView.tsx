@@ -26,6 +26,7 @@ import { busyPct, formatBytes, diskTypeLabel } from '../../utils/capacity';
 import { hwStatusLabel as sharedHwStatusLabel } from '../../utils/entityDisplay';
 
 interface DiskViewProps {
+  active?: boolean;
   dgId: number;
   diskId: string;
   usage: CapacityUsageResponse | null;
@@ -35,6 +36,7 @@ interface DiskViewProps {
 }
 
 export function DiskView({
+  active = true,
   dgId,
   diskId,
   usage,
@@ -79,6 +81,7 @@ export function DiskView({
     dgId,
     diskId,
     selectedZoneIndex,
+    active,
   );
 
   const runAction = useCallback(async (
@@ -132,10 +135,10 @@ export function DiskView({
 
   const observation = observeCapacity(hardwareCapacity, usage, { dgId, diskId });
   const pct = observation.busy === null ? null : busyPct(disk.capacity_bytes, observation.busy);
-  const zoneCount = disk.zone_usages.length;
+  const zoneCount = disk.zone_count;
 
   return (
-    <div className="tw-space-y-4">
+    <div className="tw-space-y-4" data-testid="capacity-disk">
       {/* Disk header */}
       <div className="tw-bg-panel tw-rounded-lg tw-p-4">
         <div className="tw-flex tw-items-center tw-gap-2 tw-mb-2">
@@ -204,7 +207,9 @@ export function DiskView({
           <div className="tw-text-xs tw-text-muted tw-mb-2">Zone grid ({zoneCount} zones)</div>
           <ZoneGrid
             zones={disk.zone_usages}
-            onZoneClick={(z) => setSelectedZoneIndex(z.zone_index)}
+            zoneCount={zoneCount}
+            selectedZone={selectedZoneIndex}
+            onZoneClick={setSelectedZoneIndex}
           />
         </div>
       ) : (
@@ -215,7 +220,12 @@ export function DiskView({
 
       {/* Zone bitmap (on-demand) */}
       {selectedZoneIndex !== null && (
-        <div className="tw-bg-panel tw-rounded-lg tw-p-4">
+        <section className="tw-bg-panel tw-rounded-lg tw-p-4" aria-label={`Zone ${selectedZoneIndex} detail`}>
+          <div className="tw-flex tw-items-center tw-gap-3 tw-text-xs tw-mb-3">
+            <button className="tw-text-accent" onClick={() => setSelectedZoneIndex(null)}>Back to parent Disk</button>
+            <span className="tw-font-mono">{diskId} / Zone {selectedZoneIndex}</span>
+            <button className="tw-text-accent" disabled={bitmapLoading} onClick={() => void refreshBitmap()}>Refresh bitmap</button>
+          </div>
           <div className="tw-text-xs tw-text-muted tw-mb-2">
             Zone {selectedZoneIndex} bitmap
             {bitmapLoading && ' · loading…'}
@@ -223,7 +233,7 @@ export function DiskView({
             {bitmapZone && ` · ${bitmapZone.busy_block_count} busy / ${bitmapZone.free_block_count} free blocks`}
           </div>
           {bitmapZone && (
-            <ZoneBitmap
+            <ZoneBitmap key={selectedZoneIndex}
               usageBitmap={bitmapZone.usage_bitmap}
               totalUnits={bitmapZone.busy_block_count + bitmapZone.free_block_count}
             />
@@ -231,7 +241,7 @@ export function DiskView({
           {!bitmapLoading && !bitmapZone && !bitmapError && (
             <div className="tw-text-xs tw-text-muted">No bitmap data.</div>
           )}
-        </div>
+        </section>
       )}
     </div>
   );

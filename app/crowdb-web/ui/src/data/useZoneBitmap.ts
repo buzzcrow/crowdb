@@ -12,34 +12,33 @@ interface ZoneBitmapState {
   refresh: () => Promise<void>;
 }
 
-/**
- * On-demand zone bitmap fetch (R85 §3-B). The disk-level
- * `QueryCapacityStats` response omits `usage_bitmap` (brief per-zone
- * entries only); the full bitmap is returned only by the zone-level
- * query shape (`dg + disk + zone`). This hook fetches it when a zone
- * is selected and caches the last result. Polling (3 s) refetches the
- * focused zone via `refresh`.
- */
+/** Load only the selected zone, cancel stale observations and clear old bitmap data. */
 export function useZoneBitmap(
   dgId: number | undefined,
   diskId: string | undefined,
   zoneIndex: number | null,
+  active = true,
 ): ZoneBitmapState {
   const [zone, setZone] = useState<ZoneUsageDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const reqIdRef = useRef(0);
+  const requestRef = useRef<AbortController | null>(null);
 
   const fetchBitmap = useCallback(async () => {
-    if (dgId === undefined || diskId === undefined || zoneIndex === null) {
+    const myReq = ++reqIdRef.current;
+    requestRef.current?.abort();
+    setZone(null); setError(null); setLoading(false);
+    if (!active || dgId === undefined || diskId === undefined || zoneIndex === null) {
       setZone(null);
       setError(null);
       return;
     }
-    const myReq = ++reqIdRef.current;
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
     try {
-      const resp = await getDiskdbUsage(dgId, diskId, zoneIndex);
+      const resp = await getDiskdbUsage(dgId, diskId, zoneIndex, { signal: controller.signal });
       // Ignore stale responses from a previous selection.
       if (myReq !== reqIdRef.current) return;
       const dg = resp.disk_groups.find((g) => g.disk_group_id === dgId);
@@ -60,10 +59,11 @@ export function useZoneBitmap(
     } finally {
       if (myReq === reqIdRef.current) setLoading(false);
     }
-  }, [dgId, diskId, zoneIndex]);
+  }, [dgId, diskId, zoneIndex, active]);
 
   useEffect(() => {
     void fetchBitmap();
+    return () => { ++reqIdRef.current; requestRef.current?.abort(); };
   }, [fetchBitmap]);
 
   return { zone, loading, error, refresh: fetchBitmap };

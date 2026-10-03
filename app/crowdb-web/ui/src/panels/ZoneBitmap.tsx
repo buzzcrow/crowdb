@@ -1,122 +1,57 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState } from 'react';
+import { blockState } from './capacity/bitmap';
 
 interface ZoneBitmapProps {
-  /** Hex-encoded bitmap string from the API. Each bit = 1 unit. */
   usageBitmap?: string;
-  /** Total number of units in the zone. */
   totalUnits: number;
 }
+const PAGE_SIZE = 4096;
+const COLUMNS = 64;
+const CELL = 6;
+const colors = { used: '#3b82f6', free: '#22c55e', unknown: '#6b7280' };
 
-/**
- * Renders a zone's unit-level bitmap as a canvas grid. Busy = red,
- * free = green. Uses an offscreen canvas for double-buffering to
- * avoid flicker on re-draw.
- */
+/** Draw only one block window; the API snapshot is little-endian by byte. */
 export function ZoneBitmap({ usageBitmap, totalUnits }: ZoneBitmapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const offscreenRef = useRef<HTMLCanvasElement | null>(null);
-  const [hover, setHover] = useState<{ offset: number; busy: boolean; x: number; y: number } | null>(null);
-
-  const gridSize = Math.max(1, Math.ceil(Math.sqrt(Math.max(totalUnits, 1))));
-  const cellSize = 4;
-  const gap = 0;
-  const canvasSize = gridSize * (cellSize + gap);
-
-  const draw = useCallback(() => {
+  const [start, setStart] = useState(0);
+  const [hover, setHover] = useState<number | null>(null);
+  const total = Number.isSafeInteger(totalUnits) && totalUnits > 0 ? totalUnits : 0;
+  const offset = Math.min(start, Math.max(0, Math.ceil(total / PAGE_SIZE) - 1) * PAGE_SIZE);
+  const count = Math.min(PAGE_SIZE, total - offset);
+  useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Draw to offscreen canvas first.
-    if (!offscreenRef.current) {
-      offscreenRef.current = document.createElement('canvas');
-    }
-    const off = offscreenRef.current;
-    off.width = canvas.width;
-    off.height = canvas.height;
-    const offCtx = off.getContext('2d');
-    if (!offCtx) return;
-    offCtx.fillStyle = '#1a1a2e';
-    offCtx.fillRect(0, 0, off.width, off.height);
-
-    // Parse hex bitmap: each hex char = 4 bits.
-    const bits: boolean[] = [];
-    if (usageBitmap) {
-      for (const ch of usageBitmap) {
-        const val = parseInt(ch, 16);
-        if (isNaN(val)) continue;
-        for (let b = 3; b >= 0; b--) {
-          bits.push(((val >> b) & 1) === 1);
-        }
-      }
-    }
-
-    for (let i = 0; i < totalUnits; i++) {
-      const row = Math.floor(i / gridSize);
-      const col = i % gridSize;
-      const x = col * (cellSize + gap);
-      const y = row * (cellSize + gap);
-      offCtx.fillStyle = bits[i] ? '#ef4444' : '#22c55e';
-      offCtx.fillRect(x, y, cellSize, cellSize);
-    }
-
-    // Blit to visible canvas.
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(off, 0, 0);
-  }, [usageBitmap, totalUnits, gridSize]);
-
-  useEffect(() => { draw(); }, [draw]);
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const col = Math.floor(x / (cellSize + gap));
-    const row = Math.floor(y / (cellSize + gap));
-    const offset = row * gridSize + col;
-    if (offset >= 0 && offset < totalUnits) {
-      // Parse bit at offset.
-      let busy = false;
-      if (usageBitmap) {
-        const charIdx = Math.floor(offset / 4);
-        const bitIdx = 3 - (offset % 4);
-        if (charIdx < usageBitmap.length) {
-          const val = parseInt(usageBitmap[charIdx], 16);
-          if (!isNaN(val)) busy = ((val >> bitIdx) & 1) === 1;
-        }
-      }
-      setHover({ offset, busy, x, y });
-    } else {
-      setHover(null);
+    for (let i = 0; i < count; i++) {
+      ctx.fillStyle = colors[blockState(usageBitmap, offset + i)];
+      ctx.fillRect((i % COLUMNS) * CELL, Math.floor(i / COLUMNS) * CELL, CELL - 1, CELL - 1);
     }
-  };
+  }, [usageBitmap, offset, count]);
 
-  const handleMouseLeave = () => setHover(null);
-
-  return (
-    <div className="tw-relative tw-inline-block">
-      <canvas
-        ref={canvasRef}
-        width={canvasSize}
-        height={canvasSize}
-        className="tw-border tw-border-border tw-rounded"
-        onMouseMove={handleMouseMove}
-        onMouseLeave={handleMouseLeave}
-      />
-      {hover && (
-        <div
-          className="tw-absolute tw-pointer-events-none tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text tw-z-10"
-          style={{ left: hover.x + 8, top: hover.y + 8 }}
-        >
-          Unit {hover.offset} · {hover.busy ? 'busy' : 'free'}
-        </div>
-      )}
+  return <div className="tw-space-y-3" data-testid="zone-bitmap">
+    <div className="tw-flex tw-gap-4 tw-text-xs" aria-label="Block usage legend">
+      {Object.entries(colors).map(([name, color]) => <span key={name} className="tw-flex tw-items-center tw-gap-1"><span style={{ background: color }} className="tw-w-3 tw-h-3 tw-inline-block" />{name === 'used' ? 'Used (blue)' : name === 'free' ? 'Free (green)' : 'Unknown (gray)'}</span>)}
     </div>
-  );
+    <p className="tw-text-xs tw-text-muted">{count ? `Blocks ${offset}–${offset + count - 1} of ${total}` : 'No blocks reported'} · one cell per allocation block</p>
+    <canvas ref={canvasRef} width={COLUMNS * CELL} height={Math.max(1, Math.ceil(count / COLUMNS)) * CELL}
+      aria-label="Zone block usage" className="tw-border tw-border-border tw-max-w-full"
+      onMouseLeave={() => setHover(null)} onMouseMove={event => {
+        const canvas = event.currentTarget; const rect = canvas.getBoundingClientRect();
+        const col = Math.floor((event.clientX - rect.left) * canvas.width / rect.width / CELL);
+        const row = Math.floor((event.clientY - rect.top) * canvas.height / rect.height / CELL);
+        const index = row * COLUMNS + col;
+        setHover(col >= 0 && col < COLUMNS && index >= 0 && index < count ? offset + index : null);
+      }} />
+    {hover !== null && <p role="status" className="tw-text-xs">Block {hover} · {blockState(usageBitmap, hover)}</p>}
+    <div className="tw-flex tw-gap-3 tw-text-xs">
+      <button disabled={offset === 0} onClick={() => { setHover(null); setStart(offset - PAGE_SIZE); }}>Previous blocks</button>
+      <button disabled={offset + count >= total} onClick={() => { setHover(null); setStart(offset + PAGE_SIZE); }}>Next blocks</button>
+      <label>Go to block <input type="number" min={0} max={Math.max(0, total - 1)} value={offset} className="tw-w-28 tw-bg-bg tw-border tw-border-border tw-rounded tw-p-1"
+        onChange={event => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value >= 0 && value < total) { setHover(null); setStart(Math.floor(value / PAGE_SIZE) * PAGE_SIZE); } }} /></label>
+    </div>
+  </div>;
 }
