@@ -40,13 +40,6 @@ R152–R166 delivered the limited basic S3 service, including the restart
 acceptance baseline. Multipart upload is available; R168–R169 defer
 shared-storage GC without blocking basic large-object deletion. R170 adds
 optional cuObject/RDMA acceleration after the TCP baseline is correct and measured.
-- **[R200](R200-s3-client-compatibility.md)** — real-client compatibility and
-  default checksum coverage — Area: S3 / clients / container — High priority,
-  high complexity. Verify default boto3, AWS CLI, and rclone
-  workflows; trace gaps and gate published compatibility recipes. **Partially
-  implemented:** SDK and configured AWS/rclone recipes pass, including metadata
-  and container recovery. Accumulated suites and concurrency-10 CLI now pass;
-  final optional language SDK verification is in progress.
 - **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
   upload benchmark regression — Area: CLI / access server / benchmark — Add a
   shared real-protocol CLI workload and retained local regression scripts for

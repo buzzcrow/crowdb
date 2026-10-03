@@ -47,6 +47,11 @@ Do not put credentials in commands or commit them to client configuration.
 
 ## Verified contract
 
+Local verification on 2026-10-03 runs Java, Go and JavaScript sequentially on
+fresh real-storage fixtures. Each pinned recipe passes normal operations and
+the injected uploaded-part failure with verified bucket/MPU cleanup. The
+GitHub Actions workflow has not been dispatched by this local verification.
+
 - Explicit custom endpoint, region us-east-1 and path-style addressing.
 - Default SDK request checksum calculation, response validation and retries
   remain enabled. Each client observes CRC32 on its ordinary PUT. The endpoint
@@ -64,9 +69,11 @@ Do not put credentials in commands or commit them to client configuration.
 - High-level transfer managers, concurrent multipart workloads, alternate Java
   HTTP transports and browser JavaScript are outside this recipe.
 
-The accumulated general S3 regression still has a separately recorded storage
-visibility failure. Passing these fresh, bounded SDK scenarios does not close
-that regression or establish unrestricted concurrent client compatibility.
+The accumulated general S3 gate covers storage visibility, interrupted uploads
+and service restart recovery. AWS CLI's separate concurrency-10 gate covers its
+configured classic transfer recipe. These fresh SDK scenarios cover the
+sequential low-level operations above; they do not establish unrestricted
+concurrent behavior across other client transports or transfer managers.
 
 ## Manual GitHub Actions
 
