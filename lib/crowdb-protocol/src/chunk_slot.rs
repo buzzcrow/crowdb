@@ -4,9 +4,11 @@
 //! Fixed chunk-ID hash space. Never derive placement from the number of owners.
 
 mod bitmap;
+mod bootstrap;
 mod map;
 
 pub use bitmap::ChunkSlotBitmap;
+pub use bootstrap::ChunkSlotBootstrap;
 pub use map::{ChunkSlotBinding, ChunkSlotMap, ChunkSlotMapHead, ChunkSlotOwner, ChunkStorageGroup};
 
 use serde::{Deserialize, Serialize};

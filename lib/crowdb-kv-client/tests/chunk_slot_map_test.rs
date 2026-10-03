@@ -8,6 +8,7 @@ use crowdb_kv::cluster::kv_server::KvServer;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
 use crowdb_kv_client::{ChunkSlotMapClient, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_slot::{
     ChunkSlot, ChunkSlotBinding, ChunkSlotBitmap, ChunkSlotMap, ChunkSlotMapHead, ChunkStorageGroup,
     CHUNK_SLOT_LAYOUT_VERSION,
@@ -170,6 +171,24 @@ async fn legacy_records_are_never_overwritten() {
 }
 
 #[tokio::test]
+async fn legacy_chunk_state_without_range_bindings_is_not_reinterpreted() {
+    let test = TestGroup0::start().await;
+    test.kv
+        .put(0, 0, b"/chunk/old-id", b"existing", None)
+        .await
+        .unwrap();
+    let client = ChunkSlotMapClient::new(Arc::clone(&test.kv));
+    assert!(client.initialize_service(&services(10)).await.is_err());
+    assert!(matches!(
+        test.kv
+            .get(0, 0, b"/chunk/old-id", ReadMode::Linearizable, None)
+            .await
+            .unwrap(),
+        GetOutcome::Found { .. }
+    ));
+}
+
+#[tokio::test]
 async fn corrupt_owner_and_partial_generation_fail_closed() {
     let test = TestGroup0::start().await;
     let client = ChunkSlotMapClient::new(Arc::clone(&test.kv));
@@ -243,4 +262,40 @@ async fn orphan_binding_is_preserved_without_creating_a_head() {
     };
     assert_eq!(value.as_ref(), bytes.as_slice());
     assert!(client.read_service().await.is_err());
+}
+
+#[tokio::test]
+async fn service_client_needs_no_storage_map_and_refreshes_same_owner_endpoints() {
+    let test = TestGroup0::start().await;
+    let maps = ChunkSlotMapClient::new(Arc::clone(&test.kv));
+    maps.initialize_service(&services(10)).await.unwrap();
+    let registry = ServiceRegistryClient::from_shared(Arc::clone(&test.kv));
+    registry.register_chunkdb(10, "127.0.0.1:17010").await.unwrap();
+    registry.register_chunkdb(11, "127.0.0.1:17011").await.unwrap();
+    let routes = RangeBindingClient::from_shared(Arc::clone(&test.kv));
+    routes.refresh().await.unwrap();
+    assert!(maps.read_storage().await.is_err());
+    for slot in ChunkSlot::all() {
+        let route = routes.route_slot(slot).unwrap();
+        assert_eq!(route.instance_id, 10);
+        assert_eq!(route.rpc_endpoint, "127.0.0.1:17010");
+    }
+    assert_eq!(routes.snapshot().len(), 2);
+    assert!(routes.snapshot()[1].slots.is_empty());
+    registry.register_chunkdb(10, "127.0.0.1:18010").await.unwrap();
+    routes.refresh().await.unwrap();
+    assert_eq!(
+        routes
+            .route_slot(ChunkSlot::try_from(0).unwrap())
+            .unwrap()
+            .rpc_endpoint,
+        "127.0.0.1:18010"
+    );
+    registry.unregister("chunkdb", 10).await.unwrap();
+    routes.refresh().await.unwrap();
+    assert!(routes.route_slot(ChunkSlot::try_from(0).unwrap()).is_err());
+    assert_eq!(
+        maps.read_service().await.unwrap().bindings(),
+        services(10).bindings()
+    );
 }

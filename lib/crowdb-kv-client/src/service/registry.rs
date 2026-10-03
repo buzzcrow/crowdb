@@ -62,6 +62,12 @@ impl ServiceRegistryClient {
         &self.kv
     }
 
+    /// Share the group-0 transport with typed service routing clients.
+    #[must_use]
+    pub fn shared_kv(&self) -> Arc<CrowdbKvClient> {
+        Arc::clone(&self.kv)
+    }
+
     /// Register a service instance (initial registration or
     /// re-registration with updated fields). Sets `last_heartbeat_ms`
     /// to the current time.

@@ -57,7 +57,7 @@ impl ChunkSlotOwner for ChunkStorageGroup {
 pub struct ChunkSlotMap<O> {
     head: ChunkSlotMapHead,
     bindings: Vec<ChunkSlotBinding<O>>,
-    owner_indices: [usize; CHUNK_SLOT_COUNT as usize],
+    owner_indices: Box<[usize; CHUNK_SLOT_COUNT as usize]>,
 }
 
 impl<O: ChunkSlotOwner> ChunkSlotMap<O> {
@@ -74,7 +74,7 @@ impl<O: ChunkSlotOwner> ChunkSlotMap<O> {
             return Err(ChunkSlotError::InvalidHead);
         }
         let mut owners = HashSet::with_capacity(bindings.len());
-        let mut owner_indices = [usize::MAX; CHUNK_SLOT_COUNT as usize];
+        let mut owner_indices = Box::new([usize::MAX; CHUNK_SLOT_COUNT as usize]);
         for (index, binding) in bindings.iter().enumerate() {
             if binding.generation != head.generation {
                 return Err(ChunkSlotError::MixedGeneration);

@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_protocol::chunk_slot::{
-    ChunkSlot, ChunkSlotBinding, ChunkSlotBitmap, ChunkSlotError, ChunkSlotMap, ChunkSlotMapHead,
-    ChunkStorageGroup, CHUNK_SLOT_LAYOUT_VERSION,
+    ChunkSlot, ChunkSlotBinding, ChunkSlotBitmap, ChunkSlotBootstrap, ChunkSlotError, ChunkSlotMap,
+    ChunkSlotMapHead, ChunkStorageGroup, CHUNK_SLOT_LAYOUT_VERSION,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::key::{ChunkServiceSlotsKey, ChunkSlotMapHeadKey, ChunkStorageSlotsKey, TextKey};
@@ -14,6 +14,43 @@ fn head(count: u32) -> ChunkSlotMapHead {
         generation: 7,
         owner_count: count,
     }
+}
+
+#[test]
+fn explicit_bootstrap_assigns_independent_balanced_maps() {
+    let bootstrap = ChunkSlotBootstrap {
+        service_instances: vec![11, 12, 13],
+        storage_groups: (1..=3)
+            .map(|group_id| ChunkStorageGroup {
+                store_id: 0,
+                group_id,
+            })
+            .collect(),
+    };
+    let service = bootstrap.service_map().unwrap();
+    let storage = bootstrap.storage_map().unwrap();
+    for entry in service.bindings() {
+        assert!((341..=342).contains(&entry.slots.slots().count()));
+        let groups: std::collections::HashSet<_> =
+            entry.slots.slots().map(|slot| storage.owner(slot)).collect();
+        assert_eq!(groups.len(), 3);
+    }
+    for entry in storage.bindings() {
+        assert!((341..=342).contains(&entry.slots.slots().count()));
+    }
+    let invalid = ChunkSlotBootstrap {
+        service_instances: vec![11, 11],
+        ..bootstrap.clone()
+    };
+    assert!(invalid.service_map().is_err());
+    let invalid = ChunkSlotBootstrap {
+        storage_groups: vec![ChunkStorageGroup {
+            store_id: 0,
+            group_id: 0,
+        }],
+        ..bootstrap
+    };
+    assert!(invalid.storage_map().is_err());
 }
 
 fn bindings() -> Vec<ChunkSlotBinding<u64>> {

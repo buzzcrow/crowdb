@@ -8,6 +8,8 @@
 //! group-0 sysdata. `destroy` tears down confirmed membership in
 //! dependency order. `clean` wipes data on confirmed replicas.
 
+mod chunk_slots;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -385,6 +387,7 @@ pub struct LocalChunkdbDeploySummary {
 #[derive(Debug, Clone)]
 pub struct LocalChunkdbDeployConfig {
     pub instance_count: usize,
+    pub storage_groups: Vec<u64>,
     pub allow_unsafe_ec: bool,
     pub rpc_workers: Option<u32>,
     pub diskio_rpc_workers: Option<u32>,
@@ -689,6 +692,7 @@ pub async fn local_deploy_chunkdb(
             message: "deploy KV before ChunkDB".into(),
         });
     }
+    chunk_slots::initialize(ctx, config).await?;
     let count = u16::try_from(instance_count).unwrap_or(u16::MAX);
     let http_ports = alloc_workspace_ports(workspace, ServicePort::ChunkdbHttp, 0, count)?;
     let rpc_ports = alloc_workspace_ports(workspace, ServicePort::ChunkdbRpc, 0, count)?;
@@ -757,14 +761,7 @@ async fn wait_for_chunkdb_bindings(ctx: &OpContext, expected_instances: usize) -
                 .iter()
                 .map(|binding| binding.instance_id)
                 .collect::<HashSet<_>>();
-            let mut next_bucket = 0_u32;
-            for binding in &snapshot {
-                if u32::from(binding.range_start) != next_bucket {
-                    break;
-                }
-                next_bucket = u32::from(binding.range_end) + 1;
-            }
-            if next_bucket == u32::from(u16::MAX) + 1 && instance_ids.len() == expected_instances {
+            if !snapshot.is_empty() && instance_ids.len() == expected_instances {
                 return wait_for_chunkdb_server_readiness(ctx, expected_instances).await;
             }
         }

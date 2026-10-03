@@ -10,8 +10,8 @@ use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::common::config::CrowDBConfig;
 use crowdb_kv_server::background::domain_monitor::{
-    spawn_domain_monitor_supervisor, ChunkdbRangeMonitorDriver, DiskdbOwnershipMonitorDriver,
-    DomainMonitorDriver, DomainMonitorDrivers, DomainMonitorFuture,
+    spawn_domain_monitor_supervisor, DiskdbOwnershipMonitorDriver, DomainMonitorDriver, DomainMonitorDrivers,
+    DomainMonitorFuture,
 };
 use crowdb_kv_server::group0_control_plane::Group0ControlPlane;
 use crowdb_kv_server::store_registry::KvStoreRegistry;
@@ -26,7 +26,7 @@ use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad, InstanceValue, ServiceExtra};
 use crowdb_protocol::key::{
     ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey,
-    ChunkdbRangeBindingKey, DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
+    DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
 };
 
 struct CountingDriver {
@@ -149,69 +149,6 @@ async fn follower_discovers_descriptor_but_driver_remains_idle() {
     tokio::time::sleep(Duration::from_millis(60)).await;
     handle.stop_and_wait().await;
     assert_eq!(ticks.load(Ordering::Acquire), 0);
-}
-
-#[tokio::test]
-async fn chunkdb_driver_reads_and_writes_through_local_group_zero() {
-    let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
-    let control = Group0ControlPlane::acquire(&store).await.unwrap();
-    let mut descriptor = descriptor();
-    descriptor.domain = "chunkdb".into();
-    descriptor.service_registry_name = "chunkdb".into();
-    let instance = InstanceValue {
-        instance_id: 7,
-        rpc_endpoint: "127.0.0.1:17007".into(),
-        last_heartbeat_ms: u64::MAX,
-        extra: Some(ServiceExtra::default()),
-    };
-    control
-        .compare_and_put(
-            Bytes::from(
-                InstanceKey {
-                    service: "chunkdb".into(),
-                    instance_id: 7,
-                }
-                .to_path(),
-            ),
-            Bytes::from(serde_json::to_vec(&instance).unwrap()),
-            0,
-        )
-        .await
-        .unwrap();
-
-    ChunkdbRangeMonitorDriver::new()
-        .tick(&control, &descriptor)
-        .await
-        .unwrap();
-    let bindings = control
-        .scan_all_prefix(Bytes::from(ChunkdbRangeBindingKey::text_prefix_all()), 16)
-        .await
-        .unwrap();
-    assert_eq!(bindings.len(), 12);
-    let mut values: Vec<crowdb_protocol::common::ChunkdbRangeBindingValue> = bindings
-        .iter()
-        .map(|entry| serde_json::from_slice(&entry.value).unwrap())
-        .collect();
-    values.sort_by_key(|binding| binding.sub_range_index);
-    assert_eq!(values[0].range_start, 0);
-    assert_eq!(values[11].range_end, u32::from(u16::MAX));
-    for (index, binding) in values.iter().enumerate() {
-        assert_eq!(binding.instance_id, 7);
-        assert!((5461..=5462).contains(&(binding.range_end - binding.range_start + 1)));
-        if index > 0 {
-            assert_eq!(values[index - 1].range_end + 1, binding.range_start);
-        }
-    }
-    // A different count must not overwrite an already populated layout.
-    assert!(ChunkdbRangeMonitorDriver::with_sub_range_count(4)
-        .tick(&control, &descriptor)
-        .await
-        .is_err());
-    let after = control
-        .scan_all_prefix(Bytes::from(ChunkdbRangeBindingKey::text_prefix_all()), 16)
-        .await
-        .unwrap();
-    assert_eq!(bindings, after);
 }
 
 #[tokio::test]

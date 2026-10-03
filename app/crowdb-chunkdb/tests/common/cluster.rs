@@ -864,7 +864,9 @@ impl ChunkdbHarness {
 
         // Binding cache — all buckets to store 0, group 1.
         let bindings = BindingCache::new();
-        bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+        bindings
+            .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+            .unwrap();
         let store = Arc::new(ChunkStore::new(Arc::clone(&kv), bindings));
 
         // Diskdb client pool.

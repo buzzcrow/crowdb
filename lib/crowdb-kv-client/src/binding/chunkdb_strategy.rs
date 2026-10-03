@@ -7,7 +7,7 @@
 //! See `doc/working/design-r99-dynamic-range-binding.md` §2.
 
 use crowdb_protocol::common::{ChunkdbRangeBindingValue, InstanceValue, RangeStatus};
-use crowdb_protocol::key::{ChunkdbRangeBindingKey, TextKey};
+use crowdb_protocol::key::ChunkdbRangeBindingKey;
 
 use super::framework::BindingStrategy;
 use crate::{CrowdbKvClient, Error, ReadMode, Result};
@@ -55,40 +55,15 @@ impl BindingStrategy for ChunkdbRangeStrategy {
         compute_sub_range_assignment(instances, self.sub_range_count)
     }
 
-    async fn write_bindings(&self, kv: &CrowdbKvClient, bindings: &[Self::Binding]) -> Result<()> {
-        // Preserve populated partition boundaries until an explicit conversion
-        // protocol exists; changing the default must not leave mixed layouts.
-        let current = self.read_bindings(kv).await?;
-        if current.iter().any(|old| {
-            !bindings.iter().any(|new| {
-                new.sub_range_index == old.sub_range_index
-                    && new.range_start == old.range_start
-                    && new.range_end == old.range_end
-            })
-        }) {
-            return Err(Error::SysdataDecode {
-                key: ChunkdbRangeBindingKey::text_prefix_all(),
-                reason: "existing chunkdb partition boundaries require an explicit migration".into(),
-            });
-        }
-        // PUT each binding (idempotent overwrite). No delete-all — the
-        // sub-range count is fixed, so the key set is stable; changed
-        // entries are overwritten in place. This avoids the non-atomic
-        // delete-all window.
-        for b in bindings {
-            let key = ChunkdbRangeBindingKey {
-                sub_range_index: b.sub_range_index,
-            };
-            let path = key.to_path();
-            let payload = serde_json::to_vec(b).map_err(|e| Error::SysdataDecode {
-                key: path.clone(),
-                reason: e.to_string(),
-            })?;
-            kv.put(G0_STORE, G0_GROUP, path.as_bytes(), &payload, None)
-                .await
-                .map(|_| ())?;
-        }
-        Ok(())
+    fn write_bindings(
+        &self,
+        _kv: &CrowdbKvClient,
+        _bindings: &[Self::Binding],
+    ) -> impl std::future::Future<Output = Result<()>> {
+        std::future::ready(Err(Error::SysdataDecode {
+            key: ChunkdbRangeBindingKey::text_prefix_all(),
+            reason: "legacy range assignment is disabled; initialize fixed slot maps explicitly".into(),
+        }))
     }
 
     async fn read_bindings(&self, kv: &CrowdbKvClient) -> Result<Vec<Self::Binding>> {

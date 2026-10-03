@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_protocol::chunk_slot::{
-    ChunkSlotBinding, ChunkSlotMap, ChunkSlotMapHead, ChunkSlotOwner, ChunkStorageGroup,
+    ChunkSlotBinding, ChunkSlotBootstrap, ChunkSlotMap, ChunkSlotMapHead, ChunkSlotOwner, ChunkStorageGroup,
 };
 use crowdb_protocol::key::{
     ChunkServiceSlotsKey, ChunkSlotMapHeadKey, ChunkStorageSlotsKey, ChunkdbRangeBindingKey, TextKey,
@@ -25,6 +25,33 @@ impl ChunkSlotMapClient {
     #[must_use]
     pub fn new(kv: Arc<CrowdbKvClient>) -> Self {
         Self { kv }
+    }
+
+    /// Initialize an explicitly configured layout after checking all selected
+    /// groups are available. Existing assignments must match exactly.
+    ///
+    /// # Errors
+    /// Returns validation, availability, conflicting-layout or publication errors.
+    pub async fn initialize_layout(&self, bootstrap: &ChunkSlotBootstrap) -> Result<()> {
+        let service = bootstrap
+            .service_map()
+            .map_err(|error| invalid("chunk slots", &error.to_string()))?;
+        let storage = bootstrap
+            .storage_map()
+            .map_err(|error| invalid("chunk slots", &error.to_string()))?;
+        for group in &bootstrap.storage_groups {
+            self.kv
+                .get(
+                    group.store_id,
+                    group.group_id,
+                    b"/chunkdb/readiness",
+                    ReadMode::Linearizable,
+                    None,
+                )
+                .await?;
+        }
+        self.initialize_storage(&storage).await?;
+        self.initialize_service(&service).await
     }
 
     /// Read a complete service map, without consulting the storage map.
@@ -91,6 +118,7 @@ impl ChunkSlotMapClient {
         if self.read_head::<O>().await?.is_some() {
             return self.check_initialized(map).await;
         }
+        self.reject_legacy_chunk_state().await?;
         let key = O::head().to_path();
         if !self.scan_prefix(&O::prefix()).await?.is_empty() {
             return Err(invalid(&key, "orphan slot bindings require explicit recovery"));
@@ -148,6 +176,32 @@ impl ChunkSlotMapClient {
                 &prefix,
                 "legacy range layout requires explicit conversion",
             ));
+        }
+        Ok(())
+    }
+
+    async fn reject_legacy_chunk_state(&self) -> Result<()> {
+        use crowdb_protocol::key::{
+            ChunkTaskKey, FinalizeChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey,
+        };
+        for prefix in [
+            b"/chunk/".to_vec(),
+            b"/reservation/".to_vec(),
+            ChunkTaskKey::prefix_all(),
+            FinalizeChunkTaskKey::prefix_all(),
+            ReadyChunkTaskKey::prefix_all(),
+            LeasedChunkTaskKey::prefix_all(),
+        ] {
+            let page = self
+                .kv
+                .scan_bounded_at(0, 0, &prefix, &[], &[], 1, true, None, 0)
+                .await?;
+            if !page.items.is_empty() || page.truncated || page.timed_out {
+                return Err(invalid(
+                    "chunk slots",
+                    "legacy per-chunk state in group 0 requires explicit conversion",
+                ));
+            }
         }
         Ok(())
     }

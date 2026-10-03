@@ -11,4 +11,4 @@ pub mod range;
 
 pub use chunkdb_strategy::{compute_sub_range_assignment, ChunkdbRangeStrategy, DEFAULT_SUB_RANGE_COUNT};
 pub use framework::{BindingMonitor, BindingStrategy, MonitorTickResult};
-pub use range::{ChunkdbRangeBinding, RangeBindingClient, RangeRouteError, RouteWithFallback};
+pub use range::{ChunkdbRangeBinding, RangeBindingClient, RangeRouteError};

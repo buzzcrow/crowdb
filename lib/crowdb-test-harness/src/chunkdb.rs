@@ -213,7 +213,11 @@ impl ChunkdbProcess {
         let deployment_mode = deployment_mode(options);
         let max_node_failures = u32::from(!options.test_single_node);
         let config_content = format!(
-            r#"[deployment]
+            r#"[slot_bootstrap]
+service_instances = [{INSTANCE_ID}]
+storage_groups = [{{ store_id = 0, group_id = 1 }}]
+
+[deployment]
 mode = "{deployment_mode}"
 max_node_failures = {max_node_failures}
 
@@ -228,9 +232,6 @@ keepalive_interval_secs = 2
 
 [topology]
 refresh_interval_secs = 2
-
-[range_guard]
-allow_all_when_empty = true
 
 [placement]
 mode = "{placement_mode}"

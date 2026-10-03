@@ -22,7 +22,7 @@ use crowdb_chunkdb::placement_repair::{PlacementRepairCoordinator, PlacementRepa
 use crowdb_chunkdb::range_guard::RangeGuard;
 use crowdb_chunkdb::relocation::RelocationCoordinator;
 use crowdb_chunkdb::repair::{RepairCoordinator, RepairStripTaskHandler};
-use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
+use crowdb_chunkdb::routing::{BindingCache, BindingTable};
 use crowdb_chunkdb::selector::{
     ChunkPlacementStrategy, ProtectedPlacementStrategy, UnsafeColocatedPlacementStrategy,
 };
@@ -37,7 +37,7 @@ use crowdb_chunkdb::topology::{
 use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
 use crowdb_kv_client::{
     ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, KVClusterMetaClient,
-    RangeBindingClient, ServiceRegistryClient, WatchNotifyClient,
+    ServiceRegistryClient, WatchNotifyClient,
 };
 use tracing::{error, info, warn};
 
@@ -204,7 +204,7 @@ async fn main() {
         descriptor: crowdb_protocol::chunk_kv::DomainMonitorDescriptor {
             domain: "chunkdb".into(),
             service_registry_name: "chunkdb".into(),
-            driver_version: 1,
+            driver_version: 2,
             capability_version: 1,
             heartbeat_interval_ms: 5_000,
             suspect_after_ms: 10_000,
@@ -212,8 +212,8 @@ async fn main() {
             lease_duration_ms: 20_000,
             max_clock_skew_ms: 1_000,
             self_fence_margin_ms: 1_000,
-            failure_policy: crowdb_protocol::chunk_kv::DomainFailurePolicy::AutomaticSharedStorage,
-            balance_policy: "uniform-12-v1".into(),
+            failure_policy: crowdb_protocol::chunk_kv::DomainFailurePolicy::OperatorOnly,
+            balance_policy: "fixed-slots-v1".into(),
             chunk_kv_range_balance: None,
         },
     };
@@ -251,37 +251,41 @@ async fn main() {
 
     // Binding cache + chunk store.
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(0, 0));
+    let slot_maps = crowdb_kv_client::ChunkSlotMapClient::new(Arc::clone(&kv));
+    if let Some(bootstrap) = &config.slot_bootstrap {
+        if let Err(error) = slot_maps.initialize_layout(bootstrap).await {
+            error!(%error, "chunk slot initialization failed; refusing startup");
+            return;
+        }
+    }
+    let storage_map = match slot_maps.read_storage().await {
+        Ok(map) => map,
+        Err(error) => {
+            error!(%error, "chunk storage slot map unavailable; refusing startup");
+            return;
+        }
+    };
+    if let Err(error) = bindings.replace(BindingTable::new(storage_map)) {
+        error!(%error, "chunk storage slot map rejected; refusing startup");
+        return;
+    }
     let store = Arc::new(ChunkStore::new(Arc::clone(&kv), bindings.clone()));
     let task_store = Arc::new(TaskStore::new(Arc::clone(&kv), bindings));
 
-    // Range guard (R99): load chunkdb instance binding from group-0.
-    // Falls back to allow-all when no binding table exists (v1 compat).
-    let range_binding = RangeBindingClient::from_shared(Arc::clone(&kv));
-    let range_guard = Arc::new(RangeGuard::new(config.range_guard.allow_all_when_empty));
-    if let Err(e) = range_binding.refresh().await {
-        warn!(error = %e, "failed to load chunkdb range binding from group-0 (using allow-all fallback)");
-    }
-    if !range_binding.is_empty() {
-        let instance_id = config
-            .server
-            .instance_id
-            .as_ref()
-            .and_then(|s| s.parse::<u64>().ok());
-        if let Some(iid) = instance_id {
-            if let Err(e) = range_guard.load_from_group0(&kv, iid).await {
-                warn!(error = %e, "failed to load owned ranges for instance {iid}");
-            }
-        }
-    }
-    // Spawn range binding notifier to keep the guard fresh.
-    let _binding_notify_handle = match range_binding.spawn_notifier() {
-        Ok(handle) => Some(handle),
-        Err(e) => {
-            warn!(error = %e, "failed to spawn range binding notifier");
-            None
-        }
+    let range_guard = Arc::new(RangeGuard::new());
+    let Some(instance_id) = config
+        .server
+        .instance_id
+        .as_deref()
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        error!("chunkdb requires a nonzero service instance ID; refusing startup");
+        return;
     };
+    if let Err(error) = range_guard.load_from_group0(&kv, instance_id).await {
+        error!(%error, "chunk service slot map rejected; refusing startup");
+        return;
+    }
 
     // Service-registry keep-alive: register this chunkdb instance under
     // `/srv/chunkdb/<instance_id>` and heartbeat periodically. The
@@ -1000,7 +1004,7 @@ async fn run_http_server(
 
 async fn ready_response(
     range_guard: &RangeGuard,
-    kv: &CrowdbKvClient,
+    kv: &Arc<CrowdbKvClient>,
     instance_id: Option<u64>,
 ) -> (axum::http::StatusCode, &'static str) {
     if let Some(instance_id) = instance_id {

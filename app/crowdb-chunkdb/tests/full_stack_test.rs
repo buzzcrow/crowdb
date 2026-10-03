@@ -477,7 +477,9 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&tasks))
         .admit_chunk(&chunk, 100)
@@ -749,7 +751,9 @@ async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_g
     }
 
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let restarted = PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&tasks));
     assert_eq!(restarted.scan_batch(256, 100).await.unwrap(), 3);
@@ -1180,7 +1184,9 @@ async fn production_degraded_ec_task_repairs_after_node_returns() {
     }
 
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let coordinator = PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&tasks));
     assert_eq!(coordinator.scan_batch(256, 100).await.unwrap(), 1);
@@ -1211,7 +1217,9 @@ async fn production_degraded_ec_task_repairs_after_node_returns() {
     drop(coordinator);
     drop(tasks);
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let mut registry = MetricsRegistry::new();
     let metrics = ChunkdbMetrics::register(&mut registry).placement;
@@ -1289,7 +1297,9 @@ async fn active_chunk_creates_one_deadline_indexed_finalizer() {
         .unwrap();
     let chunk_id = chunk.id.unwrap();
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = TaskStore::new(cluster.make_crowdb_client(), bindings);
 
     let task = tasks
@@ -1338,7 +1348,9 @@ async fn finalizer_reclaims_an_empty_active_chunk() {
         .unwrap();
     let chunk_id = chunk.id.unwrap();
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let mut task = tasks
         .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
@@ -1385,7 +1397,9 @@ async fn finalizer_waits_for_pre_expiry_requests_before_scanning() {
         .unwrap();
     let chunk_id = chunk.id.unwrap();
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = TaskStore::new(cluster.make_crowdb_client(), bindings);
     let task = tasks
         .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
@@ -1429,7 +1443,9 @@ async fn task_survives_claim_expiry_takeover_and_completion() {
 
     let cluster = KvCluster::start().await;
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let store = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let first_manager = TaskManager::new(Arc::clone(&store), 41, 100);
     let task = task_value();
@@ -1540,7 +1556,9 @@ async fn unavailable_strip_survives_crash_gap_and_is_admitted_as_repair_task() {
         .unwrap();
 
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let restarted = RepairCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
     assert_eq!(restarted.admit_chunk(&marked_chunk, 100).await.unwrap(), 1);
@@ -1591,7 +1609,9 @@ async fn degraded_ec_strip_is_admitted_as_a_persistent_placement_task() {
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let harness = ChunkdbHarness::start(&cluster).await;
     let coordinator = PlacementRepairCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
@@ -1920,7 +1940,9 @@ async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
         .expect("seal mirror range");
 
     let task_bindings = BindingCache::new();
-    task_bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    task_bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let task_store = Arc::new(TaskStore::new(cluster.make_crowdb_client(), task_bindings));
     let coordinator = ConversionCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&task_store));
     let prepared = coordinator
@@ -1995,7 +2017,9 @@ async fn deletion_during_conversion_clears_task_ownership_before_tentative_clean
         .expect("seal mirror range");
 
     let task_bindings = BindingCache::new();
-    task_bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    task_bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let task_store = Arc::new(TaskStore::new(cluster.make_crowdb_client(), task_bindings));
     let coordinator = ConversionCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&task_store));
     let prepared = coordinator
@@ -2097,7 +2121,9 @@ async fn relocation_handoff_claims_publishes_and_defers_source_free() {
         .await
         .unwrap();
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 8000, 30_000));
     let coordinator = Arc::new(RelocationCoordinator::new(Arc::clone(&manager)));
@@ -2255,7 +2281,9 @@ async fn relocation_rejects_a_target_that_weakens_physical_placement() {
     let mut target = mirror.segments[1];
     target.allocation_ts = target.allocation_ts.saturating_add(1);
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 8001, 30_000));
     let coordinator = RelocationCoordinator::new(Arc::clone(&manager));
@@ -2325,7 +2353,9 @@ async fn relocation_marks_deleted_owner_stale_without_publishing_target() {
         .await
         .unwrap();
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 8002, 30_000));
     let coordinator = RelocationCoordinator::new(Arc::clone(&manager));
@@ -2465,7 +2495,9 @@ async fn cross_domain_rebalance_hands_one_safe_move_to_target_diskdb() {
         },
     );
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 8003, 30_000));
     let coordinator = Arc::new(RelocationCoordinator::new(Arc::clone(&manager)));
@@ -3263,7 +3295,9 @@ async fn completed_conversion_reservation_is_taken_over_as_a_durable_task() {
     .await;
 
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    bindings
+        .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+        .unwrap();
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
     let coordinator = ConversionCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
     assert_eq!(coordinator.reconcile_reservations(16, u64::MAX).await.unwrap(), 1);
@@ -3290,10 +3324,10 @@ async fn generated_chunk_ids_stay_with_the_serving_range_owner() {
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
-    let range_guard = Arc::new(RangeGuard::new(false));
-    range_guard.replace(vec![OwnedRange {
+    let range_guard = Arc::new(RangeGuard::new());
+    range_guard.replace_for_tests(&[OwnedRange {
         start: 0,
-        end: 32_767,
+        end: 511,
         sub_range_index: 0,
     }]);
     let handler = LifecycleHandler::new(
@@ -3308,7 +3342,7 @@ async fn generated_chunk_ids_stay_with_the_serving_range_owner() {
             .allocate_chunk(None, 1, 0, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
             .await
             .unwrap();
-        assert!(hash_to_bucket(&chunk.id.unwrap()) <= 32_767);
+        assert!(hash_to_bucket(&chunk.id.unwrap()) <= 511);
     }
 }
 

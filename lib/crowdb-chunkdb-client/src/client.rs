@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use arc_swap::ArcSwap;
 
 use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
-use crowdb_protocol::chunk_id::ChunkIdParts;
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
@@ -72,10 +71,8 @@ pub struct ChunkdbClient {
     /// `instance_id -> rpc_endpoint` cache.
     endpoint_cache: ArcSwap<HashMap<InstanceId, String>>,
     retry: RetryConfig,
-    /// Optional range binding client for R99 sharded mode. When
-    /// present, chunk IDs are routed to the owning instance. When
-    /// `None`, falls back to "any instance" (v1 behavior).
-    range_binding: Option<RangeBindingClient>,
+    /// Service slot authority is required for every client.
+    range_binding: RangeBindingClient,
     /// crowdb-rpc transport.
     rpc_transport: Arc<ChunkdbRpcTransport>,
     /// Last successful (or in-flight) Group-0 endpoint refresh.
@@ -96,11 +93,12 @@ impl ChunkdbClient {
     }
     #[must_use]
     pub fn new(svc: ServiceRegistryClient, rpc_transport: Arc<ChunkdbRpcTransport>) -> Self {
+        let range_binding = RangeBindingClient::from_shared(svc.shared_kv());
         Self {
             svc,
             endpoint_cache: ArcSwap::from_pointee(HashMap::new()),
             retry: RetryConfig::default(),
-            range_binding: None,
+            range_binding,
             rpc_transport,
             last_registry_refresh_ms: AtomicU64::new(0),
         }
@@ -113,21 +111,21 @@ impl ChunkdbClient {
         retry: RetryConfig,
         rpc_transport: Arc<ChunkdbRpcTransport>,
     ) -> Self {
+        let range_binding = RangeBindingClient::from_shared(svc.shared_kv());
         Self {
             svc,
             endpoint_cache: ArcSwap::from_pointee(HashMap::new()),
             retry,
-            range_binding: None,
+            range_binding,
             rpc_transport,
             last_registry_refresh_ms: AtomicU64::new(0),
         }
     }
 
-    /// Enable R99 range-based routing. When set, chunk IDs are routed
-    /// to the owning chunkdb instance via the `RangeBindingClient`.
+    /// Supply a shared service-slot routing client.
     #[must_use]
     pub fn with_range_binding(mut self, binding: RangeBindingClient) -> Self {
-        self.range_binding = Some(binding);
+        self.range_binding = binding;
         self
     }
 
@@ -167,28 +165,31 @@ impl ChunkdbClient {
     /// Refresh `ChunkDB` service endpoints and range ownership bindings.
     pub async fn refresh_routes(&self) -> Result<()> {
         self.refresh_endpoints().await?;
-        if let Some(binding) = &self.range_binding {
-            binding
-                .refresh()
-                .await
-                .map_err(|error| ChunkdbClientError::Unreachable(format!("range refresh failed: {error}")))?;
-        }
+        self.range_binding
+            .refresh()
+            .await
+            .map_err(|error| ChunkdbClientError::Unreachable(format!("slot refresh failed: {error}")))?;
         Ok(())
     }
 
-    /// Get the first cached endpoint (or refresh + pick first).
+    /// Choose a live service owner with at least one slot for ID-less allocation.
     async fn first_endpoint(&self) -> Result<String> {
         self.refresh_endpoints_if_due().await;
-        if let Some(endpoint) = self.endpoint_cache.load().values().next() {
-            return Ok(endpoint.clone());
+        if self.range_binding.is_empty() {
+            self.range_binding
+                .refresh()
+                .await
+                .map_err(|error| ChunkdbClientError::Unreachable(format!("slot refresh failed: {error}")))?;
         }
-        self.refresh_endpoints().await?;
-        self.endpoint_cache
-            .load()
-            .values()
-            .next()
-            .cloned()
-            .ok_or_else(|| ChunkdbClientError::Unreachable("no chunkdb instances registered".into()))
+        let endpoints = self.endpoint_cache.load();
+        self.range_binding
+            .snapshot()
+            .into_iter()
+            .filter(|binding| !binding.slots.is_empty())
+            .find_map(|binding| endpoints.get(&binding.instance_id).cloned())
+            .ok_or_else(|| {
+                ChunkdbClientError::Unreachable("no live chunkdb owner with assigned slots".into())
+            })
     }
 
     /// Return an owned route to a live `ChunkDB` endpoint for storage engines
@@ -200,34 +201,18 @@ impl ChunkdbClient {
 
     async fn endpoints_for_chunk(&self, chunk_id: Option<&ChunkId>) -> Result<Vec<String>> {
         self.refresh_endpoints_if_due().await;
-        if let (Some(binding), Some(id)) = (&self.range_binding, chunk_id) {
-            binding
+        if let Some(id) = chunk_id {
+            let binding = &self.range_binding;
+            let owner = binding
                 .route(id)
                 .await
-                .map_err(|error| ChunkdbClientError::Unreachable(format!("range routing failed: {error}")))?;
-            let bucket = ChunkIdParts::from_proto(id).hash_to_bucket();
-            let route = binding
-                .route_with_fallback(bucket)
-                .map_err(|error| ChunkdbClientError::Unreachable(format!("range routing failed: {error}")))?;
-            // Range bindings identify the owner but can retain its old socket
-            // after that same instance restarts on a different port. The
-            // service registry is authoritative for a live instance endpoint.
+                .map_err(|error| ChunkdbClientError::Unreachable(format!("slot routing failed: {error}")))?;
             let cached = self.endpoint_cache.load();
-            let primary = cached
-                .get(&route.primary.instance_id)
+            let endpoint = cached
+                .get(&owner.instance_id)
                 .cloned()
-                .unwrap_or(route.primary.rpc_endpoint);
-            let mut endpoints = vec![primary];
-            if let Some(fallback) = route.fallback {
-                let endpoint = cached
-                    .get(&fallback.instance_id)
-                    .cloned()
-                    .unwrap_or(fallback.rpc_endpoint);
-                if endpoint != endpoints[0] {
-                    endpoints.push(endpoint);
-                }
-            }
-            return Ok(endpoints);
+                .unwrap_or(owner.rpc_endpoint);
+            return Ok(vec![endpoint]);
         }
         Ok(vec![self.first_endpoint().await?])
     }
@@ -266,13 +251,7 @@ impl ChunkdbClient {
             // A restarted owner may advertise a new RPC endpoint while the
             // cached range binding still names its old socket. Refresh both
             // sources on transient failures, not only on NotMyRange.
-            if let Some(binding) = &self.range_binding {
-                if let Some(id) = chunk_id {
-                    let _ = binding.refresh_and_route(id).await;
-                } else {
-                    let _ = binding.refresh().await;
-                }
-            }
+            let _ = self.range_binding.refresh().await;
         }
     }
 
@@ -285,9 +264,8 @@ impl ChunkdbClient {
             let endpoints = self.endpoints_for_chunk(chunk_id.as_ref()).await?;
             let mut safe_retry = None;
             for endpoint in endpoints {
-                // Allocation is not idempotent at the DiskDB layer. Trying the
-                // transition fallback is safe only when the server rejected
-                // the range or the connection failed before request submission.
+                // Allocation is not idempotent at the DiskDB layer. Retry only
+                // an explicit ownership rejection or a pre-submission failure.
                 match self.rpc_transport.send_allocate_chunk(&endpoint, &req).await {
                     Ok(response) => return Ok(response),
                     Err(
@@ -310,9 +288,7 @@ impl ChunkdbClient {
             tokio::time::sleep(backoff).await;
             backoff = backoff.saturating_mul(2);
             let _ = self.refresh_endpoints().await;
-            if let (Some(binding), Some(id)) = (&self.range_binding, chunk_id.as_ref()) {
-                let _ = binding.refresh_and_route(id).await;
-            }
+            let _ = self.range_binding.refresh().await;
         }
     }
 

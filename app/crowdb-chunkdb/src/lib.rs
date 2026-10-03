@@ -18,7 +18,6 @@ pub mod conversion;
 pub mod finalize;
 pub mod lifecycle;
 pub mod metrics;
-pub mod migration;
 pub mod placement_rebalance;
 pub mod placement_repair;
 pub mod range_guard;

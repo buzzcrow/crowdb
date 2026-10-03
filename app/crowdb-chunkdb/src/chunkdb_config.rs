@@ -48,14 +48,15 @@ impl Default for DeploymentConfig {
 /// Top-level configuration for a chunkdb instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkdbConfig {
+    /// Optional explicit initialization; omitted on restart of an initialized cluster.
+    #[serde(default)]
+    pub slot_bootstrap: Option<crowdb_protocol::chunk_slot::ChunkSlotBootstrap>,
     #[serde(default)]
     pub deployment: DeploymentConfig,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
     pub topology: TopologyConfig,
-    #[serde(default)]
-    pub range_guard: RangeGuardConfig,
     #[serde(default)]
     pub lifecycle: LifecycleConfig,
     #[serde(default)]
@@ -387,25 +388,7 @@ impl ConversionConfig {
     }
 }
 
-/// Range guard configuration (R99 sharded mode).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RangeGuardConfig {
-    /// When `true` (default), an empty range guard allows all
-    /// requests — preserving v1 single-instance behavior before the
-    /// binding table is loaded. When `false`, an empty guard rejects
-    /// all mutating requests until the binding table is loaded.
-    pub allow_all_when_empty: bool,
-}
-
-impl Default for RangeGuardConfig {
-    fn default() -> Self {
-        Self {
-            allow_all_when_empty: true,
-        }
-    }
-}
-
-/// HTTP + crowdb-rpc listen addresses.
+/// Server listeners, identity and client transport configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {

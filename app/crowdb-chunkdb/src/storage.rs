@@ -22,7 +22,7 @@ use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::{encode_chunk_task_value, BinaryKey, ChunkTaskKey, FinalizeChunkTaskKey};
 use serde::Deserialize;
 
-use crate::routing::{route, BindingCache, MigrationState, Route};
+use crate::routing::{route, BindingCache, Route};
 
 /// Storage error.
 #[derive(Debug, thiserror::Error)]
@@ -246,15 +246,6 @@ impl ChunkStore {
 
         self.put_chunk_at(r.kv_store_id, r.kv_group_id, &key, &value, chunk)
             .await?;
-        if r.migration_state == MigrationState::Copying || r.migration_state == MigrationState::Cutover {
-            // The new route is authoritative. Mirror the same guarded logical
-            // transition to the old route during migration.
-            if let (Some(old_store), Some(old_group)) = (r.old_kv_store_id, r.old_kv_group_id) {
-                if let Err(e) = self.put_chunk_at(old_store, old_group, &key, &value, chunk).await {
-                    warn!(error = %e, "dual-write: old group write failed (new group has data)");
-                }
-            }
-        }
         Ok(())
     }
 
@@ -317,25 +308,8 @@ impl ChunkStore {
         let r = route(&self.bindings, id)?;
         let key = chunk_key(id);
 
-        // Try new group first.
         if let Some(data) = self.get_chunk_raw(&r, &key).await? {
             return decode_chunk(&data);
-        }
-
-        // During migration, fall back to old group.
-        if r.migration_state == MigrationState::Copying || r.migration_state == MigrationState::Cutover {
-            if let (Some(old_store), Some(old_group)) = (r.old_kv_store_id, r.old_kv_group_id) {
-                let old_route = Route {
-                    kv_store_id: old_store,
-                    kv_group_id: old_group,
-                    migration_state: MigrationState::NotMigrating,
-                    old_kv_store_id: None,
-                    old_kv_group_id: None,
-                };
-                if let Some(data) = self.get_chunk_raw(&old_route, &key).await? {
-                    return decode_chunk(&data);
-                }
-            }
         }
 
         Err(StoreError::ChunkNotFound)
@@ -346,18 +320,10 @@ impl ChunkStore {
         let r = route(&self.bindings, id)?;
         let key = chunk_key(id);
 
-        // Delete from new group.
         self.kv
             .delete(r.kv_store_id, r.kv_group_id, &key, None)
             .await
             .map_err(|e| StoreError::Kv(e.to_string()))?;
-
-        // During migration, also delete from old group.
-        if r.migration_state == MigrationState::Copying || r.migration_state == MigrationState::Cutover {
-            if let (Some(old_store), Some(old_group)) = (r.old_kv_store_id, r.old_kv_group_id) {
-                let _ = self.kv.delete(old_store, old_group, &key, None).await;
-            }
-        }
 
         Ok(())
     }

@@ -577,7 +577,9 @@ impl LifecycleHandler {
             let candidate = generate_chunk_id(chunk_type as u8).to_proto();
             return self.check_range(&candidate).map(|()| candidate);
         }
-        for _ in 0..1_000_000 {
+        let attempts = 32 * u64::from(crowdb_protocol::chunk_slot::CHUNK_SLOT_COUNT)
+            / range_guard.owned_bucket_count().max(1);
+        for _ in 0..attempts {
             let candidate = generate_chunk_id(chunk_type as u8).to_proto();
             if range_guard.check(&candidate).is_ok() {
                 return Ok(candidate);

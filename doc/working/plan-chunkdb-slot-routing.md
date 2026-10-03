@@ -11,7 +11,8 @@ Implement typed chunk operations and isolated tasks over two independent slot
 maps, with all chunk metadata in fixed nonzero direct KV groups.
 
 Status: Implementation started on 2026-10-03 at the user's request.
-Protocol layout and map IO are verified; production wiring is active. Delete this temporary plan after
+Fixed-map startup and Rust routing are implemented and focused tests pass.
+Task scope isolation is active. Delete this temporary plan after
 implementation and verified requirement completion.
 
 ## Delivery boundary and readiness
@@ -65,14 +66,16 @@ implementation and verified requirement completion.
   atomic batch; read with fixed-cutoff pagination and head revision revalidation.
   Reject legacy/orphan records and conflicting initialization. Files:
   `lib/crowdb-kv-client/src/binding/chunk_slots.rs` and its integration tests.
-- [~] **Atomic initialization wiring**: publish each complete initial map through the
+- [x] **Atomic initialization wiring**: publish each complete initial map through the
   group-0 atomic write primitives, including a version/header in the same
   publication. Make retries idempotent and detect conflicting initialization.
   Readers use a consistent scan cutoff or header revalidation before publishing
   a cache. A per-owner CAS alone is insufficient for a complete map.
-  Files: `app/crowdb-kv-server/src/group0_control_plane.rs`,
-  `app/crowdb-kv-server/src/background/domain_monitor/chunkdb.rs`.
-- [ ] **Freeze old writers**: adapt the monitor and client-side binding strategy
+  Files: protocol `chunk_slot/bootstrap.rs`, KV-client `binding/chunk_slots.rs`,
+  ChunkDB startup, console local deployment and test harness bootstrap config.
+  Initialization uses the existing remote group-0 conditional batch; the
+  in-process monitor only audits the complete fixed layout.
+- [x] **Freeze old writers**: adapt the monitor and client-side binding strategy
   to recognize the new layout and reject incompatible changes. Heartbeat loss
   must not reassign initialized slots in this delivery. Keep endpoint discovery
   separate from ownership; do not convert old per-range rows automatically.
@@ -81,21 +84,21 @@ implementation and verified requirement completion.
 
 ## Phase 2: ChunkDB persistence and task authority
 
-- [ ] **Storage route wiring**: remove `default_binding_table(0, 0)` from
+- [x] **Storage route wiring**: remove `default_binding_table(0, 0)` from
   production startup. Load and validate the storage map before accepting
   allocation. Route canonical chunk, task, index and reservation writes from
   the owning chunk ID; preserve their existing group-local CAS/batch boundaries.
   Missing routes or unavailable groups return errors without fallback.
   Files: `app/crowdb-chunkdb/src/{main,routing,storage}.rs`,
   `app/crowdb-chunkdb/src/task/store.rs`, lifecycle reservation paths.
-- [ ] **Service guard**: replace interval membership with slot ownership in
+- [x] **Service guard**: replace interval membership with slot ownership in
   request admission, readiness and quota allocation. Empty ownership permits no
   partition work. Keep ownership snapshots coherent for an operation; fail
   closed on missing/invalid initialization. Cover allocation with supplied IDs
   and server-generated IDs, including zero-slot instances and bounded retries.
   Files: `app/crowdb-chunkdb/src/range_guard.rs`, `main.rs`,
   `app/crowdb-chunkdb/src/lifecycle/handler.rs`.
-- [ ] **Task scan scope**: add explicit domain/slot index scope so ready,
+- [~] **Task scan scope**: add explicit domain/slot index scope so ready,
   finalize and expired-lease scans select owned work before applying limits.
   Deduplicate destination-group scans and preserve pagination/progress; avoid
   repeatedly reading an unowned prefix and filtering away the whole batch.
@@ -116,7 +119,7 @@ implementation and verified requirement completion.
 
 ## Phase 3: Every chunk client uses service routing
 
-- [ ] **Rust service routing**: consume the per-instance bitmap map, refresh
+- [x] **Rust service routing**: consume the per-instance bitmap map, refresh
   endpoints through discovery and reject invalid layouts. Resolve existing
   chunks by slot; choose a nonempty owner for server-generated allocation.
   Remove compatibility behavior that retries mutations through an old owner
@@ -229,8 +232,17 @@ implementation and verified requirement completion.
   suite (6 tests), protocol/KV-client all-target clippy and workspace Rust format
   check passed. Includes concurrent initializers, common publication revision,
   300-owner paginated reload, empty owners, corruption, legacy and orphan rejection.
-- New primitives are not yet connected to production startup; group-0 fallback
-  and legacy writers still require the wiring tasks above. No end-to-end claim.
+- 2026-10-03: production startup now requires explicit initialized maps;
+  group-0 fallback, mutable range routing and incomplete legacy dual-write
+  migration were removed. The old client-side range writer rejects writes;
+  monitor version 2 audits maps without heartbeat-driven reassignment.
+- Focused map/client/monitor, lifecycle, owner metadata, conversion-policy,
+  routing and three-group atomic-persistence suites passed. The real three-node
+  generated-ID allocation test passed with a half-slot owner. Cold cache reload,
+  same-owner endpoint refresh and no per-chunk writes to group 0 are covered.
+  All-target clippy for eight affected crates and workspace Rust format passed.
+- Full three-node/three-storage-group end-to-end acceptance, task authority
+  isolation, native routing and chunk-purpose changes remain unverified/incomplete.
 - Source review found reusable group-local conditional atomic writes, task claim
   generations, lock-free binding caches and group-0 batch publication.
 - Remaining work is tracked above; no implementation completion is implied.

@@ -11,9 +11,8 @@ use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, StripReservationGroup};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use serde::Deserialize;
-use tracing::warn;
 
-use crate::routing::{route, MigrationState, Route};
+use crate::routing::{route, Route};
 
 use super::{chunk_key, encode_chunk, ChunkStore, Result, StoreError};
 
@@ -117,26 +116,6 @@ impl ChunkStore {
         if let Some(value) = self.read_reservation_raw(&reservation_route, &key).await? {
             return decode_group(&value).map(Some);
         }
-        if matches!(
-            reservation_route.migration_state,
-            MigrationState::Copying | MigrationState::Cutover
-        ) {
-            if let (Some(store), Some(group)) = (
-                reservation_route.old_kv_store_id,
-                reservation_route.old_kv_group_id,
-            ) {
-                let old_route = Route {
-                    kv_store_id: store,
-                    kv_group_id: group,
-                    migration_state: MigrationState::NotMigrating,
-                    old_kv_store_id: None,
-                    old_kv_group_id: None,
-                };
-                if let Some(value) = self.read_reservation_raw(&old_route, &key).await? {
-                    return decode_group(&value).map(Some);
-                }
-            }
-        }
         Ok(None)
     }
 
@@ -227,22 +206,6 @@ impl ChunkStore {
             chunk,
         )
         .await?;
-        if matches!(
-            reservation_route.migration_state,
-            MigrationState::Copying | MigrationState::Cutover
-        ) {
-            if let (Some(store), Some(group)) = (
-                reservation_route.old_kv_store_id,
-                reservation_route.old_kv_group_id,
-            ) {
-                if let Err(error) = self
-                    .write_reservation_ops_at(store, group, chunk_id, ops, chunk)
-                    .await
-                {
-                    warn!(%error, "reservation dual-write to old group failed");
-                }
-            }
-        }
         Ok(())
     }
 

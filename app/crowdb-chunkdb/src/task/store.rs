@@ -16,7 +16,7 @@ use crowdb_protocol::{
 };
 use tracing::warn;
 
-use crate::routing::{route, BindingCache, MigrationState, Route};
+use crate::routing::{route, BindingCache, Route};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TaskStoreError {
@@ -104,23 +104,6 @@ impl TaskStore {
         if let Some((value, _)) = self.read_raw(&task_route, &key).await? {
             return decode_for_key(&task_key, &value).map(Some);
         }
-        if matches!(
-            task_route.migration_state,
-            MigrationState::Copying | MigrationState::Cutover
-        ) {
-            if let (Some(store), Some(group)) = (task_route.old_kv_store_id, task_route.old_kv_group_id) {
-                let old_route = Route {
-                    kv_store_id: store,
-                    kv_group_id: group,
-                    migration_state: MigrationState::NotMigrating,
-                    old_kv_store_id: None,
-                    old_kv_group_id: None,
-                };
-                if let Some((value, _)) = self.read_raw(&old_route, &key).await? {
-                    return decode_for_key(&task_key, &value).map(Some);
-                }
-            }
-        }
         Ok(None)
     }
 
@@ -133,22 +116,7 @@ impl TaskStore {
     ) -> Result<Vec<ChunkTaskValue>, TaskStoreError> {
         let task_route = route(&self.bindings, partition_id)?;
         let prefix = ChunkTaskKey::prefix_for_partition(partition_id);
-        let mut records = self.scan_partition_route(&task_route, &prefix).await?;
-        if matches!(
-            task_route.migration_state,
-            MigrationState::Copying | MigrationState::Cutover
-        ) {
-            if let (Some(store), Some(group)) = (task_route.old_kv_store_id, task_route.old_kv_group_id) {
-                let old_route = Route {
-                    kv_store_id: store,
-                    kv_group_id: group,
-                    migration_state: MigrationState::NotMigrating,
-                    old_kv_store_id: None,
-                    old_kv_group_id: None,
-                };
-                records.extend(self.scan_partition_route(&old_route, &prefix).await?);
-            }
-        }
+        let records = self.scan_partition_route(&task_route, &prefix).await?;
         let mut tasks = HashMap::with_capacity(records.len());
         for (key, value) in records {
             let task_key = ChunkTaskKey::from_bytes(&key)?;
@@ -299,16 +267,6 @@ impl TaskStore {
                 KvError::CasFailed { .. } | KvError::CasBusy => TaskStoreError::Conflict,
                 _ => TaskStoreError::Kv(error.to_string()),
             })?;
-        if matches!(
-            task_route.migration_state,
-            MigrationState::Copying | MigrationState::Cutover
-        ) {
-            if let (Some(store), Some(group)) = (task_route.old_kv_store_id, task_route.old_kv_group_id) {
-                if let Err(error) = self.kv.batch_write(store, group, ops).await {
-                    warn!(%error, "task dual-write to old group failed");
-                }
-            }
-        }
         Ok(())
     }
 
