@@ -789,33 +789,33 @@ logical chunks across metadata stores and explain their physical placement.
 
 ### 19.2 Navigation and detail
 
-- Left navigation starts with All types and individual types, then optionally
-  scopes by metadata source and Store/Group or Partition. Large populations
-  remain paged lists rather than one tree node per chunk.
-- Entering Chunk scans the first 100-record window automatically. Type selection
-  refreshes that bounded window; exact Chunk ID lookup remains available. There
-  is no ID-prefix form or additional filter requiring a wider scan.
-- Prev and Next navigate bounded scan windows using remembered start cursors.
-  Changing type or refreshing starts a new cursor history. Continuations
-  replace the displayed window instead of accumulating rows; window numbers
-  do not imply a global total or a snapshot across requests.
-  Returning from another domain retains the list and selected detail; inactive
-  requests are cancelled and late responses cannot overwrite the selection.
-- Results expose full ID, type, state, capacity/length, metadata location, and
-  business owner when known. Selecting a result opens structured metadata and
-  Strip/Mirror/EC layout. Stable Strip sequence identifies selection.
-- The layout is one vertical Chunk box containing horizontal Strip rows in
-  logical-offset order. Each row contains disk blocks: one per Mirror replica,
-  or separate EC data and parity blocks. Every block displays its complete
-  disk ID, Node, Diskgroup, Zone, unit offset and, when unit size is known,
-  byte offset. Missing placement remains explicitly unknown.
-- Strip rows use 20-entry pages. Disk blocks remain on a horizontal scroll row
-  rather than wrapping into ambiguous strip boundaries. The central diagram
-  shows at most 32 blocks per strip and identifies truncation; selecting the
-  strip exposes the remaining details. The list has its own bounded viewport.
-- The property panel describes the selected strip/fragment and provides
-  links to Capacity Disk, Cluster Node, owning Tree/Journal, or metadata
-  Group/Partition. Placement observations retain their own timestamps.
+- The center starts with a persistent compact Chunk table and a toolbar with
+  type selection, refresh, and a filter explicitly scoped to the loaded window.
+  The sidebar retains exact ID lookup and space for future controls.
+- Entering Chunk scans at most 20 records automatically. Prev and Next use
+  remembered start cursors and replace the current window. Type changes and
+  refresh reset cursor history. Window numbers do not imply a global total.
+  Local filtering never triggers additional scans; empty matches do not mean
+  the cluster contains no matching chunks.
+- Selecting a row highlights it without collapsing the table. Below it, a
+  compact Chunk summary shows identity, type, state, capacity, and strip count.
+  Returning from another domain preserves selection and loaded results.
+- A vertical Chunk layout contains horizontal Strip groups ordered by logical
+  offset. Each group names its sequence, logical range, and Mirror/EC scheme.
+  Compact, equal-sized blocks represent replicas or EC data/parity fragments;
+  dimensions do not imply capacity. Muted blue identifies Mirror, teal EC data,
+  and purple parity. Unavailable blocks carry explicit text and a dashed border.
+- Blocks show role, Node/Diskgroup, abbreviated disk identity, and Zone.
+  Selecting a block highlights it and exposes the complete disk identity,
+  physical zone offset, units, allocation timestamp, and placement in the
+  right property panel. Selecting a Strip or Chunk summary shows that object's
+  structured properties. Disk and Node navigation remains available.
+- Strip pages contain 16 groups; pagination reports the visible range and
+  stays outside the layout list. At most 32 blocks are drawn per strip, with
+  horizontal scrolling and explicit truncation. Strip properties retain access
+  to all fragment details. The Chunk table has a bounded scrolling viewport.
+- Layout and placement observation times remain separate in properties.
+  Missing placement does not erase disk identities or a successful layout.
 
 ### 19.3 Query contract
 

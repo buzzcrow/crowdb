@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: layout 0.932s, bounded strips 0.519s, scan 0.667s (2026-10-03)
+// Baseline: layout 1.0s, bounded strips 0.543s, scan 0.730s (2026-10-03)
 import { test, expect } from '../fixtures/realBackend';
 
 test('Chunk browser renders stable Mirror and EC sequences with exact placement identities', async ({ page }) => {
@@ -22,27 +22,28 @@ test('Chunk browser renders stable Mirror and EC sequences with exact placement 
   await expect(page.getByLabel('Chunk ID prefix')).toHaveCount(0);
   await page.getByRole('table', { name: 'Chunks' }).getByRole('button', { name: id, exact: true }).click();
   const layout = page.getByLabel('Chunk strips');
-  await expect(layout.getByRole('button')).toHaveCount(4);
-  await expect(layout.getByRole('button').nth(0)).toContainText('Sequence 3');
-  const mirror = layout.getByRole('button', { name: /Sequence 3/ });
-  await expect(mirror.getByTestId('chunk-disk-block')).toContainText('Mirror 1');
+  await expect(layout.getByTestId('chunk-strip')).toHaveCount(4);
+  await expect(layout.getByTestId('chunk-strip').nth(0)).toContainText('Strip 3');
+  const mirror = layout.getByTestId('chunk-strip').filter({ hasText: 'Strip 3' });
+  await expect(mirror.getByTestId('chunk-disk-block')).toContainText('Copy 1');
   for (const copies of [2, 3]) {
-    const blocks = layout.getByRole('button', { name: new RegExp(`Sequence ${10 + copies} ·`) }).getByTestId('chunk-disk-block');
+    const blocks = layout.getByTestId('chunk-strip').filter({ hasText: `Strip ${10 + copies}` }).getByTestId('chunk-disk-block');
     await expect(blocks).toHaveCount(copies);
-    await expect(blocks.nth(copies - 1)).toContainText(`Mirror ${copies}`);
+    await expect(blocks.nth(copies - 1)).toContainText(`Copy ${copies}`);
   }
-  const ec = layout.getByRole('button', { name: /Sequence 9/ });
+  const ec = layout.getByTestId('chunk-strip').filter({ hasText: 'Strip 9' });
   await expect(ec.getByTestId('chunk-disk-block')).toHaveCount(2);
   await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Data 0 · unavailable');
-  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Node 1 · Diskgroup 3');
-  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Disk ffffffffffffffffffffffffffffffff');
-  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('Zone 2 · offset 9007199254740993 units');
-  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('36893488147419107328 bytes offset');
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toContainText('N1 / DG3');
   await expect(ec.getByTestId('chunk-disk-block').nth(1)).toContainText('Parity 0');
-  await layout.getByRole('button', { name: /Sequence 9/ }).click();
-  await expect(page.locator('main aside').filter({ hasText: 'Strip sequence 9' })).toContainText('Data 0 · unavailable');
-  await expect(page.locator('main aside').filter({ hasText: 'Strip sequence 9' })).toContainText('36893488147419107328 bytes');
-  await expect(page.locator('main aside').filter({ hasText: 'Strip sequence 9' })).toContainText('Parity 0');
+  await ec.getByTestId('chunk-disk-block').nth(0).click();
+  const properties = page.getByLabel('Chunk properties');
+  await expect(properties).toContainText('ffffffffffffffffffffffffffffffff');
+  await expect(properties).toContainText('9007199254740993');
+  await expect(properties).toContainText('36893488147419107328 bytes');
+  await expect(properties).not.toContainText('Parity 0');
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('table', { name: 'Chunks' })).toBeVisible();
   await page.getByTestId('domain-iceberg').click();
   await page.getByTestId('domain-chunk').click();
   await expect(page.getByLabel('Chunk type')).toHaveValue('');
@@ -64,16 +65,16 @@ test('Large Chunk renders bounded strip pages and retains selected sequence', as
   await page.getByLabel('Exact Chunk ID').fill(id);
   await page.getByRole('button', { name: 'Lookup ID', exact: true }).click();
   const layout = page.getByLabel('Chunk strips');
-  await expect(layout.getByRole('button')).toHaveCount(20);
+  await expect(layout.getByRole('button')).toHaveCount(16);
   await layout.getByRole('button', { name: /Sequence 0 ·/ }).click();
-  await page.getByRole('button', { name: 'Next 20 strips', exact: true }).click();
-  await expect(layout.getByRole('button')).toHaveCount(20);
-  await expect(layout.getByRole('button').first()).toContainText('Sequence 60');
+  await page.getByRole('button', { name: 'Next 16 strips', exact: true }).click();
+  await expect(layout.getByRole('button')).toHaveCount(16);
+  await expect(layout.getByTestId('chunk-strip').nth(0)).toContainText('Strip 48');
   await expect(page.getByRole('heading', { name: 'Strip sequence 0', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Next 20 strips', exact: true }).click();
-  await expect(layout.getByRole('button')).toHaveCount(5);
+  await page.getByRole('button', { name: 'Next 16 strips', exact: true }).click();
+  await expect(layout.getByRole('button')).toHaveCount(13);
   await page.getByRole('button', { name: 'Previous strips', exact: true }).click();
-  await expect(layout.getByRole('button')).toHaveCount(20);
+  await expect(layout.getByRole('button')).toHaveCount(16);
 });
 
 
@@ -82,24 +83,24 @@ test('Chunk auto scan stays bounded and type changes replace the current window'
   await page.route('**/api/chunks?**', route => {
     const url = new URL(route.request().url());
     requests.push(url);
-    const offset = url.searchParams.has('after') ? 100 : 0;
+    const offset = url.searchParams.has('after') ? 20 : 0;
     const kind = url.searchParams.get('chunk_type') ?? '0';
-    const chunks = Array.from({ length: 100 }, (_, index) => ({ id_hex: Number(kind).toString(16).padStart(2, '0') + (offset + index).toString(16).padStart(30, '0'), chunk_type: Number(kind), state: 1, strips: [] }));
-    return route.fulfill({ json: { chunks, scanned: 100, next: chunks[99].id_hex, owners: 1, failures: [], observed_at_ms: 1000 } });
+    const chunks = Array.from({ length: 20 }, (_, index) => ({ id_hex: Number(kind).toString(16).padStart(2, '0') + (offset + index).toString(16).padStart(30, '0'), chunk_type: Number(kind), state: 1, strips: [] }));
+    return route.fulfill({ json: { chunks, scanned: 20, next: chunks[19].id_hex, owners: 1, failures: [], observed_at_ms: 1000 } });
   });
   await page.goto('/?domain=Cluster');
   await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
   expect(requests).toHaveLength(0);
   await page.getByTestId('domain-chunk').click();
   const rows = page.getByRole('table', { name: 'Chunks' }).getByRole('button');
-  await expect(rows).toHaveCount(100);
+  await expect(rows).toHaveCount(20);
   expect(requests[0].searchParams.has('prefix')).toBe(false);
-  expect(requests[0].searchParams.get('limit')).toBe('100');
+  expect(requests[0].searchParams.get('limit')).toBe('20');
   const pagination = page.getByRole('navigation', { name: 'Chunk page window' });
   await expect(pagination.getByRole('button', { name: 'Prev', exact: true })).toBeDisabled();
   await pagination.getByRole('button', { name: 'Next', exact: true }).click();
-  await expect(rows.nth(0)).toHaveText('00000000000000000000000000000064');
-  await expect(rows).toHaveCount(100);
+  await expect(rows.nth(0)).toHaveText('00000000000000000000000000000014');
+  await expect(rows).toHaveCount(20);
   await expect(pagination).toContainText('Window 2');
   await pagination.getByRole('button', { name: 'Prev', exact: true }).click();
   await expect(rows.nth(0)).toHaveText('00000000000000000000000000000000');
@@ -111,6 +112,9 @@ test('Chunk auto scan stays bounded and type changes replace the current window'
   expect(requests[3].searchParams.get('chunk_type')).toBe('4');
   await page.getByTestId('domain-capacity').click();
   await page.getByTestId('domain-chunk').click();
-  await expect(rows).toHaveCount(100);
+  await expect(rows).toHaveCount(20);
+  expect(requests).toHaveLength(4);
+  await page.getByLabel('Filter current window').fill('04000000000000000000000000000000');
+  await expect(rows).toHaveCount(1);
   expect(requests).toHaveLength(4);
 });

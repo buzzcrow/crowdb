@@ -1,0 +1,28 @@
+/* Copyright 2026-present Gian <crow.db@outlook.com> */
+/* Licensed under the Apache License, Version 2.0. */
+.chunk-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.chunk-list { max-height: 220px; overflow: auto; border: 1px solid var(--border, #303640); border-radius: 6px; }
+.chunk-list th { position: sticky; top: 0; background: #191e25; text-align: left; color: #a7b1bd; font-weight: 500; }
+.chunk-list th, .chunk-list td { padding: 7px 12px; white-space: nowrap; }
+.chunk-list tr[aria-selected="true"] { background: #263d50; }
+.chunk-list tbody tr:hover { background: #25313e; }
+.chunk-list button { text-align: left; }
+.chunk-strip-list { display: flex; flex-direction: column; gap: 10px; }
+.chunk-strip { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 12px; align-items: center; background: #1c242e; border: 1px solid #354352; border-radius: 7px; padding: 10px 12px; }
+.chunk-strip.is-selected { border-color: #7e9db7; }
+.chunk-strip-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; font-size: 12px; color: #b5c2d0; }
+.chunk-strip-heading strong { color: #e0e8f1; }
+.chunk-blocks { display: flex; gap: 8px; overflow-x: auto; padding: 2px; }
+.chunk-block { flex: 0 0 172px; display: flex; flex-direction: column; gap: 4px; text-align: left; border: 1px solid; border-radius: 5px; padding: 9px 10px; font-size: 11px; color: #e0e8f1; }
+.chunk-block strong { font-size: 12px; }
+.chunk-block.mirror { background: #304860; border-color: #506b86; }
+.chunk-block.data { background: #294b51; border-color: #46747b; }
+.chunk-block.parity { background: #48405f; border-color: #716388; }
+.chunk-block.unavailable { border-color: #ce8976; border-style: dashed; }
+.chunk-block:hover { filter: brightness(1.12); }
+.chunk-block[aria-pressed="true"] { outline: 2px solid #c3d6e7; outline-offset: 0; }
+.chunk-block:focus-visible, .chunk-strip-heading:focus-visible { outline: 2px solid #c3d6e7; }
+.chunk-properties { display: flex; flex-direction: column; gap: 10px; font-size: 12px; }
+.chunk-properties > div { display: grid; grid-template-columns: 105px minmax(0, 1fr); gap: 8px; }
+.chunk-properties dt { color: #98a6b7; margin-bottom: 2px; }
+.chunk-properties dd { overflow-wrap: anywhere; font-family: monospace; }
