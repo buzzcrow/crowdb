@@ -106,3 +106,94 @@ async fn production_runtime_dispatches_all_purposes_and_lists_only_owned_chunks(
             .unwrap();
     }
 }
+
+#[tokio::test]
+async fn native_snapshots_route_by_service_slot_and_refresh_endpoints_without_storage_map() {
+    use crowdb_chunkdb_client::ChunkdbClient;
+    use crowdb_kv_client::{ChunkSlotMapClient, ServiceRegistryClient};
+    use crowdb_protocol::chunk_slot::ChunkSlot;
+    use crowdb_protocol::common::ChunkId;
+
+    let test = TestGroups::start().await;
+    let maps = ChunkSlotMapClient::new(Arc::clone(&test.kv));
+    let services = ChunkSlotBootstrap {
+        service_instances: vec![10, 20],
+        storage_groups: Vec::new(),
+    }
+    .service_map()
+    .unwrap();
+    maps.initialize_service(&services).await.unwrap();
+    assert!(maps.read_storage().await.is_err());
+    let mut endpoints = Vec::new();
+    for _ in 0..3 {
+        let server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
+        server.listen("127.0.0.1", 0).unwrap();
+        server.start();
+        endpoints.push(server);
+    }
+    let registry = ServiceRegistryClient::from_shared(Arc::clone(&test.kv));
+    registry
+        .register_chunkdb(10, &format!("127.0.0.1:{}", endpoints[0].port()))
+        .await
+        .unwrap();
+    registry
+        .register_chunkdb(20, &format!("127.0.0.1:{}", endpoints[1].port()))
+        .await
+        .unwrap();
+    let client = Arc::new(ChunkdbClient::new(
+        registry.clone(),
+        Arc::new(ChunkdbRpcTransport::new()),
+    ));
+    let native = client.native_routes().await.unwrap();
+    let mut ids = Vec::new();
+    for owner in [10, 20] {
+        ids.push(
+            (1..10_000)
+                .map(|low| ChunkId { high: 2 << 56, low })
+                .find(|id| services.owner(ChunkSlot::for_chunk(id)) == owner)
+                .unwrap(),
+        );
+    }
+    let old = native.resolve(Some(ids[0]), false).unwrap();
+    let other = native.resolve(Some(ids[1]), false).unwrap();
+    assert_ne!(old.raw_handles().2, other.raw_handles().2);
+    registry
+        .register_chunkdb(10, &format!("127.0.0.1:{}", endpoints[2].port()))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if native
+                .resolve(Some(ids[0]), true)
+                .is_some_and(|route| route.raw_handles().2 != old.raw_handles().2)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        native.resolve(Some(ids[1]), false).unwrap().raw_handles().2,
+        other.raw_handles().2
+    );
+    registry.unregister("chunkdb", 10).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while native.resolve(Some(ids[0]), true).is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        native.resolve(None, false).unwrap().raw_handles().2,
+        other.raw_handles().2
+    );
+    drop(native);
+    drop(old);
+    drop(other);
+    for endpoint in endpoints {
+        endpoint.stop();
+    }
+}

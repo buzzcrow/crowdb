@@ -81,6 +81,25 @@ pub struct ct_chunk_rpc_disk_route {
     pub route: ct_chunk_rpc_route,
 }
 
+pub type ct_chunk_rpc_resolve_fn = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    u64,
+    u64,
+    bool,
+    *mut ct_chunk_rpc_route,
+    *mut *mut std::ffi::c_void,
+) -> c_int;
+
+#[repr(C)]
+#[derive(Default)]
+pub struct ct_chunk_rpc_resolver {
+    pub context: *mut std::ffi::c_void,
+    pub resolve: Option<ct_chunk_rpc_resolve_fn>,
+    pub release_route: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+    pub retain_context: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+    pub release_context: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+}
+
 #[repr(C)]
 pub struct ct_chunk_rpc_transport_options {
     pub chunkdb: ct_chunk_rpc_route,
@@ -90,6 +109,7 @@ pub struct ct_chunk_rpc_transport_options {
     pub rpc_timeout_ms: u64,
     pub completion_capacity: u32,
     pub mirror_copies: u32,
+    pub chunkdb_resolver: ct_chunk_rpc_resolver,
 }
 
 #[repr(C)]

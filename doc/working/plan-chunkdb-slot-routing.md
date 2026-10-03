@@ -125,13 +125,13 @@ implementation and verified requirement completion.
   without current authority. Clients must not require storage-map access.
   Files: `lib/crowdb-kv-client/src/binding/range.rs`,
   `lib/crowdb-chunkdb-client/src/client.rs`, `lib/crowdb-chunk-client/src/client.rs`.
-- [~] **Native route interface**: replace the single retained ChunkDB route
+- [x] **Native route interface**: replace the single retained ChunkDB route
   exported by `native_storage_routes` with a lifetime-safe service resolver or
   equivalent shared route snapshot. Specify ownership and asynchronous refresh
   across the existing Rust/C++ seam without introducing hot-path locks.
   Files: chunk client, `app/crowdb-chunk-kv-server/src/storage.rs`,
   `lib/crowdb-tree/ffi/`, tree `backend/chunk/rpc_chunk_transport.h`.
-- [ ] **Native request routing**: resolve query, advance, seal and other
+- [x] **Native request routing**: resolve query, advance, seal and other
   existing-chunk RPCs from chunk ID; route allocation to an eligible owner.
   Handle stale endpoints/NotMyRange by refreshing and bounded retry while
   preserving operation idempotency and unknown-outcome behavior. Fixed topology
@@ -271,3 +271,15 @@ implementation and verified requirement completion.
   and old-claim fencing after same-owner restart pass. The real three-node
   takeover test also passes. Execution verifies the durable claim without an
   extra renewal write; normal lease heartbeats retain their existing cadence.
+
+- Native tree requests now resolve ChunkDB owners from retained, lock-free
+  service snapshots, refreshed asynchronously. Per-call leases keep old
+  connections alive through completion. C++ page stores retain resolver and
+  DiskIO owners even after the Rust transport handle is dropped.
+- Native RPC connections are separate from ordinary Rust RPC completion pools.
+  Explicit ownership rejection permits bounded refresh/retry; an unknown
+  allocation or mutation outcome is returned without resubmission.
+- Native service-only discovery/endpoint refresh, all five C++ transport tests,
+  FFI retained-owner lifetime, affected all-target clippy, formatting, changed
+  tree-lint and the full `pixi run test-cpp` gate pass. Chunk-purpose and final
+  three-node acceptance work remain incomplete.

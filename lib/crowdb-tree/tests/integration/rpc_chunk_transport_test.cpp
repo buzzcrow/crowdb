@@ -3,6 +3,7 @@
 
 #include "backend/chunk/rpc_chunk_transport.h"
 #include "chunkdb_generated.h"
+#include "common/test_chunk_route_service.h"
 #include "crowdb-rpc/c_api.h"
 #include "diskdb_generated.h"
 #include "diskio_generated.h"
@@ -195,6 +196,7 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
         .rpc_timeout_ms      = 1000,
         .completion_capacity = 16,
         .mirror_copies       = 3,
+        .chunkdb_resolver    = {},
     };
     RpcChunkTransport transport(options);
     ChunkId           allocated;
@@ -218,6 +220,72 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     crowdb_rpc_server_stop(server);
     crowdb_rpc_server_destroy(server);
     crowdb_rpc_pool_destroy(pool);
+}
+
+TEST(RpcChunkTransport, ResolvesEachChunkOwnerAndReleasesRouteLeases)
+{
+    TestChunkRouteFixture         fixture;
+    const ct_chunk_rpc_disk_route disk{.disk_id_high = 9, .disk_id_low = 10, .route = fixture.routes[0]};
+    {
+        ct_chunk_rpc_transport_options options{};
+        options.disk_routes      = &disk;
+        options.disk_route_count = 1;
+        options.chunkdb_resolver = fixture.resolver();
+        RpcChunkTransport transport(options);
+        ChunkId           allocated;
+        ASSERT_TRUE(transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated).ok());
+        EXPECT_EQ(allocated.low, 100);
+        EXPECT_TRUE(transport.advance_write(allocated, 0, 4).ok());
+        EXPECT_TRUE(transport.seal_chunk(allocated, 17, 4).ok());
+        ChunkLayout other;
+        EXPECT_TRUE(transport.query_chunk(ChunkId(allocated.high, 101), &other).ok());
+        EXPECT_EQ(other.chunk_id.low, 101);
+        EXPECT_EQ(fixture.services[0].allocations.load(), 1U);
+        EXPECT_EQ(fixture.services[0].advances.load(), 1U);
+        EXPECT_EQ(fixture.services[0].seals.load(), 1U);
+        EXPECT_EQ(fixture.services[1].queries.load(), 1U);
+        EXPECT_EQ(fixture.retains.load(), 1U);
+        EXPECT_EQ(fixture.leases.load(), 0U);
+    }
+    EXPECT_EQ(fixture.releases.load(), 1U);
+}
+
+TEST(RpcChunkTransport, RefreshesOnOwnershipRejectionWithoutWrongOwnerFallback)
+{
+    TestChunkRouteFixture fixture;
+    fixture.stale = true;
+    const ct_chunk_rpc_disk_route  disk{.disk_id_high = 9, .disk_id_low = 10, .route = fixture.routes[0]};
+    ct_chunk_rpc_transport_options options{};
+    options.disk_routes      = &disk;
+    options.disk_route_count = 1;
+    options.chunkdb_resolver = fixture.resolver();
+    RpcChunkTransport transport(options);
+    ChunkLayout       layout;
+    EXPECT_TRUE(transport.query_chunk(ChunkId(0x0200'0000'0000'0042ULL, 101), &layout).ok());
+    EXPECT_EQ(layout.chunk_id.low, 101);
+    EXPECT_EQ(fixture.services[0].queries.load(), 1U);
+    EXPECT_EQ(fixture.services[1].queries.load(), 1U);
+    EXPECT_EQ(fixture.refreshes.load(), 1U);
+    EXPECT_EQ(fixture.leases.load(), 0U);
+}
+
+TEST(RpcChunkTransport, DoesNotResubmitAllocationAfterAnUnknownOutcome)
+{
+    TestChunkRouteFixture fixture;
+    fixture.services[0].drop_allocation = true;
+    const ct_chunk_rpc_disk_route  disk{.disk_id_high = 9, .disk_id_low = 10, .route = fixture.routes[0]};
+    ct_chunk_rpc_transport_options options{};
+    options.disk_routes      = &disk;
+    options.disk_route_count = 1;
+    options.rpc_timeout_ms   = 100;
+    options.chunkdb_resolver = fixture.resolver();
+    RpcChunkTransport transport(options);
+    ChunkId           allocated;
+    EXPECT_EQ(transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated).code(), Code::kUnavailable);
+    EXPECT_EQ(fixture.services[0].allocations.load(), 1U);
+    EXPECT_EQ(fixture.services[1].allocations.load(), 0U);
+    EXPECT_EQ(fixture.refreshes.load(), 1U);
+    EXPECT_EQ(fixture.leases.load(), 0U);
 }
 
 } // namespace

@@ -169,7 +169,12 @@ impl ChunkKvStorage {
             .collect();
         let tree_transport = Arc::new(
             ChunkTransport::open_owned_rpc(OwnedChunkRpcTransportOptions {
-                chunkdb,
+                chunkdb: Arc::new(move |id, refresh| {
+                    chunkdb.resolve(
+                        id.map(|(high, low)| crowdb_protocol::common::ChunkId { high, low }),
+                        refresh,
+                    )
+                }),
                 disk_routes,
                 writer_lease_ms,
                 rpc_timeout_ms: writer_lease_ms,

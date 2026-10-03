@@ -133,8 +133,16 @@ fn owned_chunk_rpc_transport_retains_route_handles() {
     client.attach(&connection);
     let route = OwnedClientRoute::new(client, server, connection);
 
+    let lifetime = Arc::new(());
+    let weak = Arc::downgrade(&lifetime);
     let transport = crowdb_tree_ffi::ChunkTransport::open_owned_rpc(OwnedChunkRpcTransportOptions {
-        chunkdb: route.clone(),
+        chunkdb: Arc::new({
+            let route = route.clone();
+            move |_, _| {
+                let _keep = &lifetime;
+                Some(route.clone())
+            }
+        }),
         disk_routes: vec![OwnedChunkRpcDiskRoute {
             disk_id_high: 1,
             disk_id_low: 2,
@@ -146,7 +154,32 @@ fn owned_chunk_rpc_transport_retains_route_handles() {
         mirror_copies: 0,
     })
     .unwrap();
+    let store = PageStore::open_chunk(
+        ChunkPageStoreOptions {
+            tree_id: 41,
+            owner_epoch: 7,
+            open_generation: 0,
+            pack_bytes: 4096,
+            iu_size: 1,
+            max_concurrent_packs: 2,
+            materialization_bytes_per_pass: 4096,
+            max_chunk_bytes: 0,
+            mirror_copies: 0,
+        },
+        Arc::new(ChunkRootCatalog::open_memory(7).unwrap()),
+        Some(&transport),
+    )
+    .unwrap();
     drop(transport);
+    assert!(
+        weak.upgrade().is_some(),
+        "page store must retain native route owners"
+    );
+    drop(store);
+    assert!(
+        weak.upgrade().is_none(),
+        "last native transport reference must release route owners"
+    );
 }
 
 #[test]

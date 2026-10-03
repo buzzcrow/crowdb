@@ -33,9 +33,12 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
-use crowdb_rpc_ffi::OwnedClientRoute;
 
 use crate::{ChunkdbClientError, ChunkdbRpcTransport, Result};
+
+#[path = "native_routes.rs"]
+mod native_routes;
+pub use native_routes::NativeChunkRoutes;
 
 const REGISTRY_REFRESH_INTERVAL_MS: u64 = 5_000;
 
@@ -190,13 +193,6 @@ impl ChunkdbClient {
             .ok_or_else(|| {
                 ChunkdbClientError::Unreachable("no live chunkdb owner with assigned slots".into())
             })
-    }
-
-    /// Return an owned route to a live `ChunkDB` endpoint for storage engines
-    /// whose allocation RPCs are not tied to an existing chunk identifier.
-    pub async fn storage_route(&self) -> Result<OwnedClientRoute> {
-        let endpoint = self.first_endpoint().await?;
-        self.rpc_transport.owned_route(&endpoint)
     }
 
     async fn endpoints_for_chunk(&self, chunk_id: Option<&ChunkId>) -> Result<Vec<String>> {
