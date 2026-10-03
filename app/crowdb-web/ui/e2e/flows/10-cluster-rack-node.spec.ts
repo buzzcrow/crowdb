@@ -188,6 +188,9 @@ test.describe('cluster · rack + node CRUD', () => {
         });
 
         await step('rack-CRUD: DDB inspect UI', async () => {
+          const creation = page.getByRole('dialog', { name: 'Add Node', exact: true });
+          await expect(creation.getByRole('listitem')).toHaveCount(6);
+          await creation.getByRole('button', { name: 'Done', exact: true }).click();
           // DDB-xxx tree items live in the Cluster domain alongside KV
           // servers. The Capacity view only shows the physical disk
           // hierarchy (DG > Disk), not service items.

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDeploymentDefaults } from '../../services/useDeploymentDefaults';
 import { Dialog } from '../Dialog';
 import { Input, Select } from '../ui/Input';
@@ -9,6 +9,10 @@ import { useToast } from '../../contexts/ToastContext';
 import { addNode, deployServer, deployDiskdb } from '../../api';
 import { Rack } from '../../types';
 import { nextIdFromSuffix } from './defaults';
+import { NodeServiceProgress } from '../../services/NodeServiceProgress';
+import { serviceRequest } from '../../services/client';
+import type { DeploymentDefaults } from '../../services/useDeploymentDefaults';
+import type { NodeServicePlan } from '../../services/useNodeServicePlans';
 
 export interface AddNodeDialogProps {
   isOpen: boolean;
@@ -21,6 +25,7 @@ export interface AddNodeDialogProps {
   defaultRpcPort?: string;
   defaultDiskdbRpcPort?: string;
   onDefaultServices?: (nodeId: number) => void;
+  servicePlans?: Record<number, NodeServicePlan>;
   onCreatedRackId?: (rackId: number) => void;
   onDiskdbPortReserved?: (port: number) => void;
   onSuccess?: () => void | Promise<void>;
@@ -40,6 +45,7 @@ export function AddNodeDialog({
   defaultRpcPort = '19920',
   defaultDiskdbRpcPort = '29920',
   onDefaultServices,
+  servicePlans,
   onCreatedRackId,
   onDiskdbPortReserved,
   onSuccess,
@@ -59,9 +65,15 @@ export function AddNodeDialog({
   const [completeSet, setCompleteSet] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const { success, error } = useToast();
+  const created = useRef<number | null>(null);
+  const completed = useRef(new Set<string>());
+  const [serviceError, setServiceError] = useState('');
+  const [createdId, setCreatedId] = useState<number | null>(null);
+  const [initialDone, setInitialDone] = useState(false);
+  const plan = createdId == null ? undefined : servicePlans?.[createdId];
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || created.current != null) return;
     setNodeId(nextIdFromSuffix(existingNodeIds, 1));
     setRackId(initialRackId);
     setCompleteSet(true);
@@ -74,7 +86,7 @@ export function AddNodeDialog({
 
   const defaults = useDeploymentDefaults(isOpen);
   useEffect(() => {
-    if (!defaults.values) return;
+    if (!defaults.values || created.current != null) return;
     setRestPort(String(defaults.values.kv.http_port));
     setRpcPort(String(defaults.values.kv.rpc_port));
     setDiskdbRpcPort(String(defaults.values.diskdb.rpc_port));
@@ -90,57 +102,50 @@ export function AddNodeDialog({
     setIsLoading(true);
     try {
       const trimmedNodeId = nodeId.trim();
-      const numericNodeId = Number(trimmedNodeId);
-      await addNode({
-        id: numericNodeId,
-        rack_id: Number(rackId),
-        host: host.trim(),
-        ssh_port: 22,
-        ssh_user: sshUser.trim(),
-        ...(sshKeyPath.trim() ? { ssh_key: sshKeyPath.trim() } : {}),
-      });
-
-      // Node creation is durable independently of service deployment. Close
-      // the dialog now so a retryable service failure cannot strand it open.
-      onCreatedRackId?.(Number(rackId));
-      if (enableDiskdb) onDiskdbPortReserved?.(Number(diskdbRpcPort));
-      setRackId(initialRackId);
-      setNodeId(initialNodeId);
-      setHost(defaultHost);
-      setSshUser('');
-      setSshKeyPath('');
-      setEnableCrowdbKV(true);
-      setRestPort(defaultRestPort);
-      setRpcPort(defaultRpcPort);
-      setEnableDiskdb(true);
-      setDiskdbRpcPort(defaultDiskdbRpcPort);
-      onClose();
-      await onSuccess?.();
-
+      const numericNodeId = created.current ?? Number(trimmedNodeId);
+      if (created.current == null) {
+        await addNode({
+          id: numericNodeId, rack_id: Number(rackId), host: host.trim(),
+          ssh_port: 22, ssh_user: sshUser.trim(),
+          ...(sshKeyPath.trim() ? { ssh_key: sshKeyPath.trim() } : {}),
+        });
+        created.current = numericNodeId;
+        setCreatedId(numericNodeId);
+        onCreatedRackId?.(Number(rackId));
+        if (enableDiskdb) onDiskdbPortReserved?.(Number(diskdbRpcPort));
+      }
+      let kvRest = Number(restPort), kvRpc = Number(rpcPort), ddbRpc = Number(diskdbRpcPort);
+      if (serviceError) {
+        const fresh = await serviceRequest('/deployment-defaults', 'GET') as Record<string, DeploymentDefaults>;
+        kvRest = fresh.kv.http_port!; kvRpc = fresh.kv.rpc_port!; ddbRpc = fresh.diskdb.rpc_port!;
+      }
+      setServiceError('');
       const serviceErrors: string[] = [];
-      if (enableCrowdbKV) {
+      if (enableCrowdbKV && !completed.current.has('kv')) {
         try {
           await deployServer(numericNodeId, {
-            rest_port: Number(restPort),
-            rpc_port: Number(rpcPort),
+            rest_port: kvRest,
+            rpc_port: kvRpc,
           });
+          completed.current.add('kv');
         } catch (err) {
           serviceErrors.push(`CrowDB Storage: ${err instanceof Error ? err.message : 'deployment failed'}`);
         }
       }
 
-      if (enableDiskdb) {
+      if (enableDiskdb && !completed.current.has('diskdb')) {
         try {
           await deployDiskdb(numericNodeId, {
-            rpc_port: Number(diskdbRpcPort),
+            rpc_port: ddbRpc,
           });
+          completed.current.add('diskdb');
         } catch (err) {
           serviceErrors.push(`DiskDB: ${err instanceof Error ? err.message : 'deployment failed'}`);
         }
       }
 
       if (serviceErrors.length > 0) {
-        error(`Node "${trimmedNodeId}" created, but ${serviceErrors.join('; ')}`);
+        setServiceError(serviceErrors.join('; '));
       } else {
         const parts = [`Node "${trimmedNodeId}" created`];
         if (enableCrowdbKV) parts.push('CrowDB Storage enabled');
@@ -148,9 +153,14 @@ export function AddNodeDialog({
         success(parts.join(', '));
       }
       await onSuccess?.();
-      if (completeSet && serviceErrors.length === 0) onDefaultServices?.(numericNodeId);
+      if (serviceErrors.length === 0) {
+        setInitialDone(true);
+        if (completeSet) onDefaultServices?.(numericNodeId);
+        if (!enableCrowdbKV && !enableDiskdb) onClose();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create node';
+      setServiceError(message);
       error(message);
     } finally {
       setIsLoading(false);
@@ -158,6 +168,7 @@ export function AddNodeDialog({
   };
 
   const handleClose = () => {
+    if (isLoading) return;
     setRackId(initialRackId);
     setNodeId(initialNodeId);
     setHost(defaultHost);
@@ -177,16 +188,21 @@ export function AddNodeDialog({
       onClose={handleClose}
       title="Add Node"
       description="Add a new physical node to your infrastructure"
-      confirmLabel="Create Node"
-      onConfirm={handleSubmit}
+      confirmLabel={isLoading ? 'Deploying services…' : createdId == null ? 'Create Node' : !initialDone ? 'Retry failed services' : plan && Object.values(plan).some(step => step.state === 'failed') ? 'Retry failed services' : 'Done'}
+      cancelLabel={createdId == null ? 'Cancel' : 'Close'}
+      onConfirm={initialDone ? () => { if (plan && Object.values(plan).some(step => step.state === 'failed')) onDefaultServices?.(createdId!); else handleClose(); } : handleSubmit}
       confirmDisabled={!defaults.values || !rackId || !nodeId.trim() || !host.trim() || isLoading || (enableCrowdbKV && !deployPortsValid) || (enableDiskdb && !diskdbPortsValid)}
       confirmLoading={isLoading}
     >
       <div className="tw-space-y-4">
         {defaults.error && <p role="alert">{defaults.error}</p>}
         {!defaults.values && !defaults.error && <p role="status">Finding available ports…</p>}
-        <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={completeSet} onChange={event => setCompleteSet(event.target.checked)} />Deploy complete service set</label>
-        {completeSet && <p className="tw-text-xs tw-text-muted">KV and DiskDB start first. Continue with CDB, DiskIO, Chunk-KV and Access Server after Group 0 and storage prerequisites are ready.</p>}
+        {serviceError && <p role="alert" className="tw-text-sm tw-text-failed">{serviceError}</p>}
+        {createdId != null && <div role="status" className="tw-text-sm">Node {createdId} created{isLoading ? ' · deploying services…' : ''}</div>}
+        {plan && <NodeServiceProgress plan={plan} />}
+        <fieldset disabled={createdId != null || isLoading} className={initialDone ? 'tw-hidden' : 'tw-space-y-4'}>
+        <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={completeSet} onChange={event => { setCompleteSet(event.target.checked); if (event.target.checked) { setEnableCrowdbKV(true); setEnableDiskdb(true); } }} />Deploy complete service set</label>
+        {completeSet && <p className="tw-text-xs tw-text-muted">KV and DiskDB start first. CDB, DiskIO, Chunk-KV and Access Server deploy automatically when their prerequisites are ready.</p>}
         {racks.length > 0 ? (
           <Select
             label="Rack"
@@ -274,6 +290,7 @@ export function AddNodeDialog({
             onChange={(e) => setDiskdbRpcPort(e.target.value)}
           />
         )}
+        </fieldset>
       </div>
     </Dialog>
   );

@@ -291,6 +291,7 @@ export interface DiskGroupEntry {
 
 // Console-config disk entry (mirrors crowdb-console-shared DiskEntry).
 export interface DiskEntry {
+  device_path?: string;
   disk_id: string;
   disk_group_id: number;
   rack_id: number;

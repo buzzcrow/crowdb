@@ -590,3 +590,24 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
 - Verification: six service integration tests, 39 create-form unit tests, two
   focused service-menu/plan browser tests, frontend build/lint and affected
   Rust fmt/Clippy passed. Auxiliary browser case 2.7s versus 2.4s baseline.
+
+## Single-dialog node creation and one-rack acceptance
+
+- [x] **Single Add Node flow**: keep creation and deployment progress in one
+  dialog. Retry only failed initial services with fresh defaults; never create
+  the Node or a successful service twice. The six-service queue survives dialog
+  closure, resumes when dependencies appear, and stops before Reset. Plans are
+  console-session state; after a page reload use the Node menu to resume missing
+  services. Durable server-side plans are not implemented.
+- [x] **Creation regression**: 41 frontend unit tests and all 12 affected browser
+  cases passed (11 in the combined run, the corrected CRUD case separately).
+  CRUD now explicitly finishes the retained progress dialog; 6.6s test time.
+  Focused service plan / single-dialog cases: 0.789s / 0.926s. Build/lint passed.
+- [~] **One Rack, three Nodes live acceptance**: Rack 1 now contains Nodes 1–3.
+  Each has KV and DiskDB, and Group 0 has three healthy replicas. Three CDBs
+  deployed automatically after initialization. DiskIO awaits file-backed disks;
+  Chunk-KV awaits metadata groups; Access deployment needs further diagnosis.
+- [ ] **Rack preference, node protection**: rack diversity is an optimization,
+  not an admission requirement. Permit normal multi-node protected placement
+  within one rack while reporting actual rack protection. Keep node/disk loss
+  limits and multi-rack preference. Verify selectors and conversion publication.

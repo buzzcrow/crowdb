@@ -242,7 +242,7 @@ describe('Add Node dialog', () => {
     });
   });
 
-  it('closes the dialog after node creation even when DiskDB deployment fails', async () => {
+  it('keeps one dialog and retries failed services without recreating the node', async () => {
     let onCloseCalled = false;
     const onDefaultServices = vi.fn();
     // Custom mock: success for addNode and deployServer, 502 for deployDiskdb.
@@ -280,8 +280,8 @@ describe('Add Node dialog', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
-    // The dialog must close after node creation, before service results.
-    await waitFor(() => expect(onCloseCalled).toBe(true));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('AddrInUse'));
+    expect(onCloseCalled).toBe(false);
     // All three requests are sent: addNode, deployServer, deployDiskdb.
     await waitFor(() => expect(captured.length).toBe(3));
     expect(captured[0].url).toBe('/api/nodes');
@@ -289,6 +289,11 @@ describe('Add Node dialog', () => {
     expect(captured[2].url).toBe('/api/nodes/1/diskdb/deploy');
     // A failed prerequisite must not start the dependent service plan.
     expect(onDefaultServices).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry failed services' }));
+    await waitFor(() => expect(captured.length).toBe(4));
+    expect(captured[3].url).toBe('/api/nodes/1/diskdb/deploy');
+    expect(captured.filter(request => request.url === '/api/nodes')).toHaveLength(1);
+    expect(captured.filter(request => request.url.endsWith('/server/deploy'))).toHaveLength(1);
   });
 });
 

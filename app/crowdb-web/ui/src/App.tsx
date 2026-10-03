@@ -12,6 +12,7 @@ import { useLogicalTree } from './data/useLogicalTree';
 import { useCapacityTree } from './data/useCapacityTree';
 import { Header, ClusterHealth } from './shell/Header';
 import { Sidebar } from './shell/Sidebar';
+import { useNodeServicePlans } from './services/useNodeServicePlans';
 import { NodeServicesDialog } from './services/NodeServicesDialog';
 import { DeployServiceDialog } from './services/DeployServiceDialog';
 import { ToastContainer } from './components/ToastContainer';
@@ -247,6 +248,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     }
   }, [managed, refreshPhysical, refreshLogical, refreshCapacity, capacityActive, physicalActive, fetchNodeDiskGroups, nodes, refreshAllServers]);
 
+  const servicePlans = useNodeServicePlans(stores, nodeDiskGroups, handleRefresh, !topologyReadonly);
+
   // Fetch node disk-groups when the Capacity or Physical view is active.
   useEffect(() => {
     if (!managed && (capacityActive || physicalActive) && nodes.length > 0) {
@@ -316,6 +319,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         id: 'all',
         onDelete: async () => {
           await runMutation('Reset Cluster', 'all', async () => {
+            await servicePlans.stop();
             await resetCluster();
             clearSelection();
           });
@@ -614,7 +618,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       />
       {dialog.addNode && (
         <AddNodeDialog
-        onDefaultServices={nodeId => setDialog(dialog => ({ ...dialog, defaultServices: { nodeId } }))}
+        onDefaultServices={servicePlans.start}
+          servicePlans={servicePlans.plans}
           isOpen
           onClose={closeDialogs}
           racks={racks}
@@ -750,7 +755,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           await handleRefresh();
         }}
       />
-      {dialog.defaultServices && <NodeServicesDialog nodeId={dialog.defaultServices.nodeId} servers={allServers} stores={stores} diskGroups={nodeDiskGroups[dialog.defaultServices.nodeId]?.diskGroups ?? []} onClose={closeDialogs} onSuccess={handleRefresh} />}
+      {dialog.defaultServices && <NodeServicesDialog nodeId={dialog.defaultServices.nodeId} plan={servicePlans.plans[dialog.defaultServices.nodeId]} onClose={closeDialogs} onStart={servicePlans.start} />}
       {dialog.deployAuxiliary && <DeployServiceDialog key={`${dialog.deployAuxiliary.kind}/${dialog.deployAuxiliary.nodeId}`} {...dialog.deployAuxiliary}
         servers={allServers} stores={stores} diskGroups={nodeDiskGroups[dialog.deployAuxiliary.nodeId]?.diskGroups ?? []}
         onClose={closeDialogs} onSuccess={handleRefresh} />}

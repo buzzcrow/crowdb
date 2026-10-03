@@ -387,6 +387,7 @@ test('auxiliary deployments use typed parameters, identities and lifecycle menus
   expect(requests[3]).not.toHaveProperty('rpc_port');
 });
 
+// Baseline: 0.681s (2026-10-03), before session queue.
 test('default service plan waits for Group 0 without using single-node mode', async ({ page, baseURL }) => {
   await seedRackAndNode(baseURL!, 496, 496);
   const services = [{ id: '496', node_id: 496, service_type: 'kv', pid: 123, health: 'up' }, { id: 'diskdb-496', node_id: 496, service_type: 'diskdb', pid: 124, health: 'up' }];
@@ -398,9 +399,56 @@ test('default service plan waits for Group 0 without using single-node mode', as
   await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByText('N-496', { exact: true }).click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Deploy default services', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Node 496 services', exact: true });
-  await expect(dialog.getByRole('listitem')).toHaveCount(6);
   await dialog.getByRole('button', { name: 'Deploy missing services', exact: true }).click();
-  await expect(dialog.getByRole('status')).toContainText('initialize Group 0');
-  await expect(dialog.getByRole('button', { name: 'Deploy missing services', exact: true })).toBeEnabled();
+  await expect(dialog.getByRole('listitem')).toHaveCount(6);
+  await expect(dialog.getByRole('status').filter({ hasText: 'initialize Group 0' })).toHaveCount(4);
+  await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeEnabled();
   expect(deployments).toBe(0);
+});
+
+test('Add Node creates and retries services in one dialog, then waits automatically', async ({ page, baseURL }) => {
+  await seedRackAndNode(baseURL!, 497, 497);
+  const services: object[] = [];
+  let nodeCreates = 0;
+  let kvDeploys = 0;
+  let diskdbDeploys = 0;
+  await page.route('**/api/nodes', async route => {
+    if (route.request().method() === 'POST') nodeCreates++;
+    await route.continue();
+  });
+  await page.route('**/api/servers', route => route.fulfill({ json: services }));
+  await page.route('**/api/stores?*', route => route.fulfill({ json: [] }));
+  await page.route('**/api/nodes/498/server/deploy', route => {
+    kvDeploys++;
+    services.push({ id: '498', node_id: 498, service_type: 'kv', pid: 123, health: 'up' });
+    return route.fulfill({ json: { node_id: 498 } });
+  });
+  await page.route('**/api/nodes/498/diskdb/deploy', route => {
+    diskdbDeploys++;
+    if (diskdbDeploys === 1) return route.fulfill({ status: 502, json: { error: 'DiskDB startup failed' } });
+    services.push({ id: 'diskdb-498', node_id: 498, service_type: 'diskdb', pid: 124, health: 'up' });
+    return route.fulfill({ json: { node_id: 498 } });
+  });
+  await page.goto('/?domain=Cluster');
+  const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  await expect(aside.getByText('R-497 (rack-497)', { exact: true })).toBeVisible({ timeout: 3000 });
+  await aside.getByText('R-497 (rack-497)', { exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Add Node', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add Node', exact: true });
+  await expect(dialog.getByLabel('Node ID')).toHaveValue('498');
+  await dialog.getByRole('button', { name: 'Create Node', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('DiskDB startup failed');
+  await expect(dialog.getByLabel('Node ID')).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Retry failed services', exact: true }).click();
+  await expect(dialog.getByRole('listitem')).toHaveCount(6);
+  await expect(dialog.getByRole('status').filter({ hasText: 'initialize Group 0' })).toHaveCount(4);
+  expect(nodeCreates).toBe(1);
+  expect(kvDeploys).toBe(1);
+  expect(diskdbDeploys).toBe(2);
+  await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+  await aside.getByText('N-498', { exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Deploy default services', exact: true }).click();
+  const progress = page.getByRole('dialog', { name: 'Node 498 services', exact: true });
+  await expect(progress.getByRole('listitem')).toHaveCount(6);
+  await expect(progress.getByRole('button', { name: 'Deploy missing services', exact: true })).toHaveCount(0);
 });
