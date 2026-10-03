@@ -398,3 +398,30 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
 - Runtime page/tree/extent inspection and discovery of management origins from
   managed deployments remain open. The catalog/runtime observation is not a
   claim of complete Chunk-KV diagnostics or a completed seven-domain rollout.
+
+## Managed Chunk-KV discovery checkpoint
+
+- Registered Chunk-KV services publish optional explicit Node IDs and HTTP
+  management origins. Standalone deployment and the single-node profile populate
+  these fields; old registrations remain readable without guessed placement.
+- Runtime discovery uses an exact Group 0 owner key, checks instance/RPC identity
+  and heartbeat freshness, and rejects records above 256 KiB. Managed navigation
+  projects all registered service types and preserves full instance identifiers.
+- Protocol identity test, four config tests, Web catalog integration, five managed
+  mode tests, four service lifecycle tests, and four monitor profile/render tests
+  passed. Frontend lint and three projection unit tests passed; shell/catalog
+  E2E: nine passed. Rust fmt and affected all-target Clippy passed.
+- Renderer validation caught a one-based Node template reference; corrected to
+  the renderer's zero-based Node index and reran both profile/render suites.
+- Native discovery acceptance remains pending; existing preview processes still
+  use their previous binaries until the next controlled Web/Chunk-KV refresh.
+
+## Root Console and default Chunk browsing steering
+
+- Treat the Console user as root until UI authentication is introduced. Remove
+  manual S3 keys and catalog/management token forms while preserving upstream
+  protocol authorization through server-held credentials. Container mode must
+  continue to reject topology and Capacity disk management mutations.
+- Entering Chunk automatically scans one bounded page. Preserve exact ID lookup
+  and type selection, remove the ID-prefix form and additional filters. Never
+  automatically exhaust continuations to find matches.

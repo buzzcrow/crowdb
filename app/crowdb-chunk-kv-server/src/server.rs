@@ -372,6 +372,7 @@ impl ChunkKvService {
             request_rate,
             hosted,
             partition_loads: Vec::new(),
+            ..ChunkKvExtra::default()
         }
     }
 

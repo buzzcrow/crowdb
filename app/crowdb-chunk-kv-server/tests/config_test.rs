@@ -77,3 +77,26 @@ fn invalid_identity_address_and_capacity_fail_closed() {
     config.storage.stream_chunk_capacity_bytes = 257 * 1024 * 1024;
     assert!(config.validate().is_err());
 }
+
+#[test]
+fn management_discovery_requires_explicit_routable_identity() {
+    let mut config = ChunkKvServerConfig {
+        instance_id: 42,
+        node_id: Some(7),
+        http_advertise_addr: Some("127.0.0.1:15101".into()),
+        ..ChunkKvServerConfig::default()
+    };
+    config.validate().unwrap();
+    let restored: ChunkKvServerConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(restored.node_id, Some(7));
+    assert_eq!(restored.http_advertise_addr.as_deref(), Some("127.0.0.1:15101"));
+    config.http_advertise_addr = Some("0.0.0.0:15101".into());
+    assert!(config.validate().is_err());
+    config.http_advertise_addr = Some("127.0.0.1:0".into());
+    assert!(config.validate().is_err());
+    config.http_advertise_addr = None;
+    config.node_id = Some(0);
+    assert!(config.validate().is_err());
+    config.node_id = None;
+    config.validate().unwrap();
+}

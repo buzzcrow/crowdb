@@ -9,7 +9,6 @@ use axum::{
     extract::{Query, State},
     Json,
 };
-use crowdb_console_shared::config::ServiceType;
 use crowdb_protocol::{
     chunk_kv::ChunkKvRangeCatalogHead,
     key::{ChunkKvRangeCatalogHeadKey, TextKey},
@@ -22,6 +21,8 @@ use crate::{
     error::{err_400, err_404, err_409, err_502},
     state::AppState,
 };
+
+mod discovery;
 
 #[derive(Deserialize)]
 pub(crate) struct RuntimeQuery {
@@ -70,17 +71,8 @@ async fn inspect(state: &AppState, query: &RuntimeQuery) -> Result<Json<Value>, 
     let endpoint = entry["endpoint"]
         .as_str()
         .ok_or_else(|| err_502("Missing owner endpoint"))?;
-    let origin = {
-        let config = state.config.read().unwrap();
-        config
-            .servers
-            .iter()
-            .find(|server| {
-                server.service_type == ServiceType::ChunkKv && server.rpc_url.as_deref() == Some(endpoint)
-            })
-            .map(|server| server.url.clone())
-    }
-    .ok_or_else(|| err_404("Owner management endpoint is not configured in this cluster"))?;
+    let instance_id = integer(&entry["owner_id"]).ok_or_else(|| err_502("Invalid owner identity"))?;
+    let origin = discovery::origin(state, instance_id, endpoint).await?;
     let mut url = reqwest::Url::parse(&origin).map_err(|_| err_502("Invalid owner management endpoint"))?;
     if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
         return Err(err_502("Owner management endpoint must be an HTTP origin"));

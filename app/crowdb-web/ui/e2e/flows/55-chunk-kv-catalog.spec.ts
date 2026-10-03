@@ -129,3 +129,26 @@ test('Chunk-KV rejects stale or oversized journal windows and refreshes from the
   await expect(page.getByLabel('Extent page map').getByRole('button')).toHaveCount(1);
   await expect(runtime).not.toContainText('Runtime unavailable');
 });
+
+test('Managed Chunk-KV placement uses registered node identity instead of instance identity', async ({ page }) => {
+  const id = '00000000000000010000000000000002';
+  await page.route('**/api/mode', route => route.fulfill({ json: { mode: 'docker' } }));
+  await page.route('**/api/preview', route => route.fulfill({ json: {
+    source: 'group0', racks: [{ id: 3 }], nodes: [{ id: 7, rack_id: 3 }], disk_groups: [], disks: [], stores: [], groups: [], replicas: [],
+    services: [{ kind: 'chunk-kv', instance_id: '9007199254740993', node_id: 7, endpoint: '127.0.0.1:15201', http_endpoint: 'http://127.0.0.1:15101', monitor: null }],
+  } }));
+  await page.route('**/api/chunk-kv/catalog**', route => route.fulfill({ json: {
+    generation: '9', page: 0, offset: 0, catalog_pages: 1, next: null, entries: [{
+      id, start: '', end: null, owner_id: '9007199254740993', endpoint: '127.0.0.1:15201', epoch: '2', state: 'Serving', transition_id: null,
+      artifact: { tree_id: '1', stream_name: { high: '1', low: '2' }, tail_overlay: null },
+    }],
+  } }));
+  await page.goto('/?domain=Chunk-KV');
+  const placement = page.getByRole('navigation', { name: 'Partition placement', exact: true });
+  await expect(placement).toContainText('Rack 3', { timeout: 3000 });
+  await expect(placement).toContainText('Node 7');
+  await expect(placement.getByRole('button', { name: 'Chunk-KV Server 9007199254740993', exact: true })).toBeVisible();
+  await expect(placement).not.toContainText('Unresolved placement');
+  await page.getByTestId('domain-cluster').click();
+  await expect(page.getByRole('button', { name: 'Add Rack', exact: true })).toHaveCount(0);
+});

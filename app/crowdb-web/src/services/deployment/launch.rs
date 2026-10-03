@@ -146,10 +146,11 @@ async fn chunk_kv_config(
     node: &NodeEntry,
 ) -> Result<serde_json::Value, Failure> {
     let store = body.metadata_store_id.unwrap();
-    let mut config = json!({ "instance_id":body.instance_id,
+    let mut config = json!({ "instance_id":body.instance_id, "node_id":node.id,
         "rpc_listen_addr":format!("{}:{}",node.host,body.rpc_port.unwrap()),
         "rpc_advertise_addr":format!("{}:{}",node.host,body.rpc_port.unwrap()),
         "http_listen_addr":format!("{}:{}",node.host,body.http_port.unwrap()),
+        "http_advertise_addr":format!("{}:{}",node.host,body.http_port.unwrap()),
         "group0_mgmt_seeds":seeds, "storage":{"metadata_store_id":store,"stream_mirror_copies":if body.test_single_node {1} else {2}},
     });
     if let Some(group) = body.bootstrap_group_id {
