@@ -239,6 +239,11 @@ provide observable capacity and bitmap fixtures.
   failed. Do not retry a potentially completed creation blindly.
 - Successful creation selects or reveals the resource after authoritative
   refresh. Partial creation shows exactly what exists and what remains.
+- Cluster reset fences new plan/deployment writes, waits at most 30 seconds
+  for accepted work, then stops registered children before deleting workspaces.
+  If accepted work remains pending, reset returns a conflict and removes nothing.
+  Cleanup operations use the reset's exclusive context; another browser cannot
+  start a deployment during cleanup.
 - **FORM-05:** Delete names the exact target and effects. Deleting a service,
   removing configuration, and deleting stored data are distinct operations.
   Reset lists its affected scope and stops queued deployment work before teardown.
@@ -322,7 +327,12 @@ provide observable capacity and bitmap fixtures.
   and owner, or reports which prerequisite/step prevents completion.
 - The dialog does not spin indefinitely when Group 0, a data group, or DiskDB
   is unavailable. It reports the actual failure/unknown outcome and reconciles
-  whether a resource exists before offering retry.
+  whether a resource exists before offering retry. DiskGroup creation returns
+  within eight seconds. An unknown outcome keeps the ID fenced until accepted
+  work finishes; reopening the same ID/name reconciles registration, binding
+  and owner instead of allocating another group. Binding can exist before a
+  DiskDB service is registered; this partial state names the missing owner
+  prerequisite explicitly.
 - **DISK-02:** Disk creation exposes identity, type, device path, capacity, zone
   size, and allocation unit. Validate consistent geometry and ID uniqueness.
   Batch rows report per-row outcomes and preserve failed entries for correction.

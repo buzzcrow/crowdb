@@ -28,22 +28,26 @@ pub(super) async fn restart(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
-    act(state, id, Action::Restart).await
+    act(state, id, Action::Restart, false).await
 }
 pub(super) async fn stop(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
-    act(state, id, Action::Stop).await
+    act(state, id, Action::Stop, false).await
 }
 pub(super) async fn delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
-    act(state, id, Action::Delete).await
+    act(state, id, Action::Delete, false).await
 }
 
-async fn act(state: AppState, id: String, action: Action) -> Result<Json<Value>, Failure> {
+pub(super) async fn delete_for_reset(state: AppState, id: String) -> Result<Json<Value>, Failure> {
+    act(state, id, Action::Delete, true).await
+}
+
+async fn act(state: AppState, id: String, action: Action, reset: bool) -> Result<Json<Value>, Failure> {
     let (entry, launch) = {
         let config = state.config.read().unwrap();
         let entry = config
@@ -67,7 +71,12 @@ async fn act(state: AppState, id: String, action: Action) -> Result<Json<Value>,
             .ok_or_else(|| err_409("Instance has no retained local launch specification"))?;
         (entry, launch)
     };
-    let operation = Operation::claim(
+    let claim = if reset {
+        Operation::claim_cleanup
+    } else {
+        Operation::claim
+    };
+    let operation = claim(
         &state,
         vec![
             format!("node/{}", entry.node_id.unwrap_or(0)),

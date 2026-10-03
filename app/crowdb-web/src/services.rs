@@ -9,6 +9,7 @@ mod deployment;
 mod lifecycle;
 pub(crate) mod observation;
 mod operation;
+pub(crate) use operation::Operation;
 mod plans;
 mod publication;
 
@@ -68,7 +69,7 @@ pub(crate) async fn remove_for_reset(state: &crate::state::AppState) -> Result<(
         .collect();
     services.sort();
     for (_, id) in services {
-        let _ = lifecycle::delete(axum::extract::State(state.clone()), axum::extract::Path(id)).await?;
+        let _ = lifecycle::delete_for_reset(state.clone(), id).await?;
     }
     Ok(())
 }

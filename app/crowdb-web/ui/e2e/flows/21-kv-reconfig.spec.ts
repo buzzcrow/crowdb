@@ -90,19 +90,19 @@ async function openKvCluster(page: import('@playwright/test').Page) {
     await page.goto('/');
   }
   await page.getByTestId('domain-kv').click();
-  await page.getByText(/^KV actions · Store/).click();
 }
 
 async function openKvPanel(page: import('@playwright/test').Page, storeId: number, groupId: number) {
-  // Always goto('/') — the KV panel store/group dropdowns must be
-  // refreshed after topology changes (node deletions, restarts). Without
-  // a fresh page load, selectOption can hang for 30s+ waiting for stale
-  // options to reappear.
-  await page.goto('/');
-  await page.getByTestId('domain-kv').click();
-  await page.getByText(/^KV actions · Store/).click();
-  await page.getByTestId('kv-store-select').selectOption(String(storeId));
-  await page.getByTestId('kv-group-select').selectOption(String(groupId));
+  await openKvCluster(page);
+  const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  const store = aside.getByRole('treeitem').filter({ has: page.getByText(`S-${storeId}`, { exact: true }) });
+  const expand = store.getByRole('button', { name: 'Expand', exact: true });
+  if (await expand.count()) await expand.click();
+  await aside.getByText(`G-${groupId}`, { exact: true }).click();
+  const actions = page.getByLabel(/^KV actions · Store/);
+  if (!(await actions.evaluate(element => element.hasAttribute("open")))) {
+    await page.getByText(/^KV actions · Store/).click();
+  }
 }
 
 /** The health badge inside a server tree item (Cluster domain). */
@@ -160,25 +160,10 @@ async function deleteNodeViaMenu(page: import('@playwright/test').Page, nodeId: 
 async function putKeyUi(page: import('@playwright/test').Page, key: string, value: string) {
   await page.getByLabel('Put key').fill(key);
   await page.getByLabel('Put value').fill(value);
-  // After reconfiguration, the backend KV client may exhaust its
-  // internal retries before the topology cache refreshes to the new
-  // leader. Retry the UI put — the backend's own retry loop provides
-  // the delay between attempts (~2s per round).
-  let lastError = '';
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const putStart = Date.now();
-    const put = page.waitForResponse((r: any) => r.url().includes('/kv/put'));
-    await page.getByRole('button', { name: /^Put$/ }).click();
-    const resp = await put;
-    const ms = Date.now() - putStart;
-    if (resp.ok()) {
-      if (attempt > 0) console.log(`[DEBUG] putKeyUi("${key}"): attempt ${attempt + 1} succeeded in ${ms}ms`);
-      return;
-    }
-    try { lastError = await resp.text(); } catch { lastError = `HTTP ${resp.status()}`; }
-    console.log(`[DEBUG] putKeyUi("${key}"): attempt ${attempt + 1} failed in ${ms}ms: ${lastError}`);
-  }
-  throw new Error(`putKeyUi failed after 5 attempts: ${lastError}`);
+  const put = page.waitForResponse(response => response.url().includes('/kv/put'));
+  await page.getByRole('button', { name: /^Put$/ }).click();
+  const response = await put;
+  expect(response.ok(), await response.text()).toBeTruthy();
 }
 
 /** UI get via the KV panel; returns the value or null when not found. */

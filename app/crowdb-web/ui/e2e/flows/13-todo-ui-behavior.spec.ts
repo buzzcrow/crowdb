@@ -63,6 +63,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
           await dialog.getByLabel('Host').fill('127.0.0.1');
           await expect(dialog.getByLabel('Enable CrowDB Storage on this node')).toBeChecked();
           await expect(dialog.getByLabel('Enable DiskDB on this node')).toBeChecked();
+          await dialog.getByLabel('Deploy complete service set', { exact: true }).uncheck();
           await dialog.getByLabel('REST Port').fill(String(rest));
           await dialog.getByTestId('kv-rpc-port').fill(String(kvRpc));
           await dialog.getByTestId('diskdb-rpc-port').fill(String(diskdbRpc));
@@ -148,14 +149,6 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
             instanceId = String(instance?.instance_id ?? '');
             return instanceId.length > 0;
           }, { timeout: 10_000, intervals: [100] }).toBe(true);
-          const ownerResponse = await api.put(`/api/disk-groups/${RACK_ID}/${NODE_IDS[0]}/${DISK_GROUP_ID}/owner`, {
-            data: { instance_id: instanceId, lease_expiry_ms: Date.now() + 3_600_000 },
-          });
-          expect(ownerResponse.ok(), await ownerResponse.text()).toBeTruthy();
-          const bindResponse = await api.put(`/api/disk-groups/${RACK_ID}/${NODE_IDS[0]}/${DISK_GROUP_ID}/bind`, {
-            data: { store_id: STORE_ID, group_id: GROUP_ID },
-          });
-          expect(bindResponse.ok(), await bindResponse.text()).toBeTruthy();
           await expect.poll(async () => {
             const response = await api.get('/api/diskdb/instances');
             if (!response.ok()) return false;
@@ -180,7 +173,8 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
         if (await node.getByRole('button', { name: 'Expand' }).count()) await node.getByRole('button', { name: 'Expand' }).click();
         await expect(aside.getByText(`KV-${NODE_IDS[0]}`, { exact: true })).toBeVisible();
         const diskdbSubtree = aside.getByTestId(`tree-node-DDB-${NODE_IDS[0]}`);
-        await expect(diskdbSubtree).toBeVisible({ timeout: 10_000 });
+        await expect(diskdbSubtree).toBeVisible();
+        await diskdbSubtree.getByRole('button', { name: 'Expand', exact: true }).click();
         await expect(diskdbSubtree.getByText(/Physical Group.*DG-7710/)).toBeVisible({ timeout: 10_000 });
         const diskGroup = diskdbSubtree.getByRole('treeitem').filter({ hasText: /DG-7710/ });
         if (await diskGroup.getByRole('button', { name: 'Expand' }).count()) await diskGroup.getByRole('button', { name: 'Expand' }).click();

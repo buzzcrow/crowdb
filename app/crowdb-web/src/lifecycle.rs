@@ -621,6 +621,7 @@ pub async fn http_deploy_node_server(
     Json(body): Json<DeployNodeServerBody>,
 ) -> Result<(StatusCode, Json<DeployResult>), (StatusCode, Json<ErrorBody>)> {
     use crowdb_console_shared::lifecycle::DeployRequest;
+    let _operation = crate::services::Operation::claim(&state, vec![format!("node/{node_id}")])?;
     let _ports = crate::services::defaults::claim_ports(&state, &[body.rest_port, body.rpc_port])?;
 
     let workspace_dir = state
@@ -973,13 +974,35 @@ pub async fn http_cluster_clean(
 pub async fn http_internal_reset(
     State(state): State<AppState>,
 ) -> Result<Json<ResetResult>, (StatusCode, Json<ErrorBody>)> {
+    let _reset = crate::services::Operation::reset(&state).await?;
     // Graceful shutdown in dependency order:
     //   1-4. shutdown_kv_data — remove user groups → user stores →
     //        clean group-0 sysdata → remove group-0/store-0.
     //   5.   stop_all_services — SIGTERM all KV + DDB processes.
     //   6-8. config cleanup — remove nodes, racks, caches, workspaces.
     crate::services::remove_for_reset(&state).await?;
-    let mut stopped = shutdown_kv_data(&state).await;
+    // Local disposable authority disappears with its owned workspaces. Stop
+    // processes directly rather than reconfiguring every Paxos group first.
+    // Attached/remote authorities still require their explicit logical teardown.
+    let local = {
+        let config = state.config.read().unwrap();
+        config
+            .servers
+            .iter()
+            .filter(|entry| entry.service_type == ServiceType::Kv)
+            .all(|entry| {
+                config.local_launches.contains_key(&entry.id)
+                    && entry
+                        .node_id
+                        .and_then(|id| config.node(id))
+                        .is_some_and(|node| !node.ssh_enabled())
+            })
+    };
+    let mut stopped = if local {
+        Vec::new()
+    } else {
+        shutdown_kv_data(&state).await
+    };
     stopped.extend(stop_all_services(&state).await?);
 
     // 6. Remove all nodes from config + drop monitor cache entries.
@@ -1432,96 +1455,7 @@ pub async fn http_add_node_disk_group(
     Path(node_id): Path<NodeId>,
     Json(body): Json<AddDiskGroupBody>,
 ) -> Result<(StatusCode, Json<DiskGroupEntry>), (StatusCode, Json<ErrorBody>)> {
-    let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let existing = ctx
-        .config()
-        .disk_groups
-        .iter()
-        .find(|entry| entry.node_id == node_id && entry.id == body.id)
-        .cloned();
-    let entry = if let Some(entry) = existing {
-        if entry.name != body.name {
-            return Err(crate::error::err_409("DiskGroup ID already has a different name"));
-        }
-        entry
-    } else {
-        ops::hardware::add_disk_group(&ctx, node_id, body.id, &body.name)
-            .await
-            .map_err(map_config_err)?
-    };
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
-
-    let hw = crate::mgmt::build_hardware_client(&state)
-        .await
-        .ok_or_else(|| err_502("no group-0 endpoint; disk-group owner cannot be assigned"))?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        auto_assign_owner(&hw, entry.rack_id, node_id, entry.id),
-    )
-    .await
-    .map_err(|_| err_502("DiskGroup exists; owner assignment outcome unknown. Refresh before retrying."))?
-    .map_err(|error| err_502(format!("DiskGroup exists; auto-assign owner: {error}")))?;
-
-    Ok((StatusCode::CREATED, Json(entry)))
-}
-
-/// Pick the diskdb instance with the fewest owned DGs from a list of
-/// live instance IDs and the current ownership map. Ties are broken by
-/// lowest `instance_id`. Returns `None` if `instance_ids` is empty.
-///
-/// Pure function — no I/O — so it can be unit-tested without a live
-/// group-0 connection.
-/// Auto-assign a newly created disk-group to the diskdb instance with
-/// the fewest owned DGs. Reads the service registry for live diskdb
-/// instances and the current ownership map, counts DGs per instance,
-/// picks the one with the lowest count, and writes the ownership entry
-/// to group-0. Fails if no diskdb instances are registered.
-async fn auto_assign_owner(
-    hw: &crowdb_kv_client::HardwareClient,
-    rack_id: RackId,
-    node_id: NodeId,
-    dg_id: DiskGroupId,
-) -> Result<(), String> {
-    let svc = crowdb_kv_client::ServiceRegistryClient::from_shared(hw.shared_kv());
-    let instances = svc
-        .read_all_diskdb_instances()
-        .await
-        .map_err(|e| format!("read_all_diskdb_instances: {e}"))?;
-    if instances.is_empty() {
-        return Ok(());
-    }
-    let owners = hw.list_owners().await.map_err(|e| format!("list_owners: {e}"))?;
-    let instance_ids: Vec<u64> = instances.iter().map(|(id, _)| *id).collect();
-    let instance_id = owners
-        .iter()
-        .find(|owner| owner.rack_id == rack_id && owner.node_id == node_id && owner.dg_id == dg_id)
-        .map(|owner| owner.instance_id)
-        .or_else(|| crate::owner_assignment::pick_least_loaded_instance(&instance_ids, &owners))
-        .ok_or_else(|| "no eligible diskdb instance".to_string())?;
-    // Lease = 1 hour from now (the diskdb keepalive will refresh it).
-    #[allow(clippy::cast_possible_truncation)]
-    let lease_expiry_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
-        + 3_600_000;
-    let disk_group = hw
-        .get_disk_group(rack_id, node_id, dg_id)
-        .await
-        .map_err(|e| format!("get_disk_group: {e}"))?
-        .ok_or_else(|| format!("disk-group {dg_id} missing from group 0"))?;
-    crate::owner_assignment::ensure_data_binding(hw, rack_id, node_id, dg_id).await?;
-    hw.add_disk_group_with_owner(
-        rack_id,
-        node_id,
-        dg_id,
-        &disk_group.value,
-        instance_id,
-        lease_expiry_ms,
-    )
-    .await
-    .map_err(|e| format!("add_disk_group_with_owner: {e}"))?;
-    tracing::info!(dg_id, instance_id, "auto-assign: assigned DG to diskdb instance");
-    Ok(())
+    crate::physical::disk_group::create(state, node_id, body.id, body.name).await
 }
 
 /// `DELETE /api/nodes/:node_id/disk-groups/:dg_id`.

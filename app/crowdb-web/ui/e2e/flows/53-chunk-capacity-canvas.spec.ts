@@ -309,7 +309,7 @@ test('Capacity preserves hardware and shows unknown usage at every scope', async
     nodes: [{ rack_id: 1, node_id: 1, disk_group_count: 1, capacity_bytes: 1024 }], disk_groups: [group],
   } }));
   await page.route('**/api/diskdb/instances', route => route.fulfill({ json: [] }));
-  await page.route('**/api/diskdb/usage', route => route.fulfill({ json: { disk_groups: reported ? [group] : [] } }));
+  await page.route('**/api/diskdb/usage**', route => route.fulfill({ json: { disk_groups: reported ? [group] : [] } }));
   await page.goto('/?domain=Capacity');
   const totals = page.getByTestId('capacity-summary');
   await expect(totals).toContainText('1.0 KB', { timeout: 3000 });

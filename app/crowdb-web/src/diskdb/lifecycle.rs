@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{err_400, err_500, err_502, ErrorBody};
+use crate::error::{err_400, err_409, err_500, err_502, ErrorBody};
 use crate::state::AppState;
 use crowdb_console_shared::config::ServiceType;
 use crowdb_console_shared::lifecycle::{self, DiskdbDeployRequest};
@@ -62,6 +62,7 @@ pub async fn http_deploy_diskdb(
     Path(node_id): Path<u64>,
     Json(body): Json<DeployDiskdbBody>,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), (StatusCode, Json<ErrorBody>)> {
+    let _operation = crate::services::Operation::claim(&state, vec![format!("node/{node_id}")])?;
     let (listen_port, http_port, rpc_listen_port) = validate_diskdb_ports(&body)?;
     let _ports = crate::services::defaults::claim_ports(&state, &[listen_port, http_port, rpc_listen_port])?;
     let node = {
@@ -72,12 +73,9 @@ pub async fn http_deploy_diskdb(
             .iter()
             .any(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::Diskdb)
         {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(ErrorBody {
-                    error: format!("node {node_id} already hosts a deployed diskdb instance"),
-                }),
-            ));
+            return Err(err_409(format!(
+                "node {node_id} already hosts a deployed diskdb instance"
+            )));
         }
         cfg.node(node_id).cloned().ok_or_else(|| {
             (
