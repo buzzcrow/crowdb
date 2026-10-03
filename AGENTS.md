@@ -7,6 +7,15 @@ Distributed storage platform: Paxos consensus, per-key slots, WAL durability,
 crowdb-tree engine, and a disk-block allocator. Rust workspace with C++ storage
 and transport exposed through FFI.
 
+## Terminology
+
+- **Repo chunk** is the discussion term for any user-data chunk, including
+  S3, IcebergTable, and future Dataset chunks. It excludes system chunks
+  such as WAL and tree storage chunks.
+- Implementations distinguish these user-data uses with specific chunk types;
+  do not retain or introduce a generic `Repo` chunk type. The discussion term
+  does not imply a shared implementation type.
+
 ## Project rules
 
 - Run every build, test, lint, and executable through `pixi run`.

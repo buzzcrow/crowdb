@@ -72,6 +72,16 @@ The user will return to the other task for subsequent accumulated S3 validation.
 
 ## Results
 
+- Follow-up S3 verification on 2026-10-03: focused default MPU/checksums,
+  thousand-key deletion/retry and concurrent slow signed uploads pass. Two
+  complete accumulated runs each pass 32/32 with zero ignored, including six
+  service restarts and exact object recovery. The follow-up removes the two
+  remaining Rust slow-upload skip guards; the implementation had already
+  removed the Python skip. The user requests stopping after critical
+  verification to switch tasks. Keep the third complete run, default-concurrency
+  CLI, optional SDK reruns and the dedicated tree-backed journal-CAS/persist/reopen
+  acceptance pending. SDK reruns go last. Do not close the requirement yet.
+
 - Baseline: `598a6548`. Unrelated documentation changes are preserved and are
   excluded from implementation commits; the R201 requirement is not edited.
 - Final C++ tree/common suite: 607/607 pass. `pixi run test-cpp` also passes,

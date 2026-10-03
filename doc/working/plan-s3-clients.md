@@ -15,10 +15,26 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - [x] **Positive rclone acceptance**: bounded user metadata persists across PUT, COPY/REPLACE and multipart publication. Canonical rclone task, new-format session restart and full container recovery/restart gates pass. Old-version data compatibility is not required.
 - [x] **Container and recipes**: default SDK and configured CLI ordinary/multipart copy pass, with exact bytes after all service crash/hang recovery and persisted-volume restart. Full pixi run test-single-node-container passes. README documents pinned versions/configurations and unsupported workflows.
 - [x] **Applicable quality gates**: library/server tests, shared encoding/auth tests, official embedded-copy error test, fmt/clippy, Python compilation, shell syntax and release policy checks pass.
-- [ ] **Accumulated full-stack gate — deferred by user**: temporary diagnostics confirm a remove-before-publish visibility gap while flush relocates above-frontier records. R201 owns the repair; retain failed acceptance and resume it after that work. Optional Java, JavaScript and Go SDK verification now passes sequentially without a temporary storage repair. No failed accumulated tests are marked passing or silently skipped.
+- [ ] **Remaining acceptance — deferred by user**: after the MemTable handoff implementation, all three focused reproductions and two complete accumulated suites pass. The slow-upload case now executes at both Python and Rust entry points. The user asks to stop after critical verification to switch tasks; leave the third complete run, default-concurrency CLI and optional SDK reruns pending, with SDK work last.
 - [ ] **Completion cleanup**: retain requirement/index/plan until all positive client and full-stack gates pass, then remove them in the cleanup commit.
 
 ## Verification
+
+- Post-handoff verification on 2026-10-03 uses implementation `139149b7`.
+  The Python slow-upload skip was removed by that implementation, but both Rust
+  entry points still skipped it. Remove those guards and report zero ignored
+  cases in the complete suite. Focused default MPU/checksums, thousand-key
+  deletion/retry and concurrent slow signed uploads all pass. Library/server
+  tests and official boto3 embedded-copy error recognition also pass.
+- Accumulated runs 1 and 2 each pass all 32 cases with zero ignored, including the old
+  thousand-key failure, CLI/rclone, lost replies, six service restarts and both
+  benchmark paths. The third run, default-concurrency CLI and SDK reruns remain
+  pending at the user's explicit stop request. Critical reproductions now pass;
+  this is not a claim that all R201/R205 acceptance is complete.
+  After the canonical task builds services and passes its prerequisite gates,
+  repeated runs invoke the same full-stack Cargo target with the pinned Python
+  path, preceded by `pixi run clean-env`; no focus/SDK/external-endpoint selector
+  is set. Successful fixtures are automatically removed by the harness.
 
 - Unit/integration: pixi run test-access-s3; pixi run test-access-server; affected encoding/auth tests.
 - E2E: pixi run clean-env && pixi run -e s3-e2e test-boto3-e2e; registered CLI tasks; pixi run test-single-node-container.

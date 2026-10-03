@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R207** — Bump this line in the same commit when adding a new item.
+**Next R number: R208** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -103,24 +103,49 @@ Caches, selected ORC and container engine workflows remain separate.
   Diagnose default CLI multipart resource rejection, storage stalls and the
   accumulated serial-suite journal/snapshot failure; retain exact reproducers.
 - **[R202](R202-chunkdb-key-partition-design.md)** — ChunkDB key partition
-  model and storage ownership — Area: chunkdb / Paxos KV / chunk-kv — High
-  priority, high complexity. **Deferred pending architecture review.** Retain
-  12 temporary bootstrap ranges; define service versus storage ownership,
-  backend paths, tree mapping and generation-fenced partition conversion.
-- **[R201](R201-tree-memtable-write-handoff.md)** — MemTable write handoff
-  before flush — Area: crowdb-tree / KV — High priority, high complexity.
-  **Deferred pending user review of synchronization and performance.** Separate
-  Active, Freezing and Frozen; close old-table admission, wait for admitted
-  batches before drain, and evaluate bounded writer-owned announcement slots.
-- **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
-  migration — Area: chunkdb / kv — Implement the full
-  `Copying`/`Cutover`/`Complete` migration flow for transferring chunkdb
-  instance range ownership. Dual-serve reads during cutover, new-owner-only
-  writes, background metadata verification, graceful client redirect.
-  Distinct from R102: R103 transfers which chunkdb instance serves a hash
-  range; R102 rebinds which paxos group stores a disk-group's data. Both
-  reuse the common `BindingStrategy` framework
-  (`doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md` §5).
+  model and storage ownership — Area: chunkdb / Paxos KV — High priority,
+  high complexity. **Current scope: hash all Chunk metadata/tasks to selected
+  nonzero KV groups; never use group 0 as their storage destination.**
+  Each server owns 0..X chunk-ID hash partitions; all of a chunk's tasks follow
+  its group, preserving group-local transactions without cross-group commits.
+  Fixed logical ID space (1024 baseline), one bitmap record per pxgroup in
+  group 0; no per-ID binding records or dynamic ID-space resizing.
+  One dynamic 1024-bit bitmap record per ChunkDB server sends clients to the
+  stateless operation owner; an independent per-pxgroup bitmap map routes
+  persistence. No per-slot or per-contiguous-service-range binding records.
+  Complete specific types, Wal/PageIndex persistence, separate system/repo
+  operation/task domains and fixed group mapping first. Test three nodes with
+  three nonzero chunk-storage groups plus control-plane group 0; defer dynamic
+  handoff/migration to R103. No generic Repo type. Use fresh test state and reject
+  unsupported legacy conversion. [Implementation plan](../working/plan-chunkdb-slot-routing.md)
+  is prepared; coding is on hold. R207 does not block this direct-KV stage.
+- **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
+  tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
+  **Deferred beyond the direct-KV stage.** After R202 is verified, migrate
+  S3/IcebergTable/business Stream metadata and associated tasks to chunk-kv;
+  system Wal/BtreePage/PageIndex metadata stays in KV groups. Define range-local
+  publication, key/split rules, isolated tasks, safe conversion and measured
+  Paxos relief. Future Dataset follows the user-data layer with its own type.
+- **[R201](R201-tree-memtable-write-handoff.md)** — Concurrent MemTable writes
+  and safe flush handoff — Area: crowdb-tree / KV — High priority, high complexity.
+  **Design finalized; implementation not yet requested.** Selected: one node
+  per key with selective prefix-version retention, one atomic closed flag and
+  batch count per MemTable,
+  immutable Frozen sources retained for readers, and finite flush waits.
+  Retain soft thresholds without new backpressure; require correctness,
+  concurrent progress and performance comparison without a percentage gate.
+  L1 must remain within a proven contiguous frontier. Add overwrite, retention
+  and merge metrics for the expected overwrite-heavy workload. No remaining
+  human design decisions; concurrency, recovery and performance require
+  implementation verification.
+- **[R103](R103-chunkdb-range-migration.md)** — dynamic slot ownership and
+  KV-group expansion/shrink — Area: chunkdb / kv — **Deferred until after R202's
+  fixed-topology delivery and a request for dynamic changes.** Independently
+  support fenced server-slot handoff without metadata copy, and storage-slot
+  migration of complete chunk/task/index/reservation state when groups are
+  added, drained or rebalanced. Include durable recovery and safe cleanup;
+  preserve independent bitmap maps, fixed slot identity and DiskIO payload.
+  R207 owns future backend conversion; legacy conversion is not a prerequisite.
 - **[R102](R102-diskdb-dynamic-binding-migration.md)** — diskdb dynamic
   disk-group binding migration — Area: diskdb / kv — Reuse the common
   `BindingStrategy` framework
