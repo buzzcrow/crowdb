@@ -26,8 +26,7 @@ currently rejects user metadata; rclone requires its durable round-trip.
 
 #### Dependencies
 
-- Use the current shared listener namespace. R206 is deferred pending necessity
-  review and is not a prerequisite for metadata persistence.
+- Use the current shared listener namespace.
 - R200 retains pinned scripts and verified integrity. AWS CLI and boto3 gates
   progress independently; rclone is not accepted yet.
 - Reuse multipart generation fences and immutable publication; no global

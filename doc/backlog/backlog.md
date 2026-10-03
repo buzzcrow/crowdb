@@ -106,12 +106,6 @@ Caches, selected ORC and container engine workflows remain separate.
   admission and storage progress — Area: S3 / KV / DiskIO — High priority.
   Diagnose default CLI multipart resource rejection, storage stalls and the
   accumulated serial-suite journal/snapshot failure; retain exact reproducers.
-- **[R206](R206-s3-principal-namespace-authorization.md)** — credential
-  principals and namespace authorization — Area: S3 / auth / namespace —
-  **Deferred pending user review of necessity and scope.** Current accepted
-  keys share the configured listener namespace. Additional user permissions are
-  not currently required; this item does not block R200 or R204.
-
 - **[R202](R202-chunkdb-key-partition-design.md)** — ChunkDB key partition
   model and storage ownership — Area: chunkdb / Paxos KV / chunk-kv — High
   priority, high complexity. **Deferred pending architecture review.** Retain

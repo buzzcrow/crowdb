@@ -62,8 +62,7 @@ inferring broad S3 compatibility from one SDK.
   remain regression baselines. R196 owns performance benchmarks, not this gate.
 - R204 owns mandatory client metadata and multipart schema migration. The
   retained positive rclone gate resumes after it lands.
-- Current recipes use the configured shared listener namespace. R206 is deferred
-  pending necessity review and is not a prerequisite.
+- Current recipes use the configured shared listener namespace.
 - R205 retains default concurrent multipart progress diagnostics. A documented
   single-concurrency development recipe does not certify default concurrency.
 
