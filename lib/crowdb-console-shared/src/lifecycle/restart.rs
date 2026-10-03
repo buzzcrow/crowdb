@@ -41,6 +41,7 @@ pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunch
         field: "pid".into(),
         message: format!("restarted {server_id} child has no pid"),
     })?;
+    super::record_workspace_child(&mut child, workdir, new_pid)?;
     if let Some(url) = &spec.readiness_url {
         wait_for_service_ready(
             &mut child,

@@ -47,7 +47,7 @@ terminate_recorded_processes() {
             process_matches "$pid" "$expected_start" || continue
             kill -TERM "$pid" 2>/dev/null || true
         done < <(jq -r '.processes[]? | [.pid, .start] | @tsv' "$manifest" 2>/dev/null || true)
-    done < <(find "$ephemeral" -type f -name namespace.json -print0)
+    done < <(find "$ephemeral" -type f \( -name namespace.json -o -name process-owner.json \) -print0)
 
     for _ in 1 2 3 4 5; do
         local any_alive=0
@@ -55,7 +55,7 @@ terminate_recorded_processes() {
             while IFS=$'\t' read -r pid expected_start; do
                 process_matches "$pid" "$expected_start" && any_alive=1
             done < <(jq -r '.processes[]? | [.pid, .start] | @tsv' "$manifest" 2>/dev/null || true)
-        done < <(find "$ephemeral" -type f -name namespace.json -print0)
+        done < <(find "$ephemeral" -type f \( -name namespace.json -o -name process-owner.json \) -print0)
         [ "$any_alive" -eq 0 ] && break
         sleep 0.1
     done
@@ -64,7 +64,7 @@ terminate_recorded_processes() {
         while IFS=$'\t' read -r pid expected_start; do
             process_matches "$pid" "$expected_start" && kill -KILL "$pid" 2>/dev/null || true
         done < <(jq -r '.processes[]? | [.pid, .start] | @tsv' "$manifest" 2>/dev/null || true)
-    done < <(find "$ephemeral" -type f -name namespace.json -print0)
+    done < <(find "$ephemeral" -type f \( -name namespace.json -o -name process-owner.json \) -print0)
 }
 
 prune_ephemeral_claims() {

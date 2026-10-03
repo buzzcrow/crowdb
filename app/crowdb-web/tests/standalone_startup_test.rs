@@ -320,6 +320,15 @@ async fn standalone_recovers_three_member_group0_and_diskdb() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_mode_termination_reaps_children_and_preserves_persistent_runtime() {
+    test_disposable_termination(false).await;
+}
+
+#[tokio::test]
+async fn test_mode_forced_exit_recovers_owned_children_without_removing_persistent_data() {
+    test_disposable_termination(true).await;
+}
+
+async fn test_disposable_termination(forced: bool) {
     let root = tempdir_in_test_data("console-test-shutdown");
     let sentinel = root.path().join("persistent/console/N-1/operator-data");
     std::fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
@@ -368,7 +377,10 @@ async fn test_mode_termination_reaps_children_and_preserves_persistent_runtime()
     let mut servers = TestServers(vec![pid]);
     assert!(root.path().join("ephemeral").read_dir().unwrap().next().is_some());
     assert!(Command::new("kill")
-        .args(["-TERM", &web.child.id().to_string()])
+        .args([
+            if forced { "-KILL" } else { "-TERM" },
+            &web.child.id().to_string()
+        ])
         .status()
         .unwrap()
         .success());
@@ -382,9 +394,26 @@ async fn test_mode_termination_reaps_children_and_preserves_persistent_runtime()
     })
     .await
     .unwrap();
-    assert!(exited.success());
+    if forced {
+        assert!(!exited.success());
+        assert!(crowdb_console_shared::lifecycle::process_is_alive(pid));
+        let cleanup =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/runtime/clean-runtime.sh");
+        assert!(Command::new("bash")
+            .arg(cleanup)
+            .arg("env")
+            .env("CROWDB_RUNTIME_ROOT", root.path())
+            .status()
+            .unwrap()
+            .success());
+    } else {
+        assert!(exited.success());
+    }
     assert!(!crowdb_console_shared::lifecycle::process_is_alive(pid));
-    assert!(root.path().join("ephemeral").read_dir().unwrap().next().is_none());
+    assert!(
+        !root.path().join("ephemeral").exists()
+            || root.path().join("ephemeral").read_dir().unwrap().next().is_none()
+    );
     assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "preserve");
     servers.0.clear();
 }

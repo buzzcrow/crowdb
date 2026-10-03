@@ -825,3 +825,18 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   competing writers, limits and reset cleanup pass in 0.01s. Browser reload
   retains four waiting steps without duplicate mutation (1.1s), and one-dialog
   Node create/retry passes in 0.920s. Whole native bring-up remains pending.
+
+- Native cold bring-up: isolated Rack 1/Nodes 1–3, normal mode, Store 0/Groups
+  0/1, automatic disk ownership and all six services per Node pass through
+  production Console APIs. Iceberg namespace and signed S3 bucket listing pass
+  without catalog repair. Per-request timing is retained outside page tests.
+  The fixture originally used duplicate globally unique DiskGroup IDs, then
+  too-small zone geometry; corrected inputs use distinct IDs and 1GiB zones.
+  Initial accepted chain took 78.68s because teardown stopped KV before consumers;
+  consumer-first teardown passes in 2.825s, reducing the full chain to 35.87s.
+  First Chunk-KV deployment remains 19.147s; its cold metadata/DiskIO discovery
+  belongs outside the fast page suite and remains separately measured.
+- Forced-exit cleanup now records independent PID/start files before readiness
+  for KV/DDB/CDB/DIO/CKV/Access launches and restarts. SIGTERM and SIGKILL tests
+  pass (0.26s); persistent sentinel remains. This closes the original missing
+  child ownership record rather than adding a process-name kill sweep.

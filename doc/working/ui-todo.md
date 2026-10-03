@@ -21,15 +21,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
 
 ## Cluster and provisioning
 
-- [ ] **Initialize ChunkDB slot maps during cluster provisioning**: after the
-  main rebase on 2026-10-04, a fresh three-node deployment failed because
-  `/chunkdb/slot_head/storage` was not initialized. The UI launch configuration
-  does not supply the new fixed-slot bootstrap. Initialize explicit service
-  instances and ordinary storage groups through `ChunkSlotMapClient` before
-  deploying ChunkDB; preserve existing maps and reject conflicting layouts.
-  This bring-up used a temporary normal-production bootstrap configuration
-  with instances 1/2/3 and Store 0 / Group 1, not a UI-flow fix.
-
 - [ ] **Automatic DiskGroup data binding**: creating a DiskGroup must resolve
   its ordinary data group and establish its binding and owner automatically.
   On 2026-10-03, Store 0 had Group 0 and Store 1 had Group 1, but the current
@@ -60,13 +51,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   status on bootstrap failure. Recovery is not a fix of the provisioning flow.
 
 
-- [ ] **Initialize Iceberg catalog during first Access deployment**: deployment
-  failed with `Error: Uninitialized` after Chunk-KV became ready. Explicit
-  catalog initialize/activate followed by redeployment brought all three
-  Access instances up. Integrate idempotent catalog setup into provisioning,
-  preserving existing catalog identity and capabilities on restart. Durable
-  request recovery is implemented and unit-tested; real Access restart and the
-  native browser chain pass. Fresh normal three-node bring-up remains pending.
 - [ ] **Six-service plan recovery**: the one-dialog queue is implemented but
   now persists on the server with revision fencing. Reload restoration and
   competing-browser fencing pass. Verify native service restart,
@@ -76,15 +60,8 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
 - [ ] **Create defaults acceptance**: conflict-free defaults are implemented;
   complete repeated-create and reopen acceptance across IDs, host listener
   ports, DiskDB port ranges and dependency references.
-- [ ] **Uniform service labels**: KV-N, DDB-N, CDB-N, DIO-N, CKV-N and AS-N
-  changes exist in the working tree. Finish affected validation and inspect
-  tree, canvas, menus and properties before marking complete.
-
 ## Capacity and shared behavior
 
-- [ ] **Cluster canvas click-to-expand**: reuse the Chunk-KV center graph's
-  click-to-expand/collapse interaction in the Cluster center view. Preserve
-  selection, expansion state and bounded rendering while revealing children.
 - [ ] **Navigation return history across all views**: every button/link that
   navigates to another resource or view must retain a return route. Back and
   Forward restore the source domain, resource, list cursor, tree expansion,
@@ -92,12 +69,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   from visit history; refresh and mutations must not create navigation entries.
   Include property links and graphical nodes, not only sidebar navigation.
 
-- [ ] **Return to Chunk after placement navigation**: selecting a disk block
-  and following its Disk or Node property link opens Capacity or Cluster, but
-  there is no return path to the originating Chunk. Add contextual back
-  navigation and restore the originating list window/type/filter, exact chunk,
-  strip page, selected strip/block and scroll position. Verify both Disk and
-  Node round trips. Reported by the user; deferred from the current layout work.
 - [ ] **Cross-view and failure acceptance**: verify scope restoration,
   disk/node navigation, owner movement, stale cursors, unavailable services,
   and container-mode topology/disk mutation restrictions against the current
@@ -212,15 +183,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
 - Manual binding/owner/catalog recovery above enabled this fixture; it does
   not prove that initial UI provisioning is fixed or approve deferred designs.
 
-- [ ] **Disposable E2E process ownership**: test-mode services used the shared
-  persistent console root; a failed earlier run left a KV child alive and its
-  outbound connection collided with a later test listener. Add teardown and
-  isolated runtime ownership, fail unknown mutation outcomes without blind
-  retries, and verify failed-run cleanup without touching the live cluster.
-  Ephemeral test-mode runtime, awaited parallel stop, SIGTERM cleanup and
-  global teardown now pass real regressions. Forced SIGKILL child recovery
-  remains to be verified before removing this item.
-
 - Navigation completion evidence: shared Back/Forward, 32-visit limit,
   Cluster retained collapse, Chunk placement return, S3 bucket/object return and
   Iceberg file-footer return are implemented and pass focused browser tests.
@@ -251,3 +213,14 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   expansion also survives. The affected 11 browser cases pass, with KV return
   1.2s and Zone return 1.5s. Global navigation remains open for Chunk-KV query,
   journal extent selection and catalog movement acceptance.
+
+- Native provisioning completion: one Rack/three Nodes, Groups 0/1 and all 18
+  normal-mode services provision through Console APIs without binding, owner,
+  slot-map or catalog repairs. Initial cold chain passed; native timing stays
+  outside the routine browser suite. Repeated defaults produced collision-free
+  IDs/listeners. CDB slot initialization, first Access catalog provisioning,
+  labels, Cluster graph collapse and Chunk placement return items are verified.
+- Disposable ownership completion: every local launch/restart records a separate
+  PID/start identity before readiness. Concurrent Nodes do not rewrite a shared
+  child list. SIGTERM and forced SIGKILL/cleanup tests pass in 0.26s; persistent
+  sentinel data is preserved. Protocol regression excludes persistent namespaces.

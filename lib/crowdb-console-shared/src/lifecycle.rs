@@ -371,13 +371,7 @@ async fn deploy_local_in_workspace(
         message: "spawned child has no pid".into(),
     })?;
 
-    // Rename the temp stdout file to include the PID.
-    if let Some(dir) = workspace_dir {
-        let log_dir = dir.join("log");
-        let from = log_dir.join("crowdb-kv-server.stdout.log");
-        let to = log_dir.join(format!("crowdb-kv-server-{pid}.out.log"));
-        let _ = std::fs::rename(&from, &to);
-    }
+    record_kv_child(&mut child, workspace_dir, pid)?;
 
     // Drain stdout/stderr to a debug logger so the child doesn't block on
     // a full pipe. We deliberately don't wait for "management_addr=" here:
@@ -540,6 +534,37 @@ pub(crate) fn remote_start_command(req: &DeployRequest, server_bin: &str) -> Str
         mp = req.rest_port,
         gp = req.rpc_port,
     )
+}
+
+fn record_kv_child(
+    child: &mut tokio::process::Child,
+    workspace: Option<&std::path::Path>,
+    pid: u32,
+) -> Result<()> {
+    if let Some(workspace) = workspace {
+        record_workspace_child(child, workspace, pid)?;
+        let log_dir = workspace.join("log");
+        let _ = std::fs::rename(
+            log_dir.join("crowdb-kv-server.stdout.log"),
+            log_dir.join(format!("crowdb-kv-server-{pid}.out.log")),
+        );
+    }
+    Ok(())
+}
+
+fn record_workspace_child(
+    child: &mut tokio::process::Child,
+    workspace: &std::path::Path,
+    pid: u32,
+) -> Result<()> {
+    if let Err(error) = crowdb_protocol::port::namespace::record_workspace_process(workspace, pid) {
+        child.start_kill()?;
+        return Err(Error::Validation {
+            field: "process ownership".into(),
+            message: error.to_string(),
+        });
+    }
+    Ok(())
 }
 
 async fn wait_for_ready(mgmt_url: &str, timeout: Duration) -> Result<()> {
@@ -1100,6 +1125,7 @@ pub async fn deploy_diskdb_local(
         field: "pid".into(),
         message: "spawned child has no pid".into(),
     })?;
+    record_workspace_child(&mut child, workspace_dir, pid)?;
     let from = log_dir.join("crowdb-diskdb.stdout.log");
     let to = log_dir.join(format!("crowdb-diskdb-{pid}.out.log"));
     let _ = std::fs::rename(&from, &to);
@@ -1199,6 +1225,7 @@ pub async fn deploy_chunkdb_local(
         field: "pid".into(),
         message: "spawned ChunkDB child has no pid".into(),
     })?;
+    record_workspace_child(&mut child, workspace_dir, pid)?;
     wait_for_service_ready(
         &mut child,
         &management,
@@ -1325,6 +1352,7 @@ pub async fn deploy_diskio_local(
         field: "pid".into(),
         message: "spawned DiskIO child has no pid".into(),
     })?;
+    record_workspace_child(&mut child, workspace_dir, pid)?;
     tokio::time::sleep(Duration::from_millis(200)).await;
     if let Some(status) = child.try_wait()? {
         return Err(Error::UpstreamRpc {
