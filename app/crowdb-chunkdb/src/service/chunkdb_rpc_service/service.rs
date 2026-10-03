@@ -82,6 +82,7 @@ pub struct ChunkdbRpcService {
     owner: Option<Arc<SegmentOwnerResolver>>,
     relocation: Option<Arc<RelocationCoordinator>>,
     ad_hoc: Option<Arc<AdHocRecoveryManager>>,
+    system_runtime: Option<Arc<Self>>,
 }
 
 impl ChunkdbRpcService {
@@ -94,7 +95,15 @@ impl ChunkdbRpcService {
             owner: None,
             relocation: None,
             ad_hoc: None,
+            system_runtime: None,
         }
+    }
+
+    /// Install the independent system runtime behind the shared RPC listener.
+    #[must_use]
+    pub fn with_system_runtime(mut self, system: Arc<Self>) -> Self {
+        self.system_runtime = Some(system);
+        self
     }
 
     #[must_use]
@@ -335,10 +344,18 @@ impl ChunkdbRpcService {
     ) -> impl Fn(ServerRequest) + Send + 'static {
         move |req| {
             let guard = this.metrics.requests.start(kind);
-            f(&this, req, &server, guard);
+            let target = if dispatch::is_system_request(req.msg_type, req.control()) {
+                this.system_runtime.as_deref().unwrap_or(&this)
+            } else {
+                &this
+            };
+            f(target, req, &server, guard);
         }
     }
 }
+
+#[path = "dispatch.rs"]
+mod dispatch;
 
 #[path = "handoff.rs"]
 mod handoff;

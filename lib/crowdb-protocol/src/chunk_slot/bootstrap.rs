@@ -9,7 +9,7 @@ use super::{
 };
 
 /// Explicit initial owners. Existing maps must match; this never authorizes a
-/// resize. Service slots are interleaved and storage slots form balanced bands,
+/// resize. Service slots form balanced bands and storage slots are interleaved,
 /// ensuring the two layers are independently assigned even at equal counts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,7 +24,7 @@ impl ChunkSlotBootstrap {
     /// # Errors
     /// Rejects empty lists, duplicate/invalid owners and unsupported sizes.
     pub fn service_map(&self) -> Result<ChunkSlotMap<u64>, ChunkSlotError> {
-        assign(&self.service_instances, true)
+        assign(&self.service_instances, false)
     }
 
     /// Build the complete initial storage map from explicitly selected groups.
@@ -32,7 +32,7 @@ impl ChunkSlotBootstrap {
     /// # Errors
     /// Rejects empty lists, duplicate owners and group-zero destinations.
     pub fn storage_map(&self) -> Result<ChunkSlotMap<ChunkStorageGroup>, ChunkSlotError> {
-        assign(&self.storage_groups, false)
+        assign(&self.storage_groups, true)
     }
 }
 

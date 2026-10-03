@@ -24,6 +24,7 @@ pub mod range_guard;
 pub mod relocation;
 pub mod repair;
 pub mod routing;
+pub mod runtime;
 pub mod selector;
 pub mod service;
 pub mod storage;

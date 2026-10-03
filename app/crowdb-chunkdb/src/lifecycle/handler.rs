@@ -384,14 +384,14 @@ impl LifecycleHandler {
         self.locks.as_ref()
     }
 
-    /// Check the range guard (if present) before processing a
-    /// mutating RPC. Read-only RPCs (query, list) bypass the guard.
+    /// Enforce service slot and maintenance-domain authority before access.
     fn check_range(&self, chunk_id: &ChunkId) -> Result<(), LifecycleError> {
         if let Some(guard) = &self.range_guard {
             guard
                 .check(chunk_id)
                 .map_err(|e| LifecycleError::NotMyRange { bucket: e.bucket })?;
         }
+        self.store.check_authority(chunk_id)?;
         Ok(())
     }
 
@@ -1605,6 +1605,7 @@ impl LifecycleHandler {
 
     /// Query a chunk by ID.
     pub async fn query_chunk(&self, chunk_id: &ChunkId) -> Result<Chunk, LifecycleError> {
+        self.check_range(chunk_id)?;
         self.store.get_chunk(chunk_id).await.map_err(|e| match e {
             StoreError::ChunkNotFound => LifecycleError::ChunkNotFound,
             other => LifecycleError::Storage(other),

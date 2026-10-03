@@ -3,8 +3,6 @@
 
 //! Durable strip-reservation values co-located with their owning chunk.
 
-use std::collections::HashMap;
-
 use bytes::Bytes;
 use crowdb_kv_client::{BatchOp, GetOutcome, ReadMode, ScanOutcome};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, StripReservationGroup};
@@ -12,7 +10,7 @@ use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use serde::Deserialize;
 
-use crate::routing::{route, Route};
+use crate::routing::Route;
 
 use super::{chunk_key, encode_chunk, ChunkStore, Result, StoreError};
 
@@ -26,51 +24,18 @@ impl ChunkStore {
         max_keys: u32,
         start_after: Option<(&ChunkId, &ChunkId)>,
     ) -> Result<Vec<StripReservationGroup>> {
-        let table = self.bindings.snapshot();
-        if table.is_empty() {
-            return Err(crate::routing::RouteError::NoBinding.into());
-        }
-        let prefix = b"/reservation/";
         let start_after = start_after.map_or_else(Vec::new, |(chunk_id, group_id)| {
             reservation_key(chunk_id, group_id)
         });
-        let mut groups = HashMap::new();
-        for binding in table.bindings() {
-            let outcome: ScanOutcome = self
-                .kv
-                .scan(
-                    binding.kv_store_id,
-                    binding.kv_group_id,
-                    prefix,
-                    &start_after,
-                    &[],
-                    max_keys,
-                    ReadMode::Linearizable,
-                    None,
-                    false,
-                    None,
-                )
-                .await
-                .map_err(|error| StoreError::Kv(error.to_string()))?;
-            for (_, value) in outcome.items {
-                let group = decode_group(&value)?;
-                if let (Some(chunk_id), Some(group_id)) = (group.chunk_id, group.group_id) {
-                    groups.insert((chunk_id, group_id), group);
-                }
-            }
-        }
-        let mut groups = groups.into_values().collect::<Vec<_>>();
-        groups.sort_unstable_by_key(|group| {
-            let chunk = group.chunk_id.unwrap_or_default();
-            let id = group.group_id.unwrap_or_default();
-            (chunk.high, chunk.low, id.high, id.low)
-        });
-        groups.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
-        Ok(groups)
+        self.scan_owned_records(b"/reservation/", &start_after, max_keys)
+            .await?
+            .into_iter()
+            .map(|(_, value)| decode_group(&value))
+            .collect()
     }
 
     pub async fn list_reservation_groups(&self, chunk_id: &ChunkId) -> Result<Vec<StripReservationGroup>> {
-        let reservation_route = route(&self.bindings, chunk_id)?;
+        let reservation_route = self.route(chunk_id)?;
         let prefix = reservation_prefix(chunk_id);
         let outcome: ScanOutcome = self
             .kv
@@ -111,7 +76,7 @@ impl ChunkStore {
         chunk_id: &ChunkId,
         group_id: &ChunkId,
     ) -> Result<Option<StripReservationGroup>> {
-        let reservation_route = route(&self.bindings, chunk_id)?;
+        let reservation_route = self.route(chunk_id)?;
         let key = reservation_key(chunk_id, group_id);
         if let Some(value) = self.read_reservation_raw(&reservation_route, &key).await? {
             return decode_group(&value).map(Some);
@@ -197,7 +162,7 @@ impl ChunkStore {
         ops: &[BatchOp],
         chunk: Option<&Chunk>,
     ) -> Result<()> {
-        let reservation_route = route(&self.bindings, chunk_id)?;
+        let reservation_route = self.route(chunk_id)?;
         self.write_reservation_ops_at(
             reservation_route.kv_store_id,
             reservation_route.kv_group_id,

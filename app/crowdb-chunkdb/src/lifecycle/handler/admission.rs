@@ -40,9 +40,9 @@ impl ReservationAdmission {
     }
 
     pub fn rebuild(&self, blocks: u64, bytes: u64) {
-        self.blocks.store(blocks, Ordering::Release);
-        self.bytes.store(bytes, Ordering::Release);
-        self.update_gauges();
+        let previous_blocks = self.blocks.swap(blocks, Ordering::AcqRel);
+        let previous_bytes = self.bytes.swap(bytes, Ordering::AcqRel);
+        self.adjust_gauges(previous_blocks, previous_bytes, blocks, bytes);
     }
 
     pub fn try_acquire(self: &Arc<Self>, blocks: u64, bytes: u64) -> Option<ReservationPermit> {
@@ -55,7 +55,7 @@ impl ReservationAdmission {
             self.reject();
             return None;
         }
-        self.update_gauges();
+        self.adjust_gauges(0, 0, blocks, bytes);
         Some(ReservationPermit {
             admission: Arc::clone(self),
             blocks,
@@ -65,9 +65,9 @@ impl ReservationAdmission {
     }
 
     pub fn release(&self, blocks: u64, bytes: u64) {
-        release(&self.blocks, blocks);
-        release(&self.bytes, bytes);
-        self.update_gauges();
+        let released_blocks = release(&self.blocks, blocks);
+        let released_bytes = release(&self.bytes, bytes);
+        self.adjust_gauges(released_blocks, released_bytes, 0, 0);
     }
 
     pub fn usage(&self) -> (u64, u64) {
@@ -83,12 +83,16 @@ impl ReservationAdmission {
         }
     }
 
-    fn update_gauges(&self) {
+    fn adjust_gauges(&self, old_blocks: u64, old_bytes: u64, blocks: u64, bytes: u64) {
         if let Some(metrics) = &self.metrics {
             metrics
                 .reservation_blocks
-                .set(self.blocks.load(Ordering::Relaxed));
-            metrics.reservation_bytes.set(self.bytes.load(Ordering::Relaxed));
+                .inc_by(blocks.saturating_sub(old_blocks));
+            metrics
+                .reservation_blocks
+                .dec_by(old_blocks.saturating_sub(blocks));
+            metrics.reservation_bytes.inc_by(bytes.saturating_sub(old_bytes));
+            metrics.reservation_bytes.dec_by(old_bytes.saturating_sub(bytes));
         }
     }
 }
@@ -115,8 +119,18 @@ fn reserve(counter: &AtomicU64, delta: u64, limit: u64) -> bool {
         .is_ok()
 }
 
-fn release(counter: &AtomicU64, delta: u64) {
-    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-        Some(current.saturating_sub(delta))
-    });
+fn release(counter: &AtomicU64, delta: u64) -> u64 {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            Some(current.saturating_sub(delta))
+        })
+        .map_or(0, |previous| previous.min(delta))
+}
+
+impl Drop for ReservationAdmission {
+    fn drop(&mut self) {
+        let blocks = *self.blocks.get_mut();
+        let bytes = *self.bytes.get_mut();
+        self.adjust_gauges(blocks, bytes, 0, 0);
+    }
 }

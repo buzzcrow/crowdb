@@ -189,6 +189,10 @@ impl ChunkdbRpcService {
         let conn_handle_usize = req.conn_handle as usize;
 
         let handler = Arc::clone(&self.handler);
+        let system = self
+            .system_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.handler));
         let server = Arc::clone(server);
         self.rt.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBListChunksRequest>(req.control()) else {
@@ -210,7 +214,16 @@ impl ChunkdbRpcService {
             });
             let max_keys = fb_req.max_keys();
 
-            let result = handler.list_chunks(start_after.as_ref(), max_keys).await;
+            let result = async {
+                let mut chunks = handler.list_chunks(start_after.as_ref(), max_keys).await?;
+                if let Some(system) = system {
+                    chunks.extend(system.list_chunks(start_after.as_ref(), max_keys).await?);
+                    chunks.sort_unstable_by_key(|chunk| chunk.id.map(|id| (id.high, id.low)));
+                    chunks.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
+                }
+                Ok::<_, crate::lifecycle::LifecycleError>(chunks)
+            }
+            .await;
             match result {
                 Ok(chunks) => {
                     request.mark_success();

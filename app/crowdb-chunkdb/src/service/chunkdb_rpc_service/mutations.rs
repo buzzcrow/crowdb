@@ -155,6 +155,10 @@ impl ChunkdbRpcService {
         let msg_type = FBMsgType::ETriggerConversionBatchResponse.0 as u16;
         let conn_handle = req.conn_handle as usize;
         let conversion = self.conversion.clone();
+        let system = self
+            .system_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.conversion.clone());
         let server = Arc::clone(server);
         self.rt.spawn(async move {
             let parsed = flatbuffers::root::<FBTriggerConversionBatchRequest>(req.control())
@@ -162,9 +166,18 @@ impl ChunkdbRpcService {
                 .map_err(|_| ConversionError::Payload("invalid batch conversion trigger".into()));
             let result = match (conversion, parsed) {
                 (Some(conversion), Ok((sealed_only, max_chunks))) => {
-                    conversion
-                        .trigger_configured_batch(sealed_only, max_chunks, unix_time_ms())
-                        .await
+                    async {
+                        let mut accepted = conversion
+                            .trigger_configured_batch(sealed_only, max_chunks, unix_time_ms())
+                            .await?;
+                        if let Some(system) = system {
+                            accepted += system
+                                .trigger_configured_batch(sealed_only, max_chunks, unix_time_ms())
+                                .await?;
+                        }
+                        Ok(accepted)
+                    }
+                    .await
                 }
                 (None, _) => Err(ConversionError::Payload("conversion service is disabled".into())),
                 (_, Err(error)) => Err(error),

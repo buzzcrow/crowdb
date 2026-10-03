@@ -91,6 +91,9 @@ impl TaskExecutor {
             .await
             .map_err(|_| TaskRegistryError::Stopped)?;
         let now_ms = unix_time_ms();
+        // Validate durable claim generation and runtime authority before any
+        // task handler can perform external work, including after queue delay.
+        self.manager.verify_claim(&claim).await?;
         let Some(handler) = self.handlers.get(&claim.task.kind) else {
             self.manager
                 .fail(&claim, now_ms, 2, "no handler registered for task kind")

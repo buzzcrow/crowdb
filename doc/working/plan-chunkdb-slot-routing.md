@@ -12,7 +12,7 @@ maps, with all chunk metadata in fixed nonzero direct KV groups.
 
 Status: Implementation started on 2026-10-03 at the user's request.
 Fixed-map startup and Rust routing are implemented and focused tests pass.
-Task scope isolation is active. Delete this temporary plan after
+Task scope isolation and fixed-owner recovery are implemented; native routing is active. Delete this temporary plan after
 implementation and verified requirement completion.
 
 ## Delivery boundary and readiness
@@ -97,20 +97,20 @@ implementation and verified requirement completion.
   and server-generated IDs, including zero-slot instances and bounded retries.
   Files: `app/crowdb-chunkdb/src/range_guard.rs`, `main.rs`,
   `app/crowdb-chunkdb/src/lifecycle/handler.rs`.
-- [~] **Task scan scope**: add explicit domain/slot index scope so ready,
+- [x] **Task scan scope**: add explicit domain/slot index scope so ready,
   finalize and expired-lease scans select owned work before applying limits.
   Deduplicate destination-group scans and preserve pagination/progress; avoid
   repeatedly reading an unowned prefix and filtering away the whole batch.
   Canonical tasks retain their owning chunk identity for routing.
   Files: `lib/crowdb-protocol/src/key/chunk_task.rs`,
   `app/crowdb-chunkdb/src/task/{store,scanner,manager}.rs`.
-- [ ] **Separate operation domains**: wire system and repo lifecycle admission
+- [x] **Separate operation domains**: wire system and repo lifecycle admission
   and task runtimes separately, with independent scan/claim scope and execution
   capacity. Reuse task algorithms without a mixed queue. Enforce slot and domain
   authority at admission, claim and publication, including reservations, repair,
   conversion, finalize, ownership queries and listing.
   Files: ChunkDB `main.rs`, `lifecycle/`, `task/`, associated protocol task types.
-- [ ] **Fixed-owner recovery**: rebuild caches and task state from remote KV;
+- [x] **Fixed-owner recovery**: rebuild caches and task state from remote KV;
   preserve task-claim generation/lease checks and existing writer fencing.
   Verify restart cannot make an old in-flight completion authoritative after
   its claim is replaced. Do not implement a new cross-server handoff protocol.
@@ -125,7 +125,7 @@ implementation and verified requirement completion.
   without current authority. Clients must not require storage-map access.
   Files: `lib/crowdb-kv-client/src/binding/range.rs`,
   `lib/crowdb-chunkdb-client/src/client.rs`, `lib/crowdb-chunk-client/src/client.rs`.
-- [ ] **Native route interface**: replace the single retained ChunkDB route
+- [~] **Native route interface**: replace the single retained ChunkDB route
   exported by `native_storage_routes` with a lifetime-safe service resolver or
   equivalent shared route snapshot. Specify ownership and asynchronous refresh
   across the existing Rust/C++ seam without introducing hot-path locks.
@@ -252,3 +252,22 @@ implementation and verified requirement completion.
   claims and writes. Three new integration cases and the three-group atomicity
   regression pass. Production runtime split is still pending; the new scope
   API alone does not complete operation-domain isolation.
+
+- Production now starts independent system and user-data lifecycle/task
+  runtimes, with separate queue scans, claim authority, executors and recovery.
+  The shared RPC listener dispatches by concrete purpose; administrative listing
+  merges only owned records. Scoped chunk/reservation stores enforce authority
+  before reads/writes and paginate past excluded records before applying limits.
+- Initial service assignment uses balanced slot bands and storage assignment
+  interleaves the selected groups. This keeps the maps independent while
+  reducing common-case scans to one band per selected group; arbitrary disjoint
+  bitmaps remain supported. Existing maps never change during refresh.
+- Execution limits are reserved independently per domain. The cluster reservation
+  budget is divided by service slot share and then equally between the domains;
+  shared reservation gauges aggregate their contributions. Administrative batch
+  conversion applies its scan bound independently to each domain.
+- RPC coverage for all six supported purposes, storage/reservation scope,
+  independent execution capacity, rejection before cross-domain side effects,
+  and old-claim fencing after same-owner restart pass. The real three-node
+  takeover test also passes. Execution verifies the durable claim without an
+  extra renewal write; normal lease heartbeats retain their existing cadence.
