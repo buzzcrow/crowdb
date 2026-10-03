@@ -24,25 +24,35 @@ impl MultipartRepository {
     ///
     /// # Errors
     /// Rejects closed, expired or foreign sessions, invalid parts and
-    /// unconfirmed storage errors. A competing writer returns `None`.
+    /// unconfirmed storage errors. Returns `None` if a reservation cannot settle
+    /// and the durable session has not advanced. Concurrent session progress is
+    /// re-evaluated without uploading the payload again.
     pub async fn put_stream_part(
         &self,
         session: &MultipartSessionRecord,
         part: &MultipartPartRecord,
         now_ms: u64,
     ) -> Result<Option<MultipartPartRecord>, MultipartRepositoryError> {
-        for _ in 0..2 {
+        loop {
             let current = self
                 .load(session)
                 .await?
                 .ok_or(MultipartRepositoryError::Conflict)?;
             if current.pending.is_some() {
                 self.settle_pending_part(&current).await?;
-                continue;
+            } else if let Some(saved) = self.reserve_stream_part(&current, part, now_ms).await? {
+                return Ok(Some(saved));
             }
-            return self.reserve_stream_part(&current, part, now_ms).await;
+            let latest = self
+                .load(session)
+                .await?
+                .ok_or(MultipartRepositoryError::Conflict)?;
+            if latest.revision == current.revision {
+                return Ok(None);
+            }
+            // Another publication advanced the durable fence. Re-evaluate our
+            // part against that state without uploading its bytes again.
         }
-        Ok(None)
     }
 
     async fn reserve_stream_part(
@@ -82,9 +92,7 @@ impl MultipartRepository {
             current.max_staged_bytes,
         )
         .map_err(|_| MultipartRepositoryError::InvalidPart)?;
-        if !self.persist_generation(current, &after).await? {
-            return Ok(None);
-        }
+        let after = self.persist_generation(current, after).await?;
         let mut reserved = current.clone();
         reserved.revision = next_revision(current.revision).ok_or(MultipartRepositoryError::Conflict)?;
         reserved.part_count = accounting.count;
@@ -110,30 +118,47 @@ impl MultipartRepository {
     async fn persist_generation(
         &self,
         session: &MultipartSessionRecord,
-        after: &MultipartPartRecord,
-    ) -> Result<bool, MultipartRepositoryError> {
-        let key = MetadataKey::multipart_part_generation(
-            &self.tenant,
-            session.bucket_id,
-            &session.upload_id,
-            after.number,
-            after.revision,
-        )?;
-        let value = after.encode()?;
-        match self.store.put_if_absent(key.clone(), value.clone()).await {
-            Ok(PutIfAbsentOutcome::Inserted { .. }) => Ok(true),
-            Ok(PutIfAbsentOutcome::Existing(existing)) if existing.value == value => Ok(true),
-            Ok(PutIfAbsentOutcome::Existing(_)) => Ok(false),
-            Err(error) => {
-                if self
-                    .store
-                    .get(key)
-                    .await?
-                    .is_some_and(|entry| entry.value == value)
-                {
-                    Ok(true)
-                } else {
-                    Err(error.into())
+        mut after: MultipartPartRecord,
+    ) -> Result<MultipartPartRecord, MultipartRepositoryError> {
+        loop {
+            let key = MetadataKey::multipart_part_generation(
+                &self.tenant,
+                session.bucket_id,
+                &session.upload_id,
+                after.number,
+                after.revision,
+            )?;
+            let value = after.encode()?;
+            match self.store.put_if_absent(key.clone(), value.clone()).await {
+                Ok(PutIfAbsentOutcome::Inserted { .. }) => return Ok(after),
+                Ok(PutIfAbsentOutcome::Existing(existing)) => {
+                    let retained = MultipartPartRecord::decode(
+                        &existing.value,
+                        after.bucket_id,
+                        &after.upload_id,
+                        after.number,
+                    )?;
+                    if retained.revision != after.revision {
+                        return Err(MultipartRepositoryError::InvalidPart);
+                    }
+                    if retained.length == after.length && retained.raw_md5 == after.raw_md5 {
+                        return Ok(retained);
+                    }
+                    // A failed reservation may leave a different immutable candidate.
+                    // Preserve it and select a fresh monotonically increasing revision.
+                    after.revision =
+                        next_part_revision(Some(after.revision)).ok_or(MultipartRepositoryError::Conflict)?;
+                }
+                Err(error) => {
+                    if self
+                        .store
+                        .get(key)
+                        .await?
+                        .is_some_and(|entry| entry.value == value)
+                    {
+                        return Ok(after);
+                    }
+                    return Err(error.into());
                 }
             }
         }

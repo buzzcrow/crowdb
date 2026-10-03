@@ -126,6 +126,10 @@ def rclone_workflow(endpoint, phase="all"):
 class CliClientCases:
     def test_aws_cli_workflow(self):
         aws_workflow(self.endpoint)
+        status, _, metrics = self.signed_http("GET", "/_crowdb/metrics")
+        self.assertEqual(status, 200)
+        self.assertIn(b"crowdb_s3_native_retained_bytes 0\n", metrics)
+        self.assertNotIn("crowdb-aws-cli", [bucket["Name"] for bucket in self.client.list_buckets()["Buckets"]])
 
     def test_rclone_workflow(self):
         rclone_workflow(self.endpoint)

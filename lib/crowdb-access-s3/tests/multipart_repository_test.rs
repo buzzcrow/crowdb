@@ -28,6 +28,9 @@ use crowdb_protocol::common::ChunkId;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
+#[path = "common/multipart_progress.rs"]
+mod progress;
+
 struct Catalog(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>);
 
 #[async_trait]

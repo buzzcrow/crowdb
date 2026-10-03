@@ -174,6 +174,15 @@ pointer update with a session compare-and-swap, publishes the pointer, then
 clears the reservation. A later request can finish an interrupted reservation.
 Completion cannot freeze while one is pending.
 
+Different part numbers can publish concurrently. A writer helps a pending
+reservation and re-evaluates its own publication when the durable session
+revision advances, retaining its already-written bytes. An immutable candidate
+left by a failed reservation does not block that part number: matching length
+and raw MD5 reuse the retained candidate under the same idempotency rule as a
+published part; different contents select the next unused generation. Generation
+numbers therefore increase monotonically and can have gaps. Retained candidates
+remain immutable, and accounting changes only through the session fence.
+
 Completion validates the ordered selected part numbers, raw MD5 values,
 minimum nonfinal size, and current generations. It freezes the selection under
 the session compare-and-swap, composes chunk locations with adjusted logical

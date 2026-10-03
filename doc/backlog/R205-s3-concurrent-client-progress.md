@@ -16,6 +16,17 @@ completion to internal tests; CLI and SDK reruns are not its prerequisites.
 
 #### Problem
 
+Post-handoff concurrency-10 reproduction still fails UploadPart with SlowDown
+after 6.466 seconds, without the historical cursor/fsync/coalescer errors.
+Temporary diagnostics reproduce it after 5.516 seconds and establish an
+independent MPU authority defect: part 1 loses the session reservation CAS at
+revision 3 after persisting generation 1. SDK retries then collide with that
+immutable generation twice because each upload has new locations/timestamps.
+Two helping rounds also reject concurrent progress rather than continuing
+against the advanced durable session. Private fixtures are retained under
+`.crowdb-runtime/persistent/s3-client-failures/post-handoff-cli-slowdown` and
+`post-handoff-cli-diagnostic`; temporary source logs are removed.
+
 AWS CLI 2.36.47 default concurrent multipart failed on the real-storage fixture
 with SlowDown. An unchanged run first logged KV coalescer stuck batches, then
 DiskIO fsync deadlines and chunk-stream metadata conflicts, followed by
@@ -109,6 +120,10 @@ Single-concurrency recipes pass but do not certify defaults or resolve stalls.
 3. Retain the low-memory recipe and separately gate default concurrency under
    documented sufficient budgets. Rejected requests cannot publish partial
    objects, and admitted work/retries must recover.
+4. In multipart publication, help and re-evaluate only after durable session
+   progress, preserving already-written payload. Reuse equivalent retained
+   candidates and skip conflicting orphan generations monotonically. Preserve
+   immutable evidence, exact accounting and completion/abort fencing.
 
 #### Dependencies
 
@@ -119,6 +134,16 @@ Single-concurrency recipes pass but do not certify defaults or resolve stalls.
   unresolved implementation dependency.
 
 #### Acceptance
+
+- Given ten distinct part numbers in one open upload, publish concurrently;
+  assert every call succeeds without reuploading, exact part pointers, count
+  and staged bytes, and no pending reservation (multipart fencing/progress).
+  Integration test.
+- Given an immutable generation whose session reservation never committed,
+  retry matching bytes and replace with different bytes; assert matching
+  content reuses the retained candidate, different content advances beyond it,
+  old evidence stays intact and accounting changes once (immutable publication).
+  Integration test.
 
 - Given a pending write before an out-of-order NoOp, flush and snapshot, then
   finish the delayed write; assert the frontier does not cross the gap early

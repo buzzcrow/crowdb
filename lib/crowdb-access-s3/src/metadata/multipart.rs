@@ -157,7 +157,8 @@ impl MultipartSessionRecord {
                 || pending.after_length > self.max_part_bytes
                 || self.staged_bytes < pending.after_length
                 || pending.before_revision.is_some() != pending.before_digest.is_some()
-                || next_part_revision(pending.before_revision) != Some(pending.after_revision)
+                || next_part_revision(pending.before_revision)
+                    .map_or(true, |minimum| pending.after_revision < minimum)
             {
                 return Err(MultipartRecordError::Invalid);
             }

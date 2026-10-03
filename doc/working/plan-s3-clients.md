@@ -15,10 +15,20 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - [x] **Positive rclone acceptance**: bounded user metadata persists across PUT, COPY/REPLACE and multipart publication. Canonical rclone task, new-format session restart and full container recovery/restart gates pass. Old-version data compatibility is not required.
 - [x] **Container and recipes**: default SDK and configured CLI ordinary/multipart copy pass, with exact bytes after all service crash/hang recovery and persisted-volume restart. Full pixi run test-single-node-container passes. README documents pinned versions/configurations and unsupported workflows.
 - [x] **Applicable quality gates**: library/server tests, shared encoding/auth tests, official embedded-copy error test, fmt/clippy, Python compilation, shell syntax and release policy checks pass.
-- [ ] **Remaining acceptance — deferred by user**: after the MemTable handoff implementation, all three focused reproductions and two complete accumulated suites pass. The slow-upload case now executes at both Python and Rust entry points. The user asks to stop after critical verification to switch tasks; leave the third complete run, default-concurrency CLI and optional SDK reruns pending, with SDK work last.
+- [x] **Third accumulated suite**: rebuilt current services and ran the canonical full S3 task without focused selectors. All 32 cases pass with zero ignored, including accumulated thousand-key deletion and six service restarts.
+- [x] **Concurrent client progress**: fixed session-CAS contention and orphan generation poisoning. Concurrency-10 CLI and another complete 32-case accumulated suite with concurrency 10 pass on the original 1 MiB receive budget.
+- [ ] **Final container acceptance**: rerun the canonical container gate after the MPU repair and completed storage routing.
+- [ ] **Optional SDK reruns**: run Java, Go and JavaScript recipes last, sequentially; keep them outside regular CI/container/release gates.
 - [ ] **Completion cleanup**: retain requirement/index/plan until all positive client and full-stack gates pass, then remove them in the cleanup commit.
 
 ## Verification
+
+- Resumed verification on 2026-10-03 at `78649976`: `pixi run clean-env &&
+  pixi run -e s3-e2e test-boto3-e2e` passes all prerequisite library/server and
+  official embedded-copy tests, then all 32 full-stack cases with zero ignored.
+  This is the third complete accumulated success; it also covers the newly
+  completed typed ChunkDB slot-routing implementation. Default concurrency
+  and optional SDK reruns are still separate pending checks.
 
 - Post-handoff verification on 2026-10-03 uses implementation `139149b7`.
   The Python slow-upload skip was removed by that implementation, but both Rust

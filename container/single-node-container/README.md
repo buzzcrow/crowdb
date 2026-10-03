@@ -151,8 +151,10 @@ These published images use the single-node development profile described above.
 - AWS CLI uses the configured recipe below for discovery, ordinary and multipart
   transfers, prefix listing, server copy, sync with deletion, and recursive
   cleanup. One concurrent request matches the bounded development fixture.
-  Default concurrency has a separate diagnostic task and is not accepted by
-  this recipe. Copy explicitly requests COPY metadata; the CLI's broader
+  The separate `pixi run -e s3-e2e test-aws-cli-concurrent` gate verifies ten
+  concurrent requests with the same classic transfer and path-style setup on
+  the real-storage fixture, including exact bytes and cleanup. The container
+  recipe retains one worker. Copy explicitly requests COPY metadata; the CLI's broader
   property/annotation discovery is unsupported.
 
 ```ini
