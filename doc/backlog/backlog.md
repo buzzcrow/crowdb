@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R206** — Bump this line in the same commit when adding a new item.
+**Next R number: R207** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -106,7 +106,7 @@ Caches, selected ORC and container engine workflows remain separate.
   admission and storage progress — Area: S3 / KV / DiskIO — High priority.
   Diagnose default CLI multipart resource rejection, storage stalls and the
   accumulated serial-suite journal/snapshot failure; retain exact reproducers.
-- **[R203](R203-s3-principal-namespace-authorization.md)** — credential
+- **[R206](R206-s3-principal-namespace-authorization.md)** — credential
   principals and namespace authorization — Area: S3 / auth / namespace —
   Define shared-realm or principal-scoped authority. Current accepted keys share
   the configured listener namespace; copy/delete client tests do not certify

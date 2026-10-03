@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R203: access-s3 — Credential principals and namespace authorization
+### R206: access-s3 — Credential principals and namespace authorization
 
 #### Problem
 

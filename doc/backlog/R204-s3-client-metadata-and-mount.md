@@ -34,7 +34,7 @@ host prerequisite. The bounded mount gate retains this reproduction.
 
 #### Dependencies
 
-- R203 selects realm/principal authority; attributes alone cannot certify ACLs.
+- R206 selects realm/principal authority; attributes alone cannot certify ACLs.
 - R200 retains pinned scripts and verified integrity. AWS CLI and boto3 gates
   progress independently; rclone and s3fs are not accepted yet.
 - Reuse multipart generation fences and immutable publication; no global
@@ -65,4 +65,4 @@ pixi run test-single-node-container, pixi run rs-fmt-check, and pixi run rs-lint
 - Upgrade existing multipart sessions lazily with a versioned legacy decoder,
   or require uploads to drain first? Lazy decoding preserves active uploads but
   requires explicit legacy schema coverage; draining changes deployment rules.
-- Which private ACL and POSIX attributes are valid under R203's authority model?
+- Which private ACL and POSIX attributes are valid under R206's authority model?

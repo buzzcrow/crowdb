@@ -31,7 +31,7 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - Rebuilt full stack still fails thousand-key deletion after 164.424 seconds: expected=341456, new=341663, durable=341042. No segment-directory corruption occurs in this run, separating the two defects. Preserve fixture under .crowdb-runtime/persistent/s3-client-failures/default-suite-addressed-directories. Its binary WAL contains accepted chunk advances to 341249 and 341456 at slots 8434 and 8441. These are durable-record evidence, not by themselves proof of the exact visibility race. C++ gate 589/589, FFI 49/49, tree-lint exit 0 with existing warnings, fmt/clippy pass.
 - Copy and batch deletion are complete before beginning this requirement.
 - Existing Iceberg upload encoding already validates bounded AWS chunks, five checksums, signed chunk chains and trailers; general S3 currently validates only MD5 and payload SHA256. Reuse the decoder while retaining protocol-specific authority/admission.
-- R203 records the separate principal/grant authority decision; recipes operate within the current listener realm.
+- R206 records the separate principal/grant authority decision; recipes operate within the current listener realm.
 - Default boto3 ordinary/CRC32/multipart case and eight shared encoding tests pass. AWS CLI discovery exposed missing CreationDate; bucket records lack that field, so the wire now reports a documented stable epoch placeholder.
 - The next exact AWS CLI run failed during concurrent multipart UploadPart: KV coalescer watchdog reported stuck batches first, then DiskIO fsync deadlines and chunk-stream metadata conflicts. No crash report was produced; group0 remained alive until harness teardown. Full service logs preserved under .crowdb-runtime/persistent/s3-client-failures/aws-cli-concurrent. Reproducing unchanged before choosing a fix; no timeout or assertion was relaxed.
 - Unchanged concurrent reproduction then returned SlowDown promptly. R205 records both observations without assigning an unproven root cause. Explicit concurrency=1 AWS discovery/transfer/prefix/copy/sync/cleanup passes.
@@ -57,5 +57,5 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 
 ## Blocked
 
-- Positive rclone/s3fs acceptance requires the durable multipart metadata migration and authority/ACL choices listed in R204/R203. Alternatives are recorded there; rejecting required headers preserves the current contract. User explicitly authorizes backlog issues and continued independent work, so SDK/AWS/container gates continue.
+- Positive rclone/s3fs acceptance requires the durable multipart metadata migration and authority/ACL choices listed in R204/R206. Alternatives are recorded there; rejecting required headers preserves the current contract. User explicitly authorizes backlog issues and continued independent work, so SDK/AWS/container gates continue.
 - R200 detail/index/plan must remain until positive client acceptance passes. Final cleanup is deferred; partial implementation is not completion.

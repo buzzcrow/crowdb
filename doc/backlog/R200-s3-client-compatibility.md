@@ -70,7 +70,7 @@ inferring broad S3 compatibility from one SDK.
   absence must not block AWS CLI/rclone or silently certify the mount workflow.
 - R204 owns mandatory client metadata, multipart schema migration and mounted
   file/ACL decisions. Retained positive client gates resume after it lands.
-- R203 owns principal/realm authority; current recipes use the configured realm.
+- R206 owns principal/realm authority; current recipes use the configured realm.
 - R205 retains default concurrent multipart progress diagnostics. A documented
   single-concurrency development recipe does not certify default concurrency.
 
