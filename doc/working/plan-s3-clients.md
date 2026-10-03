@@ -30,11 +30,16 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
   thousand-key failure, CLI/rclone, lost replies, six service restarts and both
   benchmark paths. The third run, default-concurrency CLI and SDK reruns remain
   pending at the user's explicit stop request. Critical reproductions now pass;
-  this is not a claim that all R201/R205 acceptance is complete.
+  this is not a claim that all client-progress acceptance is complete.
   After the canonical task builds services and passes its prerequisite gates,
   repeated runs invoke the same full-stack Cargo target with the pinned Python
   path, preceded by `pixi run clean-env`; no focus/SDK/external-endpoint selector
   is set. Successful fixtures are automatically removed by the harness.
+
+- MemTable completion is scoped by the user to internal tests. A third S3 run
+  started during that work was stopped at the user's scope change; it is not a
+  pass or a failure. Default-concurrency CLI and Java/JS/Go SDK reruns were not
+  started. Keep these client follow-ups here, independent of MemTable cleanup.
 
 - Unit/integration: pixi run test-access-s3; pixi run test-access-server; affected encoding/auth tests.
 - E2E: pixi run clean-env && pixi run -e s3-e2e test-boto3-e2e; registered CLI tasks; pixi run test-single-node-container.

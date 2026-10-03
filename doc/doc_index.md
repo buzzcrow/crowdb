@@ -87,6 +87,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/tree/design-crowdb-tree-storage.md`                               | Durable pages, buffer pool, snapshot, mapping, GC.      |
 | `doc/design/tree/design-crowdb-tree-chunk-storage.md`                         | Mirrored page packs, manifests, rebuild, reclaim.       |
 | `doc/design/tree/design-crowdb-tree-engine-flush-flow.md`                     | L0→L1 flush path and bottlenecks.                       |
+| `lib/crowdb-tree/bench/README.md`                                            | MemTable handoff benchmark results and reproduction.    |
 | `doc/design/tree/design-crowdb-tree-engine-snapshot-flow.md`                  | Snapshot persist path and bottlenecks.                  |
 | `doc/design/console/design-crowdb-console-ui.md`                              | Web UI shell, canvas, inspector, KV operator.           |
 | `doc/design/protocol/design-crowdb-protocol-key.md`                           | Binary/text key encoding and evolution.                 |

@@ -109,18 +109,6 @@ Caches, selected ORC and container engine workflows remain separate.
   system Wal/BtreePage/PageIndex metadata stays in KV groups. Define range-local
   publication, key/split rules, isolated tasks, safe conversion and measured
   Paxos relief. Future Dataset follows the user-data layer with its own type.
-- **[R201](R201-tree-memtable-write-handoff.md)** — Concurrent MemTable writes
-  and safe flush handoff — Area: crowdb-tree / KV — High priority, high complexity.
-  **Design finalized; implementation not yet requested.** Selected: one node
-  per key with selective prefix-version retention, one atomic closed flag and
-  batch count per MemTable,
-  immutable Frozen sources retained for readers, and finite flush waits.
-  Retain soft thresholds without new backpressure; require correctness,
-  concurrent progress and performance comparison without a percentage gate.
-  L1 must remain within a proven contiguous frontier. Add overwrite, retention
-  and merge metrics for the expected overwrite-heavy workload. No remaining
-  human design decisions; concurrency, recovery and performance require
-  implementation verification.
 - **[R103](R103-chunkdb-range-migration.md)** — dynamic slot ownership and
   KV-group expansion/shrink — Area: chunkdb / kv — **Deferred until dynamic
   changes are requested.** The fixed-topology stage is implemented. Independently

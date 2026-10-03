@@ -9,9 +9,10 @@ Partially implemented. Default SDK and configured AWS CLI/rclone recipes pass,
 including persisted user metadata, service recovery and container restart.
 No compatibility claim substitutes for a failing positive gate. Default concurrent CLI
 progress is tracked by [R205](R205-s3-concurrent-client-progress.md).
-The accumulated full-stack regression also remains unaccepted because of the
-reproduced journal cursor regression and snapshot corruption recorded there;
-the isolated thousand-key case and new SDK cases pass independently.
+After the storage repairs, focused reproductions and two accumulated full-stack
+runs pass all 32 cases, including the thousand-key case and restart recovery.
+The third accumulated run and default-concurrency client verification remain
+with this client task; the user excluded CLI/SDK reruns from MemTable completion.
 
 #### Problem
 

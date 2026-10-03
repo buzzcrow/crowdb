@@ -5,13 +5,14 @@
 
 #### Status
 
-Cursor-regression diagnosis now identifies an R201 visibility defect in frozen
-MemTable relocation. At the user's direction, retain this evidence and defer
-the affected accumulated acceptance while proceeding to R206. No test is marked
-passing or silently skipped. Apply a minimal correctness repair only if this
-defect blocks subsequent work. Default-concurrency admission/stall observations
-remain separately unresolved; this diagnosis does not prove every failure has
-the same cause.
+The diagnosed frozen-MemTable relocation gap is repaired by `139149b7`.
+Focused reproductions and two complete accumulated S3 runs pass after the repair;
+`61cd717a` also removes the remaining slow-upload skip guards. Internal coverage
+now exercises production journal-metadata CAS through repeated prefix flushes,
+gap completion, persistence and reopen. This does not establish that every
+historical admission/stall observation had the same cause. Default-concurrency
+client progress remains separately unresolved here. The user scoped MemTable
+completion to internal tests; CLI and SDK reruns are not its prerequisites.
 
 #### Problem
 
@@ -112,9 +113,10 @@ Single-concurrency recipes pass but do not certify defaults or resolve stalls.
 #### Dependencies
 
 - R200 retains the concurrent reproducer and verified single-concurrency recipe.
-- R201 owns safe MemTable handoff and relocation visibility. The new diagnostic
-  reproduction confirms the relocation gap; its stashed implementation remains
-  unapplied and no concurrency mechanism is selected here.
+- Safe MemTable handoff and retained-source visibility are implemented. See
+  [the engine design](../design/tree/design-crowdb-tree-engine.md). The historical
+  relocation timeline above remains evidence for the repaired defect, not an
+  unresolved implementation dependency.
 
 #### Acceptance
 

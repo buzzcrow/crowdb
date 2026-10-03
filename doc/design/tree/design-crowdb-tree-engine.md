@@ -201,20 +201,18 @@ into resident frames that stay valid for the read guard's lifetime (§2.2).
 - A retired page is freed only after every thread that could hold a pointer
   has left the epoch in which it was retired.
 
-Because there is a single writer, `Retire` is uncontended; readers pay only
-the enter/exit. This is the one mechanism that answers page deletion, page
-references, and concurrent-read performance together.
+L1 page retirement uses `retire()` under the reclamation mutex. Concurrent
+MemTable writers enqueue preallocated retirement tickets through `defer()`'s
+lock-free CAS list; per-record publication never takes that mutex. Maintenance
+collects tickets, assigns retirement epochs and frees entries only below the
+minimum active participant epoch. Idle maintenance also drives reclamation.
 
-**`enter()`/`exit()` are lock-free** (a single atomic store each; no mutex,
-no CAS). The writer path (`retire`/`reclaim`) keeps a mutex since there is
-only one writer (the Flusher), so no contention there. This follows the classic
-epoch-based reclamation (EBR) design (Fraser, *Practical Lock-Freedom*, 2004;
-the same idea underlies Linux kernel RCU and Rust's `crossbeam-epoch`): a
-monotonic global epoch, per-thread local-epoch slots (cache-padded,
-fixed-capacity pool, no dynamic allocation on the hot path), and reclamation
-deferred to whichever thread calls `try_reclaim()` (the writer or a periodic
-tick), which frees any retired entry whose epoch is below the minimum active
-participant's epoch.
+**Guard entry and exit do not acquire a mutex.** First use on a thread allocates
+and CAS-registers a participant, then caches it by manager identity. Subsequent
+outermost entry publishes the current epoch; the outermost exit clears it.
+Nested guards share that participant. Participants are dynamically registered,
+not drawn from a fixed-capacity writer registry. The lifetime owner preserves
+participants and pending retirements while borrowed results outlive the tree.
 
 **Why not sharding instead?** Sharding (multiple `EpochManager` instances,
 reader hashed by thread) reduces contention but does not eliminate it. Each
