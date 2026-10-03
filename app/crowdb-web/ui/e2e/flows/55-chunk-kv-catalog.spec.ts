@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: partition/overlay 0.918s, unavailable 0.236s (2026-10-03).
+// Baseline: partition/overlay 1.2s, unavailable 0.243s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
 
 test('Chunk-KV preserves exact partition identity and separates inherited journal tracks', async ({ page }) => {
@@ -17,6 +17,12 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   };
   const requests: string[] = [];
   const runtimeRequests: string[] = [];
+  const chunkRequests: string[] = [];
+  await page.route('**/api/chunks**', route => {
+    chunkRequests.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ json: { chunk: { id_hex: id, chunk_type: 4, state: 1, capacity: 4096, sealed_length: 0, strips: [] },
+      layout_validity_ms: 1000, observed_at_ms: 1000, placement_observed_at_ms: 1000, placements: [], placement_error: null } });
+  });
   let runtimeConflict = false;
   await page.route('**/api/chunk-kv/runtime**', route => {
     runtimeRequests.push(route.request().url());
@@ -62,6 +68,13 @@ test('Chunk-KV preserves exact partition identity and separates inherited journa
   await expect(journal).toContainText('ffffffffffffffff0000000000000003');
   await expect(journal).toContainText('ffffffffffffffff0000000000000002');
   await expect(journal.getByLabel('Extent page map').getByRole('button')).toHaveCount(100);
+  await journal.getByRole('button', { name: 'Inspect active Chunk' }).click();
+  await expect(page.getByTestId('domain-chunk')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(id);
+  await expect(page.getByRole('heading', { name: id, exact: true })).toBeVisible();
+  expect(chunkRequests).toEqual([`/api/chunks/${id}`]);
+  await page.getByTestId('domain-chunk-kv').click();
+  await expect(journal).toBeVisible();
   await journal.getByRole('button', { name: 'Extent page 0 [0, 64)', exact: true }).click();
   await expect(journal.getByLabel('Selected extent page')).toContainText('64');
   await journal.getByRole('button', { name: 'Next extent pages', exact: true }).click();

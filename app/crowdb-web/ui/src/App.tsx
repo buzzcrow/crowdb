@@ -95,6 +95,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   // Cross-jumps replace the destination scope once. Manual switches retain
   // each domain's selection.
   const pendingSelectionRef = useRef<SelectedEntity | null>(null);
+  const [chunkRequest, setChunkRequest] = useState<{ id: string; nonce: number } | undefined>();
 
   useEffect(() => {
     if (pendingSelectionRef.current) {
@@ -577,11 +578,12 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             scanStatus={capacityScanStatus} loading={capLoading} readonly={topologyReadonly}
             onRefresh={refreshCapacity} selectedEntity={selectionForDomain(Domain.Capacity)}
           /></div>
-        <div hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser active={domain === Domain.Chunk}
+        <div hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser active={domain === Domain.Chunk} openRequest={chunkRequest}
           onPlacement={entity => { pendingSelectionRef.current = entity; setDomain(entity.domain); }}
         /></div>
         <div hidden={domain !== Domain.ChunkKV} className="tw-flex-1 tw-min-h-0"><ChunkKvView
           active={domain === Domain.ChunkKV} racks={racks} nodes={nodes} servers={allServers}
+          onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }}
         /></div>
         <div hidden={domain !== Domain.Iceberg} className="tw-flex-1 tw-min-h-0"><IcebergView active={domain === Domain.Iceberg} readonly={readonly} /></div>
         <div hidden={domain !== Domain.S3} className="tw-flex-1 tw-min-h-0"><S3View active={domain === Domain.S3} readonly={readonly} /></div>

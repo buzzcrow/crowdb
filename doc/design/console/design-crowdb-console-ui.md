@@ -876,7 +876,9 @@ Selecting a partition opens a central workbench with breadcrumbs to the map:
   position, active and sealed extents, and recovery lag. An extent links to
   its underlying chunk. Sequence numbers and byte offsets are separately
   labelled; counter differences are meaningful only within the same stream
-  and sequence namespace. Record decoding is explicit and bounded.
+  and sequence namespace. The active Chunk opens the Chunk explorer by exact
+  identity without scanning; returning preserves the partition selection.
+  Record decoding is explicit and bounded.
 - **Dependencies:** retained parent overlay, inheritance boundary, pinned
   tree/stream references, and materialization progress. Show phase and measured
   work; do not invent percentage completion from a phase name.

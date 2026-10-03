@@ -23,7 +23,7 @@ export function TreeStorage({ value }: { value?: TreeObservation }) {
   </section>;
 }
 
-export function JournalStorage({ value, disabled, onPage }: { value?: JournalObservation | null; disabled: boolean; onPage: (offset: number) => void }) {
+export function JournalStorage({ value, disabled, onPage, onChunk }: { onChunk: (id: string) => void; value?: JournalObservation | null; disabled: boolean; onPage: (offset: number) => void }) {
   const [selected, setSelected] = useState<string | null>(null);
   if (!value) return <p role="status">Journal storage observation unavailable.</p>;
   const extent = value.extent_pages.find(page => page.page_index === selected);
@@ -33,6 +33,7 @@ export function JournalStorage({ value, disabled, onPage }: { value?: JournalObs
     <div className="tw-border tw-border-accent tw-rounded tw-p-3 tw-space-y-3"><h3 className="tw-font-semibold">Active chunk</h3>
       {value.active ? <Fields values={{ 'Chunk ID': value.active.chunk_id, 'Logical start (bytes)': value.active.logical_start, 'Physical start (bytes)': value.active.physical_start,
         'Acknowledged physical cursor (bytes)': value.active.acknowledged_cursor, 'Physical capacity (bytes)': value.active.capacity }} /> : <p>No active chunk in this manifest.</p>}
+      {value.active && <button className={buttonClass} disabled={disabled} onClick={() => onChunk(value.active!.chunk_id)}>Inspect active Chunk</button>}
     </div>
     <h3 className="tw-font-semibold">Published extent index</h3>
     <p className="tw-text-xs tw-text-muted">{value.extent_pages.length} loaded page fences · offset {value.offset}. Ordered blocks show logical byte ranges; widths do not represent sizes. Extent records and journal payloads are not read.</p>
