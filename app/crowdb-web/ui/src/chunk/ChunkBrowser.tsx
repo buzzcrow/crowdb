@@ -19,7 +19,7 @@ const states = ['Init', 'Active', 'Sealed', 'Deleted'];
 const diskId = (segment: Segment): string | null => segment.disk_id ? BigInt(segment.disk_id.high).toString(16).padStart(16, '0') + BigInt(segment.disk_id.low).toString(16).padStart(16, '0') : null;
 const identity = (segment: Segment): string => `${diskId(segment)}/${segment.zone_index}/${segment.unit_offset}/${segment.allocation_ts}`;
 
-export function ChunkBrowser({ active, onPlacement }: { active: boolean; onPlacement: (entity: SelectedEntity) => void }) {
+export function ChunkBrowser({ active, onPlacement, openRequest }: { openRequest?: { id: string; nonce: number }; active: boolean; onPlacement: (entity: SelectedEntity) => void }) {
   const [kind, setKind] = useState('');
   const [lookup, setLookup] = useState('');
   const [page, setPage] = useState<ChunkPage | null>(null);
@@ -32,6 +32,7 @@ export function ChunkBrowser({ active, onPlacement }: { active: boolean; onPlace
   const revision = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const loadedKind = useRef<string | null>(null);
+  const openedRequest = useRef<number | null>(null);
   const query = useCallback(async (after?: string) => {
     controller.current?.abort();
     const request = new AbortController();
@@ -46,11 +47,7 @@ export function ChunkBrowser({ active, onPlacement }: { active: boolean; onPlace
     } catch (error) { if (version === revision.current) setError(String(error)); }
     finally { if (version === revision.current) setBusy(false); }
   }, [kind]);
-  useEffect(() => {
-    if (active && loadedKind.current !== kind) void query();
-    return () => { controller.current?.abort(); ++revision.current; setBusy(false); };
-  }, [active, kind, query]);
-  const inspect = async (id: string) => {
+  const inspect = useCallback(async (id: string) => {
     controller.current?.abort();
     const request = new AbortController();
     controller.current = request;
@@ -61,7 +58,19 @@ export function ChunkBrowser({ active, onPlacement }: { active: boolean; onPlace
       if (version === revision.current) setDetail(result);
     } catch (error) { if (version === revision.current) setError(String(error)); }
     finally { if (version === revision.current) setBusy(false); }
-  };
+  }, []);
+  useEffect(() => {
+    if (active) {
+      if (openRequest && openedRequest.current !== openRequest.nonce) {
+        if (kind) { setKind(''); return; }
+        openedRequest.current = openRequest.nonce;
+        loadedKind.current = kind;
+        setLookup(openRequest.id); setRows([]); setPage(null);
+        void inspect(openRequest.id);
+      } else if (loadedKind.current !== kind) void query();
+    }
+    return () => { controller.current?.abort(); ++revision.current; setBusy(false); };
+  }, [active, kind, query, inspect, openRequest]);
   const chunk = detail?.chunk;
   const strip = chunk?.strips.find(strip => strip.strip_sequence === stripSequence);
   const ordered = [...(chunk?.strips ?? [])].sort((a, b) => a.chunk_offset - b.chunk_offset || a.strip_sequence - b.strip_sequence);

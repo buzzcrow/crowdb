@@ -492,3 +492,18 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
   `CROWDB_NATIVE_DEPLOYMENT_DATA` and `CROWDB_NATIVE_DEPLOYMENT_SEED` through
   `pixi run cargo test -p crowdb-web --test native_access_deployment_test -- --ignored`.
   This fixture is opt-in so ordinary tests cannot target an existing cluster.
+
+
+## Journal-to-Chunk navigation checkpoint
+
+- Journal active chunks link directly into the Chunk explorer using their exact
+  128-bit ID. The destination clears incompatible type/list scope and performs
+  one detail read, without scanning to find the chunk. Returning to Chunk-KV
+  retains the selected partition and Journal view.
+- Focused Chunk/Chunk-KV E2E: seven passed. The new cross-domain assertion checks
+  the exact requested ID and absence of an initial scan; the extended partition
+  case took 1.3 s against its freshly measured 1.2 s baseline. TypeScript and
+  production frontend build passed.
+- Actual Tree page structure and decoded extent records still require bounded
+  native inspection interfaces. Current checkpoint/counter and extent-fence
+  views do not claim those records are already available.

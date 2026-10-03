@@ -11,7 +11,7 @@ import { PartitionDetail } from './PartitionDetail';
 
 const endpointKey = (endpoint: string) => endpoint.replace(/^[a-z]+:\/\//, '').replace(/\/$/, '');
 
-export function ChunkKvView({ active, racks, nodes, servers }: { active: boolean; racks: Rack[]; nodes: Node[]; servers: ServerSummary[] }) {
+export function ChunkKvView({ active, racks, nodes, servers, onChunk }: { onChunk: (id: string) => void; active: boolean; racks: Rack[]; nodes: Node[]; servers: ServerSummary[] }) {
   const [page, setPage] = useState<CatalogPage | null>(null);
   const [cursor, setCursor] = useState<Cursor>({ page: 0, offset: 0 });
   const [refresh, setRefresh] = useState(0);
@@ -88,6 +88,6 @@ export function ChunkKvView({ active, racks, nodes, servers }: { active: boolean
       {!entries.length && <p>No matches in the loaded catalog window.</p>}
       {page.next && <button className={buttonClass} disabled={busy || !!error} onClick={() => { setOwner(''); setCursor({ ...page.next!, generation: page.generation }); }}>Next partitions</button>}
     </>}
-    {selected && <PartitionDetail key={`${selected.partition.id}/${selected.generation}`} {...selected} active={active && !error && selected.generation === page?.generation} currentGeneration={page?.generation} onBack={() => setSelected(null)} />}
+    {selected && <PartitionDetail key={`${selected.partition.id}/${selected.generation}`} {...selected} active={active && !error && selected.generation === page?.generation} currentGeneration={page?.generation} onChunk={onChunk} onBack={() => setSelected(null)} />}
   </Workbench>;
 }

@@ -14,7 +14,7 @@ function Properties({ values }: { values: Record<string, string | null> }) {
   </dl>;
 }
 
-export function PartitionDetail({ partition: p, generation, currentGeneration, active, catalogPage, catalogOffset, onBack }: { partition: Partition; generation: string; currentGeneration?: string; active: boolean; catalogPage: number; catalogOffset: number; onBack: () => void }) {
+export function PartitionDetail({ partition: p, generation, currentGeneration, active, catalogPage, catalogOffset, onBack, onChunk }: { onChunk: (id: string) => void; partition: Partition; generation: string; currentGeneration?: string; active: boolean; catalogPage: number; catalogOffset: number; onBack: () => void }) {
   const [tab, setTab] = useState('Overview');
   const overlay = p.artifact.tail_overlay;
   const runtime = useRuntimeObservation({ active, partition: p, generation, catalogPage, catalogOffset });
@@ -34,7 +34,7 @@ export function PartitionDetail({ partition: p, generation, currentGeneration, a
         {overlay && <div className="tw-rounded tw-border tw-border-degraded tw-p-4 tw-space-y-3"><h3 className="tw-font-semibold">Inherited parent stream</h3><Properties values={{ Stream: identity(overlay.source_stream_name), 'Source partition': identity(overlay.source_partition_id), 'Manifest generation': overlay.source_stream_manifest_generation, 'Replay offset (bytes)': overlay.replay_offset, 'Cutover offset (bytes)': overlay.cutover_offset, 'Cutover sequence': overlay.cutover_seq }} /></div>}
         <div className="tw-rounded tw-border tw-border-accent tw-p-4 tw-space-y-3"><h3 className="tw-font-semibold">Partition journal stream</h3><Properties values={{ Stream: identity(p.artifact.stream_name), 'Start sequence from overlay': overlay?.target_stream_start_seq ?? null }} /></div>
         <p className="tw-text-sm tw-text-muted">Streams have independent byte offsets. Durable and applied sequence numbers refer to this partition's journal.</p>
-        <JournalStorage key={`${runtime.value?.journal?.generation}/${runtime.value?.journal?.offset}`} value={runtime.value?.journal} disabled={!active || runtime.busy || !!runtime.error} onPage={runtime.pageStream} />
+        <JournalStorage key={`${runtime.value?.journal?.generation}/${runtime.value?.journal?.offset}`} value={runtime.value?.journal} disabled={!active || runtime.busy || !!runtime.error} onPage={runtime.pageStream} onChunk={onChunk} />
       </>}
       {tab === 'Dependencies' && (overlay ? <><p className="tw-text-sm">Parent recovery dependency is retained in this catalog generation. Serving does not imply that materialization has completed.</p><Properties values={{ 'Source partition': identity(overlay.source_partition_id), 'Source epoch': overlay.source_epoch, 'Parent stream': identity(overlay.source_stream_name), 'Pinned base root generation': overlay.base_root_manifest_generation, 'Inheritance cutover sequence': overlay.cutover_seq }} /></> : <p className="tw-text-sm">No parent-tail overlay is recorded in this catalog entry. Runtime readiness and other retention pins require separate observations.</p>)}
     </div>
