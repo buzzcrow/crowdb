@@ -253,3 +253,42 @@ impl Drop for TestProcess {
         }
     }
 }
+
+#[tokio::test]
+async fn reset_removes_auxiliary_launches_before_nodes_and_racks() {
+    let mut config = config();
+    for (id, kind) in [
+        ("cdb", ServiceType::Chunkdb),
+        ("io", ServiceType::Diskio),
+        ("ckv", ServiceType::ChunkKv),
+        ("access", ServiceType::AccessServer),
+    ] {
+        let mut server = ServerEntry::new(id, "http://127.0.0.1:19999");
+        server.node_id = Some(1);
+        server.service_type = kind;
+        config.servers.push(server);
+        config.local_launches.insert(
+            id.into(),
+            LocalLaunchSpec {
+                program: "/nonexistent/stopped-service".into(),
+                args: vec![],
+                workdir: "/nonexistent/stopped-workspace".into(),
+                ..Default::default()
+            },
+        );
+    }
+    let state = AppState::with_config(config, None);
+    let (status, body) = request(
+        &router(state.clone()),
+        "POST",
+        "/api/cluster/destroy",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let config = state.config.read().unwrap();
+    assert!(config.servers.is_empty());
+    assert!(config.local_launches.is_empty());
+    assert!(config.nodes.is_empty());
+    assert!(config.racks.is_empty());
+}

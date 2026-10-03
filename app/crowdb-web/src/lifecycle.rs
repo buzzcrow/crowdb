@@ -976,6 +976,7 @@ pub async fn http_internal_reset(
     //        clean group-0 sysdata → remove group-0/store-0.
     //   5.   stop_all_services — SIGTERM all KV + DDB processes.
     //   6-8. config cleanup — remove nodes, racks, caches, workspaces.
+    crate::services::remove_for_reset(&state).await?;
     let mut stopped = shutdown_kv_data(&state).await;
     stopped.extend(stop_all_services(&state).await);
 
@@ -1017,6 +1018,7 @@ pub async fn http_internal_reset(
         // the reset. Without this, a restart reloads stale DGs/disks.
         cfg.disk_groups.clear();
         cfg.disks.clear();
+        cfg.local_launches.clear();
     }
 
     // 8. Clear caches and workspace directories.

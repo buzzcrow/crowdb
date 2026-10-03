@@ -40,3 +40,30 @@ pub(crate) fn node_removal(
     }
     Ok(operation)
 }
+
+/// Stop and remove consumers before tearing down their KV metadata authority.
+pub(crate) async fn remove_for_reset(state: &crate::state::AppState) -> Result<(), Failure> {
+    use crowdb_console_shared::config::ServiceType;
+    let mut services: Vec<_> = state
+        .config
+        .read()
+        .unwrap()
+        .servers
+        .iter()
+        .filter_map(|entry| {
+            let order = match entry.service_type {
+                ServiceType::AccessServer => 0,
+                ServiceType::ChunkKv => 1,
+                ServiceType::Chunkdb => 2,
+                ServiceType::Diskio => 3,
+                _ => return None,
+            };
+            Some((order, entry.id.clone()))
+        })
+        .collect();
+    services.sort();
+    for (_, id) in services {
+        let _ = lifecycle::delete(axum::extract::State(state.clone()), axum::extract::Path(id)).await?;
+    }
+    Ok(())
+}
