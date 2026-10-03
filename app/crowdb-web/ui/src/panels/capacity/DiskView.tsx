@@ -21,7 +21,7 @@ import { useZoneBitmap } from '../../data/useZoneBitmap';
 import { ZoneGrid } from '../ZoneGrid';
 import { ZoneBitmap } from '../ZoneBitmap';
 import { RecalcPanel } from '../RecalcPanel';
-import { observeCapacity } from './observation';
+import { observeCapacity, diskKey } from './observation';
 import { busyPct, formatBytes, diskTypeLabel } from '../../utils/capacity';
 import { hwStatusLabel as sharedHwStatusLabel } from '../../utils/entityDisplay';
 
@@ -51,10 +51,10 @@ export function DiskView({
 
   const disk = useMemo<DiskInfoDto | null>(() => {
     const usageDg = usage?.disk_groups.find((g) => g.disk_group_id === dgId);
-    const usageDisk = usageDg?.disks.find((d) => d.disk_id === diskId);
+    const usageDisk = usageDg?.disks.find((d) => diskKey(d.disk_id) === diskKey(diskId));
     if (usageDisk) return usageDisk;
     const hwDg = hardwareCapacity?.disk_groups.find((g) => g.disk_group_id === dgId);
-    const hwDisk = hwDg?.disks.find((d) => d.disk_id === diskId);
+    const hwDisk = hwDg?.disks.find((d) => diskKey(d.disk_id) === diskKey(diskId));
     if (!hwDg || !hwDisk) return null;
     return {
       rack_id: hwDg.rack_id,
@@ -153,7 +153,7 @@ export function DiskView({
             <button
               onClick={handleScan}
               disabled={actionLoading === `scan-${dgId}`}
-              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-text-xs tw-bg-accent tw-text-white tw-rounded disabled:tw-opacity-50"
+              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-text-xs tw-bg-[#365e78] tw-text-white hover:tw-bg-[#406d89] tw-rounded disabled:tw-opacity-50"
             >
               {actionLoading === `scan-${dgId}` ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Activity className="tw-h-3 tw-w-3" />}
               Scan
@@ -161,7 +161,7 @@ export function DiskView({
             <button
               onClick={handleRecalc}
               disabled={actionLoading === `recalc-${dgId}`}
-              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-text-xs tw-bg-accent tw-text-white tw-rounded disabled:tw-opacity-50"
+              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-text-xs tw-bg-[#365e78] tw-text-white hover:tw-bg-[#406d89] tw-rounded disabled:tw-opacity-50"
             >
               {actionLoading === `recalc-${dgId}` ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <RotateCw className="tw-h-3 tw-w-3" />}
               Recalc
@@ -222,7 +222,7 @@ export function DiskView({
       {selectedZoneIndex !== null && (
         <section className="tw-bg-panel tw-rounded-lg tw-p-4" aria-label={`Zone ${selectedZoneIndex} detail`}>
           <div className="tw-flex tw-items-center tw-gap-3 tw-text-xs tw-mb-3">
-            <button className="tw-text-accent" onClick={() => setSelectedZoneIndex(null)}>Back to parent Disk</button>
+            <button className="tw-text-accent" onClick={() => setSelectedZoneIndex(null)}>Close zone detail</button>
             <span className="tw-font-mono">{diskId} / Zone {selectedZoneIndex}</span>
             <button className="tw-text-accent" disabled={bitmapLoading} onClick={() => void refreshBitmap()}>Refresh bitmap</button>
           </div>

@@ -1469,6 +1469,7 @@ async fn auto_assign_owner(
         .await
         .map_err(|e| format!("get_disk_group: {e}"))?
         .ok_or_else(|| format!("disk-group {dg_id} missing from group 0"))?;
+    crate::owner_assignment::ensure_data_binding(hw, rack_id, node_id, dg_id).await?;
     hw.add_disk_group_with_owner(
         rack_id,
         node_id,

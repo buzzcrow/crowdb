@@ -8,7 +8,7 @@ import type {
   DiskInfoDto,
 } from '../../types';
 import { busyPct, busyColor, formatBytes, diskTypeLabel } from '../../utils/capacity';
-import { observeCapacity } from './observation';
+import { observeCapacity, diskKey } from './observation';
 import { hwStatusLabel as sharedHwStatusLabel } from '../../utils/entityDisplay';
 
 interface DiskGroupViewProps {
@@ -24,7 +24,7 @@ export function DiskGroupView({ dgId, usage, hardwareCapacity, onSelectDisk }: D
     const hwDg = hardwareCapacity?.disk_groups.find((g) => g.disk_group_id === dgId);
     if (!hwDg) return usageDg?.disks ?? [];
     // No usage data — synthesize brief disk entries from hardware sysdata.
-    return hwDg.disks.map((d) => usageDg?.disks.find(report => report.disk_id === d.disk_id) ?? ({
+    return hwDg.disks.map((d) => usageDg?.disks.find(report => diskKey(report.disk_id) === diskKey(d.disk_id)) ?? ({
       rack_id: hwDg.rack_id,
       node_id: hwDg.node_id,
       disk_group_id: dgId,

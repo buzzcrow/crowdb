@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { diskKey } from '../panels/capacity/observation';
 import { getDiskdbUsage } from '../api';
 import type { ZoneUsageDto } from '../types';
 
@@ -42,7 +43,7 @@ export function useZoneBitmap(
       // Ignore stale responses from a previous selection.
       if (myReq !== reqIdRef.current) return;
       const dg = resp.disk_groups.find((g) => g.disk_group_id === dgId);
-      const disk = dg?.disks.find((d) => d.disk_id === diskId);
+      const disk = dg?.disks.find((d) => diskKey(d.disk_id) === diskKey(diskId));
       const zu = disk?.zone_usages.find((z) => z.zone_index === zoneIndex);
       if (myReq !== reqIdRef.current) return;
       if (!zu) {

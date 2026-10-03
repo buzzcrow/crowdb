@@ -445,3 +445,23 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
   parent return. Two decoder unit tests and TypeScript passed. The existing
   backend still sends one full selected-zone snapshot; block-range transport
   pagination is not implemented by this UI checkpoint.
+
+
+## Capacity owner repair and visual refinement
+
+- DiskGroup creation binds an ordinary Store 0 data group before assigning its
+  DiskDB owner. Existing bindings survive; absence of a data group is explicit.
+  Four owner-assignment tests passed, including CAS creation and preservation.
+- Repaired the original deployment's missing DG 1/2/3 binds to existing Store 0,
+  Group 1 after saving the prior metadata. All three DiskDB registrations
+  recovered without restarting the original KV/DiskDB processes. Zone 41 on
+  disk 8827da0d7f28b34d-dbb7a12e686cf5d1 returned 32,768 free blocks.
+- Disk identity joins normalize dashed and undashed representations. Zone pages
+  contain 32 buttons with direct-number selection; inline detail uses Close,
+  not a parent-navigation link. Bitmap and disk-map colors are muted and action
+  buttons use a darker blue for white-text contrast.
+- TypeScript, production frontend build and the focused Zone browser test passed
+  (1.2 s), including map/bitmap colors, button colors, IDs and bounded paging.
+- Root Console verification is in progress. The real managed chain passed KV,
+  Iceberg and S3 CRUD plus Chunk inspection without browser credentials (4.2 s);
+  topology and disk-maintenance APIs rejected writes with 503.

@@ -4,7 +4,7 @@
 import type { CapacityUsageResponse, HardwareCapacitySummary } from '../../types';
 
 export interface CapacityScope { rackId?: number; nodeId?: number; dgId?: number; diskId?: string }
-const diskKey = (id: string) => id.replace(/-/g, '').toLowerCase();
+export const diskKey = (id: string) => id.replace(/-/g, '').toLowerCase();
 const valid = (capacity: number, busy: number, free: number) =>
   [capacity, busy, free].every(value => Number.isFinite(value) && value >= 0) && busy + free <= capacity;
 
