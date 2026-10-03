@@ -40,6 +40,8 @@ interface SidebarProps {
   onNodeClick?: (node: TreeNode) => void;
   onNodeContextMenu?: (node: TreeNode, event: React.MouseEvent) => void;
   onAdd?: () => void;
+  onLoadNodeDisks?: (nodeId: number) => Promise<void>;
+  onLoadGroupDisks?: (nodeId: number, groupId: number) => Promise<void>;
   // Capacity view props (R77)
   diskdbInstances?: DiskdbInstanceInfo[];
   capacityUsage?: CapacityUsageResponse | null;
@@ -64,6 +66,8 @@ export function Sidebar({
   onNodeClick,
   onNodeContextMenu,
   onAdd,
+  onLoadNodeDisks,
+  onLoadGroupDisks,
   diskdbInstances = [],
   capacityUsage = null,
   hardwareCapacity = null,
@@ -148,6 +152,8 @@ export function Sidebar({
                 .map((dg) => ({ dg, disks: entry.disksByDg[dg.id] || [] })),
             );
             children.push({
+              expandable: !!onLoadNodeDisks,
+              onExpand: () => { void onLoadNodeDisks?.(nodeId); },
               id: `DDB-${nodeId}`,
               rawId: `${nodeId}-ddb`,
               label: `DDB-${nodeId}`,
@@ -159,6 +165,8 @@ export function Sidebar({
               children: diskGroups.map(({ dg, disks }) => {
                 const dgStatus = dgStatusByKey.get(`${dg.rack_id}:${dg.node_id}:${dg.id}`);
                 return {
+                  expandable: !!onLoadGroupDisks,
+                  onExpand: () => { void onLoadGroupDisks?.(dg.node_id, dg.id); },
                   id: `CL-DG-${dg.node_id}-${dg.id}`,
                   rawId: dg.id,
                   label: dg.name ? `${dg.name} (DG-${dg.id})` : `DG-${dg.id}`,
@@ -268,6 +276,8 @@ export function Sidebar({
             const disks = ndg?.disksByDg[dg.id] || [];
             const dgStatus = dgStatusByKey.get(`${rack.id}:${nodeId}:${dg.id}`);
             children.push({
+              expandable: !!onLoadGroupDisks,
+              onExpand: () => { void onLoadGroupDisks?.(nodeId, dg.id); },
               id: `CH-DG-${nodeId}-${dg.id}`,
               rawId: dg.id,
               label: dg.name ? `${dg.name} (DG-${dg.id})` : `DG-${dg.id}`,
@@ -288,6 +298,8 @@ export function Sidebar({
           }
 
           return {
+            expandable: !!onLoadNodeDisks,
+            onExpand: () => { void onLoadNodeDisks?.(nodeId); },
             id: `N-${nodeId}`,
             rawId: nodeId,
             label: nodeLabel(String(nodeId)),
@@ -336,7 +348,7 @@ export function Sidebar({
         }),
       };
     }))];
-  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId]);
+  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks]);
 
   const filtered = useMemo(() => {
     if (!filterQuery.trim()) return treeNodes;
@@ -354,13 +366,13 @@ export function Sidebar({
     const ids: string[] = [];
     const collect = (ns: TreeNode[]) => {
       for (const n of ns) {
-        ids.push(n.id);
+        if (n.type === 'Datacenter' || n.type === 'Rack' || (domain !== Domain.Capacity && n.type === 'Node') || domain === Domain.KV) ids.push(n.id);
         if (n.children) collect(n.children);
       }
     };
     collect(filtered);
     return ids;
-  }, [filtered]);
+  }, [filtered, domain]);
 
   return (
     <aside aria-label="Cluster tree sidebar" className="tw-h-[calc(100vh-3.5rem)] tw-mt-14 tw-border-r tw-border-border tw-bg-bg tw-flex tw-flex-col tw-overflow-hidden tw-fixed tw-left-0 tw-top-0" style={{ width }}>

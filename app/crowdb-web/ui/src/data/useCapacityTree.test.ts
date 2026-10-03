@@ -52,3 +52,20 @@ it('suspends hidden-tab polling and reports partial observation failures', async
   expect(result.current.error?.message).toContain('usage');
   unmount();
 });
+
+it('keeps Cluster inventory free of runtime usage and scopes Disk observations', async () => {
+  setup();
+  const { rerender, unmount } = renderHook(({ observeRuntime, diskGroupId, diskId }) => useCapacityTree({ observeRuntime, diskGroupId, diskId }), {
+    initialProps: { observeRuntime: false, diskGroupId: undefined as number | undefined, diskId: undefined as string | undefined },
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(api.getDiskdbUsage).not.toHaveBeenCalled();
+  expect(api.getDiskdbScanStatus).not.toHaveBeenCalled();
+  expect(api.listNodeDiskGroups).not.toHaveBeenCalled();
+  expect(api.listDisksInGroup).not.toHaveBeenCalled();
+  rerender({ observeRuntime: true, diskGroupId: 7, diskId: 'exact-disk' });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(api.getDiskdbUsage).toHaveBeenLastCalledWith(7, 'exact-disk', undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(api.getDiskdbScanStatus).toHaveBeenLastCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  unmount();
+});

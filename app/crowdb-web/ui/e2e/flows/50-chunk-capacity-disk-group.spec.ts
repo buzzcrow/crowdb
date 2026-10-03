@@ -27,55 +27,24 @@ import { step } from '../fixtures/stepTimer';
 const DISKDB_RACK = 501;
 const DISKDB_NODE = 501;
 
-// Right-click a tree item, then click a context menu item. Retries up to
-// 5 times with 470 ms between attempts — the sidebar tree re-renders
-// every 5 s (useCapacityTree poll), and a right-click during re-render
-// lands on a stale element so the contextmenu event never fires. After
-// each right-click, polls every 100 ms for the menu to appear; if it
-// doesn't appear within 2 s, presses Escape and retries.
-// Uses dispatchEvent('click') for the menu item — regular click()
-// dispatches mousedown which closes the menu via the outside-click
-// handler before the click event fires.
+// Assert the menu once; UI refresh must not require silent click retries.
 async function clickMenuItem(
   page: import('@playwright/test').Page,
   treeItem: import('@playwright/test').Locator,
   menuItemName: string | RegExp,
 ) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (attempt > 0) await page.waitForTimeout(470);
-    await treeItem.click({ button: 'right', timeout: 5_000 }).catch(() => {});
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      const item = page.getByRole('menuitem', { name: menuItemName });
-      if (await item.isVisible().catch(() => false)) {
-        await item.dispatchEvent('click');
-        return;
-      }
-      await page.waitForTimeout(100);
-    }
-    await page.keyboard.press('Escape').catch(() => {});
-  }
-  throw new Error(`clickMenuItem: '${menuItemName}' not found after 5 attempts`);
+  await treeItem.click({ button: 'right' });
+  const item = page.getByRole('menuitem', { name: menuItemName });
+  await expect(item).toBeVisible();
+  await item.dispatchEvent('click');
 }
 
-// Right-click a tree item and verify the context menu opens. Retries up
-// to 5 times with 470 ms between attempts. Returns when any menuitem is
-// visible. Caller inspects menu items and presses Escape when done.
 async function openContextMenu(
   page: import('@playwright/test').Page,
   treeItem: import('@playwright/test').Locator,
 ) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (attempt > 0) await page.waitForTimeout(470);
-    await treeItem.click({ button: 'right', timeout: 5_000 }).catch(() => {});
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      if (await page.getByRole('menuitem').first().isVisible().catch(() => false)) return;
-      await page.waitForTimeout(100);
-    }
-    await page.keyboard.press('Escape').catch(() => {});
-  }
-  throw new Error('openContextMenu: menu did not appear after 5 attempts');
+  await treeItem.click({ button: 'right' });
+  await expect(page.getByRole('menu')).toBeVisible();
 }
 
 /**
@@ -263,6 +232,11 @@ test.describe('chunk · capacity · disk-group', () => {
       await dgDialog.getByLabel('Name (optional)').fill('test-dg');
       const createDgBtn = dgDialog.getByRole('button', { name: /create disk group/i });
       await createDgBtn.evaluate((el) => (el as HTMLElement).click());
+
+      const createdNode = aside.getByTestId(`tree-node-N-${nodeId}`);
+      await expect(createdNode.getByRole('treeitem')).toBeVisible();
+      const openCreatedNode = createdNode.getByRole('button', { name: 'Expand', exact: true });
+      if (await openCreatedNode.count()) await openCreatedNode.click();
 
       // The disk-group should appear in the sidebar.
       await expect(aside.getByText(/test-dg.*DG-520|DG-520.*test-dg/, { exact: true })).toBeVisible({ timeout: 10_000 });
@@ -488,10 +462,8 @@ test.describe('chunk · capacity · disk-group', () => {
       // The disk-groups data arrives via fetchNodeDiskGroups (async, not
       // polled) which lags the racks tree on slow CI runners. Wait for
       // the API response before asserting DG visibility.
-      const dgResponse = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
       await page.goto('/');
       await page.getByTestId('domain-capacity').click();
-      await dgResponse;
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
@@ -555,10 +527,10 @@ test.describe('chunk · capacity · disk-group', () => {
           }, { timeout: 30_000, intervals: [200] }).toBeGreaterThan(0));
 
         // --- Verify the capacity panel shows non-zero ---
-        const dgResponse2 = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
         await page.goto('/');
         await page.getByTestId('domain-capacity').click();
-        await dgResponse2;
+        await expect(aside.getByRole('button', { name: `N-${nodeId}`, exact: true })).toBeVisible();
+        await aside.getByTestId(`tree-node-N-${nodeId}`).getByRole('button', { name: 'Expand', exact: true }).click();
         await expect(aside.getByText(/DG-590/, { exact: true })).toBeVisible({ timeout: 10_000 });
         // The Total Capacity card should show a non-zero value (not "0 B").
         const capacityText = page.getByText(/Total Capacity/).locator('..');
@@ -595,9 +567,7 @@ test.describe('chunk · capacity · disk-group', () => {
       // groups are not projected in Cluster). It remains visible in
       // the Capacity domain, which keeps the full physical hierarchy.
       await page.goto('/');
-      const dgResponse = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
       await page.getByTestId('domain-cluster').click();
-      await dgResponse;
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
@@ -613,8 +583,6 @@ test.describe('chunk · capacity · disk-group', () => {
       // Switch to Capacity domain — the DG should be visible there.
       await page.getByTestId('domain-capacity').click();
       const capAside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-      const capDgResponse = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
-      await capDgResponse;
       const capExpandRack = capAside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
       if (await capExpandRack.count() > 0) await capExpandRack.click();
       await expect(capAside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });

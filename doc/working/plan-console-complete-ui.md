@@ -778,3 +778,18 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   S3 browser 5 (existing 0.348–1.0s, new round trip 0.883s), hook 8 cases.
   Build and focused all-target Clippy pass. Actual native three-node bring-up
   remains part of the outstanding provisioning acceptance, not implied by mocks.
+
+### Scoped Capacity population and deterministic context menus
+
+- Shared `useDiskInventory` loads opened nodes/groups with four workers, dedupes
+  same-branch requests, retains previous data on failure and aborts on teardown.
+  Cluster drops unused per-node ping/KV-store traversal. Capacity drops its
+  duplicate inventory chain and scopes runtime queries to the selection.
+- Context menus close at action invocation, preventing an old awaited refresh
+  from closing a later menu. Removed the old five-attempt/sleep helpers from
+  Capacity specs; tests assert actual menu visibility once.
+- Verification: seven unit regressions; five real DiskGroup cases pass (0.565–
+  2.7s except the measured owner-capacity wait: 9.31s / total 10.7s). Disk/zone
+  and large navigation six cases pass (0.051–4.0s; 200-Node budget case 1.4s).
+  Old eager-GET timing dependencies in the tests were replaced with explicit
+  branch expansion and visible state assertions, preserving mutation checks.

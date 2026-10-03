@@ -97,9 +97,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   navigation and restore the originating list window/type/filter, exact chunk,
   strip page, selected strip/block and scroll position. Verify both Disk and
   Node round trips. Reported by the user; deferred from the current layout work.
-- [ ] **Bound Capacity population**: remove eager node/disk topology fanout and
-  cluster-wide usage reads where scoped observation suffices. Preserve 32-zone
-  windows and bounded bitmap rendering; verify large synthetic populations.
 - [ ] **Cross-view and failure acceptance**: verify scope restoration,
   disk/node navigation, owner movement, stale cursors, unavailable services,
   and container-mode topology/disk mutation restrictions against the current
@@ -236,3 +233,13 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   eight hook cases and five S3 browser cases pass. The new browser location
   round trip takes 0.883 seconds; the four existing cases remain 0.348–1.0 seconds.
   Normal three-node native fixture acceptance remains part of provisioning below.
+
+- Capacity completion: shared lazy Node/DiskGroup inventory replaces duplicate
+  eager topology walks; four workers and per-branch deduplication bound fanout.
+  Cluster does not poll DiskDB usage; selected Disk/DG requests are scoped. A
+  200-Node browser fixture verifies no unopened storage branch requests and only
+  the selected node/group after expansion (1.4s). Real Capacity domain cases
+  passed; the retained owner-capacity wait remains 9.31s, separately measured.
+- Context menu race fixed: old asynchronous action completion no longer closes a
+  newer resource menu. The no-retry maintenance browser case passes in 4.0s and
+  a focused unit regression verifies the close ordering.

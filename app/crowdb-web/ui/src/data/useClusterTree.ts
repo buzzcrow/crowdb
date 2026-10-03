@@ -2,15 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { listRacks, listNodes, listNodeStores, pingNode, listNodeDiskGroups, listDisksInGroup, type ServerSummary } from '../api';
+import { listRacks, listNodes, type ServerSummary } from '../api';
 import { NodeHealth } from '../types';
-import type { Rack, Node, NodeStore, DiskGroupEntry, DiskEntry } from '../types';
+import type { Rack, Node, NodeStore } from '../types';
 import { physicalSnapshot } from '../managed/physicalSnapshot';
 
-export interface NodeDiskGroups {
-  diskGroups: DiskGroupEntry[];
-  disksByDg: Record<number, DiskEntry[]>;
-}
+import { useDiskInventory, type NodeDiskGroups } from './useDiskInventory';
+export type { NodeDiskGroups } from './useDiskInventory';
 
 interface UseClusterTreeOptions {
   pollIntervalActive?: number;
@@ -30,6 +28,8 @@ interface UseClusterTreeResult {
   loading: boolean;
   error: Error | null;
   refresh: () => Promise<void>;
+  loadNodeDisks: (nodeId: number) => Promise<void>;
+  loadGroupDisks: (nodeId: number, groupId: number) => Promise<void>;
   getNodeById: (nodeId: number) => Node | undefined;
 }
 
@@ -52,15 +52,21 @@ export function useClusterTree({
   const [nodes, setNodes] = useState<Node[]>([]);
   const [nodeStores, setNodeStores] = useState<Record<string, NodeStore[]>>({});
   const [nodeHealthById, setNodeHealthById] = useState<Record<string, NodeHealth>>({});
-  const [nodeDiskGroups, setNodeDiskGroups] = useState<Record<number, NodeDiskGroups>>({});
+  const disks = useDiskInventory(enabled);
+  const [managedDiskGroups, setManagedDiskGroups] = useState<Record<number, NodeDiskGroups>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const isActiveRef = useRef(true);
   const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasLoadedRef = useRef(false);
+  const requestRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
-    if (!enabled) return;
+    if (!enabled || document.visibilityState === 'hidden') return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const options = { signal: controller.signal };
 
     try {
       if (!hasLoadedRef.current) {
@@ -69,131 +75,39 @@ export function useClusterTree({
 
       if (managed) {
         const snapshot = await physicalSnapshot();
-        setRacks(snapshot.racks); setNodes(snapshot.nodes); setNodeDiskGroups(snapshot.diskGroups); setServices(snapshot.servers);
+        if (controller.signal.aborted) return;
+        setRacks(snapshot.racks); setNodes(snapshot.nodes); setManagedDiskGroups(snapshot.diskGroups); setServices(snapshot.servers);
         setNodeStores({}); setNodeHealthById({}); setError(null);
         return;
       }
-      const racksData = await listRacks(recursive);
+      const racksData = await listRacks(recursive, options);
+      if (controller.signal.aborted) return;
       setRacks(Array.isArray(racksData) ? racksData : []);
 
-      const nodesData = await listNodes(undefined, recursive);
+      const nodesData = await listNodes(undefined, recursive, options);
+      if (controller.signal.aborted) return;
       const nodeList = Array.isArray(nodesData) ? nodesData : [];
       setNodes(nodeList);
 
-      const reachability = await Promise.all(
-        nodeList.map(async (node) => {
-          try {
-            const result = await pingNode(node.id);
-            return [node.id, result.ok ? NodeHealth.Up : NodeHealth.Down] as const;
-          } catch {
-            return [node.id, NodeHealth.Unknown] as const;
-          }
-        }),
-      );
-      setNodeHealthById(Object.fromEntries(reachability));
-
-      // Determine which nodes host a server.
-      const serverNodeIds = new Set<number>();
-      for (const n of nodeList) if (n.kv_server) serverNodeIds.add(n.id);
-      for (const rack of Array.isArray(racksData) ? racksData : []) {
-        for (const entry of rack.nodes || []) {
-          if (entry.has_server || entry.kv_server) {
-            serverNodeIds.add(entry.id);
-          }
-        }
-      }
-
-      // Fetch per-node KV store/group detail in parallel.
-      const storeEntries = await Promise.all(
-        [...serverNodeIds].map(async (id) => {
-          try {
-            const ns = await listNodeStores(id);
-            return [id, Array.isArray(ns) ? ns : []] as const;
-          } catch {
-            return [id, [] as NodeStore[]] as const;
-          }
-        }),
-      );
-      setNodeStores(Object.fromEntries(storeEntries));
-
-      // Fetch disk-groups + disks for every node (not just server nodes —
-      // disk-groups can exist on a node without a running KV server).
-      const allNodeIds = nodeList.map((n) => n.id);
-      await fetchDiskGroups(allNodeIds);
+      // Node status comes from the authoritative service projection. The physical
+      // view has no use for a second per-node KV catalog or reachability fanout.
+      setNodeHealthById(Object.fromEntries(nodeList.map(node => [node.id, node.kv_server?.health ?? NodeHealth.Unknown])));
+      setNodeStores({});
 
       setError(null);
     } catch (err) {
+      if (controller.signal.aborted) return;
       console.error('Failed to fetch cluster tree:', err);
-      if (managed) { setRacks([]); setNodes([]); setNodeDiskGroups({}); setServices([]); }
+      if (managed) { setRacks([]); setNodes([]); setManagedDiskGroups({}); setServices([]); }
       setError(err instanceof Error ? err : new Error('Unknown error fetching cluster tree'));
     } finally {
-      hasLoadedRef.current = true;
-      setLoading(false);
+      if (!controller.signal.aborted) { hasLoadedRef.current = true; setLoading(false); }
     }
   }, [enabled, recursive, managed]);
 
-  const fetchDiskGroups = useCallback(
-    async (nodeIds: number[]) => {
-      if (!enabled || nodeIds.length === 0) {
-        setNodeDiskGroups({});
-        return;
-      }
-      try {
-        // Fetch disk-groups for all nodes first; render immediately.
-        const dgLists = await Promise.all(
-          nodeIds.map(async (nodeId) => {
-            try {
-              const dgs = await listNodeDiskGroups(nodeId);
-              return [nodeId, dgs] as const;
-            } catch {
-              return [nodeId, [] as DiskGroupEntry[]] as const;
-            }
-          }),
-        );
-        setNodeDiskGroups((prev) => {
-          const map: Record<number, NodeDiskGroups> = { ...prev };
-          for (const [id, dgs] of dgLists) {
-            const existing = map[id];
-            map[id] = {
-              diskGroups: dgs,
-              disksByDg: existing?.disksByDg ?? {},
-            };
-          }
-          return map;
-        });
-
-        // Load disks for each DG in the background.
-        await Promise.all(
-          dgLists.flatMap(([nodeId, dgs]) =>
-            dgs.map(async (dg) => {
-              try {
-                const disks = await listDisksInGroup(nodeId, dg.id);
-                setNodeDiskGroups((prev) => {
-                  const node = prev[nodeId] || {
-                    diskGroups: dgs,
-                    disksByDg: {},
-                  };
-                  if (node.diskGroups.length === 0 && dgs.length > 0) {
-                    node.diskGroups = dgs;
-                  }
-                  node.disksByDg = { ...node.disksByDg, [dg.id]: disks };
-                  return { ...prev, [nodeId]: node };
-                });
-              } catch {
-                // leave disks undefined; UI retries on next poll
-              }
-            }),
-          ),
-        );
-      } catch (err) {
-        console.error('Failed to fetch node disk-groups:', err);
-      }
-    },
-    [enabled],
-  );
-
   useEffect(() => {
-    fetchData();
+    void fetchData();
+    return () => { requestRef.current?.abort(); };
   }, [fetchData]);
 
   useEffect(() => {
@@ -234,16 +148,20 @@ export function useClusterTree({
     [nodes],
   );
 
+  const refresh = useCallback(async () => { await Promise.all([fetchData(), disks.refresh()]); }, [fetchData, disks.refresh]);
+
   return {
     services,
     racks,
     nodes,
     nodeStores,
     nodeHealthById,
-    nodeDiskGroups,
+    nodeDiskGroups: managed ? managedDiskGroups : disks.inventory,
     loading,
-    error,
-    refresh: fetchData,
+    error: error ?? disks.error,
+    refresh,
+    loadNodeDisks: disks.loadNode,
+    loadGroupDisks: disks.loadGroup,
     getNodeById,
   };
 }

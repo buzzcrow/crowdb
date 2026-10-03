@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, fireEvent, within } from '@testing-library/react';
 import { DomainProvider } from '../contexts/DomainContext';
 import { SelectionProvider } from '../contexts/SelectionContext';
 import { Sidebar } from './Sidebar';
@@ -99,6 +99,8 @@ describe('Sidebar · Cluster tree projection', () => {
   it('renders assigned disk groups and disks under the owning DiskDB service', () => {
     const { getByTestId, getByText } = renderSidebar(Domain.Cluster);
     const diskdbSubtree = getByTestId('tree-node-DDB-10');
+    fireEvent.click(within(diskdbSubtree).getByRole('button', { name: 'Expand' }));
+    fireEvent.click(within(getByTestId('tree-node-CL-DG-10-100')).getByRole('button', { name: 'Expand' }));
     expect(diskdbSubtree.contains(getByText(/Physical Group.*DG-100/))).toBe(true);
     expect(diskdbSubtree.contains(getByText('0123456789ab…'))).toBe(true);
   });
@@ -127,7 +129,9 @@ describe('Sidebar · KV logical projection', () => {
 
 describe('Sidebar · Chunk hierarchy', () => {
   it('renders node → disk group → disk; DiskDB server is not shown in Capacity view', () => {
-    const { getByText, queryByText } = renderSidebar(Domain.Capacity);
+    const { getByText, queryByText, getByTestId } = renderSidebar(Domain.Capacity);
+    fireEvent.click(within(getByTestId('tree-node-N-10')).getByRole('button', { name: 'Expand' }));
+    fireEvent.click(within(getByTestId('tree-node-CH-DG-10-100')).getByRole('button', { name: 'Expand' }));
     expect(getByText('N-10', { exact: true })).toBeTruthy();
     // Physical disk group is under the node.
     expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();

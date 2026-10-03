@@ -23,35 +23,16 @@ import {
 const DISKDB_RACK = 501;
 const DISKDB_NODE = 501;
 
-// Right-click a tree item, then click a context menu item. Retries up to
-// 5 times with 470 ms between attempts — the sidebar tree re-renders
-// every 5 s (useCapacityTree poll), and a right-click during re-render
-// lands on a stale element so the contextmenu event never fires. After
-// each right-click, polls every 100 ms for the menu to appear; if it
-// doesn't appear within 2 s, presses Escape and retries.
-// Uses dispatchEvent('click') for the menu item — regular click()
-// dispatches mousedown which closes the menu via the outside-click
-// handler before the click event fires.
+// Assert the menu once; UI refresh must not require silent click retries.
 async function clickMenuItem(
   page: import('@playwright/test').Page,
   treeItem: import('@playwright/test').Locator,
   menuItemName: string | RegExp,
 ) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (attempt > 0) await page.waitForTimeout(470);
-    await treeItem.click({ button: 'right', timeout: 5_000 }).catch(() => {});
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      const item = page.getByRole('menuitem', { name: menuItemName });
-      if (await item.isVisible().catch(() => false)) {
-        await item.dispatchEvent('click');
-        return;
-      }
-      await page.waitForTimeout(100);
-    }
-    await page.keyboard.press('Escape').catch(() => {});
-  }
-  throw new Error(`clickMenuItem: '${menuItemName}' not found after 5 attempts`);
+  await treeItem.click({ button: 'right' });
+  const item = page.getByRole('menuitem', { name: menuItemName });
+  await expect(item).toBeVisible();
+  await item.dispatchEvent('click');
 }
 
 /**
@@ -912,4 +893,44 @@ test.describe('chunk · capacity · disk', () => {
       await apiRemoveDiskGroup(baseURL!, nodeId, dgId);
     }
   });
+});
+
+// Rendering/request-budget fixture; production storage semantics are covered above.
+test('large Capacity navigation fetches only opened storage branches and scopes usage', async ({ page }) => {
+  const nodes = Array.from({ length: 200 }, (_, index) => ({ id: index + 1, rack_id: 1, host: '127.0.0.1', ssh: { type: 'KeyDefault', user: 'test' } }));
+  const groups: number[] = []; const disks: string[] = []; const usage: string[] = [];
+  await page.route('**/api/racks?**', route => route.fulfill({ json: [{ id: 1, name: 'large', nodes }] }));
+  await page.route('**/api/nodes?**', route => route.fulfill({ json: nodes }));
+  await page.route('**/api/servers', route => route.fulfill({ json: [] }));
+  await page.route('**/api/stores?**', route => route.fulfill({ json: [] }));
+  await page.route('**/api/diskdb/instances', route => route.fulfill({ json: [] }));
+  await page.route('**/api/hardware/capacity', route => route.fulfill({ json: { datacenter_capacity_bytes: 0, racks: [], nodes: [], disk_groups: [] } }));
+  await page.route('**/api/diskdb/scan-status**', route => route.fulfill({ json: { has_run: false, scan_in_progress: false } }));
+  await page.route('**/api/diskdb/usage**', route => {
+    usage.push(new URL(route.request().url()).search);
+    return route.fulfill({ json: { disk_groups: [] } });
+  });
+  await page.route('**/api/nodes/*/disk-groups', route => {
+    const node = Number(new URL(route.request().url()).pathname.split('/')[3]); groups.push(node);
+    return route.fulfill({ json: [{ id: 7, rack_id: 1, node_id: node }] });
+  });
+  await page.route('**/api/nodes/*/disk-groups/*/disks', route => {
+    disks.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('/?domain=Cluster');
+  await expect(page.getByRole('button', { name: 'N-1', exact: true })).toBeVisible();
+  expect(groups).toEqual([]); expect(disks).toEqual([]); expect(usage).toEqual([]);
+  await page.getByTestId('domain-capacity').click();
+  const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  await expect(sidebar.getByRole('button', { name: 'N-1', exact: true })).toBeVisible();
+  expect(groups).toEqual([]); expect(disks).toEqual([]);
+  await sidebar.getByTestId('tree-node-N-1').getByRole('button', { name: 'Expand', exact: true }).click();
+  await expect(sidebar.getByRole('button', { name: 'DG-7', exact: true })).toBeVisible();
+  expect(groups).toEqual([1]); expect(disks).toEqual([]);
+  await sidebar.getByRole('button', { name: 'DG-7', exact: true }).click();
+  await expect.poll(() => usage.some(query => query.includes('dg=7')), { intervals: [100] }).toBe(true);
+  await expect.poll(() => disks.length, { intervals: [100] }).toBe(1);
+  expect(disks[0]).toBe('/api/nodes/1/disk-groups/7/disks');
+  expect(groups.every(node => node === 1)).toBe(true);
 });

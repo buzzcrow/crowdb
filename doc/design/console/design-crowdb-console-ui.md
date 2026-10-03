@@ -338,6 +338,20 @@ provide observable capacity and bitmap fixtures.
   identify their scope and show progress/results. RPC or owner lookup failure
   remains visible at the affected zone and never becomes an empty/free bitmap.
 
+- **CAP-06:** Opening Cluster does not issue DiskDB runtime usage or scan
+  requests. Capacity usage is scoped to the selected DiskGroup/Disk when that
+  scope is known; cluster totals explicitly request aggregate observation.
+  Disk inventory belongs to one shared source. Expanding a Node loads its
+  DiskGroups; expanding/selecting a DiskGroup loads its disks. Selecting a
+  linked Disk loads the required ancestor inventory directly. Four workers
+  serve opened branches, merging duplicate requests for the same branch.
+  Refresh revisits requested branches and never traverses unopened disks.
+  Failed branch refresh retains its known inventory and reports failure.
+- **CAP-07:** The physical tree reads Node health from the service projection;
+  it does not ping every Node or fetch a second per-node KV catalog. Capacity
+  Nodes and DiskGroups begin collapsed; Datacenter/Racks remain visible.
+  Default-service prerequisite inspection is explicit for its selected Node.
+
 ## 16. Loading, failures, and recovery
 
 - **ERR-01:** Distinguish initial loading, refreshing existing data, empty,

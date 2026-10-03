@@ -118,7 +118,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
   const capacityActive = domain === Domain.Capacity;
-  const { racks, nodes, services: managedServers, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
+  const { racks, nodes, services: managedServers, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loadNodeDisks, loadGroupDisks, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
     enabled: true,
     managed,
     recursive: 2,
@@ -132,24 +132,33 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     pollIntervalActive: 1000,
     pollIntervalInactive: 30000,
   });
-  const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity, nodeDiskGroups: capNodeDiskGroups, fetchNodeDiskGroups } = useCapacityTree({
+  const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity,  } = useCapacityTree({
     enabled: domain === Domain.Capacity || domain === Domain.Cluster,
+    observeRuntime: capacityActive,
+    diskGroupId: selectionForDomain(Domain.Capacity)?.parentIds?.disk_group_id !== undefined
+      ? Number(selectionForDomain(Domain.Capacity)!.parentIds!.disk_group_id)
+      : selectionForDomain(Domain.Capacity)?.type === 'DiskGroup' ? Number(selectionForDomain(Domain.Capacity)!.id) : undefined,
+    diskId: selectionForDomain(Domain.Capacity)?.type === 'Disk' ? selectionForDomain(Domain.Capacity)!.id : undefined,
     pollIntervalActive: 5000,
     pollIntervalInactive: 30000,
   });
 
-  // Merge disk-group maps: prefer cluster tree (fresh, all nodes), fall
-  // back to capacity tree (on-demand fetch for the Capacity panel).
-  const nodeDiskGroups = useMemo(() => {
-    const merged: Record<number, import('./data/useClusterTree').NodeDiskGroups> = {};
-    for (const [id, ndg] of Object.entries(capNodeDiskGroups)) {
-      merged[Number(id)] = ndg;
-    }
-    for (const [id, ndg] of Object.entries(clusterDiskGroups)) {
-      merged[Number(id)] = ndg;
-    }
-    return merged;
-  }, [capNodeDiskGroups, clusterDiskGroups]);
+  const nodeDiskGroups = clusterDiskGroups;
+  const diskSelection = selectionForDomain(Domain.Capacity);
+  const clusterSelection = selectionForDomain(Domain.Cluster);
+  useEffect(() => {
+    if (managed) return;
+    const selected = capacityActive ? diskSelection : physicalActive ? clusterSelection : null;
+    const nodeId = selected?.type === 'Node' ? Number(selected.id) : Number(selected?.parentIds?.node_id);
+    if (!Number.isFinite(nodeId)) return;
+    void loadNodeDisks(nodeId);
+    const groupId = selected?.type === 'DiskGroup' ? Number(selected.id) : Number(selected?.parentIds?.disk_group_id);
+    if (Number.isFinite(groupId)) void loadGroupDisks(nodeId, groupId);
+  }, [managed, capacityActive, physicalActive, diskSelection, clusterSelection, loadNodeDisks, loadGroupDisks]);
+  useEffect(() => {
+    if (managed || !dialog.deployAuxiliary) return;
+    void loadNodeDisks(dialog.deployAuxiliary.nodeId);
+  }, [managed, dialog.deployAuxiliary, loadNodeDisks]);
   const existingDiskGroupIds = useMemo(
     () => Array.from(new Set([
       ...Object.values(nodeDiskGroups).flatMap((entry) => entry.diskGroups.map((dg) => dg.id)),
@@ -159,7 +168,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   );
 
   const loading = physLoading || logLoading || capLoading;
-  const dataError = (domain === Domain.Cluster ? physError : domain === Domain.KV ? logError : domain === Domain.Capacity ? capError : null);
+  const dataError = (domain === Domain.Cluster ? physError : domain === Domain.KV ? logError : domain === Domain.Capacity ? capError ?? physError : null);
   const servers = useMemo(() => buildCrowdbKVServers(nodes, racks), [nodes, racks]);
   const serverNodeIds = useMemo(() => crowdbKvServerNodeIds(servers), [servers]);
   const [standaloneServers, setAllServers] = useState<import('./api').ServerSummary[]>([]);
@@ -237,25 +246,26 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     setRefreshing(true);
     try {
       const tasks: Promise<unknown>[] = [refreshPhysical(), refreshLogical(), refreshCapacity()];
-      if (!managed && (capacityActive || physicalActive)) {
-        tasks.push(fetchNodeDiskGroups(nodes.map((n) => n.id)));
-      }
       if (!managed) tasks.push(refreshAllServers());
       await Promise.all(tasks);
       setLastRefreshTime(new Date());
     } finally {
       setRefreshing(false);
     }
-  }, [managed, refreshPhysical, refreshLogical, refreshCapacity, capacityActive, physicalActive, fetchNodeDiskGroups, nodes, refreshAllServers]);
+  }, [managed, refreshPhysical, refreshLogical, refreshCapacity, refreshAllServers]);
 
   const servicePlans = useNodeServicePlans(stores, nodeDiskGroups, handleRefresh, !topologyReadonly);
-
-  // Fetch node disk-groups when the Capacity or Physical view is active.
   useEffect(() => {
-    if (!managed && (capacityActive || physicalActive) && nodes.length > 0) {
-      fetchNodeDiskGroups(nodes.map((n) => n.id));
+    if (managed) return;
+    for (const [id, plan] of Object.entries(servicePlans.plans)) {
+      if (plan.diskio.state !== 'waiting') continue;
+      const nodeId = Number(id);
+      if (!nodeDiskGroups[nodeId]) { void loadNodeDisks(nodeId); continue; }
+      for (const group of nodeDiskGroups[nodeId].diskGroups) {
+        if (!nodeDiskGroups[nodeId].disksByDg[group.id]) void loadGroupDisks(nodeId, group.id);
+      }
     }
-  }, [capacityActive, physicalActive, nodes, fetchNodeDiskGroups]);
+  }, [managed, servicePlans.plans, nodeDiskGroups, loadNodeDisks, loadGroupDisks]);
 
   // After cluster init succeeds, refresh the tree so the system group
   // appears. Init only bootstraps store 0 / group 0; store creation is
@@ -512,6 +522,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         capacityUsage={capacityUsage}
         hardwareCapacity={hardwareCapacity}
         nodeDiskGroups={nodeDiskGroups}
+        onLoadNodeDisks={managed ? undefined : loadNodeDisks}
+        onLoadGroupDisks={managed ? undefined : loadGroupDisks}
         diskdbNodeIds={diskdbNodeIds}
         diskdbHealthById={diskdbHealthById}
         diskdbInstanceIdByNodeId={diskdbInstanceIdByNodeId}
