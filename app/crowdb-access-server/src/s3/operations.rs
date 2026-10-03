@@ -84,7 +84,9 @@ impl S3ServiceConfig {
             continuation_ttl_seconds: 900,
             large_write: LargeWritePolicy {
                 ec_scheme: EcScheme::new(8, 4),
-                client: Arc::new(ChunkClientConfig::default()),
+                client: Arc::new(ChunkClientConfig::new(
+                    crowdb_protocol::chunkdb::rpc::ChunkType::S3,
+                )),
             },
         }
     }

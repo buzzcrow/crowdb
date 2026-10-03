@@ -82,7 +82,7 @@ async fn initialize_iceberg(seeds: Vec<String>) {
     let small = SmallWritePolicy {
         conversion_enabled: false,
         mirror_copies: 2,
-        ..SmallWritePolicy::default()
+        ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
     };
     let (repository, _, chunks) = storage::connect(seeds, ChunkReadPolicy::default(), small, 2, 2)
         .await
@@ -336,7 +336,7 @@ async fn write_iceberg(iceberg_addr: SocketAddr, seeds: &[String]) {
         SmallWritePolicy {
             mirror_copies: 2,
             conversion_enabled: false,
-            ..SmallWritePolicy::default()
+            ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         },
         2,
         2,
@@ -451,7 +451,7 @@ async fn protected_two_copy_write_stops_after_repair_and_chunk_rotation_fail() {
             chunk_type: ChunkType::S3,
             conversion_enabled: false,
             mirror_copies: 2,
-            ..SmallWritePolicy::default()
+            ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         },
     })
     .await

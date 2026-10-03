@@ -196,8 +196,9 @@ bool ChunkAsyncExecutor::execute(const std::shared_ptr<State> &state, Slot *slot
         }
         case Kind::kWrite:
             if (auto *store = state->store.load(std::memory_order_acquire); store != nullptr) {
-                status = store->write_at(slot->task.addr, static_cast<const uint8_t *>(slot->task.const_buffer),
-                                         slot->task.length);
+                status =
+                    store->write_typed_at(slot->task.purpose, slot->task.addr,
+                                          static_cast<const uint8_t *>(slot->task.const_buffer), slot->task.length);
             }
             else {
                 status = Status::unavailable("chunk page store is closing");

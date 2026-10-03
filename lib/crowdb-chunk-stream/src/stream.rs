@@ -202,6 +202,12 @@ enum BatchFailure {
 }
 
 impl ChunkStream {
+    /// Durable chunk purpose of this stream.
+    #[must_use]
+    pub fn purpose(&self) -> crowdb_protocol::chunk_stream::StreamPurpose {
+        self.manifest.load().purpose
+    }
+
     #[must_use]
     pub fn stream_name(&self) -> StreamName {
         self.stream_name
@@ -282,6 +288,7 @@ impl ChunkStream {
         chunks: Arc<dyn StreamChunkStore>,
     ) -> Result<Self> {
         let manifest = StreamManifest {
+            purpose: binding.purpose,
             stream_name: binding.stream_name,
             metadata_group_id: binding.metadata_group_id,
             writer_epoch,
@@ -322,6 +329,11 @@ impl ChunkStream {
             .load_current(stream_name)
             .await?
             .ok_or_else(|| StreamError::Corruption("stream manifest does not exist".into()))?;
+        if manifest.purpose != binding.purpose {
+            return Err(StreamError::Corruption(
+                "stream binding purpose differs from manifest".into(),
+            ));
+        }
         if manifest.metadata_group_id != binding.metadata_group_id || manifest.writer_epoch > writer_epoch {
             return Err(StreamError::StaleWriter);
         }
@@ -349,7 +361,9 @@ impl ChunkStream {
         if rotate_active {
             manifest.active.take();
             manifest.sealed_tail = tail;
-            let mut successor = chunks.allocate_mirrored(stream_name, writer_epoch).await?;
+            let mut successor = chunks
+                .allocate_mirrored(stream_name, writer_epoch, manifest.purpose)
+                .await?;
             successor.logical_start = tail;
             manifest.active = Some(successor);
             needs_publish = true;
@@ -407,6 +421,11 @@ impl ChunkStream {
             .load_current(stream_name)
             .await?
             .ok_or_else(|| StreamError::Corruption("stream manifest does not exist".into()))?;
+        if manifest.purpose != binding.purpose {
+            return Err(StreamError::Corruption(
+                "stream binding purpose differs from manifest".into(),
+            ));
+        }
         if manifest.metadata_group_id != binding.metadata_group_id || manifest.writer_epoch != writer_epoch {
             return Err(StreamError::StaleWriter);
         }
@@ -1481,7 +1500,7 @@ async fn ensure_active(state: &mut WorkerState) -> Result<()> {
     }
     let mut active = state
         .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch)
+        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
         .await?;
     active.logical_start = state.tail_view.load(Ordering::Acquire);
     if active.acknowledged_cursor < active.physical_start || active.acknowledged_cursor > active.capacity {
@@ -1519,7 +1538,7 @@ async fn rollover(state: &mut WorkerState) -> Result<()> {
     state.manifest.sealed_tail = tail;
     let mut successor = state
         .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch)
+        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
         .await?;
     successor.logical_start = tail;
     state.manifest.active = Some(successor);
@@ -1588,7 +1607,7 @@ async fn rotate_externally_sealed_active(state: &mut WorkerState) -> Result<bool
     state.manifest.sealed_tail = tail;
     let mut successor = state
         .chunks
-        .allocate_mirrored(state.stream_name, state.writer_epoch)
+        .allocate_mirrored(state.stream_name, state.writer_epoch, state.manifest.purpose)
         .await?;
     successor.logical_start = tail;
     state.manifest.active = Some(successor);

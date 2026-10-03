@@ -229,7 +229,6 @@ pub(super) fn proto_strip_type(fb: FBStripType) -> Option<ProtoStripType> {
 /// Convert a flatbuffer `FBChunkType` to the proto `ChunkType`.
 pub(super) fn proto_chunk_type(fb: FBChunkType) -> Option<ProtoChunkType> {
     match fb {
-        FBChunkType::Repo => Some(ProtoChunkType::Repo),
         FBChunkType::Wal => Some(ProtoChunkType::Wal),
         FBChunkType::BtreePage => Some(ProtoChunkType::BtreePage),
         FBChunkType::PageIndex => Some(ProtoChunkType::PageIndex),
@@ -727,7 +726,7 @@ pub(super) fn build_chunk_offset<'a>(
         .map(|id| FBInt128::new(id.high, id.low));
     let owner_key = (!chunk.owner_key.is_empty()).then(|| fbb.create_vector(&chunk.owner_key));
     let state = ProtoChunkState::try_from(chunk.state).unwrap_or(ProtoChunkState::Init);
-    let chunk_type = ProtoChunkType::try_from(chunk.chunk_type).unwrap_or(ProtoChunkType::Repo);
+    let chunk_type = ProtoChunkType::try_from(chunk.chunk_type).map_or(FBChunkType::Reserved, fb_chunk_type);
     FBChunk::create(
         fbb,
         &FBChunkArgs {
@@ -739,7 +738,7 @@ pub(super) fn build_chunk_offset<'a>(
             capacity: chunk.capacity,
             sealed_length: chunk.sealed_length,
             strips: strips_vec,
-            chunk_type: fb_chunk_type(chunk_type),
+            chunk_type,
             writer_epoch: chunk.writer_epoch,
             acknowledged_cursor: chunk.acknowledged_cursor,
             closed_strip_sequence: chunk.closed_strip_sequence.unwrap_or(u32::MAX),
@@ -984,7 +983,6 @@ pub(super) fn fb_chunk_state(s: ProtoChunkState) -> FBChunkState {
 
 pub(super) fn fb_chunk_type(t: ProtoChunkType) -> FBChunkType {
     match t {
-        ProtoChunkType::Repo => FBChunkType::Repo,
         ProtoChunkType::Wal => FBChunkType::Wal,
         ProtoChunkType::BtreePage => FBChunkType::BtreePage,
         ProtoChunkType::PageIndex => FBChunkType::PageIndex,

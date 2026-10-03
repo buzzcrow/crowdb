@@ -141,27 +141,27 @@ implementation and verified requirement completion.
 
 ## Phase 4: Chunk purpose and PageIndex persistence
 
-- [ ] **Concrete user-data types**: remove generic Repo producers, defaults and
+- [x] **Concrete user-data types**: remove generic Repo producers, defaults and
   fallback conversions; require explicit supported types. Reserve the retired
   wire value and reject it without reusing it. Update CLI/bench and adapter
   callers without adding a speculative Dataset implementation.
   Files: protocol `types/chunkdb.rs`, `fbs/chunkdb.fbs` and conversions,
   `lib/crowdb-chunk-client/src/config.rs`, affected CLI/S3/Iceberg callers.
-- [ ] **Durable stream purpose**: carry Wal versus business Stream through
+- [x] **Durable stream purpose**: carry Wal versus business Stream through
   production runtime creation, manifest/recovery, owner-key validation,
   MirrorChunkWriter allocation/reopen and rollover/repair. Do not infer purpose
   only from a live caller or silently retag legacy system Stream IDs.
   Files: `lib/crowdb-protocol/src/chunk_stream.rs`,
   `lib/crowdb-chunk-client/src/chunk/mirror_chunk_writer.rs`,
   `lib/crowdb-chunk-stream/src/`, chunk-kv storage assembly.
-- [ ] **Typed page-store writes**: carry BtreePage/PageIndex purpose from snapshot
+- [x] **Typed page-store writes**: carry BtreePage/PageIndex purpose from snapshot
   preparation through synchronous/asynchronous page-store writes and packing.
   Keep different purposes in separate chunks. Specify directory/anchor placement
   and bootstrap references before changing the persisted representation.
   Files: `lib/crowdb-tree/src/snapshot/persist.cpp`, page-store interfaces,
   `lib/crowdb-tree/src/backend/chunk/{chunk_page_store,chunk_transport}.h`,
   `lib/crowdb-tree/src/backend/chunk/chunk_page_store.cpp`.
-- [ ] **Mapping recovery and reclamation**: allocate PageIndex in the transport,
+- [x] **Mapping recovery and reclamation**: allocate PageIndex in the transport,
   publish coherent snapshot references and recover without needing the mapping
   table to locate its own chunks. Preserve split sharing/reference ownership and
   reclaim page/mapping chunks only after durable reachability permits it.
@@ -283,3 +283,23 @@ implementation and verified requirement completion.
   FFI retained-owner lifetime, affected all-target clippy, formatting, changed
   tree-lint and the full `pixi run test-cpp` gate pass. Chunk-purpose and final
   three-node acceptance work remain incomplete.
+
+- Concrete purpose selection now replaces generic Repo defaults and retired
+  value zero is rejected. Durable Wal/Stream purpose survives stream rollover,
+  failed mirror writes and cold recovery; chunk-kv journal admission requires
+  Wal. Protocol purpose tests, stream production/recovery suites, and 53
+  chunk-kv partition/server/transition tests pass; affected all-target clippy
+  passes.
+- Snapshot mapping segments, directories and anchors persist in PageIndex
+  chunks; page payload persists in BtreePage chunks. Typed staging splits pack
+  boundaries, capacity accounts for frame overhead, and materialization retains
+  purpose. The typed manifest format rejects unsupported legacy manifests.
+  Cold reopen, mixed-purpose packing, shared snapshots, reclamation and all
+  611 tree tests plus complete C++/DiskIO/FFI gates pass.
+- Three-node/three-nonzero-group acceptance covers all six purposes, independent
+  service/storage maps, group-local chunk/task/index revisions, group-0 absence,
+  cold caches and Paxos failover. The harness now assigns the same logical store
+  ID to all replicas; distinct replica IDs identify nodes. The test passes after
+  killing a leader. Actual production restart and S3/Iceberg acceptance remain
+  pending; this is not a claim that the independent concurrent MemTable race is
+  fixed.

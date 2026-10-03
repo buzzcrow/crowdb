@@ -245,7 +245,7 @@ async fn append(
 }
 
 async fn allocate(client: &ChunkdbClient, args: &ChunkdbArgs) -> crowdb_chunkdb_client::Result<ChunkId> {
-    let id = generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    let id = generate_chunk_id(ChunkType::S3 as u8).to_proto();
     let strip_type = match args.strip_type {
         ChunkdbStripMode::Mirror => StripType::Mirror,
         ChunkdbStripMode::Ec => StripType::Ec,
@@ -259,7 +259,7 @@ async fn allocate(client: &ChunkdbClient, args: &ChunkdbArgs) -> crowdb_chunkdb_
             data_num: args.data_num,
             code_num: args.code_num,
             copy_count: args.copy_count,
-            chunk_type: ChunkType::Repo as i32,
+            chunk_type: ChunkType::S3 as i32,
             writer_epoch: 0,
             writer_lease_ms: 0,
             owner_key: Vec::new(),

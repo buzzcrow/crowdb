@@ -24,6 +24,7 @@ class ChunkAsyncExecutor
     struct Task
     {
         Kind            kind         = Kind::kRead;
+        PagePurpose     purpose      = PagePurpose::kBtreePage;
         PageAddr        addr         = 0;
         void           *buffer       = nullptr;
         const void     *const_buffer = nullptr;

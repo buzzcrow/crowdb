@@ -6,6 +6,7 @@
 #pragma once
 
 #include "chunk_cancellation.h"
+#include "chunk_purpose.h"
 #include "chunk_transport.h"
 #include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
@@ -22,7 +23,7 @@
 namespace crowdb::tree::detail
 {
 
-inline constexpr uint32_t kChunkManifestFormat = 5;
+inline constexpr uint32_t kChunkManifestFormat = 6;
 
 class ChunkAsyncExecutor;
 class ChunkPackPipeline;
@@ -301,11 +302,14 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     }
 
     Status                 write_at(uint64_t off, const uint8_t *buf, size_t len) override;
+    Status                 write_typed_at(PagePurpose purpose, uint64_t off, const uint8_t *buf, size_t len) override;
     Status                 read_at(uint64_t off, uint8_t *buf, size_t len) const override;
     Status                 sync() override;
     [[nodiscard]] uint64_t size() const override;
     uint64_t               submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete) override;
     uint64_t submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete) override;
+    uint64_t submit_typed_write(PagePurpose purpose, PageAddr addr, const void *buf, size_t len,
+                                AsyncCompletion on_complete) override;
     Status   submit_fsync(AsyncCompletion on_complete) override;
     void     cancel(uint64_t op_id) override;
 
@@ -362,8 +366,11 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
         std::shared_ptr<const std::vector<uint8_t>> bytes;
     };
 
-    Status materialize_active(std::vector<uint8_t> *out) const;
-    Status refresh_active_chunk();
+    size_t      staged_pack_length(uint64_t offset, const ChunkManifest *base) const;
+    static bool range_has_pack(const ChunkManifest &base, uint64_t offset, size_t length);
+    uint64_t    chunk_allocation_bytes() const;
+    Status      materialize_active(std::vector<uint8_t> *out) const;
+    Status      refresh_active_chunk();
     Status build_manifest(uint64_t expected_generation, std::shared_ptr<ChunkManifest> *out, uint64_t *new_pack_bytes,
                           ChunkCancellation cancellation = {});
     Status read_at_cancellable(uint64_t off, uint8_t *buf, size_t len, ChunkCancellation cancellation) const;
@@ -393,6 +400,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::shared_ptr<RootCatalog>                              catalog_;
     std::shared_ptr<ChunkTransport>                           transport_;
     std::vector<uint8_t>                                      staged_;
+    PagePurposeRanges                                         staged_purposes_;
     std::vector<std::pair<uint64_t, uint64_t>>                dirty_ranges_;
     std::vector<std::pair<uint64_t, uint64_t>>                materialization_live_extents_;
     bool                                                      staged_initialized_ = false;

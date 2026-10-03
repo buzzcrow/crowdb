@@ -58,6 +58,7 @@ async fn create_stream(runtime: &ProductionStreamRuntime) -> Result<ChunkStream>
     runtime
         .registry()
         .create(StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 1,
             binding_generation: 1,

@@ -166,8 +166,12 @@ impl ChunkIoClient {
     }
 
     /// Construct from low-level seams. Intended for focused tests and embedded fixtures.
-    pub fn from_parts(allocator: Arc<dyn crate::ChunkAllocator>, disk_writer: Arc<dyn DiskWriter>) -> Self {
-        Self::from_parts_with_small_policy(allocator, disk_writer, SmallWritePolicy::default())
+    pub fn from_parts(
+        allocator: Arc<dyn crate::ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType,
+    ) -> Self {
+        Self::from_parts_with_small_policy(allocator, disk_writer, SmallWritePolicy::new(chunk_type))
             .unwrap_or_else(|_| unreachable!("default small-write policy is valid"))
     }
 

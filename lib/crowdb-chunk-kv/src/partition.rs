@@ -774,7 +774,7 @@ impl Partition {
         let parent_journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(
             parent_stream,
             artifact.parent_stream_name,
-        ));
+        )?);
         Self::recover_prepared_overlay(artifact, checkpoint, config, tree, journal, parent_journal).await
     }
 
@@ -2159,7 +2159,7 @@ fn native_storage_parts(
     };
     let tree: Arc<dyn PartitionTree> = Arc::new(CrowdbPartitionTree::open(tree_id, &tree_config)?);
     let stream_name = stream.stream_name();
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name)?);
     Ok((tree, journal))
 }
 

@@ -100,6 +100,7 @@ async fn partition(
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: artifact.stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -116,7 +117,7 @@ async fn partition(
     .unwrap();
     let tree: Arc<dyn PartitionTree> = Arc::new(MemoryPartitionTree::with_tree_id(artifact.tree_id));
     let journal: Arc<dyn PartitionJournal> =
-        Arc::new(StreamPartitionJournal::new(stream, artifact.stream_name));
+        Arc::new(StreamPartitionJournal::new(stream, artifact.stream_name).unwrap());
     let partition_range = PartitionRange {
         start: Some(range.start),
         end: range.end,

@@ -726,7 +726,7 @@ async fn run_direct_chunk_benchmark(seeds: &[String], artifacts_dir: &Path) {
             management_seeds: seeds.to_vec(),
             diskio_connections_per_endpoint: 2,
             diskio_rpc_workers: 1,
-            small_write: SmallWritePolicy::default(),
+            small_write: SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3),
         })
         .await
         .expect("connect benchmark chunk client"),
@@ -735,7 +735,7 @@ async fn run_direct_chunk_benchmark(seeds: &[String], artifacts_dir: &Path) {
         ec_scheme: EcScheme::new(2, 1),
         client: Arc::new(ChunkClientConfig {
             max_chunk_size: 4 * 1024 * 1024,
-            ..ChunkClientConfig::default()
+            ..ChunkClientConfig::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         }),
     };
     let mut samples = Vec::new();

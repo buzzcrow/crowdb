@@ -156,6 +156,7 @@ async fn prepared_partition_range(
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -185,7 +186,7 @@ async fn prepared_partition_range(
         },
         PartitionConfig::default(),
         Arc::new(MemoryPartitionTree::with_tree_id(tree_id)),
-        Arc::new(StreamPartitionJournal::new(stream, stream_name)),
+        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap()),
     )
     .await
     .unwrap()
@@ -196,9 +197,10 @@ async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, 
     let source_name = StreamName { high: 50, low: 1 };
     let target_name = StreamName { high: 50, low: 2 };
     let open_journal = |stream: ChunkStream, name| -> Arc<dyn PartitionJournal> {
-        Arc::new(StreamPartitionJournal::new(stream, name))
+        Arc::new(StreamPartitionJournal::new(stream, name).unwrap())
     };
     let binding = |stream_name| StreamBinding {
+        purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
         stream_name,
         metadata_group_id: 7,
         binding_generation: 1,
@@ -652,6 +654,7 @@ async fn fixture() -> (ChunkKvService, Partition) {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -667,7 +670,8 @@ async fn fixture() -> (ChunkKvService, Partition) {
     .await
     .unwrap();
     let tree: Arc<dyn PartitionTree> = Arc::new(MemoryPartitionTree::default());
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let journal: Arc<dyn PartitionJournal> =
+        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
     let partition = Partition::open(
         PartitionId { high: 1, low: 2 },
         PartitionRange {

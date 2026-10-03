@@ -17,6 +17,11 @@
 
 namespace crowdb::tree::detail
 {
+static crowdb::protocol::FrameMagic page_frame_magic(PagePurpose purpose)
+{
+    return purpose == PagePurpose::kPageIndex ? crowdb::protocol::FrameMagic::PageIndexV1
+                                              : crowdb::protocol::FrameMagic::BtreePageV1;
+}
 
 uint64_t monotonic_millis()
 {
@@ -198,10 +203,10 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             if (cancellation.cancelled()) {
                 return Status::unavailable("chunk manifest build cancelled");
             }
-            const size_t length =
-                std::min(store->config_.pack_bytes, store->staged_.size() - static_cast<size_t>(offset));
+            const size_t length  = store->staged_pack_length(offset, reuse_base.get());
+            const auto   purpose = store->staged_purposes_.at(offset);
             if (reuse_base != nullptr && reuse_base->format_version >= 3 &&
-                ChunkPageStore::find_pack_at(*reuse_base, offset, static_cast<uint32_t>(length)) == nullptr &&
+                !ChunkPageStore::range_has_pack(*reuse_base, offset, length) &&
                 !store->range_was_written(offset, length)) {
                 offset += length;
                 continue;
@@ -212,7 +217,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                 if (cancellation.cancelled()) {
                     return Status::unavailable("chunk manifest reuse verification cancelled");
                 }
-                if (reused != nullptr) {
+                if (reused != nullptr && chunk_purpose(reused->ref.chunk_id) == purpose) {
                     manifest->packs.push_back({
                         .owner_tree_id  = chunk_pack_owner(*reuse_base, *reused),
                         .ordinal        = manifest->packs.size(),
@@ -226,7 +231,9 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                     continue;
                 }
             }
-            if (!chunk.empty() && length > store->config_.max_chunk_bytes - logical_bytes) {
+            if (!chunk.empty() &&
+                (chunk_purpose(chunk) != purpose || length > store->config_.max_chunk_bytes - logical_bytes ||
+                 crowdb::protocol::framed_physical_length(length) > store->chunk_allocation_bytes() - cursor)) {
                 if (writes.empty()) {
                     initial_rotated_chunk  = chunk;
                     initial_rotated_cursor = cursor;
@@ -245,7 +252,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                     return Status::resource_exhausted("chunk page framing exceeds address space");
                 }
                 Status status = store->transport_->allocate_mirror_chunk(packs_per_chunk * physical_pack_bytes,
-                                                                         store->config_.owner_epoch, &chunk);
+                                                                         store->config_.owner_epoch, &chunk, purpose);
                 if (!status.ok()) {
                     return status;
                 }
@@ -400,7 +407,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         auto &job = *writes[index];
         orphan_pack_bytes.fetch_add(job.pack.ref.length, std::memory_order_relaxed);
         const auto frame_error = crowdb::protocol::encode_frames(
-            crowdb::protocol::FrameMagic::BtreePageV1,
+            page_frame_magic(chunk_purpose(job.pack.ref.chunk_id)),
             {.high = job.pack.ref.chunk_id.high, .low = job.pack.ref.chunk_id.low},
             std::span<const uint8_t>(store->staged_.data() + job.source_offset, job.pack.ref.length),
             monotonic_millis(), &job.framed);

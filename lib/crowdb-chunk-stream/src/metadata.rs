@@ -23,6 +23,19 @@ pub struct ExtentLocation {
 /// Returns [`StreamError::Corruption`] for inconsistent identities, fences,
 /// arrays, coverage, cursors, or arithmetic overflow.
 pub fn validate_manifest(manifest: &StreamManifest, pages: &[StreamExtentPage]) -> Result<u64> {
+    if manifest
+        .active
+        .as_ref()
+        .is_some_and(|active| !manifest.purpose.matches(active.chunk_id))
+        || pages
+            .iter()
+            .flat_map(|page| &page.chunk_ids)
+            .any(|id| !manifest.purpose.matches(*id))
+    {
+        return Err(StreamError::Corruption(
+            "stream manifest references a different chunk purpose".into(),
+        ));
+    }
     if manifest.trim_offset > manifest.sealed_tail {
         return Err(StreamError::Corruption("trim offset exceeds sealed tail".into()));
     }

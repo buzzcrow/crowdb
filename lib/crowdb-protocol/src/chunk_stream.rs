@@ -9,6 +9,29 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Durable purpose of a logical stream; absent legacy values are not inferred.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StreamPurpose {
+    Wal,
+    #[default]
+    Stream,
+}
+
+impl StreamPurpose {
+    #[must_use]
+    pub const fn chunk_type(self) -> ChunkType {
+        match self {
+            Self::Wal => ChunkType::Wal,
+            Self::Stream => ChunkType::Stream,
+        }
+    }
+
+    #[must_use]
+    pub fn matches(self, id: ChunkId) -> bool {
+        crate::chunk_id::ChunkIdParts::from_proto(&id).chunk_type() == self.chunk_type() as u8
+    }
+}
+
 pub const DEFAULT_STREAM_METADATA_GROUP_ID: u64 = 1;
 
 /// Stable opaque identity of one logical stream.
@@ -49,7 +72,7 @@ impl StreamName {
 #[must_use]
 pub fn chunk_owner_key_matches_type(chunk_type: ChunkType, key: &[u8]) -> bool {
     match chunk_type {
-        ChunkType::Stream => StreamName::from_chunk_owner_key(key).is_some(),
+        ChunkType::Stream | ChunkType::Wal => StreamName::from_chunk_owner_key(key).is_some(),
         _ => key.is_empty(),
     }
 }
@@ -95,7 +118,7 @@ mod tests {
         assert!(first < second);
         assert_eq!(first.to_string().len(), 32);
         assert_eq!(
-            super::StreamBinding::creating(first, None).metadata_group_id,
+            super::StreamBinding::creating(first, None, super::StreamPurpose::Stream).metadata_group_id,
             super::DEFAULT_STREAM_METADATA_GROUP_ID
         );
     }
@@ -106,9 +129,9 @@ mod tests {
         let key = name.chunk_owner_key();
         assert_eq!(StreamName::from_chunk_owner_key(&key), Some(name));
         assert!(chunk_owner_key_matches_type(ChunkType::Stream, &key));
-        assert!(!chunk_owner_key_matches_type(ChunkType::Wal, &key));
+        assert!(chunk_owner_key_matches_type(ChunkType::Wal, &key));
         assert!(!chunk_owner_key_matches_type(ChunkType::Stream, &[]));
-        assert!(chunk_owner_key_matches_type(ChunkType::Repo, &[]));
+        assert!(chunk_owner_key_matches_type(ChunkType::S3, &[]));
     }
 }
 
@@ -128,6 +151,7 @@ pub enum StreamBindingState {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamBinding {
+    pub purpose: StreamPurpose,
     pub stream_name: StreamName,
     pub metadata_group_id: u64,
     pub binding_generation: u64,
@@ -138,13 +162,14 @@ pub struct StreamBinding {
 impl StreamBinding {
     /// Creates an inactive binding in the default nonzero metadata group.
     #[must_use]
-    pub fn creating(stream_name: StreamName, owner_kind: Option<String>) -> Self {
+    pub fn creating(stream_name: StreamName, owner_kind: Option<String>, purpose: StreamPurpose) -> Self {
         Self {
             stream_name,
             metadata_group_id: DEFAULT_STREAM_METADATA_GROUP_ID,
             binding_generation: 1,
             state: StreamBindingState::Creating,
             owner_kind,
+            purpose,
         }
     }
 }
@@ -167,6 +192,7 @@ pub struct StreamExtentPageFence {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamManifest {
+    pub purpose: StreamPurpose,
     pub stream_name: StreamName,
     pub metadata_group_id: u64,
     pub writer_epoch: u64,

@@ -4,6 +4,7 @@
 #include "rpc_chunk_transport.h"
 
 #include "chunk_c_api_internal.h"
+#include "chunk_purpose.h"
 #include "chunkdb_generated.h"
 #include "crowdb-rpc/c_api.h"
 #include "diskio_generated.h"
@@ -32,7 +33,6 @@ using crowdb::chunkdb::proto::FBChunk;
 using crowdb::chunkdb::proto::FBChunkdbRetCode;
 using crowdb::chunkdb::proto::FBChunkdbRetCode_Success;
 using crowdb::chunkdb::proto::FBChunkState_Sealed;
-using crowdb::chunkdb::proto::FBChunkType_BtreePage;
 using crowdb::chunkdb::proto::FBStripType_Mirror;
 using crowdb::rpc::proto::FBInt128;
 
@@ -350,6 +350,11 @@ struct RpcChunkTransport::Impl
             .acknowledged_bytes = chunk->acknowledged_cursor(),
             .sealed             = chunk->state() == FBChunkState_Sealed,
         };
+        const auto purpose = chunk_purpose(parsed.layout.chunk_id);
+        if (!valid_page_purpose(purpose) ||
+            static_cast<uint8_t>(chunk->chunk_type()) != static_cast<uint8_t>(purpose)) {
+            return Status::corruption("ChunkDB tree chunk purpose mismatch");
+        }
         parsed.owner_epoch = chunk->writer_epoch();
         parsed.modify_ts   = chunk->modify_ts();
         for (const auto *wire_strip : *chunk->strips()) {
@@ -653,9 +658,10 @@ bool RpcChunkTransport::valid() const
     return impl_->valid();
 }
 
-Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id)
+Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id,
+                                                PagePurpose purpose)
 {
-    if (!valid() || chunk_id == nullptr || logical_capacity == 0 ||
+    if (!valid() || chunk_id == nullptr || logical_capacity == 0 || !valid_page_purpose(purpose) ||
         logical_capacity > std::numeric_limits<uint32_t>::max()) {
         return Status::invalid_argument("tree chunk RPC allocation arguments are invalid");
     }
@@ -667,8 +673,8 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
     flatbuffers::FlatBufferBuilder builder;
     auto                           request = crowdb::chunkdb::proto::CreateFBAllocateChunkRequest(
         builder, request_id, monotonic_nanos(), nullptr, granularity_kb, strip_count, FBStripType_Mirror, 0, 0,
-        impl_->options.mirror_copies == 0 ? 2 : impl_->options.mirror_copies, FBChunkType_BtreePage, owner_epoch,
-        impl_->options.writer_lease_ms);
+        impl_->options.mirror_copies == 0 ? 2 : impl_->options.mirror_copies,
+        static_cast<crowdb::chunkdb::proto::FBChunkType>(purpose), owner_epoch, impl_->options.writer_lease_ms);
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;
@@ -688,7 +694,7 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
     Impl::RemoteChunk remote;
     status = crowdb::tree::detail::RpcChunkTransport::Impl::parse_chunk(response->chunk(), &remote);
     if (!status.ok() || remote.layout.chunk_id.empty() || remote.owner_epoch != owner_epoch ||
-        remote.layout.logical_capacity < logical_capacity) {
+        remote.layout.logical_capacity < logical_capacity || chunk_purpose(remote.layout.chunk_id) != purpose) {
         return status.ok() ? Status::corruption("ChunkDB allocation metadata mismatch") : status;
     }
     remote.valid_until_ms         = std::numeric_limits<uint64_t>::max();

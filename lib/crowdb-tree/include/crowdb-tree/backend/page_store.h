@@ -15,6 +15,7 @@
 // geometry, durability barrier.
 #pragma once
 
+#include "crowdb-tree/backend/page_purpose.h"
 #include "crowdb-tree/maptable/mapping_slot.h"
 #include "crowdb-tree/status.h"
 
@@ -51,6 +52,11 @@ class PageStore
     // needed (up to capacity for fixed-size backends).
     virtual Status write_at(uint64_t off, const uint8_t *buf, size_t len) = 0;
     virtual Status read_at(uint64_t off, uint8_t *buf, size_t len) const  = 0;
+
+    virtual Status write_typed_at(PagePurpose /*purpose*/, uint64_t off, const uint8_t *buf, size_t len)
+    {
+        return write_at(off, buf, len);
+    }
 
     // Durability barrier: returns after all prior writes are persisted.
     virtual Status sync() = 0;
@@ -241,8 +247,13 @@ class DebugPageStore : public PageStore
 
     Status write_at(uint64_t off, const uint8_t *buf, size_t len) override
     {
+        return write_typed_at(PagePurpose::kBtreePage, off, buf, len);
+    }
+
+    Status write_typed_at(PagePurpose purpose, uint64_t off, const uint8_t *buf, size_t len) override
+    {
         ++writes_;
-        return inner_->write_at(off, buf, len);
+        return inner_->write_typed_at(purpose, off, buf, len);
     }
 
     Status read_at(uint64_t off, uint8_t *buf, size_t len) const override
@@ -320,6 +331,11 @@ class FaultyPageStore : public PageStore
 
     Status write_at(uint64_t off, const uint8_t *buf, size_t len) override
     {
+        return write_typed_at(PagePurpose::kBtreePage, off, buf, len);
+    }
+
+    Status write_typed_at(PagePurpose purpose, uint64_t off, const uint8_t *buf, size_t len) override
+    {
         int idx = write_count_++;
         if (idx == fault_write_idx_) {
             Fault kind        = fault_write_kind_;
@@ -329,14 +345,14 @@ class FaultyPageStore : public PageStore
             case Fault::kDrop:
                 return Status::Ok(); // silently lost -- inner_ never sees it
             case Fault::kTear:
-                return inner_->write_at(off, buf, std::min(len, tear_len_));
+                return inner_->write_typed_at(purpose, off, buf, std::min(len, tear_len_));
             case Fault::kFail:
                 return Status::io_error("FaultyPageStore: armed write fault");
             case Fault::kNone:
                 break;
             }
         }
-        return inner_->write_at(off, buf, len);
+        return inner_->write_typed_at(purpose, off, buf, len);
     }
 
     Status read_at(uint64_t off, uint8_t *buf, size_t len) const override

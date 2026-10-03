@@ -278,6 +278,13 @@ impl StreamMetadataStore for MemoryStreamStore {
             ));
         }
         let mut state = self.state.lock().await;
+        if state
+            .manifests
+            .get(&manifest.stream_name)
+            .is_some_and(|current| current.purpose != manifest.purpose)
+        {
+            return Err(StreamError::Corruption("stream purpose is immutable".into()));
+        }
         let observed = state
             .manifests
             .get(&manifest.stream_name)
@@ -333,9 +340,13 @@ impl StreamChunkStore for MemoryStreamStore {
         &self,
         _stream_name: StreamName,
         writer_epoch: u64,
+        purpose: crowdb_protocol::chunk_stream::StreamPurpose,
     ) -> Result<ActiveChunkDescriptor> {
         let low = self.next_chunk.fetch_add(1, Ordering::AcqRel);
-        let chunk_id = ChunkId { high: 0, low };
+        let chunk_id = ChunkId {
+            high: (purpose.chunk_type() as u64) << 56,
+            low,
+        };
         self.state.lock().await.chunks.insert(
             chunk_id,
             Chunk {

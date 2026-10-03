@@ -618,7 +618,7 @@ impl DiskWriter for SelectiveFailureDiskWriter {
 
 fn policy() -> SmallWritePolicy {
     SmallWritePolicy {
-        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::default(),
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType::S3,
         object_limit: 1024 * 1024,
         memory_budget: 4 * 1024 * 1024,
         queue_capacity: 128,
@@ -646,7 +646,7 @@ fn policy() -> SmallWritePolicy {
 
 #[test]
 fn small_object_elasticity_defaults_start_at_one_and_cap_at_thirty_two() {
-    let policy = SmallWritePolicy::default();
+    let policy = SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3);
     assert_eq!(policy.min_pipelines, 1);
     assert_eq!(policy.max_pipelines, 32);
     assert_eq!(policy.scale_out_queue_bytes, 4 * 1024 * 1024);
@@ -1413,6 +1413,7 @@ async fn direct_mirror_chunk_writer_replicates_advances_and_seals() {
         crowdb_protocol::chunk_stream::StreamName { high: 1, low: 2 },
         44,
         30_000,
+        crowdb_protocol::chunk_stream::StreamPurpose::Stream,
     )
     .await
     .unwrap();
@@ -1442,6 +1443,7 @@ async fn direct_mirror_chunk_writer_supports_five_copies() {
         44,
         30_000,
         5,
+        crowdb_protocol::chunk_stream::StreamPurpose::Stream,
     )
     .await
     .unwrap();
@@ -1461,6 +1463,7 @@ async fn direct_mirror_chunk_writer_accepts_protected_degraded_layout() {
         44,
         30_000,
         3,
+        crowdb_protocol::chunk_stream::StreamPurpose::Stream,
     )
     .await
     .unwrap();
@@ -1477,11 +1480,22 @@ async fn direct_mirror_chunk_writer_accepts_protected_degraded_layout() {
         44,
         30_000,
         3,
+        crowdb_protocol::chunk_stream::StreamPurpose::Stream
     )
     .is_ok());
     let Some(Strip::MirrorStrip(mirror)) = &mut chunk.strips[0].strip else {
         panic!("allocated stream chunk must use mirrors");
     };
     mirror.segments.pop();
-    assert!(MirrorChunkWriter::open_with_copy_count(allocator, disk, chunk, stream, 44, 30_000, 3).is_err());
+    assert!(MirrorChunkWriter::open_with_copy_count(
+        allocator,
+        disk,
+        chunk,
+        stream,
+        44,
+        30_000,
+        3,
+        crowdb_protocol::chunk_stream::StreamPurpose::Stream
+    )
+    .is_err());
 }

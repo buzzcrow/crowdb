@@ -177,7 +177,7 @@ async fn connect_chunk_io(cluster: &KvCluster) -> ChunkIoClient {
             management_seeds: cluster.mgmt_endpoints.clone(),
             diskio_connections_per_endpoint: 2,
             diskio_rpc_workers: 1,
-            small_write: SmallWritePolicy::default(),
+            small_write: SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::Stream),
         })
         .await
         {
@@ -245,6 +245,7 @@ async fn production_stream_recovers_exact_bytes_after_service_restarts() {
     first_runtime
         .registry()
         .create(StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 1,
             binding_generation: 1,
@@ -341,6 +342,7 @@ async fn production_stream_write_returns_after_diskio_failure() {
     runtime
         .registry()
         .create(StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 1,
             binding_generation: 1,
@@ -423,6 +425,7 @@ async fn production_stream_write_returns_after_live_diskio_errors() {
     runtime
         .registry()
         .create(StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 1,
             binding_generation: 1,

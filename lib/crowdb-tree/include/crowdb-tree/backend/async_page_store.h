@@ -19,6 +19,8 @@
 #    include "crowdb-common/diskio_uring.h"
 #endif
 
+#include "crowdb-tree/backend/page_purpose.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -61,6 +63,12 @@ class AsyncPageStore
     // was accepted.
     virtual uint64_t submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete)        = 0;
     virtual uint64_t submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete) = 0;
+
+    virtual uint64_t submit_typed_write(PagePurpose /*purpose*/, PageAddr addr, const void *buf, size_t len,
+                                        AsyncCompletion on_complete)
+    {
+        return submit_write(addr, buf, len, on_complete);
+    }
 
     // Durability barrier, submitted async. Returns the *submission* status
     // (e.g. invalid_argument if the store has no backing fd); the barrier's

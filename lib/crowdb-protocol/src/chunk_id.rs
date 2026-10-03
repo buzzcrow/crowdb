@@ -26,7 +26,7 @@ use xxhash_rust::xxh64;
 use crate::common::ChunkId;
 
 /// Chunk type values (design §5.5). Matches the proto `ChunkType` enum.
-pub const CHUNK_TYPE_REPO: u8 = 0;
+// Wire type 0 is retired and must not be allocated.
 pub const CHUNK_TYPE_WAL: u8 = 1;
 pub const CHUNK_TYPE_BTREE_PAGE: u8 = 2;
 pub const CHUNK_TYPE_PAGE_INDEX: u8 = 3;

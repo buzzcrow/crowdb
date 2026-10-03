@@ -74,6 +74,7 @@ pub trait StreamChunkStore: Send + Sync {
         &self,
         stream_name: StreamName,
         writer_epoch: u64,
+        purpose: crowdb_protocol::chunk_stream::StreamPurpose,
     ) -> Result<ActiveChunkDescriptor>;
     /// Extends an active mirror chunk so `required_capacity` bytes can be
     /// addressed. `None` means that this store has reached the chunk's fixed

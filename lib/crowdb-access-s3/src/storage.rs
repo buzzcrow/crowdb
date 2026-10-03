@@ -96,7 +96,7 @@ impl S3WriteSettings {
             chunk_type: ChunkType::S3,
             large_mirror_copies: self.large.mirror_copies,
             read_buffer_size: self.disk_block_bytes,
-            ..ChunkClientConfig::default()
+            ..ChunkClientConfig::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         };
         if let Some(value) = self.large.max_chunk_size {
             client.max_chunk_size = value;

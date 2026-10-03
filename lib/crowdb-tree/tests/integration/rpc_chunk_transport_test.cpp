@@ -63,12 +63,14 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16
     const auto *request = flatbuffers::GetRoot<FBAllocateChunkRequest>(control);
     state->request_valid.store(request->chunk_id() == nullptr && request->write_granularity() == 256U * 1024U &&
                                    request->strip_count() == 1 && request->strip_type() == FBStripType_Mirror &&
-                                   request->copy_count() == 3 && request->chunk_type() == FBChunkType_BtreePage &&
+                                   request->copy_count() == 3 &&
+                                   (request->chunk_type() == FBChunkType_BtreePage ||
+                                    request->chunk_type() == crowdb::chunkdb::proto::FBChunkType_PageIndex) &&
                                    request->writer_epoch() == 17,
                                std::memory_order_release);
 
     flatbuffers::FlatBufferBuilder builder;
-    const FBInt128                 chunk_id(0x0200'0000'0000'0042ULL, 0x1234);
+    const FBInt128                 chunk_id((static_cast<uint64_t>(request->chunk_type()) << 56U) | 0x42U, 0x1234);
     const FBInt128                 disk_id(9, 10);
     std::vector<FBSegment>         segments;
     segments.reserve(3);
@@ -82,7 +84,7 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16
     const auto strips =
         builder.CreateVector(std::vector<flatbuffers::Offset<crowdb::chunkdb::proto::FBChunkStrip>>{strip});
     const auto chunk    = CreateFBChunk(builder, &chunk_id, 3, FBChunkState_Active, 1, 0, 256U * 1024U, 0, strips,
-                                        FBChunkType_BtreePage, 17, 4);
+                                        request->chunk_type(), 17, 4);
     const auto response = CreateFBAllocateChunkResponse(
         builder, request_id, 0, crowdb::chunkdb::proto::FBChunkdbRetCode_Success, 0, 0, 0, chunk);
     builder.Finish(response);
@@ -200,7 +202,9 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     };
     RpcChunkTransport transport(options);
     ChunkId           allocated;
-    ASSERT_TRUE(transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated).ok());
+    ASSERT_TRUE(
+        transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated, crowdb::tree::PagePurpose::kBtreePage)
+            .ok());
     EXPECT_TRUE(handler.request_valid.load(std::memory_order_acquire));
     EXPECT_EQ(allocated, ChunkId(0x0200'0000'0000'0042ULL, 0x1234));
     std::array<uint8_t, 4> read{};
@@ -214,6 +218,14 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
                                   {.complete_fn = &complete_async_write, .context = &write_result});
     write_result.done.wait(false, std::memory_order_acquire);
     EXPECT_TRUE(write_result.status.ok()) << write_result.status.to_string();
+
+    ChunkId mapping;
+    ASSERT_TRUE(
+        transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &mapping, crowdb::tree::PagePurpose::kPageIndex)
+            .ok());
+    EXPECT_TRUE(handler.request_valid.load(std::memory_order_acquire));
+    EXPECT_EQ(mapping.high >> 56U, 3U);
+    EXPECT_NE(mapping, allocated);
 
     crowdb_rpc_conn_destroy(connection);
     crowdb_rpc_client_destroy(client);
@@ -233,7 +245,9 @@ TEST(RpcChunkTransport, ResolvesEachChunkOwnerAndReleasesRouteLeases)
         options.chunkdb_resolver = fixture.resolver();
         RpcChunkTransport transport(options);
         ChunkId           allocated;
-        ASSERT_TRUE(transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated).ok());
+        ASSERT_TRUE(
+            transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated, crowdb::tree::PagePurpose::kBtreePage)
+                .ok());
         EXPECT_EQ(allocated.low, 100);
         EXPECT_TRUE(transport.advance_write(allocated, 0, 4).ok());
         EXPECT_TRUE(transport.seal_chunk(allocated, 17, 4).ok());
@@ -281,7 +295,10 @@ TEST(RpcChunkTransport, DoesNotResubmitAllocationAfterAnUnknownOutcome)
     options.chunkdb_resolver = fixture.resolver();
     RpcChunkTransport transport(options);
     ChunkId           allocated;
-    EXPECT_EQ(transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated).code(), Code::kUnavailable);
+    EXPECT_EQ(
+        transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated, crowdb::tree::PagePurpose::kBtreePage)
+            .code(),
+        Code::kUnavailable);
     EXPECT_EQ(fixture.services[0].allocations.load(), 1U);
     EXPECT_EQ(fixture.services[1].allocations.load(), 0U);
     EXPECT_EQ(fixture.refreshes.load(), 1U);

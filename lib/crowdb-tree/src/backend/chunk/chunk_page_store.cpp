@@ -21,6 +21,12 @@
 
 namespace crowdb::tree::detail
 {
+static crowdb::protocol::FrameMagic page_frame_magic(PagePurpose purpose)
+{
+    return purpose == PagePurpose::kPageIndex ? crowdb::protocol::FrameMagic::PageIndexV1
+                                              : crowdb::protocol::FrameMagic::BtreePageV1;
+}
+
 namespace
 {
 
@@ -1096,11 +1102,11 @@ Status ChunkPageStore::validate_manifest(const ChunkManifest &manifest, const Ro
             return Status::corruption("chunk reference segment image is missing or corrupt");
         }
         for (size_t offset = 0; offset < count; ++offset) {
-            const size_t         ordinal    = static_cast<size_t>(first) + offset;
-            const ChunkPagePack &pack       = manifest.packs[ordinal];
-            const ChunkPageRef  &ref        = image->refs[offset];
-            const bool           bad_layout = manifest.format_version < 3 ? pack.logical_offset != logical_offset
-                                                                          : pack.logical_offset < logical_offset;
+            const size_t         ordinal = static_cast<size_t>(first) + offset;
+            const ChunkPagePack &pack    = manifest.packs[ordinal];
+            const ChunkPageRef  &ref     = image->refs[offset];
+            const bool           bad_layout =
+                !valid_page_purpose(chunk_purpose(pack.ref.chunk_id)) || pack.logical_offset < logical_offset;
             if (pack.ordinal != ordinal || bad_layout || pack.ref.chunk_id.empty() || pack.ref.length == 0 ||
                 pack.logical_offset > manifest.logical_size ||
                 pack.ref.length > manifest.logical_size - pack.logical_offset || ref.chunk_id != pack.ref.chunk_id ||
@@ -1154,39 +1160,6 @@ Status ChunkPageStore::materialize_active(std::vector<uint8_t> *out) const
     return Status::Ok();
 }
 
-Status ChunkPageStore::write_at(uint64_t off, const uint8_t *buf, size_t len)
-{
-    if (buf == nullptr && len != 0) {
-        return Status::invalid_argument("chunk page write has null buffer");
-    }
-    if (off > std::numeric_limits<size_t>::max() || len > std::numeric_limits<size_t>::max() - off) {
-        return Status::resource_exhausted("chunk page write exceeds address space");
-    }
-    if (!staged_initialized_) {
-        Status status = materialize_active(&staged_);
-        if (!status.ok()) {
-            return status;
-        }
-        staged_initialized_ = true;
-    }
-    const size_t end = static_cast<size_t>(off) + len;
-    if (end > staged_.size()) {
-        staged_.resize(end, 0);
-    }
-    if (len != 0) {
-        std::memcpy(staged_.data() + off, buf, len);
-        dirty_ranges_.emplace_back(off, len);
-    }
-    const uint64_t anchor_region_bytes = round_up_to_iu(kAnchorSlotBytes, config_.iu_size) * 2;
-    if (end > anchor_region_bytes) {
-        data_durable_ = false;
-    }
-    if (off < anchor_region_bytes) {
-        anchor_dirty_ = true;
-    }
-    return Status::Ok();
-}
-
 Status ChunkPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
 {
     return read_at_cancellable(off, buf, len, {});
@@ -1235,7 +1208,7 @@ Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const 
         auto       payload = std::make_shared<std::vector<uint8_t>>();
         const auto frame_error =
             crowdb::protocol::parse_frames(*framed, {.high = ref.chunk_id.high, .low = ref.chunk_id.low},
-                                           crowdb::protocol::FrameMagic::BtreePageV1, ref.length, payload.get());
+                                           page_frame_magic(chunk_purpose(ref.chunk_id)), ref.length, payload.get());
         if (frame_error == crowdb::protocol::FrameError::Ok) {
             auto entry = std::make_shared<CachedPack>(CachedPack{.ref = ref, .bytes = payload});
             if (use_cache) {
@@ -1503,9 +1476,9 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         if (cancellation.cancelled()) {
             return Status::unavailable("chunk manifest build cancelled");
         }
-        const size_t length = std::min(config_.pack_bytes, staged_.size() - static_cast<size_t>(offset));
-        if (reuse_base != nullptr && reuse_base->format_version >= 3 &&
-            find_pack_at(*reuse_base, offset, static_cast<uint32_t>(length)) == nullptr &&
+        const size_t length  = staged_pack_length(offset, reuse_base.get());
+        const auto   purpose = staged_purposes_.at(offset);
+        if (reuse_base != nullptr && reuse_base->format_version >= 3 && !range_has_pack(*reuse_base, offset, length) &&
             !range_was_written(offset, length)) {
             offset += length;
             continue;
@@ -1513,7 +1486,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         if (reuse_base != nullptr) {
             const ChunkPagePack *reused =
                 find_reusable_pack(*reuse_base, offset, static_cast<uint32_t>(length), cancellation);
-            if (reused != nullptr) {
+            if (reused != nullptr && chunk_purpose(reused->ref.chunk_id) == purpose) {
                 manifest->packs.push_back({
                     .owner_tree_id  = chunk_pack_owner(*reuse_base, *reused),
                     .ordinal        = manifest->packs.size(),
@@ -1527,7 +1500,9 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
                 continue;
             }
         }
-        if (!active_chunk_id_.empty() && length > config_.max_chunk_bytes - active_chunk_bytes_) {
+        if (!active_chunk_id_.empty() &&
+            (chunk_purpose(active_chunk_id_) != purpose || length > config_.max_chunk_bytes - active_chunk_bytes_ ||
+             crowdb::protocol::framed_physical_length(length) > chunk_allocation_bytes() - active_chunk_cursor_)) {
             Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_cursor_);
             if (!seal_status.ok()) {
                 return seal_status;
@@ -1546,7 +1521,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
                 return Status::resource_exhausted("chunk page framing exceeds address space");
             }
             Status allocate_status = transport_->allocate_mirror_chunk(packs_per_chunk * physical_pack_bytes,
-                                                                       config_.owner_epoch, &active_chunk_id_);
+                                                                       config_.owner_epoch, &active_chunk_id_, purpose);
             if (!allocate_status.ok()) {
                 return allocate_status;
             }
@@ -1562,7 +1537,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         const size_t         physical_length = crowdb::protocol::framed_physical_length(length);
         std::vector<uint8_t> framed;
         if (physical_length == 0 ||
-            crowdb::protocol::encode_frames(crowdb::protocol::FrameMagic::BtreePageV1,
+            crowdb::protocol::encode_frames(page_frame_magic(purpose),
                                             {.high = active_chunk_id_.high, .low = active_chunk_id_.low},
                                             std::span<const uint8_t>(staged_.data() + offset, length),
                                             monotonic_millis(), &framed) != crowdb::protocol::FrameError::Ok) {
@@ -1716,8 +1691,11 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
             orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
             return fail(std::move(read_status));
         }
+        const auto   purpose         = chunk_purpose(base_pack.ref.chunk_id);
         const size_t physical_length = crowdb::protocol::framed_physical_length(bytes->size());
-        if (!active_chunk_id_.empty() && base_pack.ref.length > config_.max_chunk_bytes - active_chunk_bytes_) {
+        if (!active_chunk_id_.empty() && (chunk_purpose(active_chunk_id_) != purpose ||
+                                          base_pack.ref.length > config_.max_chunk_bytes - active_chunk_bytes_ ||
+                                          physical_length > chunk_allocation_bytes() - active_chunk_cursor_)) {
             Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_cursor_);
             if (!seal_status.ok()) {
                 orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
@@ -1742,7 +1720,7 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
                 return fail(Status::resource_exhausted("chunk materialization framing exceeds address space"));
             }
             Status allocate_status = transport_->allocate_mirror_chunk(packs_per_chunk * physical_pack_bytes,
-                                                                       config_.owner_epoch, &active_chunk_id_);
+                                                                       config_.owner_epoch, &active_chunk_id_, purpose);
             if (!allocate_status.ok()) {
                 orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
                 return fail(std::move(allocate_status));
@@ -1751,7 +1729,7 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
 
         std::vector<uint8_t> framed;
         if (physical_length == 0 ||
-            crowdb::protocol::encode_frames(crowdb::protocol::FrameMagic::BtreePageV1,
+            crowdb::protocol::encode_frames(page_frame_magic(purpose),
                                             {.high = active_chunk_id_.high, .low = active_chunk_id_.low}, *bytes,
                                             monotonic_millis(), &framed) != crowdb::protocol::FrameError::Ok) {
             orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
@@ -2004,8 +1982,15 @@ uint64_t ChunkPageStore::submit_read(PageAddr addr, void *buf, size_t len, Async
 
 uint64_t ChunkPageStore::submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete)
 {
+    return submit_typed_write(PagePurpose::kBtreePage, addr, buf, len, on_complete);
+}
+
+uint64_t ChunkPageStore::submit_typed_write(PagePurpose purpose, PageAddr addr, const void *buf, size_t len,
+                                            AsyncCompletion on_complete)
+{
     const uint64_t operation_id = async_executor_->submit({
         .kind         = ChunkAsyncExecutor::Kind::kWrite,
+        .purpose      = purpose,
         .addr         = addr,
         .const_buffer = buf,
         .length       = len,

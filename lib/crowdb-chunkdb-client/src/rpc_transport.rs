@@ -248,7 +248,8 @@ impl ChunkdbRpcTransport {
             code_num: req.code_num,
             copy_count: req.copy_count,
             chunk_type: chunk_type_to_fb(
-                ProtoChunkType::try_from(req.chunk_type).unwrap_or(ProtoChunkType::Repo),
+                ProtoChunkType::try_from(req.chunk_type)
+                    .map_err(|()| ChunkdbClientError::InvalidArgument("unsupported chunk purpose".into()))?,
             ),
             writer_epoch: req.writer_epoch,
             writer_lease_ms: req.writer_lease_ms,
@@ -267,7 +268,7 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(AllocateChunkResponse {
-            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)).transpose()?,
         })
     }
 
@@ -312,7 +313,7 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(response.ret_code(), response.error_msg())?;
         Ok(AdvanceChunkWriteResponse {
-            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)).transpose()?,
         })
     }
 
@@ -358,7 +359,7 @@ impl ChunkdbRpcTransport {
                 .strips()
                 .map(|strips| strips.iter().map(|strip| parse_fb_chunk_strip(&strip)).collect())
                 .unwrap_or_default(),
-            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)).transpose()?,
         })
     }
 
@@ -405,7 +406,7 @@ impl ChunkdbRpcTransport {
             .map_err(|_| ChunkdbClientError::Rpc("reserve strip group response malformed".into()))?;
         check_ret_code(response.ret_code(), response.error_msg())?;
         Ok(ReserveStripGroupResponse {
-            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)).transpose()?,
             group: response.group().map(|group| parse_reservation_group(&group)),
         })
     }
@@ -463,7 +464,7 @@ impl ChunkdbRpcTransport {
             .map_err(|_| ChunkdbClientError::Rpc("mutate strip reservation response malformed".into()))?;
         check_ret_code(response.ret_code(), response.error_msg())?;
         Ok(MutateStripReservationResponse {
-            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)).transpose()?,
             group: response.group().map(|group| parse_reservation_group(&group)),
         })
     }
@@ -496,7 +497,7 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(QueryChunkResponse {
-            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)).transpose()?,
             layout_validity_ms: r.layout_validity_ms(),
         })
     }
@@ -610,7 +611,7 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(SealChunkResponse {
-            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)).transpose()?,
         })
     }
 
@@ -642,7 +643,7 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(DeleteChunkResponse {
-            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)).transpose()?,
         })
     }
 
@@ -716,7 +717,7 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(UpdateChunkStripResponse {
-            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)).transpose()?,
         })
     }
 
@@ -853,7 +854,7 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(response.ret_code(), response.error_msg())?;
         Ok(ReplaceChunkStripRangeResponse {
-            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)).transpose()?,
         })
     }
 
@@ -953,7 +954,7 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(response.ret_code(), response.error_msg())?;
         Ok(CompleteMirrorToEcConversionResponse {
-            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)).transpose()?,
         })
     }
 
@@ -1058,7 +1059,12 @@ impl ChunkdbRpcTransport {
         check_ret_code(r.ret_code(), r.error_msg())?;
         let chunks: Vec<Chunk> = r
             .chunks()
-            .map(|v| v.iter().map(|fb_chunk| parse_fb_chunk(&fb_chunk)).collect())
+            .map(|v| {
+                v.iter()
+                    .map(|fb_chunk| parse_fb_chunk(&fb_chunk))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?
             .unwrap_or_default();
         let next_token = r.next_token().map(|id| ChunkId {
             high: id.high(),
@@ -1136,13 +1142,14 @@ fn check_ret_code(code: FBChunkdbRetCode, error_msg: Option<&str>) -> Result<()>
 }
 
 /// Parse a flatbuffer `FBChunk` into a proto `Chunk`.
-fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
+fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Result<Chunk> {
     let id = fb.id().map(|id| ChunkId {
         high: id.high(),
         low: id.low(),
     });
     let state = fb_chunk_state_to_proto(fb.state());
-    let chunk_type = fb_chunk_type_to_proto(fb.chunk_type());
+    let chunk_type = ProtoChunkType::try_from(i32::from(fb.chunk_type().0))
+        .map_err(|()| ChunkdbClientError::Rpc("unsupported chunk purpose in response".into()))?;
     let strips: Vec<ChunkStrip> = fb
         .strips()
         .map(|v| v.iter().map(|s| parse_fb_chunk_strip(&s)).collect())
@@ -1163,7 +1170,7 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
                 .collect()
         })
         .unwrap_or_default();
-    Chunk {
+    Ok(Chunk {
         id,
         modify_ts: fb.modify_ts(),
         state: state as i32,
@@ -1187,7 +1194,7 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
             .owner_key()
             .map(|value| value.iter().collect())
             .unwrap_or_default(),
-    }
+    })
 }
 
 fn parse_reservation_group(fb: &FBStripReservationGroup<'_>) -> StripReservationGroup {
@@ -1515,25 +1522,12 @@ fn fb_strip_type_to_proto(t: FBStripType) -> ProtoStripType {
 
 fn chunk_type_to_fb(t: ProtoChunkType) -> FBChunkType {
     match t {
-        ProtoChunkType::Repo => FBChunkType::Repo,
         ProtoChunkType::Wal => FBChunkType::Wal,
         ProtoChunkType::BtreePage => FBChunkType::BtreePage,
         ProtoChunkType::PageIndex => FBChunkType::PageIndex,
         ProtoChunkType::Stream => FBChunkType::Stream,
         ProtoChunkType::S3 => FBChunkType::S3,
         ProtoChunkType::IcebergTable => FBChunkType::IcebergTable,
-    }
-}
-
-fn fb_chunk_type_to_proto(t: FBChunkType) -> ProtoChunkType {
-    match t {
-        FBChunkType::Wal => ProtoChunkType::Wal,
-        FBChunkType::BtreePage => ProtoChunkType::BtreePage,
-        FBChunkType::PageIndex => ProtoChunkType::PageIndex,
-        FBChunkType::Stream => ProtoChunkType::Stream,
-        FBChunkType::S3 => ProtoChunkType::S3,
-        FBChunkType::IcebergTable => ProtoChunkType::IcebergTable,
-        _ => ProtoChunkType::Repo,
     }
 }
 

@@ -121,6 +121,7 @@ async fn partition(
     config: PartitionConfig,
 ) -> Partition {
     let binding = StreamBinding {
+        purpose: crowdb_chunk_stream::StreamPurpose::Wal,
         stream_name,
         metadata_group_id: 7,
         binding_generation: 1,
@@ -140,7 +141,8 @@ async fn partition(
     )
     .await
     .unwrap();
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let journal: Arc<dyn PartitionJournal> =
+        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
     let tree: Arc<dyn PartitionTree> = tree;
     Partition::open(
         PartitionId {
@@ -166,6 +168,7 @@ async fn empty_journal(
 ) -> Arc<dyn PartitionJournal> {
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -180,7 +183,7 @@ async fn empty_journal(
     )
     .await
     .unwrap();
-    Arc::new(StreamPartitionJournal::new(stream, stream_name))
+    Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap())
 }
 
 async fn append_record(journal: &dyn PartitionJournal, record: &WalRecord) {
@@ -414,6 +417,7 @@ async fn native_partition_constructor_owns_tree_and_stream_storage() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -498,6 +502,7 @@ async fn native_partition_reopens_the_latest_tree_root() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -540,6 +545,7 @@ async fn chunk_root_checkpoint_supplies_the_wal_replay_offset() {
     let stream_store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -1043,7 +1049,8 @@ async fn recovery_replays_recorded_results_and_restores_deduplication() {
     )
     .await
     .unwrap();
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let journal: Arc<dyn PartitionJournal> =
+        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
     let recovered = Partition::recover_prepared_assignment(
         PartitionId { high: 6, low: 6 },
         PartitionRange {
@@ -1121,7 +1128,8 @@ async fn recovery_rejects_a_tree_root_other_than_the_checkpoint() {
     )
     .await
     .unwrap();
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let journal: Arc<dyn PartitionJournal> =
+        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
     let result = Partition::recover_prepared_assignment(
         PartitionId { high: 6, low: 7 },
         PartitionRange {
@@ -1189,11 +1197,15 @@ async fn recovery_rejects_a_frame_bound_to_another_physical_chunk() {
     let durable_tail = stream.tail();
     store
         .flip_durable_byte(
-            ChunkId { high: 0, low: 1 },
+            ChunkId {
+                high: 1_u64 << 56,
+                low: 1,
+            },
             usize::try_from(durable_tail - 1).unwrap(),
         )
         .await;
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let journal: Arc<dyn PartitionJournal> =
+        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
     let result = Partition::recover(
         PartitionId { high: 60, low: 60 },
         PartitionRange {
@@ -1559,7 +1571,8 @@ async fn transfer_reuses_tree_and_stream_under_higher_epoch() {
     )
     .await
     .unwrap();
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let journal: Arc<dyn PartitionJournal> =
+        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
     let tree_for_new: Arc<dyn PartitionTree> = tree;
     let new = Partition::recover(
         PartitionId { high: 11, low: 11 },
@@ -1604,6 +1617,7 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
     let stream_name = StreamName { high: 12, low: 12 };
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -1618,7 +1632,8 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
     )
     .await
     .unwrap();
-    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let journal: Arc<dyn PartitionJournal> =
+        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
     let artifact = empty_prepared_child(
         PartitionId { high: 12, low: 1 },
         PartitionRange {
@@ -2259,6 +2274,7 @@ async fn native_online_split_rebuilds_one_child_from_the_exact_parent_manifest()
     let parent_stream_name = StreamName { high: 120, low: 120 };
     let parent_stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_chunk_stream::StreamPurpose::Wal,
             stream_name: parent_stream_name,
             metadata_group_id: 7,
             binding_generation: 1,

@@ -62,7 +62,7 @@ enum FBPlacementPriority : int16 {
 }
 
 enum FBChunkType : int16 {
-    Repo = 0,
+    Reserved = 0, // Retired; never valid for chunk allocation.
     Wal = 1,
     BtreePage = 2,
     PageIndex = 3,

@@ -17,7 +17,16 @@ fn extent_page() -> StreamExtentPage {
         writer_epoch: 7,
         generation: 3,
         page_index: 0,
-        chunk_ids: vec![ChunkId { high: 0, low: 10 }, ChunkId { high: 0, low: 11 }],
+        chunk_ids: vec![
+            ChunkId {
+                high: 4_u64 << 56,
+                low: 10,
+            },
+            ChunkId {
+                high: 4_u64 << 56,
+                low: 11,
+            },
+        ],
         logical_offsets: vec![0, 10, 25],
         physical_offsets: vec![4, 8],
         frame_lengths: vec![44, 49],
@@ -64,6 +73,7 @@ fn rejects_malformed_extent_geometry() {
 fn manifest_tail_includes_only_acknowledged_active_bytes() {
     let page = extent_page();
     let manifest = StreamManifest {
+        purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
         stream_name: name(),
         metadata_group_id: 7,
         writer_epoch: 7,
@@ -71,7 +81,10 @@ fn manifest_tail_includes_only_acknowledged_active_bytes() {
         trim_offset: 5,
         sealed_tail: 25,
         active: Some(ActiveChunkDescriptor {
-            chunk_id: ChunkId { high: 0, low: 12 },
+            chunk_id: ChunkId {
+                high: 4_u64 << 56,
+                low: 12,
+            },
             physical_start: 10,
             logical_start: 25,
             acknowledged_cursor: 18,

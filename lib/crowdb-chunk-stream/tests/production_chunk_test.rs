@@ -47,13 +47,51 @@ impl Allocator {
     }
 }
 
+#[tokio::test]
+async fn production_wal_allocation_and_cold_lookup_preserve_purpose() {
+    use crowdb_chunk_stream::StreamPurpose;
+
+    let allocator = Arc::new(Allocator::new());
+    let disks = Arc::new(Disks::default());
+    let make_store = || {
+        ProductionStreamChunkStore::new(
+            allocator.clone(),
+            disks.clone(),
+            30_000,
+            ChunkReadPolicy::default(),
+        )
+        .unwrap()
+    };
+    let name = StreamName { high: 3, low: 4 };
+    let store = make_store();
+    let active = store
+        .allocate_mirrored(name, 9, StreamPurpose::Wal)
+        .await
+        .unwrap();
+    assert!(StreamPurpose::Wal.matches(active.chunk_id));
+    let chunk = allocator.chunk.lock().unwrap().clone().unwrap();
+    assert_eq!(chunk.chunk_type, StreamPurpose::Wal.chunk_type() as i32);
+    assert_eq!(chunk.owner_key, name.chunk_owner_key());
+    drop(store);
+    let reopened = make_store();
+    assert_eq!(
+        reopened.durable_cursor(active.chunk_id, 9).await.unwrap().offset,
+        0
+    );
+    allocator.chunk.lock().unwrap().as_mut().unwrap().chunk_type = StreamPurpose::Stream.chunk_type() as i32;
+    assert!(make_store().durable_cursor(active.chunk_id, 9).await.is_err());
+}
+
 #[async_trait]
 impl ChunkAllocator for Allocator {
     async fn allocate_chunk(
         &self,
         request: AllocateChunkRequest,
     ) -> crowdb_chunk_client::Result<AllocateChunkResponse> {
-        let chunk_id = ChunkId { high: 7, low: 8 };
+        let chunk_id = ChunkId {
+            high: u64::try_from(request.chunk_type).unwrap() << 56,
+            low: 8,
+        };
         let segments = (1..=request.copy_count)
             .map(|disk| Segment {
                 disk_id: Some(DiskId {
@@ -277,7 +315,8 @@ struct Disks {
 fn production_runtime_shares_connected_chunk_io_parts() {
     let allocator: Arc<dyn ChunkAllocator> = Arc::new(Allocator::new());
     let disks: Arc<dyn DiskWriter> = Arc::new(Disks::default());
-    let chunk_io = ChunkIoClient::from_parts(allocator, disks);
+    let chunk_io =
+        ChunkIoClient::from_parts(allocator, disks, crowdb_protocol::chunkdb::rpc::ChunkType::Stream);
     let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![
         "http://127.0.0.1:1".into()
     ])));
@@ -369,7 +408,10 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
         ProductionStreamChunkStore::new(allocator_trait, disk_trait, 30_000, ChunkReadPolicy::default())
             .unwrap();
     let name = StreamName { high: 1, low: 2 };
-    let active = store.allocate_mirrored(name, 9).await.unwrap();
+    let active = store
+        .allocate_mirrored(name, 9, crowdb_protocol::chunk_stream::StreamPurpose::Stream)
+        .await
+        .unwrap();
     let data = Bytes::from_static(b"stream");
     store
         .write_mirrors_with_images(
@@ -416,7 +458,10 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
     let store =
         ProductionStreamChunkStore::new(allocator, disks, 30_000, ChunkReadPolicy::default()).unwrap();
     let name = StreamName { high: 11, low: 12 };
-    let active = store.allocate_mirrored(name, 9).await.unwrap();
+    let active = store
+        .allocate_mirrored(name, 9, crowdb_protocol::chunk_stream::StreamPurpose::Stream)
+        .await
+        .unwrap();
     assert_eq!(active.capacity, 1024 * 1024);
     let grown = store
         .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
@@ -486,7 +531,10 @@ async fn configured_stream_chunk_capacity_limits_growth_without_changing_strip_s
     )
     .unwrap();
     let name = StreamName { high: 19, low: 20 };
-    let active = store.allocate_mirrored(name, 9).await.unwrap();
+    let active = store
+        .allocate_mirrored(name, 9, crowdb_protocol::chunk_stream::StreamPurpose::Stream)
+        .await
+        .unwrap();
     assert_eq!(active.capacity, 1024 * 1024);
     assert_eq!(
         store
@@ -517,6 +565,7 @@ async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
     let stream_name = StreamName { high: 40, low: 41 };
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name,
             metadata_group_id: 7,
             binding_generation: 1,
@@ -556,6 +605,7 @@ async fn stream_replaces_failed_mirrors_from_retained_strip_image() {
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name: StreamName { high: 50, low: 51 },
             metadata_group_id: 7,
             binding_generation: 1,
@@ -618,6 +668,7 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let stream = ChunkStream::create(
         StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             stream_name: StreamName { high: 52, low: 53 },
             metadata_group_id: 7,
             binding_generation: 1,
@@ -663,7 +714,10 @@ async fn production_store_reconciles_a_post_commit_cursor_timeout() {
     let store =
         ProductionStreamChunkStore::new(allocator_trait, disks, 30_000, ChunkReadPolicy::default()).unwrap();
     let name = StreamName { high: 3, low: 4 };
-    let active = store.allocate_mirrored(name, 9).await.unwrap();
+    let active = store
+        .allocate_mirrored(name, 9, crowdb_protocol::chunk_stream::StreamPurpose::Stream)
+        .await
+        .unwrap();
     let data = Bytes::from_static(b"once");
     store
         .write_mirrors_with_images(

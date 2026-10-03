@@ -1205,15 +1205,16 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
         }
     }
     for (auto &sw : prepared.segment_writes) {
-        Status s = opt_.page_store->write_at(sw.addr, sw.blob.data(), sw.blob.size());
+        Status s = opt_.page_store->write_typed_at(PagePurpose::kPageIndex, sw.addr, sw.blob.data(), sw.blob.size());
         if (!s.ok()) {
             CRB_LOG_ERROR("[{}] snapshot segment write failed: addr={} status={}", name_, sw.addr, s.to_string());
             release_snapshot_slot();
             return s;
         }
     }
-    Status dw = opt_.page_store->write_at(prepared.directory_write.addr, prepared.directory_write.blob.data(),
-                                          prepared.directory_write.blob.size());
+    Status dw =
+        opt_.page_store->write_typed_at(PagePurpose::kPageIndex, prepared.directory_write.addr,
+                                        prepared.directory_write.blob.data(), prepared.directory_write.blob.size());
     if (!dw.ok()) {
         CRB_LOG_ERROR("[{}] snapshot directory write failed: addr={} status={}", name_, prepared.directory_write.addr,
                       dw.to_string());
@@ -1234,8 +1235,8 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
         release_snapshot_slot();
         return sync1;
     }
-    Status aw = opt_.page_store->write_at(prepared.anchor_write.addr, prepared.anchor_write.blob.data(),
-                                          prepared.anchor_write.blob.size());
+    Status aw = opt_.page_store->write_typed_at(PagePurpose::kPageIndex, prepared.anchor_write.addr,
+                                                prepared.anchor_write.blob.data(), prepared.anchor_write.blob.size());
     if (!aw.ok()) {
         CRB_LOG_ERROR("[{}] snapshot anchor write failed: addr={} status={}", name_, prepared.anchor_write.addr,
                       aw.to_string());
@@ -1343,8 +1344,8 @@ void Crowdbtree::snapshot_write_next_async(                    // NOLINT(readabi
     size_t seg_idx_in_list = idx - prepared->page_writes.size();
     if (seg_idx_in_list < prepared->segment_writes.size()) {
         const PreparedSegmentWrite &sw = prepared->segment_writes[seg_idx_in_list];
-        opt_.async_page_store->submit_write(
-            sw.addr, sw.blob.data(), sw.blob.size(),
+        opt_.async_page_store->submit_typed_write(
+            PagePurpose::kPageIndex, sw.addr, sw.blob.data(), sw.blob.size(),
             detail::own_async_completion([this, prepared, idx, on_done](const Status &st) mutable {
                 if (!st.ok()) {
                     release_snapshot_slot();
@@ -1357,8 +1358,8 @@ void Crowdbtree::snapshot_write_next_async(                    // NOLINT(readabi
     }
 
     const PreparedSnapshotWrite &dw = prepared->directory_write;
-    opt_.async_page_store->submit_write(
-        dw.addr, dw.blob.data(), dw.blob.size(),
+    opt_.async_page_store->submit_typed_write(
+        PagePurpose::kPageIndex, dw.addr, dw.blob.data(), dw.blob.size(),
         detail::own_async_completion([this, prepared, on_done](const Status &st) mutable {
             if (!st.ok()) {
                 release_snapshot_slot();
@@ -1375,8 +1376,8 @@ void Crowdbtree::snapshot_write_next_async(                    // NOLINT(readabi
                         return;
                     }
                     const PreparedSnapshotWrite &aw = prepared->anchor_write;
-                    opt_.async_page_store->submit_write(
-                        aw.addr, aw.blob.data(), aw.blob.size(),
+                    opt_.async_page_store->submit_typed_write(
+                        PagePurpose::kPageIndex, aw.addr, aw.blob.data(), aw.blob.size(),
                         detail::own_async_completion([this, prepared, on_done](const Status &st3) mutable {
                             if (!st3.ok()) {
                                 release_snapshot_slot();
@@ -1490,14 +1491,16 @@ Status Crowdbtree::persist_compaction_snapshot(std::vector<PrefetchedPage> prefe
         }
     }
     for (auto &write : prepared->segment_writes) {
-        Status status = opt_.page_store->write_at(write.addr, write.blob.data(), write.blob.size());
+        Status status =
+            opt_.page_store->write_typed_at(PagePurpose::kPageIndex, write.addr, write.blob.data(), write.blob.size());
         if (!status.ok()) {
             release_snapshot_slot();
             return status;
         }
     }
-    Status directory = opt_.page_store->write_at(prepared->directory_write.addr, prepared->directory_write.blob.data(),
-                                                 prepared->directory_write.blob.size());
+    Status directory =
+        opt_.page_store->write_typed_at(PagePurpose::kPageIndex, prepared->directory_write.addr,
+                                        prepared->directory_write.blob.data(), prepared->directory_write.blob.size());
     if (!directory.ok()) {
         release_snapshot_slot();
         return directory;
@@ -1507,8 +1510,9 @@ Status Crowdbtree::persist_compaction_snapshot(std::vector<PrefetchedPage> prefe
         release_snapshot_slot();
         return durable_contents;
     }
-    Status anchor = opt_.page_store->write_at(prepared->anchor_write.addr, prepared->anchor_write.blob.data(),
-                                              prepared->anchor_write.blob.size());
+    Status anchor =
+        opt_.page_store->write_typed_at(PagePurpose::kPageIndex, prepared->anchor_write.addr,
+                                        prepared->anchor_write.blob.data(), prepared->anchor_write.blob.size());
     if (!anchor.ok()) {
         release_snapshot_slot();
         return anchor;
@@ -1516,8 +1520,8 @@ Status Crowdbtree::persist_compaction_snapshot(std::vector<PrefetchedPage> prefe
     Status committed = opt_.page_store->sync();
     if (!committed.ok()) {
         std::vector<uint8_t> invalid_anchor(prepared->anchor_write.blob.size(), 0);
-        Status               rollback =
-            opt_.page_store->write_at(prepared->anchor_write.addr, invalid_anchor.data(), invalid_anchor.size());
+        Status rollback = opt_.page_store->write_typed_at(PagePurpose::kPageIndex, prepared->anchor_write.addr,
+                                                          invalid_anchor.data(), invalid_anchor.size());
         if (rollback.ok()) {
             (void)opt_.page_store->sync();
         }

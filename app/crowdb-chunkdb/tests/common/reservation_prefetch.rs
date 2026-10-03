@@ -24,7 +24,7 @@ async fn append_offset_prefetch_survives_cursor_progress_and_live_writer_protect
             0,
             0,
             3,
-            ChunkType::Repo,
+            ChunkType::S3,
             writer_epoch,
             30_000,
         )

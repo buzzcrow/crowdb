@@ -25,9 +25,18 @@ pub struct StreamPartitionJournal {
 }
 
 impl StreamPartitionJournal {
-    #[must_use]
-    pub fn new(stream: ChunkStream, stream_name: StreamName) -> Self {
-        Self { stream, stream_name }
+    /// Opens a WAL journal and rejects business streams or mismatched identities.
+    ///
+    /// # Errors
+    /// Returns an error if the stream purpose or identity is incompatible.
+    pub fn new(stream: ChunkStream, stream_name: StreamName) -> Result<Self> {
+        if stream.purpose() != crowdb_chunk_stream::StreamPurpose::Wal || stream.stream_name() != stream_name
+        {
+            return Err(ChunkKvError::InvalidRequest(
+                "partition journal requires its named WAL stream".into(),
+            ));
+        }
+        Ok(Self { stream, stream_name })
     }
 }
 

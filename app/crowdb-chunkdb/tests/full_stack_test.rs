@@ -434,7 +434,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
             data_num,
             code_num,
             0,
-            ChunkType::Repo,
+            ChunkType::S3,
             0,
             0,
         )
@@ -740,7 +740,7 @@ async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_g
                 data_num,
                 code_num,
                 0,
-                ChunkType::Repo,
+                ChunkType::S3,
                 0,
                 0,
             )
@@ -878,7 +878,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
     ] {
         assert!(matches!(
             handler
-                .allocate_chunk(None, size_kb, 1, strip_type, 0, 0, copies, ChunkType::Repo, 0, 0)
+                .allocate_chunk(None, size_kb, 1, strip_type, 0, 0, copies, ChunkType::S3, 0, 0)
                 .await,
             Err(LifecycleError::InvalidRequest(_))
         ));
@@ -892,7 +892,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
             0,
             0,
             1,
-            ChunkType::Repo,
+            ChunkType::S3,
             71,
             30_000,
         )
@@ -908,7 +908,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         lease_ms: 30_000,
     };
     for copies in [0, 2] {
-        let group = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+        let group = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
         assert!(matches!(
             handler
                 .reserve_strip_group(
@@ -937,7 +937,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         panic!("single-node strip must be a mirror");
     };
     mirror.segments.push(mirror.segments[0]);
-    let operation = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    let operation = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
     assert!(matches!(
         handler
             .replace_chunk_strip_range(
@@ -955,7 +955,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
 }
 
 async fn assert_single_node_reservation(handler: &LifecycleHandler, id: &ChunkId, fence: ReservationFence) {
-    let group = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    let group = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
     let reserved = handler
         .reserve_strip_group(
             id,
@@ -979,7 +979,7 @@ async fn assert_single_node_reservation(handler: &LifecycleHandler, id: &ChunkId
         panic!("reserved strip must be a mirror");
     };
     mirror.segments.push(mirror.segments[0]);
-    let operation = crowdb_protocol::generate_chunk_id(ChunkType::Repo as u8).to_proto();
+    let operation = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
     assert!(matches!(
         handler
             .replace_chunk_strip_range(id, reserved.chunk.modify_ts, 1, &[strip], &[invalid], operation,)
@@ -1041,7 +1041,7 @@ async fn production_ec_stays_degraded_ec_and_mirrors_use_two_copies_after_one_no
     .with_deployment_mode(DeploymentMode::Production);
     assert_invalid_production_mirror_copies(&handler).await;
     let degraded = handler
-        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     let Some(Strip::EcStrip(ec)) = &degraded.strips[0].strip else {
@@ -1079,7 +1079,7 @@ async fn production_ec_stays_degraded_ec_and_mirrors_use_two_copies_after_one_no
         .topology
         .replace(build_snapshot(&hardware).await.expect("recovered hardware"));
     let healthy = handler
-        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     assert!(matches!(healthy.strips[0].strip, Some(Strip::EcStrip(_))));
@@ -1152,7 +1152,7 @@ async fn production_degraded_ec_task_repairs_after_node_returns() {
         .with_layout_validity(Duration::from_millis(1)),
     );
     let chunk = handler
-        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::S3, 0, 0)
         .await
         .expect("allocate degraded EC strip");
     assert!(chunk.strips[0].placement_repair_required);
@@ -1281,18 +1281,7 @@ async fn active_chunk_creates_one_deadline_indexed_finalizer() {
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(
-            None,
-            1,
-            1,
-            StripType::Mirror,
-            0,
-            0,
-            3,
-            ChunkType::Repo,
-            17,
-            60_000,
-        )
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 17, 60_000)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -1332,18 +1321,7 @@ async fn finalizer_reclaims_an_empty_active_chunk() {
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(
-            None,
-            1,
-            1,
-            StripType::Mirror,
-            0,
-            0,
-            3,
-            ChunkType::Repo,
-            19,
-            60_000,
-        )
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 19, 60_000)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -1381,18 +1359,7 @@ async fn finalizer_waits_for_pre_expiry_requests_before_scanning() {
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(
-            None,
-            1,
-            1,
-            StripType::Mirror,
-            0,
-            0,
-            3,
-            ChunkType::Repo,
-            23,
-            60_000,
-        )
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 23, 60_000)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -1531,7 +1498,7 @@ async fn unavailable_strip_survives_crash_gap_and_is_admitted_as_repair_task() {
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -1698,7 +1665,7 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
             0,
             0,
             3, // 3 mirror copies
-            ChunkType::Repo,
+            ChunkType::S3,
             0,
             0,
         )
@@ -1809,7 +1776,7 @@ async fn chunkdb_fenced_range_replacement_is_idempotent_and_preserves_geometry()
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 2, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 2, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -1929,7 +1896,7 @@ async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
     let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 8, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 8, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate mirror range");
     let chunk_id = chunk.id.expect("chunk id");
@@ -2006,7 +1973,7 @@ async fn deletion_during_conversion_clears_task_ownership_before_tentative_clean
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 8, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 8, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate mirror range");
     let chunk_id = chunk.id.expect("chunk id");
@@ -2107,7 +2074,7 @@ async fn relocation_handoff_claims_publishes_and_defers_source_free() {
     let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -2270,7 +2237,7 @@ async fn relocation_rejects_a_target_that_weakens_physical_placement() {
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -2339,7 +2306,7 @@ async fn relocation_marks_deleted_owner_stale_without_publishing_target() {
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -2416,7 +2383,7 @@ async fn cross_domain_rebalance_hands_one_safe_move_to_target_diskdb() {
     let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -2642,7 +2609,7 @@ async fn chunkdb_restart_reconciles_expired_replacement_cleanup_intent() {
     let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .unwrap();
     let chunk_id = chunk.id.unwrap();
@@ -2714,7 +2681,7 @@ async fn chunkdb_lock_serializes_concurrent_append() {
     // Allocate a chunk.
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -2771,12 +2738,12 @@ async fn chunkdb_lock_no_deadlock_different_chunks() {
     // Allocate two chunks.
     let chunk_a = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate A");
     let chunk_b = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate B");
     let id_a = *chunk_a.id.as_ref().expect("chunk A id");
@@ -2823,7 +2790,7 @@ async fn chunkdb_cache_hit_on_second_query() {
     // Allocate a chunk (populates cache via populate_cache for auto-gen ID).
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -2902,7 +2869,7 @@ async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
             0,
             0,
             3,
-            ChunkType::Repo,
+            ChunkType::S3,
             writer_epoch,
             30_000,
         )
@@ -3090,7 +3057,7 @@ async fn expired_consumed_reservation_waits_for_reuse_grace() {
             0,
             0,
             3,
-            ChunkType::Repo,
+            ChunkType::S3,
             writer_epoch,
             30_000,
         )
@@ -3186,7 +3153,7 @@ async fn reservation_admission_rejects_overcommit_and_rebuilds_durable_usage() {
             0,
             0,
             3,
-            ChunkType::Repo,
+            ChunkType::S3,
             writer_epoch,
             30_000,
         )
@@ -3253,7 +3220,7 @@ async fn completed_conversion_reservation_is_taken_over_as_a_durable_task() {
             0,
             0,
             3,
-            ChunkType::Repo,
+            ChunkType::S3,
             writer_epoch,
             30_000,
         )
@@ -3339,7 +3306,7 @@ async fn generated_chunk_ids_stay_with_the_serving_range_owner() {
 
     for _ in 0..16 {
         let chunk = handler
-            .allocate_chunk(None, 1, 0, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+            .allocate_chunk(None, 1, 0, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
             .await
             .unwrap();
         assert!(hash_to_bucket(&chunk.id.unwrap()) <= 511);
@@ -3418,7 +3385,7 @@ async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail
                 0,
                 0,
                 3,
-                ChunkType::Repo,
+                ChunkType::S3,
                 writer_epoch,
                 30_000,
             )
@@ -3526,7 +3493,7 @@ async fn chunkdb_lock_serializes_concurrent_seal() {
     // Allocate a chunk (Active).
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -3568,7 +3535,7 @@ async fn chunkdb_lock_serializes_concurrent_delete() {
     // Allocate a chunk (Active).
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -3607,7 +3574,7 @@ async fn chunkdb_lock_serializes_concurrent_append_delete() {
     // Allocate a chunk (Active).
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -3663,7 +3630,7 @@ async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
     let harness = ChunkdbHarness::start(&cluster).await;
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 99, 20)
+        .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 99, 20)
         .await
         .expect("allocate shared chunk");
     let chunk_id = chunk.id.expect("chunk id");
