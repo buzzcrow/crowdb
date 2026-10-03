@@ -8,6 +8,7 @@ import type {
   HardwareCapacitySummary,
 } from '../../types';
 import { CapacityBar } from './CapacityBar';
+import { observeCapacity } from './observation';
 
 interface NodeViewProps {
   nodeId: number;
@@ -19,34 +20,16 @@ interface NodeViewProps {
 interface DgAgg {
   dgId: number;
   diskCount: number;
-  capacity: number;
-  busy: number;
 }
 
 export function NodeView({ nodeId, usage, hardwareCapacity, onSelectDg }: NodeViewProps) {
   const dgs = useMemo<DgAgg[]>(() => {
-    const hwDgs = (hardwareCapacity?.disk_groups || []).filter((g) => g.node_id === nodeId);
-    const usageDgs = (usage?.disk_groups || []).filter((g) => g.node_id === nodeId);
-    const byDg = new Map<number, DgAgg>();
-    for (const g of hwDgs) {
-      byDg.set(g.disk_group_id, {
-        dgId: g.disk_group_id,
-        diskCount: g.disks.length,
-        capacity: g.capacity_bytes,
-        busy: 0,
-      });
-    }
-    for (const g of usageDgs) {
-      let agg = byDg.get(g.disk_group_id);
-      if (!agg) {
-        agg = { dgId: g.disk_group_id, diskCount: g.disks.length, capacity: 0, busy: 0 };
-        byDg.set(g.disk_group_id, agg);
-      }
-      agg.busy += g.busy_bytes;
-      if (agg.capacity === 0) agg.capacity += g.capacity_bytes;
-      if (agg.diskCount === 0) agg.diskCount = g.disks.length;
-    }
-    return Array.from(byDg.values()).sort((a, b) => a.dgId - b.dgId);
+    const hardware = (hardwareCapacity?.disk_groups ?? []).filter(group => group.node_id === nodeId);
+    const reports = (usage?.disk_groups ?? []).filter(group => group.node_id === nodeId);
+    const ids = new Set([...hardware, ...reports].map(group => group.disk_group_id));
+    return [...ids].sort((a, b) => a - b).map(dgId => ({ dgId,
+      diskCount: (hardware.find(group => group.disk_group_id === dgId) ?? reports.find(group => group.disk_group_id === dgId))!.disks.length,
+    }));
   }, [nodeId, usage, hardwareCapacity]);
 
   if (dgs.length === 0) {
@@ -69,7 +52,7 @@ export function NodeView({ nodeId, usage, hardwareCapacity, onSelectDg }: NodeVi
               <div className="tw-text-xs tw-text-muted">{d.diskCount} disk(s)</div>
             </div>
           </div>
-          <CapacityBar capacity={d.capacity} busy={d.busy} barWidth="tw-w-32" />
+          <CapacityBar {...observeCapacity(hardwareCapacity, usage, { dgId: d.dgId })} barWidth="tw-w-32" />
         </button>
       ))}
     </div>

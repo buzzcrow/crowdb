@@ -54,6 +54,10 @@ test.describe('capacity · canvas + scanner/recalc', () => {
     test.setTimeout(30_000);
     const nodeId = CANVAS_NODE;
     const rpcPort = freePortRange(3);
+    let scanKnown = false;
+    await page.route('**/api/diskdb/scan-status', route => scanKnown
+      ? route.fulfill({ json: { has_run: false, scan_in_progress: false } })
+      : route.fulfill({ status: 503, json: { error: 'Scan observation unavailable' } }));
 
     try {
       await deployDiskdb(baseURL!, nodeId, rpcPort);
@@ -69,8 +73,15 @@ test.describe('capacity · canvas + scanner/recalc', () => {
       const scanBtn = panel.getByRole('button', { name: /run scan/i });
       await expect(scanBtn).toBeVisible({ timeout: 10_000 });
 
-      // Before any scan, should show "No scan has been run yet."
-      await expect(panel.getByText('No scan has been run yet.')).toBeVisible({ timeout: 10_000 });
+      // Missing observation cannot establish that no scan has run.
+      await expect(panel.getByText('Scan status unavailable.')).toBeVisible({ timeout: 3000 });
+      await expect(page.getByRole('alert').filter({ hasText: 'Capacity observation unavailable' })).toContainText('scan status');
+      await expect(page.getByText('Backend unreachable — retrying', { exact: true })).toHaveCount(0);
+      await expect(page.getByRole('banner').getByTitle('Cluster health: Degraded', { exact: true })).toBeVisible({ timeout: 3000 });
+      await expect(panel.getByText('No scan has been run yet.')).toHaveCount(0);
+      scanKnown = true;
+      await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+      await expect(panel.getByText('No scan has been run yet.')).toBeVisible({ timeout: 3000 });
 
       // Click Run Scan — button should handle the response (success or error).
       await scanBtn.click();
@@ -321,3 +332,41 @@ function formatBytesAssert(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
+
+test('Capacity preserves hardware and shows unknown usage at every scope', async ({ page }) => {
+  page.setDefaultTimeout(3000);
+  let reported = false;
+  const diskId = '0000000000000001-0000000000000002';
+  const disk = { rack_id: 1, node_id: 1, disk_group_id: 1, disk_id: diskId, capacity_bytes: 1024, busy_bytes: 512, free_bytes: 256, disk_type: 1, status: 1, zone_count: 1, zone_usages: [] };
+  const group = { rack_id: 1, node_id: 1, disk_group_id: 1, capacity_bytes: 1024, busy_bytes: 512, free_bytes: 256, disks: [disk] };
+  await page.route('**/api/hardware/capacity', route => route.fulfill({ json: {
+    datacenter_capacity_bytes: 1024, racks: [{ rack_id: 1, node_count: 1, capacity_bytes: 1024 }],
+    nodes: [{ rack_id: 1, node_id: 1, disk_group_count: 1, capacity_bytes: 1024 }], disk_groups: [group],
+  } }));
+  await page.route('**/api/diskdb/instances', route => route.fulfill({ json: [] }));
+  await page.route('**/api/diskdb/usage', route => route.fulfill({ json: { disk_groups: reported ? [group] : [] } }));
+  await page.goto('/?domain=Capacity');
+  const totals = page.getByTestId('capacity-summary');
+  await expect(totals).toContainText('1.0 KB', { timeout: 3000 });
+  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+  const panel = totals.locator('..');
+  await panel.getByRole('button', { name: /R-1 / }).click();
+  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+  await panel.getByRole('button', { name: /N-1 / }).click();
+  await panel.getByRole('button', { name: /DG-1 / }).click();
+  const unknownDisk = panel.getByRole('button', { name: /00000000…/ });
+  await expect(unknownDisk).toHaveAttribute('title', /Usage unknown/);
+  await unknownDisk.click();
+  await expect(panel.getByText(/1 zones.*Usage unknown/)).toBeVisible();
+  const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
+  const free = inspector.locator('dl > div').filter({ has: page.locator('dt', { hasText: /^Free$/ }) }).locator('dd');
+  await expect(free).toHaveText('Unknown');
+  reported = true;
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(free).toHaveText('256.0 B');
+  await expect(totals).toContainText('25% free');
+  reported = false;
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(free).toHaveText('Unknown');
+  await expect(totals).not.toContainText('100% free');
+});

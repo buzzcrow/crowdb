@@ -8,6 +8,7 @@ import type {
   HardwareCapacitySummary,
 } from '../../types';
 import { CapacityBar } from './CapacityBar';
+import { observeCapacity } from './observation';
 
 interface ClusterViewProps {
   usage: CapacityUsageResponse | null;
@@ -19,35 +20,18 @@ interface RackAgg {
   rackId: number;
   nodeCount: number;
   dgCount: number;
-  capacity: number;
-  busy: number;
 }
 
 export function ClusterView({ usage, hardwareCapacity, onSelectRack }: ClusterViewProps) {
   const racks = useMemo<RackAgg[]>(() => {
-    const hwRacks = hardwareCapacity?.racks || [];
-    const usageDgs = usage?.disk_groups || [];
-    const byRack = new Map<number, RackAgg>();
-    for (const r of hwRacks) {
-      byRack.set(r.rack_id, {
-        rackId: r.rack_id,
-        nodeCount: r.node_count,
-        dgCount: 0,
-        capacity: r.capacity_bytes,
-        busy: 0,
-      });
-    }
-    for (const dg of usageDgs) {
-      let agg = byRack.get(dg.rack_id);
-      if (!agg) {
-        agg = { rackId: dg.rack_id, nodeCount: 0, dgCount: 0, capacity: 0, busy: 0 };
-        byRack.set(dg.rack_id, agg);
-      }
-      agg.dgCount += 1;
-      agg.busy += dg.busy_bytes;
-      if (agg.capacity === 0) agg.capacity += dg.capacity_bytes;
-    }
-    return Array.from(byRack.values()).sort((a, b) => a.rackId - b.rackId);
+    const hwRacks = hardwareCapacity?.racks ?? [];
+    const groups = [...(hardwareCapacity?.disk_groups ?? []), ...(usage?.disk_groups ?? [])];
+    const ids = new Set([...hwRacks.map(rack => rack.rack_id), ...groups.map(group => group.rack_id)]);
+    return [...ids].sort((a, b) => a - b).map(rackId => {
+      const members = groups.filter(group => group.rack_id === rackId);
+      return { rackId, dgCount: new Set(members.map(group => group.disk_group_id)).size,
+        nodeCount: hwRacks.find(rack => rack.rack_id === rackId)?.node_count ?? new Set(members.map(group => group.node_id)).size };
+    });
   }, [usage, hardwareCapacity]);
 
   if (racks.length === 0) {
@@ -73,7 +57,7 @@ export function ClusterView({ usage, hardwareCapacity, onSelectRack }: ClusterVi
               </div>
             </div>
           </div>
-          <CapacityBar capacity={r.capacity} busy={r.busy} barWidth="tw-w-32" />
+          <CapacityBar {...observeCapacity(hardwareCapacity, usage, { rackId: r.rackId })} barWidth="tw-w-32" />
         </button>
       ))}
     </div>

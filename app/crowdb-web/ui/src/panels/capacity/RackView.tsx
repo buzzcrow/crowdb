@@ -8,6 +8,7 @@ import type {
   HardwareCapacitySummary,
 } from '../../types';
 import { CapacityBar } from './CapacityBar';
+import { observeCapacity } from './observation';
 
 interface RackViewProps {
   rackId: number;
@@ -19,34 +20,16 @@ interface RackViewProps {
 interface NodeAgg {
   nodeId: number;
   dgCount: number;
-  capacity: number;
-  busy: number;
 }
 
 export function RackView({ rackId, usage, hardwareCapacity, onSelectNode }: RackViewProps) {
   const nodes = useMemo<NodeAgg[]>(() => {
-    const hwNodes = (hardwareCapacity?.nodes || []).filter((n) => n.rack_id === rackId);
-    const usageDgs = (usage?.disk_groups || []).filter((g) => g.rack_id === rackId);
-    const byNode = new Map<number, NodeAgg>();
-    for (const n of hwNodes) {
-      byNode.set(n.node_id, {
-        nodeId: n.node_id,
-        dgCount: n.disk_group_count,
-        capacity: n.capacity_bytes,
-        busy: 0,
-      });
-    }
-    for (const dg of usageDgs) {
-      let agg = byNode.get(dg.node_id);
-      if (!agg) {
-        agg = { nodeId: dg.node_id, dgCount: 0, capacity: 0, busy: 0 };
-        byNode.set(dg.node_id, agg);
-      }
-      agg.dgCount += 1;
-      agg.busy += dg.busy_bytes;
-      if (agg.capacity === 0) agg.capacity += dg.capacity_bytes;
-    }
-    return Array.from(byNode.values()).sort((a, b) => a.nodeId - b.nodeId);
+    const hwNodes = (hardwareCapacity?.nodes ?? []).filter(node => node.rack_id === rackId);
+    const groups = [...(hardwareCapacity?.disk_groups ?? []), ...(usage?.disk_groups ?? [])].filter(group => group.rack_id === rackId);
+    const ids = new Set([...hwNodes.map(node => node.node_id), ...groups.map(group => group.node_id)]);
+    return [...ids].sort((a, b) => a - b).map(nodeId => ({ nodeId,
+      dgCount: new Set(groups.filter(group => group.node_id === nodeId).map(group => group.disk_group_id)).size,
+    }));
   }, [rackId, usage, hardwareCapacity]);
 
   if (nodes.length === 0) {
@@ -72,7 +55,7 @@ export function RackView({ rackId, usage, hardwareCapacity, onSelectNode }: Rack
               </div>
             </div>
           </div>
-          <CapacityBar capacity={n.capacity} busy={n.busy} barWidth="tw-w-32" />
+          <CapacityBar {...observeCapacity(hardwareCapacity, usage, { nodeId: n.nodeId })} barWidth="tw-w-32" />
         </button>
       ))}
     </div>

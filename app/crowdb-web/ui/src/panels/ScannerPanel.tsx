@@ -44,7 +44,8 @@ export function ScannerPanel({ scanStatus, readonly, actionLoading, onScan }: Sc
           </button>
         )}
       </div>
-      {!hasRun && !inProgress && (
+      {!scanStatus && <p className="tw-text-xs tw-text-muted">Scan status unavailable.</p>}
+      {scanStatus && !hasRun && !inProgress && (
         <div className="tw-text-xs tw-text-muted">No scan has been run yet.</div>
       )}
       {inProgress && (

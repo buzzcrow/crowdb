@@ -446,6 +446,7 @@ export async function deployDiskdb(
       data: body,
     });
     expect(response.status(), await response.text()).toBe(201);
+    return await response.json() as { node_id: number; endpoint: string; pid: number };
   } finally {
     await api.dispose();
   }

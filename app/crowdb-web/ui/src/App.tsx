@@ -220,14 +220,14 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   );
 
   const clusterHealth: ClusterHealth = useMemo(() => {
-    if (dataError) return 'Failed';
+    if (dataError) return domain === Domain.Capacity ? 'Degraded' : 'Failed';
     if (groups.length === 0) return 'Unknown';
     const statuses = groups.map((g) => toUiHealth(String((g as any).state || (g as any).health || '')));
     if (statuses.some((status) => status === 'Failed')) return 'Failed';
     if (statuses.some((status) => status === 'Degraded')) return 'Degraded';
     if (statuses.every((status) => status === 'Healthy')) return 'Healthy';
     return 'Unknown';
-  }, [groups, dataError]);
+  }, [groups, dataError, domain]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -504,7 +504,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           role="alert"
           className="tw-fixed tw-top-16 tw-left-1/2 -tw-translate-x-1/2 tw-z-50 tw-bg-failed/10 tw-border tw-border-failed/30 tw-text-failed tw-px-4 tw-py-2 tw-rounded-md tw-text-sm tw-shadow-lg"
         >
-          Backend unreachable — retrying
+          {domain === Domain.Capacity ? `${dataError.message} — retrying` : 'Backend unreachable — retrying'}
         </div>
       )}
 
