@@ -45,7 +45,9 @@ optional cuObject/RDMA acceleration after the TCP baseline is correct and measur
   high complexity. Verify default boto3, AWS CLI, and rclone
   workflows; trace gaps and gate published compatibility recipes. **Partially
   implemented:** SDK and configured AWS/rclone recipes pass, including metadata
-  and container recovery; accumulated storage regression remains under R205.
+  and container recovery. MemTable repair is complete; two accumulated suites
+  pass 32/32. A third run and default-concurrency verification remain pending;
+  optional language SDK reruns go last.
 - **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
   upload benchmark regression — Area: CLI / access server / benchmark — Add a
   shared real-protocol CLI workload and retained local regression scripts for
@@ -100,8 +102,9 @@ Caches, selected ORC and container engine workflows remain separate.
 
 - **[R205](R205-s3-concurrent-client-progress.md)** — concurrent client
   admission and storage progress — Area: S3 / KV / DiskIO — High priority.
-  Diagnose default CLI multipart resource rejection, storage stalls and the
-  accumulated serial-suite journal/snapshot failure; retain exact reproducers.
+  MemTable visibility repair and journal-CAS/persist/reopen coverage are complete;
+  two accumulated S3 suites pass. Default CLI multipart admission/stall causes
+  remain unverified; retain the historical reproducers and verify client progress.
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
   **Deferred beyond the completed direct-KV stage.** When selected, migrate
