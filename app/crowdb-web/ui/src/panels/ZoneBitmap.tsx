@@ -5,6 +5,8 @@ import { useRef, useEffect, useState } from 'react';
 import { blockState } from './capacity/bitmap';
 
 interface ZoneBitmapProps {
+  start: number;
+  onStartChange: (start: number) => void;
   usageBitmap?: string;
   totalUnits: number;
 }
@@ -14,9 +16,8 @@ const CELL = 6;
 const colors = { used: '#557fa5', free: '#527d68', unknown: '#6b7280' };
 
 /** Draw only one block window; the API snapshot is little-endian by byte. */
-export function ZoneBitmap({ usageBitmap, totalUnits }: ZoneBitmapProps) {
+export function ZoneBitmap({ usageBitmap, totalUnits, start, onStartChange: setStart }: ZoneBitmapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [start, setStart] = useState(0);
   const [hover, setHover] = useState<number | null>(null);
   const total = Number.isSafeInteger(totalUnits) && totalUnits > 0 ? totalUnits : 0;
   const offset = Math.min(start, Math.max(0, Math.ceil(total / PAGE_SIZE) - 1) * PAGE_SIZE);

@@ -1,10 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { Server, Loader2, RefreshCw } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { useActivity } from '../contexts/ActivityContext';
+import { useNavigationSnapshot } from '../contexts/DomainContext';
 import { useSelection } from '../contexts/SelectionContext';
 import type { SelectedEntity } from '../contexts/SelectionContext';
 import { triggerDiskdbScan } from '../api';
@@ -22,7 +23,7 @@ import { ClusterView } from './capacity/ClusterView';
 import { RackView } from './capacity/RackView';
 import { NodeView } from './capacity/NodeView';
 import { DiskGroupView } from './capacity/DiskGroupView';
-import { DiskView } from './capacity/DiskView';
+import { DiskView, type DiskQuery } from './capacity/DiskView';
 
 interface CapacityPanelProps {
   active?: boolean;
@@ -77,6 +78,21 @@ export function CapacityPanel({
   const diskId = scope === 'Disk'
     ? String(selectedEntity?.parentIds?.disk_id ?? selectedEntity?.id)
     : undefined;
+
+  const diskQueries = useRef(new Map<string, DiskQuery>());
+  const [, updateQueryVersion] = useState(0);
+  const diskQueryKey = dgId === undefined || !diskId ? '' : `${dgId}/${diskId}`;
+  const diskQuery = diskQueries.current.get(diskQueryKey) ?? { zone: null, page: 0, blockStart: 0 };
+  const changeDiskQuery = (value: DiskQuery) => {
+    if (!diskQueryKey) return;
+    diskQueries.current.delete(diskQueryKey); diskQueries.current.set(diskQueryKey, value);
+    while (diskQueries.current.size > 32) diskQueries.current.delete(diskQueries.current.keys().next().value!);
+    updateQueryVersion(version => version + 1);
+  };
+  useNavigationSnapshot(Domain.Capacity, 'disk-query', () => {
+    const identity = diskQueryKey; const state = { ...diskQuery };
+    return () => { if (identity) { diskQueries.current.set(identity, state); updateQueryVersion(version => version + 1); } };
+  });
 
   const totals = observeCapacity(hardwareCapacity, usage, { rackId, nodeId, dgId, diskId });
   const totalCapacity = totals.capacity;
@@ -234,6 +250,8 @@ export function CapacityPanel({
         <DiskView key={`${dgId}/${diskId}`} active={active}
           dgId={dgId}
           diskId={diskId}
+          query={diskQuery}
+          onQueryChange={changeDiskQuery}
           usage={usage}
           hardwareCapacity={hardwareCapacity ?? null}
           readonly={readonly}

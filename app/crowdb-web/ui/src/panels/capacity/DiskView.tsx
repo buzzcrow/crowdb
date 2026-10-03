@@ -25,8 +25,12 @@ import { observeCapacity, diskKey } from './observation';
 import { busyPct, formatBytes, diskTypeLabel } from '../../utils/capacity';
 import { hwStatusLabel as sharedHwStatusLabel } from '../../utils/entityDisplay';
 
+export interface DiskQuery { zone: number | null; page: number; blockStart: number }
+
 interface DiskViewProps {
   active?: boolean;
+  query: DiskQuery;
+  onQueryChange: (value: DiskQuery) => void;
   dgId: number;
   diskId: string;
   usage: CapacityUsageResponse | null;
@@ -37,6 +41,8 @@ interface DiskViewProps {
 
 export function DiskView({
   active = true,
+  query,
+  onQueryChange,
   dgId,
   diskId,
   usage,
@@ -47,7 +53,8 @@ export function DiskView({
   const { success, error } = useToast();
   const { log } = useActivity();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [selectedZoneIndex, setSelectedZoneIndex] = useState<number | null>(null);
+  const selectedZoneIndex = query.zone;
+  const setSelectedZoneIndex = (zone: number | null, page = query.page) => onQueryChange({ zone, page, blockStart: zone === query.zone ? query.blockStart : 0 });
 
   const disk = useMemo<DiskInfoDto | null>(() => {
     const usageDg = usage?.disk_groups.find((g) => g.disk_group_id === dgId);
@@ -206,6 +213,8 @@ export function DiskView({
         <div className="tw-bg-panel tw-rounded-lg tw-p-4">
           <div className="tw-text-xs tw-text-muted tw-mb-2">Zone grid ({zoneCount} zones)</div>
           <ZoneGrid
+            page={query.page}
+            onPageChange={page => onQueryChange({ ...query, page })}
             zones={disk.zone_usages}
             zoneCount={zoneCount}
             selectedZone={selectedZoneIndex}
@@ -234,6 +243,8 @@ export function DiskView({
           </div>
           {bitmapZone && (
             <ZoneBitmap key={selectedZoneIndex}
+              start={query.blockStart}
+              onStartChange={blockStart => onQueryChange({ ...query, blockStart })}
               usageBitmap={bitmapZone.usage_bitmap}
               totalUnits={bitmapZone.busy_block_count + bitmapZone.free_block_count}
             />

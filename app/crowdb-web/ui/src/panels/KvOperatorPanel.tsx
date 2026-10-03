@@ -3,6 +3,8 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Search, Info, Database, Trash2, Loader2, Copy, AlertTriangle, FlaskConical } from 'lucide-react';
+import { useNavigationSnapshot } from '../contexts/DomainContext';
+import { Domain } from '../types';
 import { displayBytes } from '../kv/displayBytes';
 import { ResourceActions } from '../access/ResourceActions';
 import { buttonClass } from '../access/Workbench';
@@ -12,6 +14,14 @@ import { Dialog } from '../components/Dialog';
 import { kvGet, kvPut, kvDelete, kvScan, type KvGetResponse, type KvScanItem } from '../api';
 import type { EnrichedStoreView, GroupView } from '../types';
 import type { SelectedEntity } from '../contexts/SelectionContext';
+
+type Cursor = Map<string, { lastKey: string; truncated: boolean }>;
+interface QueryState {
+  storeId: string; groupId: string; prefix: string;
+  start: Array<[string, { lastKey: string; truncated: boolean }]>;
+  previous: Array<Array<[string, { lastKey: string; truncated: boolean }]>>;
+  number: number; focused?: { group: string; key: string };
+}
 
 const ALL_GROUPS = '__all__';
 
@@ -44,7 +54,6 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   const [scanLoading, setScanLoading] = useState(false);
   const [scanCursors, setScanCursors] = useState<Map<string, { lastKey: string; truncated: boolean }>>(new Map());
   const [loadingMore, setLoadingMore] = useState(false);
-  type Cursor = Map<string, { lastKey: string; truncated: boolean }>;
   const [pageStarts, setPageStarts] = useState<Cursor[]>([]);
   const [pageStart, setPageStart] = useState<Cursor>(new Map());
   const [pageNumber, setPageNumber] = useState(1);
@@ -71,6 +80,18 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   const [demoSession] = useState(() => crypto.randomUUID().replace(/-/g, ''));
   const scanReqIdRef = useRef(0);
   const scanAbortRef = useRef<AbortController>();
+  const restoreQuery = useRef<QueryState | null>(null);
+  const [restoreVersion, setRestoreVersion] = useState(0);
+  useNavigationSnapshot(Domain.KV, 'operator-query', () => {
+    const state: QueryState = { storeId, groupId, prefix: scanPrefix, start: [...pageStart],
+      previous: pageStarts.slice(-32).map(cursor => [...cursor]), number: pageNumber,
+      focused: focusedRow ? { group: focusedRow.groupId, key: focusedRow.key_hex } : undefined };
+    return () => {
+      restoreQuery.current = state;
+      setStoreId(state.storeId); setGroupId(state.groupId); setScanPrefix(state.prefix);
+      setRestoreVersion(value => value + 1);
+    };
+  });
   const activeRef = useRef(active);
   activeRef.current = active;
 
@@ -164,9 +185,9 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     setPutKey(''); setPutValue(''); setDeleteKey('');
     setPageStarts([]); setPageStart(new Map()); setPageNumber(1);
     return () => { ++scanReqIdRef.current; scanAbortRef.current?.abort(); };
-  }, [storeId, groupId, scanPrefix, active]);
+  }, [storeId, groupId, scanPrefix]);
 
-  const fetchPage = useCallback(async (start: Cursor, direction: 'first' | 'next' | 'previous') => {
+  const fetchPage = useCallback(async (start: Cursor, direction: 'first' | 'next' | 'previous' | 'restore', focus?: QueryState['focused']) => {
     if (!storeId || !groupId || !activeRef.current) return;
     if (groupId === ALL_GROUPS && groupIdsInStore.length > 10) { setErrorMsg('All Groups is limited to 10 groups. Select a specific group.'); return; }
     scanAbortRef.current?.abort();
@@ -187,16 +208,31 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         cursors.set(gid, { lastKey: result.items.at(-1)?.key_hex ?? cursor?.lastKey ?? '', truncated: result.truncated });
       }
       setScanRows(rows); setScanCursors(cursors); setScanTruncated(gids.some(gid => !cursors.has(gid) || cursors.get(gid)!.truncated));
-      setScanDone(true); setFocusedRow(null); setPageStart(start);
+      setScanDone(true); setFocusedRow(focus ? rows.find(row => row.groupId === focus.group && row.key_hex === focus.key) ?? null : null); setPageStart(start);
       if (direction === 'first') { setPageStarts([]); setPageNumber(1); }
       else if (direction === 'next') { setPageStarts(previous => [...previous, pageStart].slice(-32)); setPageNumber(value => value + 1); }
-      else { setPageStarts(previous => previous.slice(0, -1)); setPageNumber(value => value - 1); }
+      else if (direction === 'previous') { setPageStarts(previous => previous.slice(0, -1)); setPageNumber(value => value - 1); }
     } catch (err) {
       if (request === scanReqIdRef.current) setErrorMsg(err instanceof Error ? err.message : 'Scan failed');
     } finally {
       if (request === scanReqIdRef.current) { setScanLoading(false); setLoadingMore(false); }
     }
   }, [storeId, groupId, groupIdsInStore, scanPrefix, pageStart]);
+  useEffect(() => {
+    if (!active) {
+      scanAbortRef.current?.abort(); ++scanReqIdRef.current;
+      setScanLoading(false); setLoadingMore(false);
+      if (!scanDone) setAutoScanned(false);
+      return;
+    }
+    const state = restoreQuery.current;
+    if (!state || state.storeId !== storeId || state.groupId !== groupId || state.prefix !== scanPrefix) return;
+    restoreQuery.current = null;
+    setPageStarts(state.previous.map(cursor => new Map(cursor))); setPageNumber(state.number);
+    setAutoScanned(true);
+    void fetchPage(new Map(state.start), 'restore', state.focused);
+  }, [active, storeId, groupId, scanPrefix, restoreVersion, fetchPage, scanDone]);
+
   const handleScan = useCallback(() => fetchPage(new Map(), 'first'), [fetchPage]);
 
   const handleScanRef = useRef(handleScan);
@@ -211,7 +247,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   useEffect(() => { autoScanRef.current = autoScan; }, [autoScan]);
 
   useEffect(() => {
-    if (active && storeId && groupId && autoScan && !autoScanned && !scanLoading && scanRows.length === 0) {
+    if (active && !restoreQuery.current && storeId && groupId && autoScan && !autoScanned && !scanLoading && scanRows.length === 0) {
       setAutoScanned(true);
       handleScan();
     }

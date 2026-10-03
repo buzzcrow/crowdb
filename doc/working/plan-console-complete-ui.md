@@ -793,3 +793,21 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   and large navigation six cases pass (0.051–4.0s; 200-Node budget case 1.4s).
   Old eager-GET timing dependencies in the tests were replaced with explicit
   branch expansion and visible state assertions, preserving mutation checks.
+
+### KV/Capacity query return
+
+- KV history stores Store/Group/prefix, 32 cursor positions and focused raw Key
+  identity, never Values. Return refetches the page and reselects the matching
+  Key; domain exit aborts pending reads without resetting a completed query.
+- Capacity keeps 32 lightweight per-Disk queries above the conditional detail:
+  selected Zone, zone page and bitmap block start. Returning from a parent or
+  another domain restores those windows. Jump-to-Zone updates selection/page
+  atomically. Bitmap payloads are not in visit history.
+- Shared Sidebar stays mounted, retaining separate search/expansion for each
+  domain. Tree supports controlled expansion so restoration also collapses
+  branches, rather than only merging new expanded IDs.
+- Verified before the final controlled-expansion refinement: KV six cases
+  0.514–1.2s with restored page/Key; Zone return case 1.6s. Final affected suite
+  and unit gate pass: 115 unit cases in 2.44s; 11 browser cases in 21.2s
+  command time. KV source return 1.2s, Zone/window return 1.5s and canvas
+  cases 0.436–1.6s.

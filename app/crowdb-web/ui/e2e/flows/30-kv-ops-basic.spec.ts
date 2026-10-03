@@ -73,6 +73,17 @@ test.describe('kv ops · put/get/scan/delete', () => {
     await pages.getByRole('button', { name: 'Next', exact: true }).click();
     await expect(rows).toHaveCount(20);
     await expect(rows).toContainText(Array.from({ length: 20 }, (_, i) => `key-${20 + i}`));
+    await page.getByTestId('kv-scan-table').getByText('key-20', { exact: true }).click();
+    await page.getByTestId('domain-capacity').click();
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await expect(rows).toContainText(Array.from({ length: 20 }, (_, i) => `key-${20 + i}`));
+    await expect(page.getByRole('region', { name: 'Selected key' })).toContainText('complete value 20');
+    await expect(pages).toContainText('Page 2');
+    await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'S-99', exact: true }).click();
+    await expect(pages).toContainText('Page 1');
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await expect(pages).toContainText('Page 2');
+    await expect(page.getByRole('region', { name: 'Selected key' })).toContainText('complete value 20');
     await pages.getByRole('button', { name: 'Previous', exact: true }).click();
     await expect(rows).toContainText(Array.from({ length: 20 }, (_, i) => `key-${i}`));
   });

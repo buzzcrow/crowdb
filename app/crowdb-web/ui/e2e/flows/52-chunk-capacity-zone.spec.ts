@@ -281,6 +281,10 @@ test.describe('chunk · capacity · zone', () => {
       await expect(panel.getByText('Blocks 4096–8191 of 8193', { exact: false })).toBeVisible();
       await panel.getByRole('button', { name: 'Next blocks' }).click();
       await expect(panel.getByText('Blocks 8192–8192 of 8193', { exact: false })).toBeVisible();
+      await page.getByTestId('domain-kv').click();
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(panel.getByRole('region', { name: 'Zone 1 detail' })).toBeVisible();
+      await expect(panel.getByText('Blocks 8192–8192 of 8193', { exact: false })).toBeVisible();
       await panel.getByRole('button', { name: 'Close zone detail' }).click();
       await expect(panel.getByTestId('zone-bitmap')).toHaveCount(0);
       await expect(panel.getByText(/Capacity — Disk/)).toBeVisible();
@@ -291,6 +295,11 @@ test.describe('chunk · capacity · zone', () => {
       await expect(panel.getByRole('region', { name: 'Zone 129 detail' })).toBeVisible();
       await expect(zones.getByRole('button', { name: /^Zone \d+$/ })).toHaveCount(2);
       await expect(panel.getByRole('button', { name: 'Back to parent Disk' })).toHaveCount(0);
+      await aside.getByRole('button', { name: 'test-dg-bitmap (DG-582)', exact: true }).click();
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(panel.getByRole('region', { name: 'Zone 129 detail' })).toBeVisible();
+      await expect(zones.getByRole('button', { name: /^Zone \d+$/ })).toHaveCount(2);
+      await expect(zones.getByRole('button', { name: 'Zone 129', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
     } finally {
       await removeDisk(baseURL!, nodeId, dgId, diskId).catch(() => {});

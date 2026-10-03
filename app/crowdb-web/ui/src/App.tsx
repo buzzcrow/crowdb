@@ -504,7 +504,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         </div>
       )}
 
-      {!ownsSidebar && <Sidebar
+      <div hidden={ownsSidebar}><Sidebar
         allServers={allServers}
         racks={racks}
         servers={servers}
@@ -527,7 +527,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         diskdbNodeIds={diskdbNodeIds}
         diskdbHealthById={diskdbHealthById}
         diskdbInstanceIdByNodeId={diskdbInstanceIdByNodeId}
-      />}
+      /></div>
 
       {!ownsSidebar && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth} />}
 

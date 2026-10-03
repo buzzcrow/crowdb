@@ -35,6 +35,8 @@ export interface TreeNode {
 interface TreeProps {
   nodes: TreeNode[];
   defaultExpandedIds?: string[];
+  expandedIds?: string[];
+  onExpansionChange?: (ids: string[]) => void;
   onNodeClick?: (node: TreeNode) => void;
   onNodeContextMenu?: (node: TreeNode, event: React.MouseEvent) => void;
   className?: string;
@@ -158,8 +160,12 @@ function TreeNodeComponent({
   );
 }
 
-export function Tree({ nodes, defaultExpandedIds = [], onNodeClick, onNodeContextMenu, className }: TreeProps) {
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(defaultExpandedIds));
+const EMPTY_EXPANSION: string[] = [];
+
+export function Tree({ nodes, defaultExpandedIds = EMPTY_EXPANSION, onNodeClick, onNodeContextMenu, className, onExpansionChange, expandedIds: controlledExpansion }: TreeProps) {
+  const [expandedState, setExpandedIds] = useState<Set<string>>(() => new Set(defaultExpandedIds));
+  const expandedIds = controlledExpansion ? new Set(controlledExpansion) : expandedState;
+  const expandedRef = useRef(expandedIds); expandedRef.current = expandedIds;
   const prevDefaultRef = useRef<Set<string>>(new Set(defaultExpandedIds));
 
   useEffect(() => {
@@ -176,13 +182,11 @@ export function Tree({ nodes, defaultExpandedIds = [], onNodeClick, onNodeContex
   }, [defaultExpandedIds]);
 
   const toggleExpanded = useCallback((id: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+    const next = new Set(expandedRef.current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    expandedRef.current = next; setExpandedIds(next);
+    onExpansionChange?.([...next]);
+  }, [onExpansionChange]);
 
   return (
     <div className={cn('tw-overflow-y-auto tw-flex-1', className)} role="tree">

@@ -243,3 +243,10 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
 - Context menu race fixed: old asynchronous action completion no longer closes a
   newer resource menu. The no-retry maintenance browser case passes in 4.0s and
   a focused unit regression verifies the close ordering.
+
+- KV/Capacity return completion: KV page and raw Key focus restore after both
+  domain changes and another Store selection. Capacity Zone, zone window and
+  bitmap block window restore after domain and parent navigation; sidebar
+  expansion also survives. The affected 11 browser cases pass, with KV return
+  1.2s and Zone return 1.5s. Global navigation remains open for Chunk-KV query,
+  journal extent selection and catalog movement acceptance.

@@ -3,7 +3,7 @@
 
 import { useState, useMemo } from 'react';
 import { Search, FolderTree, Monitor, Database, Boxes, HardDrive, Cog, Plus, Rocket, Building2 } from 'lucide-react';
-import { useDomain } from '../contexts/DomainContext';
+import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { Tree, TreeNode } from '../components/Tree';
 import { Button } from '../components/ui/Button';
 import { Domain, Rack, EnrichedStoreView, NodeStore, CrowdbKVServerView, NodeHealth, DiskdbInstanceInfo, CapacityUsageResponse, HardwareCapacitySummary } from '../types';
@@ -77,6 +77,7 @@ export function Sidebar({
   diskdbInstanceIdByNodeId = new Map(),
 }: SidebarProps) {
   const { domain } = useDomain();
+  const [expansions, setExpansions] = useState<Partial<Record<Domain, string[]>>>({});
   const [filters, setFilters] = useState<Partial<Record<Domain, string>>>({});
   const filterQuery = filters[domain] ?? '';
   const setFilterQuery = (value: string) => setFilters(previous => ({ ...previous, [domain]: value }));
@@ -374,6 +375,14 @@ export function Sidebar({
     return ids;
   }, [filtered, domain]);
 
+  useNavigationSnapshot(domain, 'shared-sidebar', () => {
+    const source = domain; const expanded = [...(expansions[source] ?? expandedIds)]; const filter = filterQuery;
+    return () => {
+      setExpansions(previous => ({ ...previous, [source]: expanded }));
+      setFilters(previous => ({ ...previous, [source]: filter }));
+    };
+  });
+
   return (
     <aside aria-label="Cluster tree sidebar" className="tw-h-[calc(100vh-3.5rem)] tw-mt-14 tw-border-r tw-border-border tw-bg-bg tw-flex tw-flex-col tw-overflow-hidden tw-fixed tw-left-0 tw-top-0" style={{ width }}>
       <div className="tw-p-3 tw-border-b tw-border-border">
@@ -429,7 +438,8 @@ export function Sidebar({
         <Tree
           key={domain}
           nodes={filtered}
-          defaultExpandedIds={expandedIds}
+          expandedIds={expansions[domain] ?? expandedIds}
+          onExpansionChange={ids => setExpansions(previous => ({ ...previous, [domain]: ids }))}
           onNodeClick={onNodeClick}
           onNodeContextMenu={onNodeContextMenu}
         />

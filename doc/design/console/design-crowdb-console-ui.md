@@ -94,6 +94,12 @@ provide observable capacity and bitmap fixtures.
   query cursors and scroll coordinates, never object bodies or metadata payloads.
   New navigation clears Forward. Returning to an Iceberg reference verifies the
   saved metadata generation before inspecting it again.
+- Shared physical/logical trees retain expansion and local search per domain.
+  Return restores both expanded and collapsed branches. KV captures bounded
+  byte cursors and focused Key identity, then refetches the window; it does not
+  keep Value payloads in history. Capacity retains at most 32 Disk query states
+  containing zone window, selected Zone and bitmap block window. Parent
+  navigation can unmount a detail without losing its return query.
 - **NAV-05:** Trees expand lazily. Each large child collection has continuation
   or Load more, a visible loaded count, and an explicit end/partial state.
   Collapsed branches do not recursively load their descendants.
