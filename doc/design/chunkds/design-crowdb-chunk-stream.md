@@ -72,10 +72,15 @@ transport:
 
 The production chunk store uses a direct-buffer `MirrorChunkWriter` from
 `crowdb-chunk-client`. It owns one chunk, appends mirror strips asynchronously,
-and never constructs the EC pipeline. Every allocation uses `ChunkType::Stream`
-and a canonical `stream/` owner key followed by the 128-bit stream identity.
+and never constructs the EC pipeline. Every allocation uses the durable `StreamPurpose` in the binding and manifest:
+system journals allocate `ChunkType::Wal`, business streams allocate
+`ChunkType::Stream`. Both use a canonical `stream/` owner key followed by the 128-bit stream identity.
 Legacy persisted and wire chunk records decode with an empty unattributed owner.
-Stream rollover remains above the writer.
+Stream rollover remains above the writer. Allocation, reopen, rollover and
+repair preserve purpose and stream identity. Reopen rejects binding/manifest
+purpose disagreement and chunk ID/metadata purpose disagreement. Purpose is
+required in persisted bindings; legacy records are not inferred or retagged.
+Chunk-kv journals require Wal streams at construction.
 
 `ProductionStreamRuntime` shares the process KV client and discovered chunk IO
 routes across every stream handle. The chunk-KV server owns that runtime and
@@ -90,11 +95,11 @@ and durability contract.
 
 ## 3. Metadata
 
-Group 0 stores only `StreamBinding {stream_name, metadata_group_id,
+Group 0 stores only `StreamBinding {purpose, stream_name, metadata_group_id,
 binding_generation, state, owner_kind}`. One nonzero KV group stores one stable
 head per stream plus immutable extent pages under versioned keys.
 
-`StreamManifest` contains the writer epoch, generation, logical trim point,
+`StreamManifest` contains the immutable purpose, writer epoch, generation, logical trim point,
 sealed tail, optional active descriptor, page fences, and closed state. Every
 head mutation uses conditional KV write; no competing writer may blind-write
 that key. `StreamExtentPage` contains parallel arrays:

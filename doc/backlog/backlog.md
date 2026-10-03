@@ -102,26 +102,9 @@ Caches, selected ORC and container engine workflows remain separate.
   admission and storage progress — Area: S3 / KV / DiskIO — High priority.
   Diagnose default CLI multipart resource rejection, storage stalls and the
   accumulated serial-suite journal/snapshot failure; retain exact reproducers.
-- **[R202](R202-chunkdb-key-partition-design.md)** — ChunkDB key partition
-  model and storage ownership — Area: chunkdb / Paxos KV — High priority,
-  high complexity. **Current scope: hash all Chunk metadata/tasks to selected
-  nonzero KV groups; never use group 0 as their storage destination.**
-  Each server owns 0..X chunk-ID hash partitions; all of a chunk's tasks follow
-  its group, preserving group-local transactions without cross-group commits.
-  Fixed logical ID space (1024 baseline), one bitmap record per pxgroup in
-  group 0; no per-ID binding records or dynamic ID-space resizing.
-  One dynamic 1024-bit bitmap record per ChunkDB server sends clients to the
-  stateless operation owner; an independent per-pxgroup bitmap map routes
-  persistence. No per-slot or per-contiguous-service-range binding records.
-  Complete specific types, Wal/PageIndex persistence, separate system/repo
-  operation/task domains and fixed group mapping first. Test three nodes with
-  three nonzero chunk-storage groups plus control-plane group 0; defer dynamic
-  handoff/migration to R103. No generic Repo type. Use fresh test state and reject
-  unsupported legacy conversion. [Implementation plan](../working/plan-chunkdb-slot-routing.md)
-  is active. R207 does not block this direct-KV stage.
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
-  **Deferred beyond the direct-KV stage.** After R202 is verified, migrate
+  **Deferred beyond the completed direct-KV stage.** When selected, migrate
   S3/IcebergTable/business Stream metadata and associated tasks to chunk-kv;
   system Wal/BtreePage/PageIndex metadata stays in KV groups. Define range-local
   publication, key/split rules, isolated tasks, safe conversion and measured
@@ -139,8 +122,8 @@ Caches, selected ORC and container engine workflows remain separate.
   human design decisions; concurrency, recovery and performance require
   implementation verification.
 - **[R103](R103-chunkdb-range-migration.md)** — dynamic slot ownership and
-  KV-group expansion/shrink — Area: chunkdb / kv — **Deferred until after R202's
-  fixed-topology delivery and a request for dynamic changes.** Independently
+  KV-group expansion/shrink — Area: chunkdb / kv — **Deferred until dynamic
+  changes are requested.** The fixed-topology stage is implemented. Independently
   support fenced server-slot handoff without metadata copy, and storage-slot
   migration of complete chunk/task/index/reservation state when groups are
   added, drained or rebalanced. Include durable recovery and safe cleanup;

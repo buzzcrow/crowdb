@@ -13,8 +13,11 @@ on completing this requirement.
 
 All production ChunkDB Chunk records, maintenance tasks, task indexes and
 reservations currently use `CrowdbKvClient` and direct Paxos KV groups.
-Startup initializes their common routing cache with
-`default_binding_table(0, 0)`. S3 and IcebergTable have distinct chunk types,
+Their routing cache loads an independently published 1024-slot storage map
+whose eligible destinations are selected nonzero groups; group 0 holds only
+control-plane bindings. System and user-data lifecycle/task runtimes have
+separate authority and execution capacity. S3 and IcebergTable have distinct
+chunk types,
 but neither has a chunk-kv metadata backend. Existing chunk-kv functionality
 must not be mistaken for an already connected ChunkDB persistence path.
 See [ChunkStore](../../app/crowdb-chunkdb/src/storage.rs),
@@ -29,7 +32,7 @@ direct KV. Changing the client alone cannot preserve the current publication,
 task and recovery contracts.
 
 The [ChunkDB root design](../design/chunkdb/design-crowdb-chunkdb.md) describes
-the existing lifecycle; [R202](R202-chunkdb-key-partition-design.md) owns the
+the existing lifecycle; [fixed slot routing](../design/chunkdb/design-crowdb-chunkdb-range-binding.md) owns the
 current type/layer definitions and direct-KV partition contract. The
 [chunk-kv design](../design/chunkds/design-crowdb-chunk-kv.md) supplies ordered
 storage ranges. This follow-up owns their integration, not a replacement
@@ -100,7 +103,7 @@ or runtime correctness is claimed by this audit.
 Use [AGENTS.md terminology](../../AGENTS.md#terminology): repo chunk is a
 collective discussion term for user-data chunks, never a generic implementation
 type. Inherit the type and separate operation contracts from
-[R202](R202-chunkdb-key-partition-design.md#chunk-types-and-operation-domains).
+[ChunkDB type and operation domains](../design/chunkdb/design-crowdb-chunkdb.md#39-chunk-types-for-different-use-cases).
 
 - **System:** Wal journal chunks, BtreePage data chunks and PageIndex chunks
   holding persistent tree page mapping tables keep their Chunk metadata,
@@ -224,7 +227,7 @@ chunk task. It must not claim or execute the repo tasks stored inside that tree.
 
 #### Dependencies
 
-- [R202](R202-chunkdb-key-partition-design.md) owns current direct-KV routing,
+- [fixed slot routing](../design/chunkdb/design-crowdb-chunkdb-range-binding.md) owns current direct-KV routing,
   type cleanup, typed Wal/PageIndex and separate operation/task domains. This
   requirement consumes those boundaries. It must not block R202 completion or
   force a premature change to its all-KV-group scope.
@@ -238,8 +241,9 @@ chunk task. It must not claim or execute the repo tasks stored inside that tree.
 - Publication semantics and key/split rules are prerequisites to enabling the
   new path. Their absence keeps this follow-up disabled; it does not justify
   weakened atomicity or an implicit runtime fallback.
-- [R201](R201-tree-memtable-write-handoff.md) addresses independent tree
-  write/flush correctness. Moving metadata does not resolve that race.
+- Preserve the implemented [tree engine](../design/tree/design-crowdb-tree-engine.md)
+  concurrent admission and prefix-safe flush handoff. Backend migration must
+  retain its acknowledged-write and recovery guarantees.
 
 #### Acceptance
 

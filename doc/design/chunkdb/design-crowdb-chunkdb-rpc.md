@@ -57,7 +57,9 @@ namespace).
 - `FBEcState` — NoParity, Parity
 - `FBChunkState` — Init, Active, Sealed, Deleted
 - `FBStripType` — Mirror, Ec
-- `FBChunkType` — Repo, Wal, BtreePage, PageIndex
+- `FBChunkType` — Wal, BtreePage, PageIndex, Stream, S3, IcebergTable.
+  Wire value zero is Reserved and rejected; allocation requires explicit purpose.
+  Chunk ID prefix, stored purpose, and stream owner attribution must agree.
 
 **Nested types:**
 
@@ -220,9 +222,9 @@ Startup sequence:
 1. Load config from TOML.
 2. Build KV client for group-0 topology access.
 3. Create topology cache + refresh loop + notify handler.
-4. Create binding cache + chunk store.
-5. Load range binding from group-0.
-6. Spawn range binding notifier.
+4. Validate complete fixed service/storage slot maps and install caches.
+5. Create independent system and user-data lifecycle/task runtimes.
+6. Spawn service endpoint/binding refresh without changing ownership.
 7. Register service-registry keep-alive.
 8. Create diskdb client pool + chunk allocator.
 9. Create per-chunk lock map + metrics.

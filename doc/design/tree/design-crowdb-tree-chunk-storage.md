@@ -62,7 +62,9 @@ through immutable segmented reference tables. Untagged words remain valid for
 local stores and legacy mapping images. Mixed mapping images use their versioned
 codec so the two forms cannot be confused.
 
-Manifest format 4 adds the WAL replay offset associated with the tree snapshot;
+Manifest format 6 requires concrete BtreePage/PageIndex chunk identities.
+Unsupported legacy chunk manifests are rejected rather than silently retagged.
+The manifest retains the WAL replay offset; format 4 introduced the WAL replay offset associated with the tree snapshot;
 format 3 permits sorted, non-overlapping sparse pack layouts. A gap
 means that no live page references that logical pack range. Recovery and page
 reference decoding validate arithmetic bounds, reference-segment checksums, and
@@ -74,6 +76,23 @@ is sealed and the whole pack is appended to a new chunk. A reopened store starts
 with a fresh writable chunk. DiskIO owns device alignment; tree page records are
 tail-padded to the configured page alignment while logical lengths and checksums
 exclude padding.
+
+Snapshot page bytes use BtreePage chunks. Persistent mapping segments,
+mapping directory, and retained tree anchors use PageIndex chunks through
+`write_typed_at` / `submit_typed_write`. Staging records purpose boundaries;
+packs split at a purpose boundary and chunks rotate when purpose changes.
+Adjacent equal-purpose staging ranges coalesce, so pack planning scans purpose
+transitions rather than every historical write boundary. Separate purpose
+chunks can increase allocation and frame overhead for small mapping images.
+Physical frame overhead also participates in capacity checks. Reuse and
+materialization preserve purpose encoded in each chunk identity.
+
+The direct-KV root catalog and immutable reference segments locate the logical
+image, including its PageIndex directory and anchors. Reading the mapping's own
+chunk therefore does not require that mapping to be loaded first. Snapshot
+publication makes page and mapping pack references visible together. Both
+purposes follow the same generation pins and reachability rules during split,
+sharing, materialization, and reclaim; purpose alone never authorizes freeing.
 
 ## 3. Async Execution and Mirroring
 
@@ -99,7 +118,7 @@ nonblocking pipe. Rust polls the descriptor through its existing async reactor.
 `ChunkManifest` records tree identity, generation, owner epoch, logical size,
 the snapshot's WAL replay offset, pack entries, reference-segment directory,
 sharing counters, and checksums. Manifest directories and reference-segment
-images are immutable. Legacy manifests imply replay offset zero.
+images are immutable. Only the current typed manifest format is accepted by this backend.
 
 A checkpoint captures the current catalog generation before it constructs any
 packs. Its new manifest is numbered `expected_generation + 1`. After pack and
@@ -165,7 +184,7 @@ snapshot cannot invalidate the reachability image mid-pass.
 
 Packs outside the live extents are omitted. Shared live packs are copied into
 child-owned chunks under a byte budget, reference ordinals are made dense, and
-a sparse format-3 manifest is published through the normal generation fence.
+a sparse typed manifest is published through the normal generation fence.
 Later checkpoints preserve absent sparse ranges unless a new write dirties them.
 A failed reuse verification rewrites already materialized bytes; it never turns
 a live pack into a hole.
@@ -215,6 +234,8 @@ the transition/materialization reconciler retries the final idempotent unpin.
   durable before its manifest can become current.
 - **I2 — One fenced successor:** generation `g + 1` publishes only by comparing
   generation `g` and the current ownership epoch.
+- **I13 — Typed storage:** page and mapping payload never share a chunk;
+  mapping bootstrap references remain independently recoverable.
 - **I3 — Whole-pack rotation:** no page pack crosses the 256-MiB logical chunk
   limit.
 - **I4 — Verified addressing:** every tagged page location resolves through a

@@ -3,14 +3,14 @@
 
 ### R103: chunkdb — Dynamic Slot Ownership and KV-Group Expansion/Shrink
 
-Status: Deferred by user decision on 2026-10-03. First complete R202 on a fixed
-three-node topology with three selected nonzero Chunk-storage KV groups, plus
-control-plane group 0. R103 is follow-up work when dynamic ownership or storage
-capacity changes are requested; it does not block that fixed-topology delivery.
+Status: Deferred by user decision on 2026-10-03. The implemented fixed topology
+uses three nodes and three selected nonzero Chunk-storage KV groups, plus
+control-plane group 0. Start this follow-up when dynamic ownership or storage
+capacity changes are requested.
 
 #### Problem
 
-[R202](R202-chunkdb-key-partition-design.md#hash-partitions-and-group-routing)
+[fixed slot routing](../design/chunkdb/design-crowdb-chunkdb-range-binding.md)
 establishes two independent maps over 1024 fixed chunk-ID hash slots:
 
 - An ordinary client resolves slot to ChunkDB server. Group 0 stores one bitmap
@@ -26,9 +26,10 @@ authoritative local chunk database. Changing a server owner therefore requires
 execution-authority handoff, while changing a storage group requires moving
 durable state. These operations have different costs and failure modes.
 
-The existing [range binding design](../design/chunkdb/design-crowdb-chunkdb-range-binding.md)
-describes service transitions. Its no-data-copy property applies only when
-storage placement is unchanged. Existing ChunkDB routing, range guards and task
+The current [slot routing design](../design/chunkdb/design-crowdb-chunkdb-range-binding.md)
+rejects ownership changes and describes the fixed service/storage maps.
+Service-only handoff avoids metadata copying only when storage placement
+remains unchanged. Existing ChunkDB routing, range guards and task
 claims are useful foundations, but neither a routing refresh nor a grace-period
 timer proves exclusive authority or complete storage transfer.
 
@@ -205,7 +206,7 @@ remain intact. Group expansion/shrink never changes the fixed hash function.
 
 #### Dependencies
 
-- [R202](R202-chunkdb-key-partition-design.md) supplies tested fixed slots,
+- [fixed slot routing](../design/chunkdb/design-crowdb-chunkdb-range-binding.md) supplies tested fixed slots,
   independent bitmap maps, typed operations, task isolation, all client paths
   and group-local atomicity. Start from its completed fixed-layout contract.
   Until R103 is implemented, keep initialized assignments unchanged; do not
