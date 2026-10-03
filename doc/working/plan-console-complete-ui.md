@@ -138,6 +138,16 @@ Baseline before domain separation: shell embedding 5 tests passed; Chunk layout
 
 ## Results
 
+- S3 fixed-cluster checkpoint: removed the endpoint editor and resolve the
+  Access origin on domain entry with abortable discovery and explicit retry.
+  Native SigV4 session credentials are retained. XML metadata is capped at
+  4 MiB, bucket rendering at 100/page, and accumulated object/upload lists at
+  1,000. These limits remain visible; object prefixes narrow later browsing.
+- S3 baseline: 2 browser cases passed (0.683/0.609 s). Updated S3/Iceberg
+  selection: 8 passed; existing S3 cases 0.648/0.585 s, deployment retry
+  0.318 s, population/XML bounds 2.6 s. TypeScript passed. Capacity unknown
+  usage and polling remain the next part of the active task.
+
 - Iceberg file-inspection checkpoint: Avro manifest lists/entries and Parquet
   footer, row-group and column metadata are rendered as fields and layouts.
   Four Iceberg browser cases passed (0.576/0.952/0.321/0.521 s), including
