@@ -23,6 +23,9 @@ use crate::mirror_shadow::MirrorShadow;
 use crate::storage::{CursorAdvance, StreamChunkStore, StreamMetadataStore, StreamRegistry};
 use crate::{Result, StreamError};
 
+mod observation;
+pub use observation::StreamMetadataObservation;
+
 #[derive(Clone, Debug)]
 pub struct StreamConfig {
     pub chunk_capacity_bytes: u64,

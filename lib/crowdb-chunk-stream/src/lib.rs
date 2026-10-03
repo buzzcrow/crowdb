@@ -27,7 +27,9 @@ pub use storage::{
     CursorAdvance, DurableCursor, MirrorStripImage, StreamChunkStore, StreamMetadataStore, StreamRegistry,
     TrimmedChunk,
 };
-pub use stream::{AppendRange, ChunkStream, ReadHint, ReadSegment, StreamConfig, StreamReader};
+pub use stream::{
+    AppendRange, ChunkStream, ReadHint, ReadSegment, StreamConfig, StreamMetadataObservation, StreamReader,
+};
 
 pub use crowdb_protocol::chunk_stream::{
     ActiveChunkDescriptor, StreamBinding, StreamBindingState, StreamExtentPage, StreamExtentPageFence,

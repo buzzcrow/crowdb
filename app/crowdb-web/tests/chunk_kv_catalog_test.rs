@@ -121,7 +121,11 @@ async fn runtime_get(app: axum::Router, query: &str) -> StatusCode {
 }
 
 async fn verify_runtime(state: &AppState, app: &axum::Router) {
-    use axum::{extract::State, routing::get, Json};
+    use axum::{
+        extract::{Query, State},
+        routing::get,
+        Json,
+    };
     use crowdb_console_shared::config::{ServerEntry, ServiceType};
     use std::sync::atomic::{AtomicU8, Ordering};
     let query = format!("epoch={}", u64::MAX);
@@ -131,14 +135,16 @@ async fn verify_runtime(state: &AppState, app: &axum::Router) {
     let owner = axum::Router::new()
         .route(
             "/partitions/:id/observation",
-            get(|State(mode): State<Arc<AtomicU8>>| async move {
+            get(|State(mode): State<Arc<AtomicU8>>, Query(query): Query<std::collections::HashMap<String, String>>| async move {
                 let mut value = serde_json::json!({ "partition_id":"ffffffffffffffff0000000000000001",
             "catalog_generation":"9", "owner_epoch":u64::MAX.to_string(), "instance_id":u64::MAX.to_string(),
-            "tree_id":"1", "stream_id":"ffffffffffffffff0000000000000001" });
+            "tree_id":"1", "stream_id":"ffffffffffffffff0000000000000001",
+            "journal":{"generation":"17", "offset":query.get("stream_offset").unwrap().parse::<usize>().unwrap(), "extent_pages":[]}});
                 match mode.load(Ordering::Acquire) {
                     1 => value["instance_id"] = "wrong-owner".into(),
                     2 => value["stream_id"] = "wrong-stream".into(),
                     3 => value["oversized"] = "x".repeat(65_537).into(),
+                    4 => value["journal"]["offset"] = 0.into(),
                     _ => (),
                 }
                 Json(value)
@@ -155,6 +161,25 @@ async fn verify_runtime(state: &AppState, app: &axum::Router) {
     entry.rpc_url = Some("127.0.0.1:41000".into());
     state.config.write().unwrap().add_server(entry).unwrap();
     assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::OK);
+    let continuation = format!("{query}&stream_generation=17&stream_offset=100");
+    assert_eq!(runtime_get(app.clone(), &continuation).await, StatusCode::OK);
+    assert_eq!(
+        runtime_get(app.clone(), &format!("{query}&stream_offset=100")).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        runtime_get(
+            app.clone(),
+            &format!("{query}&stream_generation=16&stream_offset=100")
+        )
+        .await,
+        StatusCode::CONFLICT
+    );
+    mode.store(4, Ordering::Release);
+    assert_eq!(
+        runtime_get(app.clone(), &continuation).await,
+        StatusCode::CONFLICT
+    );
     mode.store(1, Ordering::Release);
     assert_eq!(runtime_get(app.clone(), &query).await, StatusCode::CONFLICT);
     mode.store(2, Ordering::Release);

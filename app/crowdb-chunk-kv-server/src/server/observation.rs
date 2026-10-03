@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Constant-size observations of one hosted writer; never scan keys or journal data.
+//! Bounded observations of one hosted writer; never scan keys or journal data.
 
 use std::sync::{atomic::Ordering, Arc};
 
@@ -10,13 +10,22 @@ use serde_json::{json, Value};
 
 use super::ChunkKvService;
 
+mod storage;
+
 impl ChunkKvService {
     /// Samples one writer under the requested catalog and ownership fences.
     /// Counters are independently sampled; this does not acquire serving authority.
     ///
     /// # Errors
     /// Returns a conflict when routing changed, or not-found for an unhosted writer.
-    pub fn observe_partition(&self, id: Id128, generation: u64, epoch: u64) -> Result<Value, &'static str> {
+    pub fn observe_partition(
+        &self,
+        id: Id128,
+        generation: u64,
+        epoch: u64,
+        stream_generation: Option<u64>,
+        stream_offset: usize,
+    ) -> Result<Value, &'static str> {
         let catalog = self.catalog.load_full();
         if generation == 0 || catalog.generation != generation {
             return Err("catalog_changed");
@@ -43,6 +52,10 @@ impl ChunkKvService {
         let observed_at = self.monotonic_ms();
         let admitted = self.admitting.load(Ordering::Acquire);
         let live_grant = self.authority.has_live_grant(generation, observed_at);
+        let journal = partition
+            .observe_journal(stream_generation, stream_offset)
+            .map_err(|_| "stream_observation_changed")?;
+        let tree = storage::tree(partition.observe_tree());
         let result = json!({
             "partition_id":format!("{:016x}{:016x}", id.high, id.low),
             "instance_id":self.instance_id.to_string(), "catalog_generation":generation.to_string(),
@@ -55,6 +68,8 @@ impl ChunkKvService {
             "applied_seq":snapshot.applied_seq.to_string(),
             "observed_at_monotonic_ms":observed_at.to_string(),
             "sampling":"independent counters", "data_pages_read":0,
+            "tree":tree,
+            "journal":journal.as_ref().map(storage::journal),
         });
         let current = partition.snapshot();
         if !Arc::ptr_eq(&catalog, &self.catalog.load_full())
