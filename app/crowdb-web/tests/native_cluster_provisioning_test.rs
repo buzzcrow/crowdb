@@ -89,11 +89,51 @@ async fn deploy(app: &axum::Router, node: u64, kind: &str) {
     call(app, "POST", &path, body).await;
 }
 
+async fn pending_group(app: &axum::Router) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/nodes/1/disk-groups")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":1,"name":"storage"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("deploy a registered DiskDB service"));
+}
+
+async fn assert_services(app: &axum::Router) {
+    let services = call(app, "GET", "/api/servers", Value::Null).await;
+    assert_eq!(services.as_array().unwrap().len(), 18);
+    for node in 1..=3 {
+        for kind in ["kv", "diskdb", "chunkdb", "diskio", "chunk-kv", "access-server"] {
+            assert!(
+                services
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["node_id"] == node
+                        && entry["service_type"] == kind
+                        && entry["pid"].as_u64().is_some()),
+                "Node {node} missing {kind}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "Cold normal three-node chain; requires all six installed native server binaries"]
 async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("native-console-provisioning");
-    let state = AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned());
+    let mut state = AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned());
+    // Speed up only DDB observation cadence; all service deployment policies
+    // below retain normal multi-node protection, never test_single_node.
+    state.test_mode = true;
     let _services = TestServices(state.clone());
     let app = router(state.clone());
     call(
@@ -112,7 +152,6 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         )
         .await;
         deploy(&app, node, "kv").await;
-        deploy(&app, node, "diskdb").await;
     }
     call(&app, "POST", "/api/cluster/init", json!({"nodes":[1,2,3]})).await;
     call(
@@ -122,6 +161,16 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         json!({"group_id":1,"replica_id":10,"nodes":[1,2,3]}),
     )
     .await;
+    // A group can predate DDB registration. Repeating the same create after
+    // registration reconciles its owner, without an administrative bind/owner write.
+    pending_group(&app).await;
+    let hardware = crowdb_kv_client::HardwareClient::from_shared(state.kv_client().await);
+    let binding = hardware.get_bind(1, 1, 1).await.unwrap().unwrap();
+    assert_eq!((binding.store_id, binding.group_id), (0, 1));
+    assert!(hardware.get_owner(1, 1, 1).await.unwrap().is_none());
+    for node in 1..=3 {
+        deploy(&app, node, "diskdb").await;
+    }
     for node in 1..=3 {
         call(
             &app,
@@ -146,28 +195,16 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         )
         .await;
     }
+    for node in 1..=3 {
+        assert!(hardware.get_owner(1, node, node).await.unwrap().is_some());
+    }
     // All Nodes exist before sealing the fixed CDB service ownership plan.
     for kind in ["chunkdb", "diskio", "chunk-kv", "access-server"] {
         for node in 1..=3 {
             deploy(&app, node, kind).await;
         }
     }
-    let services = call(&app, "GET", "/api/servers", Value::Null).await;
-    assert_eq!(services.as_array().unwrap().len(), 18);
-    for node in 1..=3 {
-        for kind in ["kv", "diskdb", "chunkdb", "diskio", "chunk-kv", "access-server"] {
-            assert!(
-                services
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|entry| entry["node_id"] == node
-                        && entry["service_type"] == kind
-                        && entry["pid"].as_u64().is_some()),
-                "Node {node} missing {kind}"
-            );
-        }
-    }
+    assert_services(&app).await;
     let namespaces = call(&app, "GET", "/api/access/iceberg/v1/namespaces", Value::Null).await;
     assert!(namespaces["namespaces"].is_array());
     // Listing validates native signing and automatic catalog provisioning.

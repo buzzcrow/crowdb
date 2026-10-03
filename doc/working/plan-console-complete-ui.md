@@ -14,20 +14,14 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 - Commit each tab's verified implementation separately before proceeding to the
   next tab. Shared adapters belong with the tab that introduces them; remaining
   acceptance gaps stay explicit in this plan.
-- The user is redesigning ChunkDB range ownership and routing. Defer that
-  integration and retain the simple Chunk browse/detail/placement flow against
-  existing APIs. Do not redesign the backend, hard-code Group 0 as the permanent
-  Chunk store, or present current routing as validated range distribution.
-  The user's observation that chunks currently collect in Group 0 is context
-  for the deferral, not a verified storage contract. Reconnect the UI when the
-  new range contract is available. This deferral does not cover the separate
-  Chunk-KV split/tree/journal workbench or response/rendering bounds.
+- The new ChunkDB service/storage range contracts are integrated. Distinct
+  maps, generation fences, and bounded owner-specific slot windows remain
+  authoritative; no hard-coded Group 0 assumption or fabricated ranges.
 - Preserve the user's running localhost cluster and its default directory.
   Browser inspection is read-only; tests must use isolated runtime roots/ports.
-- Initial Iceberg scope is Namespace/Table metadata CRUD. Row DML and object-to-
-  Chunk reverse lookup remain human decisions in R203; other work proceeds.
-- Existing startup/persistence edits are uncommitted and need integration/lint
-  verification; three initial startup tests passed before the last scope changes.
+- Iceberg reference/file inspection and bounded S3 ObjectRecord-to-Chunk
+  diagnostics are implemented. Row DML and future metrics/authentication design
+  are outside the agreed UI scope.
 
 ## Phase 1 — startup and shell
 
@@ -36,7 +30,7 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
   process identity. Files: `app/crowdb-web/src/{main,state,standalone}.rs`,
   `src/standalone/recovery.rs`, `src/diskdb/lifecycle.rs`, `src/mgmt/cluster_init.rs`,
   `tests/standalone_startup_test.rs`. Acceptance: A1–A5.
-- [x] **Five-domain shell**: typed domain identities, per-domain scope and status,
+- [x] **Seven-domain shell**: typed domain identities, per-domain scope and status,
   health/empty/error distinction, header and pane reuse. Files: `ui/src/App.tsx`,
   `types/index.ts`, `contexts/`, `shell/`, `views/`. Acceptance: A1, A6, A10, A23.
 - [x] **KV/Cluster boundaries**: Cluster layout stops at physical services; KV left
@@ -840,3 +834,69 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   for KV/DDB/CDB/DIO/CKV/Access launches and restarts. SIGTERM and SIGKILL tests
   pass (0.26s); persistent sentinel remains. This closes the original missing
   child ownership record rather than adding a process-name kill sweep.
+
+- Failure-boundary checkpoint: DiskGroup creation now has an eight-second
+  unknown-outcome deadline and retains its in-flight ID claim. The blocked
+  authority regression passed in 8.01 seconds. Missing DDB registration is
+  reported as a partial creation rather than claiming successful ownership.
+- Reset fences new plan, listener and deployment operations before waiting for
+  accepted work; only cleanup may proceed inside that fence. Its focused
+  regression passed in 0.03 seconds. Native/cancellation acceptance remains.
+- Chunk-KV bootstrap failure now exits nonzero and retains its causal diagnostic.
+  The invalid-startup process regression passed in 0.02 seconds; both storage
+  observation regressions passed in 0.04 seconds after updating their Wal purpose.
+- KV reconfiguration now selects Groups through the shared sidebar and opens
+  Actions only when collapsed. Removed UI mutation retries. All four cases
+  passed (32.9-second command); stop/reelection case was 5.3 seconds. Temporary
+  instrumentation found millisecond metadata/probe responses and was removed.
+- Cold native-chain investigation found DDB ownership publication dominated
+  Chunk-KV bootstrap. The native fixture now uses the existing test-mode DDB
+  cadence only; every service retains normal multi-node protection policy.
+  Await the measured rerun before recording a completion claim.
+
+## Blocked
+
+R203 remains unfinished. Do not remove its backlog item, this plan, or remaining
+UI todo acceptance items.
+
+- Command: `pixi run cargo test -p crowdb-web --test native_cluster_provisioning_test -- --ignored --nocapture`.
+- Five root-cause-driven runs of the updated incomplete-DiskGroup fixture:
+  1. Existing owner/binding reconciliation assertions passed, but the first
+     Chunk-KV POST exceeded 20 seconds (27.99-second test including teardown).
+  2. Applied the existing test-mode DDB cadence; same timeout (28.14 seconds).
+     Inspection showed the request override was never serialized.
+  3. Serialized the override; DDB rejected its partial heartbeat table because
+     omitted fields had no serde defaults (6.83 seconds). No readiness retry.
+  4. Added preserved heartbeat defaults and rebuilt DDB; same Chunk-KV timeout
+     (27.35 seconds). DDB metrics confirmed frequent successful ownership sync
+     and actual allocations, so the ownership-publication explanation was
+     insufficient for the remaining wait.
+  5. Rebuilt Chunk-KV with temporary bootstrap-stage instrumentation; same
+     timeout (28.01 seconds). Captured stages reached binding, native-tree
+     initialization, both mutations, checkpoint, and root-ready. Stage output
+     lacks elapsed timing and may include detached work after the response
+     deadline; it does not prove timely catalog publication/readiness.
+- Diagnostic fixture: `.crowdb-runtime/ephemeral/native-console-provisioning-378561-0`;
+  temporary instrumentation was removed. Do not clean this fixture until its
+  logs have been reviewed; its tracked process owners enable safe cleanup.
+- Next investigation must measure journal/Tree checkpoint, catalog publication,
+  serving startup and readiness separately, and verify no detached unregistered
+  child remains. Keep the 20-second contract and normal multi-node policy.
+- The full UI suite on the preceding binary reported 81 pass / 4 fail in
+  3.8 minutes: reset deadlines in specs 13/20 and reelection status in spec 21.
+  The isolated spec 21 passed all four in 32.9 seconds; this does not establish
+  ordered-suite stability. Keep the failing assertions and slow-step reports.
+- Applicable `/implement-requirement` rule requires committing this blocked
+  state and asking the user after five root-cause-driven attempts. Request
+  authorization to continue this backend diagnosis; no R203 completion claim.
+
+- Final focused gate after local reset optimization and cadence serialization:
+  specs 13, 20, 21 and 50 all passed (13 cases; 1.5-minute command). DiskDB
+  ownership usage case dropped from 10.6 seconds to 1.7 seconds. This is the
+  affected selection, not a second successful full-suite claim.
+- All-target Clippy passed for Web, Console Shared, DDB and Chunk-KV Server;
+  Rust formatting and TypeScript E2E lint passed. Twenty DDB configuration
+  tests, seven typed lifecycle tests, durable plan recreation, reset fencing,
+  and the eight-second DiskGroup deadline regression passed.
+- Remaining reset acceptance must include client cancellation during cleanup;
+  the current reset guard is handler-owned, unlike detached deployment work.

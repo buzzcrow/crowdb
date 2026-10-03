@@ -21,6 +21,13 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
 
 ## Cluster and provisioning
 
+- [ ] **Reset versus in-flight deployment**: the full browser suite exposed
+  `Directory not empty` during reset while a recovered six-service plan was
+  launching an auxiliary service. Quiesce accepted deployments and fence new
+  plan/deployment writes before removing workspaces; cancellation must not
+  orphan an unregistered child. Preserve the regression, no mutation retries.
+
+
 - [ ] **Automatic DiskGroup data binding**: creating a DiskGroup must resolve
   its ordinary data group and establish its binding and owner automatically.
   On 2026-10-03, Store 0 had Group 0 and Store 1 had Group 1, but the current
@@ -36,21 +43,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   for disk_group 1`. Explicit owner assignment restored normal bootstrap.
   Existing incomplete groups must be reconciled automatically and readiness
   must check usable allocation routing, not only running DiskIO processes.
-- [ ] **Create DiskGroup stalls on unhealthy Group-0 RPC**: requests previously
-  waited while Node 3 RPC failed; its logs included a full watch queue and
-  `std::bad_alloc`. Restart recovered service but did not establish or fix the
-  cause. Diagnose transport failure separately; bound API wait time and show
-  actionable failure/unknown outcome instead of an indefinite spinner.
-  Verify state reconciliation before retrying a mutation.
-- [ ] **Chunk-KV normal deployment exits before readiness**: current Node 1
-  deployment on HTTP 15010 returned 502, child PID 668297 exited with status 0,
-  and the captured log tail was empty. Three DiskIO services were running;
-  metadata Store 1 / Group 1 was present. Service logs traced this occurrence
-  to DG 1's missing owner; manual owner assignment and redeployment recovered
-  all three instances. Preserve causal startup errors and report nonzero exit
-  status on bootstrap failure. Recovery is not a fix of the provisioning flow.
-
-
 - [ ] **Six-service plan recovery**: the one-dialog queue is implemented but
   now persists on the server with revision fencing. Reload restoration and
   competing-browser fencing pass. Verify native service restart,
@@ -76,14 +68,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
 
 ## Data environment and deferred design
 
-- [ ] **Chunk-KV balance leaves a ready server without splits**: observed
-  three registered instances (CKV-1/2/3 on Nodes 1/2/3), all readiness endpoints
-  returning 200, but the complete catalog contains six splits distributed
-  4/2/0 (`next=null`). User reported this as a balance bug. Check whether
-  balancing is enabled, server eligibility, trigger/threshold policy, and
-  migration scheduling/failures before assigning a root cause. Verify eventual
-  distribution under the intended policy, including a newly joined ready
-  server. Do not assume equal split counts alone prove balanced load.
 - [ ] **Chunk-KV KV Page inspection API missing**: current runtime exposes
   checkpoint/memory/maintenance counters and bounded journal extent fences,
   not root/child/leaf Page links or key/value bytes. Add bounded metadata/key
@@ -224,3 +208,29 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   PID/start identity before readiness. Concurrent Nodes do not rewrite a shared
   child list. SIGTERM and forced SIGKILL/cleanup tests pass in 0.26s; persistent
   sentinel data is preserved. Protocol regression excludes persistent namespaces.
+
+## Current verification (2026-10-04)
+
+- The complete browser run has 81 passing / 4 failing cases in 3.8 minutes;
+  all 117 frontend unit cases pass in 2.48 seconds. Three failures are reset
+  request deadlines; the fourth is the Group status read after stopping its
+  leader. These are not accepted or suppressed. Final focused checks follow
+  the latest reset optimization; preserve the remaining failures if any.
+- Eight-second DiskGroup unknown-outcome regression passes. The ID remains
+  fenced while accepted provisioning continues. Missing DDB registration now
+  identifies the incomplete owner step; exact-ID creation reconciles it.
+- Chunk-KV startup failure exits nonzero and retains causal output; startup
+  exit regression passes. Storage observation fixtures have current Wal purpose.
+- Current live catalog generation 172 has 12 splits, distributed 4/4/4 across
+  CKV-1/2/3 (`next=null`); the old 4/2/0 report no longer reproduces. No claim
+  of load equality is inferred from these counts.
+- Three-node native provisioning remains blocked after five root-cause-driven
+  attempts. DDB cadence override serialization was fixed and tested; the
+  first Chunk-KV deployment still exceeds the 20-second response contract.
+  See the implementation plan's Blocked section. No timeout was increased.
+
+- Latest affected selection after reset/cadence fixes: 13 browser cases pass
+  in 1.5 minutes (specs 13/20/21/50). The owner/usage case is 1.7 seconds versus
+  10.6 seconds before cadence serialization. Twenty DDB config tests and seven
+  lifecycle tests pass. Full ordered-suite stability and client cancellation
+  during reset remain unaccepted; no second full-suite pass is claimed.
