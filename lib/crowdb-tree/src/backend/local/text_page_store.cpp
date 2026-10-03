@@ -171,7 +171,7 @@ std::string TextPageStore::filename_for(uint64_t addr, const uint8_t *buf, size_
             return "seg-" + std::to_string(addr) + ".crb";
         }
         if (magic == kSegDirMagic) {
-            return "segdir.crb";
+            return "segdir-" + std::to_string(addr) + ".crb";
         }
     }
     // Default: page blob

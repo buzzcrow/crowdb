@@ -28,6 +28,15 @@ snapshot/handoff cause is not yet established. The repeat fixture is under
 The same thousand-key test passes on a fresh isolated fixture. Accumulated
 state/load matters; the full-suite failure remains unresolved.
 
+Resumed diagnosis confirms an independent TextPageStore defect: distinct
+segment-directory addresses alias the same segdir.crb file. The fixed backend
+uses address-specific filenames; a retained-directory reopen regression fails
+before the fix and passes afterward. Rebuilt full-stack verification no longer
+reports directory corruption, but still reads a journal cursor 414 bytes behind
+its acknowledged position. This separates directory preservation from the
+remaining metadata visibility failure; neither is evidence that the deferred
+handoff implementation may be applied without review.
+
 The [S3 data path](../design/access-server/s3/design-crowdb-access-s3.md)
 requires bounded admission and continued progress under concurrent peers.
 Single-concurrency recipes pass but do not certify defaults or resolve stalls.

@@ -16,7 +16,7 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - [ ] **Positive rclone/FUSE acceptance**: resume mandatory metadata, mounted operations and remount gates after R204 decisions and implementation.
 - [x] **Container and recipes**: default SDK and configured CLI ordinary/multipart copy pass, with exact bytes after all service crash/hang recovery and persisted-volume restart. Full pixi run test-single-node-container passes. README documents pinned versions/configurations and unsupported workflows.
 - [x] **Applicable quality gates**: library/server tests, shared encoding/auth tests, official embedded-copy error test, fmt/clippy, Python compilation, shell syntax and release policy checks pass.
-- [ ] **Accumulated full-stack gate**: resume without skipping tests after R205 fixes journal cursor regression/snapshot corruption.
+- [~] **Accumulated full-stack gate**: diagnose the first storage divergence, fix confirmed upstream defects and rerun without skipping tests. TextPageStore currently aliases distinct segment-directory addresses to one filename; add a retained-directory regression before fixing it. Journal cursor regression remains under investigation.
 - [ ] **Completion cleanup**: retain requirement/index/plan until all positive client and full-stack gates pass, then remove them in the cleanup commit.
 
 ## Verification
@@ -27,6 +27,8 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 
 ## Evidence
 
+- Resumed storage diagnosis finds a deterministic TextPageStore defect: every segment-directory address maps to segdir.crb. The retained repeat fixture has five distinct directory addresses aliased to that file; tree diagnostics identify committed segment directory unreadable rather than a generic snapshot failure. New distinct-address/reopen regression fails before the fix and passes afterward. Use segdir-<address>.crb for new writes; existing manifest filenames still decode. All 589 C++ tree tests pass. Rebuild real-stack service binaries before validating accumulated S3 behavior; journal regression is not yet attributed to this defect or to deferred handoff work.
+- Rebuilt full stack still fails thousand-key deletion after 164.424 seconds: expected=341456, new=341663, durable=341042. No segment-directory corruption occurs in this run, separating the two defects. Preserve fixture under .crowdb-runtime/persistent/s3-client-failures/default-suite-addressed-directories. Its binary WAL contains accepted chunk advances to 341249 and 341456 at slots 8434 and 8441. These are durable-record evidence, not by themselves proof of the exact visibility race. C++ gate 589/589, FFI 49/49, tree-lint exit 0 with existing warnings, fmt/clippy pass.
 - Copy and batch deletion are complete before beginning this requirement.
 - Existing Iceberg upload encoding already validates bounded AWS chunks, five checksums, signed chunk chains and trailers; general S3 currently validates only MD5 and payload SHA256. Reuse the decoder while retaining protocol-specific authority/admission.
 - R203 records the separate principal/grant authority decision; recipes operate within the current listener realm.

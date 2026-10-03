@@ -5,6 +5,7 @@
 #include "crowdb-tree/backend/text_codec.h"
 #include "crowdb-tree/backend/text_page_store.h"
 #include "crowdb-tree/btree/debug_codec.h"
+#include "crowdb-tree/maptable/mapping_persist.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>
@@ -217,6 +218,31 @@ TEST(TextPageStore, ManifestMapsMultipleBlobs)
     std::string manifest = read_file(s->dir() + "/manifest.crb");
     EXPECT_NE(manifest.find("addr=100"), std::string::npos);
     EXPECT_NE(manifest.find("addr=200"), std::string::npos);
+}
+
+TEST(TextPageStore, RetainsDirectoriesAtDistinctAddressesAcrossReopen)
+{
+    const std::string           base = temp_dir();
+    std::vector<uint8_t>        previous;
+    std::vector<uint8_t>        current;
+    const std::vector<DirEntry> previous_entries = {
+        DirEntry{.generation = 1, .image_addr = 8192}
+    };
+    encode_segment_directory(previous_entries, &previous);
+    encode_segment_directory({}, &current);
+    std::unique_ptr<TextPageStore> store;
+    ASSERT_TRUE(TextPageStore::open(base, 0, 0, &store).ok());
+    ASSERT_TRUE(store->write_at(16384, previous.data(), previous.size()).ok());
+    ASSERT_TRUE(store->write_at(32768, current.data(), current.size()).ok());
+    ASSERT_TRUE(store->sync().ok());
+    store.reset();
+    ASSERT_TRUE(TextPageStore::open(base, 0, 0, &store).ok());
+    std::vector<uint8_t> read_previous(previous.size());
+    std::vector<uint8_t> read_current(current.size());
+    ASSERT_TRUE(store->read_at(16384, read_previous.data(), read_previous.size()).ok());
+    ASSERT_TRUE(store->read_at(32768, read_current.data(), read_current.size()).ok());
+    EXPECT_EQ(read_previous, previous);
+    EXPECT_EQ(read_current, current);
 }
 
 TEST(TextPageStore, SizeReturnsMaxAddr)
