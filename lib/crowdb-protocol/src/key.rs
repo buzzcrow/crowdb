@@ -38,6 +38,8 @@ pub use chunk_kv::{
 pub use chunk_stream::{StreamBindingKey, StreamExtentPageKey, StreamManifestHeadKey, StreamManifestKey};
 pub use chunk_task::{ChunkTaskKey, FinalizeChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey};
 pub use chunkdb::{ChunkdbRangeBindingKey, ChunkdbRangeMigrationKey};
+mod chunk_slot;
+pub use chunk_slot::{ChunkServiceSlotsKey, ChunkSlotMapHeadKey, ChunkStorageSlotsKey};
 pub use common::{NodeKey, RackKey};
 pub use diskdb::{
     BindMapKey, BusyBlockKey, DiskGroupKey, DiskGroupUsageKey, DiskKey, FreeBlockKey, InstanceKey,

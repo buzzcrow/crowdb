@@ -310,6 +310,7 @@ pub mod common_type;
 pub use common_type::{DiskGroupId, GroupId, InstanceId, NodeId, RackId, ReplicaId, StoreId};
 
 pub mod chunk_id;
+pub mod chunk_slot;
 pub use chunk_id::{
     generate as generate_chunk_id, is_zero as is_zero_chunk, ChunkIdParts, CHUNK_TYPE_BTREE_PAGE,
     CHUNK_TYPE_ICEBERG_TABLE, CHUNK_TYPE_PAGE_INDEX, CHUNK_TYPE_REPO, CHUNK_TYPE_S3, CHUNK_TYPE_STREAM,

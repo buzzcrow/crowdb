@@ -10,8 +10,8 @@ Follow-ups: [R103](../backlog/R103-chunkdb-range-migration.md),
 Implement typed chunk operations and isolated tasks over two independent slot
 maps, with all chunk metadata in fixed nonzero direct KV groups.
 
-Status: Plan prepared on 2026-10-03. Coding is on hold by user instruction.
-No implementation task is active or verified. Delete this temporary plan after
+Status: Implementation started on 2026-10-03 at the user's request.
+Protocol layout and map IO are verified; production wiring is active. Delete this temporary plan after
 implementation and verified requirement completion.
 
 ## Delivery boundary and readiness
@@ -48,20 +48,24 @@ implementation and verified requirement completion.
 
 ## Phase 1: Fixed layout and control-plane publication
 
-- [ ] **Slot contract**: introduce a shared logical-slot type and fixed 1024-slot
+- [x] **Slot contract**: introduce a shared logical-slot type and fixed 1024-slot
   bitmap codec, with a layout version and canonical ChunkId hash input. Keep
   surviving chunk-type wire values stable. Define new-layout slot derivation
   explicitly; do not silently reinterpret persisted 16-bit bucket bindings.
   Files: `lib/crowdb-protocol/src/chunk_id.rs`,
   `lib/crowdb-protocol/src/types/common.rs`, protocol `tests/`.
-- [ ] **Binding records**: add separate keys/values for per-instance service
+- [x] **Binding records**: add separate keys/values for per-instance service
   bitmaps and per-group storage bitmaps. Include independently identified map
   versions; retain one record for an instance with an empty bitmap. Validate
   bitmap size, owner identity, complete coverage, overlap and nonzero eligible
   destinations before building immutable in-memory slot lookup arrays.
   Files: `lib/crowdb-protocol/src/key/chunkdb.rs`, protocol binding types,
-  `app/crowdb-chunkdb/src/routing.rs`.
-- [ ] **Atomic initialization**: publish each complete initial map through the
+  `lib/crowdb-protocol/src/chunk_slot/`.
+- [x] **Map IO primitives**: publish complete maps through a head-conditional
+  atomic batch; read with fixed-cutoff pagination and head revision revalidation.
+  Reject legacy/orphan records and conflicting initialization. Files:
+  `lib/crowdb-kv-client/src/binding/chunk_slots.rs` and its integration tests.
+- [~] **Atomic initialization wiring**: publish each complete initial map through the
   group-0 atomic write primitives, including a version/header in the same
   publication. Make retries idempotent and detect conflicting initialization.
   Readers use a consistent scan cutoff or header revalidation before publishing
@@ -221,6 +225,12 @@ implementation and verified requirement completion.
 
 ## Results
 
+- 2026-10-03: protocol chunk-slot/chunk-ID suites (13 tests), map IO integration
+  suite (6 tests), protocol/KV-client all-target clippy and workspace Rust format
+  check passed. Includes concurrent initializers, common publication revision,
+  300-owner paginated reload, empty owners, corruption, legacy and orphan rejection.
+- New primitives are not yet connected to production startup; group-0 fallback
+  and legacy writers still require the wiring tasks above. No end-to-end claim.
 - Source review found reusable group-local conditional atomic writes, task claim
   generations, lock-free binding caches and group-0 batch publication.
 - Remaining work is tracked above; no implementation completion is implied.

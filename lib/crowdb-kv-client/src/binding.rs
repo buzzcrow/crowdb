@@ -3,7 +3,9 @@
 
 //! Key → service-instance binding framework and strategies.
 
+mod chunk_slots;
 pub mod chunkdb_strategy;
+pub use chunk_slots::ChunkSlotMapClient;
 pub mod framework;
 pub mod range;
 

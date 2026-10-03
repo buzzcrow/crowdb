@@ -3,8 +3,15 @@
 
 ### R202: chunkdb — Key partition model and storage ownership
 
-Status: Implementation remains deferred for architecture review. Current scope
-is explicitly all Chunk metadata and associated tasks hashed to selected nonzero
+Current delivery uses fresh isolated state, three nodes and three selected
+nonzero Chunk-storage KV groups, plus control-plane group 0. Both initial slot
+maps remain fixed; same-owner restart and endpoint refresh are in scope.
+Service handoff, KV-group expansion/shrink and migration belong to R103;
+legacy-layout conversion is unsupported. Related acceptance cases below are
+follow-up integration contracts, not gates for this fixed-topology delivery.
+See the [implementation plan](../working/plan-chunkdb-slot-routing.md).
+
+Current scope is all Chunk metadata and associated tasks hashed to selected nonzero
 direct Paxos KV groups. Group 0 is excluded from their storage destinations.
 First complete and verify this model; later
 [R207](R207-chunkdb-repo-metadata-chunk-kv.md) migrates selected user-data state

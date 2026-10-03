@@ -118,7 +118,7 @@ Caches, selected ORC and container engine workflows remain separate.
   three nonzero chunk-storage groups plus control-plane group 0; defer dynamic
   handoff/migration to R103. No generic Repo type. Use fresh test state and reject
   unsupported legacy conversion. [Implementation plan](../working/plan-chunkdb-slot-routing.md)
-  is prepared; coding is on hold. R207 does not block this direct-KV stage.
+  is active. R207 does not block this direct-KV stage.
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
   **Deferred beyond the direct-KV stage.** After R202 is verified, migrate
