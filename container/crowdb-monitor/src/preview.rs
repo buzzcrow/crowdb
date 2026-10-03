@@ -306,6 +306,12 @@ async fn bootstrap_services(
         "CROWDB_ICEBERG_MANAGE_TOKEN".into(),
         credentials.iceberg_manage_token().into(),
     )]);
+    let reader = credentials
+        .server_env()
+        .lines()
+        .find_map(|line| line.strip_prefix("CROWDB_ICEBERG_READ_TOKEN=").map(str::to_owned))
+        .ok_or(PreviewError::Invalid("Iceberg reader credential is absent"))?;
+    web_environment.insert("CROWDB_ICEBERG_READ_TOKEN".into(), reader);
     for name in ["CROWDB_S3_PUBLIC_URI", "CROWDB_ICEBERG_PUBLIC_URI"] {
         let value = access
             .env

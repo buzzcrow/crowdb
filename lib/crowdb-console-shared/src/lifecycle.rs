@@ -107,51 +107,10 @@ pub struct DeployedDiskdb {
     pub launch: LocalLaunchSpec,
 }
 
-/// Stop and relaunch a locally deployed auxiliary service from its retained
-/// launch specification.
-///
-/// # Errors
-/// Returns an error when the old process cannot stop, the replacement cannot
-/// start, or its configured readiness endpoint does not become healthy.
-pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunchSpec) -> Result<u32> {
-    if process_is_alive(pid) {
-        stop_pid_with_timeout(pid, Duration::from_secs(15))?;
-    }
-    let workdir = Path::new(&spec.workdir);
-    let log_dir = workdir.join("log");
-    std::fs::create_dir_all(&log_dir)?;
-    let output_path = log_dir.join(format!("{server_id}.restart.stdout.log"));
-    let output = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&output_path)?;
-    let mut command = detached_command(&spec.program);
-    command
-        .args(&spec.args)
-        .envs(&spec.env)
-        .current_dir(workdir)
-        .stdout(Stdio::from(output.try_clone()?))
-        .stderr(Stdio::from(output))
-        .kill_on_drop(false);
-    let mut child = command.spawn()?;
-    let new_pid = child.id().ok_or_else(|| Error::Validation {
-        field: "pid".into(),
-        message: format!("restarted {server_id} child has no pid"),
-    })?;
-    if let Some(url) = &spec.readiness_url {
-        wait_for_diskdb_ready(&mut child, url, &output_path, new_pid, Duration::from_secs(60)).await?;
-    } else {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        if let Some(status) = child.try_wait()? {
-            return Err(Error::UpstreamRpc {
-                node_id: server_id.into(),
-                status: format!("restarted process exited early with {status}"),
-            });
-        }
-    }
-    std::mem::forget(child);
-    Ok(new_pid)
-}
+mod restart;
+pub use restart::restart_local_service;
+mod native;
+pub use native::prepare_native_launch;
 
 /// Inputs for a local `ChunkDB` deployment.
 #[derive(Debug, Clone)]
@@ -1152,6 +1111,7 @@ pub async fn deploy_diskdb_local(
         endpoint,
         pid,
         launch: LocalLaunchSpec {
+            env_file: None,
             program: launch_binary.to_string_lossy().into_owned(),
             args: diskdb_launch_args(req, &config_path, workspace_dir),
             workdir: workspace_dir.to_string_lossy().into_owned(),
@@ -1263,7 +1223,7 @@ pub async fn deploy_chunkdb_local(
         .current_dir(workspace_dir)
         .stdout(Stdio::from(output.try_clone()?))
         .stderr(Stdio::from(output))
-        .kill_on_drop(false);
+        .kill_on_drop(true);
     if let Some(interval) = req.metrics_interval {
         command.arg("--metrics-interval").arg(interval.to_string());
     }
@@ -1286,6 +1246,7 @@ pub async fn deploy_chunkdb_local(
         endpoint,
         pid,
         launch: LocalLaunchSpec {
+            env_file: None,
             program: launch_binary.to_string_lossy().into_owned(),
             args: chunkdb_launch_args(req, &config_path, &log_dir),
             workdir: workspace_dir.to_string_lossy().into_owned(),
@@ -1375,6 +1336,7 @@ pub async fn deploy_diskio_local(
         endpoint,
         pid,
         launch: LocalLaunchSpec {
+            env_file: None,
             program: launch_binary.to_string_lossy().into_owned(),
             args: diskio_launch_args(&config_path),
             workdir: workspace_dir.to_string_lossy().into_owned(),

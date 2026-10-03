@@ -12,6 +12,9 @@ import { ActivityLog } from '../panels/ActivityLog';
 import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, serverLabel, storeLabel } from '../utils/entityDisplay';
 import { useMetricsPoll, buildMetricsFetcher } from '../utils/useMetricsPoll';
 import { MetricsRegion, ElectionStateRegion, ReadStateRegion } from '../components/MetricsRegion';
+import type { ServerSummary } from '../api';
+import { isAuxiliaryKind, serviceNames } from '../services/client';
+import { ServiceProperties } from '../services/ServiceProperties';
 
 const KvPanel = lazy(() => import('../panels/KvPanel').then((m) => ({ default: m.KvPanel })));
 
@@ -46,6 +49,7 @@ function displayEntityId(entity: SelectedEntity): string {
 }
 
 interface InspectorProps {
+  allServers?: ServerSummary[];
   readonly?: boolean;
   modules?: Record<string, boolean>;
   nodes?: Node[];
@@ -63,7 +67,7 @@ interface InspectorProps {
  * Right-side inspector. Reacts to SelectionContext: Details + Activity for any
  * selection.
  */
-export function Inspector({ readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, pendingSelectionRef }: InspectorProps) {
+export function Inspector({ allServers = [], readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, pendingSelectionRef }: InspectorProps) {
   const { selectedEntity, clearSelection, selectEntity } = useSelection();
   const { setDomain } = useDomain();
   const [activeTab, setActiveTab] = useState<TabId>('details');
@@ -71,7 +75,7 @@ export function Inspector({ readonly, modules: _modules, nodes = [], racks = [],
   if (!selectedEntity) return null;
 
   const displayType = selectedEntity.type === 'Server'
-    ? (selectedEntity.serviceType === 'diskdb' ? 'DiskDB' : 'KV')
+    ? (isAuxiliaryKind(selectedEntity.serviceType) ? serviceNames[selectedEntity.serviceType] : selectedEntity.serviceType === 'diskdb' ? 'DiskDB' : 'KV')
     : selectedEntity.type;
   const displayName = selectedEntity.name || displayEntityId(selectedEntity);
 
@@ -100,7 +104,9 @@ export function Inspector({ readonly, modules: _modules, nodes = [], racks = [],
 
       <div className="tw-flex-1 tw-overflow-y-auto">
         {activeTab === 'details' && (
-          <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} />
+          selectedEntity.type === 'Server' && isAuxiliaryKind(selectedEntity.serviceType)
+            ? <ServiceProperties service={allServers.find(service => service.id === selectedEntity.id)} />
+            : <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} />
         )}
         {activeTab === 'activity' && <ActivityLog />}
       </div>

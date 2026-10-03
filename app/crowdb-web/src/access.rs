@@ -63,6 +63,9 @@ fn origin(state: &AppState, protocol: &str) -> Result<Option<String>, ApiError> 
     if state.managed_mode {
         return Ok(None);
     }
+    if let Some(value) = crate::services::access::origin(state, protocol) {
+        return validate_origin(&value).map(Some);
+    }
     let config = state.config.read().unwrap();
     config
         .servers
@@ -73,10 +76,11 @@ fn origin(state: &AppState, protocol: &str) -> Result<Option<String>, ApiError> 
 }
 
 pub(crate) async fn connections(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(
-        json!({"iceberg":origin(&state,"iceberg")?,"s3":origin(&state,"s3")?,
-        "configurable":!state.managed_mode,"max_request_bytes":BODY_LIMIT}),
-    ))
+    let iceberg = origin(&state, "iceberg")?;
+    let reader = crate::services::access::reader(&state, iceberg.as_deref()).map_err(err_502)?;
+    Ok(Json(json!({"iceberg":iceberg,"s3":origin(&state,"s3")?,
+        "iceberg_ready":reader.is_some() && iceberg.is_some(),
+        "configurable":!state.managed_mode,"max_request_bytes":BODY_LIMIT})))
 }
 
 #[derive(Deserialize)]
@@ -89,6 +93,14 @@ pub(crate) async fn configure(
     State(state): State<AppState>,
     Json(connection): Json<Connection>,
 ) -> Result<Json<Value>, ApiError> {
+    if connection.protocol == "iceberg" {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorBody {
+                error: "Iceberg is bound to this Console deployment".into(),
+            }),
+        ));
+    }
     let environment =
         protocol_environment(&connection.protocol).ok_or_else(|| err_400("Unknown Access protocol"))?;
     if state.managed_mode || std::env::var_os(environment).is_some() {
@@ -160,7 +172,25 @@ pub(crate) async fn proxy(
         .query()
         .map_or(String::new(), |query| format!("?{query}"));
     let url = format!("{target}{}{query}", if path.is_empty() { "/" } else { path });
-    let headers = request_headers(request.headers());
+    let mut headers = request_headers(request.headers());
+    if protocol == "iceberg" && matches!(request.method().as_str(), "GET" | "HEAD") {
+        let token = crate::services::access::reader(&state, Some(&target))
+            .map_err(err_502)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ErrorBody {
+                        error: "Cluster Catalog reader is not configured on the Console server".into(),
+                    }),
+                )
+            })?;
+        headers.insert(
+            "authorization",
+            format!("Bearer {token}")
+                .parse()
+                .map_err(|_| err_502("Invalid cluster Catalog credential"))?,
+        );
+    }
     let method = request.method().clone();
     let body = axum::body::to_bytes(request.into_body(), BODY_LIMIT)
         .await

@@ -101,6 +101,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         state = state.with_process_config(&config);
         state = state.with_management_token(std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN")?)?;
     }
+    if let Ok(token) = std::env::var("CROWDB_ICEBERG_READ_TOKEN") {
+        state = state.with_iceberg_reader(token)?;
+    }
     if let Some(path) = &args.registry {
         state = state.with_launch_registry(path.clone())?;
         let started = state.start_configured_services().await?;

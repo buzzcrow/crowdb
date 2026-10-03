@@ -21,7 +21,7 @@ export interface TreeNode {
   role?: 'Leader' | 'Follower' | 'Remote' | 'Unknown';
   parentIds?: Record<string, string | number>;
   /** Service flavor for `Server` nodes: KV vs DiskDB. */
-  serviceType?: 'kv' | 'diskdb';
+  serviceType?: import('../types').ServiceKind;
   /** HwStatus enum (0-6) for DiskGroup/Disk in Capacity view. */
   hwStatus?: number;
 }

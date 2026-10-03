@@ -45,6 +45,9 @@ pub struct ConsoleConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalLaunchSpec {
     pub program: String,
+    /// Private credentials remain in a bounded file, never in the launch registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     pub workdir: String,

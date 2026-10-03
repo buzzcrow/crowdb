@@ -1219,6 +1219,7 @@ dependencies = [
 name = "crowdb-web"
 version = "0.2.1"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "axum",
  "clap",

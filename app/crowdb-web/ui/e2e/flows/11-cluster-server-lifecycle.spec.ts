@@ -328,3 +328,52 @@ test.describe('cluster · server lifecycle', () => {
     }
   });
 });
+
+test('auxiliary deployments use typed parameters, identities and lifecycle menus', async ({ page, baseURL }) => {
+  page.setDefaultTimeout(3000);
+  await seedRackAndNode(baseURL!, 495, 495);
+  const services: object[] = [];
+  const requests: { kind: string; instance_id: string; [key: string]: unknown }[] = [];
+  const stopped: string[] = [];
+  await page.route('**/api/servers', route => route.fulfill({ json: services }));
+  await page.route('**/api/stores?*', route => route.fulfill({ json: [{ store_id: '7', nodes: [], groups: [] }] }));
+  await page.route('**/api/nodes/495/disk-groups', route => route.fulfill({ json: [{ id: 8, node_id: 495, rack_id: 495, name: 'Capacity disks', status: 'active' }] }));
+  await page.route('**/api/nodes/495/services/deploy', route => {
+    const body = route.request().postDataJSON(); requests.push(body);
+    services.push({ id: `${body.kind}-${body.instance_id}`, node_id: 495, service_type: body.kind, pid: 12345, health: 'unknown' });
+    return route.fulfill({ status: 201, json: { id: `${body.kind}-${body.instance_id}` } });
+  });
+  await page.route('**/api/services/*/stop', route => {
+    stopped.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ json: { pid: null } });
+  });
+  await page.goto('/?domain=Cluster');
+  const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  await expect(sidebar.getByText('N-495', { exact: true })).toBeVisible({ timeout: 3000 });
+  for (const [kind, label] of [['chunkdb', 'CDB (ChunkDB)'], ['diskio', 'DiskIO'], ['chunk-kv', 'Chunk-KV'], ['access-server', 'Access Server']]) {
+    await sidebar.getByText('N-495', { exact: true }).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: `Deploy ${label}`, exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: `Deploy ${label}`, exact: true });
+    await dialog.getByLabel('Instance ID', { exact: true }).fill('9007199254740993');
+    if (kind === 'diskio') await dialog.getByLabel('Disk group', { exact: true }).selectOption('8');
+    if (kind === 'chunk-kv') await dialog.getByLabel('Metadata store', { exact: true }).selectOption('7');
+    await dialog.getByRole('button', { name: 'Deploy service', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    const item = sidebar.getByText(`${label} · ${kind}-9007199254740993`, { exact: true });
+    await expect(item).toBeVisible();
+    await item.click();
+    await expect(page.getByRole('complementary', { name: 'Entity inspector' }).getByText(label, { exact: true })).toBeVisible();
+    await expect(page.locator(`[data-id="SERVICE-${kind}-9007199254740993"]`)).toBeVisible();
+    await item.click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: 'Stop CrowDB Storage', exact: true })).toHaveCount(0);
+    await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
+    await expect.poll(() => stopped.includes(`/api/services/${kind}-9007199254740993/stop`), { timeout: 3000, intervals: [100] }).toBe(true);
+  }
+  expect(requests.map(request => request.kind)).toEqual(['chunkdb', 'diskio', 'chunk-kv', 'access-server']);
+  expect(requests.every(request => request.instance_id === '9007199254740993' && request.test_single_node === false)).toBe(true);
+  expect(requests[1]).toMatchObject({ disk_group_id: 8 });
+  expect(requests[1]).not.toHaveProperty('http_port');
+  expect(requests[2]).toMatchObject({ metadata_store_id: 7 });
+  expect(requests[3]).toMatchObject({ s3_port: 9091, http_port: 9092 });
+  expect(requests[3]).not.toHaveProperty('rpc_port');
+});

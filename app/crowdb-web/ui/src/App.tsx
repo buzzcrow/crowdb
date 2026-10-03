@@ -12,6 +12,7 @@ import { useLogicalTree } from './data/useLogicalTree';
 import { useCapacityTree } from './data/useCapacityTree';
 import { Header, ClusterHealth } from './shell/Header';
 import { Sidebar } from './shell/Sidebar';
+import { DeployServiceDialog } from './services/DeployServiceDialog';
 import { ToastContainer } from './components/ToastContainer';
 import { TreeNode } from './components/Tree';
 import { ContextMenu, useContextMenu } from './components/ContextMenu';
@@ -320,7 +321,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     }));
   }, [runMutation, clearSelection]);
 
-  const menuContext = { readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, setDialog, capacityUsage };
+  const menuContext = { readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
   const buildMenuItems = useClusterMenus(menuContext);
   const buildCapacityMenuItems = useCapacityMenus(menuContext);
 
@@ -508,6 +509,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       )}
 
       {!ownsSidebar && <Sidebar
+        allServers={allServers}
         racks={racks}
         servers={servers}
         stores={stores}
@@ -549,6 +551,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           {managed && <MonitorSummary apiPrefix={apiPrefix} />}
           {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
+            allServers={allServers}
             racks={racks}
             nodes={nodes}
             servers={servers}
@@ -584,7 +587,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       </main>
 
       {!ownsSidebar && <Suspense fallback={null}>
-        <Inspector readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
+        <Inspector readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
       </Suspense>}
 
       {selectedEntity && !ownsSidebar && (
@@ -742,6 +745,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           await handleRefresh();
         }}
       />
+      {dialog.deployAuxiliary && <DeployServiceDialog key={`${dialog.deployAuxiliary.kind}/${dialog.deployAuxiliary.nodeId}`} {...dialog.deployAuxiliary}
+        servers={allServers} stores={stores} diskGroups={nodeDiskGroups[dialog.deployAuxiliary.nodeId]?.diskGroups ?? []}
+        onClose={closeDialogs} onSuccess={handleRefresh} />}
 
       {dialog.compactZones && (
         <ZoneSelectDialog
