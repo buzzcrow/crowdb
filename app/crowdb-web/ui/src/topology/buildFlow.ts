@@ -345,7 +345,7 @@ export function buildFlowForDomain(
   switch (domain) {
     case Domain.Cluster:
       return buildPhysicalFlow(racks, nodes, servers, _nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, stores);
-    case Domain.Chunk:
+    case Domain.Capacity:
       return buildCapacityFlow(racks, nodes, diskdbNodeIds, nodeHealthById, nodeDiskGroups);
     default:
       return buildLogicalFlow(stores);

@@ -88,7 +88,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/tree/design-crowdb-tree-chunk-storage.md`                         | Mirrored page packs, manifests, rebuild, reclaim.       |
 | `doc/design/tree/design-crowdb-tree-engine-flush-flow.md`                     | L0→L1 flush path and bottlenecks.                       |
 | `doc/design/tree/design-crowdb-tree-engine-snapshot-flow.md`                  | Snapshot persist path and bottlenecks.                  |
-| `doc/design/console/design-crowdb-console-ui.md`                              | Web UI shell, canvas, inspector, KV operator.           |
+| `doc/design/console/design-crowdb-console-ui.md`                              | UI domains, operator flow, Chunk and Chunk-KV inspection. |
 | `doc/design/protocol/design-crowdb-protocol-key.md`                           | Binary/text key encoding and evolution.                 |
 | `doc/design/protocol/design-crowdb-protocol-types.md`                         | Wire types, ID aliases, schemas, re-exports.            |
 | `doc/design/chunkdb/design-crowdb-chunkdb-mirror-to-ec.md`                    | Mirror-to-EC tasks, leases, publication, recovery.      |

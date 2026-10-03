@@ -183,13 +183,15 @@ test.describe('shell · embedding', () => {
     }
   });
 
-  test('domain toggle switches between Cluster, KV, and Chunk', async ({ page }) => {
+  test('domain toggle switches between all seven domains', async ({ page }) => {
     await step('shell: goto', () => page.goto('/'));
 
     // Domain toggle buttons are visible.
     await expect(page.getByTestId('domain-cluster')).toBeVisible({ timeout: 3_000 });
     await expect(page.getByTestId('domain-kv')).toBeVisible();
     await expect(page.getByTestId('domain-chunk')).toBeVisible();
+
+    for (const domain of ['capacity', 'chunk-kv', 'iceberg', 's3']) await expect(page.getByTestId(`domain-${domain}`)).toBeVisible();
 
     // Default domain is Cluster.
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');

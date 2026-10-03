@@ -4,13 +4,13 @@
 # Complete Console UI Plan
 
 Upstream: [R203](../backlog/R203-console-complete-ui.md).
-Goal: five domains with explicit scope, real operations/diagnostics, persistent
+Goal: seven domains with explicit scope, real operations/diagnostics, persistent
 standalone bootstrap, and the same UI in Container with topology writes disabled.
 
 ## Baseline and scope
 
-- User authorized implementation after spec; record decisions needing review in
-  the backlog rather than interrupting the user's six-hour absence.
+- User approved the seven-domain design and authorized planning and implementation.
+  The formal UI design §§18–21 defines the expanded scope and known gaps.
 - Preserve the user's running localhost cluster and its default directory.
   Browser inspection is read-only; tests must use isolated runtime roots/ports.
 - Initial Iceberg scope is Namespace/Table metadata CRUD. Row DML and object-to-
@@ -67,7 +67,45 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 - [ ] **Permanent design and cleanup**: update Console/UI architecture for delivered
   scope. Remove R203/index/plan only after its full accepted scope is delivered.
 
-## Verification
+## Seven-domain implementation sequence
+
+- [x] **Independent domains**: split Capacity and Chunk in the enum, header,
+  embedding URL parser, Sidebar/selection dispatch, and placement links. Add
+  Chunk-KV as its own workbench. `domain=Chunk` now means the Chunk explorer;
+  existing capacity links and fixtures must use `domain=Capacity` explicitly.
+  Files: UI `types`, `main`, `App`, `shell`, `views`, `topology`, `chunk`.
+- [x] **Chunk-KV catalog**: bounded catalog-page endpoint pinned to head
+  generation, exact identities, unavailable states; present range map and selected
+  partition artifact/overlay. Resolve placement only from matching known service
+  endpoints; unmatched placement remains explicit. Head/page limits: 1/2 MiB;
+  at most 100 returned partitions; five-second observation deadline.
+  Files: Web `chunk_kv.rs`, UI `chunk-kv/`, `chunk_kv_catalog_test.rs`, E2E 55.
+- [ ] **Chunk-KV runtime observation**: add authoritative server placement and runtime
+  observations, then bounded tree/journal inspection without reading all pages.
+  Files: Web `chunk_kv/`, UI `chunk-kv/`, protocol/client observation adapters.
+- [ ] **Paxos overview**: default KV to Group/Replica management; retain Data
+  subview with explicit scope and Group 0 protection. Files: `views/KvView`,
+  KV panels and corresponding topology/data E2E specs.
+- [ ] **Typed services**: consolidate all six service lifecycle operations in
+  Cluster, eliminate non-KV fallthrough, add validated deployment forms and
+  current-cluster dependency inputs. Files: Web lifecycle domain, shared launch
+  adapters, `useClusterMenus`, deploy dialogs, physical server projections.
+- [ ] **Chunk sources**: establish actual Repo metadata routing and implement
+  source/type filters, bounded per-source cursors and partial coverage. Files:
+  Web `chunk`, ChunkDB/Chunk-KV metadata adapters, UI `chunk`.
+- [ ] **Capacity and Access**: distinguish unknown usage, suspend inactive
+  polling, connect S3 and Iceberg to the same cluster's Access deployment;
+  finish bounded native file inspection and real data acceptance.
+- [ ] **Integration acceptance**: scope restoration, layout-to-disk/node
+  navigation, split parent/child overlays, owner movement, stale cursors, large
+  populations, unavailable backend, and capability restrictions. Verify every
+  visible step against the affected browser specs; commit coherent gated work.
+
+Baseline before domain separation: shell embedding 5 tests passed; Chunk layout
+2 tests passed (0.888 s and 0.814 s). Browser command:
+`pixi run bash -c 'cd app/crowdb-web/ui && npx playwright test --config=e2e/realBackend.config.ts e2e/flows/00-shell-embedding.spec.ts e2e/flows/54-chunk-layout.spec.ts'`.
+
+## Verification commands and coverage
 
 - Unit: scope transitions, prefix/type parsing, Strip layout identity, capability
   combination, safe error/value presentation, request bodies.
@@ -158,3 +196,61 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
   `owned disk-group has no bind dg_id=1`; no runtime/config data was changed to
   conceal this condition. Native managed acceptance has valid registration/binds.
   Investigate this existing standalone deployment state separately.
+
+## Iceberg file inspector — approved design, 2026-10-03
+
+- [ ] **Inspection service (partially implemented)**: add authenticated, generation-bound reference
+  inspection to Access table routes; reuse ManifestListReader/ManifestReader and
+  footer parsing with bounded work and responses. Extend footer diagnostic fields.
+  Files: Access `iceberg/inspection/`, table routes, Iceberg `file/parquet/`.
+- [ ] **Explorer UI**: retain Catalog operations and replace primary JSON views
+  with the reference tree, structured metadata and Parquet layout/column detail.
+  Use two columns for Iceberg: no right property panel; refresh/table actions and
+  column details belong in the center.
+  Files: Web `ui/src/iceberg/`, `views/IcebergView.tsx`, native JSON transport.
+- [ ] **Focused acceptance**: parser/integration tests, Iceberg browser spec,
+  isolated TPC loader data, fmt/Clippy/TypeScript. Baseline existing Iceberg
+  browser case: 0.732 s. Preserve the persistent localhost deployment.
+- [ ] **Document and commit**: update Console UI architecture and record results;
+  keep the broader requirement/plan open for unrelated remaining acceptance.
+
+Tests: Iceberg footer metadata tests; Access table inspection HTTP tests; Web
+Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata chain.
+
+- Iceberg two-column layout verified: the right panel is absent, table refresh
+  and actions remain in the center. The browser spec passes both catalog and
+  file-inspection cases (0.778 s / 0.969 s): exact 64-bit snapshot identity,
+  100-entry replacement pages, signed continuation history, selected footer
+  retained during tree paging, and credential-change clearing.
+- Frontend inspection responses are capped at 4 MiB; four branch pages and
+  32 previous cursors are retained. Structured collections and schema tables
+  render bounded pages. Inspection admission reserves 64 MiB per parser through
+  the existing atomic 128 MiB budget. Full native data-chain acceptance remains
+  pending; the browser fixture is not evidence for native parser completeness.
+
+- Fixed-cluster entry verified: opening Iceberg automatically loads Catalog and
+  namespaces without endpoint/token fields or a Load action. Read credentials
+  stay in Web process state, are injected only for GET/HEAD, and cannot be
+  redirected by the configuration API. Native mutations retain authorization.
+  Proxy tests: 7 passed. Browser cases: 3 passed (0.688/0.893/0.343 s).
+  Web/Monitor all-target Clippy and frontend TypeScript passed.
+
+
+## Seven-domain checkpoint verification
+
+- Frontend TypeScript and 29 focused unit tests passed. Shell, Chunk layout, and
+  Chunk-KV E2E: 9 passed. Existing Chunk cases took 0.870 s / 0.488 s, within
+  baseline. New Chunk-KV cases took 0.676 s / 0.238 s.
+- Capacity E2E 50–53: 14 passed. The existing datacenter totals test conditionally
+  skipped its live totals comparison because its DiskDB fixture did not report
+  usage; tree/Inspector navigation passed. This is not proof of live usage totals.
+- Real Group 0 catalog integration passed: missing catalog, bounded 100+5
+  windows, exact u64 fields, stale generation, invalid offset, corrupt checksum.
+- Rust fmt and Web all-target Clippy passed after factoring the long test setup.
+- Tree pages, stream extents/watermarks, multi-backend Chunk enumeration, expanded
+  deployment lifecycle, Paxos overview, and same-cluster S3 setup remain pending.
+- Release Web rebuilt and the existing 9090 Web process replaced; all six
+  original KV/DiskDB PIDs survived. The earlier test Access binding was removed
+  with a config backup. `/healthz` returns 200, and the real Chunk-KV catalog
+  route returns an explicit 404 because this cluster has no initialized catalog.
+  Browser inspection confirms seven visible top-level domains and that state.

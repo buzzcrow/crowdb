@@ -49,6 +49,7 @@ export interface AddNodeRequest {
 let apiBase = '/api';
 let managementToken = '';
 export function setManagementToken(token: string): void { managementToken = token; }
+export function getManagementToken(): string { return managementToken; }
 
 export function setApiBase(prefix?: string): void {
   const trimmed = (prefix ?? '').trim().replace(/\/+$/, '');

@@ -44,11 +44,13 @@ describe('Header', () => {
     expect(getByTitle('Cluster health: Healthy')).toBeTruthy();
   });
 
-  it('renders all five domain toggle buttons', () => {
+  it('renders all seven domain toggle buttons', () => {
     const { getByTestId } = renderHeader();
     expect(getByTestId('domain-cluster')).toHaveTextContent('Cluster');
     expect(getByTestId('domain-kv')).toHaveTextContent('KV');
-    expect(getByTestId('domain-chunk')).toHaveTextContent('Capacity');
+    expect(getByTestId('domain-capacity')).toHaveTextContent('Capacity');
+    expect(getByTestId('domain-chunk')).toHaveTextContent('Chunk');
+    expect(getByTestId('domain-chunk-kv')).toHaveTextContent('Chunk-KV');
     expect(getByTestId('domain-iceberg')).toHaveTextContent('Iceberg');
     expect(getByTestId('domain-s3')).toHaveTextContent('S3');
   });
@@ -76,10 +78,10 @@ describe('Header', () => {
     expect(onShowTopology).toHaveBeenCalledOnce();
   });
 
-  it('clicking the Chunk domain button calls onShowCapacity', () => {
+  it('clicking the Capacity domain button calls onShowCapacity', () => {
     const onShowCapacity = vi.fn();
     const { getByTestId } = renderHeader({ onShowCapacity });
-    fireEvent.click(getByTestId('domain-chunk'));
+    fireEvent.click(getByTestId('domain-capacity'));
     expect(onShowCapacity).toHaveBeenCalledOnce();
   });
 

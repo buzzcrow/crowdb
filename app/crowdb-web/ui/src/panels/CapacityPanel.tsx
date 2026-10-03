@@ -24,6 +24,7 @@ import { DiskGroupView } from './capacity/DiskGroupView';
 import { DiskView } from './capacity/DiskView';
 
 interface CapacityPanelProps {
+  active?: boolean;
   instances: DiskdbInstanceInfo[];
   usage: CapacityUsageResponse | null;
   hardwareCapacity?: HardwareCapacitySummary | null;
@@ -48,6 +49,7 @@ function scopeFromEntity(entity: SelectedEntity | null | undefined): CapacitySco
 }
 
 export function CapacityPanel({
+  active = true,
   instances,
   usage,
   hardwareCapacity,
@@ -69,10 +71,10 @@ export function CapacityPanel({
   // data arrives — no flicker because React only re-renders when the
   // parent passes new props.
   useEffect(() => {
-    if (loading) return;
+    if (!active || loading) return;
     const id = setInterval(() => { void refreshRef.current?.(); }, 3000);
     return () => clearInterval(id);
-  }, [loading]);
+  }, [active, loading]);
 
   const scope = scopeFromEntity(selectedEntity);
 
@@ -156,15 +158,15 @@ export function CapacityPanel({
   }, [readonly, success, error, log, onRefresh]);
 
   const selectRack = useCallback((id: number) => {
-    selectEntity({ type: 'Rack', id: String(id), domain: Domain.Chunk });
+    selectEntity({ type: 'Rack', id: String(id), domain: Domain.Capacity });
   }, [selectEntity]);
 
   const selectNode = useCallback((id: number) => {
-    selectEntity({ type: 'Node', id: String(id), domain: Domain.Chunk });
+    selectEntity({ type: 'Node', id: String(id), domain: Domain.Capacity });
   }, [selectEntity]);
 
   const selectDg = useCallback((id: number) => {
-    selectEntity({ type: 'DiskGroup', id: String(id), parentIds: { disk_group_id: id }, domain: Domain.Chunk });
+    selectEntity({ type: 'DiskGroup', id: String(id), parentIds: { disk_group_id: id }, domain: Domain.Capacity });
   }, [selectEntity]);
 
   const selectDisk = useCallback((dId: string, dgIdVal: number, rackIdVal: number, nodeIdVal: number) => {
@@ -172,7 +174,7 @@ export function CapacityPanel({
       type: 'Disk',
       id: dId,
       parentIds: { rack_id: rackIdVal, node_id: nodeIdVal, disk_group_id: dgIdVal, disk_id: dId },
-      domain: Domain.Chunk,
+      domain: Domain.Capacity,
     });
   }, [selectEntity]);
 

@@ -127,7 +127,7 @@ describe('Sidebar · KV logical projection', () => {
 
 describe('Sidebar · Chunk hierarchy', () => {
   it('renders node → disk group → disk; DiskDB server is not shown in Capacity view', () => {
-    const { getByText, queryByText } = renderSidebar(Domain.Chunk);
+    const { getByText, queryByText } = renderSidebar(Domain.Capacity);
     expect(getByText('N-10', { exact: true })).toBeTruthy();
     // Physical disk group is under the node.
     expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();

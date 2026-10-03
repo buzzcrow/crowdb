@@ -6,9 +6,14 @@
 Depends on: [`design-crowdb-console.md`](design-crowdb-console.md), [`../kv/design-crowdb-kv.md`](../kv/design-crowdb-kv.md) §15.4.6
 Satisfies: [`../kv/design-crowdb-kv.md`](../kv/design-crowdb-kv.md) §15.4.6
 
-This document covers the **frontend SPA design decisions only**:
-what we chose and why. Requirements (the *what*) live in
-`../kv/design-crowdb-kv.md`; backend API contracts live in `design-crowdb-console.md`.
+This document defines the Console SPA's information architecture, navigation,
+and inspection workflows. Backend contracts belong to
+[`design-crowdb-console.md`](design-crowdb-console.md).
+
+Sections 1, 3, 6.1, 12.1, and 18–21 describe the agreed target UI, including
+capabilities awaiting implementation. Section 21 records those gaps. The
+embedding, lifecycle, and transport details in other sections describe the
+implementation baseline; they do not imply that the target UI is complete.
 
 ## Table of Contents
 
@@ -29,7 +34,7 @@ what we chose and why. Requirements (the *what*) live in
 - [10. Accessibility](#10-accessibility)
 - [11. Testing](#11-testing)
 - [12. Domain responsibilities](#12-domain-responsibilities)
-  - [12.1 Five domains](#121-five-domains)
+  - [12.1 Seven domains](#121-seven-domains)
   - [12.2 Scope and navigation invariants](#122-scope-and-navigation-invariants)
   - [12.3 Swagger UI removal](#123-swagger-ui-removal)
   - [12.4 Batch Add Disk](#124-batch-add-disk)
@@ -44,13 +49,19 @@ what we chose and why. Requirements (the *what*) live in
   - [16.1 Console-shared client](#161-console-shared-client)
   - [16.2 CLI subcommands](#162-cli-subcommands)
 - [17. Native Access and Chunk diagnostics](#17-native-access-and-chunk-diagnostics)
+- [18. Fixed-cluster operator flow](#18-fixed-cluster-operator-flow)
+- [19. Chunk explorer](#19-chunk-explorer)
+- [20. Chunk-KV workbench](#20-chunk-kv-workbench)
+- [21. Implementation boundaries](#21-implementation-boundaries)
 
 ## 1. Goals (recap)
 
 - Single page, no full-page navigation.
-- Five first-class domains: Cluster, KV, Capacity, Iceberg, and S3. Each
-  owns navigation, operations, and details. Capacity retains the internal
-  `Chunk` domain identity for embedding compatibility.
+- Seven first-class domains: Cluster, KV, Capacity, Chunk, Chunk-KV, Iceberg,
+  and S3. Each owns navigation, operations, and details. Capacity and Chunk
+  have distinct identities; embedding compatibility must not conflate them.
+- One Console deployment operates one fixed cluster. Access browsing uses
+  that cluster's services without a per-page connection wizard.
 - Full operator surface: rack/node/server lifecycle, store/group/replica
   CRUD, KV data plane, disk-group/disk lifecycle, capacity
   visualization.
@@ -75,31 +86,36 @@ what we chose and why. Requirements (the *what*) live in
 
 ## 3. Information Architecture
 
-The shared header selects Cluster, KV, Capacity, Iceberg, or S3. Each domain
-owns its left navigation, center operations, and selected-resource details.
+The shared header selects Cluster, KV, Capacity, Chunk, Chunk-KV, Iceberg,
+or S3. Each domain owns its left navigation, central workbench, and optional
+selected-resource properties.
 
 ```text
 +---------------------------------------------------------------------+
-| Cluster | KV | Capacity | Iceberg | S3             health / refresh  |
+| Cluster | KV | Capacity | Chunk | Chunk-KV | Iceberg | S3            |
 +----------------------+-------------------------------+--------------+
 | Domain scope         | Domain operations and state   | Details      |
 | Physical hierarchy   | Rack/Node/Service layout      | Physical     |
-| Store/Group/Replica  | KV CRUD and scans             | Logical      |
-| Disk/Zone or Chunk   | Capacity or Strip layout      | Placement    |
-| Namespace/Table      | Catalog metadata operations   | Table head   |
+| Store/Group/Replica  | Paxos state / Data subview    | Logical      |
+| DiskGroup/Disk/Zone  | Capacity and allocation       | Placement    |
+| Chunk type/source   | Chunk list / Strip layout     | References   |
+| Node/Server/Partition| Range map / Tree / Journal    | Selection    |
+| Catalog/Table/Files | Structured file inspector (two columns)      |
 | Bucket/Prefix        | Objects and multipart state   | Object       |
 +----------------------+-------------------------------+--------------+
 ```
 
 - Cluster renders physical resources through services. Logical KV resources
   belong to KV. DiskDB-owned disks remain reachable from their physical service.
-- Capacity has independent Capacity and Chunk subpanels. Chunk queries and
-  fragment placement do not duplicate the physical topology canvas.
-- Iceberg and S3 use the same workbench layout, input styles, activity journal,
-  and result/error feedback. They own protocol authentication and resource scope.
-- Selection is stored by domain. Workbenches remain mounted when hidden, keeping
-  inputs, credentials, queries, selected resources, and subpanel state for the
-  browser session. Reload discards session credentials and activity.
+- Capacity owns physical storage and allocation; Chunk owns logical chunks
+  and their layouts; Chunk-KV owns range partitions and their tree/journal
+  state. Cross-links preserve these boundaries.
+- Iceberg uses a two-column resource tree and central file inspector; file
+  properties and selected column details stay in the center. S3 retains its
+  object detail panel. Both share input styles and session activity feedback.
+- Selection and filters are stored by domain. Hidden workbenches preserve
+  bounded navigation state but suspend polling. Deep links identify the domain,
+  resource, and subview; secrets never enter URLs or persisted navigation.
 - Container renders this same UI. Physical topology/deployment controls are
   read-only; a checked management bearer enables supported logical/data and
   DiskDB maintenance operations. Native Access credentials authorize native
@@ -107,17 +123,25 @@ owns its left navigation, center operations, and selected-resource details.
 
 ### 3.1 Selection & cross-jump
 
-Selection is `{ type, id, parentIds }` where `type ∈ { Rack, Node,
-Server, Store, Group, Replica, DiskGroup, Disk }`. Clicking any tree
-row or canvas node sets it.
+Selection identifies a domain, resource kind, full stable identity, and parent
+scope. Partition selections retain catalog generation and owner epoch for
+observation consistency; selecting a resource does not freeze its owner.
 
-Cross-jump (one click) is supported for the common case only:
+Cross-jumps include:
 - KV `Replica` → "Show on node": switch to Cluster, expand the owning
   `Node`, select the matching server entry.
-- Cluster `Server`/`Group` → "Show in KV": switch to KV, expand the
+- Cluster KV `Server` → "Show in KV": switch to KV, expand the
   owning `Store → Group`, select the unified row.
 
-No navigation stack / back button in v1.
+- Chunk-KV Partition → Tree/Journal → Chunk → Strip → Capacity Disk →
+  Cluster Node. Metadata location links to the exact Paxos Group or Chunk-KV
+  Partition; business ownership is a separate link.
+- Iceberg and S3 link to lower storage objects only when an authoritative
+  mapping is available. A missing mapping is explicit, never inferred from a
+  name or prefix.
+
+Breadcrumbs and return navigation restore the originating selection, filters,
+and bounded page state. Large hierarchies expand lazily to the selected item.
 
 ## 4. Visual Language
 
@@ -179,24 +203,23 @@ surface with store/group selectors, scan results, and an action bar.
 
 ## 6.1 KV Operator Panel (center panel)
 
-A full-width center panel for KV data-plane operations, toggled from the
-header via a "KV" button (mutually exclusive with the topology canvas).
-Replaces the former Inspector KV tab, which was too cramped at
-320px for comfortable key browsing.
+A Group opens its Paxos overview by default: membership, leader, replica
+health, and supported operational state. The full-width Data subview contains
+the KV operator. A Replica selection opens that replica's state and links to
+its physical server. Store and Group lifecycle controls remain in KV.
 
 **Design choices:**
 
-- **Flat single-page layout (no tabs)** — action bar on top, scan
+- **Data subview layout** — action bar on top, scan
   results below. The user can scan, see results, and act (put/get/delete)
   without switching tabs.
-- **Store/group selector with "All Groups" option** — when selected,
-  scan iterates over every group and merges results (labeled by group).
-  Demo inject randomly distributes keys across groups. This avoids
-  forcing the user to pick a group when they want a store-wide view.
-- **Auto-scan on first load** — when store and group are both set, the
-  panel triggers a scan automatically so the user sees data immediately.
-- **Independent of domain** — KV operations are always logical
-  (store/group), regardless of which domain's canvas is active.
+- **Explicit scope** — reads identify Store/Group. A store-wide scan has bounded
+  fan-out and per-group continuations; mutations require an explicit supported
+  target and do not randomly choose a writable group.
+- **Lazy data reads** — entering the Data subview may read its first bounded
+  page. Opening a Paxos overview does not scan the keyspace.
+- **Group 0 protection** — general data mutations remain forbidden in both
+  the UI and server.
 
 **Scan pagination (`start_after` token):**
 
@@ -235,7 +258,7 @@ The SPA is mountable as a sub-component with a minimal props interface
 - **Standalone** — `index.html` mounts at the document root with defaults;
   `embed.ts` exports the component for hosts.
 
-The `initialDomain` prop (values: `Cluster | KV | Chunk | Iceberg | S3`) replaces the
+The `initialDomain` prop (values: `Cluster | KV | Capacity | Chunk | Chunk-KV | Iceberg | S3`) replaces the
 former `initialViewMode`. The `modules` opt-out keys are
 `'racks' | 'nodes' | 'stores' | 'groups' | 'replicas' | 'kv' |
 'activity'` — the former `'swagger'` key is removed (Swagger UI is no
@@ -295,22 +318,27 @@ needed for the lean surface.
 
 ## 12. Domain responsibilities
 
-### 12.1 Five domains
+### 12.1 Seven domains
 
-- **Cluster**: Datacenter → Rack → Node → deployed KV/DiskDB services and
-  assigned disk resources. Center layout ends at physical services. Add,
-  deploy, restart, stop, and delete use existing lifecycle operations.
-- **KV**: Store → Group → Replica. The center operator supports initialization,
-  scan/get/put/delete, binary values, group-specific cursors, and demo data.
+- **Cluster**: Datacenter → Rack → Node → service instance. Owns deployment,
+  start/restart/stop/removal, configuration, and logs for KV, DiskDB, ChunkDB,
+  DiskIO, Chunk-KV, and Access Server. Service-specific readiness remains
+  distinct from process liveness.
+- **KV**: Store → Group → Replica. The center defaults to Paxos management;
+  a Data subview supports scan/get/put/delete with explicit scope.
   Store 0 / Group 0 is read-only to general data mutation APIs as well as UI.
-- **Capacity**: DiskDB instance/group/disk/zone capacity and maintenance, plus a
-  Chunk subpanel with bounded queries and routed layout inspection. Strip
-  sequence identifies layouts; visible cards describe actual Mirror/EC
-  fragments and separate current placement observations.
-- **Iceberg**: Namespace/Table metadata CRUD through native REST. Schema,
-  snapshots, and metadata file references are real catalog responses. Files
-  are references rather than fabricated data-file enumeration; row DML has no
-  console execution path.
+- **Capacity**: Node/DiskGroup/Disk/Zone capacity, allocation, and supported
+  maintenance. Missing usage is unknown, not zero usage or free capacity.
+  Service lifecycle links back to Cluster.
+- **Chunk**: Type/source filters, bounded listing, metadata location, business
+  ownership, and real Strip/Mirror/EC placement (§19).
+- **Chunk-KV**: Rack → Node → Server → owned Partition; range distribution,
+  split and transfer state, Tree, Journal, and recovery dependencies (§20).
+- **Iceberg**: Catalog → Table → Snapshot → Manifest List → Manifest → File,
+  with namespaces grouping tables. The center renders structured fields and
+  file-specific content. Parquet inspection shows footer, row-group layout,
+  sizes, and column metadata without reading data pages by default. Table
+  operations use native REST; row DML has no console execution path.
 - **S3**: Bucket/object CRUD, prefixes and cursors, HEAD/ETag, bounded preview,
   downloads, multipart transfer/inspection/abort through native signed requests.
 
@@ -469,14 +497,14 @@ Edge cases:
 
 ## 15. Capacity Panel (Canvas Visualization)
 
-The Chunk domain's Capacity sub-view renders capacity visualization
+The Capacity domain renders capacity visualization
 that scales to thousands of zones per disk and tens of thousands of
 blocks per zone. Canvas with offscreen double-buffering handles 84×84
 zone grids and 181×181 bitmap grids without flicker. DOM/SVG
 rendering at that scale causes layout thrash and jank.
 
-`CapacityPanel.tsx` renders when `domain === Chunk` and the Capacity
-sub-view is active. The panel
+`CapacityPanel` renders in the independent Capacity domain and suspends its
+focused polling while inactive. The panel
 content depends on the selected entity (from `SelectionContext`):
 
 - **Cluster (Datacenter or no selection)** — per-rack breakdown. One
@@ -642,12 +670,20 @@ crowdb-rpc; no direct talk to `crowdb-diskdb`.
   topology. Container receives finite origins from its profile; standalone
   accepts a persisted HTTP origin without embedded credentials or path.
   Access currently has no Group 0 endpoint registration to discover.
+- Entering Iceberg automatically loads the Catalog belonging to the Console
+  deployment. The resource sidebar has no endpoint or credential inputs and no
+  connection action. Unavailable services show an explicit retry state.
+  The fixed reader credential stays in Web process state and is used only for
+  GET/HEAD. The endpoint cannot be changed through the browser configuration API;
+  a separate cluster requires a separate deployment binding.
 - The Web proxy accepts a fixed protocol and operation path, preserves native
   status/authentication/ETag/range headers, forwards native credentials, and
   refuses redirects. Request URLs cannot select arbitrary upstream hosts.
 - Iceberg mutations use catalog REST requirements and updates. UUID assertions
   identify the table; concurrent commits retain forms and require metadata
-  refresh. Reader/manager/writer authorization remains native service policy.
+  refresh. They use the existing authorized management session; automatic read
+  access does not authorize mutations. Reader/manager/writer authorization remains
+  native service policy.
 - S3 signs canonical upstream host/path/query/payload in the browser using
   WebCrypto. Secrets remain session inputs, excluded from persisted config and
   activity. Large uploads use serial 8 MiB parts, bounded by the proxy's 16 MiB
@@ -669,3 +705,213 @@ crowdb-rpc; no direct talk to `crowdb-diskdb`.
 - Chunk Strip rendering uses 20-entry pages with stable sequence selection;
   multipart upload and part lists use native continuation markers. Changing
   native credentials clears the corresponding resource scope and loaded data.
+
+## 18. Fixed-cluster operator flow
+
+- A new cluster opens Cluster. An established deployment restores the last
+  valid domain and selection. There is no per-domain connect action.
+- The operator path is Cluster deployment → KV and Capacity configuration →
+  Iceberg/S3 use → lower-layer diagnosis through resource links. This is
+  guidance, not a mandatory wizard or a requirement that every service type
+  exist for every operation.
+- Cluster presents readiness per capability: authoritative registration and
+  quorum, relevant data groups, DiskIO and storage bindings, writable capacity,
+  ChunkDB/Chunk-KV ownership, and Access protocol availability as applicable.
+  A live process alone does not make a capability ready. Unavailable workflows
+  identify the missing dependency and link to its owning domain.
+- All service lifecycle operations target an exact instance and service type.
+  Unsupported types fail explicitly; they never fall through to KV actions.
+  Async operations retain progress, outcome, and actionable errors. Removing a
+  dependency must not silently cascade to dependent resources.
+- Iceberg and S3 use this deployment's Access binding. Protocol setup belongs
+  to cluster configuration; browsing does not require endpoint/token forms.
+  Automatic read access does not grant mutation privileges. Protocol-specific
+  authorization still applies; secret delivery and S3 signing integration are
+  implementation work, not permission to expose a server credential.
+- The right property panel is contextual: useful for Cluster, KV, Capacity,
+  Chunk, and Chunk-KV selections; optional for S3 objects; absent in Iceberg.
+  Full Tree/Journal/file views remain central, not squeezed into properties.
+
+Additional invariants:
+
+- **I6 — Cluster binding:** every page and cross-link uses the same cluster;
+  a test deployment cannot supply one domain of another cluster's Console.
+- **I7 — Bounded observation:** lists, trees, graph layouts, requests, fan-out,
+  response bytes, caches, and history have explicit bounds. Filtering never
+  requires loading the complete dataset into the browser.
+- **I8 — Honest completeness:** unknown, unavailable, partial, empty, and zero
+  are distinct. Counts identify their scope and completeness; unavailable
+  global totals are not obtained by an unbounded foreground scan.
+- **I9 — Observation identity:** responses carry their source and observation
+  identity/time. Ownership changes invalidate stale continuations or trigger
+  an explicit refresh; mixed catalog generations cannot form one split map.
+- **I10 — Stable selection:** changing scope cancels stale work. Paging does
+  not silently replace an inspected object. Hidden pages suspend polling;
+  navigation retains bounded state and exact integer identities.
+
+## 19. Chunk explorer
+
+Chunk is a top-level domain independent of Capacity. Its purpose is to find
+logical chunks across metadata stores and explain their physical placement.
+
+### 19.1 Types, metadata sources, and ownership
+
+- Chunk type is the protocol's extensible `ChunkType`: Repo, Wal, BtreePage,
+  PageIndex, Stream, S3, and IcebergTable. Unknown numeric values remain
+  inspectable. A type is not a metadata-backend discriminator.
+- Metadata source is an independent dimension: Paxos KV Store/Group or
+  Chunk-KV Partition. Supporting chunks for Chunk-KV trees/streams and large
+  populations such as repository chunks must be discoverable through their
+  authoritative source, not assumed to share one persistence route.
+- Distinguish business owner (repository/tree/stream/table), metadata location,
+  serving instance, and physical placement. The word "owner" alone is
+  insufficient as a column or property label.
+- Read actual bindings and records to resolve these relationships. Legacy
+  unattributed records and unresolved mappings display an explicit unknown
+  value. Type alone never supplies a fabricated ownership link.
+
+### 19.2 Navigation and detail
+
+- Left navigation starts with All types and individual types, then optionally
+  scopes by metadata source and Store/Group or Partition. Large populations
+  remain paged lists rather than one tree node per chunk.
+- Central filters include type, exact ID or prefix, state, metadata source,
+  Store/Group or Partition, business owner, and physical node/disk when that
+  relationship is queryable. Unsupported filters are identified explicitly.
+- Results expose full ID, type, state, capacity/length, metadata location, and
+  business owner when known. Selecting a result opens structured metadata and
+  Strip/Mirror/EC layout. Stable Strip sequence identifies selection.
+- The property panel describes the selected strip/fragment and provides
+  links to Capacity Disk, Cluster Node, owning Tree/Journal, or metadata
+  Group/Partition. Placement observations retain their own timestamps.
+
+### 19.3 Query contract
+
+- A query is bounded at the authoritative source by count, bytes, work, and
+  deadline. Type/source filtering should be routed or indexed there. If only
+  a bounded scan window is available, report scanned versus matched counts
+  and continuation explicitly; an empty window does not mean no matches.
+- Multi-source queries use bounded fan-out and source-aware continuation.
+  Missing sources are named as partial coverage; retries cannot skip their
+  unseen records by advancing a shared cursor past them.
+- Do not infer global totals from one page or scan every backend to draw type
+  badges. Stable identity deduplication must retain provenance and surface
+  conflicting observations rather than arbitrarily selecting an owner.
+- Chunk detail and placement can fail independently. A missing placement
+  lookup does not erase a successfully read chunk or its disk identities.
+
+## 20. Chunk-KV workbench
+
+Depends on [Chunk-Backed Range KV](../chunkds/design-crowdb-chunk-kv.md),
+[Chunk KV Server](../chunkds/design-crowdb-chunk-kv-server.md), and
+[Chunk Stream](../chunkds/design-crowdb-chunk-stream.md).
+
+### 20.1 Identity and navigation
+
+The independently owned result of a split is a Partition: stable identity,
+half-open binary key range, owner epoch, tree, and distinct journal stream.
+Partition count is independent of node count. The left tree is:
+
+```text
+Rack
+  Node
+    Chunk-KV Server
+      Partition [start, end)
+```
+
+Catalog assignment and observed runtime ownership are shown separately when
+they disagree or one is unavailable. An unavailable server's assigned
+partitions remain visible; unknown placement is an explicit unresolved scope.
+Server lifecycle actions link to Cluster.
+
+### 20.2 Distribution and split maps
+
+- The default center shows ordered key ranges grouped by server/node. Selecting
+  a rack or node highlights its ownership while preserving global context.
+  Color and labels identify serving, recovery, split, transfer, and failure.
+- Arbitrary binary ranges have no meaningful linear width. Default blocks
+  communicate order and boundaries; an optional size mode requires measured
+  bytes and labels unavailable measurements.
+- A separate relationship view shows parent/child lineage, split boundary,
+  active dependencies, and source/target transfer. Historical transitions are
+  displayed only if retained evidence exists; current catalog state is not a
+  complete split history.
+- Maps aggregate at large scale and progressively load bounded partition
+  pages. Search accepts exact partition identity or a key whose owning range
+  is resolved by the catalog. Zoom never fetches the entire tree or journal.
+- A catalog generation defines a coherent range map. Refresh exposes stale
+  observations and reconciles the selected partition by stable identity.
+
+### 20.3 Partition detail
+
+Selecting a partition opens a central workbench with breadcrumbs to the map:
+
+- **Overview:** exact range, owner, epoch, catalog generation, lifecycle,
+  serving readiness, and current split/transfer phase with source and target.
+- **Tree:** tree ID, root/checkpoint identity, memory and persisted structure,
+  and available page statistics. Actual pages expand lazily with depth/count/
+  byte limits and link to their supporting chunks. Missing inspection data is
+  explicit; a generic diagram must not masquerade as the real tree.
+- **Journal:** stream identity, durable/applied/checkpoint frontiers, trim
+  position, active and sealed extents, and recovery lag. An extent links to
+  its underlying chunk. Sequence numbers and byte offsets are separately
+  labelled; counter differences are meaningful only within the same stream
+  and sequence namespace. Record decoding is explicit and bounded.
+- **Dependencies:** retained parent overlay, inheritance boundary, pinned
+  tree/stream references, and materialization progress. Show phase and measured
+  work; do not invent percentage completion from a phase name.
+
+The right panel holds selected page/extent properties. Tree and Journal use
+the full central workbench rather than becoming property-panel-only views.
+
+### 20.4 Split and transfer correctness
+
+- Split retains the parent's partition/tree/stream identity and lower range,
+  and creates one child for the upper range. Both initially remain on the same
+  owner. Distribution is a subsequent balance operation.
+- A child has its own journal but can recover through an exact base tree,
+  a range-filtered parent-stream suffix through cutover, and then its own WAL.
+  Journal visualization uses distinct parent and child tracks with labelled
+  cutover boundaries; their byte offsets are never concatenated as one stream.
+- Serving does not imply independent recovery. Until materialization and the
+  authoritative catalog update clear the overlay, retained references and
+  pins remain visible. UI links must preserve the relevant generations.
+- During transfer, distinguish catalog assignment, target preparation/catch-up,
+  and actual serving authority. A target appearing in the catalog does not by
+  itself prove readiness or permit the source to resume writes.
+- Initial scope is observation. Manual split, migration, and repair controls
+  need separate operation contracts before becoming active UI actions.
+
+## 21. Implementation boundaries
+
+The agreed target is not a claim that all inspection or lifecycle APIs exist.
+The remaining integration boundaries are:
+
+- Capacity and Chunk now have separate domain identities, and Chunk-KV has a
+  top-level catalog workbench. `domain=Capacity` selects physical capacity;
+  `domain=Chunk` selects the Chunk explorer, including for embedding hosts.
+  Legacy capacity links must explicitly migrate to `Capacity`.
+- Extend typed Cluster lifecycle dispatch beyond KV/DiskDB. Reuse existing
+  deployment capabilities where present; unsupported types must not fall
+  through to another service's operation.
+- Make Paxos overview the KV default and scope data operations to its Data
+  subview. Keep Group 0 protections and bounded reads.
+- Resolve the authoritative Repo and other Chunk-KV metadata records and
+  their query paths. The inspected `ChunkStore` currently uses Paxos KV bucket
+  bindings; the current Web list queries ChunkDB owners and post-filters scan
+  windows. Neither establishes complete multi-backend enumeration.
+- The catalog workbench reads one referenced page with a generation-bound
+  continuation, verifies checksums and range fences, and returns at most 100
+  entries. It reads the head again before responding. Budgets are 1 MiB per
+  head, 2 MiB per page, 4096 page references, and a five-second request deadline.
+  Validation covers the referenced page, not a full global catalog audit.
+- Join Chunk-KV catalog, runtime health, and transition observations. Existing
+  `HostedPartitionHealth` contains identity, epoch, lifecycle, durable sequence,
+  and applied sequence; it is not a tree-page or stream-extent inspector.
+  Add bounded observation APIs for the missing detail rather than fabricate it.
+- Complete S3 fixed-cluster authentication/signing integration and keep native
+  privileges explicit. Complete real Iceberg reference-chain and footer
+  acceptance; browser fixtures alone do not establish parser coverage.
+- Verify large populations, partial owners, stale generations, unavailable
+  dependencies, and cross-domain return navigation. Validate against the same
+  cluster used by the Console, with isolated fixtures clearly distinguished.

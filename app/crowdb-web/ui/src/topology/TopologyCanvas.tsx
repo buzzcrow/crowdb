@@ -82,7 +82,7 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
  * be highlighted on the canvas. */
 function selectedNodeId(entity: SelectedEntity): string | null {
   const p = entity.parentIds || {};
-  if (entity.domain === Domain.Cluster || entity.domain === Domain.Chunk) {
+  if (entity.domain === Domain.Cluster || entity.domain === Domain.Capacity) {
     switch (entity.type) {
       case 'Datacenter': return `DC-${DEFAULT_DC_ID}`;
       case 'Rack': return `R-${entity.id}`;
@@ -96,7 +96,7 @@ function selectedNodeId(entity: SelectedEntity): string | null {
         if (!p.node_id) return null;
         return entity.domain === Domain.Cluster ? `CL-DG-${p.node_id}-${entity.id}` : `CDG-${p.node_id}-${entity.id}`;
       case 'Disk':
-        return entity.domain === Domain.Chunk && p.node_id && p.disk_group_id
+        return entity.domain === Domain.Capacity && p.node_id && p.disk_group_id
           ? `CD-${p.node_id}-${p.disk_group_id}-${entity.id}`
           : null;
       case 'Store': return p.node_id ? `S-${p.node_id}-${entity.id}` : null;
@@ -300,7 +300,7 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
         <div className="tw-w-full tw-h-full tw-flex tw-items-center tw-justify-center tw-text-muted tw-text-sm">
           {domain === Domain.Cluster
             ? 'No racks registered. Add a rack to get started.'
-            : domain === Domain.Chunk
+            : domain === Domain.Capacity
               ? 'No racks registered. Add a rack to get started.'
               : 'No stores yet. Switch to a deployed node and add a store.'}
         </div>

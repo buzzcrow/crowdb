@@ -223,7 +223,7 @@ test.describe('chunk · capacity · zone', () => {
       });
 
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');

@@ -86,17 +86,17 @@ export function Header({
           <Database className="tw-h-3.5 tw-w-3.5" /> KV
         </button>
         <button
-          data-testid="domain-chunk"
-          onClick={() => { setDomain(Domain.Chunk); onShowCapacity?.(); }}
+          data-testid="domain-capacity"
+          onClick={() => { setDomain(Domain.Capacity); onShowCapacity?.(); }}
           className={cn(
             'tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors',
-            domain === Domain.Chunk ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg',
+            domain === Domain.Capacity ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg',
           )}
-          aria-pressed={domain === Domain.Chunk}
+          aria-pressed={domain === Domain.Capacity}
         >
           <HardDrive className="tw-h-3.5 tw-w-3.5" /> Capacity
         </button>
-        {[{ domain: Domain.Iceberg, id: 'iceberg', Icon: Layers }, { domain: Domain.S3, id: 's3', Icon: Package }].map(({ domain: target, id, Icon }) => (
+        {[{ domain: Domain.Chunk, id: 'chunk', Icon: Package }, { domain: Domain.ChunkKV, id: 'chunk-kv', Icon: Database }, { domain: Domain.Iceberg, id: 'iceberg', Icon: Layers }, { domain: Domain.S3, id: 's3', Icon: Package }].map(({ domain: target, id, Icon }) => (
           <button key={id} data-testid={`domain-${id}`} onClick={() => setDomain(target)}
             className={cn('tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors', domain === target ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg')}
             aria-pressed={domain === target}>
