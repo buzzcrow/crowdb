@@ -686,21 +686,20 @@ crowdb-rpc; no direct talk to `crowdb-diskdb`.
   GET/HEAD. The endpoint cannot be changed through the browser configuration API;
   a separate cluster requires a separate deployment binding.
 - The Web proxy accepts a fixed protocol and operation path, preserves native
-  status/authentication/ETag/range headers, forwards native credentials, and
+  status/ETag/range headers, supplies server-held native credentials, and
   refuses redirects. Request URLs cannot select arbitrary upstream hosts.
 - Iceberg mutations use catalog REST requirements and updates. UUID assertions
   identify the table; concurrent commits retain forms and require metadata
-  refresh. An optional central authorization form retains a native write token
-  only in page memory, independently of Console management authorization.
-  Clearing it clears selected metadata and returns to automatic reading.
+  refresh. The Console assumes a root operator until UI login is introduced.
+  Web injects the deployment reader for reads and writer for mutations.
   Reader/manager/writer authorization remains native service policy.
-- S3 signs canonical upstream host/path/query/payload in the browser using
-  WebCrypto. Secrets remain session inputs, excluded from persisted config and
-  activity. Large uploads use serial 8 MiB parts, bounded by the proxy's 16 MiB
+- Web signs canonical S3 upstream host/path/query/payload with deployment
+  credentials. Secrets remain in private server files or process environment,
+  excluded from browser responses, serialized configuration and activity. Large uploads use serial 8 MiB parts, bounded by the proxy's 16 MiB
   request cap. Cancellation leaves the UploadId available for inspection/abort.
 - The S3 workbench resolves its origin from this deployment on entry, without
   an endpoint editor. Missing deployment bindings offer retry and direct users
-  to Cluster. Credentials remain native session inputs. Metadata XML is capped
+  to Cluster. There are no browser access-key fields. Metadata XML is capped
   at 4 MiB; the bucket tree renders 100 entries per page with a loaded-bucket
   filter. Object and multipart lists retain at most 1,000 entries. Object users
   narrow their prefix at that limit; later multipart entries require a native
@@ -721,7 +720,7 @@ crowdb-rpc; no direct talk to `crowdb-diskdb`.
 
 - Chunk Strip rendering uses 20-entry pages with stable sequence selection;
   multipart upload and part lists use native continuation markers. Changing
-  native credentials clears the corresponding resource scope and loaded data.
+  resource scope cancels old requests and clears inapplicable loaded data.
 
 ## 18. Fixed-cluster operator flow
 
@@ -742,9 +741,10 @@ crowdb-rpc; no direct talk to `crowdb-diskdb`.
   dependency must not silently cascade to dependent resources.
 - Iceberg and S3 use this deployment's Access binding. Protocol setup belongs
   to cluster configuration; browsing does not require endpoint/token forms.
-  Automatic read access does not grant mutation privileges. Protocol-specific
-  authorization still applies; secret delivery and S3 signing integration are
-  implementation work, not permission to expose a server credential.
+  Console operations assume root access; Web supplies protocol-specific
+  credentials without exposing them to the browser. Container mode rejects
+  topology, deployment and Capacity disk-management mutations in both UI and
+  backend, while logical KV and Access data operations remain available.
 - The right property panel is contextual: useful for Cluster, KV, Capacity,
   Chunk, and Chunk-KV selections; optional for S3 objects; absent in Iceberg.
   Full Tree/Journal/file views remain central, not squeezed into properties.
@@ -925,8 +925,10 @@ The remaining integration boundaries are:
 - Native Access instances supply both fixed-cluster protocol origins. Private
   environment files retain cluster credentials outside serialized launch inputs;
   restart validates their permissions before stopping the old process. Catalog
-  reads inject only the server's reader token. Native mutations retain their
-  separate privileges. S3 credential provisioning remains a separate boundary.
+  reads inject the server's reader token and writes inject its writer token.
+  Standalone Access deployment initializes a durable Console S3 user before
+  startup and persists its credential privately. Repeated deployments reuse
+  it; concurrent initialization is rejected by existing operation admission.
 - KV opens on the Paxos overview, with group membership, replica placement,
   election terms and read frontiers. Data mounts on first use, inherits a
   selected Store/Group/Replica scope, and cancels scans when hidden or when
@@ -985,8 +987,9 @@ The remaining integration boundaries are:
   128 MiB budget. Oversized metadata returns an explicit bound error. Parent
   reference validation is bounded to 100,000 entries and can rescan ancestry;
   independently paged column metadata and direct parent proofs remain incomplete.
-- S3 uses the deployment's Access origin with native SigV4 credentials; credential
-  provisioning remains separate from automatic endpoint selection.
+- S3 uses the deployment's Access origin with server-generated SigV4 signatures.
+  Container uses provisioned client credentials; standalone creates the Console
+  credential during Access deployment. Upstream redirects remain disabled.
 - Verify large populations, partial owners, stale generations, unavailable
   dependencies, and cross-domain return navigation. Validate against the same
   cluster used by the Console, with isolated fixtures clearly distinguished.

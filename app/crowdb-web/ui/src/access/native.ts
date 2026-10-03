@@ -54,37 +54,12 @@ async function boundedText(response: Response): Promise<string> {
   } finally { await reader.cancel(); }
 }
 
-export interface S3Credentials { accessKey: string; secretKey: string; region: string; sessionToken: string }
 export const awsEncode = (value: string): string => encodeURIComponent(value).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 export const objectPath = (bucket: string, key?: string): string => `/${awsEncode(bucket)}${key === undefined ? '' : `/${key.split('/').map(awsEncode).join('/')}`}`;
-const hex = (value: ArrayBuffer): string => Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join('');
-const bytes = (value: string): Uint8Array<ArrayBuffer> => new TextEncoder().encode(value);
-async function hash(value: Blob | string): Promise<string> { return hex(await crypto.subtle.digest('SHA-256', typeof value === 'string' ? bytes(value) : await value.arrayBuffer())); }
-async function hmac(key: Uint8Array<ArrayBuffer>, value: string): Promise<Uint8Array<ArrayBuffer>> {
-  const imported = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return new Uint8Array(await crypto.subtle.sign('HMAC', imported, bytes(value)));
-}
-export async function s3Headers(origin: string, credentials: S3Credentials, method: string, path: string, query: Record<string, string>, body: Blob | string = '', now = new Date()): Promise<{ headers: Record<string, string>; query: string }> {
-  if (!credentials.accessKey || !credentials.secretKey) throw new Error('Enter S3 credentials');
-  const timestamp = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
-  const date = timestamp.slice(0, 8);
-  const payload = await hash(body);
-  const canonicalQuery = Object.entries(query).map(([key, value]) => [awsEncode(key), awsEncode(value)]).sort(([ak, av], [bk, bv]) => ak < bk ? -1 : ak > bk ? 1 : av < bv ? -1 : av > bv ? 1 : 0).map(([key, value]) => `${key}=${value}`).join('&');
-  const signed: Record<string, string> = { host: new URL(origin).host, 'x-amz-content-sha256': payload, 'x-amz-date': timestamp };
-  if (credentials.sessionToken) signed['x-amz-security-token'] = credentials.sessionToken;
-  const names = Object.keys(signed).sort();
-  const canonical = [method, path, canonicalQuery, names.map(name => `${name}:${signed[name].trim()}\n`).join(''), names.join(';'), payload].join('\n');
-  const scope = `${date}/${credentials.region}/s3/aws4_request`;
-  const signingKey = await hmac(await hmac(await hmac(await hmac(bytes(`AWS4${credentials.secretKey}`), date), credentials.region), 's3'), 'aws4_request');
-  const signature = hex((await hmac(signingKey, `AWS4-HMAC-SHA256\n${timestamp}\n${scope}\n${await hash(canonical)}`)).buffer);
-  const { host: _host, ...headers } = signed;
-  headers.Authorization = `AWS4-HMAC-SHA256 Credential=${credentials.accessKey}/${scope}, SignedHeaders=${names.join(';')}, Signature=${signature}`;
-  return { headers, query: canonicalQuery };
-}
-export async function s3(origin: string, credentials: S3Credentials, method: string, path: string, query: Record<string, string> = {}, body?: Blob | string, options?: { signal?: AbortSignal; range?: string }): Promise<Response> {
-  const signed = await s3Headers(origin, credentials, method, path, query, body);
-  const response = await fetch(`${getApiBase()}/access/s3${path}${signed.query ? `?${signed.query}` : ''}`, {
-    method, headers: { ...signed.headers, ...(options?.range ? { Range: options.range } : {}) }, body,
+export async function s3(method: string, path: string, query: Record<string, string> = {}, body?: Blob | string, options?: { signal?: AbortSignal; range?: string }): Promise<Response> {
+  const encoded = Object.entries(query).map(([name, value]) => `${awsEncode(name)}=${awsEncode(value)}`).join('&');
+  const response = await fetch(`${getApiBase()}/access/s3${path}${encoded ? `?${encoded}` : ''}`, {
+    method, headers: { ...(options?.range ? { Range: options.range } : {}) }, body,
     signal: options?.signal,
   });
   await check(response);

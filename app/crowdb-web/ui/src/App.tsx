@@ -109,9 +109,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
   const { menuState, openMenu, closeMenu } = useContextMenu();
 
-  const [managementAuthorized, setManagementAuthorized] = useState(false);
+  const managementAuthorized = true;
   const topologyReadonly = readonly || managed;
-  const logicalReadonly = readonly || (managed && !managementAuthorized);
+  const logicalReadonly = readonly;
   const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
   const capacityActive = domain === Domain.Capacity;
@@ -546,7 +546,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           marginRight: selectedEntity && !ownsSidebar ? inspectorWidth : 0,
         }}
       >
-        {managed && <ManagementSession apiPrefix={apiPrefix} onAuthorized={setManagementAuthorized} />}
+        {managed && <ManagementSession />}
         {domain === Domain.Cluster && (
           <><div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · {managed ? 'Container: topology is read-only' : 'Deploy and manage services here'}</div>
           {managed && <MonitorSummary apiPrefix={apiPrefix} />}
@@ -574,7 +574,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         <div hidden={domain !== Domain.Capacity} className="tw-flex-1 tw-min-h-0"><CapacityView
             active={domain === Domain.Capacity}
             instances={diskdbInstances} usage={capacityUsage} hardwareCapacity={hardwareCapacity}
-            scanStatus={capacityScanStatus} loading={capLoading} readonly={logicalReadonly}
+            scanStatus={capacityScanStatus} loading={capLoading} readonly={topologyReadonly}
             onRefresh={refreshCapacity} selectedEntity={selectionForDomain(Domain.Capacity)}
           /></div>
         <div hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser active={domain === Domain.Chunk}

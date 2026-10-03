@@ -121,7 +121,7 @@ async fn bare_metal_web_loads_launch_policy_without_restoring_topology() {
             .await
             .unwrap()
             .status(),
-        StatusCode::UNAUTHORIZED
+        StatusCode::OK
     );
     let view: serde_json::Value = http
         .get(format!("{base}/api/launches"))

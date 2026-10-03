@@ -4,6 +4,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::any;
+use crowdb_access_s3::auth::{RawAuthRequest, RequestAuthenticator, SigV4Verifier};
 use crowdb_console_shared::config::{ServerEntry, ServiceType};
 use crowdb_console_shared::ConsoleConfig;
 use crowdb_web::{router, AppState};
@@ -89,15 +90,26 @@ fn configured(origin: &str) -> axum::Router {
         entry.auto_start = false;
         config.servers.push(entry);
     }
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("root-access").keep();
+    let credentials = crowdb_monitor::ServerCredentials::load_or_create(&root).unwrap();
+    credentials
+        .persist_client(&crowdb_monitor::ClientCredentials {
+            s3_endpoint: origin.into(),
+            iceberg_endpoint: origin.into(),
+            region: "us-east-1".into(),
+            access_key_id: "AKIDEXAMPLE".into(),
+            secret_access_key: "server-secret".into(),
+        })
+        .unwrap();
     router(
-        AppState::with_config(config, None)
+        AppState::with_runtime_root(config, root)
             .with_iceberg_reader("r".repeat(32))
             .unwrap(),
     )
 }
 
 #[tokio::test]
-async fn cluster_catalog_uses_server_reader_without_granting_mutation_access() {
+async fn root_catalog_uses_server_held_read_and_write_credentials() {
     let upstream = axum::Router::new().route(
         "/*path",
         any(|request: Request<Body>| async move {
@@ -108,8 +120,12 @@ async fn cluster_catalog_uses_server_reader_without_granting_mutation_access() {
                 );
                 (StatusCode::OK, "catalog")
             } else {
-                assert!(!request.headers().contains_key("authorization"));
-                (StatusCode::UNAUTHORIZED, "authentication required")
+                assert!(request.headers()["authorization"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("Bearer "));
+                assert_ne!(request.headers()["authorization"], "Bearer browser-credential");
+                (StatusCode::OK, "catalog updated")
             }
         }),
     );
@@ -118,13 +134,14 @@ async fn cluster_catalog_uses_server_reader_without_granting_mutation_access() {
     let task = tokio::spawn(async move {
         axum::serve(listener, upstream).await.unwrap();
     });
-    for (method, expected) in [("GET", StatusCode::OK), ("POST", StatusCode::UNAUTHORIZED)] {
+    for (method, expected) in [("GET", StatusCode::OK), ("POST", StatusCode::OK)] {
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method(method)
                     .uri("/api/access/iceberg/v1/namespaces")
+                    .header("authorization", "Bearer browser-credential")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -186,13 +203,20 @@ async fn s3_root_with_or_without_trailing_slash_reaches_native_service() {
 }
 
 #[tokio::test]
-async fn native_proxy_preserves_authentication_status_and_streamed_body() {
+async fn root_proxy_signs_with_server_credentials_and_preserves_ranges_and_status() {
     let upstream = axum::Router::new().route(
         "/*path",
         any(|request: Request<Body>| async move {
             assert_eq!(request.uri().path(), "/bucket/a%20b");
             assert_eq!(request.uri().query(), Some("uploadId=a%2Fb"));
-            assert_eq!(request.headers()["authorization"], "native-credential");
+            SigV4Verifier::new(TestCredentials, "us-east-1".into(), 60)
+                .authenticate(RawAuthRequest::from_parts(
+                    request.method(),
+                    request.uri(),
+                    request.headers(),
+                ))
+                .await
+                .unwrap();
             assert_eq!(request.headers()["range"], "bytes=0-3");
             assert!(!request.headers().contains_key("x-console-secret"));
             (
@@ -295,5 +319,16 @@ async fn chunk_query_rejects_invalid_ids_and_unbounded_pages() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+}
+
+struct TestCredentials;
+impl crowdb_access_s3::auth::CredentialProvider for TestCredentials {
+    fn lookup(&self, access_key: &str) -> Option<crowdb_access_s3::auth::Credential> {
+        (access_key == "AKIDEXAMPLE").then(|| crowdb_access_s3::auth::Credential {
+            secret_key: b"server-secret".to_vec(),
+            session_token: None,
+            enabled: true,
+        })
     }
 }

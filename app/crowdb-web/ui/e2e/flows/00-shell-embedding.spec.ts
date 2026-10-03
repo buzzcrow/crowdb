@@ -48,7 +48,7 @@ test.describe('shell · embedding', () => {
     await page.goto('/');
     await expect(page.getByTestId('managed-preview')).toBeVisible({ timeout: 3_000 });
     await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0');
-    await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only');
+    await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology and disk management are read-only');
     await expect(page.getByTestId('managed-monitor-phase')).toContainText('Ready');
     await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
     await page.route('**/api/management/check', route => route.fulfill({ status: 204 }));
@@ -57,7 +57,7 @@ test.describe('shell · embedding', () => {
       : route.fallback());
     await page.route(/\/api\/stores\/([07])\/groups\/(0|70)(\?.*)?$/, route => route.fulfill({ json: { store_id: Number(new URL(route.request().url()).pathname.split('/')[3]), group_id: Number(new URL(route.request().url()).pathname.split('/')[5]), state: 'Running', replicas: [] } }));
     await page.getByTestId('domain-kv').click();
-    await expect(page.getByRole('button', { name: 'Add Store' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Add Store', exact: true })).toBeVisible();
     const writes: Array<{ path: string; token: string | undefined; body: unknown }> = [];
     await page.route('**/api/stores**', async (route) => {
       const request = route.request();
@@ -69,15 +69,14 @@ test.describe('shell · embedding', () => {
       });
       await route.fulfill({ status: 201, json: {} });
     });
-    await page.getByLabel('Management token').fill('m'.repeat(64));
-    await page.getByRole('button', { name: 'Authorize', exact: true }).click();
+    await expect(page.getByLabel('Management token')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Add Store', exact: true })).toBeVisible({ timeout: 3000 });
     await page.getByRole('button', { name: 'Add Store', exact: true }).click();
     await page.getByLabel('KV Store ID (numeric)').fill('8');
     await page.getByLabel(/^1\b/).check();
     await page.getByRole('button', { name: /create kv store/i }).click();
     await expect.poll(() => writes.length, { intervals: [100] }).toBe(1);
-    expect(writes[0]).toEqual({ path: '/api/stores', token: `Bearer ${'m'.repeat(64)}`, body: { store_id: 8, nodes: [1] } });
+    expect(writes[0]).toEqual({ path: '/api/stores', token: undefined, body: { store_id: 8, nodes: [1] } });
     await page.getByRole('button', { name: 'S-7', exact: true }).click({ button: 'right' });
     await page.getByRole('menuitem', { name: /add group/i }).click();
     await page.getByLabel('Group ID (numeric)').fill('71');

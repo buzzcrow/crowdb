@@ -128,6 +128,7 @@ async fn native(
             "CROWDB_S3_PUBLIC_URI".into(),
             format!("http://{}:{}", node.host, body.s3_port.unwrap()),
         );
+        super::credentials::prepare(state.runtime_root.as_ref(), &spec, seeds).await?;
     }
     let pid = lifecycle::restart_local_service(id, 0, &spec)
         .await

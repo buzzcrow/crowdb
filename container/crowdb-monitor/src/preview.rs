@@ -319,6 +319,10 @@ async fn bootstrap_services(
             .ok_or(PreviewError::Invalid("Access public URI is absent"))?;
         web_environment.insert(name.to_owned(), value.clone());
     }
+    web_environment.insert(
+        "CROWDB_CONSOLE_CREDENTIAL_ROOT".into(),
+        profile.paths.data_root.to_string_lossy().into_owned(),
+    );
     supervisor.start_service("web", web_environment).await?;
     record_bootstrap_probe(
         supervisor,

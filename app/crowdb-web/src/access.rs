@@ -18,6 +18,9 @@ use serde_json::{json, Value};
 use crate::error::{err_400, err_502, ErrorBody};
 use crate::state::AppState;
 
+mod credentials;
+mod signing;
+
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
 type ApiError = (StatusCode, Json<ErrorBody>);
 
@@ -130,16 +133,7 @@ pub(crate) async fn configure(
 
 fn request_headers(source: &HeaderMap) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    for name in [
-        "authorization",
-        "content-type",
-        "x-amz-date",
-        "x-amz-content-sha256",
-        "x-amz-security-token",
-        "range",
-        "if-match",
-        "if-none-match",
-    ] {
+    for name in ["content-type", "range", "if-match", "if-none-match"] {
         if let Some(value) = source.get(name) {
             headers.insert(name, value.clone());
         }
@@ -173,17 +167,21 @@ pub(crate) async fn proxy(
         .map_or(String::new(), |query| format!("?{query}"));
     let url = format!("{target}{}{query}", if path.is_empty() { "/" } else { path });
     let mut headers = request_headers(request.headers());
-    if protocol == "iceberg" && matches!(request.method().as_str(), "GET" | "HEAD") {
-        let token = crate::services::access::reader(&state, Some(&target))
-            .map_err(err_502)?
-            .ok_or_else(|| {
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(ErrorBody {
-                        error: "Cluster Catalog reader is not configured on the Console server".into(),
-                    }),
-                )
-            })?;
+    if protocol == "iceberg" {
+        let token = if matches!(request.method().as_str(), "GET" | "HEAD") {
+            crate::services::access::reader(&state, Some(&target))
+                .map_err(err_502)?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(ErrorBody {
+                            error: "Cluster Catalog reader is not configured on the Console server".into(),
+                        }),
+                    )
+                })?
+        } else {
+            credentials::writer(&state).map_err(err_502)?
+        };
         headers.insert(
             "authorization",
             format!("Bearer {token}")
@@ -195,6 +193,11 @@ pub(crate) async fn proxy(
     let body = axum::body::to_bytes(request.into_body(), BODY_LIMIT)
         .await
         .map_err(|_| err_400("Request exceeds 16 MiB; use multipart upload"))?;
+    let url = reqwest::Url::parse(&url).map_err(|_| err_400("Invalid Access URL"))?;
+    if protocol == "s3" {
+        let credentials = credentials::s3(&state, &target).map_err(err_502)?;
+        signing::sign(&credentials, &method, &url, &body, &mut headers).map_err(err_502)?;
+    }
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
