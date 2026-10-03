@@ -55,20 +55,27 @@ class PagePurposeRanges
         boundaries_.erase(boundaries_.lower_bound(offset), boundaries_.lower_bound(end));
         boundaries_[offset] = purpose;
         boundaries_[end]    = after;
+        erase_redundant_boundary(offset);
+        erase_redundant_boundary(end);
     }
 
     [[nodiscard]] size_t span(uint64_t offset, size_t maximum) const
     {
-        const auto purpose = at(offset);
-        for (auto next = boundaries_.upper_bound(offset); next != boundaries_.end(); ++next) {
-            if (next->second != purpose) {
-                return static_cast<size_t>(std::min<uint64_t>(maximum, next->first - offset));
-            }
-        }
-        return maximum;
+        const auto next = boundaries_.upper_bound(offset);
+        return next == boundaries_.end() ? maximum
+                                         : static_cast<size_t>(std::min<uint64_t>(maximum, next->first - offset));
     }
 
   private:
+    void erase_redundant_boundary(uint64_t offset)
+    {
+        const auto boundary = boundaries_.find(offset);
+        const auto before   = boundary == boundaries_.begin() ? PagePurpose::kBtreePage : std::prev(boundary)->second;
+        if (before == boundary->second) {
+            boundaries_.erase(boundary);
+        }
+    }
+
     std::map<uint64_t, PagePurpose> boundaries_;
 };
 
