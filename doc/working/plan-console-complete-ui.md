@@ -817,3 +817,11 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   stream generations. The five affected browser tests pass; the extended Journal
   source-return case takes 1.7s against its 1.4s baseline. Build and TypeScript
   gates pass. Explicit catalog refresh clears pending stale restoration.
+
+- Six-service progress now persists under each private Node workspace with atomic
+  write and revision compare-and-set. Progress is saved before deployment;
+  interrupted steps require explicit registration reconciliation, and stopped
+  instances require Restart. Five hook cases pass in 28ms; backend recreation,
+  competing writers, limits and reset cleanup pass in 0.01s. Browser reload
+  retains four waiting steps without duplicate mutation (1.1s), and one-dialog
+  Node create/retry passes in 0.920s. Whole native bring-up remains pending.

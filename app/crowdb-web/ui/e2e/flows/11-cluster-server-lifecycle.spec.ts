@@ -404,6 +404,18 @@ test('default service plan waits for Group 0 without using single-node mode', as
   await expect(dialog.getByRole('status').filter({ hasText: 'initialize Group 0' })).toHaveCount(4);
   await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeEnabled();
   expect(deployments).toBe(0);
+  await expect.poll(async () => {
+    const response = await page.request.get(`${baseURL}/api/service-plans`);
+    expect(response.ok()).toBe(true);
+    const plans = await response.json();
+    return Object.values(plans['496'].steps).filter((step: any) => step.state === 'waiting').length;
+  }, { timeout: 3000, intervals: [100] }).toBe(4);
+  await page.reload();
+  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByText('N-496', { exact: true }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Deploy default services', exact: true }).click();
+  await expect(dialog.getByRole('status').filter({ hasText: 'initialize Group 0' })).toHaveCount(4);
+  await expect(dialog.getByRole('button', { name: 'Deploy missing services', exact: true })).toHaveCount(0);
+  expect(deployments).toBe(0);
 });
 
 test('Add Node creates and retries services in one dialog, then waits automatically', async ({ page, baseURL }) => {

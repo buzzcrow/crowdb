@@ -68,7 +68,8 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   request recovery is implemented and unit-tested; real Access restart and the
   native browser chain pass. Fresh normal three-node bring-up remains pending.
 - [ ] **Six-service plan recovery**: the one-dialog queue is implemented but
-  lives in browser-session state. Verify Node-menu resume after reload, restart,
+  now persists on the server with revision fencing. Reload restoration and
+  competing-browser fencing pass. Verify native service restart,
   partial deployment and prerequisite arrival, with no duplicate instances.
   Do not mark the normal three-node bring-up accepted until all six service
   types run on each Node.

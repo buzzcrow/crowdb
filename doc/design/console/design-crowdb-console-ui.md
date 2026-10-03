@@ -155,6 +155,14 @@ provide observable capacity and bitmap fixtures.
 - Waiting deployment steps resume when prerequisites become available while
   the console session is active. The Node menu reopens/resumes the plan after
   navigation or reload; deployed instances are reconciled before retry.
+- Six-service progress is saved in each Node workspace, with a revision checked
+  on every update. Saving progress must succeed before a deployment starts.
+  A competing browser receives a conflict and must reload. Reload turns an
+  interrupted Deploying step into an explicit failure; Retry first checks the
+  registered instance and never repeats a successful deployment. Stopped
+  registered services require their normal Restart action. Removing a Node or
+  resetting the cluster clears its deployment intent. This is durable progress,
+  not an unattended scheduler while the console is closed.
 - A partial failure retains the Node and successful services. Retry operates
   only on missing/failed steps and revalidates defaults. It never creates a
   second Node or a second copy of a successful service.

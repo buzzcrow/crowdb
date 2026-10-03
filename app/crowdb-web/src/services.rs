@@ -9,12 +9,15 @@ mod deployment;
 mod lifecycle;
 pub(crate) mod observation;
 mod operation;
+mod plans;
 mod publication;
 
 pub(crate) fn routes() -> axum::Router<crate::state::AppState> {
-    use axum::routing::{delete, get, post};
+    use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/api/deployment-defaults", get(defaults::get))
+        .route("/api/service-plans", get(plans::list))
+        .route("/api/nodes/:id/service-plan", put(plans::put))
         .route("/api/nodes/:id/services/deploy", post(deployment::deploy))
         .route("/api/services/:id/restart", post(lifecycle::restart))
         .route("/api/services/:id/stop", post(lifecycle::stop))
@@ -68,4 +71,8 @@ pub(crate) async fn remove_for_reset(state: &crate::state::AppState) -> Result<(
         let _ = lifecycle::delete(axum::extract::State(state.clone()), axum::extract::Path(id)).await?;
     }
     Ok(())
+}
+
+pub(crate) fn forget_plan(state: &crate::state::AppState, node: u64) -> Result<(), Failure> {
+    plans::remove(state, node)
 }

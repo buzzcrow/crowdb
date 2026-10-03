@@ -233,6 +233,7 @@ pub async fn http_remove_node(
         cfg.remove_node(id).map_err(map_config_err)?;
     }
     state.persist().map_err(map_persist_err)?;
+    crate::services::forget_plan(&state, id)?;
     let t_cfg = t0.elapsed().as_millis() - t_stop;
     // Refresh the monitor cache for remaining group-0 nodes and poll
     // until a post-election leader is observed, so the sysdata write
