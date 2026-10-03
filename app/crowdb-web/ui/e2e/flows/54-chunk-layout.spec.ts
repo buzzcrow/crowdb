@@ -53,8 +53,14 @@ test('Chunk browser renders stable Mirror and EC sequences with exact placement 
   await expect(layout.getByRole('button', { name: /Sequence 9/ })).toBeVisible();
   await page.getByRole('button', { name: 'Show disk capacity', exact: true }).nth(0).click();
   await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
-  await page.getByTestId('domain-chunk').click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByTestId('domain-chunk')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByLabel('Chunk type')).toHaveValue('');
+  await expect(ec.getByTestId('chunk-disk-block').nth(0)).toHaveAttribute('aria-pressed', 'true');
+  await expect(properties).toContainText('9007199254740993');
+  await page.getByRole('button', { name: 'Forward', exact: true }).click();
+  await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(page.getByTestId('chunk-tab-chunk')).toHaveCount(0);
 });
 

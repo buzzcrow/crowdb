@@ -103,7 +103,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     if (pendingSelectionRef.current) {
       const pending = pendingSelectionRef.current;
       pendingSelectionRef.current = null;
-      selectEntity(pending);
+      selectEntity(pending, false);
     }
     setCanvasFocusRequest(null);
   }, [domain, clearSelection, selectEntity]);
@@ -527,11 +527,13 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         }}
       >
         {managed && <ManagementSession />}
-        {domain === Domain.Cluster && (
-          <><div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · {managed ? 'Container: topology is read-only' : 'Deploy and manage services here'}</div>
+        {(
+          <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col"><div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · {managed ? 'Container: topology is read-only' : 'Deploy and manage services here'}</div>
           {managed && <MonitorSummary apiPrefix={apiPrefix} />}
           {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
+            active={domain === Domain.Cluster}
+            scope={Domain.Cluster}
             allServers={allServers}
             racks={racks}
             nodes={nodes}
@@ -546,7 +548,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             refreshToken={lastRefreshTime.getTime()}
             focusRequest={canvasFocusRequest}
             onEntityContextMenu={onCanvasContextMenu}
-          /></div></>
+          /></div></div>
         )}
         {kvEnabled && (
           <div hidden={domain !== Domain.KV} className="tw-flex-1 tw-min-h-0"><KvView active={domain === Domain.KV} stores={stores} selectedEntity={selectionForDomain(Domain.KV)} readonly={logicalReadonly} backendError={!!logError} loading={logLoading} /></div>

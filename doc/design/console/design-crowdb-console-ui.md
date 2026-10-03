@@ -89,7 +89,11 @@ provide observable capacity and bitmap fixtures.
   Back links for inline details.
 - **NAV-04:** Cross-links identify the exact destination resource. Returning
   restores the originating selection and page. A stale/deleted destination has
-  an explicit state rather than silently selecting a different item.
+  an explicit state rather than silently selecting a different item. The header
+  exposes Back/Forward with at most 32 visits. History stores identities, bounded
+  query cursors and scroll coordinates, never object bodies or metadata payloads.
+  New navigation clears Forward. Returning to an Iceberg reference verifies the
+  saved metadata generation before inspecting it again.
 - **NAV-05:** Trees expand lazily. Each large child collection has continuation
   or Load more, a visible loaded count, and an explicit end/partial state.
   Collapsed branches do not recursively load their descendants.

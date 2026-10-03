@@ -40,6 +40,11 @@ test('Root S3 sends credential-free Console requests, preserves keys and bounds 
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('a b/中文.txt');
   await page.getByRole('navigation', { name: 'S3 breadcrumbs' }).getByRole('button', { name: 'demo-bucket', exact: true }).click();
   await expect(page.getByRole('table', { name: 'S3 objects' })).toContainText('a b/中文.txt');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('a b/中文.txt');
+  await expect(page.getByLabel('Object metadata')).toContainText('native-etag');
+  await page.getByRole('button', { name: 'Forward', exact: true }).click();
+  await expect(page.getByRole('table', { name: 'S3 objects' })).toContainText('a b/中文.txt');
 });
 
 

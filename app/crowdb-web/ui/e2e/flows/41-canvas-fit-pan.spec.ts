@@ -85,6 +85,11 @@ test.describe('canvas · fit + pan', () => {
     await rack.click();
     await expect(node).toBeVisible();
     await expect(server).toHaveCount(0);
+    await page.getByTestId('domain-kv').click();
+    await expect(rack).toBeHidden();
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await expect(node).toBeVisible();
+    await expect(server).toHaveCount(0);
     await node.click({ button: 'right' });
     await expect(page.getByRole('menu')).toBeVisible();
     await expect(server).toHaveCount(0);

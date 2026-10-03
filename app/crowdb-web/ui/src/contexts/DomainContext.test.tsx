@@ -48,3 +48,31 @@ describe('DomainProvider', () => {
     expect(getByText('child-content')).toBeTruthy();
   });
 });
+
+
+it('keeps a bounded return route, restores snapshots and drops forward on new navigation', async () => {
+  const { result } = renderHook(() => useDomain(), {
+    wrapper: ({ children }) => <DomainProvider>{children}</DomainProvider>,
+  });
+  let position = 'group-A';
+  act(() => { result.current.register(Domain.Cluster, 'query', () => {
+    const saved = position; return () => { position = saved; };
+  }); });
+  await act(async () => { result.current.setDomain(Domain.KV); await Promise.resolve(); });
+  position = 'group-B';
+  act(() => result.current.back());
+  expect(position).toBe('group-A');
+  expect(result.current.domain).toBe(Domain.Cluster);
+  expect(result.current.canForward).toBe(true);
+  act(() => result.current.forward());
+  expect(result.current.domain).toBe(Domain.KV);
+  act(() => result.current.back());
+  await act(async () => { result.current.setDomain(Domain.S3); await Promise.resolve(); });
+  expect(result.current.canForward).toBe(false);
+  for (let index = 0; index < 40; index++) {
+    await act(async () => { result.current.setDomain(index % 2 ? Domain.KV : Domain.Cluster); await Promise.resolve(); });
+  }
+  let count = 0;
+  while (result.current.canBack) { act(() => result.current.back()); count++; }
+  expect(count).toBe(32);
+});

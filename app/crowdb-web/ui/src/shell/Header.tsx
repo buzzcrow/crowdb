@@ -40,10 +40,14 @@ export function Header({
   onShowCapacity,
   onResetCluster,
 }: HeaderProps) {
-  const { domain, setDomain } = useDomain();
+  const { domain, setDomain, back, forward, canBack, canForward } = useDomain();
 
   return (
     <header className="tw-fixed tw-top-0 tw-left-0 tw-right-0 tw-z-40 tw-h-14 tw-bg-panel tw-border-b tw-border-border tw-flex tw-items-center tw-gap-4 tw-px-4">
+      <nav aria-label="Navigation history" className="tw-flex tw-gap-1">
+        <button aria-label="Back" title="Back" disabled={!canBack} onClick={back} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">←</button>
+        <button aria-label="Forward" title="Forward" disabled={!canForward} onClick={forward} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">→</button>
+      </nav>
       {/* Brand */}
       <div className="tw-flex tw-items-center tw-gap-2 tw-font-semibold tw-text-text">
         <span className="tw-text-accent">◆</span> CrowDB Storage Console

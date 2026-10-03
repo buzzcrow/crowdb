@@ -10,14 +10,29 @@ import { InspectionView } from '../iceberg/ReferenceExplorer';
 import { TableContent } from '../iceberg/TableContent';
 import { useInspection } from '../iceberg/useInspection';
 import { CatalogTree, type NamespacePage } from '../iceberg/CatalogTree';
+import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
+import { Domain } from '../types';
+import { navigationSelection } from '../iceberg/navigation';
+import type { Selection } from '../iceberg/types';
 import { useActivity } from '../contexts/ActivityContext';
 
 const namespacePath = (namespace: string[]): string => `/v1/namespaces/${encodeURIComponent(namespace.join('\x1f'))}`;
 const initialFields = '[{"id":1,"name":"id","required":true,"type":"long"}]';
 const sections = ['Overview', 'Schema', 'Files'] as const;
+interface IcebergQuery {
+  namespace: string[] | null; table: string; section: typeof sections[number];
+  catalogCursor?: string; tableCursor?: string; namespaceCursor?: string;
+  metadata?: string; selection: Selection | null; offset?: string;
+}
 export function IcebergView({ active, readonly: domainReadonly }: { active: boolean; readonly: boolean }) {
   const { log } = useActivity();
+  const { checkpoint } = useDomain();
+  const restoreQuery = useRef<(query: IcebergQuery) => void>(() => {});
+  const pendingInspection = useRef<IcebergQuery | null>(null);
+  const [catalogCursor, setCatalogCursor] = useState<string>();
+  const [namespaceCursor, setNamespaceCursor] = useState<{ table?: string; namespace?: string }>({});
   const navigation = useRef(0);
+  const catalogLoadedRetry = useRef(-1);
   const [demoNamespace, setDemoNamespace] = useState<string | null>(null);
   const [removals, setRemovals] = useState('[]');
   const [origin, setOrigin] = useState<string | null>(null);
@@ -49,11 +64,11 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     setCatalog(null); setNamespaces([]); setNamespace(null); setTables([]); setTable(''); setLoaded(null); setProperties(null); setDemoNamespace(null); setError(''); setOutcome('');
   }, [token]);
   useEffect(() => {
-    if (!active) return;
+    if (!active || catalog && catalogLoadedRetry.current === retry) return;
     const controller = new AbortController();
     setBusy(true); setError('');
     void (async () => {
-      const deployment = await connections();
+      const deployment = await connections(controller.signal);
       if (controller.signal.aborted) return;
       if (!deployment.iceberg_ready || !deployment.iceberg) throw new Error('The cluster Catalog is not ready. Check the Console deployment and retry.');
       setOrigin(deployment.iceberg);
@@ -61,7 +76,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
         iceberg('/v1/config', '', 'GET', undefined, controller.signal),
         iceberg('/v1/namespaces?pageSize=30', '', 'GET', undefined, controller.signal),
       ]);
-      if (!controller.signal.aborted) { setCatalog(config); setNamespaces(listed.namespaces ?? []); setNextNamespaces(listed['next-page-token'] ?? null); }
+      if (!controller.signal.aborted) { catalogLoadedRetry.current = retry; setCatalogCursor(undefined); setCatalog(config); setNamespaces(listed.namespaces ?? []); setNextNamespaces(listed['next-page-token'] ?? null); }
     })().catch(error => { if (!controller.signal.aborted) setError(String(error)); })
       .finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => controller.abort();
@@ -74,8 +89,9 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     catch (error) { setError(`${String(error)}. Refresh metadata before retrying a mutation.`); log({ action: label, target: `Iceberg / ${namespace?.join('.') ?? 'catalog'} / ${table}`, status: 'Failed', message: 'Native request failed. Refresh resource state before retrying.' }); }
     finally { setBusy(false); }
   };
-  const loadNamespaces = async (cursor?: string) => { setPagedNamespaces(!!cursor); const response = await iceberg(`/v1/namespaces?pageSize=30${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ''}`, token); setNamespaces(response.namespaces ?? []); setNextNamespaces(response['next-page-token'] ?? null); };
+  const loadNamespaces = async (cursor?: string) => { setCatalogCursor(cursor); setPagedNamespaces(!!cursor); const response = await iceberg(`/v1/namespaces?pageSize=30${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ''}`, token); setNamespaces(response.namespaces ?? []); setNextNamespaces(response['next-page-token'] ?? null); };
   const loadNamespace = async (value: string[], tableToken?: string, namespaceToken?: string) => {
+    setNamespaceCursor({ table: tableToken, namespace: namespaceToken });
     const request = ++navigation.current;
     const pageQuery = (cursor?: string) => `pageSize=30${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ''}`;
     const [properties, listed, children] = await Promise.all([
@@ -89,10 +105,42 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     setNamespacePages(previous => Object.fromEntries([...Object.entries(previous).filter(([key]) => key !== JSON.stringify(value)).slice(-7), [JSON.stringify(value), page]]));
   };
   const loadTable = async (name: string, ns = namespace) => { if (!ns) return; const request = ++navigation.current; const value = await iceberg(`${namespacePath(ns)}/tables/${encodeURIComponent(name)}`, token); if (request === navigation.current) setLoaded(value); };
-  const selectCatalog = () => { navigation.current++; setOutcome(''); setNamespace(null); setTable(''); setLoaded(null); };
-  const selectNamespace = (value: string[]) => { setNamespace(value); setTable(''); setLoaded(null); setTables([]); void run(() => loadNamespace(value), `Namespace ${value.join('.')} loaded`); };
-  const selectTable = (name: string, ns = namespace) => { if (!ns) return; setNamespace(ns); setTable(name); setLoaded(null); setSection('Overview'); void run(() => loadTable(name, ns), `Table ${name} loaded`); };
+  const selectCatalog = () => { checkpoint(); navigation.current++; setOutcome(''); setNamespace(null); setTable(''); setLoaded(null); };
+  const selectNamespace = (value: string[]) => { checkpoint(); setNamespace(value); setTable(''); setLoaded(null); setTables([]); void run(() => loadNamespace(value), `Namespace ${value.join('.')} loaded`); };
+  const selectTable = (name: string, ns = namespace) => { if (!ns) return; checkpoint(); setNamespace(ns); setTable(name); setLoaded(null); setSection('Overview'); void run(() => loadTable(name, ns), `Table ${name} loaded`); };
   const inspector = useInspection(loaded, tablePath, token, origin);
+  useNavigationSnapshot(Domain.Iceberg, 'catalog-query', () => {
+    const state: IcebergQuery = { namespace: namespace ? [...namespace] : null, table, section,
+      catalogCursor, tableCursor: namespaceCursor.table, namespaceCursor: namespaceCursor.namespace,
+      metadata: loaded?.['metadata-location'], selection: navigationSelection(inspector.selection),
+      offset: inspector.pageToken };
+    return () => restoreQuery.current(state);
+  });
+  restoreQuery.current = state => {
+    pendingInspection.current = state.selection ? state : null;
+    setNamespace(state.namespace); setTable(state.table); setSection(state.section);
+    setLoaded(null); setProperties(null); setTables([]);
+    void run(async () => {
+      if (!state.namespace) await loadNamespaces(state.catalogCursor);
+      else {
+        await loadNamespace(state.namespace, state.tableCursor, state.namespaceCursor);
+        if (state.table) await loadTable(state.table, state.namespace);
+      }
+    }, 'Navigation restored');
+  };
+  useEffect(() => {
+    const pending = pendingInspection.current;
+    if (!loaded || !pending?.selection) return;
+    pendingInspection.current = null;
+    if (pending.metadata !== loaded['metadata-location']) {
+      setError('Saved table generation is stale. Refresh the table before inspecting its references.');
+      return;
+    }
+    const snapshot = loaded.metadata?.snapshots?.find((value: { 'snapshot-id': string | number }) =>
+      String(value['snapshot-id']) === String(pending.selection!.snapshot['snapshot-id']));
+    if (!snapshot) { setError('Saved snapshot no longer exists. Refresh the table.'); return; }
+    void inspector.select({ ...pending.selection, snapshot }, pending.offset, false, false);
+  }, [loaded]);
   const metadata = loaded?.metadata;
   const supported = (method: string, template: string) => !catalog?.endpoints || catalog.endpoints.some((entry: string) => entry === `${method} ${template}` || entry === `${method} ${template.replace('/v1/', '/v1/{prefix}/')}`);
   const overview = metadata ? { uuid: metadata['table-uuid'], location: metadata.location, 'format-version': metadata['format-version'], 'metadata-location': loaded['metadata-location'], 'current-snapshot-id': metadata['current-snapshot-id'], 'last-updated-ms': metadata['last-updated-ms'], properties: metadata.properties } : null;

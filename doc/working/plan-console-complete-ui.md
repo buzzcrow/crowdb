@@ -751,3 +751,14 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   Two-child reset regression passed (0.32 s), SIGTERM/persistent sentinel
   regression passed (0.24 s). Lifecycle routes 6 and standalone startup 6 passed.
   Forced SIGKILL recovery still needs durable child ownership evidence.
+
+- Shared bounded Back/Forward now retains 32 visits, source selection, scroll
+  coordinates and topology expansion/viewport. Cluster stays mounted; direct tab
+  switching retains its existing Fit behavior while history restores source state.
+  Chunk→Capacity→Back preserves selected Strip/block. S3 captures bucket/prefix/
+  object cursor and multipart identity; Iceberg captures table generation and
+  reference identity/opaque page token without retaining metadata payloads.
+  Nine Iceberg/S3 browser cases passed (15.3 s command); 14 KV/canvas/Chunk cases
+  passed (23.7 s command). Sixteen context/header unit assertions passed.
+  Remaining return contracts: KV cursor/value, Capacity zone/bitmap, Chunk-KV
+  Tree/journal and new S3 extents; test stale restores and in-flight races.

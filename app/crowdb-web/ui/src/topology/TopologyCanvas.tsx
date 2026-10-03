@@ -14,7 +14,7 @@ import ReactFlow, {
 } from 'reactflow';
 import { ScanSearch } from 'lucide-react';
 import 'reactflow/dist/style.css';
-import { useDomain } from '../contexts/DomainContext';
+import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { useSelection, SelectedEntity } from '../contexts/SelectionContext';
 import { Rack, Node as NodeEntity, EnrichedStoreView, NodeStore, Domain, CrowdbKVServerView, NodeHealth } from '../types';
 import { DEFAULT_DC_ID } from '../data/defaultDatacenter';
@@ -36,6 +36,8 @@ export interface MenuTarget {
 }
 
 interface TopologyCanvasProps {
+  active?: boolean;
+  scope?: Domain;
   allServers?: import('../api').ServerSummary[];
   racks: Rack[];
   nodes: NodeEntity[];
@@ -123,16 +125,19 @@ function selectedNodeId(entity: SelectedEntity): string | null {
   }
 }
 
-function TopologyCanvasInner({ allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
-  const { domain } = useDomain();
-  const { selectedEntity, selectEntity } = useSelection();
-  const { fitView, setViewport, setCenter, getZoom, getNodes } = useReactFlow();
+function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
+  const { domain: activeDomain, returning } = useDomain();
+  const domain = scope ?? activeDomain;
+  const { selectionForDomain, selectEntity } = useSelection();
+  const selectedEntity = selectionForDomain(domain);
+  const { fitView, setViewport, setCenter, getZoom, getNodes, getViewport } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
   const viewportsRef = useRef<Partial<Record<Domain, Viewport>>>({});
   const fittedOnceRef = useRef<Partial<Record<Domain, boolean>>>({});
   const lastRefreshTokenRef = useRef<number | undefined>(refreshToken);
   const lastFocusNonceRef = useRef<number | undefined>(undefined);
   const lastDomainRef = useRef<Domain | undefined>(undefined);
+  const wasActive = useRef(active);
   const nodeIdsKeyRef = useRef<Partial<Record<Domain, string>>>({});
   // Tracks the last (domain, nodeIds, refreshToken) triple that triggered
   // a fit/restore. Polls return new array references for the same data, which
@@ -144,6 +149,16 @@ function TopologyCanvasInner({ allServers, racks, nodes, servers, stores, nodeSt
   const fitRafIdRef = useRef<number | undefined>(undefined);
   const [collapsedByDomain, setCollapsedByDomain] = useState<Partial<Record<Domain, Set<string>>>>({});
   const collapsed = collapsedByDomain[domain] ?? EMPTY_COLLAPSED;
+  useNavigationSnapshot(domain, 'topology', () => {
+    const viewport = getViewport();
+    const hidden = [...collapsed];
+    return () => {
+      setCollapsedByDomain(previous => ({ ...previous, [domain]: new Set(hidden) }));
+      viewportsRef.current[domain] = viewport;
+      fittedOnceRef.current[domain] = true;
+      void setViewport(viewport, { duration: 0 });
+    };
+  });
 
   const { nodes: rawNodes, edges } = useMemo(
     () => addServiceNodes(domain, buildFlowForDomain(domain, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups), allServers ?? [], nodes),
@@ -186,6 +201,13 @@ function TopologyCanvasInner({ allServers, racks, nodes, servers, stores, nodeSt
   }, [refreshToken]);
 
   useEffect(() => {
+    if (!active) { wasActive.current = false; return; }
+    if (!wasActive.current && !returning) {
+      viewportsRef.current[domain] = undefined;
+      fittedOnceRef.current[domain] = false;
+      lastActionKeyRef.current = undefined;
+    }
+    wasActive.current = true;
     // On view-mode switch, always fit to window — don't restore a stale
     // saved viewport from a previous visit to this mode.
     const domainChanged = lastDomainRef.current !== domain;
@@ -243,7 +265,7 @@ function TopologyCanvasInner({ allServers, racks, nodes, servers, stores, nodeSt
       fitRafIdRef.current = undefined;
     };
     fitRafIdRef.current = requestAnimationFrame(tryFit);
-  }, [fitView, getNodes, nodesInitialized, positioned.nodes, setViewport, domain, refreshToken]);
+  }, [active, returning, fitView, getNodes, nodesInitialized, positioned.nodes, setViewport, domain, refreshToken]);
 
   const selId = selectedEntity ? selectedNodeId(selectedEntity) : null;
   const decoratedNodes: Node[] = useMemo(

@@ -1,9 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { useEffect, useRef, useState } from 'react';
+import { useDomain } from '../contexts/DomainContext';
 import { iceberg } from '../access/native';
 import type { Inspection, Selection, TableLoad } from './types';
 export function useInspection(loaded: TableLoad | null, tablePath: string, token: string, origin: string | null) {
+  const { checkpoint } = useDomain();
   const [selection, setSelection] = useState<Selection | null>(null);
   const [data, setData] = useState<Inspection | null>(null);
   type Page = Inspection & { previous?: string; trail: string[]; pageToken: string };
@@ -14,7 +16,9 @@ export function useInspection(loaded: TableLoad | null, tablePath: string, token
   const scope = useRef(0);
   useEffect(() => { scope.current++; controller.current?.abort(); setSelection(null); setData(null); setCache({}); setError(''); setBusy(false); return () => { scope.current++; controller.current?.abort(); }; }, [loaded, token, origin, tablePath]);
   const key = (s: Selection) => [s.snapshot['snapshot-id'], s.manifest?.location ?? '', s.file?.location ?? ''].join('|');
-  async function select(next: Selection, offset?: string, preserveSelection = false) {
+  async function select(next: Selection, offset?: string, preserveSelection = false, record = true) {
+    if (record && !preserveSelection && (!selection || key(selection) !== key(next) || selection.kind !== next.kind
+      || offset != null && offset !== (cache[key(next)]?.pageToken ?? '0'))) checkpoint();
     controller.current?.abort();
     const active = new AbortController(); controller.current = active;
     const generation = scope.current;
@@ -51,6 +55,6 @@ export function useInspection(loaded: TableLoad | null, tablePath: string, token
     } catch (e) { if (!active.signal.aborted && generation === scope.current) setError(String(e)); }
     finally { if (!active.signal.aborted && generation === scope.current) setBusy(false); }
   }
-  return { selection, data, cache, error, busy, select, key, clear: () => { controller.current?.abort(); setSelection(null); setData(null); setBusy(false); } };
+  return { selection, data, cache, error, busy, select, key, pageToken: selection ? cache[key(selection)]?.pageToken : undefined, clear: () => { if (selection) checkpoint(); controller.current?.abort(); setSelection(null); setData(null); setBusy(false); } };
 }
 export type Inspector = ReturnType<typeof useInspection>;

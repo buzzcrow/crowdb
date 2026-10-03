@@ -142,6 +142,11 @@ test('Iceberg reference pages preserve exact identities and selected footer in t
   await page.getByRole('navigation', { name: 'Iceberg breadcrumbs' }).getByRole('button', { name: 'events', exact: true }).click();
   await expect(sections).toBeVisible();
   await expect(page.getByRole('button', { name: 'Refresh table' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('file-0.parquet');
+  await expect(page.getByText('Logical metadata ranges:', { exact: false })).toContainText('Data pages read: 0 B');
+  await page.getByRole('button', { name: 'Forward', exact: true }).click();
+  await expect(sections).toBeVisible();
   await tree.getByRole('button', { name: 'Catalog', exact: true }).click();
   await expect(sections).toHaveCount(0);
   await expect(tree.getByRole('button', { name: `Snapshot ${snapshot}` })).toHaveCount(0);

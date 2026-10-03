@@ -266,3 +266,9 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   Ephemeral test-mode runtime, awaited parallel stop, SIGTERM cleanup and
   global teardown now pass real regressions. Forced SIGKILL child recovery
   remains to be verified before removing this item.
+
+- Navigation completion evidence: shared Back/Forward, 32-visit limit,
+  Cluster retained collapse, Chunk placement return, S3 bucket/object return and
+  Iceberg file-footer return are implemented and pass focused browser tests.
+  Keep the global navigation item open until KV, Capacity, Chunk-KV and
+  S3 location selection/cursors plus stale/in-flight restoration are verified.
