@@ -611,3 +611,12 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
   not an admission requirement. Permit normal multi-node protected placement
   within one rack while reporting actual rack protection. Keep node/disk loss
   limits and multi-rack preference. Verify selectors and conversion publication.
+
+- Rack preference correction verified: normal selectors and conversion publication
+  allow one rack while enforcing node/disk recovery budgets. Actual rack protection
+  remains visible in assessments. Passed 24 selector tests, 8 configuration tests,
+  the new production single-rack allocation/conversion test and 2 production
+  node-loss/recovery full-stack tests; affected fmt and all-target Clippy passed.
+- Live Group 0 initialization automatically deployed CDB on each of Nodes 1–3.
+  Access currently fails because `/chunk-kv/catalog-head` is not initialized;
+  make this a waiting dependency instead of attempting startup early.

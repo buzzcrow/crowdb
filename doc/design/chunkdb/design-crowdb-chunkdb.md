@@ -539,10 +539,12 @@ protection.
 
 `placement.failure_domain_priority` selects `rack_first` (the default) or
 `node_first`. It orders safe candidates lexicographically; it does not change
-the safety definition. `placement.allow_degraded_failure_domains` is required
-before a placement may publish an unmet rack or node guarantee. EC placement
-that also exceeds its node or disk recovery budget additionally requires
-`placement.allow_unsafe_ec`.
+the node/disk recovery limits. Rack diversity is a preference: normal placement
+uses distinct racks when available and distinct nodes within one rack otherwise.
+An unmet rack guarantee is reported in the assessment and does not reject the
+allocation or EC publication. `placement.allow_degraded_failure_domains` is
+required to relax node protection; EC placement exceeding its node or disk
+recovery budget additionally requires `placement.allow_unsafe_ec`.
 
 ### 7.1 Mirror placement
 
@@ -560,9 +562,9 @@ rack failures:
 recovery to avoid re-using failed nodes).
 
 **Example**: 2-copy mirror on 3-rack cluster → 2 replicas on 2 distinct racks.
-On insufficient topology, normal placement returns a typed failure before any
-DiskDB allocation. An explicitly degraded result identifies the missing
-protection instead of claiming rack safety.
+If fewer distinct healthy nodes than copies are available, normal placement
+returns a typed failure before any DiskDB allocation. A one-rack result retains
+node protection and explicitly reports that it cannot survive a whole-rack loss.
 
 ### 7.2 EC placement
 
