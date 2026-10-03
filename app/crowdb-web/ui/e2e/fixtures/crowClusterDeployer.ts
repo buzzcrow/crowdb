@@ -363,7 +363,7 @@ export async function waitForLeader(baseURL: string, storeId: number, groupId: n
 export async function clusterInit(baseURL: string, nodeIds: number[]) {
   const api = await apiContext(baseURL);
   try {
-    const response = await api.post('/api/cluster/init', { data: { nodes: nodeIds } });
+    const response = await api.post('/api/cluster/init', { data: { nodes: nodeIds }, timeout: 10_000 });
     if (response.status() !== 201 && response.status() !== 409) {
       throw new Error(`cluster_init failed: ${response.status()} ${await response.text()}`);
     }

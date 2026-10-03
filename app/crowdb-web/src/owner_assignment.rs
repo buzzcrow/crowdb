@@ -42,26 +42,32 @@ pub async fn ensure_data_binding(
         return Ok(());
     }
     let sysmd = crowdb_kv_client::CrowdbSysmdClient::from_shared(hw.shared_kv());
-    let group = sysmd
-        .list_groups_in_store(0)
-        .await
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|g| g.group_id)
-        .filter(|id| *id != 0)
-        .min()
-        .ok_or_else(|| "Create an ordinary data group in Store 0 before adding a DiskGroup".to_owned())?;
+    let mut stores = sysmd.list_stores().await.map_err(|e| e.to_string())?;
+    stores.sort_by_key(|store| store.store_id);
+    let mut destination = None;
+    for store in stores {
+        if let Some(group) = sysmd
+            .list_groups_in_store(store.store_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|group| group.group_id != 0)
+            .min_by_key(|group| group.group_id)
+        {
+            destination = Some((store.store_id, group.group_id));
+            break;
+        }
+    }
+    let (store_id, group_id) =
+        destination.ok_or_else(|| "Create an ordinary data group before adding a DiskGroup".to_owned())?;
     let key = BindMapKey {
         rack_id,
         node_id,
         disk_group_id: dg_id,
     }
     .to_path();
-    let value = serde_json::to_vec(&crowdb_protocol::common::BindMapValue {
-        store_id: 0,
-        group_id: group,
-    })
-    .map_err(|e| e.to_string())?;
+    let value = serde_json::to_vec(&crowdb_protocol::common::BindMapValue { store_id, group_id })
+        .map_err(|e| e.to_string())?;
     match hw.kv().put_cas(0, 0, key.as_bytes(), &value, 0).await {
         Ok(_) => Ok(()),
         Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => hw

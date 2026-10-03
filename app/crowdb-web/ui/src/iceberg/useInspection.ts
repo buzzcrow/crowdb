@@ -20,7 +20,7 @@ export function useInspection(loaded: TableLoad | null, tablePath: string, token
     const generation = scope.current;
     if (!preserveSelection) { setSelection(next); setData(null); }
     setError('');
-    if (next.kind === 'snapshot') { setBusy(false); return; }
+    if (next.kind === 'snapshot' && !next.snapshot['manifest-list']) { setBusy(false); return; }
     const cached = cache[key(next)];
     if (cached && offset == null) { if (!preserveSelection) setData(cached); setBusy(false); return; }
     if (!loaded) return;

@@ -16,6 +16,7 @@ import {
   deployDiskdb as apiDeployDiskdb,
   deployNodeServer,
   clusterInit,
+  addGroup,
   waitForLeader,
 } from '../fixtures/consoleSetup';
 
@@ -82,6 +83,7 @@ test.describe('chunk · capacity · disk', () => {
     // against the real backend.
     await deployNodeServer(baseURL, DISKDB_NODE, freePort(), freePort());
     await clusterInit(baseURL, [DISKDB_NODE]);
+    await addGroup(baseURL, 0, 1, 1, [DISKDB_NODE]);
     // Wait for group-0 to be visible in the monitor cache (store 0,
     // group 0 with an elected leader). clusterInit refreshes the cache,
     // but in the full suite the refresh may lag behind the server's

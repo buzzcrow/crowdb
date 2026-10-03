@@ -681,3 +681,47 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
 - Restarting KV Node 3 through the API restored Group-0 RPC: disk-group list and
   DiskDB instance list now return HTTP 200. No DiskGroup remained on Node 1.
   The original RPC failure root cause is still unverified; recovery is not a fix.
+
+## Completion pass — 2026-10-04
+
+The user authorized finishing the persistent UI issue list, completing R203,
+and reorganizing E2E against the agreed seven-domain behavior specification.
+The previously deferred ChunkDB slot model is now available. Preserve the live
+9090 cluster; all destructive acceptance uses an isolated runtime.
+
+- [x] **Seven-domain behavior spec**: expand the permanent Console UI spec with
+  current navigation, Actions, properties, byte display and page limits. Files:
+  `doc/design/console/design-crowdb-console-ui.md`.
+- [x] **Graph and test baseline**: finish Cluster collapse; update stale canvas
+  and cross-function assertions, retain slow-step timers and prevent invisible
+  controls from consuming the whole test timeout. Files: `ui/src/topology/`,
+  `ui/e2e/flows/41-canvas-fit-pan.spec.ts`, `90-flow-full-chain.spec.ts`, config.
+  Baseline: canvas 3.5 s failure / 0.521 s pass / 4.1 s failure; full chain
+  120.342 s failure waiting for a collapsed Put form (not a backend delay).
+- [~] **Provisioning invariants**: automatic data binding/owner reconciliation,
+  fixed-slot initialization, Access catalog setup, causal launch logs and durable
+  six-service recovery. Files: Web `services/`, `diskdb/`, shared lifecycle.
+- [ ] **Ownership and inspection**: real Chunk service/storage slots, Chunk-KV
+  selection/page inspection, bounded S3 location API. Keep exact u64 identities.
+- [ ] **Navigation and scale**: shared return history and restored domain state;
+  bound Capacity fanout and graph/population windows.
+- [ ] **Layered E2E**: one dedicated page-function assertion per behavior, shared
+  setup, small native smoke data, separate large multipart/SF=1 acceptance. Keep
+  `stepTimer` and `slowReporter`; measure setup/mutation/readiness/DOM/teardown.
+- [ ] **Gates and cleanup**: run relevant unit/integration and full requested UI
+  suite, lint/fmt, coherent commits; remove R203 and plan only when acceptance
+  succeeds. Future authentication/metrics redesign remains out of scope.
+
+- Verified first completion checkpoint: `test-console-ui` passed 101 unit tests
+  (2.29 s) and 83 browser tests (3.4 min). The full-chain case is now 3.5 s;
+  binary cursor/deletion regression is 0.738 s. Existing Group-0 setup around
+  5.5 s and Capacity usage around 9.5 s remain measured, not hidden by retries.
+- Chunk fixed-slot ownership API and 32-slot lazy tree windows passed four
+  browser cases (0.544–1.0 s) and a real KV-backed test. Service/storage maps
+  remain separate and generation-pinned. Ordinary CDB deployment now waits for
+  a data group and initializes maps; the real service deployment test passes.
+- Affected backend verification: lifecycle restart 3, service discovery 10,
+  owner assignment 4, typed service lifecycle 7 and slot inspection 1 passed.
+  Relevant Rust clippy and frontend type/build checks passed. R203 remains
+  open: native provisioning, Access catalog recovery, return history, Capacity
+  scale, Chunk-KV inspections/balance and S3 locations are unfinished.

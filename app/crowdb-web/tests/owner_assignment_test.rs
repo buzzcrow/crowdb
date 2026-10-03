@@ -61,10 +61,11 @@ async fn new_owner_requires_data_binding_and_preserves_existing_destination() {
     let sysmd = CrowdbSysmdClient::from_shared(kv);
     assert!(ensure_data_binding(&hw, 1, 1, 1).await.is_err());
     assert!(hw.get_bind(1, 1, 1).await.unwrap().is_none());
-    sysmd.add_group(0, 1).await.unwrap();
+    sysmd.add_store(1, &[1]).await.unwrap();
+    sysmd.add_group(1, 1).await.unwrap();
     ensure_data_binding(&hw, 1, 1, 1).await.unwrap();
     let binding = hw.get_bind(1, 1, 1).await.unwrap().unwrap();
-    assert_eq!((binding.store_id, binding.group_id), (0, 1));
+    assert_eq!((binding.store_id, binding.group_id), (1, 1));
     hw.set_bind(1, 1, 1, 9, 12).await.unwrap();
     ensure_data_binding(&hw, 1, 1, 1).await.unwrap();
     let binding = hw.get_bind(1, 1, 1).await.unwrap().unwrap();

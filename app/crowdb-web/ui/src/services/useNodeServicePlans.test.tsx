@@ -8,7 +8,7 @@ import { useNodeServicePlans } from './useNodeServicePlans';
 import type { EnrichedStoreView } from '../types';
 vi.mock('../api', () => ({ listServers: vi.fn(), deployServer: vi.fn(), deployDiskdb: vi.fn() }));
 vi.mock('./client', () => ({ serviceNames: {}, serviceRequest: vi.fn() }));
-const stores = [{ store_id: '0', groups: [] }] as unknown as EnrichedStoreView[];
+const stores = [{ store_id: '0', groups: [{ group_id: '0' }, { group_id: '1' }] }] as unknown as EnrichedStoreView[];
 beforeEach(() => {
   vi.useFakeTimers();
   vi.mocked(listServers).mockResolvedValue([
@@ -19,6 +19,13 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('keeps CDB queued until an ordinary data group exists', async () => {
+    const systemOnly = [{ store_id: '0', groups: [{ group_id: '0' }] }] as unknown as EnrichedStoreView[];
+    const { result } = renderHook(() => useNodeServicePlans(systemOnly, {}, async () => {}, true));
+    await act(async () => { result.current.start(1); });
+    expect(result.current.plans[1].chunkdb.state).toBe('waiting');
+    expect(serviceRequest).not.toHaveBeenCalled();
+  });
   it('resumes dependencies without another submit and keeps unrelated prerequisites waiting', async () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
     const { result, rerender } = renderHook(({ value }) => useNodeServicePlans(value, {}, refresh, true), { initialProps: { value: [] as EnrichedStoreView[] } });

@@ -74,6 +74,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               const diskGroup = disks?.diskGroups.find(group => disks.disksByDg[group.id]?.length && disks.disksByDg[group.id].every(disk => disk.device_path?.trim()));
               let waiting = '';
               if (kind !== 'kv' && kind !== 'diskdb' && !currentStores.some(store => String(store.store_id) === '0')) waiting = 'Waiting: initialize Group 0 in KV';
+              else if (kind === 'chunkdb' && !metadata) waiting = 'Waiting: create an ordinary data group in KV for chunk storage slots';
               else if (kind === 'diskio' && !diskGroup) waiting = 'Waiting: add disks with device paths in Capacity';
               else if (kind === 'chunk-kv' && !metadata) waiting = 'Waiting: create a non-system metadata group in KV';
               else if (kind === 'chunk-kv' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < 2) waiting = 'Waiting: deploy DiskIO on at least two nodes for journal mirrors';

@@ -127,7 +127,7 @@ test('Chunk auto scan stays bounded and type changes replace the current window'
 });
 
 
-test('Chunk hierarchy expands stores and groups without replicas or range filtering', async ({ page }) => {
+test('Chunk hierarchy lazily separates service slots and storage slots without replicas', async ({ page }) => {
   await page.route('**/api/racks*', route => route.fulfill({ json: [{ id: 1, name: '' }] }));
   await page.route('**/api/nodes?*', route => route.fulfill({ json: [{ id: 1, rack_id: 1, host: '127.0.0.1' }] }));
   await page.route('**/api/nodes', route => route.fulfill({ json: [{ id: 1, rack_id: 1, host: '127.0.0.1' }] }));
@@ -136,15 +136,40 @@ test('Chunk hierarchy expands stores and groups without replicas or range filter
   await page.route('**/api/nodes/1/stores?*', route => { reads++; return route.fulfill({ json: [{ node_id: 1, store_id: 0, groups: [] }] }); });
   await page.route('**/api/nodes/1/stores/0/groups?*', route => route.fulfill({ json: [{ node_id: 1, store_id: 0, group_id: 1 }] }));
   await page.route('**/api/chunks?*', route => route.fulfill({ json: { chunks: [], scanned: 0, next: null, owners: 1, failures: [], observed_at_ms: 1000 } }));
+  const slotRequests: URL[] = [];
+  await page.route('**/api/chunk-slots?*', route => {
+    const url = new URL(route.request().url()); slotRequests.push(url);
+    expect(url.searchParams.get('limit')).toBe('32');
+    const next = url.searchParams.has('after');
+    if (next) expect(url.searchParams.get('generation')).toBe('9007199254740993');
+    return route.fulfill({ json: { generation: '9007199254740993', assigned: true, owned_count: 64,
+      slots: Array.from({ length: 32 }, (_, index) => index * 2 + (next ? 64 : 0)), next: next ? null : 62 } });
+  });
   await page.goto('/?domain=Chunk');
   const tree = page.getByRole('navigation', { name: 'Chunk hierarchy' });
   await expect(tree.getByRole('button', { name: 'datacenter', exact: true })).toBeVisible();
   await tree.getByTestId('tree-node-chunk-node-1').getByRole('button', { name: 'Expand', exact: true }).click();
   expect(reads).toBe(0);
   await expect(tree.getByRole('button', { name: 'CDB-1', exact: true })).toBeVisible();
+  expect(slotRequests).toHaveLength(0);
+  const cdb = tree.getByTestId('tree-node-chunk-server-chunkdb-1');
+  await cdb.getByRole('button', { name: 'Expand', exact: true }).click();
+  await expect(cdb.getByLabel('Slot ownership')).toContainText('64 service slots');
+  await expect(cdb.getByLabel('Owned slots').locator('span')).toHaveCount(32);
+  expect(slotRequests[0].searchParams.get('instance_id')).toBe('1');
+  await cdb.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(cdb.getByLabel('Owned slots')).toContainText('64');
+  await expect(cdb.getByRole('button', { name: 'Next', exact: true })).toBeDisabled();
+  await cdb.getByRole('button', { name: 'Previous', exact: true }).click();
+  await expect(cdb.getByLabel('Owned slots').locator('span').nth(0)).toHaveText('0');
   await tree.getByTestId('tree-node-chunk-server-1').getByRole('button', { name: 'Expand', exact: true }).click();
   await tree.getByTestId('tree-node-chunk-store-1-0').getByRole('button', { name: 'Expand', exact: true }).click();
   await expect(tree.getByRole('button', { name: 'G-1', exact: true })).toBeVisible();
+  const group = tree.getByTestId('tree-node-chunk-group-1-0-1');
+  await group.getByRole('button', { name: 'Expand', exact: true }).click();
+  await expect(group.getByLabel('Slot ownership')).toContainText('64 storage slots');
+  expect(slotRequests.at(-1)!.searchParams.get('store_id')).toBe('0');
+  expect(slotRequests.at(-1)!.searchParams.get('group_id')).toBe('1');
   await expect(tree).not.toContainText('Chunk placement');
   await expect(tree).not.toContainText('Replica');
   expect(reads).toBe(1);

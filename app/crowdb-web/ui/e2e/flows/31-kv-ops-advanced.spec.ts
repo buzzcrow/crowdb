@@ -17,7 +17,7 @@ const apiBase = consoleBaseURL();
 async function openKvPanel(page: any, storeId: string, groupId?: string) {
   await step('kv: goto', () => page.goto('/'));
   await page.getByTestId('domain-kv').click();
-  await page.getByTestId('kv-view-data').click();
+  await page.getByText(/^KV actions · Store/).click();
   await page.getByTestId('kv-store-select').selectOption(storeId);
   if (groupId !== undefined) {
     await page.getByTestId('kv-group-select').selectOption(groupId);
@@ -229,21 +229,21 @@ test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
     await expect(page.getByText(/truncated/i)).toBeVisible({ timeout: 3_000 });
 
     // Verify Load More button is visible
-    await expect(page.getByRole('button', { name: /load more/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeVisible();
 
     // Count rows in table (should be 100)
     const initialRowCount = await page.getByTestId('kv-scan-table').locator('tbody tr').count();
-    expect(initialRowCount).toBe(100);
+    expect(initialRowCount).toBe(20);
 
     // Click Load More
     await step('kv: load more', async () => {
       const loadMoreResponse = page.waitForResponse((r: any) => r.url().includes('/kv/scan'));
-      await page.getByRole('button', { name: /load more/i }).click();
+      await page.getByRole('button', { name: 'Next', exact: true }).click();
       await loadMoreResponse;
     });
 
     // Verify additional rows appear
-    await expect(page.getByTestId('kv-scan-table').locator('tbody tr')).toHaveCount(120, { timeout: 3_000 });
+    await expect(page.getByTestId('kv-scan-table').locator('tbody tr')).toHaveCount(20, { timeout: 3_000 });
 
     // --- All Groups mode aggregates scan and disables get (former 30-kv-all-groups-mode) ---
     await openKvPanel(page, '261');

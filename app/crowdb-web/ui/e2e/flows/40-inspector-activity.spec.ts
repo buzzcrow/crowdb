@@ -20,6 +20,7 @@ async function openKvPanel(page: any, storeId: string, groupId: string) {
   await page.getByTestId('domain-kv').click();
   await page.getByTestId('kv-store-select').selectOption(storeId);
   await page.getByTestId('kv-group-select').selectOption(groupId);
+  await page.getByText(/^KV actions · Store/).click();
 }
 
 async function putKey(page: any, key: string, value: string) {

@@ -13,7 +13,7 @@ const apiBase = consoleBaseURL();
 async function openKvPanel(page: any) {
   await step('kv: goto', () => page.goto('/'));
   await page.getByTestId('domain-kv').click();
-  await page.getByTestId('kv-view-data').click();
+  await page.getByText(/^KV actions · Store/).click();
   await page.getByTestId('kv-store-select').selectOption('99');
   await page.getByTestId('kv-group-select').selectOption('990');
 }
@@ -55,58 +55,67 @@ test.describe('kv ops · put/get/scan/delete', () => {
     await step('kv: stop server', () => stopNodeServer(apiBase, 9));
   });
 
-  test('Overview selects a replica without scanning; Data inherits its group', async ({ page }) => {
-    const scans: string[] = [];
-    page.on('request', request => { if (request.url().includes('/kv/scan')) scans.push(request.url()); });
-    await page.goto('/?domain=KV');
-    await expect(page.getByTestId('kv-view-overview')).toHaveAttribute('aria-pressed', 'true');
-    await page.getByRole('table', { name: 'Paxos groups', exact: true }).getByRole('button', { name: '99 / 990', exact: true }).click();
-    const detail = page.getByTestId('paxos-group-detail');
-    await expect(detail).toContainText('Healthy');
-    await detail.getByRole('button', { name: '9900', exact: true }).click();
-    expect(scans).toEqual([]);
-    await page.getByTestId('kv-view-data').click();
-    await expect(page.getByTestId('kv-store-select')).toHaveValue('99');
-    await expect(page.getByTestId('kv-group-select')).toHaveValue('990');
-    await expect(page.getByTestId('kv-scan-table')).toBeVisible();
-    await page.getByTestId('kv-view-overview').click();
-    await detail.getByRole('button', { name: 'Node 9', exact: true }).click();
-    await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
-  });
-
-  test('scan window is bounded and leaving Data cancels in-flight continuation', async ({ page }) => {
-    let pageNumber = 0;
+  test('Group selection opens data directly; pages replace rows and expose complete values', async ({ page }) => {
     await page.route('**/kv/scan**', route => {
-      ++pageNumber;
-      return route.fulfill({ json: {
-        items: Array.from({ length: 100 }, (_, index) => ({ key_utf8: `bounded-${pageNumber}-${index}`, value_utf8: 'value' })),
-        truncated: true,
-      } });
+      const url = new URL(route.request().url());
+      const after = Buffer.from(url.searchParams.get('start_after_hex') ?? '', 'hex').toString('utf8');
+      const start = after ? Number(after.split('-').at(-1)) + 1 : 0;
+      return route.fulfill({ json: { items: Array.from({ length: 20 }, (_, i) => ({ key_utf8: `key-${start + i}`, key_hex: Buffer.from(`key-${start + i}`).toString('hex'), value_utf8: `complete value ${start + i}` })), truncated: start < 40 } });
     });
     await openKvPanel(page);
-    const more = page.getByRole('button', { name: 'Load more', exact: true });
-    for (let count = 200; count <= 1000; count += 100) {
-      await expect(more).toBeEnabled();
-      await more.click();
-      await expect(page.getByTestId('kv-scan-table').locator('tbody tr')).toHaveCount(count);
-    }
-    await expect(more).toBeDisabled();
-    await expect(page.getByText('Display limit: 1,000 rows.', { exact: false })).toBeVisible();
-    await page.unroute('**/kv/scan**');
-    let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    await page.route('**/kv/scan**', async route => {
-      await gate;
-      await route.fulfill({ json: { items: [{ key_utf8: 'stale-result', value_utf8: 'old' }], truncated: false } });
+    await expect(page.getByRole('navigation', { name: 'KV views' })).toHaveCount(0);
+    const rows = page.getByTestId('kv-scan-table').locator('tbody tr');
+    await expect(rows).toHaveCount(20);
+    await page.getByTestId('kv-scan-table').getByText('key-0', { exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Selected key' })).toContainText('complete value 0');
+    await expect(page.getByLabel(/^KV actions · Store/)).toContainText('Store 99 / Group 990');
+    const pages = page.getByRole('navigation', { name: 'Key pages' });
+    await pages.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(rows).toHaveCount(20);
+    await expect(rows).toContainText(Array.from({ length: 20 }, (_, i) => `key-${20 + i}`));
+    await pages.getByRole('button', { name: 'Previous', exact: true }).click();
+    await expect(rows).toContainText(Array.from({ length: 20 }, (_, i) => `key-${i}`));
+  });
+
+  test('binary keys and values display original hex while Unicode text remains readable', async ({ page }) => {
+    await page.route('**/kv/scan**', route => route.fulfill({ json: { items: [
+      { key_utf8: '\ufffd', key_hex: 'ff00', value_utf8: '\ufffd', value_hex: 'fe8001' },
+      { key_utf8: '中文', key_hex: 'e4b8ade69687', value_utf8: 'hello', value_hex: '68656c6c6f' },
+    ], truncated: false } }));
+    await openKvPanel(page);
+    const table = page.getByTestId('kv-scan-table');
+    await expect(table).toContainText('0xff00');
+    await expect(table).toContainText('0xfe8001');
+    await expect(table).toContainText('中文');
+    await table.getByText('0xff00', { exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Selected key' })).toContainText('0xfe8001');
+    await expect(page.getByLabel('Put key')).toHaveValue('');
+  });
+
+  test('binary key pagination and row deletion preserve raw bytes', async ({ page }) => {
+    await page.route('**/kv/scan**', route => {
+      const url = new URL(route.request().url());
+      expect(url.searchParams.has('start_after')).toBe(false);
+      const after = url.searchParams.get('start_after_hex');
+      if (after) expect(after).toBe('ff00');
+      return route.fulfill({ json: { items: [{ key_utf8: '\ufffd', key_hex: after ? 'ff01' : 'ff00', value_utf8: '', value_hex: '' }], truncated: !after } });
     });
-    const pending = page.waitForRequest('**/kv/scan**');
-    await page.getByRole('button', { name: /^Scan$/ }).click();
-    const request = await pending;
-    await page.getByTestId('kv-view-overview').click();
-    release();
-    await expect.poll(() => request.failure(), { intervals: [100], timeout: 3000 }).not.toBeNull();
-    await page.getByTestId('kv-view-data').click();
-    await expect(page.getByTestId('kv-scan-table')).not.toContainText('stale-result');
+    await page.route('**/kv/delete', route => {
+      expect(route.request().postDataJSON()).toMatchObject({ key_hex: 'ff01' });
+      expect(route.request().postDataJSON()).not.toHaveProperty('key');
+      return route.fulfill({ json: { ok: true, revision: 1 } });
+    });
+    await openKvPanel(page);
+    const table = page.getByTestId('kv-scan-table');
+    await expect(table).toContainText('0xff00');
+    await page.getByRole('navigation', { name: 'Key pages' }).getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(table).toContainText('0xff01');
+    await table.getByRole('button', { name: 'Delete key' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('0xff01');
+    const deleted = page.waitForResponse(response => response.url().endsWith('/kv/delete'));
+    await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+    expect((await deleted).ok()).toBe(true);
   });
 
   test('put/get/overwrite, prefix scan, and graceful not-found', async ({ page }) => {
@@ -245,7 +254,7 @@ test.describe('kv ops · put/get/scan/delete', () => {
     await step('kv: goto + select G-0', async () => {
       await page.goto('/');
       await page.getByTestId('domain-kv').click();
-  await page.getByTestId('kv-view-data').click();
+  await page.getByText(/^KV actions · Store/).click();
       // Select store 0 (system store) and group 0. The auto-scan
       // checkbox is ON by default, so selecting the group must
       // trigger a scan automatically — no manual Scan click needed.

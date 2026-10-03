@@ -18,6 +18,7 @@ import {
   deployDiskdb,
   deployNodeServer,
   clusterInit,
+  addGroup,
   waitForLeader,
   stepTime,
 } from '../fixtures/consoleSetup';
@@ -47,6 +48,7 @@ test.describe('capacity · canvas + scanner/recalc', () => {
     await createNode(baseURL, { id: CANVAS_NODE, rack_id: CANVAS_RACK });
     await deployNodeServer(baseURL, CANVAS_NODE, freePort(), freePort());
     await clusterInit(baseURL, [CANVAS_NODE]);
+    await addGroup(baseURL, 0, 1, 1, [CANVAS_NODE]);
     await waitForLeader(baseURL, 0, 0, 15_000);
   });
 
@@ -258,62 +260,25 @@ test.describe('capacity · canvas + scanner/recalc', () => {
 
         // Capacity totals (Total Capacity / Used / Free) are shown in the
         // Capacity view. Wait for the DG to report usage so the totals are
-        // non-zero; if the diskdb crowdb-rpc is unreachable, still verify the
-        // labels render (totals would be 0 B).
+        // non-zero. Hardware totals remain visible before usage is ready.
         await expect(inspector.getByText('Total Capacity')).toBeVisible({ timeout: 10_000 });
         await expect(inspector.getByText('Used', { exact: true })).toBeVisible({ timeout: 10_000 });
         await expect(inspector.getByText('Free', { exact: true })).toBeVisible({ timeout: 10_000 });
       });
 
-      // If the DG appears in usage, verify the inspector totals match the
-      // cluster-wide sum from the API.
-      await stepTime('dc: usage poll + totals match', async () => {
+      // Hardware defines total capacity even before usage sampling. Usage
+      // routing is verified by the dedicated assign test in spec 50.
+      await stepTime('dc: hardware totals match', async () => {
         const api = await apiContext(baseURL!);
         try {
-          // Quick precondition: check if any diskdb instance has
-          // reported group_usages via the local service registry
-          // (fast — no crowdb-rpc fan-out). If none after 3s, diskdb
-          // is deployed but not reachable via crowdb-rpc; skip the
-          // expensive 12s usage poll.
-          let hasUsage = false;
-          try {
-            await expect.poll(async () => {
-              const r = await api.get('/api/diskdb/instances');
-              if (!r.ok()) return false;
-              const instances = await r.json();
-              return Array.isArray(instances) && instances.some((i: any) => Array.isArray(i.group_usages) && i.group_usages.length > 0);
-            }, { timeout: 3_000, intervals: [200] }).toBe(true);
-            hasUsage = true;
-          } catch {
-            console.warn(`DG-${dgId} never reported usage — diskdb crowdb-rpc not reachable, skipping totals match`);
-          }
-
-          if (hasUsage) {
-            // Diskdb is reporting usage — now poll the usage endpoint
-            // for the specific DG.
-            await expect.poll(async () => {
-              const r = await api.get('/api/diskdb/usage');
-              if (!r.ok()) return false;
-              const body = await r.json();
-              return Array.isArray(body.disk_groups) && body.disk_groups.some((g: any) => g.disk_group_id === dgId);
-            }, { timeout: 10_000, intervals: [200] }).toBe(true);
-
-            const r = await api.get('/api/diskdb/usage');
-            const body = await r.json();
-            const sum = (body.disk_groups || []).reduce(
-              (acc: { capacity: number; busy: number; free: number }, g: any) => ({
-                capacity: acc.capacity + g.capacity_bytes,
-                busy: acc.busy + g.busy_bytes,
-                free: acc.free + g.free_bytes,
-              }),
-              { capacity: 0, busy: 0, free: 0 },
-            );
-            const capDd = page.locator('aside[aria-label="Entity inspector"]').locator('dl > div').filter({ has: page.locator('dt', { hasText: 'Total Capacity' }) }).locator('dd');
-            await expect(capDd).toHaveText(formatBytesAssert(sum.capacity), { timeout: 10_000 });
-          }
-        } finally {
-          await api.dispose();
-        }
+          const response = await api.get('/api/hardware/capacity');
+          expect(response.ok(), await response.text()).toBe(true);
+          const summary = await response.json();
+          expect(summary.disk_groups.some((group: any) => group.disk_group_id === dgId)).toBe(true);
+          const inspector = page.locator('aside[aria-label="Entity inspector"]');
+          const capacity = inspector.locator('dl > div').filter({ has: page.locator('dt', { hasText: 'Total Capacity' }) }).locator('dd');
+          await expect(capacity).toHaveText(formatBytesAssert(summary.datacenter_capacity_bytes));
+        } finally { await api.dispose(); }
       });
     } finally {
       await stepTime('dc: cleanup', async () => {
@@ -357,7 +322,7 @@ test('Capacity preserves hardware and shows unknown usage at every scope', async
   const unknownDisk = panel.getByRole('button', { name: /00000000…/ });
   await expect(unknownDisk).toHaveAttribute('title', /Usage unknown/);
   await unknownDisk.click();
-  await expect(panel.getByText(/1 zones.*Usage unknown/)).toBeVisible();
+  await expect(page.getByTestId('disk-geometry')).toContainText(/1 zones.*Usage unknown/);
   const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
   const free = inspector.locator('dl > div').filter({ has: page.locator('dt', { hasText: /^Free$/ }) }).locator('dd');
   await expect(free).toHaveText('Unknown');

@@ -1,11 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { buttonClass } from '../access/Workbench';
 import { byteSize, Fields, Records, scalar } from './Fields';
 import type { Column, Inspection } from './types';
 
-export function ParquetInspector({ data }: { data: Inspection }) {
+export function ParquetInspector({ data, propertyHost }: { data: Inspection; propertyHost?: HTMLDivElement | null }) {
   const [selected, setSelected] = useState<{ group: string; column: Column } | null>(null);
   const [columnPage, setColumnPage] = useState(0);
   const [view, setView] = useState<'layout' | 'schema' | 'footer'>('layout');
@@ -25,14 +26,14 @@ export function ParquetInspector({ data }: { data: Inspection }) {
       <div className="tw-flex tw-items-center tw-gap-2"><h2 className="tw-font-medium">Row groups</h2>{maxColumns > 12 && <><button className={buttonClass} disabled={!columnPage} onClick={() => setColumnPage(p => p - 1)}>Previous columns</button><button className={buttonClass} disabled={(columnPage + 1) * 12 >= maxColumns} onClick={() => setColumnPage(p => p + 1)}>Next columns</button><span className="tw-text-xs">Columns {columnPage * 12 + 1}–{Math.min(maxColumns, (columnPage + 1) * 12)}</span></>}</div>
       <div aria-label="Parquet row groups" className="tw-space-y-3">{groups.map(group => <section key={group.index} className="tw-border tw-border-border tw-rounded tw-p-3 tw-space-y-2">
         <h3 className="tw-text-sm">Row group {group.index} · {group.rows} rows · {byteSize(group.columns.reduce((n, c) => n + BigInt(c.compressed), 0n).toString())} compressed</h3>
-        <div className="tw-flex tw-gap-1 tw-h-9" aria-label={`Row group ${group.index} size distribution`}>{group.columns.slice(columnPage * 12, columnPage * 12 + 12).map((c, i) => <button key={i} aria-label={`Row group ${group.index} column ${c.path.join('.')}`} title={`${c.path.join('.')} · ${byteSize(c.compressed)}`} className={`tw-min-w-0 tw-bg-accent/20 hover:tw-bg-accent/40 ${selected?.group === group.index && selected.column.path.join('.') === c.path.join('.') ? 'tw-ring-2 tw-ring-accent' : ''}`} style={{ flex: Number(c.compressed) }} onClick={() => choose(group.index, c)} />)}</div>
+        <div className="tw-flex tw-gap-1 tw-h-9" aria-label={`Row group ${group.index} columns`}>{group.columns.slice(columnPage * 12, columnPage * 12 + 12).map((c, i) => <button key={i} aria-label={`Row group ${group.index} column ${c.path.join('.')}`} title={`${c.path.join('.')} · ${byteSize(c.compressed)}`} className={`tw-min-w-0 tw-flex-1 tw-rounded tw-border tw-border-border tw-px-2 tw-text-xs tw-truncate hover:tw-brightness-125 ${selected?.group === group.index && selected.column.path.join('.') === c.path.join('.') ? 'tw-ring-2 tw-ring-accent' : ''}`} style={{ backgroundColor: ['#344d64', '#3d5551', '#514760', '#5b503d'][i % 4] }} onClick={() => choose(group.index, c)}>{c.path.join('.')}</button>)}</div>
         <Records label={`Row group ${group.index} columns`} headings={['Column', 'Type', 'Codec', 'Compressed', 'Uncompressed']} rows={group.columns.slice(columnPage * 12, columnPage * 12 + 12).map(c => [<button className="tw-text-accent tw-underline" onClick={() => choose(group.index, c)}>{c.path.join('.')}</button>, c.logical_type ?? c.physical_type, c.codec, byteSize(c.compressed), byteSize(c.uncompressed)])} />
       </section>)}</div>
-      {selected && <section aria-label="Column chunk details" className="tw-border-t tw-border-border tw-pt-4 tw-space-y-3"><h2 className="tw-font-medium">Row group {selected.group} / {selected.column.path.join('.')}</h2><ColumnDetails column={selected.column} /></section>}
+      {selected && (propertyHost ? createPortal(<section aria-label="Column chunk details" className="tw-border-t tw-border-border tw-pt-4 tw-space-y-3"><h2 className="tw-font-medium">Row group {selected.group} / {selected.column.path.join('.')}</h2><ColumnDetails column={selected.column} stacked /></section>, propertyHost) : <section aria-label="Column chunk details" className="tw-border-t tw-border-border tw-pt-4 tw-space-y-3"><h2 className="tw-font-medium">Row group {selected.group} / {selected.column.path.join('.')}</h2><ColumnDetails column={selected.column} /></section>)}
     </>}
     <p className="tw-text-xs tw-text-muted">Logical metadata ranges: {byteSize(data.logical_metadata_bytes)} · Data pages read: {data.data_page_bytes} B. Physical storage reads may include block framing. Row counts do not apply delete files.</p>
   </div>;
 }
-function ColumnDetails({ column: c }: { column: Column }) {
-  return <Fields values={{ 'Field ID': c.field_id, 'Physical type': c.physical_type, 'Logical type': c.logical_type, 'Converted type': c.converted_type, Precision: c.precision, Scale: c.scale, Codec: c.codec, Encodings: c.encodings.join(', '), 'Byte offset': c.offset, 'Data page offset': c.data_offset, 'Compressed bytes': c.compressed, 'Uncompressed bytes': c.uncompressed, 'Value count': c.values, 'Null count': c.statistics?.nulls, 'Distinct count': c.statistics?.distinct, 'Lower bound': c.statistics?.lower, 'Upper bound': c.statistics?.upper, 'Lower bound exact': c.statistics?.lower_exact, 'Upper bound exact': c.statistics?.upper_exact }} />;
+function ColumnDetails({ column: c, stacked = false }: { column: Column; stacked?: boolean }) {
+  return <Fields stacked={stacked} values={{ 'Field ID': c.field_id, 'Physical type': c.physical_type, 'Logical type': c.logical_type, 'Converted type': c.converted_type, Precision: c.precision, Scale: c.scale, Codec: c.codec, Encodings: c.encodings.join(', '), 'Byte offset': c.offset, 'Data page offset': c.data_offset, 'Compressed bytes': c.compressed, 'Uncompressed bytes': c.uncompressed, 'Value count': c.values, 'Null count': c.statistics?.nulls, 'Distinct count': c.statistics?.distinct, 'Lower bound': c.statistics?.lower, 'Upper bound': c.statistics?.upper, 'Lower bound exact': c.statistics?.lower_exact, 'Upper bound exact': c.statistics?.upper_exact }} />;
 }

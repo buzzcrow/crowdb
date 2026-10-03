@@ -3,6 +3,7 @@
 
 // E2E step timing instrumentation. Import `step` from any test to
 // measure async operations — only slow steps (>= 2 s) are logged.
+import { test } from '@playwright/test';
 
 const SLOW_MS = 2_000;
 const VERY_SLOW_MS = 5_000;
@@ -11,7 +12,7 @@ const VERY_SLOW_MS = 5_000;
 export async function step<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();
   try {
-    return await fn();
+    return await test.step(label, fn);
   } finally {
     const ms = Date.now() - start;
     const tag = ms >= VERY_SLOW_MS ? 'VERY_SLOW' : ms >= SLOW_MS ? 'SLOW' : null;

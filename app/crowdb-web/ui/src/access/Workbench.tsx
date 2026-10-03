@@ -3,14 +3,19 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { configure, connections } from './native';
+import { PanelDivider } from '../components/PanelDivider';
 import { ActivityLog } from '../panels/ActivityLog';
 
 export const inputClass = 'tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1.5 tw-text-sm tw-text-text';
 export const buttonClass = 'tw-rounded tw-border tw-border-border tw-px-3 tw-py-1.5 tw-text-xs hover:tw-bg-accent/10 disabled:tw-opacity-40';
-export function Workbench({ sidebar, children, detail, showActivity = true }: { showActivity?: boolean; sidebar: ReactNode; children: ReactNode; detail?: ReactNode }) {
-  return <div className="tw-grid tw-h-full tw-grid-cols-[240px_minmax(0,1fr)]" style={detail ? { gridTemplateColumns: '240px minmax(0,1fr) 300px' } : undefined}>
-    <aside className="tw-overflow-auto tw-border-r tw-border-border tw-bg-panel tw-p-4 tw-space-y-3">{sidebar}</aside>
+export function Workbench({ sidebar, children, detail, showActivity = true, resizableSidebar = true }: { resizableSidebar?: boolean; showActivity?: boolean; sidebar: ReactNode; children: ReactNode; detail?: ReactNode }) {
+  const [width, setWidth] = useState(280);
+  const [detailWidth, setDetailWidth] = useState(320);
+  return <div className="tw-grid tw-h-full" style={{ gridTemplateColumns: `${resizableSidebar ? width : 280}px ${resizableSidebar ? '6px ' : ''}minmax(0,1fr)${detail ? ` 6px ${detailWidth}px` : ''}` }}>
+    <aside className="tw-overflow-auto tw-border-r tw-border-border tw-bg-bg tw-p-4 tw-space-y-3">{sidebar}</aside>
+    {resizableSidebar && <PanelDivider side="left" width={width} onResize={setWidth} />}
     <section className="tw-overflow-auto tw-p-5 tw-space-y-4">{children}{showActivity && <details className="tw-border-t tw-border-border tw-pt-3"><summary className="tw-text-xs tw-text-muted tw-cursor-pointer">Session activity</summary><p className="tw-text-xs tw-text-muted">Browser session history; reload clears this log.</p><ActivityLog /></details>}</section>
+    {detail && <PanelDivider side="right" width={detailWidth} onResize={setDetailWidth} />}
     {detail && <aside className="tw-overflow-auto tw-border-l tw-border-border tw-bg-panel tw-p-4 tw-space-y-3">{detail}</aside>}
   </div>;
 }

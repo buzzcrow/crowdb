@@ -1,25 +1,33 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { ResourceActions } from '../access/ResourceActions';
 import { Workbench, inputClass, buttonClass } from '../access/Workbench';
 import { connections, iceberg } from '../access/native';
-import { Fields, Structured } from '../iceberg/Fields';
-import { ReferenceTree, InspectionView } from '../iceberg/ReferenceExplorer';
+import { Fields } from '../iceberg/Fields';
+import { InspectionView } from '../iceberg/ReferenceExplorer';
+import { TableContent } from '../iceberg/TableContent';
 import { useInspection } from '../iceberg/useInspection';
+import { CatalogTree, type NamespacePage } from '../iceberg/CatalogTree';
 import { useActivity } from '../contexts/ActivityContext';
 
 const namespacePath = (namespace: string[]): string => `/v1/namespaces/${encodeURIComponent(namespace.join('\x1f'))}`;
 const initialFields = '[{"id":1,"name":"id","required":true,"type":"long"}]';
-const sections = ['Overview', 'Schema', 'Snapshots', 'Files'] as const;
+const sections = ['Overview', 'Schema', 'Files'] as const;
 export function IcebergView({ active, readonly: domainReadonly }: { active: boolean; readonly: boolean }) {
   const { log } = useActivity();
+  const navigation = useRef(0);
   const [demoNamespace, setDemoNamespace] = useState<string | null>(null);
   const [removals, setRemovals] = useState('[]');
   const [origin, setOrigin] = useState<string | null>(null);
   const token = '';
   const readonly = domainReadonly;
   const [retry, setRetry] = useState(0);
+  const [propertyHost, setPropertyHost] = useState<HTMLDivElement | null>(null);
+  const [namespacePages, setNamespacePages] = useState<Record<string, NamespacePage>>({});
+  const [pagedNamespaces, setPagedNamespaces] = useState(false);
+  const [nextNamespaces, setNextNamespaces] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<any>(null);
   const [namespaces, setNamespaces] = useState<string[][]>([]);
   const [namespace, setNamespace] = useState<string[] | null>(null);
@@ -51,9 +59,9 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
       setOrigin(deployment.iceberg);
       const [config, listed] = await Promise.all([
         iceberg('/v1/config', '', 'GET', undefined, controller.signal),
-        iceberg('/v1/namespaces', '', 'GET', undefined, controller.signal),
+        iceberg('/v1/namespaces?pageSize=30', '', 'GET', undefined, controller.signal),
       ]);
-      if (!controller.signal.aborted) { setCatalog(config); setNamespaces(listed.namespaces ?? []); }
+      if (!controller.signal.aborted) { setCatalog(config); setNamespaces(listed.namespaces ?? []); setNextNamespaces(listed['next-page-token'] ?? null); }
     })().catch(error => { if (!controller.signal.aborted) setError(String(error)); })
       .finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => controller.abort();
@@ -62,60 +70,60 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
   const tablePath = `${path}/tables/${encodeURIComponent(table)}`;
   const run = async (operation: () => Promise<void>, label: string) => {
     setBusy(true); setError(''); setOutcome('');
-    try { await operation(); setOutcome(label); log({ action: label, target: `Iceberg / ${namespace?.join('.') ?? 'catalog'} / ${table}`, status: 'Success' }); }
+    try { await operation(); setOutcome(label.endsWith('loaded') ? '' : label); log({ action: label, target: `Iceberg / ${namespace?.join('.') ?? 'catalog'} / ${table}`, status: 'Success' }); }
     catch (error) { setError(`${String(error)}. Refresh metadata before retrying a mutation.`); log({ action: label, target: `Iceberg / ${namespace?.join('.') ?? 'catalog'} / ${table}`, status: 'Failed', message: 'Native request failed. Refresh resource state before retrying.' }); }
     finally { setBusy(false); }
   };
-  const loadNamespaces = async () => { const response = await iceberg('/v1/namespaces', token); setNamespaces(response.namespaces ?? []); };
-  const loadNamespace = async (value: string[]) => {
-    const [properties, listed] = await Promise.all([iceberg(namespacePath(value), token), iceberg(`${namespacePath(value)}/tables`, token)]);
+  const loadNamespaces = async (cursor?: string) => { setPagedNamespaces(!!cursor); const response = await iceberg(`/v1/namespaces?pageSize=30${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ''}`, token); setNamespaces(response.namespaces ?? []); setNextNamespaces(response['next-page-token'] ?? null); };
+  const loadNamespace = async (value: string[], tableToken?: string, namespaceToken?: string) => {
+    const request = ++navigation.current;
+    const pageQuery = (cursor?: string) => `pageSize=30${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ''}`;
+    const [properties, listed, children] = await Promise.all([
+      iceberg(namespacePath(value), token),
+      iceberg(`${namespacePath(value)}/tables?${pageQuery(tableToken)}`, token),
+      iceberg(`/v1/namespaces?parent=${encodeURIComponent(value.join('\x1f'))}&${pageQuery(namespaceToken)}`, token),
+    ]);
+    if (request !== navigation.current) return;
     setProperties(properties); setTables(listed.identifiers ?? []);
+    const page: NamespacePage = { paged: !!tableToken || !!namespaceToken, tables: listed.identifiers ?? [], children: (children.namespaces ?? []).filter((child: string[]) => child.length > value.length && value.every((part, i) => part === child[i])), nextTables: listed['next-page-token'], nextNamespaces: children['next-page-token'] };
+    setNamespacePages(previous => Object.fromEntries([...Object.entries(previous).filter(([key]) => key !== JSON.stringify(value)).slice(-7), [JSON.stringify(value), page]]));
   };
-  const loadTable = async (name: string) => { setLoaded(await iceberg(`${path}/tables/${encodeURIComponent(name)}`, token)); };
+  const loadTable = async (name: string, ns = namespace) => { if (!ns) return; const request = ++navigation.current; const value = await iceberg(`${namespacePath(ns)}/tables/${encodeURIComponent(name)}`, token); if (request === navigation.current) setLoaded(value); };
+  const selectCatalog = () => { navigation.current++; setOutcome(''); setNamespace(null); setTable(''); setLoaded(null); };
   const selectNamespace = (value: string[]) => { setNamespace(value); setTable(''); setLoaded(null); setTables([]); void run(() => loadNamespace(value), `Namespace ${value.join('.')} loaded`); };
-  const selectTable = (name: string) => { setTable(name); setLoaded(null); setSection('Overview'); void run(() => loadTable(name), `Table ${name} loaded`); };
+  const selectTable = (name: string, ns = namespace) => { if (!ns) return; setNamespace(ns); setTable(name); setLoaded(null); setSection('Overview'); void run(() => loadTable(name, ns), `Table ${name} loaded`); };
   const inspector = useInspection(loaded, tablePath, token, origin);
   const metadata = loaded?.metadata;
   const supported = (method: string, template: string) => !catalog?.endpoints || catalog.endpoints.some((entry: string) => entry === `${method} ${template}` || entry === `${method} ${template.replace('/v1/', '/v1/{prefix}/')}`);
   const overview = metadata ? { uuid: metadata['table-uuid'], location: metadata.location, 'format-version': metadata['format-version'], 'metadata-location': loaded['metadata-location'], 'current-snapshot-id': metadata['current-snapshot-id'], 'last-updated-ms': metadata['last-updated-ms'], properties: metadata.properties } : null;
-  const schema = metadata ? { 'current-schema-id': metadata['current-schema-id'], schemas: metadata.schemas, 'default-spec-id': metadata['default-spec-id'], 'partition-specs': metadata['partition-specs'], 'default-sort-order-id': metadata['default-sort-order-id'], 'sort-orders': metadata['sort-orders'] } : null;
-  const files = metadata ? { 'metadata-location': loaded['metadata-location'], 'metadata-log': metadata['metadata-log'], 'manifest-lists': (metadata.snapshots ?? []).map((snapshot: any) => ({ 'snapshot-id': snapshot['snapshot-id'], 'manifest-list': snapshot['manifest-list'] })) } : null;
-  return <Workbench sidebar={<>
-    <h2 className="tw-font-semibold">Iceberg</h2>
-    <p className="tw-text-xs tw-text-muted">Current cluster catalog</p>
+  const selected = inspector.selection;
+  const selectedType = selected ? ({ snapshot: 'Snapshot', list: 'Manifest List', manifest: 'Manifest', file: selected.file?.format ?? 'File' }[selected.kind]) : table ? 'Table' : namespace ? 'Namespace' : 'Catalog';
+  const selectedProperties = selected ? { Type: selectedType, ...(selected.kind === 'snapshot' ? { ...selected.snapshot, 'Manifest list size': inspector.cache[inspector.key(selected)]?.size } : selected.kind === 'file' ? selected.file : selected.kind === 'manifest' ? selected.manifest : { location: selected.snapshot['manifest-list'] }), 'Parent table': table, ...(selected.kind !== 'snapshot' ? { 'Snapshot ID': selected.snapshot['snapshot-id'] } : {}) } : table ? { Type: 'Table', ...overview } : namespace ? { Type: 'Namespace', Name: namespace.join('.'), ...properties } : { Type: 'Catalog', ...catalog };
+  const focusTitle = selected ? selected.kind === 'snapshot' ? `Snapshot ${selected.snapshot['snapshot-id']}` : (selected.file?.location ?? selected.manifest?.location ?? selected.snapshot['manifest-list'] ?? '').split('/').pop() : table || namespace?.join('.') || 'Iceberg catalog';
+  return <Workbench resizableSidebar showActivity={false} detail={<div aria-label="Iceberg properties" className="tw-space-y-4"><h2 className="tw-font-semibold">Properties</h2><div ref={setPropertyHost} /><Fields stacked values={selectedProperties} /></div>} sidebar={<>
     {busy && !catalog && <p role="status" className="tw-text-xs">Loading catalog…</p>}
-    {catalog && <button className={`${buttonClass} tw-w-full tw-text-left`} disabled={busy} onClick={() => { setNamespace(null); setTable(''); setLoaded(null); void run(loadNamespaces, 'Catalog refreshed'); }}>Catalog</button>}
+    {catalog && <CatalogTree namespaces={namespaces} pages={namespacePages} namespace={namespace} table={table} loaded={loaded} inspector={inspector}
+      onCatalog={selectCatalog} onNamespace={selectNamespace} onTable={selectTable}
+      onPage={(ns, t, n) => void run(() => loadNamespace(ns, t, n), 'Namespace page loaded')}
+      pagedNamespaces={pagedNamespaces} onFirstNamespaces={() => void run(() => loadNamespaces(), 'First namespaces loaded')} nextNamespaces={nextNamespaces} onNextNamespaces={() => void run(() => loadNamespaces(nextNamespaces!), 'Namespace page loaded')} />}
     {catalog && !namespaces.length && <p className="tw-text-xs tw-text-muted">No namespaces in this catalog.</p>}
-    {namespace && <button className={buttonClass} disabled={busy} onClick={() => void run(async () => { const response = await iceberg(`/v1/namespaces?parent=${encodeURIComponent(namespace.join('\x1f'))}`, token); setNamespaces(response.namespaces ?? []); }, 'Child namespaces loaded')}>Browse child namespaces</button>}
-    <nav aria-label="Iceberg namespaces" className="tw-space-y-1">{namespaces.map(value => <div key={JSON.stringify(value)}>
-      <button className={`${buttonClass} tw-w-full tw-text-left`} aria-pressed={JSON.stringify(namespace) === JSON.stringify(value)} disabled={busy} onClick={() => selectNamespace(value)}>{value.join('.')}</button>
-      {JSON.stringify(namespace) === JSON.stringify(value) && <nav aria-label="Iceberg tables" className="tw-pl-4 tw-flex tw-flex-col">{tables.map(identifier => <div key={identifier.name}><button className={`${buttonClass} tw-text-left`} aria-pressed={table === identifier.name} disabled={busy} onClick={() => selectTable(identifier.name)}>{identifier.name}</button>{table === identifier.name && loaded && <ReferenceTree loaded={loaded} inspector={inspector} />}</div>)}</nav>}
-    </div>)}</nav>
   </>}>
-    <div><h1 className="tw-text-lg tw-font-semibold">{namespace ? `Catalog / ${namespace.join('.')}${table ? ` / ${table}` : ''}` : 'Iceberg catalog'}</h1><p className="tw-text-xs tw-text-muted">Current cluster · {readonly ? 'Read only' : 'Native REST metadata operations'}</p></div>
-
-    {loaded && <div className="tw-space-y-3">
-      <button className={buttonClass} disabled={busy} onClick={() => void run(() => loadTable(table), 'Metadata refreshed')}>Refresh table</button>
-      {!readonly && <details className="tw-space-y-2"><summary className="tw-text-xs tw-cursor-pointer">Table actions</summary>
-      <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void run(async () => { await iceberg('/v1/tables/rename', token, 'POST', { source: { namespace, name: table }, destination: { namespace, name: rename } }); setTable(rename); await loadNamespace(namespace!); await loadTable(rename); }, 'Table renamed'); }}>
+    <nav aria-label="Iceberg breadcrumbs" className="tw-flex tw-flex-wrap tw-items-center tw-gap-2 tw-text-xs tw-text-muted">
+      <button onClick={selectCatalog}>Catalog</button>{namespace && <><span>/</span><button onClick={() => selectNamespace(namespace)}>{namespace.join('.')}</button></>}{table && <><span>/</span><button onClick={() => inspector.clear()}>{table}</button></>}{selected && <><span>/</span><span>{selectedType}</span></>}
+    </nav>
+    <p className="tw-text-xs tw-text-muted">{selectedType}</p>
+    <h1 className="tw-text-lg tw-font-semibold tw-break-all">{focusTitle}</h1>
+    <ResourceActions key={`${selectedType}:${focusTitle}`} label={`${selectedType} actions`}>
+      <p className="tw-text-xs tw-text-muted tw-break-all">Target: {namespace?.join('.')}{table ? ` / ${table}` : ''}{selected ? ` / ${focusTitle}` : ''}</p>
+    {selected && <button className={buttonClass} disabled={inspector.busy} onClick={() => void inspector.select(selected, '0')}>Refresh {selectedType.toLowerCase()}</button>}
+    {!readonly && catalog && !inspector.selection && <div className="tw-space-y-3">
+      {loaded && <>      <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void run(async () => { await iceberg('/v1/tables/rename', token, 'POST', { source: { namespace, name: table }, destination: { namespace, name: rename } }); setTable(rename); await loadNamespace(namespace!); await loadTable(rename); }, 'Table renamed'); }}>
         <label className="tw-text-xs">New table name<input className={`${inputClass} tw-w-full`} value={rename} required onChange={event => setRename(event.target.value)} /></label><button className={buttonClass} disabled={busy || !supported('POST', '/v1/tables/rename')}>Rename table</button>
       </form>
-      <button className={buttonClass} disabled={busy || !supported('DELETE', '/v1/namespaces/{namespace}/tables/{table}')} onClick={() => { if (confirm(`Drop table ${namespace?.join('.')}.${table}?`)) void run(async () => { await iceberg(tablePath, token, 'DELETE'); setTable(''); setLoaded(null); await loadNamespace(namespace!); }, 'Table dropped'); }}>Drop table</button>
+      <button className={`${buttonClass} tw-text-failed tw-border-failed/30`} disabled={busy || !supported('DELETE', '/v1/namespaces/{namespace}/tables/{table}')} onClick={() => { if (confirm(`Drop table ${namespace?.join('.')}.${table}?`)) void run(async () => { await iceberg(tablePath, token, 'DELETE'); setTable(''); setLoaded(null); await loadNamespace(namespace!); }, 'Table dropped'); }}>Drop table</button>
       <p className="tw-text-xs tw-text-muted">Drop removes the catalog reference. Physical reclamation follows service GC.</p>
-      </details>}
-    </div>}
-    {error && <p role="alert" className="tw-text-sm tw-text-failed tw-break-all">{error}</p>}{outcome && <p role="status" className="tw-text-xs tw-text-muted">{outcome}</p>}
-    {error && <button className={buttonClass} disabled={busy} onClick={() => setRetry(value => value + 1)}>Retry catalog</button>}
-    {!catalog && !error && <p className="tw-text-sm tw-text-muted">Loading the current cluster catalog…</p>}
-    {catalog && !namespace && <Fields values={catalog} />}
-    {namespace && !table && <><h2 className="tw-font-semibold">Namespace properties</h2><Fields values={properties ?? {}} />{!tables.length && <p className="tw-text-xs tw-text-muted">No tables in this namespace.</p>}</>}
-    {loaded && <><nav className="tw-flex tw-gap-2" aria-label="Table sections">{sections.map(value => <button key={value} className={buttonClass} aria-pressed={section === value} onClick={() => { inspector.clear(); setSection(value); }}>{value}</button>)}</nav>
-      {!inspector.selection && <Structured value={section === 'Overview' ? overview : section === 'Schema' ? schema : section === 'Snapshots' ? { snapshots: metadata?.snapshots, refs: metadata?.refs, 'snapshot-log': metadata?.['snapshot-log'] } : files} />}
-      <InspectionView inspector={inspector} />
-      {section === 'Files' && !inspector.selection && <p className="tw-text-xs tw-text-muted">Select a snapshot in the reference tree to inspect its manifest list, manifests and file metadata.</p>}
-    </>}
-    {!readonly && catalog && !inspector.selection && <section className="tw-space-y-3 tw-rounded tw-border tw-border-border tw-p-4">
-      <div className="tw-flex tw-gap-2 tw-items-center tw-flex-wrap"><button className={buttonClass} disabled={busy || !!demoNamespace} onClick={() => void run(async () => {
+      </>}
+      {!namespace && <div className="tw-flex tw-gap-2 tw-items-center tw-flex-wrap"><button className={buttonClass} disabled={busy || !!demoNamespace} onClick={() => void run(async () => {
         const demo = `console_demo_${crypto.randomUUID().replace(/-/g, '')}`;
         await iceberg('/v1/namespaces', token, 'POST', { namespace: [demo], properties: { purpose: 'console demo' } }); setDemoNamespace(demo);
         await iceberg(`${namespacePath([demo])}/tables`, token, 'POST', { name: 'example', schema: { type: 'struct', 'schema-id': 0, fields: JSON.parse(initialFields) } }); await loadNamespaces();
@@ -123,7 +131,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
       {demoNamespace && <><span className="tw-text-xs tw-break-all">Demo scope: {demoNamespace} / example</span><button className={buttonClass} disabled={busy} onClick={() => { if (confirm(`Remove only demo table ${demoNamespace}.example and its empty namespace?`)) void run(async () => {
         try { await iceberg(`${namespacePath([demoNamespace])}/tables/example`, token, 'DELETE'); } catch (error) { if (!String(error).startsWith('Error: HTTP 404:')) throw error; }
         await iceberg(namespacePath([demoNamespace]), token, 'DELETE'); if (namespace?.[0] === demoNamespace) { setNamespace(null); setTable(''); setLoaded(null); } setDemoNamespace(null); await loadNamespaces();
-      }, 'Demo resources removed'); }}>Clean metadata demo</button></>}</div>
+      }, 'Demo resources removed'); }}>Clean metadata demo</button></>}</div>}
       {!namespace && <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void run(async () => { await iceberg('/v1/namespaces', token, 'POST', { namespace: name.split('.'), properties: JSON.parse(propertyText) }); await loadNamespaces(); }, 'Namespace created'); }}>
         <h2 className="tw-font-semibold">Create namespace</h2><label className="tw-text-xs">Namespace name<input className={`${inputClass} tw-ml-2`} value={name} required placeholder="demo.analytics" onChange={event => setName(event.target.value)} /></label><label className="tw-block tw-text-xs">Properties (JSON)<textarea className={`${inputClass} tw-w-full`} value={propertyText} onChange={event => setPropertyText(event.target.value)} /></label><button className={buttonClass} disabled={busy || !supported('POST', '/v1/namespaces')}>Create namespace</button>
       </form>}
@@ -134,11 +142,25 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
         <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void run(async () => { await iceberg(`${path}/tables`, token, 'POST', { name: newTable, schema: { type: 'struct', 'schema-id': 0, fields: JSON.parse(fields) } }); await loadNamespace(namespace); }, 'Table created'); }}>
           <h2 className="tw-font-semibold">Create table</h2><label className="tw-text-xs">Table name<input className={`${inputClass} tw-ml-2`} required value={newTable} onChange={event => setNewTable(event.target.value)} /></label><label className="tw-block tw-text-xs">Schema fields (JSON)<textarea className={`${inputClass} tw-w-full`} rows={3} value={fields} onChange={event => setFields(event.target.value)} /></label><button className={buttonClass} disabled={busy || !supported('POST', '/v1/namespaces/{namespace}/tables')}>Create table</button>
         </form>
-        <button className={buttonClass} disabled={busy || !supported('DELETE', '/v1/namespaces/{namespace}')} onClick={() => { if (confirm(`Drop empty namespace ${namespace.join('.')}?`)) void run(async () => { await iceberg(path, token, 'DELETE'); setNamespace(null); setProperties(null); await loadNamespaces(); }, 'Namespace dropped'); }}>Drop namespace</button>
+        <button className={`${buttonClass} tw-text-failed tw-border-failed/30`} disabled={busy || !supported('DELETE', '/v1/namespaces/{namespace}')} onClick={() => { if (confirm(`Drop empty namespace ${namespace.join('.')}?`)) void run(async () => { await iceberg(path, token, 'DELETE'); setNamespace(null); setProperties(null); await loadNamespaces(); }, 'Namespace dropped'); }}>Drop namespace</button>
       </>}
       {loaded && <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void run(async () => { await iceberg(tablePath, token, 'POST', { requirements: [{ type: 'assert-table-uuid', uuid: metadata['table-uuid'] }], updates: JSON.parse(updates) }); await loadTable(table); }, 'Metadata committed'); }}>
         <h2 className="tw-font-semibold">Commit table metadata</h2><p className="tw-text-xs tw-text-muted">Applies native Iceberg updates to this table UUID. Refresh after a conflict or interrupted request.</p><label className="tw-block tw-text-xs">Metadata updates (JSON)<textarea className={`${inputClass} tw-w-full`} rows={4} value={updates} onChange={event => setUpdates(event.target.value)} /></label><button className={buttonClass} disabled={busy || !supported('POST', '/v1/namespaces/{namespace}/tables/{table}')}>Commit metadata</button>
       </form>}
-    </section>}
+    </div>}
+    </ResourceActions>
+    {loaded && !selected && <button className={buttonClass} disabled={busy} onClick={() => void run(() => loadTable(table), 'Metadata refreshed')}>Refresh table</button>}
+
+    {error && <p role="alert" className="tw-text-sm tw-text-failed tw-break-all">{error}</p>}{outcome && <p role="status" className="tw-text-xs tw-text-muted">{outcome}</p>}
+    {error && <button className={buttonClass} disabled={busy} onClick={() => setRetry(value => value + 1)}>Retry catalog</button>}
+    {!catalog && !error && <p className="tw-text-sm tw-text-muted">Loading the current cluster catalog…</p>}
+    {catalog && !namespace && <div className="tw-grid tw-grid-cols-2 tw-gap-3">{namespaces.map(ns => <button key={JSON.stringify(ns)} className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4 tw-text-left" onClick={() => selectNamespace(ns)}><span className="tw-block tw-text-xs tw-text-muted">Namespace</span>{ns.join('.')}</button>)}</div>}
+    {namespace && !table && <><h2 className="tw-font-semibold">Tables</h2><div className="tw-grid tw-grid-cols-2 xl:tw-grid-cols-3 tw-gap-3">{tables.map(entry => <button key={entry.name} className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4 tw-text-left" onClick={() => selectTable(entry.name)}><span className="tw-block tw-text-xs tw-text-muted">Table</span>{entry.name}</button>)}</div>{!tables.length && <p className="tw-text-xs tw-text-muted">No tables in this namespace.</p>}</>}
+    {loaded && <>{!selected && <nav className="tw-flex tw-gap-2" aria-label="Table sections">{sections.map(value => <button key={value} className={buttonClass} aria-pressed={section === value} onClick={() => setSection(value)}>{value}</button>)}</nav>}
+      {!inspector.selection && <TableContent loaded={loaded} section={section} inspector={inspector} />}
+      <InspectionView inspector={inspector} propertyHost={propertyHost} />
+      {section === 'Files' && !inspector.selection && <p className="tw-text-xs tw-text-muted">Select a snapshot in the reference tree to inspect its manifest list, manifests and file metadata.</p>}
+    </>}
+
   </Workbench>;
 }

@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { observeCapacity } from '../panels/capacity/observation';
-import { useState, useMemo, lazy, Suspense, type MutableRefObject } from 'react';
+import { useState, useMemo, type MutableRefObject } from 'react';
 import { X, Info, ListChecks, ExternalLink } from 'lucide-react';
 import { useSelection, SelectedEntity } from '../contexts/SelectionContext';
 import { useDomain } from '../contexts/DomainContext';
@@ -11,13 +11,11 @@ import { Domain, Node, Rack, EnrichedStoreView, CrowdbKVServerView, CapacityUsag
 import { DEFAULT_DC_NAME } from '../data/defaultDatacenter';
 import { ActivityLog } from '../panels/ActivityLog';
 import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, serverLabel, storeLabel } from '../utils/entityDisplay';
-import { useMetricsPoll, buildMetricsFetcher } from '../utils/useMetricsPoll';
-import { MetricsRegion, ElectionStateRegion, ReadStateRegion } from '../components/MetricsRegion';
+import { ElectionStateRegion, ReadStateRegion } from '../components/ConsensusState';
 import type { ServerSummary } from '../api';
 import { isAuxiliaryKind, serviceNames } from '../services/client';
 import { ServiceProperties } from '../services/ServiceProperties';
 
-const KvPanel = lazy(() => import('../panels/KvPanel').then((m) => ({ default: m.KvPanel })));
 
 type TabId = 'details' | 'activity';
 
@@ -160,7 +158,7 @@ interface DetailsTabProps {
   pendingSelectionRef?: MutableRefObject<SelectedEntity | null>;
 }
 
-function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hardwareCapacity, diskdbInstances, selectEntity, setDomain, readonly, pendingSelectionRef }: DetailsTabProps) {
+function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hardwareCapacity, diskdbInstances, selectEntity, setDomain, pendingSelectionRef }: DetailsTabProps) {
   const displayType = entity.type === 'Server'
     ? (entity.serviceType === 'diskdb' ? 'DiskDB' : 'KV')
     : entity.type;
@@ -241,20 +239,6 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
     const owner = diskdbInstances.find((inst) => inst.owned_dg_ids.includes(dgId));
     return owner?.instance_id;
   }, [entity.type, entity.parentIds, entity.id, diskdbInstances]);
-
-  // Metrics poll: build a fetcher for the current entity type.
-  const parentStoreId = entity.parentIds?.store_id != null ? String(entity.parentIds.store_id) : undefined;
-  const parentGroupId = entity.parentIds?.group_id != null ? String(entity.parentIds.group_id) : undefined;
-  const metricsFetcherInfo = buildMetricsFetcher(
-    entity.type,
-    entity.id,
-    parentStoreId,
-    parentGroupId,
-  );
-  const metricsData = useMetricsPoll(
-    metricsFetcherInfo?.fetcher ?? null,
-    metricsFetcherInfo?.key ?? 'none',
-  );
 
   const fields: { label: string; value: string }[] = [
     { label: 'Type', value: displayType },
@@ -354,16 +338,8 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
 
       {electionState && <ElectionStateRegion state={electionState} />}
       {readState && <ReadStateRegion state={readState} />}
-      <MetricsRegion data={metricsData} />
 
-      {entity.type === 'Group' && parentStoreId && (
-        <div className="tw-space-y-1">
-          <div className="tw-text-[10px] tw-uppercase tw-tracking-wider tw-text-muted">KV</div>
-          <Suspense fallback={null}>
-            <KvPanel storeId={parentStoreId} groupId={entity.id} readonly={readonly} />
-          </Suspense>
-        </div>
-      )}
+
     </div>
   );
 }

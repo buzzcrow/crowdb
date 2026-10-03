@@ -16,6 +16,7 @@ use crate::{
     state::AppState,
 };
 
+mod chunk_slots;
 mod credentials;
 mod launch;
 

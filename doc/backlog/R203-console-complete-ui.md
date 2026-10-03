@@ -34,53 +34,18 @@
 
 ##### 1. Shared Shell and Information Architecture
 
-- Seven top-level tabs: `Cluster | KV | Capacity | Chunk | Chunk-KV | Iceberg | S3`. The user-facing
-  name is Iceberg; existing `iceberge` documentation paths are not renamed here.
-- Share the Header, left resource tree/filter, central domain panel, and right
-  Inspector. The Inspector provides collapsible Details and Activity views.
-  Both sidebars have adjustable widths where present. Iceberg uses only the left
-  tree and central content; it does not reserve space for a right Inspector.
-- Selection within a domain synchronizes the left tree, central content, and
-  Inspector. Switching domains clears inapplicable selected entities. Navigation
-  across domains carries the target identity, expands it after loading, and
-  reports missing targets explicitly.
-- Query/write forms follow the existing KV panel: scope selection, operation
-  toolbar, query results, and an editor for the selected item. Each domain shows
-  its own operation semantics; resources must not all become generic JSON editors.
-- Each tab has its own scope: physical entities for Cluster; Store/Group for KV;
-  hardware capacity for Capacity; type/source/ID for Chunk; Server/Partition for
-  Chunk-KV; Catalog/Namespace/Table for
-  Iceberg; authorized scope/Bucket/prefix for S3. The corresponding panel clearly
-  displays its scope. Refresh, filters, and writes apply only to that scope.
-  Domain switches may retain filters, but must not reuse another domain's write
-  target.
-- Provide demo operations per domain and label their actual write targets. KV
-  sample keys, S3 sample objects, and Iceberg sample tables use recognizable demo
-  names; confirm the exact cleanup scope. Never write demo data to Group 0 system
-  configuration keys. Chunk/Capacity show real data only, without fabricated
-  layouts; empty states guide users to the relevant deployment or data write
-  flow. Demos use normal APIs and permissions and cannot bypass protocols.
-- Query lists use server-side filtering and bounded pagination, with 100 items
-  per page by default and Load more to append results. Without an exact total,
-  show only the loaded count and whether another page exists; do not scan the
-  whole domain to calculate totals.
-- Mutations wait for backend results before refreshing the relevant resources;
-  client caches must not fabricate success. Activity records operations, targets,
-  times, results, and associated request information for the current session.
-  It does not promise a durable audit log. Domains must not share one generic
-  “Backend unreachable” error.
-
-```text
-+----------------------------------------------------------------------------+
-| CrowDB Console   deployment/status   Cluster KV Capacity Iceberg S3 Refresh |
-+-------------------+------------------------------------+-------------------+
-| Scope / filter    | Domain toolbar                     | Details | Activity|
-|                   +------------------------------------+-------------------+
-| Resource tree     |                                    | Selected identity |
-| or prefix groups  | Topology / CRUD / capacity / strips | Fields / status   |
-|                   |                                    | Cross-domain links|
-+-------------------+------------------------------------+-------------------+
-```
+- The authoritative behavior contract is the seven-domain
+  [Console UI specification](../design/console/design-crowdb-console-ui.md).
+  Its shared tree, resizable panes, collapsed Actions, exact identity, byte
+  presentation, replacement pagination and domain-specific content take
+  precedence over earlier interaction sketches in this requirement.
+- Seven domains: Cluster, KV, Capacity, Chunk, Chunk-KV, Iceberg, S3. One fixed
+  cluster and server-held root credentials; container capabilities still reject
+  topology/process and disk-management mutations in the backend.
+- Mutations report authoritative results; stale, partial and unavailable results
+  remain explicit. Activity is session history, not a durable audit log.
+- Bounded windows use their specified sizes: KV/S3 20, Chunk 10, Capacity zones
+  32. No unbounded append or hidden fetch-all for counts/filters.
 
 ##### 2. Startup, Configuration Authority, and Deployment Capabilities
 
@@ -175,195 +140,41 @@ restart -> local launch hints -> restore Servers/Group 0 -> confirmed config
 
 ##### 4. KV: Initialization, Logical Resources, and Key-Value CRUD
 
-- Replace the left panel with a logical tree: Store → Group → Replica. Physical
-  resource management stays in Cluster. Replicas show their Node, health, and
-  Leader status; selecting one can navigate to its Server in Cluster.
-- Before initialization, the central panel provides Init guidance: select
-  deployed, reachable KV nodes and show the Store 0/Group 0 to be created and
-  selected members. With no available nodes, guide users to Cluster Deploy.
-- After initialization, manage Stores, Groups, and Replicas. Selecting a Store
-  shows its groups; selecting a Group opens its Paxos overview with a Data subview; selecting
-  a Replica shows details while retaining its Group scope. Replica management
-  invokes the existing membership change flow, rather than editing raw
-  configuration as a substitute.
-- The central panel provides Prefix/Key filters, Scan/Get, a results list,
-  UTF-8/Hex views of the selected key, Put/Delete, and Load more. Put edits the
-  value; renaming a key must explicitly be two operations: creation and deletion.
-  Keep scan cursors independently per Group and label Group identities in
-  results spanning a Store.
-- Clearly label system Store 0/Group 0 as System. Ordinary user KV CRUD cannot
-  modify system configuration keys. System resource changes use the appropriate
-  management operations, preventing generic KV operations from damaging the
-  cluster authority.
-
-```text
-+-------------------+---------------------------------------+----------------+
-| KV                | Store 7 / Group 2                     | Group 2        |
-| Store 0 [System]  | Prefix [        ] [Scan] [Get]        | leader / state |
-| Store 7           | Key       Value preview      Revision | replicas       |
-|  Group 1          | key-a     ...                123      | Node links     |
-|  Group 2          | key-b     ...                124      |                |
-|   Replica 1 N1    | [Load more]                           | Activity       |
-|   Replica 2 N2    | Key [key-a]  Value [UTF-8 / Hex]       |                |
-| [Add Store/Group] | [Put] [Delete]                        |                |
-+-------------------+---------------------------------------+----------------+
-```
+- Implement Console UI §12: Store → Group → Replica; Group selection opens
+  data directly, 20-row replacement pages, exact selected bytes, shared top
+  Actions and read-only system Group 0. Preserve membership management and
+  per-group scan cursors; binary keys must not become lossy mutation targets.
+- Initialization remains in KV, using reachable deployed nodes and durable
+  bootstrap intent. Cluster provides deployment and links to Init.
 
 ##### 5. Capacity, Chunk, and Chunk-KV Inspection
 
-- Capacity, Chunk, and Chunk-KV are independent top-level domains with separate
-  filters and selections. Implement the agreed navigation, observation, and
-  bounded-query contracts in [Console UI design](../design/console/design-crowdb-console-ui.md)
-  §§18–21. Chunk type and metadata source are independent filters; unavailable
-  sources are partial coverage, not empty results.
-- Chunk-KV navigation is Rack → Node → Server → Partition. The center provides
-  a range distribution map and selected Partition Overview/Tree/Journal/
-  Dependencies. Split lineage and transfer state are distinct from current
-  placement. Parent and child stream offsets remain separate; an active child
-  can retain a parent recovery dependency. Manual split/repair is outside this
-  observation scope.
-- Capacity retains hierarchical Cluster/Rack/Node/DiskGroup/Disk capacity,
-  DiskDB instance status, Zone grids, and Bitmaps. Scan/Recalc/Compact/Rebuild
-  show their exact scope. DiskGroup/Disk management remains in this domain.
-  Container can view every level; hardware mutations are prohibited and runtime
-  maintenance requires a separate capability. An unreachable instance yields
-  partial results identifying the missing source.
-- The Chunk subpage provides read-only diagnostics by default, without raw
-  Chunk/Strip deletion or manual layout rewriting. Lifecycle remains controlled
-  by the owning business and existing service flows, preserving reference and
-  reclamation rules.
-- Left-side grouping uses the actual type byte of Chunk IDs and a user-entered
-  hexadecimal prefix. Type names/encodings come from protocol definitions,
-  rather than copied enum numbers from old documents. Show raw values for unknown
-  types and flag mismatches between ID type and record. Arbitrary prefix filters
-  can be combined with type grouping.
-- Grouping is a list filter, not a ChunkDB hash range, KV Group, or storage
-  ownership boundary. The backend performs bounded queries across relevant owners,
-  handling pagination, routing changes, and partial unavailability. The browser
-  must not fetch all Chunks and then filter them. Entering a full ID locates a
-  single Chunk.
-- Upper central panel: Chunk ID, type, lifecycle state, version/generation (if
-  exposed), logical capacity, written ranges/usage (if confirmed by the service),
-  Strip count, and query time. Show allocated capacity, written bytes, and physical
-  usage separately; missing quantities must not be inferred as zero.
-- Lower central panel: Strips in logical order, using their stable sequence
-  identities. Do not renumber them by array index after deletion/replacement.
-  Mirror shows the actual copy count; EC shows actual k+m and encoding state.
-  One Chunk can contain different layouts; do not assume uniform Mirror/EC
-  parameters across it.
-- Selecting a Strip shows its logical offset/range, layout, write/encoding/health
-  state, and Segment/fragment details. Each fragment shows its Mirror copy or EC
-  data/parity role, Rack → Node → DiskGroup → Disk, physical offset/length, and
-  allocation unit information provided by the protocol. If topology resolution
-  fails, retain the Disk ID and label it Unknown.
-- Fragment placement diagrams use a bounded visible window and on-demand details;
-  do not render large Strip/fragment collections as one complete relationship
-  graph. Layout records and physical locations must show the same query generation
-  or their separate observation times. During conversion/migration, do not combine
-  two versions into a Strip that never existed.
-- Fragments can link to a specific Disk in Capacity. Locate Zone/Bitmap only with
-  a verifiable Zone mapping. Node/Server links navigate to Cluster. Capacity
-  details may link back to related Chunk queries, but must not fabricate “all
-  Chunks on this Disk” without a service supporting reverse lookup.
-
-```text
-+-------------------+---------------------------------------+----------------+
-| CHUNK             | [Capacity] [Chunk]                    | Strip seq 8    |
-| Type / ID prefix  | Prefix [0a..] [Query] [ID lookup]     | logical range  |
-| All               | Chunk ID  Type   State   Capacity     | layout/state   |
-| WAL               | 0a...     ...    Sealed  ...          | physical spans |
-| Tree / Index      +---------------------------------------+----------------+
-| S3 / Iceberg      | Selected chunk: ID / state / totals   | Placement links|
-| Other (raw type)  | seq 7  Mirror x2  [copy 0] [copy 1]   |                |
-|                   | seq 8  EC 4+2     [D0][D1][D2][D3]    | Activity       |
-|                   |                   [P0][P1]           |                |
-+-------------------+---------------------------------------+----------------+
-
-Chunk logical ranges -> stable Strip sequence -> actual fragment locations
-
-Strip seq 7: Mirror x2
-  copy 0 -> Rack A / Node 1 / DG 101 / Disk a -> offset, length
-  copy 1 -> Rack B / Node 2 / DG 201 / Disk b -> offset, length
-
-Strip seq 8: EC 4+2 (example only; profile determines allowed placement)
-  D0 -> N1 / DG101 / Disk a       P0 -> N5 / DG501 / Disk e
-  D1 -> N2 / DG201 / Disk b       P1 -> N6 / DG601 / Disk f
-  D2 -> N3 / DG301 / Disk c
-  D3 -> N4 / DG401 / Disk d
-```
+- Implement Console UI §§14–15 and §§19–20. Capacity owns disk lifecycle and
+  inline 32-zone bitmap windows. Chunk lists real records and compact Strip /
+  block layouts; service slots and storage slots are independent authorities.
+- Chunk-KV presents a bounded collapsible diagram and scoped Tree/Journal
+  inspection. Journal fences are not KV Pages. Missing page-inspection support
+  must be explicit until the bounded management interface is available.
+- Rack diversity is preferred, not mandatory when distinct Nodes satisfy the
+  protection policy. No raw layout rewriting/deletion entry points.
 
 ##### 6. Iceberg: Reference Tree and File Inspection
 
-- Entering Iceberg automatically loads the current cluster Catalog. Do not show
-  endpoint/token inputs or a connection wizard. Deployment supplies the fixed
-  Catalog origin and server-held reader credential. Show unavailable/retry when
-  that service is absent; do not substitute another cluster. Catalog mutations
-  retain native authorization through the existing management session.
-- Use a two-column layout. Keep file properties and footer fields in the central
-  content, and show selected column details below the Parquet layout. Put refresh
-  and table actions in the center; do not duplicate metadata in a right panel.
-- The left panel expands Catalog → Namespace → Table → Snapshot → Manifest List
-  → Manifest → File. It follows immutable references, including shared files,
-  data/delete manifests, branch/tag labels and historical snapshots.
-- Selecting each entity shows structured fields and tables, never raw JSON as
-  the primary content. Table views show schema, partition/sort specifications,
-  properties and snapshot ancestry. Manifest lists show manifest descriptors;
-  manifests show entry status, partition values, inherited sequences and metrics.
-- File inspection is read-only and bound to the selected table metadata generation
-  and snapshot. Reject foreign references, expired files and stale generations;
-  changing credentials or scope cancels pending work and clears previous results.
-- Parquet inspection reads framing and footer metadata only. Show file size,
-  physical rows, schema, writer and footer fields; visualize actual column-chunk
-  byte ranges and bounded Row Group pages. Selecting a column shows its path,
-  field ID, type, codec, encodings, compressed/uncompressed sizes, offsets, value
-  count and optional statistics. Missing statistics remain unknown; bounds retain
-  exactness flags. Footer-only inspection does not claim page boundaries or live
-  row counts after deletes.
-- Expand reference children lazily, use bounded server pages, and retain explicit
-  partial/unsupported states. Other file formats expose supported metadata only.
-  Native Catalog management remains available alongside the inspector.
-- Use crowdb-tpc-loader in an isolated namespace for real Parquet/manifest
-  acceptance; independently verify footer-only reads and large integer identities.
-  Row queries and row DML are outside this delivery; the user selected metadata
-  and file-layout inspection as this iteration's scope.
+- Implement Console UI §21: Catalog → Namespace → Table → Snapshot → Manifest
+  → File, lazy independent manifest/file pages, expanded schema tree table and
+  selected properties. Manifest List metadata remains inspectable in properties.
+- Footer/Row Group/column inspection reads metadata only. Actions follow the
+  exact selected resource. Root credentials stay on the server.
 
 ##### 7. S3: Bucket and Object CRUD
 
-- Left panel: current authorized S3 scope → Bucket → prefix. A prefix virtually
-  groups keys; it is not an independently deletable directory. Preserve key case,
-  repeated slashes, and other details according to the protocol.
-- Central panel: Bucket selector, prefix/key queries, paginated object list,
-  selected object preview, and operations. Lists show Key, size, ETag, and last
-  modified time when provided by the service.
-- Bucket supports create/list/head/delete. Display errors for deleting nonempty
-  Buckets as returned, without implicit recursive deletion. Object supports
-  upload/replace, head/get/download, and delete. Update replaces object contents;
-  ETag is neither content nor an editable property.
-- Small text objects allow bounded UTF-8/Hex previews and editing. Objects beyond
-  the preview limit and binary files use file upload/download. Large objects retain
-  streaming and cancellation semantics without full buffering in Web or the browser.
-  Multipart shows upload progress/status. After cancellation, report whether uploads
-  remain pending, following existing abort/recovery semantics. Failures and unknown
-  outcomes must not be shown as saved.
-- The first version does not depend on CopyObject, UploadPartCopy, batch
-  DeleteObjects, version history, or IAM management. Add entry points only after
-  the corresponding service capabilities are implemented.
-- The Object Inspector shows available native references. Navigation to Chunk
-  requires an authorized management query; S3 key prefixes and Chunk ID prefixes
-  must not be treated as the same classification.
-
-```text
-+-------------------+---------------------------------------+----------------+
-| S3                | Bucket [datasets] Prefix [raw/]       | Object details |
-| authorized scope  | [List] [Upload] [Create Bucket]       | full key       |
-|  datasets         | Key       Size     ETag / modified    | size / ETag    |
-|   raw/            | raw/a     ...      ...                | content type   |
-|   output/         | raw/b     ...      ...                | Chunk links    |
-|  logs             | [Load more]                           | Activity       |
-|                   | Preview [UTF-8 / Hex]                 |                |
-|                   | [Download] [Replace] [Delete Object]  |                |
-+-------------------+---------------------------------------+----------------+
-```
+- Implement Console UI §22: S3 → Bucket; paged buckets/objects, HEAD details,
+  explicit bounded preview, streaming transfers and multipart outcome states.
+- Add authorized bounded ObjectRecord location inspection and Chunk links.
+  Continuations pin object generation; 64-bit offsets remain exact. No payload
+  read or recursive Chunk-placement fanout to obtain metadata locations.
+- Cross-domain return restores source selection, pagination, expansion and
+  scroll. Do not confuse ancestry breadcrumbs with navigation history.
 
 ##### 8. Service Boundaries, Credentials, and Capability Gaps
 
@@ -597,12 +408,9 @@ Additional acceptance for the seven-domain design:
 
 #### Open Questions
 
-- **Business references from Iceberg/S3 to Chunk**: Should the first version show
-  only references already queryable, or add authorized object-to-Chunk diagnostic
-  queries? The former has a smaller scope but leaves some objects without links;
-  the latter requires explicit business identity, authorization, and pagination,
-  without exposing internal references across the whole domain. Independent
-  Chunk browsing is not blocked.
+- None. The user approved the seven-domain interaction design and authorized
+  bounded object-to-Chunk diagnostics. Remaining work and defects are tracked
+  in the implementation plan and persistent UI issue list.
 
 Implementation verification commands (record results when implemented; this
 documentation change does not run the implementation suites):

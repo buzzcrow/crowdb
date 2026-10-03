@@ -1414,20 +1414,34 @@ pub async fn http_add_node_disk_group(
     Json(body): Json<AddDiskGroupBody>,
 ) -> Result<(StatusCode, Json<DiskGroupEntry>), (StatusCode, Json<ErrorBody>)> {
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let entry = ops::hardware::add_disk_group(&ctx, node_id, body.id, &body.name)
-        .await
-        .map_err(map_config_err)?;
+    let existing = ctx
+        .config()
+        .disk_groups
+        .iter()
+        .find(|entry| entry.node_id == node_id && entry.id == body.id)
+        .cloned();
+    let entry = if let Some(entry) = existing {
+        if entry.name != body.name {
+            return Err(crate::error::err_409("DiskGroup ID already has a different name"));
+        }
+        entry
+    } else {
+        ops::hardware::add_disk_group(&ctx, node_id, body.id, &body.name)
+            .await
+            .map_err(map_config_err)?
+    };
     state.commit_op_context(&ctx).map_err(map_persist_err)?;
 
     let hw = crate::mgmt::build_hardware_client(&state)
         .await
         .ok_or_else(|| err_502("no group-0 endpoint; disk-group owner cannot be assigned"))?;
-    if let Err(error) = auto_assign_owner(&hw, entry.rack_id, node_id, entry.id).await {
-        let rollback = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-        let _ = ops::hardware::remove_disk_group(&rollback, node_id, entry.id).await;
-        let _ = state.commit_op_context(&rollback);
-        return Err(err_502(format!("auto-assign owner: {error}")));
-    }
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        auto_assign_owner(&hw, entry.rack_id, node_id, entry.id),
+    )
+    .await
+    .map_err(|_| err_502("DiskGroup exists; owner assignment outcome unknown. Refresh before retrying."))?
+    .map_err(|error| err_502(format!("DiskGroup exists; auto-assign owner: {error}")))?;
 
     Ok((StatusCode::CREATED, Json(entry)))
 }
@@ -1455,11 +1469,15 @@ async fn auto_assign_owner(
         .await
         .map_err(|e| format!("read_all_diskdb_instances: {e}"))?;
     if instances.is_empty() {
-        return Err("no live diskdb instances registered".to_string());
+        return Ok(());
     }
     let owners = hw.list_owners().await.map_err(|e| format!("list_owners: {e}"))?;
     let instance_ids: Vec<u64> = instances.iter().map(|(id, _)| *id).collect();
-    let instance_id = crate::owner_assignment::pick_least_loaded_instance(&instance_ids, &owners)
+    let instance_id = owners
+        .iter()
+        .find(|owner| owner.rack_id == rack_id && owner.node_id == node_id && owner.dg_id == dg_id)
+        .map(|owner| owner.instance_id)
+        .or_else(|| crate::owner_assignment::pick_least_loaded_instance(&instance_ids, &owners))
         .ok_or_else(|| "no eligible diskdb instance".to_string())?;
     // Lease = 1 hour from now (the diskdb keepalive will refresh it).
     #[allow(clippy::cast_possible_truncation)]

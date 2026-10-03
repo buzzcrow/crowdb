@@ -145,7 +145,7 @@ export function DiskView({
           <HardDrive className="tw-h-5 tw-w-5 tw-text-muted" />
           <div className="tw-text-sm tw-font-mono tw-text-text">{disk.disk_id}</div>
         </div>
-        <div className="tw-text-xs tw-text-muted tw-mb-3">
+        <div data-testid="disk-geometry" className="tw-text-xs tw-text-muted tw-mb-3">
           {diskTypeLabel(disk.disk_type)} · {sharedHwStatusLabel(disk.status)} · {disk.zone_count} zones · {formatBytes(disk.capacity_bytes)} · {pct === null ? 'Usage unknown' : `${pct}% busy`}
         </div>
         {!readonly && (

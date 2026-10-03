@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useMemo, useCallback, useEffect, useRef } from 'react';
+import { useMemo, useCallback, useEffect, useRef, useState } from 'react';
 import ReactFlow, {
   Background,
   ReactFlowProvider,
@@ -53,6 +53,7 @@ interface TopologyCanvasProps {
   onEntityContextMenu?: (target: MenuTarget, event: React.MouseEvent) => void;
 }
 
+const EMPTY_COLLAPSED = new Set<string>();
 const NODE_TYPES = { crowdbKv: CrowdbKVNode };
 
 function descendantIds(rootId: string, edges: Edge[]): Set<string> {
@@ -141,13 +142,40 @@ function TopologyCanvasInner({ allServers, racks, nodes, servers, stores, nodeSt
   // poll updates (which re-run the effect with a new positioned.nodes
   // reference but the same action key) don't cancel an in-flight fit.
   const fitRafIdRef = useRef<number | undefined>(undefined);
+  const [collapsedByDomain, setCollapsedByDomain] = useState<Partial<Record<Domain, Set<string>>>>({});
+  const collapsed = collapsedByDomain[domain] ?? EMPTY_COLLAPSED;
 
   const { nodes: rawNodes, edges } = useMemo(
     () => addServiceNodes(domain, buildFlowForDomain(domain, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups), allServers ?? [], nodes),
     [domain, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups],
   );
 
-  const positioned = useMemo(() => layoutTree(rawNodes, edges), [rawNodes, edges]);
+  const childCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    edges.forEach(edge => counts.set(edge.source, (counts.get(edge.source) ?? 0) + 1));
+    return counts;
+  }, [edges]);
+  const positioned = useMemo(() => {
+    const hidden = new Set<string>();
+    collapsed.forEach(id => descendantIds(id, edges).forEach(child => {
+      if (child !== id) hidden.add(child);
+    }));
+    return layoutTree(rawNodes.filter(node => !hidden.has(node.id)),
+      edges.filter(edge => !hidden.has(edge.source) && !hidden.has(edge.target)));
+  }, [rawNodes, edges, collapsed]);
+
+  // Sidebar focus reveals every ancestor before centering a hidden target.
+  useEffect(() => {
+    if (!focusRequest) return;
+    setCollapsedByDomain(previous => {
+      const next = new Set(previous[domain]);
+      next.forEach(id => {
+        if (id !== focusRequest.targetId && descendantIds(id, edges).has(focusRequest.targetId)) next.delete(id);
+      });
+      if (next.size === previous[domain]?.size) return previous;
+      return { ...previous, [domain]: next };
+    });
+  }, [domain, edges, focusRequest]);
 
   useEffect(() => {
     if (refreshToken !== lastRefreshTokenRef.current) {
@@ -222,9 +250,10 @@ function TopologyCanvasInner({ allServers, racks, nodes, servers, stores, nodeSt
     () =>
       positioned.nodes.map((n) => ({
         ...n,
-        data: { ...(n.data as FlowNodeData), isSelected: n.id === selId },
+        data: { ...(n.data as FlowNodeData), isSelected: n.id === selId,
+          childCount: childCounts.get(n.id) ?? 0, collapsed: collapsed.has(n.id) },
       })),
-    [positioned.nodes, selId],
+    [positioned.nodes, selId, childCounts, collapsed],
   );
 
   useEffect(() => {
@@ -269,8 +298,13 @@ function TopologyCanvasInner({ allServers, racks, nodes, servers, stores, nodeSt
     (_e, node) => {
       const entity = (node.data as FlowNodeData).entity;
       if (entity) selectEntity({ ...entity, domain });
+      if (childCounts.has(node.id)) setCollapsedByDomain(previous => {
+        const next = new Set(previous[domain]);
+        if (next.has(node.id)) next.delete(node.id); else next.add(node.id);
+        return { ...previous, [domain]: next };
+      });
     },
-    [selectEntity, domain],
+    [selectEntity, domain, childCounts],
   );
 
   const onNodeContextMenu = useCallback(

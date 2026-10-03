@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{detached_command, process_is_alive, stop_pid_with_timeout, wait_for_diskdb_ready};
+use super::{detached_command, process_is_alive, stop_pid_with_timeout, wait_for_service_ready};
 use crate::{
     config::LocalLaunchSpec,
     error::{Error, Result},
@@ -42,7 +42,15 @@ pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunch
         message: format!("restarted {server_id} child has no pid"),
     })?;
     if let Some(url) = &spec.readiness_url {
-        wait_for_diskdb_ready(&mut child, url, &output_path, new_pid, Duration::from_secs(60)).await?;
+        wait_for_service_ready(
+            &mut child,
+            url,
+            &output_path,
+            new_pid,
+            Duration::from_secs(60),
+            server_id,
+        )
+        .await?;
     } else {
         tokio::time::sleep(Duration::from_millis(200)).await;
         if let Some(status) = child.try_wait()? {

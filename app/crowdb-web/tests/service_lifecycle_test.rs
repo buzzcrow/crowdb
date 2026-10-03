@@ -244,6 +244,10 @@ async fn deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch() {
         crowdb_kv_client::ClientConfig::new(cluster.mgmt_endpoints.clone()),
     ));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
+    kv.seed_leader(0, 1, cluster.group1_leader_endpoint.clone());
+    let sysmd = crowdb_kv_client::CrowdbSysmdClient::from_shared(kv.clone());
+    sysmd.add_store(0, &[1]).await.unwrap();
+    sysmd.add_group(0, 1).await.unwrap();
     let hardware = crowdb_kv_client::HardwareClient::from_shared(kv);
     hardware
         .add_rack(
@@ -272,9 +276,9 @@ async fn deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch() {
     let mut config = config();
     config.servers.clear();
     for (index, endpoint) in cluster.mgmt_endpoints.iter().enumerate() {
-        config
-            .servers
-            .push(ServerEntry::new(format!("kv-{index}"), endpoint.clone()));
+        let mut server = ServerEntry::new(format!("kv-{}", index + 1), endpoint.clone());
+        server.node_id = Some(u64::try_from(index + 1).unwrap());
+        config.servers.push(server);
     }
     let state = AppState::with_runtime_root(config, workspace.path().to_owned());
     let app = router(state.clone());

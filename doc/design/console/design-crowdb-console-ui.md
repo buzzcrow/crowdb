@@ -13,9 +13,9 @@ passed. Implementation status, runtime evidence, defects, and execution steps
 belong in the working plan. There is no separate UI spec to reconcile with this
 file. Backend architecture and wire formats remain in the linked component docs.
 
-The scope is Cluster, Capacity, KV, and their shared interaction rules. Chunk,
-Iceberg, Chunk-KV, and S3 page designs remain undefined here and are excluded
-from acceptance. Managing their server instances in Cluster remains in scope.
+The scope covers all seven domains and their shared interaction rules. Backend
+prerequisites and inspection APIs are part of acceptance; a rendering fixture
+does not establish that a native service operation succeeds.
 
 ## Contents
 
@@ -37,6 +37,12 @@ from acceptance. Managing their server instances in Cluster remains in scope.
 - [16. Loading, failures, and recovery](#16-loading-failures-and-recovery)
 - [17. Fixed-cluster operator flow](#17-fixed-cluster-operator-flow)
 - [18. Acceptance scenarios and scope](#18-acceptance-scenarios-and-scope)
+- [19. Chunk](#19-chunk)
+- [20. Chunk-KV](#20-chunk-kv)
+- [21. Iceberg](#21-iceberg)
+- [22. S3](#22-s3)
+- [23. Actions and properties](#23-actions-and-properties)
+- [24. E2E organization and timing](#24-e2e-organization-and-timing)
 
 ## 1. Product contract
 
@@ -44,8 +50,7 @@ from acceptance. Managing their server instances in Cluster remains in scope.
   that cluster directly; no Connect dialog, endpoint input, or access-key form
   precedes ordinary browsing.
 - **UI-02:** The seven top-level tabs are Cluster, KV, Capacity, Chunk, Chunk-KV,
-  Iceberg, and S3. This specification defines only Cluster, KV, and Capacity;
-  the other tabs are reserved navigation entries pending their page designs.
+  Iceberg, and S3. Each has an independent selected resource and query window.
 - **UI-03:** Assume an administrator/root session until UI authentication is
   introduced. Available backend operations remain authoritative; capability
   restrictions are not inferred from a missing login screen.
@@ -91,6 +96,14 @@ provide observable capacity and bitmap fixtures.
 - **NAV-06:** The center remains usable with the right panel open. Tables and
   diagrams scroll within their work area; action bars and pagination remain
   reachable. Resizing does not reset selection or trigger unbounded refetches.
+- **NAV-07:** Every domain uses the shared Tree appearance and two draggable
+  panel dividers. Left default width is 280 px; properties default is 320 px.
+  Each divider supports pointer and keyboard resizing between 220 and 600 px.
+  Switching domains introduces no panel replacement/slide animation.
+- **NAV-08:** Parent cards in center topology diagrams collapse or expand their
+  children on click while selecting the parent. Children retain their own
+  expansion state. Sidebar focus reveals hidden ancestors. Right-click opens
+  the entity menu without toggling expansion. Fit All fits visible cards.
 
 ## 4. Visual language and service identity
 
@@ -116,7 +129,7 @@ provide observable capacity and bitmap fixtures.
 
 ## 5. Cluster
 
-- **CLU-01:** The hierarchy is Rack → Node → service instances. The center
+- **CLU-01:** The hierarchy is Datacenter → Rack → Node → service instances. The center
   topology uses the same hierarchy, identities, and selection as the left tree.
   Logical Paxos groups are managed in KV; physical storage is managed in Capacity.
 - **CLU-02:** Rack actions include Add Node. A Node context menu independently
@@ -246,13 +259,23 @@ provide observable capacity and bitmap fixtures.
 - **KV-02:** Store/group/replica creation, membership operations, and deletion
   use the selected scope and valid defaults. Group 0 is visibly identified as
   the system group; ordinary groups are not confused with it.
-- **KV-03:** Selecting a group exposes membership, node placement, state, and
-  available progress/frontier values. Unknown leader is not rendered as zero.
+- **KV-03:** Selecting a Group directly opens its data window; there is no
+  Overview/Data toggle. Membership and node placement remain in properties.
+  Unknown leader is not rendered as zero. The right inspector does not poll or
+  render generic internal metrics.
 - **KV-04:** Data operations target an explicit Store/Group. Get/put/delete/scan
   show encoding and exact key/value interpretation. Scan is bounded and paged;
   empty values, missing keys, and request failures are distinguishable.
 - A selected replica or group may expose supported diagnostics; a generic
   physical Cluster diagram does not replace the logical KV workbench.
+- **KV-05:** A data window contains at most 20 entries. Previous/Next replace
+  rows; each Group has an independent cursor when browsing a Store. Clicking
+  a row shows the full Key and Value. Strictly valid printable UTF-8 is text;
+  other bytes display their original hexadecimal encoding prefixed by `0x`.
+  Display conversion cannot change bytes sent in a mutation or continuation.
+- **KV-06:** Get/Put/Delete occupy the shared collapsed Actions strip below
+  the heading/path. Its expanded content names Store and Group. System Store 0 /
+  Group 0 is read-only for ordinary KV mutations; management APIs own its state.
 
 ## 13. Service lifecycle
 
@@ -363,8 +386,155 @@ plan, never edited out of this specification to make a run pass.
   supported admin data operations remain usable. Readonly embedding forbids
   mutations and respects API/style isolation.
 
-Scenario IDs A06–A09 are reserved; no acceptance contract is defined for them.
+- **A06 / Chunk:** default real list, 10-entry replacement windows, exact ID,
+  multiple Mirror/EC Strips, selected block properties and Disk/Node round trips.
+- **A07 / Chunk-KV:** registered servers including empty owners, bounded graph,
+  collapse, exact split identity, selected Tree/Journal and stale continuations.
+- **A08 / Iceberg:** Catalog to Parquet footer through a real committed table;
+  nested schema, snapshots, paged manifests/files and zero data-page reads.
+- **A09 / S3:** bucket/object replacement pages, HEAD, bounded preview,
+  upload/download/multipart, locations and return from Chunk to the source object.
 
-Out of scope: Chunk, Iceberg, Chunk-KV, and S3 page design and acceptance; UI
-login/role design; ChunkDB's new range model; and new data-plane protocols.
+Out of scope: UI login/role design and new data-plane protocols.
 Unsupported features are explicit rather than represented as working controls.
+
+## 19. Chunk
+
+- **CHK-01:** Left tree is Datacenter → Rack → Node → CDB and KV Server;
+  KV branches expand Store → Group without Replicas. CDB service-slot ownership
+  and KV storage-slot ownership are distinct. Disjoint slot sets are not drawn
+  as one continuous hash range. Unresolved ownership is labelled unavailable.
+  Owner branches load only when expanded, with 32-slot Previous/Next windows
+  and an exact generation token. A changed generation preserves the previous
+  observation with an error and requires Refresh from the first window.
+- **CHK-02:** Entering Chunk requests an All-type page automatically. The center
+  lists at most 10 chunks without an inner vertical scrollbar. Previous/Next
+  replace the page. Type is a protocol-defined selector; exact Chunk ID lookup
+  sits above the list in the center. Arbitrary ID-prefix/global filtering is not
+  required. Source failures identify partial coverage rather than an empty list.
+- **CHK-03:** Selected Chunk summary and layout appear below the list. Each Strip
+  has a compact two-line identity: `Strip <id> Mirror` or `Strip <id> EC k+m`,
+  followed by logical interval such as `[8M, 16M)`. Stable protocol identities
+  remain distinct from presentation indexes. Capacity, written bytes and physical
+  usage are separate; missing values are unknown.
+- **CHK-04:** Muted selectable block cards form each Strip. Mirror cards use
+  `Mirror 1`, `Mirror 2`, etc.; EC cards distinguish data and parity. Small cards
+  show identity/role, while properties carry full Node, DiskGroup, Disk, Zone,
+  offset and length. No redundant horizontal Strip bar consumes a third row.
+- **CHK-05:** Selecting a block updates right properties. Disk and Node links
+  retain the originating chunk, page/cursor, Strip window, block and scroll.
+  Repair status reflects actual protection deficit, not lack of rack diversity
+  alone. Missing placement retains known Disk IDs rather than invented targets.
+
+## 20. Chunk-KV
+
+- **CKV-01:** Left shared Tree is Datacenter → Rack → Node → CKV Server → Split.
+  No extra sidebar title duplicates the root. Registered servers stay visible
+  even with no assigned splits. Compact split labels retain full ID and bounds
+  in hover/properties; five rendered splits are a window, not a global count.
+- **CKV-02:** The center is a node-link diagram, not a second indented sidebar:
+  Chunk-KV root → CKV Server → Split → actual Tree ID. Its visible window is
+  at most eight servers and five splits per server. Server cards collapse their
+  children. Graph paging is separate from authoritative catalog pagination.
+  Do not add a loaded-ID filter or an ambiguous All loaded servers control.
+- **CKV-03:** Selecting a Split opens its scoped Tree/Journal information below
+  the graph. Properties retain complete identities, bounds, epoch, owner/source,
+  checkpoint and selected journal extent. Root/child KV Pages must come from a
+  real bounded page-inspection API; journal fences are not KV Pages. Byte keys
+  default to hex with an optional validated text interpretation.
+- **CKV-04:** Tree and journal observations have bounded replacement pages.
+  Continuation pins catalog/stream generation. Stale generation requires refresh
+  from the first page; parent/child recovery dependencies retain separate stream
+  offsets. Placement and split lineage are separate fields.
+
+## 21. Iceberg
+
+- **ICE-01:** The configured cluster Catalog loads automatically. Left shared
+  Tree is Catalog → Namespace → Table → Snapshot → Manifest → File. Namespace
+  and Table types are labelled explicitly. No Metadata leaf, Snapshots wrapper,
+  or Manifest List file layer duplicates content. Current Snapshot is marked
+  `Current`; immutable IDs remain exact.
+- **ICE-02:** Catalog/Namespace centers list their children. Table center shows
+  a compact overview followed directly by a Snapshot table: time, operation,
+  records and files. Overview/Schema/Files controls belong only to selected
+  Table, disappear for other resources, and have no independent Snapshots tab.
+- **ICE-03:** Schema is an expanded tree table with field ID/name/type/required
+  and hierarchy for structs, lists and maps. Element/key/value identities stay
+  visible. Large schemas use bounded row windows; collapse is optional, not a
+  prerequisite to seeing ordinary fields.
+- **ICE-04:** Snapshot center has one scoped summary and a Manifest table.
+  Expanding one Manifest row requests its File subtable. Manifest and File
+  pagination are independent and lazy; no full-snapshot fetch to calculate a
+  total. The right properties retain Manifest List path and known size even
+  though that file is omitted from navigation.
+- **ICE-05:** Manifest/file inspectors render decoded fields. Parquet shows
+  footer information and sized Row Group/column blocks. Selecting a column
+  shows complete metadata in properties. Inspection reads footer/metadata only,
+  not data pages. Unsupported file types show an explicit capability state.
+- **ICE-06:** Actions follow selected Catalog, Namespace or Table. Catalog
+  actions disappear when a Table is selected. Paths, titles and summaries name
+  the focused item once; properties must not merge unrelated parent identities.
+
+## 22. S3
+
+- **S3-01:** Left Tree is S3 → Bucket. A single namespace introduces no wrapper;
+  the logical S3 root is not named Datacenter. Root center lists buckets with
+  20-row windows; it does not repeat S3 as path, type and heading.
+- **S3-02:** Selecting a Bucket displays an API page of at most 20 objects.
+  Prefix changes reset cursor history; Previous/Next replace rows. Any bucket
+  filter over already loaded metadata explicitly names that local scope.
+- **S3-03:** Selecting an Object replaces the list with HEAD fields: key, size,
+  ETag, last modified, content type, supplied version and user metadata. Missing
+  fields show `—`. Breadcrumbs restore the Bucket list and its cursor/prefix.
+  Preview is a separate bounded operation, not an automatic payload GET.
+- **S3-04:** Root Actions create buckets/demo; Bucket Actions upload/delete and
+  multipart; Object Actions preview/download/delete. Exact bucket/key is visible.
+  Multipart state distinguishes uploaded parts, completion, abort, failure and
+  unknown outcome. Downloads stream; previews read at most the advertised cap.
+- **S3-05:** Object details include Storage locations below HEAD, 20 extents per
+  page: stable index, logical `[start, end)`, Chunk ID, chunk `[offset, end)`, and
+  physical length. Properties show exact decimal bytes and full identity.
+  Chunk links preserve object and extent cursors, selected extent and scroll.
+- Locations are an admin metadata query, never inferred from HEAD or obtained
+  by reading object payloads. Empty/missing/corrupt/oversized references have
+  distinct states. Continuation binds object and metadata generation; overwrite
+  reports stale and requires first-page refresh. Exact 64-bit offsets survive
+  JSON/JavaScript without rounding. Bounded decoding and response limits are
+  mandatory; no recursive placement fetch for every extent.
+
+## 23. Actions and properties
+
+- **ACT-01:** Resource title/path appear first, then one compact Actions strip,
+  collapsed by default, then primary content. Expanded Actions name their exact
+  operation target. Changing resource closes obsolete action forms.
+- **ACT-02:** KV, Iceberg and S3 use this shared structure and button style.
+  Ordinary buttons have a visible border; destructive buttons use muted red.
+  Refresh, Previous and Next belong with the query/list and do not hide inside
+  mutation forms. Readonly/container capabilities apply to every action.
+- **ACT-03:** Right properties show complete information for the clicked item,
+  including graph blocks/columns/extents. Optional diagnostics never replace
+  primary details. Cluster/KV generic internal metrics are excluded until a
+  separate metrics design exists.
+
+## 24. E2E organization and timing
+
+- **TEST-02:** Page-function specs retain each behavior once: shell `0x`,
+  physical lifecycle `1x`, logical KV `2x`, KV data `3x`, inspector/canvas `4x`,
+  Capacity/Chunk/Chunk-KV `5x`, Iceberg `6x`, S3 `7x`, cross-function `9x`.
+  Dedicated creation/reconfiguration specs retain their UI mutations; a smoke
+  chain does not repeat every dialog or failure permutation.
+- **TEST-03:** Use three layers: fast deterministic rendering/failure fixtures;
+  real API-backed management/data tests; isolated native full-stack acceptance
+  including deployment and container capability enforcement. A mock layer never
+  substitutes for a missing native contract. Share setup per spec and keep
+  destructive cases last. Reset only for cases that require empty authority.
+- **TEST-04:** Keep the step timer and slow-test reporter. Measure setup, mutation
+  response, lifecycle readiness, DOM refresh and teardown separately. Slow steps
+  at 2 s and very slow steps at 5 s remain logged even when a step fails. Tests
+  at 10/30 s retain slow/very-slow reports. Compare per-test baselines; investigate
+  more than 2× rather than hiding time with retries or larger deadlines.
+- **TEST-05:** One worker owns the mutable runtime; installed system browser,
+  no automatic browser installation. Default assertion deadline is 3 s and
+  election 10 s, polling every 100 ms. No fixed sleeps. Native large multipart
+  and SF=1 loader acceptance run separately from ordinary UI iteration; normal
+  smoke data remain small while preserving multi-Strip and pagination cases.

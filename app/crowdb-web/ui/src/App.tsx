@@ -1,3 +1,4 @@
+import { PanelDivider } from './components/PanelDivider';
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
@@ -92,7 +93,6 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const [centerPanel, setCenterPanel] = useState<CenterPanelMode>('topology');
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [inspectorWidth, setInspectorWidth] = useState(320);
-  const [resizing, setResizing] = useState<'left' | 'right' | null>(null);
   const [canvasFocusRequest, setCanvasFocusRequest] = useState<{ targetId: string; subtree: boolean; nonce: number } | null>(null);
   // Cross-jumps replace the destination scope once. Manual switches retain
   // each domain's selection.
@@ -264,27 +264,6 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     await handleRefresh();
     setDialog((d) => ({ ...d, initCluster: false }));
   }, [handleRefresh]);
-
-  useEffect(() => {
-    if (!resizing) return;
-
-    const onMouseMove = (event: MouseEvent) => {
-      if (resizing === 'left') {
-        setSidebarWidth(Math.min(420, Math.max(200, event.clientX)));
-        return;
-      }
-      setInspectorWidth(Math.min(560, Math.max(280, window.innerWidth - event.clientX)));
-    };
-
-    const onMouseUp = () => setResizing(null);
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-  }, [resizing]);
 
   /** Run a mutation, surface toast + activity, then refresh. */
   const runMutation = useCallback(
@@ -538,15 +517,10 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         diskdbInstanceIdByNodeId={diskdbInstanceIdByNodeId}
       />}
 
-      {!ownsSidebar && <div
-        className="tw-fixed tw-top-14 tw-bottom-0 tw-z-30 tw-w-2 tw-cursor-col-resize hover:tw-bg-accent/20"
-        style={{ left: sidebarWidth - 1 }}
-        onMouseDown={() => setResizing('left')}
-        aria-hidden="true"
-      />}
+      {!ownsSidebar && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth} />}
 
       <main
-        className="tw-mt-14 tw-h-[calc(100vh-3.5rem)] tw-transition-[margin] tw-flex tw-flex-col tw-min-h-0"
+        className="tw-mt-14 tw-h-[calc(100vh-3.5rem)] tw-flex tw-flex-col tw-min-h-0"
         style={{
           marginLeft: ownsSidebar ? 0 : sidebarWidth,
           marginRight: selectedEntity && !ownsSidebar ? inspectorWidth : 0,
@@ -598,14 +572,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         <Inspector readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
       </Suspense>}
 
-      {selectedEntity && !ownsSidebar && (
-        <div
-          className="tw-fixed tw-top-14 tw-bottom-0 tw-z-30 tw-w-2 tw-cursor-col-resize hover:tw-bg-accent/20"
-          style={{ right: inspectorWidth - 1 }}
-          onMouseDown={() => setResizing('right')}
-          aria-hidden="true"
-        />
-      )}
+      {selectedEntity && !ownsSidebar && <PanelDivider fixed side="right" width={inspectorWidth} onResize={setInspectorWidth} />}
 
       {menuState && <ContextMenu items={menuState.items} position={menuState.position} onClose={closeMenu} />}
 

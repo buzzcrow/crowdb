@@ -12,6 +12,57 @@ Execution history: [UI implementation plan](plan-console-complete-ui.md).
 
 Goal: make the normal one-rack, three-node flow work without manual repairs.
 
+## Inspector simplification
+
+- [ ] **Redesign metrics separately**: Cluster and KV no longer render or poll
+  raw internal metrics in the right inspector. Their identity, topology,
+  election and read-state properties remain. A future metrics experience needs
+  a separate design; do not reinstate the old generic counter list.
+
+## S3 browsing design
+
+- [ ] **Object locations: explicit UI/API contract**:
+  - Left navigation is `S3 → Bucket`. With one namespace, omit a namespace
+    wrapper; do not label the logical S3 root Datacenter. The root center lists
+    buckets. Selecting a bucket opens a 20-object page with Previous/Next and
+    prefix input. Selecting an object replaces that list with object details.
+  - Object details: breadcrumb `S3 / bucket / key`, object key title, then a
+    default-collapsed Actions strip using the shared component (implemented for the browser; storage locations remain pending). Main content
+    begins with HEAD fields: size, ETag, last modified, content type, version
+    when supplied, and user metadata. Missing fields show `—`, not guessed data.
+  - Below HEAD, show **Storage locations** as a table with 20 rows per page:
+    extent index, logical interval `[start, end)`, Chunk ID, chunk interval
+    `[offset, offset + length)`, and physical length. Use readable byte units
+    in cells and exact decimal bytes in the right property panel. Never infer
+    physical disk offsets from object offsets.
+  - The right property panel follows the selected extent and shows full Chunk
+    ID, logical offset/length, chunk offset/length and object identity. Clicking
+    a Chunk ID opens Chunk detail. Return restores bucket, object, prefix,
+    object-list cursor, extent cursor, selected extent and scroll position.
+  - Proposed console endpoint: `GET /api/access/s3-inspect/locations` with
+    `bucket`, exact `key`, `limit` (default 20, maximum 100), and opaque `cursor`.
+    It uses cluster admin identity internally, without browser access keys.
+    The access service resolves tenant/bucket and decodes the stored reference;
+    the console must not guess metadata keys or access another tenant by name.
+  - Response: bucket/key, immutable metadata-generation token, ETag, logical
+    object length, `locations[]`, `next_cursor`. Each location has stable index,
+    nullable Chunk ID, offset, length, logical_offset, logical_length. Encode
+    64-bit numbers as decimal strings. The cursor binds object, generation and
+    position. Overwrite between pages returns 409; UI keeps the previous page
+    labelled stale and offers Refresh from the first page. Deletion returns 404.
+  - Bound response to 1 MiB and reference decoding to 4 MiB; reject oversized
+    legacy references with an explicit inspection-limit error, not truncation
+    disguised as completion. Read only metadata, never GET object bodies or
+    recursively fetch every Chunk's placement. Empty objects show `No storage
+    extents`; missing Chunk IDs show `Location unavailable` without a link.
+    Corrupt references show an error and preserve HEAD details.
+  - Verification: multiple extents paginate without duplicates; IDs/offsets
+    above JavaScript's safe integer range remain exact; an overwritten object
+    cannot combine generations; empty/missing/corrupt/oversized records have
+    explicit states; inspection performs zero payload reads; Chunk navigation
+    and Back restore the original object page. Add backend integration tests
+    and extend `70-s3-object.spec.ts` for those visible states.
+
 ## Cluster and provisioning
 
 - [ ] **Initialize ChunkDB slot maps during cluster provisioning**: after the
@@ -51,12 +102,8 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   to DG 1's missing owner; manual owner assignment and redeployment recovered
   all three instances. Preserve causal startup errors and report nonzero exit
   status on bootstrap failure. Recovery is not a fix of the provisioning flow.
-- [ ] **Wrong service name in deployment errors**: Chunk-KV startup failure
-  reports `DiskDB child exited before readiness`. Use the actual service kind
-  and preserve useful startup diagnostics. Verify auxiliary failure messages.
-- [ ] **Native service log capture**: Chunk-KV logs went to the shared manual
-  runtime log directory while the managed launch's log tail was empty. Pass
-  the service workspace log path and include its causal startup error.
+
+
 - [ ] **Initialize Iceberg catalog during first Access deployment**: deployment
   failed with `Error: Uninitialized` after Chunk-KV became ready. Explicit
   catalog initialize/activate followed by redeployment brought all three
@@ -75,6 +122,16 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   tree, canvas, menus and properties before marking complete.
 
 ## Capacity and shared behavior
+
+- [ ] **Cluster canvas click-to-expand**: reuse the Chunk-KV center graph's
+  click-to-expand/collapse interaction in the Cluster center view. Preserve
+  selection, expansion state and bounded rendering while revealing children.
+- [ ] **Navigation return history across all views**: every button/link that
+  navigates to another resource or view must retain a return route. Back and
+  Forward restore the source domain, resource, list cursor, tree expansion,
+  selected detail and scroll position. Keep ancestry breadcrumbs separate
+  from visit history; refresh and mutations must not create navigation entries.
+  Include property links and graphical nodes, not only sidebar navigation.
 
 - [ ] **Return to Chunk after placement navigation**: selecting a disk block
   and following its Disk or Node property link opens Capacity or Cluster, but
@@ -105,11 +162,12 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   not root/child/leaf Page links or key/value bytes. Add bounded metadata/key
   inspection before implementing the Page tree. Default key rendering to hex,
   with optional text rendering; do not represent journal extents as KV Pages.
-- [ ] **Remaining page contracts**: discuss Chunk, Chunk-KV, Iceberg and S3
-  using the real fixture before extending the permanent UI specification.
-- [ ] **Chunk range integration deferred**: wait for the user's backend range
-  redesign; do not implement range distribution in this pass. Preserve a
-  bounded list/exact-query flow and report actual metadata source coverage.
+
+
+- [ ] **Chunk-KV Partition bug reported**: user flagged Partition behavior in
+  the Chunk-KV tab on 2026-10-04. Capture the exact selection/display symptom
+  and reproduce it before assigning a cause; do not conflate this report with
+  the separately recorded balancing issue.
 
 ## Verification layers
 
@@ -120,7 +178,31 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   Capacity views and failure feedback. Run through `pixi run`; use the system
   browser and an isolated test runtime.
 
-## Current fixture (2026-10-03)
+## Verified completion pass (2026-10-04)
+
+- The permanent specification now defines all seven domains, the shared tree,
+  center Actions, properties and rendering/request bounds. Future metrics and
+  authentication redesign remain separate work.
+- Current browser suite: 83 tests passed in 3.4 minutes; 101 unit tests passed
+  in 2.29 seconds. Timing instrumentation remains on setup, mutation, readiness,
+  DOM and teardown. Page-only behavior and native acceptance have separate
+  configurations.
+- KV uses 20-row replacement pages and original hex bytes for binary cursor
+  and row deletion. Six focused tests passed; printable Unicode remains text.
+- Chunk ownership uses real validated service/storage maps, lazy owner-specific
+  32-slot pages, generation pinning and separate CDB/Group branches. Four UI
+  tests and the real KV-backed ownership integration passed. Disjoint slots
+  remain explicit. No fabricated range/Replica children are shown.
+- Lifecycle failures identify the actual service and include the causal child
+  output. Three retained-launch tests passed. Managed Chunk-KV/Access launch
+  specifications now direct logs into their own workspace.
+- Fresh CDB launch initializes a fixed service/storage plan before starting;
+  existing maps are preserved and out-of-plan owners require explicit
+  migration. A real CDB deployment test passed. The whole three-node
+  six-service bring-up remains unaccepted until the outstanding items above
+  are fixed and tested together.
+
+## Prior fixture (2026-10-03)
 
 - Chunk-KV sidebar uses the shared datacenter/Rack/Node/Server/Split tree.
   Registered servers remain visible without catalog entries. Split rows and

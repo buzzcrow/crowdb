@@ -3,7 +3,7 @@
 
 import { memo } from 'react';
 import { Handle, NodeProps, Position } from 'reactflow';
-import { FolderTree, Monitor, Database, Boxes, HardDrive, RadioTower, Cog, Crown, AlertTriangle, Building2 } from 'lucide-react';
+import { FolderTree, Monitor, Database, Boxes, HardDrive, RadioTower, Cog, Crown, AlertTriangle, Building2, ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { toUiHealth } from '../utils/entityDisplay';
 
@@ -20,6 +20,8 @@ interface CrowdbKVNodeData {
   leader?: boolean;
   /** Set when the node is the current selection. */
   isSelected?: boolean;
+  childCount?: number;
+  collapsed?: boolean;
 }
 
 const iconForKind: Record<CrowdbKVNodeData['kind'], typeof FolderTree> = {
@@ -79,6 +81,7 @@ function CrowdbKVNodeBase({ data }: NodeProps<CrowdbKVNodeData>) {
 
   return (
     <div
+      title={data.childCount ? `${data.collapsed ? 'Expand' : 'Collapse'} ${data.label} · ${data.childCount} children` : data.label}
       className={cn(
         'tw-border tw-rounded-lg tw-px-3 tw-py-2 tw-min-w-[160px] tw-shadow-sm tw-transition-all',
         surface,
@@ -94,6 +97,9 @@ function CrowdbKVNodeBase({ data }: NodeProps<CrowdbKVNodeData>) {
         <div className="tw-flex-1 tw-min-w-0">
           <div className="tw-flex tw-items-center tw-gap-1">
             <span className="tw-text-sm tw-font-medium tw-text-text tw-truncate">{data.label}</span>
+            {!!data.childCount && (data.collapsed
+              ? <ChevronRight aria-label="Expand children" className="tw-h-3.5 tw-w-3.5 tw-text-muted" />
+              : <ChevronDown aria-label="Collapse children" className="tw-h-3.5 tw-w-3.5 tw-text-muted" />)}
             {data.leader && <Crown className="tw-h-3.5 tw-w-3.5 tw-text-yellow-400 tw-flex-shrink-0" />}
           </div>
           {data.sublabel && (

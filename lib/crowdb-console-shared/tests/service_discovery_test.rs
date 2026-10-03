@@ -54,6 +54,8 @@ async fn chunk_kv_raw_observation_preserves_load_and_partition_state() {
     let cluster = KvCluster::start().await;
     let svc = cluster.make_service_registry_client();
     let payload = ChunkKvExtra {
+        node_id: Some(1),
+        http_endpoint: Some("http://127.0.0.1:15508".into()),
         capacity_bytes: 10_000,
         durable_bytes: 4_000,
         request_rate: 37,

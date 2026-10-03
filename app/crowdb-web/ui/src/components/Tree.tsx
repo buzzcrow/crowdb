@@ -15,7 +15,9 @@ export interface TreeNode {
   rawId?: string | number;
   label: string;
   title?: string;
-  type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition';
+  selected?: boolean;
+  footer?: React.ReactNode;
+  type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
   icon?: React.ReactNode;
   children?: TreeNode[];
   /** Load children when this branch is first opened. */
@@ -60,7 +62,7 @@ function TreeNodeComponent({
   const hasChildren = node.expandable || (!!node.children && node.children.length > 0);
   const isExpanded = expandedIds.has(node.id);
   const entityId = node.rawId ?? node.id;
-  const isNodeSelected = isSelected(String(entityId));
+  const isNodeSelected = node.selected ?? isSelected(String(entityId));
 
   const select = useCallback(() => {
     selectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, serviceType: node.serviceType });
@@ -149,6 +151,7 @@ function TreeNodeComponent({
               onNodeContextMenu={onNodeContextMenu}
             />
           ))}
+          {node.footer && <div style={{ paddingLeft: `${(level + 1) * 16 + 12}px` }}>{node.footer}</div>}
         </div>
       )}
     </div>

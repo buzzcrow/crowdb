@@ -21,6 +21,7 @@ test('Root S3 sends credential-free Console requests, preserves keys and bounds 
     return route.fulfill({ contentType: 'application/xml', body: '<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>a b/中文.txt</Key><Size>99999</Size><ETag>native-etag</ETag></Contents></ListBucketResult>' });
   });
   await page.goto('/?domain=S3');
+  await expect(page.getByRole('heading', { name: 'S3', exact: true })).toHaveCount(0);
   await expect(page.getByLabel('s3 endpoint', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Save endpoint', exact: true })).toHaveCount(0);
   await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
@@ -28,14 +29,16 @@ test('Root S3 sends credential-free Console requests, preserves keys and bounds 
   await page.getByRole('button', { name: 'List buckets', exact: true }).click();
   await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'demo-bucket', exact: true }).click();
   await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'a b/中文.txt', exact: true }).click();
+  await page.getByText('Object actions', { exact: true }).click();
   await page.getByRole('button', { name: 'Preview first 4 KiB', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Loaded first 4 KiB' })).toBeVisible({ timeout: 3000 });
   expect(requests).toContainEqual({ method: 'GET', path: '/api/access/s3/demo-bucket/a%20b/%E4%B8%AD%E6%96%87.txt', range: 'bytes=0-4095' });
-  const preview = await page.locator('main aside pre').textContent();
-  expect(JSON.parse(preview!).preview).toHaveLength(4096);
+  expect(await page.getByLabel('Object preview', { exact: true }).textContent()).toHaveLength(4096);
   await page.getByTestId('domain-iceberg').click();
   await page.getByTestId('domain-s3').click();
   await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('a b/中文.txt');
+  await page.getByRole('navigation', { name: 'S3 breadcrumbs' }).getByRole('button', { name: 'demo-bucket', exact: true }).click();
   await expect(page.getByRole('table', { name: 'S3 objects' })).toContainText('a b/中文.txt');
 });
 
@@ -60,10 +63,11 @@ test('S3 multipart parts use native markers without credential forms', async ({ 
   await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'List buckets', exact: true }).click();
   await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'parts-bucket', exact: true }).click();
+  await page.getByText('Bucket actions', { exact: true }).click();
   await page.getByRole('button', { name: 'List multipart uploads', exact: true }).click();
   await page.getByRole('button', { name: 'Inspect parts', exact: true }).click();
   await page.getByRole('button', { name: 'Next parts page', exact: true }).click();
-  await expect(page.locator('main aside pre')).toContainText('101');
+  await expect(page.getByRole('region', { name: 'Object metadata' })).toContainText('101');
   await expect(page.getByRole('button', { name: 'Next parts page', exact: true })).toHaveCount(0);
   await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
 
@@ -94,26 +98,25 @@ test('S3 bounds bucket rendering, accumulated objects and XML responses', async 
     if (!url.search) return route.fulfill({ contentType: 'application/xml', body: `<ListAllMyBucketsResult><Buckets>${Array.from({ length: 150 }, (_, i) => `<Bucket><Name>bucket-${i}</Name></Bucket>`).join('')}</Buckets></ListAllMyBucketsResult>` });
     const start = Number(url.searchParams.get('continuation-token') ?? 0);
     objectRequests++;
-    return route.fulfill({ contentType: 'application/xml', body: `<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>${start + 100}</NextContinuationToken>${Array.from({ length: 100 }, (_, i) => `<Contents><Key>object-${start + i}</Key><Size>1</Size></Contents>`).join('')}</ListBucketResult>` });
+    return route.fulfill({ contentType: 'application/xml', body: `<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>${start + 20}</NextContinuationToken>${Array.from({ length: 20 }, (_, i) => `<Contents><Key>object-${start + i}</Key><Size>1</Size></Contents>`).join('')}</ListBucketResult>` });
   });
   await page.goto('/?domain=S3');
   await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
   await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'List buckets' }).click();
   const buckets = page.getByRole('navigation', { name: 'S3 buckets' });
-  await expect(buckets.getByRole('button')).toHaveCount(100);
+  await expect(page.getByRole('table', { name: 'S3 bucket list' }).getByRole('row')).toHaveCount(21);
   await page.getByRole('button', { name: 'Next buckets' }).click();
-  await expect(buckets.getByRole('button')).toHaveCount(50);
-  await buckets.getByRole('button', { name: 'bucket-100', exact: true }).click();
+  await buckets.getByRole('button', { name: 'bucket-20', exact: true }).click();
   const rows = page.getByRole('table', { name: 'S3 objects' }).getByRole('row');
-  await expect(rows).toHaveCount(101);
-  for (let i = 2; i <= 10; i++) {
-    await page.getByRole('button', { name: 'Load more', exact: true }).click();
-    await expect(rows).toHaveCount(i * 100 + 1);
-  }
-  await expect(page.getByRole('button', { name: 'Load more', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('status').filter({ hasText: 'Showing 1,000 objects' })).toBeVisible();
-  expect(objectRequests).toBe(10);
+  await expect(rows).toHaveCount(21);
+  await page.getByRole('navigation', { name: 'Object pages' }).getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(rows).toHaveCount(21);
+  await expect(page.getByRole('table', { name: 'S3 objects' })).toContainText('object-20');
+  await page.getByRole('navigation', { name: 'Object pages' }).getByRole('button', { name: 'Previous', exact: true }).click();
+  await expect(page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'object-0', exact: true })).toBeVisible();
+  expect(objectRequests).toBe(3);
+  await page.getByRole('navigation', { name: 'S3 breadcrumbs' }).getByRole('button', { name: 'S3', exact: true }).click();
   oversized = true;
   await page.getByRole('button', { name: 'List buckets' }).click();
   await expect(page.getByRole('alert').filter({ hasText: '4 MiB budget' })).toBeVisible();

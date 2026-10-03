@@ -10,6 +10,30 @@ use crowdb_console_shared::lifecycle;
 use crowdb_test_harness::test_dirs;
 
 #[tokio::test]
+async fn early_readiness_exit_reports_actual_service_and_cause() {
+    let workdir = test_dirs::tempdir_in_test_data("readiness-exit");
+    let spec = LocalLaunchSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "echo 'journal owner unavailable' >&2; exit 7".into()],
+        workdir: workdir.path().to_string_lossy().into_owned(),
+        env: BTreeMap::new(),
+        env_file: None,
+        readiness_url: Some("http://127.0.0.1:1/ready".into()),
+    };
+    let error = lifecycle::restart_local_service("chunk-kv-17", 0, &spec)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("chunk-kv-17 child exited before readiness"),
+        "{error}"
+    );
+    assert!(error.contains("journal owner unavailable"), "{error}");
+    assert!(error.contains('7'), "{error}");
+    assert!(!error.contains("DiskDB"), "{error}");
+}
+
+#[tokio::test]
 async fn retained_launch_restarts_with_a_new_pid() {
     let workdir = test_dirs::test_data_dir().join(format!("lifecycle-restart-{}", std::process::id()));
     std::fs::create_dir_all(&workdir).unwrap();

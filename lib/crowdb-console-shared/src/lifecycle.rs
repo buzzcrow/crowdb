@@ -968,12 +968,13 @@ fn diskdb_log_tail(path: &Path) -> String {
 /// Poll `DiskDB` health while retaining the child handle so an early exit is
 /// reported immediately. The child is not killed here; `kill_on_drop(false)`
 /// preserves the existing lifecycle ownership semantics.
-async fn wait_for_diskdb_ready(
+async fn wait_for_service_ready(
     child: &mut Child,
     url: &str,
     log_path: &Path,
     pid: u32,
     timeout: Duration,
+    service: &str,
 ) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -993,7 +994,7 @@ async fn wait_for_diskdb_ready(
             return Err(Error::UpstreamRpc {
                 node_id: url.to_string(),
                 status: format!(
-                    "DiskDB child exited before readiness (pid={pid}, status={status})\n--- log tail ---\n{}",
+                    "{service} child exited before readiness (pid={pid}, status={status})\n--- log tail ---\n{}",
                     diskdb_log_tail(log_path)
                 ),
             });
@@ -1102,7 +1103,7 @@ pub async fn deploy_diskdb_local(
     let from = log_dir.join("crowdb-diskdb.stdout.log");
     let to = log_dir.join(format!("crowdb-diskdb-{pid}.out.log"));
     let _ = std::fs::rename(&from, &to);
-    wait_for_diskdb_ready(&mut child, &mgmt_url, &to, pid, Duration::from_secs(30)).await?;
+    wait_for_service_ready(&mut child, &mgmt_url, &to, pid, Duration::from_secs(30), "DiskDB").await?;
     // Keep ownership of the child in a reaper task so exited children do not
     // become zombies under the console process.
     tokio::spawn(reap_child(child, pid, "crowdb-diskdb"));
@@ -1171,41 +1172,7 @@ pub async fn deploy_chunkdb_local(
     std::fs::create_dir_all(&config_dir)?;
     std::fs::create_dir_all(&log_dir)?;
     let config_path = config_dir.join("crowdb_chunkdb_config.toml");
-    let seeds = req
-        .kv_server_mgmt_seeds
-        .iter()
-        .map(|seed| format!("{seed:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let deployment_mode = if req.allow_unsafe_ec {
-        "test_unsafe_placement"
-    } else {
-        "production"
-    };
-    let placement_mode = if req.allow_unsafe_ec {
-        "unsafe_colocated"
-    } else {
-        "protected"
-    };
-    let config = format!(
-        "[deployment]\nmode = \"{}\"\n\n[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nmode = \"{}\"\nallow_unsafe_ec = {}\nallow_degraded_failure_domains = {}\n",
-        deployment_mode,
-        req.rpc_workers.unwrap_or(2),
-        node.host,
-        req.http_port,
-        node.host,
-        req.rpc_port,
-        req.instance_id,
-        seeds,
-        req.kv_connections.unwrap_or(1),
-        req.kv_client_rpc_workers.unwrap_or(2),
-        req.diskdb_connections.unwrap_or(1),
-        req.diskdb_client_rpc_workers.unwrap_or(2),
-        placement_mode,
-        req.allow_unsafe_ec,
-        req.allow_unsafe_ec,
-    );
-    std::fs::write(&config_path, config)?;
+    std::fs::write(&config_path, chunkdb_config(req, node))?;
 
     let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
     let management = format!("http://{}:{}", node.host, req.http_port);
@@ -1232,12 +1199,13 @@ pub async fn deploy_chunkdb_local(
         field: "pid".into(),
         message: "spawned ChunkDB child has no pid".into(),
     })?;
-    wait_for_diskdb_ready(
+    wait_for_service_ready(
         &mut child,
         &management,
         &output_path,
         pid,
         Duration::from_secs(30),
+        "ChunkDB",
     )
     .await?;
     std::mem::forget(child);
@@ -1254,6 +1222,43 @@ pub async fn deploy_chunkdb_local(
             readiness_url: Some(management),
         },
     })
+}
+
+fn chunkdb_config(req: &ChunkdbDeployRequest, node: &NodeEntry) -> String {
+    let seeds = req
+        .kv_server_mgmt_seeds
+        .iter()
+        .map(|seed| format!("{seed:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let deployment_mode = if req.allow_unsafe_ec {
+        "test_unsafe_placement"
+    } else {
+        "production"
+    };
+    let placement_mode = if req.allow_unsafe_ec {
+        "unsafe_colocated"
+    } else {
+        "protected"
+    };
+    format!(
+        "[deployment]\nmode = \"{}\"\n\n[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nmode = \"{}\"\nallow_unsafe_ec = {}\nallow_degraded_failure_domains = {}\n",
+        deployment_mode,
+        req.rpc_workers.unwrap_or(2),
+        node.host,
+        req.http_port,
+        node.host,
+        req.rpc_port,
+        req.instance_id,
+        seeds,
+        req.kv_connections.unwrap_or(1),
+        req.kv_client_rpc_workers.unwrap_or(2),
+        req.diskdb_connections.unwrap_or(1),
+        req.diskdb_client_rpc_workers.unwrap_or(2),
+        placement_mode,
+        req.allow_unsafe_ec,
+        req.allow_unsafe_ec,
+    )
 }
 
 fn chunkdb_launch_args(req: &ChunkdbDeployRequest, config_path: &Path, log_dir: &Path) -> Vec<String> {

@@ -3,6 +3,8 @@
 
 //! Bounded, read-only `ChunkDB` diagnostics with routed detail and real placements.
 
+pub(crate) mod slots;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

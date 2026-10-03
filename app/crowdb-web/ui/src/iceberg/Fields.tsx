@@ -16,9 +16,9 @@ export function byteSize(value: string | number | undefined): string {
   const power = Math.min(4, Math.floor(Math.log(n) / Math.log(1024)));
   return `${(n / 1024 ** power).toFixed(2)} ${['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]}`;
 }
-export function Fields({ values }: { values: Record<string, unknown> }) {
+export function Fields({ values, stacked = false }: { values: Record<string, unknown>; stacked?: boolean }) {
   if (Object.keys(values).length > 50) return <Structured value={values} />;
-  return <dl className="tw-grid tw-grid-cols-2 xl:tw-grid-cols-3 tw-gap-x-5 tw-gap-y-3" aria-label="Metadata fields">{Object.entries(values).slice(0, 50).map(([key, value]) => <div key={key} className="tw-min-w-0"><dt className="tw-text-xs tw-text-muted">{key.replaceAll('_', ' ').replaceAll('-', ' ')}</dt><dd className="tw-text-sm tw-break-words">{typeof value === 'object' && value !== null ? <Structured value={value} /> : scalar(value)}</dd></div>)}</dl>;
+  return <dl className={stacked ? "tw-space-y-3" : "tw-grid tw-grid-cols-2 xl:tw-grid-cols-3 tw-gap-x-5 tw-gap-y-3"} aria-label="Metadata fields">{Object.entries(values).slice(0, 50).map(([key, value]) => <div key={key} className="tw-min-w-0"><dt className="tw-text-xs tw-text-muted">{key.replaceAll('_', ' ').replaceAll('-', ' ')}</dt><dd className="tw-text-sm tw-break-words">{typeof value === 'object' && value !== null ? stacked ? <Expandable value={value} /> : <Structured value={value} /> : scalar(value)}</dd></div>)}</dl>;
 }
 export function Structured({ value }: { value: unknown }) {
   const [page, setPage] = useState(0);

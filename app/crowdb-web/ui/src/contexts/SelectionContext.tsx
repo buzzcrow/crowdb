@@ -5,7 +5,7 @@ import { createContext, useContext, useState, useCallback, ReactNode } from 'rea
 import { Domain, type ServiceKind } from '../types';
 import { useDomain } from './DomainContext';
 
-export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition';
+export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
 
 /**
  * The single selected entity. `parentIds` carries the ancestor chain in

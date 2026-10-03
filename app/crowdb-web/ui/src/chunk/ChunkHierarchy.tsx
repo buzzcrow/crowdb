@@ -8,6 +8,7 @@ import type { Node, NodeGroup, NodeStore, Rack } from '../types';
 import { Tree, type TreeNode } from '../components/Tree';
 import { DEFAULT_DC_NAME } from '../data/defaultDatacenter';
 import { serviceInstanceLabel } from '../services/client';
+import { SlotWindow } from './SlotWindow';
 
 export function ChunkHierarchy({ active, racks, nodes, servers }: { active: boolean; racks: Rack[]; nodes: Node[]; servers: ServerSummary[] }) {
   const [stores, setStores] = useState<Record<string, NodeStore[]>>({});
@@ -41,12 +42,16 @@ export function ChunkHierarchy({ active, racks, nodes, servers }: { active: bool
       children: nodes.filter(node => node.rack_id === rack.id).map(node => ({ id: `chunk-node-${node.id}`, label: `N-${node.id}`, type: 'Node', icon: <Monitor className={iconClass} />,
         children: servers.filter(server => server.node_id === node.id && ['kv', 'chunkdb'].includes(server.service_type)).map(server => ({
           id: `chunk-server-${server.id}`, label: serviceInstanceLabel(server.service_type, server.id ?? String(node.id)), type: 'Server', icon: <Cog className={iconClass} />,
-          expandable: server.service_type === 'kv',
+          expandable: true,
+          footer: server.service_type === 'chunkdb' ? server.id ? <SlotWindow scope={`layer=service&instance_id=${encodeURIComponent(server.id.replace(/^chunkdb-/, ''))}`} /> : <p>Service instance ID unavailable</p> : undefined,
           onExpand: () => { if (server.service_type === 'kv') void load(node.id); },
           children: server.service_type !== 'kv' ? undefined : stores[String(node.id)]?.map(store => ({
             id: `chunk-store-${node.id}-${store.store_id}`, label: `S-${store.store_id}`, type: 'Store', icon: <Database className={iconClass} />, expandable: true,
             onExpand: () => { void load(node.id, String(store.store_id)); },
-            children: groups[`${node.id}/${store.store_id}`]?.map(group => ({ id: `chunk-group-${node.id}-${store.store_id}-${group.group_id}`, label: `G-${group.group_id}`, type: 'Group', icon: <Boxes className={iconClass} /> })),
+            children: groups[`${node.id}/${store.store_id}`]?.map(group => ({ id: `chunk-group-${node.id}-${store.store_id}-${group.group_id}`, label: `G-${group.group_id}`, type: 'Group', icon: <Boxes className={iconClass} />,
+              expandable: String(group.group_id) !== '0',
+              footer: String(group.group_id) !== '0' ? <SlotWindow scope={`layer=storage&store_id=${encodeURIComponent(store.store_id)}&group_id=${encodeURIComponent(group.group_id)}`} /> : undefined,
+            })),
           })),
         })),
       })),

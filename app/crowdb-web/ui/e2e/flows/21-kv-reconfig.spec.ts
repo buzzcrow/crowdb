@@ -90,6 +90,7 @@ async function openKvCluster(page: import('@playwright/test').Page) {
     await page.goto('/');
   }
   await page.getByTestId('domain-kv').click();
+  await page.getByText(/^KV actions · Store/).click();
 }
 
 async function openKvPanel(page: import('@playwright/test').Page, storeId: number, groupId: number) {
@@ -99,7 +100,7 @@ async function openKvPanel(page: import('@playwright/test').Page, storeId: numbe
   // options to reappear.
   await page.goto('/');
   await page.getByTestId('domain-kv').click();
-  await page.getByTestId('kv-view-data').click();
+  await page.getByText(/^KV actions · Store/).click();
   await page.getByTestId('kv-store-select').selectOption(String(storeId));
   await page.getByTestId('kv-group-select').selectOption(String(groupId));
 }

@@ -40,11 +40,27 @@ pub fn prepare_native_launch(
         .open(&config_path)?;
     file.write_all(body.as_bytes())?;
     file.sync_all()?;
+    let log_dir = workspace.join("log");
+    std::fs::create_dir_all(&log_dir)?;
+    let mut args = vec!["--config".into(), config_path.to_string_lossy().into_owned()];
+    let mut env = BTreeMap::new();
+    if kind == ServiceType::ChunkKv {
+        args.extend([
+            "--log-dir".into(),
+            log_dir.to_string_lossy().into_owned(),
+            "--log".into(),
+        ]);
+    } else {
+        env.insert(
+            "CROWDB_ACCESS_LOG_DIR".into(),
+            log_dir.to_string_lossy().into_owned(),
+        );
+    }
     Ok(LocalLaunchSpec {
         program: program.to_string_lossy().into_owned(),
-        args: vec!["--config".into(), config_path.to_string_lossy().into_owned()],
+        args,
         workdir: workspace.to_string_lossy().into_owned(),
-        env: BTreeMap::new(),
+        env,
         env_file: env_file.map(|path| path.to_string_lossy().into_owned()),
         readiness_url: Some(readiness_url),
     })
