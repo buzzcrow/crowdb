@@ -92,7 +92,8 @@ pub trait KVEngine: Send + Sync {
     /// Advance the engine's internal contiguous-slot watermark for a
     /// `NoOp` slot (empty batch from `repair_once` gap-fill). Without this,
     /// `contiguous_slot_` (C++) stalls at the `NoOp`, permanently blocking
-    /// `flush()` drain and `last_applied_slot_` advancement. Default:
+    /// `flush()` drain and `last_applied_slot_` advancement. Record only this
+    /// slot; earlier slots may still be applying and cannot be skipped. Default:
     /// no-op (engines without a contiguous-slot watermark don't need it).
     fn noop(&self, _slot: u64) {}
 

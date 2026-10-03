@@ -19,6 +19,40 @@ fn highest_slot_wins_regardless_of_apply_order() {
     conformance::highest_slot_wins_regardless_of_apply_order(&open());
 }
 
+#[tokio::test]
+async fn out_of_order_noop_does_not_discard_a_delayed_write() {
+    use crowdb_kv::kv::KVEngine;
+
+    let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-noop-gap");
+    let config = CrowdbTreeConfig {
+        path: Some(tmp.path().to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let engine = CrowdbTreeEngine::open(&config).unwrap();
+    engine
+        .apply(1, &conformance::batch(vec![conformance::put(b"key", b"old")]))
+        .await
+        .unwrap();
+    engine.flush();
+    engine.noop(3);
+    engine.flush();
+    assert_eq!(engine.resume_from_slot(), 1);
+    assert_eq!(engine.persist_snapshot(), 1);
+    engine
+        .apply(2, &conformance::batch(vec![conformance::put(b"key", b"new")]))
+        .await
+        .unwrap();
+    engine.flush();
+    assert_eq!(engine.resume_from_slot(), 3);
+    assert_eq!(engine.persist_snapshot(), 3);
+    drop(engine);
+    let engine = CrowdbTreeEngine::open(&config).unwrap();
+    assert_eq!(
+        engine.get_versioned(b"key").await.unwrap(),
+        Some((2, bytes::Bytes::from_static(b"new")))
+    );
+}
+
 #[test]
 fn equal_slot_is_idempotent_noop() {
     conformance::equal_slot_is_idempotent_noop(&open());

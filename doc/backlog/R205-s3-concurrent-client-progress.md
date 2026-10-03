@@ -37,6 +37,13 @@ its acknowledged position. This separates directory preservation from the
 remaining metadata visibility failure; neither is evidence that the deferred
 handoff implementation may be applied without review.
 
+The tree-backed KV NoOp path also incorrectly forces its contiguous frontier
+past earlier pending apply calls. A delayed write is then rejected below the
+flush durable floor, although Paxos already chose it. A deterministic
+out-of-order NoOp test reproduces the premature frontier; recording an empty
+batch marks only the NoOp slot and retains earlier gaps. Engine, group and
+store regressions pass with this fix; full-stack verification is in progress.
+
 The [S3 data path](../design/access-server/s3/design-crowdb-access-s3.md)
 requires bounded admission and continued progress under concurrent peers.
 Single-concurrency recipes pass but do not certify defaults or resolve stalls.
@@ -50,6 +57,9 @@ Single-concurrency recipes pass but do not certify defaults or resolve stalls.
 2. Fix the confirmed earliest defect in its owning component, preserving
    lock-free hot paths. Increasing budgets, retries or deadlines is not proof
    of fixing progress.
+   A NoOp records exactly one applied slot without asserting earlier writes
+   complete. Snapshot directory storage keeps distinct durable addresses
+   independent, preserving retained anchors.
 3. Retain the low-memory recipe and separately gate default concurrency under
    documented sufficient budgets. Rejected requests cannot publish partial
    objects, and admitted work/retries must recover.
@@ -63,6 +73,11 @@ Single-concurrency recipes pass but do not certify defaults or resolve stalls.
 
 #### Acceptance
 
+- Given a pending write before an out-of-order NoOp, flush and snapshot, then
+  finish the delayed write; assert the frontier does not cross the gap early
+  and restart retains the delayed value. Integration test.
+- Given two snapshot directories at distinct addresses, write and reopen the
+  text backend; assert both exact directory images remain readable. Unit test.
 - Given the bounded fixture and concurrent multipart, run the reproducer;
   assert finite admission errors, no progress stall and no partial publication.
   E2E test.

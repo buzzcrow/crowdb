@@ -317,7 +317,12 @@ impl KVEngine for CrowdbTreeEngine {
     }
 
     fn noop(&self, slot: u64) {
-        self.inner.handle().force_advance_slot(slot);
+        // Record this slot without declaring earlier, still-in-flight slots
+        // applied. Forced advancement is reserved for recovery initialization.
+        self.inner
+            .handle()
+            .apply_batch(slot, &[])
+            .expect("empty NoOp batch uses a valid tree handle");
     }
 
     fn flush_pending(&self) -> bool {
