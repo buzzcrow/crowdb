@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Server, Loader2, RefreshCw } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { useActivity } from '../contexts/ActivityContext';
@@ -16,6 +16,7 @@ import type {
 } from '../types';
 import { Domain } from '../types';
 import { busyPct, formatBytes } from '../utils/capacity';
+import { observeCapacity } from './capacity/observation';
 import { ScannerPanel } from './ScannerPanel';
 import { ClusterView } from './capacity/ClusterView';
 import { RackView } from './capacity/RackView';
@@ -49,7 +50,6 @@ function scopeFromEntity(entity: SelectedEntity | null | undefined): CapacitySco
 }
 
 export function CapacityPanel({
-  active = true,
   instances,
   usage,
   hardwareCapacity,
@@ -63,19 +63,6 @@ export function CapacityPanel({
   const { success, error } = useToast();
   const { log } = useActivity();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const refreshRef = useRef(onRefresh);
-
-  useEffect(() => { refreshRef.current = onRefresh; }, [onRefresh]);
-
-  // 3s poll for the focused view data. Retains previous data until new
-  // data arrives — no flicker because React only re-renders when the
-  // parent passes new props.
-  useEffect(() => {
-    if (!active || loading) return;
-    const id = setInterval(() => { void refreshRef.current?.(); }, 3000);
-    return () => clearInterval(id);
-  }, [active, loading]);
-
   const scope = scopeFromEntity(selectedEntity);
 
   // Resolve IDs from the selected entity.
@@ -90,44 +77,11 @@ export function CapacityPanel({
     ? String(selectedEntity?.parentIds?.disk_id ?? selectedEntity?.id)
     : undefined;
 
-  // Totals for the header cards, scoped to the selection.
-  const { totalCapacity, totalBusy, totalFree } = useMemo(() => {
-    const dgs = usage?.disk_groups || [];
-    const hwDgs = hardwareCapacity?.disk_groups || [];
-    let cap = 0;
-    let busy = 0;
-    if (scope === 'Disk' && dgId !== undefined && diskId !== undefined) {
-      const usageDg = dgs.find((g) => g.disk_group_id === dgId);
-      const usageDisk = usageDg?.disks.find((d) => d.disk_id === diskId);
-      if (usageDisk) {
-        return { totalCapacity: usageDisk.capacity_bytes, totalBusy: usageDisk.busy_bytes, totalFree: usageDisk.free_bytes };
-      }
-      const hwDg = hwDgs.find((g) => g.disk_group_id === dgId);
-      const hwDisk = hwDg?.disks.find((d) => d.disk_id === diskId);
-      if (hwDisk) {
-        return { totalCapacity: hwDisk.capacity_bytes, totalBusy: 0, totalFree: hwDisk.capacity_bytes };
-      }
-      return { totalCapacity: 0, totalBusy: 0, totalFree: 0 };
-    }
-    // Build the DG list the same way as the old filteredDgs: prefer
-    // hardwareCapacity (group-0 sysdata) for the DG list + capacity;
-    // fall back to usage (diskdb) when hardwareCapacity is not loaded.
-    const scopeMatch = (g: { rack_id: number; node_id: number; disk_group_id: number }) =>
-      (scope !== 'Rack' || g.rack_id === rackId) &&
-      (scope !== 'Node' || g.node_id === nodeId) &&
-      (scope !== 'DiskGroup' || g.disk_group_id === dgId);
-
-    if (hwDgs.length > 0) {
-      const filtered = hwDgs.filter(scopeMatch);
-      cap = filtered.reduce((s, g) => s + g.capacity_bytes, 0);
-      busy = dgs.filter(scopeMatch).reduce((s, g) => s + g.busy_bytes, 0);
-    } else {
-      const filtered = dgs.filter(scopeMatch);
-      cap = filtered.reduce((s, g) => s + g.capacity_bytes, 0);
-      busy = filtered.reduce((s, g) => s + g.busy_bytes, 0);
-    }
-    return { totalCapacity: cap, totalBusy: busy, totalFree: Math.max(0, cap - busy) };
-  }, [scope, rackId, nodeId, dgId, diskId, usage, hardwareCapacity]);
+  const totals = observeCapacity(hardwareCapacity, usage, { rackId, nodeId, dgId, diskId });
+  const totalCapacity = totals.capacity;
+  const totalBusy = totals.busy;
+  const totalFree = totals.free;
+  const usageKnown = totalBusy !== null && totalFree !== null && totalCapacity !== null;
 
   const scopeLabel = useMemo(() => {
     if (!selectedEntity) return 'Cluster';
@@ -186,7 +140,7 @@ export function CapacityPanel({
     );
   }
 
-  if (instances.length === 0) {
+  if (instances.length === 0 && !hardwareCapacity) {
     return (
       <div className="tw-flex tw-flex-col tw-items-center tw-justify-center tw-h-full tw-text-muted tw-gap-3">
         <Server className="tw-h-12 tw-w-12 tw-opacity-40" />
@@ -216,20 +170,20 @@ export function CapacityPanel({
       </div>
 
       {/* Scope totals */}
-      <div className="tw-grid tw-grid-cols-3 tw-gap-4">
+      <div className="tw-grid tw-grid-cols-3 tw-gap-4" data-testid="capacity-summary">
         <div className="tw-bg-panel tw-rounded-lg tw-p-4">
           <div className="tw-text-xs tw-text-muted tw-uppercase">Total Capacity</div>
-          <div className="tw-text-2xl tw-font-bold tw-text-text tw-mt-1">{formatBytes(totalCapacity)}</div>
+          <div className="tw-text-2xl tw-font-bold tw-text-text tw-mt-1">{totalCapacity === null ? 'Unknown' : formatBytes(totalCapacity)}</div>
         </div>
         <div className="tw-bg-panel tw-rounded-lg tw-p-4">
           <div className="tw-text-xs tw-text-muted tw-uppercase">Busy</div>
-          <div className="tw-text-2xl tw-font-bold tw-text-text tw-mt-1">{formatBytes(totalBusy)}</div>
-          <div className="tw-text-xs tw-text-muted tw-mt-1">{busyPct(totalCapacity, totalBusy)}% used</div>
+          <div className="tw-text-2xl tw-font-bold tw-text-text tw-mt-1">{totalBusy === null ? 'Unknown' : formatBytes(totalBusy)}</div>
+          <div className="tw-text-xs tw-text-muted tw-mt-1">{usageKnown ? `${busyPct(totalCapacity, totalBusy)}% used` : 'Usage coverage incomplete'}</div>
         </div>
         <div className="tw-bg-panel tw-rounded-lg tw-p-4">
           <div className="tw-text-xs tw-text-muted tw-uppercase">Free</div>
-          <div className="tw-text-2xl tw-font-bold tw-text-text tw-mt-1">{formatBytes(totalFree)}</div>
-          <div className="tw-text-xs tw-text-muted tw-mt-1">{100 - busyPct(totalCapacity, totalBusy)}% free</div>
+          <div className="tw-text-2xl tw-font-bold tw-text-text tw-mt-1">{totalFree === null ? 'Unknown' : formatBytes(totalFree)}</div>
+          <div className="tw-text-xs tw-text-muted tw-mt-1">{usageKnown ? `${busyPct(totalCapacity, totalFree)}% free` : 'Free space is unknown'}</div>
         </div>
       </div>
 

@@ -112,9 +112,12 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
   browser flow has verified these operations on the isolated preview; it does
   not validate multi-range distribution. Files: Web `chunk`, ChunkDB/Chunk-KV
   metadata adapters, UI `chunk`.
-- [~] **Capacity and Access**: distinguish unknown usage, suspend inactive
+- [x] **Capacity and Access**: distinguish unknown usage, suspend inactive
   polling, connect S3 and Iceberg to the same cluster's Access deployment;
   finish bounded native file inspection and real data acceptance.
+- [ ] **Capacity population bounds**: replace eager node/disk topology fanout
+  with bounded scoped reads and rendering. The current usage poll is still a
+  cluster-wide observation while Cluster or Capacity is visible.
 - [ ] **Integration acceptance**: scope restoration, layout-to-disk/node
   navigation, split parent/child overlays, owner movement, stale cursors, large
   populations, unavailable backend, and capability restrictions. Verify every
@@ -138,6 +141,30 @@ Baseline before domain separation: shell embedding 5 tests passed; Chunk layout
 
 ## Results
 
+- Capacity checkpoint: shared inventory/usage coverage determines known totals
+  at every scope and in the Inspector. Missing reports retain hardware and show
+  Unknown; free bytes use the reported value, including reserved-space gaps.
+  Missing scanner status is distinct from a scanner that has never run.
+- Capacity has one completion-paced poll, canceled outside Cluster/Capacity or
+  when the document is hidden. Aborted results cannot overwrite later samples;
+  individual endpoint failures preserve successful observations.
+- Capacity browser baseline: 14 passed; updated 50–53 selection: 15 passed
+  (44.7 s command time). New unknown/partial coverage case: 0.874 s. Four
+  focused unit cases and TypeScript passed. Existing live datacenter totals
+  still conditionally skip when that fixture publishes no usage.
+- Lifecycle timing investigation: isolated 2.8 s against 2.7 s baseline;
+  ordered trace located 4.1 s server/topology requests behind the delete DOM
+  assertion. The preceding bind test left Store 590 installed. Added cleanup;
+  lifecycle then took 3.8 s. DiskDB setup now reserves all three ports and waits
+  for its actual returned endpoint to appear in the registry. Run topology
+  assertions before the shared fixture's final process stop/restart sequence.
+  Final disk-group spec: all five passed, lifecycle 2.6 s; focused unit and
+  TypeScript gates passed again after fixture changes.
+- Follow up native KV restart readiness separately: in one diagnostic run the
+  process/health checks passed but a subsequent Group 0 operation kept dialing
+  an unavailable RPC endpoint. This Capacity checkpoint does not establish
+  post-restart Group 0 recovery correctness.
+
 - S3 fixed-cluster checkpoint: removed the endpoint editor and resolve the
   Access origin on domain entry with abortable discovery and explicit retry.
   Native SigV4 session credentials are retained. XML metadata is capped at
@@ -145,8 +172,8 @@ Baseline before domain separation: shell embedding 5 tests passed; Chunk layout
   1,000. These limits remain visible; object prefixes narrow later browsing.
 - S3 baseline: 2 browser cases passed (0.683/0.609 s). Updated S3/Iceberg
   selection: 8 passed; existing S3 cases 0.648/0.585 s, deployment retry
-  0.318 s, population/XML bounds 2.6 s. TypeScript passed. Capacity unknown
-  usage and polling remain the next part of the active task.
+  0.318 s, population/XML bounds 2.6 s. TypeScript passed. The managed native
+  KV/Iceberg/S3/Chunk acceptance flow also passed in 4.5 s with these assets.
 
 - Iceberg file-inspection checkpoint: Avro manifest lists/entries and Parquet
   footer, row-group and column metadata are rendered as fields and layouts.

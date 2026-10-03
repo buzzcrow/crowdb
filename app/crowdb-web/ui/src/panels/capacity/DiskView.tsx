@@ -21,6 +21,7 @@ import { useZoneBitmap } from '../../data/useZoneBitmap';
 import { ZoneGrid } from '../ZoneGrid';
 import { ZoneBitmap } from '../ZoneBitmap';
 import { RecalcPanel } from '../RecalcPanel';
+import { observeCapacity } from './observation';
 import { busyPct, formatBytes, diskTypeLabel } from '../../utils/capacity';
 import { hwStatusLabel as sharedHwStatusLabel } from '../../utils/entityDisplay';
 
@@ -68,7 +69,7 @@ export function DiskView({
       free_units: 0,
       capacity_bytes: hwDisk.capacity_bytes,
       busy_bytes: 0,
-      free_bytes: hwDisk.capacity_bytes,
+      free_bytes: 0,
       active_zone_count: 0,
       zone_usages: [],
     };
@@ -129,7 +130,8 @@ export function DiskView({
     return <div className="tw-text-sm tw-text-muted">Disk {diskId.slice(0, 12)}… not found in DG-{dgId}.</div>;
   }
 
-  const pct = busyPct(disk.capacity_bytes, disk.busy_bytes);
+  const observation = observeCapacity(hardwareCapacity, usage, { dgId, diskId });
+  const pct = observation.busy === null ? null : busyPct(disk.capacity_bytes, observation.busy);
   const zoneCount = disk.zone_usages.length;
 
   return (
@@ -141,7 +143,7 @@ export function DiskView({
           <div className="tw-text-sm tw-font-mono tw-text-text">{disk.disk_id}</div>
         </div>
         <div className="tw-text-xs tw-text-muted tw-mb-3">
-          {diskTypeLabel(disk.disk_type)} · {sharedHwStatusLabel(disk.status)} · {disk.zone_count} zones · {formatBytes(disk.capacity_bytes)} · {pct}% busy
+          {diskTypeLabel(disk.disk_type)} · {sharedHwStatusLabel(disk.status)} · {disk.zone_count} zones · {formatBytes(disk.capacity_bytes)} · {pct === null ? 'Usage unknown' : `${pct}% busy`}
         </div>
         {!readonly && (
           <div className="tw-flex tw-gap-2 tw-flex-wrap">

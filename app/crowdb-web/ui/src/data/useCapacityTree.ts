@@ -44,7 +44,6 @@ interface UseCapacityTreeResult {
 
 export function useCapacityTree({
   pollIntervalActive = 3000,
-  pollIntervalInactive = 30000,
   enabled = true,
 }: UseCapacityTreeOptions = {}): UseCapacityTreeResult {
   const [instances, setInstances] = useState<DiskdbInstanceInfo[]>([]);
@@ -55,64 +54,38 @@ export function useCapacityTree({
   const [nodeDiskGroups, setNodeDiskGroups] = useState<
     Record<number, NodeDiskGroups>
   >({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<Error | null>(null);
-  const isActiveRef = useRef(true);
-  const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   const hasLoadedRef = useRef(false);
 
   const fetchData = useCallback(async () => {
-    if (!enabled) return;
-
-    try {
-      if (!hasLoadedRef.current) {
-        setLoading(true);
-      }
-
-      const [instancesResult, usageResult, hwCapResult, scanResult] =
-        await Promise.allSettled([
-          listDiskdbInstances(),
-          getDiskdbUsage(),
-          getHardwareCapacity(),
-          getDiskdbScanStatus(),
-        ]);
-
-      if (instancesResult.status === "fulfilled") {
-        setInstances(instancesResult.value);
-      } else {
-        setInstances([]);
-      }
-
-      if (usageResult.status === "fulfilled") {
-        setUsage(usageResult.value);
-      } else {
-        setUsage(null);
-      }
-
-      if (hwCapResult.status === "fulfilled") {
-        setHardwareCapacity(hwCapResult.value);
-      } else {
-        setHardwareCapacity(null);
-      }
-
-      if (scanResult.status === "fulfilled") {
-        setScanStatus(scanResult.value);
-      } else {
-        setScanStatus(null);
-      }
-
-      setError(null);
-    } catch (err) {
-      console.error("Failed to fetch capacity tree:", err);
-      setError(
-        err instanceof Error
-          ? err
-          : new Error("Unknown error fetching capacity tree"),
-      );
-    } finally {
-      hasLoadedRef.current = true;
-      setLoading(false);
-    }
+    if (!enabled || document.visibilityState === 'hidden') return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const options = { signal: controller.signal };
+    if (!hasLoadedRef.current) setLoading(true);
+    const [instancesResult, usageResult, hwCapResult, scanResult] = await Promise.allSettled([
+      listDiskdbInstances(options),
+      getDiskdbUsage(undefined, undefined, undefined, options),
+      getHardwareCapacity(options),
+      getDiskdbScanStatus(undefined, options),
+    ]);
+    if (controller.signal.aborted) return;
+    setInstances(instancesResult.status === 'fulfilled' ? instancesResult.value : []);
+    setUsage(usageResult.status === 'fulfilled' ? usageResult.value : null);
+    setHardwareCapacity(hwCapResult.status === 'fulfilled' ? hwCapResult.value : null);
+    setScanStatus(scanResult.status === 'fulfilled' ? scanResult.value : null);
+    const missing = [
+      instancesResult.status === 'rejected' && 'DiskDB instances',
+      usageResult.status === 'rejected' && 'usage',
+      hwCapResult.status === 'rejected' && 'hardware inventory',
+      scanResult.status === 'rejected' && 'scan status',
+    ].filter(Boolean);
+    setError(missing.length ? new Error(`Capacity observation unavailable: ${missing.join(', ')}`) : null);
+    hasLoadedRef.current = true;
+    setLoading(false);
   }, [enabled]);
 
   const fetchNodeDiskGroups = useCallback(
@@ -179,44 +152,29 @@ export function useCapacityTree({
   );
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  useEffect(() => {
-    if (!enabled) return;
-
-    const scheduleNextPoll = () => {
-      if (pollTimeoutRef.current) {
-        clearTimeout(pollTimeoutRef.current);
-      }
-
-      const interval = isActiveRef.current
-        ? pollIntervalActive
-        : pollIntervalInactive;
-      pollTimeoutRef.current = setTimeout(async () => {
-        await fetchData();
-        scheduleNextPoll();
-      }, interval);
+    let stopped = false;
+    let generation = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async (version = generation) => {
+      await fetchData();
+      if (!stopped && version === generation && enabled && document.visibilityState !== 'hidden') timer = setTimeout(() => void poll(version), pollIntervalActive);
     };
-
-    scheduleNextPoll();
-
+    const visibility = () => {
+      generation++;
+      clearTimeout(timer);
+      requestRef.current?.abort();
+      if (document.visibilityState !== 'hidden' && enabled) void poll();
+    };
+    if (enabled) void poll();
+    else setLoading(false);
+    document.addEventListener('visibilitychange', visibility);
     return () => {
-      if (pollTimeoutRef.current) {
-        clearTimeout(pollTimeoutRef.current);
-      }
+      stopped = true;
+      clearTimeout(timer);
+      requestRef.current?.abort();
+      document.removeEventListener('visibilitychange', visibility);
     };
-  }, [enabled, pollIntervalActive, pollIntervalInactive, fetchData]);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      isActiveRef.current = document.visibilityState === "visible";
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () =>
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, []);
+  }, [enabled, pollIntervalActive, fetchData]);
 
   return {
     instances,

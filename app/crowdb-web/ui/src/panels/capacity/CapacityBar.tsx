@@ -4,8 +4,8 @@
 import { busyPct, formatBytes } from '../../utils/capacity';
 
 interface CapacityBarProps {
-  capacity: number;
-  busy: number;
+  capacity: number | null;
+  busy: number | null;
   /** Width of the bar in tailwind units (e.g. 'tw-w-24'). */
   barWidth?: string;
   /** Show the numeric percentage label. */
@@ -14,7 +14,8 @@ interface CapacityBarProps {
 
 /** Compact capacity bar + percentage label. */
 export function CapacityBar({ capacity, busy, barWidth = 'tw-w-24', showPct = true }: CapacityBarProps) {
-  const pct = busyPct(capacity, busy);
+  const known = capacity !== null && busy !== null;
+  const pct = known ? busyPct(capacity, busy) : 0;
   return (
     <div className="tw-flex tw-items-center tw-gap-3">
       <div className={`${barWidth} tw-h-2 tw-bg-bg tw-rounded-full tw-overflow-hidden`}>
@@ -23,8 +24,8 @@ export function CapacityBar({ capacity, busy, barWidth = 'tw-w-24', showPct = tr
           style={{ width: `${pct}%` }}
         />
       </div>
-      {showPct && <span className="tw-text-xs tw-text-muted tw-w-12 tw-text-right">{pct}%</span>}
-      <span className="tw-text-xs tw-text-muted">{formatBytes(busy)} / {formatBytes(capacity)}</span>
+      {showPct && <span className="tw-text-xs tw-text-muted tw-w-12 tw-text-right">{known ? `${pct}%` : 'Unknown'}</span>}
+      <span className="tw-text-xs tw-text-muted">{busy === null ? 'Unknown' : formatBytes(busy)} / {capacity === null ? 'Unknown' : formatBytes(capacity)}</span>
     </div>
   );
 }

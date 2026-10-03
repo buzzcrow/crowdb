@@ -606,18 +606,20 @@ test.describe('chunk · capacity · disk', () => {
         });
       });
 
-      // Mock hardware capacity to return empty so the panel uses the
-      // mocked usage data for totals (the real hardwareCapacity API
-      // returns actual disk capacities which differ from the mock).
+      // Match the hardware inventory to the observed usage. An empty or
+      // different inventory cannot establish complete usage coverage.
       await page.route('**/api/hardware/capacity', (route) => {
         route.fulfill({
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify({
-            datacenter_capacity_bytes: 0,
-            racks: [],
-            nodes: [],
-            disk_groups: [],
+            datacenter_capacity_bytes: 12288000,
+            racks: [{ rack_id: rackId, node_count: 1, capacity_bytes: 12288000 }],
+            nodes: [{ rack_id: rackId, node_id: nodeId, disk_group_count: 2, capacity_bytes: 12288000 }],
+            disk_groups: [
+              { rack_id: rackId, node_id: nodeId, disk_group_id: dg580, capacity_bytes: 4096000, disks: [{ disk_id: disk580Dashed, capacity_bytes: 4096000 }] },
+              { rack_id: rackId, node_id: nodeId, disk_group_id: dg581, capacity_bytes: 8192000, disks: [{ disk_id: disk581Dashed, capacity_bytes: 8192000 }] },
+            ],
           }),
         });
       });
@@ -656,7 +658,7 @@ test.describe('chunk · capacity · disk', () => {
       await expect(panel.getByText('Capacity — Cluster')).toBeVisible();
 
       // Total capacity = 4096000 + 8192000 = 12288000 bytes
-      await expect(panel.getByText('11.7 MB')).toBeVisible({ timeout: 5_000 }); // 12288000 / 1024^2 ≈ 11.7 MB
+      await expect(page.getByTestId('capacity-summary').getByText('11.7 MB', { exact: true })).toBeVisible({ timeout: 3_000 });
 
       // --- ClusterView: per-rack breakdown ---
       // Should show "Racks (1)" section with R-501 button.

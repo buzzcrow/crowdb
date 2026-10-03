@@ -503,8 +503,9 @@ blocks per zone. Canvas with offscreen double-buffering handles 84×84
 zone grids and 181×181 bitmap grids without flicker. DOM/SVG
 rendering at that scale causes layout thrash and jank.
 
-`CapacityPanel` renders in the independent Capacity domain and suspends its
-focused polling while inactive. The panel
+`CapacityPanel` renders in the independent Capacity domain. A shared observation
+hook supplies Capacity and Cluster properties; the panel does not start its own
+polling loop. The panel
 content depends on the selected entity (from `SelectionContext`):
 
 - **Cluster (Datacenter or no selection)** — per-rack breakdown. One
@@ -559,6 +560,14 @@ Canvas, not SVG/DOM, for all levels:
 
 ### 15.2 Color encoding
 
+Hardware capacity and runtime usage are independent observations. Missing usage,
+incomplete disk coverage, or a capacity mismatch displays Unknown in summary
+cards, hierarchy bars, disk boxes and the Inspector. Unknown disk boxes are gray
+with a question mark. Known free bytes come from the runtime report, not total
+capacity minus busy bytes; reserved space may make those values different.
+Hardware remains browsable without a registered DiskDB. An unavailable scanner
+observation is distinct from a confirmed scanner that has never run.
+
 Green (free) → amber → red (busy):
 - Zone/disk boxes: gradient fill based on `busy_blocks /
   unit_capacity` ratio. 0% = green, ~50% = amber, 100% = red.
@@ -569,13 +578,17 @@ Green (free) → amber → red (busy):
 
 ### 15.3 Polling
 
-3 s refresh of the currently focused visualization:
-- The poll refetches only the data for the selected entity level
-  (rack/node → cluster merge; disk-group → dg query; disk → disk
-  query; zone → zone query).
-- On refetch, the canvas redraws via double-buffer (no flicker).
-- If the selection changes, the poll target switches immediately;
-  the old canvas is cleared on the next draw.
+- The shared hook refreshes instances, cluster usage, hardware inventory and
+  scanner status on entry and every five seconds after the preceding read
+  completes. Scoped views derive their coverage from that observation.
+- Leaving both Capacity and Cluster, or hiding the browser tab, aborts pending
+  observation reads and stops the polling chain. Returning starts a fresh read.
+  Late aborted responses cannot overwrite current state.
+- Failed subqueries clear their own observation and identify the missing source;
+  successful hardware metadata remains available. Zone bitmaps are requested
+  separately on selection and after relevant explicit maintenance actions.
+- Population-bounded hardware enumeration and fully scoped periodic usage reads
+  remain integration work.
 
 Zone count math (for layout):
 - 200 TB disk / 32 GB zone = 6400 zones → 80×80 grid.
@@ -588,7 +601,7 @@ Edge cases:
   as-is.
 - `usage_bitmap` shorter than `unit_capacity` (last zone rounded) →
   pad with free (green) cells.
-- Poll response slower than 3 s → keep previous frame; next poll
+- Poll response slower than the configured interval → keep previous frame; next poll
   catches up. No spinner overlay (would flicker).
 
 ### 15.4 Scope dispatch and module structure
@@ -614,8 +627,8 @@ Shared color/format utilities live in `utils/capacity.ts`:
 - `busyPct`, `formatBytes` — formatting helpers.
 
 `useZoneBitmap(dg, disk, zone)` fetches the zone bitmap on demand
-when a zone is clicked and caches the last result; the 3 s poll
-refetches the focused zone via its `refresh` callback.
+when a zone is clicked and caches the last result. Explicit maintenance can
+refresh the selected zone through its `refresh` callback.
 
 ## 16. Console-Shared DiskDB Client + CLI
 

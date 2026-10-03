@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { observeCapacity } from '../panels/capacity/observation';
 import { useState, useMemo, lazy, Suspense, type MutableRefObject } from 'react';
 import { X, Info, ListChecks, ExternalLink } from 'lucide-react';
 import { useSelection, SelectedEntity } from '../contexts/SelectionContext';
@@ -215,43 +216,13 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
     // (rack/node/datacenter capacity is a Capacity-view concept).
     if (entity.domain === Domain.Cluster && entity.type !== 'DiskGroup' && entity.type !== 'Disk') return null;
 
-    let dgs = hwDgs;
-    if (entity.type === 'Datacenter') {
-      dgs = hwDgs;
-    } else if (entity.type === 'Rack') {
-      const rackId = Number(entity.id);
-      dgs = hwDgs.filter((g) => g.rack_id === rackId);
-    } else if (entity.type === 'Node') {
-      const nodeId = Number(entity.id);
-      dgs = hwDgs.filter((g) => g.node_id === nodeId);
-    } else if (entity.type === 'DiskGroup') {
-      const dgId = Number(entity.parentIds?.disk_group_id ?? entity.id);
-      dgs = hwDgs.filter((g) => g.disk_group_id === dgId);
-    } else if (entity.type === 'Disk') {
-      const dgId = Number(entity.parentIds?.disk_group_id);
-      const diskId = String(entity.parentIds?.disk_id ?? entity.id);
-      const dg = hwDgs.find((g) => g.disk_group_id === dgId);
-      const disk = dg?.disks.find((d) => d.disk_id === diskId);
-      if (disk) {
-        const usageDg = capacityUsage?.disk_groups.find((g) => g.disk_group_id === dgId);
-        const usageDisk = usageDg?.disks.find((d) => d.disk_id === diskId);
-        return {
-          capacity: disk.capacity_bytes,
-          busy: usageDisk?.busy_bytes ?? 0,
-          free: usageDisk?.free_bytes ?? disk.capacity_bytes,
-        };
-      }
-      return null;
-    } else {
-      return null;
-    }
-    const capacity = dgs.reduce((sum, g) => sum + g.capacity_bytes, 0);
-    const usageDgs = capacityUsage?.disk_groups || [];
-    const busy = dgs.reduce((sum, g) => {
-      const u = usageDgs.find((ud) => ud.disk_group_id === g.disk_group_id);
-      return sum + (u?.busy_bytes ?? 0);
-    }, 0);
-    return { capacity, busy, free: capacity - busy };
+    if (!['Datacenter', 'Rack', 'Node', 'DiskGroup', 'Disk'].includes(entity.type)) return null;
+    return observeCapacity(hardwareCapacity, capacityUsage, {
+      rackId: entity.type === 'Rack' ? Number(entity.id) : undefined,
+      nodeId: entity.type === 'Node' ? Number(entity.id) : undefined,
+      dgId: entity.type === 'DiskGroup' || entity.type === 'Disk' ? Number(entity.parentIds?.disk_group_id ?? entity.id) : undefined,
+      diskId: entity.type === 'Disk' ? String(entity.parentIds?.disk_id ?? entity.id) : undefined,
+    });
   }, [entity.type, entity.domain, entity.id, entity.parentIds, hardwareCapacity, capacityUsage]);
 
   // Disk list for the selected DiskGroup (from hardwareCapacity sysdata).
@@ -292,9 +263,9 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
     ...(entity.type === 'Datacenter' ? [{ label: 'Rack Count', value: String(racks.length) }] : []),
     ...(capacityTotals
       ? [
-          { label: 'Total Capacity', value: formatBytes(capacityTotals.capacity) },
-          { label: 'Used', value: formatBytes(capacityTotals.busy) },
-          { label: 'Free', value: formatBytes(capacityTotals.free) },
+          { label: 'Total Capacity', value: capacityTotals.capacity === null ? 'Unknown' : formatBytes(capacityTotals.capacity) },
+          { label: 'Used', value: capacityTotals.busy === null ? 'Unknown' : formatBytes(capacityTotals.busy) },
+          { label: 'Free', value: capacityTotals.free === null ? 'Unknown' : formatBytes(capacityTotals.free) },
         ]
       : []),
     ...(dgOwnerInstanceId !== undefined
