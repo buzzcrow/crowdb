@@ -3,12 +3,14 @@
 
 """Pinned CLI recipes; credentials stay in the subprocess environment."""
 
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from datetime import datetime
 
 
 def client_env(endpoint):
@@ -20,8 +22,7 @@ def client_env(endpoint):
     env.update(RCLONE_CONFIG_CROW_TYPE="s3", RCLONE_CONFIG_CROW_PROVIDER="Other",
                RCLONE_CONFIG_CROW_ENV_AUTH="true", RCLONE_CONFIG_CROW_ENDPOINT=endpoint,
                RCLONE_CONFIG_CROW_REGION="us-east-1", RCLONE_CONFIG_CROW_FORCE_PATH_STYLE="true",
-               RCLONE_CONFIG_CROW_LIST_VERSION="2", RCLONE_CONFIG_CROW_NO_SYSTEM_METADATA="true",
-               RCLONE_CONFIG_CROW_DISABLE_CHECKSUM="true")
+               RCLONE_CONFIG_CROW_LIST_VERSION="2", RCLONE_CONFIG_CROW_NO_SYSTEM_METADATA="true")
     return env
 
 
@@ -89,13 +90,15 @@ def rclone_workflow(endpoint, phase="all"):
         def rclone(*args):
             return run("rclone", [*args, "--retries", "1", "--low-level-retries", "1",
                                   "--s3-upload-cutoff", "8Mi", "--s3-chunk-size", "5Mi",
-                                  "--use-server-modtime", "--transfers", "1", "--checkers", "1",
+                                  "--transfers", "1", "--checkers", "1",
                                   "--s3-upload-concurrency", "1"], env)
         payload = bytes(range(256)) * (48 * 1024)
         source = root / "source"
         source.mkdir()
         (source / "large.bin").write_bytes(payload)
         (source / "small.txt").write_bytes(b"rclone exact bytes")
+        for path in source.iterdir():
+            os.utime(path, (1700000000, 1700000000))
         remote = f"crow:{bucket}"
         if phase in ["all", "write"]:
             rclone("mkdir", remote)
@@ -112,6 +115,9 @@ def rclone_workflow(endpoint, phase="all"):
             assert (root / "download").read_bytes() == payload
             rclone("copyto", remote + "/copied.txt", str(root / "copy-download"))
             assert (root / "copy-download").read_bytes() == b"rclone exact bytes"
+            for key in ["prefix/small.txt", "prefix/large.bin", "copied.txt"]:
+                details = json.loads(rclone("lsjson", remote + "/" + key, "--stat"))
+                assert datetime.fromisoformat(details["ModTime"].replace("Z", "+00:00")).timestamp() == 1700000000, details["ModTime"]
         if phase == "all":
             rclone("purge", remote)
     print(f"rclone recipe {phase}: discovery, multipart transfer, prefix, copy, sync/delete verified")
@@ -123,17 +129,6 @@ class CliClientCases:
 
     def test_rclone_workflow(self):
         rclone_workflow(self.endpoint)
-
-    def test_rclone_metadata_is_rejected_without_mutation(self):
-        with self.assertRaises(AssertionError) as unsupported:
-            rclone_workflow(self.endpoint)
-        self.assertIn("NotImplemented", str(unsupported.exception))
-        bucket = "crowdb-rclone"
-        self.assertEqual(self.client.list_objects_v2(Bucket=bucket)["KeyCount"], 0)
-        self.assertEqual(self.client.list_multipart_uploads(Bucket=bucket).get("Uploads", []), [])
-        self.client.delete_bucket(Bucket=bucket)
-
-
 if __name__ == "__main__":
     selected = sys.argv[1]
     phase = sys.argv[2] if len(sys.argv) > 2 else "all"

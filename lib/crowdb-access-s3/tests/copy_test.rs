@@ -136,7 +136,6 @@ fn copy_selectors_must_be_signed_and_unsupported_metadata_is_rejected() {
     assert!(copy::validate_headers(&headers, "host;x-amz-copy-source", false).is_ok());
     for excluded in [
         "x-amz-copy-source-server-side-encryption-customer-key",
-        "x-amz-meta-name",
         "x-amz-tagging-directive",
         "x-amz-checksum-algorithm",
         "if-match",
@@ -149,10 +148,37 @@ fn copy_selectors_must_be_signed_and_unsupported_metadata_is_rejected() {
             "{excluded}"
         );
     }
+    headers.insert("x-amz-meta-name", HeaderValue::from_static("value"));
+    assert_eq!(
+        copy::validate_headers(&headers, "host;x-amz-copy-source", false),
+        Err(S3ErrorCode::AccessDenied)
+    );
+    assert!(copy::validate_headers(&headers, "host;x-amz-copy-source;x-amz-meta-name", false).is_ok());
+    assert_eq!(
+        copy::validate_headers(&headers, "host;x-amz-copy-source;x-amz-meta-name", true),
+        Err(S3ErrorCode::NotImplemented)
+    );
+    headers.remove("x-amz-meta-name");
     headers.insert("x-amz-copy-source-range", HeaderValue::from_static("bytes=0-1"));
     assert_eq!(
         copy::validate_headers(&headers, "host;x-amz-copy-source;x-amz-copy-source-range", false),
         Err(S3ErrorCode::NotImplemented)
     );
     assert!(copy::validate_headers(&headers, "host;x-amz-copy-source;x-amz-copy-source-range", true).is_ok());
+}
+
+#[test]
+fn copy_sdk_operation_marker_is_bound_to_the_selected_operation() {
+    assert!(copy::validate_query(Some("x-id=CopyObject"), false).is_ok());
+    assert!(copy::validate_query(Some("uploadId=abc&partNumber=1&x-id=UploadPartCopy"), true).is_ok());
+    for query in ["x-id=DeleteObjects", "x-id=CopyObject&x-id=CopyObject", "x-id="] {
+        assert_eq!(
+            copy::validate_query(Some(query), false),
+            Err(S3ErrorCode::InvalidRequest)
+        );
+    }
+    assert_eq!(
+        copy::validate_query(Some("versionId=1"), false),
+        Err(S3ErrorCode::NotImplemented)
+    );
 }

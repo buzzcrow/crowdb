@@ -12,10 +12,10 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - [x] **Default integrity**: pin clients, share bounded UploadBody between protocols, carry the authenticated streaming seed, preserve native ownership and MD5 error codes. Eight encoding tests and fmt/clippy pass.
 - [x] **SDK focused acceptance**: default ordinary/multipart CRC32, malformed MD5, presigned GET/PUT expiry/tamper, corrupted/truncated/suffixed trailers and fragmented bodies pass. Fresh trailer gate also verifies forbidden streaming bucket creation leaves absence. Existing cancellation tests remain in the full regression.
 - [x] **CLI investigation and AWS recipe**: retain AWS CLI/rclone discovery, transfer, listing, copy, sync and cleanup scenarios. The configured AWS recipe passes; rclone metadata rejection is traced and positive acceptance stays pending R204. Files: tools/pixi-tasks/test-s3-client.sh, tests/s3_e2e/clients.py.
-- [ ] **Positive rclone acceptance**: resume mandatory metadata gates after R204 migration decisions and implementation.
+- [ ] **Positive rclone acceptance**: current sequential work is tracked in plan-s3-metadata.md. Resume client gates after R204 implementation. Old-version data compatibility is not required; verify restart recovery with the new format.
 - [x] **Container and recipes**: default SDK and configured CLI ordinary/multipart copy pass, with exact bytes after all service crash/hang recovery and persisted-volume restart. Full pixi run test-single-node-container passes. README documents pinned versions/configurations and unsupported workflows.
 - [x] **Applicable quality gates**: library/server tests, shared encoding/auth tests, official embedded-copy error test, fmt/clippy, Python compilation, shell syntax and release policy checks pass.
-- [~] **Accumulated full-stack gate**: diagnose the first storage divergence, fix confirmed upstream defects and rerun without skipping tests. Addressed TextPageStore directory preservation and ordered NoOp admission are verified, including delayed-write persistence and 232 engine/group/store tests. The rebuilt full S3 stack still reproduces the journal cursor regression; continue tracing ChunkDB cached state and KV CAS/read revisions.
+- [ ] **Accumulated full-stack gate**: diagnose the first storage divergence, fix confirmed upstream defects and rerun without skipping tests. Addressed TextPageStore directory preservation and ordered NoOp admission are verified, including delayed-write persistence and 232 engine/group/store tests. The rebuilt full S3 stack still reproduces the journal cursor regression; continue tracing ChunkDB cached state and KV CAS/read revisions.
 - [ ] **Completion cleanup**: retain requirement/index/plan until all positive client and full-stack gates pass, then remove them in the cleanup commit.
 
 ## Verification
@@ -39,6 +39,7 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - The next exact AWS CLI run failed during concurrent multipart UploadPart: KV coalescer watchdog reported stuck batches first, then DiskIO fsync deadlines and chunk-stream metadata conflicts. No crash report was produced; group0 remained alive until harness teardown. Full service logs preserved under .crowdb-runtime/persistent/s3-client-failures/aws-cli-concurrent. Reproducing unchanged before choosing a fix; no timeout or assertion was relaxed.
 - Unchanged concurrent reproduction then returned SlowDown promptly. R205 records both observations without assigning an unproven root cause. Explicit concurrency=1 AWS discovery/transfer/prefix/copy/sync/cleanup passes.
 - Two real rclone runs reject x-amz-meta-mtime for PUT and multipart initiation. No supported configuration removes this mandatory field; R204 owns persistence instead of dropping it.
+- User explicitly excludes old-version data compatibility. Metadata persistence needs no legacy decoder, migration or upload-draining decision; new-version restart recovery remains required.
 - First full default-client run passes copy and default CRC32/multipart, then finds expired presigned URLs accepted because clock skew extends expiry. Remove expiry extension; preserve future-clock tolerance. Add skew-enabled unit regression and retain real HTTP expiry test.
 - Release policy checks pass; publication credentials remain isolated from the verification job. Container acceptance includes default boto3 and the accepted AWS CLI recipe across recovery/restart. Rclone remains excluded until its positive gate passes.
 - Full suite then passes all new SDK cases, rclone fail-closed and exact-key batch deletion, but the existing thousand-key case fails after 120.620 seconds. Snapshot Corruption precedes the journal cursor mismatch (expected=382427, new=382634, durable=382013). Preserve fixture under .crowdb-runtime/persistent/s3-client-failures/default-suite-journal; rerun unchanged. R205 includes this serial failure; no unproven R201 attribution or deferred stash application.
@@ -55,8 +56,3 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - Clients: pixi.toml/lock, tools/pixi-tasks/test-s3-client.sh, tests/s3_e2e/{clients,default_client,basic}.py, s3_full_stack_test.rs.
 - Container: tests/{s3-client,s3-cli-client}.py, container-e2e.sh, release-policy.sh, README.md.
 - Contracts: S3 design, backlog R200/R204/R205 and index.
-
-## Blocked
-
-- Positive rclone acceptance requires the durable multipart metadata migration choice listed in R204. Alternatives are recorded there; rejecting required headers preserves the current contract. User explicitly authorizes backlog issues and continued independent work, so SDK/AWS/container gates continue.
-- R200 detail/index/plan must remain until positive client acceptance passes. Final cleanup is deferred; partial implementation is not completion.

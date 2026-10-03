@@ -19,6 +19,13 @@ fn session() -> MultipartSessionRecord {
         created_ms: 100,
         expires_ms: 200,
         content_type: "application/octet-stream".into(),
+        attributes: crowdb_access_s3::metadata::UserMetadata::from_headers(&hyper::HeaderMap::from_iter([(
+            hyper::header::HeaderName::from_static("x-amz-meta-mtime"),
+            hyper::header::HeaderValue::from_static("123.456"),
+        )]))
+        .unwrap()
+        .encode()
+        .unwrap(),
         max_parts: 10,
         max_part_bytes: 100,
         max_object_bytes: 500,

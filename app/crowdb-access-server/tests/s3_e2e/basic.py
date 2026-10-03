@@ -21,6 +21,7 @@ import boto3
 from batch_delete import BatchDeleteCases
 from default_client import DefaultClientCases
 from clients import CliClientCases
+from user_metadata import UserMetadataCases
 from botocore.auth import S3SigV4Auth, SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.config import Config
@@ -44,7 +45,7 @@ class FragmentedBody(BytesIO):
         return super().read(fragment)
 
 
-class BasicS3CompatibilityTest(BatchDeleteCases, DefaultClientCases, CliClientCases, unittest.TestCase):
+class BasicS3CompatibilityTest(BatchDeleteCases, DefaultClientCases, CliClientCases, UserMetadataCases, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         endpoint = os.environ.get("CROWDB_S3_E2E_ENDPOINT")
@@ -451,7 +452,7 @@ class BasicS3CompatibilityTest(BatchDeleteCases, DefaultClientCases, CliClientCa
         self.client.put_object(Bucket=target_bucket, Key="copy", Body=b"predecessor")
         copied = self.client.copy_object(Bucket=target_bucket, Key="copy",
                                          CopySource={"Bucket": source_bucket, "Key": source_key},
-                                         CopySourceIfMatch=source["ETag"])
+                                         CopySourceIfMatch=source["ETag"], StorageClass="STANDARD")
         self.assertEqual(copied["CopyObjectResult"]["ETag"], source["ETag"])
         self.assertIn("LastModified", copied["CopyObjectResult"])
         self.assertEqual(self.client.get_object(Bucket=target_bucket, Key="copy")["Body"].read(), payload)
@@ -459,7 +460,7 @@ class BasicS3CompatibilityTest(BatchDeleteCases, DefaultClientCases, CliClientCa
         for options, code in [({"CopySourceIfMatch": '"wrong"'}, "PreconditionFailed"),
                               ({"CopySourceIfNoneMatch": source["ETag"]}, "PreconditionFailed"),
                               ({"MetadataDirective": "INVALID"}, "InvalidRequest"),
-                              ({"MetadataDirective": "REPLACE", "Metadata": {"unsupported": "value"}}, "NotImplemented")]:
+                              ({"MetadataDirective": "REPLACE", "Metadata": {"oversized": "x" * 2048}}, "InvalidRequest")]:
             with self.assertRaises(ClientError) as error:
                 self.client.copy_object(Bucket=target_bucket, Key="copy",
                                         CopySource={"Bucket": source_bucket, "Key": source_key}, **options)

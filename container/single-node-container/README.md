@@ -173,12 +173,21 @@ run `aws --endpoint-url http://127.0.0.1:9091 ...`. For server copy, supply
 and checks persisted bytes after recovery before publication credentials become
 available.
 
-- rclone compatibility remains pending. It always requests modification-time
-  user metadata, which currently returns NotImplemented without mutation.
-  The reproduction command is `pixi run -e s3-e2e test-rclone-e2e`.
+- The configured rclone recipe covers discovery, ordinary/multipart transfer,
+  prefix listing, server copy, sync/delete and exact downloads. It uses the
+  Other provider, path-style addressing, ListObjectsV2, no system metadata,
+  one transfer/checker/upload worker, an 8 MiB multipart cutoff and 5 MiB parts.
+  User metadata preserves file modification times; checksum metadata remains
+  enabled. Run `pixi run -e s3-e2e test-rclone-e2e`. Container acceptance runs
+  this recipe alongside AWS CLI and verifies both after recovery/restart.
 - Mounting the endpoint as a filesystem with s3fs-fuse is unsupported.
+- User metadata supports lowercase keys and printable ASCII values, with a
+  combined key/value size up to 2 KiB. PUT, multipart initiation and COPY/REPLACE
+  persist the attributes; HEAD and GET return them. Duplicate names and invalid
+  values are rejected. Older multipart session schemas are unsupported;
+  restart recovery applies to the current format, with no migration decoder.
 - The endpoint has one configured namespace shared by accepted credentials;
-  per-user ACLs, versioning, annotations, and user metadata are unsupported.
+  per-user ACLs, versioning and annotations are unsupported.
   ListBuckets CreationDate is a stable Unix-epoch placeholder. ListObjectsV2
   supports `encoding-type=url` for keys requiring XML-safe encoding.
 

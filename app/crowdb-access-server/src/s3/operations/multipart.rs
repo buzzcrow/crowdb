@@ -122,6 +122,8 @@ impl ProductionS3Operations {
             content_type: strict_header(request, "content-type", S3ErrorCode::InvalidRequest)?
                 .unwrap_or("application/octet-stream")
                 .to_owned(),
+            attributes: crowdb_access_s3::metadata::UserMetadata::from_headers(request.headers())?
+                .encode()?,
             max_parts: MAX_PARTS,
             max_part_bytes: MAX_PART_BYTES,
             max_object_bytes: MAX_OBJECT_BYTES,

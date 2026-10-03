@@ -12,5 +12,5 @@ case "$client" in
     rclone) export CROWDB_S3_E2E_ONLY=test_rclone_workflow ;;
     *) echo 'expected aws or rclone' >&2; exit 2 ;;
 esac
-pixi run clean-env
+pixi run -e default clean-env
 exec bash tools/pixi-tasks/test-s3-e2e.sh

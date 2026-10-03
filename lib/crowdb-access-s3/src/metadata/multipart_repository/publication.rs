@@ -76,7 +76,7 @@ impl MultipartRepository {
             created_at_ms: published_at,
             modified_at_ms: published_at,
             content_type: current.content_type.clone(),
-            attributes: Vec::new(),
+            attributes: current.attributes.clone(),
             data_reference: bincode::serialize(&assembled.locations)
                 .map_err(|_| MultipartRepositoryError::Conflict)?,
             data_length: assembled.length,

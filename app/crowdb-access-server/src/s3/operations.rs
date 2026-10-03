@@ -258,6 +258,8 @@ impl ProductionS3Operations {
         let content_type = header(&request, CONTENT_TYPE)
             .unwrap_or("application/octet-stream")
             .to_owned();
+        let attributes =
+            crowdb_access_s3::metadata::UserMetadata::from_headers(request.headers())?.encode()?;
         let content_md5 = content_md5_header(&request)?.map(str::to_owned);
         let payload_sha256 = strict_header(&request, "x-amz-content-sha256", S3ErrorCode::InvalidRequest)?
             .filter(|value| *value != "UNSIGNED-PAYLOAD" && streaming.is_none())
@@ -320,7 +322,7 @@ impl ProductionS3Operations {
                 created_at_ms: now,
                 modified_at_ms: now,
                 content_type,
-                attributes: Vec::new(),
+                attributes,
                 data_reference: vec![0],
                 data_length: logical_length,
             },
@@ -778,6 +780,9 @@ fn object_response(
     if let Some(content_range) = &headers.content_range {
         builder = builder.header(CONTENT_RANGE, content_range);
     }
+    let metadata = crowdb_access_s3::metadata::UserMetadata::decode(&headers.attributes)
+        .map_err(|_| S3ErrorCode::InternalError)?;
+    metadata.append_headers(builder.headers_mut().ok_or(S3ErrorCode::InternalError)?)?;
     builder.body(body).map_err(|_| S3ErrorCode::InternalError)
 }
 

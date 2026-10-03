@@ -60,7 +60,7 @@ inferring broad S3 compatibility from one SDK.
   required capabilities land.
 - Existing `test-boto3-e2e`, container S3 client, and container release verification
   remain regression baselines. R196 owns performance benchmarks, not this gate.
-- R204 owns mandatory client metadata and multipart schema migration. The
+- R204 owns mandatory client metadata and multipart metadata persistence. The
   retained positive rclone gate resumes after it lands.
 - Current recipes use the configured shared listener namespace.
 - R205 retains default concurrent multipart progress diagnostics. A documented

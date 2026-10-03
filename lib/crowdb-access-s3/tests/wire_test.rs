@@ -107,6 +107,7 @@ fn multipart_upload_listing_emits_stable_markers_and_initiation_time() {
         created_ms: 1_000,
         expires_ms: 2_000,
         content_type: "application/octet-stream".into(),
+        attributes: Vec::new(),
         max_parts: 1,
         max_part_bytes: 5,
         max_object_bytes: 5,

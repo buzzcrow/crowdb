@@ -117,23 +117,21 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
         return Err(RouteError::Invalid);
     }
     if let Some(name) = headers.keys().find(|name| {
-        name.as_str().starts_with("x-amz-meta-")
-            || matches!(
-                name.as_str(),
-                "x-amz-acl"
-                    | "x-amz-storage-class"
-                    | "x-amz-server-side-encryption"
-                    | "x-amz-server-side-encryption-aws-kms-key-id"
-                    | "x-amz-server-side-encryption-context"
-                    | "x-amz-server-side-encryption-customer-algorithm"
-                    | "x-amz-server-side-encryption-customer-key"
-                    | "x-amz-server-side-encryption-customer-key-md5"
-                    | "x-amz-tagging"
-                    | "x-amz-website-redirect-location"
-                    | "x-amz-object-lock-mode"
-                    | "x-amz-object-lock-retain-until-date"
-                    | "x-amz-object-lock-legal-hold"
-            )
+        matches!(
+            name.as_str(),
+            "x-amz-acl"
+                | "x-amz-server-side-encryption"
+                | "x-amz-server-side-encryption-aws-kms-key-id"
+                | "x-amz-server-side-encryption-context"
+                | "x-amz-server-side-encryption-customer-algorithm"
+                | "x-amz-server-side-encryption-customer-key"
+                | "x-amz-server-side-encryption-customer-key-md5"
+                | "x-amz-tagging"
+                | "x-amz-website-redirect-location"
+                | "x-amz-object-lock-mode"
+                | "x-amz-object-lock-retain-until-date"
+                | "x-amz-object-lock-legal-hold"
+        )
     }) {
         tracing::debug!(header = %name, "unsupported S3 selector");
         return Err(RouteError::NotImplemented);
@@ -154,6 +152,7 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
             MultipartOperation::Abort => S3Operation::AbortMultipartUpload,
             MultipartOperation::ListUploads => S3Operation::ListMultipartUploads,
         };
+        validate_publication_headers(operation, headers)?;
         return Ok(S3Route {
             operation,
             bucket: Some(multipart.bucket),
@@ -169,7 +168,33 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
         }
         route.operation = S3Operation::CopyObject;
     }
+    validate_publication_headers(route.operation, headers)?;
     Ok(route)
+}
+
+fn validate_publication_headers(operation: S3Operation, headers: &HeaderMap) -> Result<(), RouteError> {
+    let storage_class = headers.get_all("x-amz-storage-class");
+    let mut values = storage_class.iter();
+    if let Some(value) = values.next() {
+        if values.next().is_some() {
+            return Err(RouteError::Invalid);
+        }
+        if value != "STANDARD" {
+            return Err(RouteError::NotImplemented);
+        }
+    }
+    if (headers.contains_key("x-amz-storage-class")
+        || headers
+            .keys()
+            .any(|name| name.as_str().starts_with("x-amz-meta-")))
+        && !matches!(
+            operation,
+            S3Operation::PutObject | S3Operation::CreateMultipartUpload | S3Operation::CopyObject
+        )
+    {
+        return Err(RouteError::Invalid);
+    }
+    Ok(())
 }
 
 fn decode(value: &str) -> Vec<u8> {

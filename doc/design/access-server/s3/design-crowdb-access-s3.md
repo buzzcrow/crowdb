@@ -94,8 +94,23 @@ model. Continuation state is opaque and bound to the original request scope.
 Bucket paths accept a single trailing slash. ListObjectsV2 supports URL encoding
 of XML-incompatible keys and selected prefix/delimiter fields. ListBuckets
 reports the Unix epoch as a stable CreationDate placeholder because bucket
-records do not retain creation timestamps. User metadata headers are rejected
-before dispatch rather than accepted and discarded.
+records do not retain creation timestamps.
+
+User metadata is accepted through x-amz-meta-* headers on ordinary PUT,
+multipart initiation and CopyObject. Nonempty HTTP token names are normalized
+to lowercase; values are opaque printable ASCII strings. Combined key/value
+bytes, excluding the header prefix, are limited to 2 KiB. Duplicate names,
+invalid values and unsupported operation placement are rejected before writes.
+The complete attribute map is published with the object's immutable generation
+and returned on HEAD, GET and ranged GET. A new upload without metadata clears
+the previous generation's attributes. Multipart sessions persist initiation
+attributes across part replacement and recovery and publish them on completion.
+The session schema has a distinct version; old-version data migration is outside
+the supported contract.
+
+STANDARD is the sole storage class reported by listings and accepted explicitly
+on PUT, multipart initiation and CopyObject. Other classes are rejected; this
+selector does not alter the configured storage policy or introduce tiering.
 
 Server-side CopyObject and UploadPartCopy resolve source and destination through
 the configured S3 tenant. Copy selects one immutable source record before
@@ -106,12 +121,15 @@ or multipart-part fences. No source reference is shared with the destination.
 Copy never deletes the source. Unpublished candidates use ordinary reclamation.
 
 CopyObject supports at most 5 GiB and copies the entire payload. COPY preserves
-the supported Content-Type metadata; REPLACE selects the supplied Content-Type
-or application/octet-stream. A self-copy requires REPLACE. User metadata,
-cache/disposition/encoding/language/expiry metadata, version selectors, tags,
+Content-Type and user metadata; REPLACE selects the supplied Content-Type
+or application/octet-stream and replaces the entire user metadata map, including
+clearing it when omitted. A self-copy requires REPLACE.
+Cache/disposition/encoding/language/expiry metadata, version selectors, tags,
 encryption, storage-class changes and destination conditions are unsupported
 and rejected. Source ETag/date conditions apply to the captured generation;
 their failure returns PreconditionFailed. Copy selectors must be signed.
+The optional SDK x-id query marker must match CopyObject or UploadPartCopy and
+occur at most once; it does not change operation selection.
 
 UploadPartCopy supports complete objects and explicit inclusive byte ranges
 from source objects larger than 5 MiB, with the session's normal part bounds.

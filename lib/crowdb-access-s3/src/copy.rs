@@ -9,6 +9,44 @@ use percent_encoding::percent_decode_str;
 
 pub const MAX_COPY_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
+/// Validates signed query selectors, including the SDK's operation marker.
+///
+/// # Errors
+/// Rejects unknown selectors and duplicate or mismatched operation markers.
+pub fn validate_query(query: Option<&str>, part: bool) -> Result<(), S3ErrorCode> {
+    let mut operation_seen = false;
+    for field in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|field| !field.is_empty())
+    {
+        let (name, value) = field.split_once('=').unwrap_or((field, ""));
+        if name == "x-id" {
+            let operation = if part { "UploadPartCopy" } else { "CopyObject" };
+            if operation_seen || value != operation {
+                return Err(S3ErrorCode::InvalidRequest);
+            }
+            operation_seen = true;
+            continue;
+        }
+        let supported = matches!(
+            name,
+            "X-Amz-Algorithm"
+                | "X-Amz-Credential"
+                | "X-Amz-Date"
+                | "X-Amz-Expires"
+                | "X-Amz-SignedHeaders"
+                | "X-Amz-Signature"
+                | "X-Amz-Security-Token"
+        ) || (part && matches!(name, "uploadId" | "partNumber"));
+        if !supported {
+            tracing::debug!(selector = name, "unsupported S3 copy query selector");
+            return Err(S3ErrorCode::NotImplemented);
+        }
+    }
+    Ok(())
+}
+
 /// Validates single-copy limits and supported self-copy semantics.
 /// # Errors
 /// Rejects an oversized source or a no-change self-copy.
@@ -47,6 +85,7 @@ pub fn validate_headers(headers: &HeaderMap, signed_headers: &str, part: bool) -
                 | "if-modified-since"
                 | "if-unmodified-since"
         ) {
+            tracing::debug!(header = name, "unsupported S3 copy header");
             return Err(S3ErrorCode::NotImplemented);
         }
         if !name.starts_with("x-amz-") {
@@ -63,11 +102,18 @@ pub fn validate_headers(headers: &HeaderMap, signed_headers: &str, part: bool) -
                 | "x-amz-copy-source-if-modified-since"
                 | "x-amz-copy-source-if-unmodified-since"
         ) || (part && name == "x-amz-copy-source-range")
-            || (!part && name == "x-amz-metadata-directive");
+            || (!part
+                && (name == "x-amz-metadata-directive"
+                    || name == "x-amz-storage-class"
+                    || name.starts_with("x-amz-meta-")));
         if !supported {
+            tracing::debug!(header = name, "unsupported S3 copy header");
             return Err(S3ErrorCode::NotImplemented);
         }
-        if (name.starts_with("x-amz-copy-source") || name == "x-amz-metadata-directive")
+        if (name.starts_with("x-amz-copy-source")
+            || name == "x-amz-metadata-directive"
+            || name == "x-amz-storage-class"
+            || name.starts_with("x-amz-meta-"))
             && !signed_headers.split(';').any(|signed| signed == name)
         {
             return Err(S3ErrorCode::AccessDenied);

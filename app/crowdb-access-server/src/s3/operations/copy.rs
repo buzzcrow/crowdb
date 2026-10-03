@@ -27,28 +27,7 @@ impl ProductionS3Operations {
         request: &Request<Incoming>,
         part: bool,
     ) -> Result<ObjectRecord, S3ErrorCode> {
-        for field in request
-            .uri()
-            .query()
-            .unwrap_or_default()
-            .split('&')
-            .filter(|field| !field.is_empty())
-        {
-            let name = field.split_once('=').map_or(field, |(name, _)| name);
-            let supported = matches!(
-                name,
-                "X-Amz-Algorithm"
-                    | "X-Amz-Credential"
-                    | "X-Amz-Date"
-                    | "X-Amz-Expires"
-                    | "X-Amz-SignedHeaders"
-                    | "X-Amz-Signature"
-                    | "X-Amz-Security-Token"
-            ) || (part && matches!(name, "uploadId" | "partNumber"));
-            if !supported {
-                return Err(S3ErrorCode::NotImplemented);
-            }
-        }
+        copy::validate_query(request.uri().query(), part)?;
         let signed = strict_header(request, "authorization", S3ErrorCode::AccessDenied)?
             .and_then(|value| value.split("SignedHeaders=").nth(1))
             .and_then(|value| value.split(',').next())
@@ -99,6 +78,8 @@ impl ProductionS3Operations {
             Some("REPLACE") => true,
             _ => return Err(S3ErrorCode::InvalidRequest),
         };
+        let attributes =
+            crowdb_access_s3::metadata::UserMetadata::from_headers(request.headers())?.encode()?;
         let mut record = self.copy_source(request, false).await?;
         let destination = self.resolve_bucket(required_bucket(&route)?).await?;
         let key = required_key(&route)?.to_vec();
@@ -118,7 +99,7 @@ impl ProductionS3Operations {
         record.key = key;
         record.content_type = content_type;
         if replace {
-            record.attributes.clear();
+            record.attributes = attributes;
         }
         let operations = self.clone();
         crate::s3::copy_body::response(

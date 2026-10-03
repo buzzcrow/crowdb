@@ -9,6 +9,9 @@ mod multipart_repository;
 mod namespace;
 mod record;
 mod store;
+mod user;
+
+pub use user::UserMetadata;
 
 mod generated {
     #![allow(
