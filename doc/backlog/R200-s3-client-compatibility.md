@@ -6,10 +6,9 @@
 #### Status
 
 Partially implemented. Default SDK and configured AWS CLI acceptance proceed
-independently. Positive rclone and s3fs compatibility remains pending
-[R204](R204-s3-client-metadata-and-mount.md): real clients require persisted
-metadata and mounted-file semantics. No compatibility claim or prerequisite
-skip substitutes for these failing positive gates. Default concurrent CLI
+independently. Positive rclone compatibility remains pending
+[R204](R204-s3-client-metadata.md): the client requires persisted user metadata.
+No compatibility claim substitutes for a failing positive gate. Default concurrent CLI
 progress is tracked by [R205](R205-s3-concurrent-client-progress.md).
 The accumulated full-stack regression also remains unaccepted because of the
 reproduced journal cursor regression and snapshot corruption recorded there;
@@ -20,8 +19,8 @@ the isolated thousand-key case and new SDK cases pass independently.
 Existing boto3 real-storage tests cover core operations, multipart, restart,
 response loss, and streaming boundaries. The container boto3 smoke client
 explicitly sets checksum calculation/validation to `when_required`. Neither
-that recipe nor passing boto3 API tests establishes that AWS CLI, rclone, or
-s3fs default workflows work. These clients may select additional APIs,
+that recipe nor passing boto3 API tests establishes that AWS CLI or rclone
+default workflows work. These clients may select additional APIs,
 addressing modes, checksum/trailer framing, or listing behavior.
 
 The [S3 design](../design/access-server/s3/design-crowdb-access-s3.md)
@@ -42,17 +41,12 @@ inferring broad S3 compatibility from one SDK.
    `integrity.rs`, and the server S3 dispatcher/upload layer, implement only
    extensions needed by the declared recipes; create separate requirements for
    substantial new semantics instead of bypassing authentication or checksums.
-3. Evaluate an s3fs mounted-file workflow on Linux: create, read, overwrite,
-   list directories, rename, unlink, and remount. Record required metadata,
-   listing, copy, and addressing behavior. If host FUSE is unavailable, report
-   an explicit prerequisite skip and retain a dedicated FUSE-enabled CI gate
-   before claiming s3fs compatibility. Do not substitute direct SDK calls.
-4. Wire client environments/tasks in `pixi.toml` and retained scripts under
+3. Wire client environments/tasks in `pixi.toml` and retained scripts under
    `tools/pixi-tasks/`, pin client versions, and retain diagnostics without
    credential-bearing headers or presigned query strings. All commands run
    through Pixi. Extend container acceptance with accepted AWS CLI/rclone
    workflows, alongside boto3, before the credentialed publish job.
-5. Document each tested version, exact workflow, endpoint/addressing setup,
+4. Document each tested version, exact workflow, endpoint/addressing setup,
    required configuration, and known unsupported operations in
    `container/single-node-container/README.md`. Distinguish out-of-box defaults
    from explicitly configured path-style/compatibility recipes. Unsupported
@@ -66,11 +60,10 @@ inferring broad S3 compatibility from one SDK.
   required capabilities land.
 - Existing `test-boto3-e2e`, container S3 client, and container release verification
   remain regression baselines. R196 owns performance benchmarks, not this gate.
-- Host FUSE permissions are an external prerequisite for s3fs only. Their
-  absence must not block AWS CLI/rclone or silently certify the mount workflow.
-- R204 owns mandatory client metadata, multipart schema migration and mounted
-  file/ACL decisions. Retained positive client gates resume after it lands.
-- R206 owns principal/realm authority; current recipes use the configured realm.
+- R204 owns mandatory client metadata and multipart schema migration. The
+  retained positive rclone gate resumes after it lands.
+- Current recipes use the configured shared listener namespace. R206 is deferred
+  pending necessity review and is not a prerequisite.
 - R205 retains default concurrent multipart progress diagnostics. A documented
   single-concurrency development recipe does not certify default concurrency.
 
@@ -86,12 +79,6 @@ inferring broad S3 compatibility from one SDK.
   transfer, prefix, copy, sync, and cleanup recipes; assert exact resulting
   namespaces and bytes and retain redacted API-gap evidence. Workflow fidelity.
   E2E test.
-- Given a FUSE-enabled Linux host and the pinned s3fs client, execute file and
-  directory operations then remount; assert bytes, names, and documented POSIX
-  limitations. Mounted-client fidelity. E2E test.
-- Given a host without FUSE capability, invoke the mount suite; assert an
-  explicit prerequisite skip and no successful compatibility claim, while
-  non-FUSE client suites still execute. Truthful coverage. Integration test.
 - Given interrupted transfers and persisted-container restart, rerun accepted
   clients; assert no partial objects and successful retrieval of committed
   data. Recovery safety. E2E test.
@@ -105,5 +92,5 @@ inferring broad S3 compatibility from one SDK.
 Run `pixi run test-access-s3`, `pixi run test-access-server`,
 `pixi run -e s3-e2e test-boto3-e2e`, `pixi run test-single-node-container`,
 `pixi run rs-fmt-check`, and `pixi run rs-lint`. The implementation must register
-and document exact Pixi task commands for AWS CLI, rclone, and the FUSE suite
+and document exact Pixi task commands for AWS CLI and rclone
 before accepting their workflows.

@@ -21,7 +21,6 @@ import boto3
 from batch_delete import BatchDeleteCases
 from default_client import DefaultClientCases
 from clients import CliClientCases
-from fuse_client import FuseClientCases
 from botocore.auth import S3SigV4Auth, SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.config import Config
@@ -45,7 +44,7 @@ class FragmentedBody(BytesIO):
         return super().read(fragment)
 
 
-class BasicS3CompatibilityTest(BatchDeleteCases, DefaultClientCases, CliClientCases, FuseClientCases, unittest.TestCase):
+class BasicS3CompatibilityTest(BatchDeleteCases, DefaultClientCases, CliClientCases, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         endpoint = os.environ.get("CROWDB_S3_E2E_ENDPOINT")

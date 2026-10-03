@@ -142,8 +142,7 @@ These published images use the single-node development profile described above.
 ## Tested S3 client recipes
 
 - The locked `s3-e2e` environment pins boto3/botocore 1.43.92, AWS CLI 2.36.47,
-  rclone 1.75.1 (the packaged binary identifies its build as `1.75.1-DEV`), and
-  s3fs 1.97. Run repository acceptance commands through Pixi.
+  and rclone 1.75.1 (the packaged binary identifies its build as `1.75.1-DEV`). Run repository acceptance commands through Pixi.
 - boto3 uses its default checksum calculation and validation settings. Only
   path-style addressing, SigV4 and the endpoint are configured. Ordinary and multipart
   uploads verify request CRC32 checksums and exact downloaded bytes. Presigned
@@ -174,14 +173,10 @@ run `aws --endpoint-url http://127.0.0.1:9091 ...`. For server copy, supply
 and checks persisted bytes after recovery before publication credentials become
 available.
 
-- rclone and s3fs are investigation gates, not accepted compatibility claims.
-  rclone always requests modification-time user metadata, which currently
-  returns NotImplemented without mutation. s3fs requires a real Linux FUSE
-  device and additional mounted-file metadata semantics. Retained reproduction
-  commands are `pixi run -e s3-e2e test-rclone-e2e` and
-  `pixi run -e s3-e2e test-s3fs-e2e`. Missing host prerequisites are reported
-  as skips only by the optional FUSE task; `test-s3fs-required` and the dedicated
-  manual CI workflow require actual mounted operations and fail on absence.
+- rclone compatibility remains pending. It always requests modification-time
+  user metadata, which currently returns NotImplemented without mutation.
+  The reproduction command is `pixi run -e s3-e2e test-rclone-e2e`.
+- Mounting the endpoint as a filesystem with s3fs-fuse is unsupported.
 - The endpoint has one configured namespace shared by accepted credentials;
   per-user ACLs, versioning, annotations, and user metadata are unsupported.
   ListBuckets CreationDate is a stable Unix-epoch placeholder. ListObjectsV2

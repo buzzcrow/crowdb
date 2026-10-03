@@ -149,7 +149,6 @@ async fn run_suite() {
             BOTO3_CASES.contains(&method.as_str())
                 || COPY_CASES.contains(&method.as_str())
                 || CLIENT_CASES.contains(&method.as_str())
-                || method == "test_s3fs_mounted_workflow"
                 || method == "test_rclone_workflow",
             "unknown focused S3 case: {method}"
         );
@@ -646,9 +645,6 @@ fn run_boto3_case(method: &str, context: &Boto3CaseContext<'_>) {
     );
     if method == "test_ordinary_put_size_matrix" || method.contains("workflow") {
         print!("{}", String::from_utf8_lossy(&python.stdout));
-    }
-    if method == "test_s3fs_mounted_workflow" {
-        print!("{}", String::from_utf8_lossy(&python.stderr));
     }
 }
 

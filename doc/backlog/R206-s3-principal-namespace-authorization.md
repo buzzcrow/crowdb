@@ -3,6 +3,14 @@
 
 ### R206: access-s3 — Credential principals and namespace authorization
 
+#### Status
+
+Deferred pending user review of necessity and scope. The current service uses
+one configured listener namespace shared by accepted credentials. Additional
+per-user permissions are not currently required. The alternatives below are
+proposals for review, not approved implementation requirements; this item does
+not block client compatibility or user-metadata support.
+
 #### Problem
 
 The general S3 listener selects one configured TenantId for every operation.
