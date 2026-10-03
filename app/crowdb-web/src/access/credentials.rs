@@ -61,3 +61,13 @@ pub(super) fn s3(state: &AppState, target: &str) -> Result<S3Credentials, String
         session: None,
     })
 }
+
+pub(super) fn manager(state: &AppState) -> Result<String, String> {
+    if let Ok(token) = std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN") {
+        return Ok(token);
+    }
+    let credentials = crowdb_monitor::ServerCredentials::load_existing(&root(state))
+        .map_err(|_| "Cluster management credentials are not configured on the Console server")?;
+    value(&credentials.server_env(), "CROWDB_ICEBERG_MANAGE_TOKEN")
+        .ok_or_else(|| "Cluster management credential is missing".into())
+}

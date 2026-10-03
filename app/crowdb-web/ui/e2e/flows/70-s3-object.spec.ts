@@ -4,6 +4,13 @@ import { test, expect } from '../fixtures/realBackend';
 
 test.use({ actionTimeout: 3000 });
 
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/access/s3-inspect/locations?**', route => {
+    const query = new URL(route.request().url()).searchParams;
+    return route.fulfill({ json: { bucket: query.get('bucket'), key: query.get('key'), generation: 'a'.repeat(64), etag: 'etag', logical_length: '0', locations: [], next_cursor: null } });
+  });
+});
+
 // Baseline: 0.683s (2026-10-03).
 test('Root S3 sends credential-free Console requests, preserves keys and bounds object previews', async ({ page }) => {
   await page.route('**/api/access/connections', route => route.fulfill({ json: { iceberg: null, s3: 'http://127.0.0.1:18000', configurable: false } }));
@@ -125,4 +132,58 @@ test('S3 bounds bucket rendering, accumulated objects and XML responses', async 
   oversized = true;
   await page.getByRole('button', { name: 'List buckets' }).click();
   await expect(page.getByRole('alert').filter({ hasText: '4 MiB budget' })).toBeVisible();
+});
+
+// Metadata inspection never requests object payload or eagerly resolves disk placement.
+test('S3 storage extents preserve exact integers, page windows and source selection on return', async ({ page }) => {
+  const chunk = '0123456789abcdef0123456789abcdef';
+  let stale = false;
+  let payloadReads = 0;
+  await page.route('**/api/access/connections', route => route.fulfill({ json: { s3: 'http://127.0.0.1:18000', configurable: false } }));
+  await page.route('**/api/access/s3/**', route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'HEAD') return route.fulfill({ headers: { etag: 'native-etag', 'content-length': '184' } });
+    if (url.searchParams.has('list-type')) return route.fulfill({ contentType: 'application/xml', body: '<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>exact.bin</Key><Size>184</Size></Contents></ListBucketResult>' });
+    if (url.pathname.endsWith('/s3/')) return route.fulfill({ contentType: 'application/xml', body: '<ListAllMyBucketsResult><Buckets><Bucket><Name>extent-bucket</Name></Bucket></Buckets></ListAllMyBucketsResult>' });
+    payloadReads++;
+    return route.fulfill({ body: 'unexpected payload' });
+  });
+  await page.route('**/api/access/s3-inspect/locations?**', route => {
+    expect(route.request().headers().authorization).toBeUndefined();
+    const query = new URL(route.request().url()).searchParams;
+    expect(query.get('limit')).toBe('20');
+    if (stale && query.has('cursor')) return route.fulfill({ status: 409, json: { error: 'Object generation changed' } });
+    const start = query.has('cursor') ? 20 : 0;
+    return route.fulfill({ json: { bucket: 'extent-bucket', key: 'exact.bin', generation: 'a'.repeat(64), etag: 'etag', logical_length: '184',
+      locations: Array.from({ length: start ? 3 : 20 }, (_, index) => ({ index: String(start + index), chunk_id: start + index === 22 ? null : chunk, offset: '9007199254740993', length: '8', logical_offset: String((start + index) * 8), logical_length: '8' })), next_cursor: start ? null : 'opaque-page-2' } });
+  });
+  await page.goto('/?domain=S3');
+  await page.getByRole('button', { name: 'List buckets', exact: true }).click();
+  await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'extent-bucket', exact: true }).click();
+  await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'exact.bin', exact: true }).click();
+  const locations = page.getByRole('region', { name: 'Storage locations', exact: true });
+  await expect(locations.getByRole('table').getByRole('row')).toHaveCount(21);
+  await locations.getByRole('button', { name: 'Next locations', exact: true }).click();
+  await expect(locations.getByRole('table').getByRole('row')).toHaveCount(4);
+  await expect(locations).toContainText('Location unavailable');
+  await locations.getByRole('button', { name: 'Select extent 20', exact: true }).click();
+  await expect(page.getByLabel('Storage extent properties')).toContainText('9007199254740993');
+  // Choose a single row because several extents can reference the same Chunk.
+  await locations.getByRole('row').filter({ has: page.getByRole('button', { name: 'Select extent 20', exact: true }) }).getByRole('button', { name: `Open Chunk ${chunk}`, exact: true }).click();
+  await expect(page.getByTestId('domain-chunk')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('exact.bin');
+  await expect(locations.getByRole('button', { name: 'Select extent 20', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByLabel('Storage extent properties')).toContainText('9007199254740993');
+  await locations.getByRole('button', { name: 'Previous locations', exact: true }).click();
+  await expect(locations.getByRole('table').getByRole('row')).toHaveCount(21);
+  stale = true;
+  await locations.getByRole('button', { name: 'Next locations', exact: true }).click();
+  await expect(locations.getByRole('alert')).toContainText('Stale locations');
+  await expect(locations.getByRole('button', { name: 'Next locations', exact: true })).toBeDisabled();
+  await expect(page.getByLabel('Object metadata')).toContainText('native-etag');
+  await locations.getByRole('button', { name: 'Refresh locations', exact: true }).click();
+  await expect(locations.getByRole('alert')).toHaveCount(0);
+  expect(payloadReads).toBe(0);
 });

@@ -19,50 +19,6 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   election and read-state properties remain. A future metrics experience needs
   a separate design; do not reinstate the old generic counter list.
 
-## S3 browsing design
-
-- [ ] **Object locations: explicit UI/API contract**:
-  - Left navigation is `S3 → Bucket`. With one namespace, omit a namespace
-    wrapper; do not label the logical S3 root Datacenter. The root center lists
-    buckets. Selecting a bucket opens a 20-object page with Previous/Next and
-    prefix input. Selecting an object replaces that list with object details.
-  - Object details: breadcrumb `S3 / bucket / key`, object key title, then a
-    default-collapsed Actions strip using the shared component (implemented for the browser; storage locations remain pending). Main content
-    begins with HEAD fields: size, ETag, last modified, content type, version
-    when supplied, and user metadata. Missing fields show `—`, not guessed data.
-  - Below HEAD, show **Storage locations** as a table with 20 rows per page:
-    extent index, logical interval `[start, end)`, Chunk ID, chunk interval
-    `[offset, offset + length)`, and physical length. Use readable byte units
-    in cells and exact decimal bytes in the right property panel. Never infer
-    physical disk offsets from object offsets.
-  - The right property panel follows the selected extent and shows full Chunk
-    ID, logical offset/length, chunk offset/length and object identity. Clicking
-    a Chunk ID opens Chunk detail. Return restores bucket, object, prefix,
-    object-list cursor, extent cursor, selected extent and scroll position.
-  - Proposed console endpoint: `GET /api/access/s3-inspect/locations` with
-    `bucket`, exact `key`, `limit` (default 20, maximum 100), and opaque `cursor`.
-    It uses cluster admin identity internally, without browser access keys.
-    The access service resolves tenant/bucket and decodes the stored reference;
-    the console must not guess metadata keys or access another tenant by name.
-  - Response: bucket/key, immutable metadata-generation token, ETag, logical
-    object length, `locations[]`, `next_cursor`. Each location has stable index,
-    nullable Chunk ID, offset, length, logical_offset, logical_length. Encode
-    64-bit numbers as decimal strings. The cursor binds object, generation and
-    position. Overwrite between pages returns 409; UI keeps the previous page
-    labelled stale and offers Refresh from the first page. Deletion returns 404.
-  - Bound response to 1 MiB and reference decoding to 4 MiB; reject oversized
-    legacy references with an explicit inspection-limit error, not truncation
-    disguised as completion. Read only metadata, never GET object bodies or
-    recursively fetch every Chunk's placement. Empty objects show `No storage
-    extents`; missing Chunk IDs show `Location unavailable` without a link.
-    Corrupt references show an error and preserve HEAD details.
-  - Verification: multiple extents paginate without duplicates; IDs/offsets
-    above JavaScript's safe integer range remain exact; an overwritten object
-    cannot combine generations; empty/missing/corrupt/oversized records have
-    explicit states; inspection performs zero payload reads; Chunk navigation
-    and Back restore the original object page. Add backend integration tests
-    and extend `70-s3-object.spec.ts` for those visible states.
-
 ## Cluster and provisioning
 
 - [ ] **Initialize ChunkDB slot maps during cluster provisioning**: after the
@@ -272,3 +228,11 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   Iceberg file-footer return are implemented and pass focused browser tests.
   Keep the global navigation item open until KV, Capacity, Chunk-KV and
   S3 location selection/cursors plus stale/in-flight restoration are verified.
+
+- S3 storage-location completion: management-only Access metadata inspection,
+  private Console proxy, exact decimal offsets, bounded reference/response,
+  revision-bound cursors and object/extent return are implemented. Two decoder
+  tests, real HTTP authorization/metadata-only test, proxy security/budget test,
+  eight hook cases and five S3 browser cases pass. The new browser location
+  round trip takes 0.883 seconds; the four existing cases remain 0.348–1.0 seconds.
+  Normal three-node native fixture acceptance remains part of provisioning below.

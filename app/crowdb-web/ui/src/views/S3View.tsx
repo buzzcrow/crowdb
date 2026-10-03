@@ -12,6 +12,8 @@ import { ResourceActions } from '../access/ResourceActions';
 import { Fields, Records } from '../iceberg/Fields';
 import { Tree, type TreeNode } from '../components/Tree';
 import { Database, Folder } from 'lucide-react';
+import { useObjectLocations, type LocationQuery } from '../s3/useObjectLocations';
+import { StorageLocations } from '../s3/StorageLocations';
 import { useClusterOrigin } from '../s3/useClusterOrigin';
 
 interface ObjectRow { key: string; size: string; etag: string; modified: string }
@@ -19,11 +21,12 @@ interface Upload { key: string; id: string }
 interface S3Query {
   bucket: string; bucketStart: number; bucketFilter: string; prefix: string;
   listedPrefix: string; cursor?: string; previous: Array<string | undefined>;
+  locations: LocationQuery | null;
   selected: ObjectRow | null; upload: { key: string; id: string; marker?: string } | null;
 }
 const MAX_ROWS = 1000;
 const BUCKET_PAGE = 20;
-export function S3View({ active, readonly }: { active: boolean; readonly: boolean }) {
+export function S3View({ active, readonly, onChunk }: { active: boolean; readonly: boolean; onChunk: (id: string) => void }) {
   const { log } = useActivity();
   const { checkpoint } = useDomain();
   const restoreQuery = useRef<(query: S3Query) => void>(() => {});
@@ -44,6 +47,7 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
   const [preview, setPreview] = useState('');
   const [next, setNext] = useState<string | null>(null);
   const [selected, setSelected] = useState<ObjectRow | null>(null);
+  const locationInspection = useObjectLocations(active, bucket, selected && selected.size !== 'pending' ? selected.key : undefined);
   const [detail, setDetail] = useState<unknown>(null);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [selectedUpload, setSelectedUpload] = useState<{ key: string; id: string; marker?: string } | null>(null);
@@ -107,6 +111,7 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
   useNavigationSnapshot(Domain.S3, 'object-query', () => {
     const state = { bucket, bucketStart, bucketFilter, prefix, listedPrefix, cursor,
       previous: [...previous], selected: selected ? { ...selected } : null,
+      locations: locationInspection.snapshot(),
       upload: selected?.size === 'pending' && selectedUpload ? { ...selectedUpload } : null };
     return () => restoreQuery.current(state);
   });
@@ -114,7 +119,7 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
     setBucket(state.bucket); setBucketStart(state.bucketStart); setBucketFilter(state.bucketFilter);
     setPrefix(state.prefix); setListedPrefix(state.listedPrefix); setPrevious(state.previous);
     setCursor(state.cursor); setSelected(state.selected); setDetail(null); setPreview('');
-    setPartsNext(null); setUploads([]); setUploadsNext(null);
+    setPartsNext(null); setUploads([]); setUploadsNext(null); locationInspection.restore(state.locations);
     if (!state.bucket) return;
     void run(async () => {
       await loadObjects(state.bucket, state.cursor, state.listedPrefix);
@@ -135,7 +140,7 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
   return <Workbench resizableSidebar showActivity={false} sidebar={<>
     {originLoading && <p role="status">Loading cluster S3 endpoint…</p>}
     <nav aria-label="S3 buckets" className="-tw-mx-4"><Tree nodes={tree} defaultExpandedIds={['s3-root']} onNodeClick={node => { if (!busy) { if (node.id === 's3-root') root(); else chooseBucket(node.id); } }} /></nav>
-  </>} detail={<div aria-label="S3 properties"><h2 className="tw-font-semibold tw-mb-4">Properties</h2><Fields stacked values={selected ? { Type: 'Object', Bucket: bucket, Key: selected.key, Size: selected.size, ETag: selected.etag, Modified: selected.modified } : { Type: scope, Name: bucket || 'S3' }} /></div>}>
+  </>} detail={<div aria-label="S3 properties"><h2 className="tw-font-semibold tw-mb-4">Properties</h2><Fields stacked values={selected ? { Type: 'Object', Bucket: bucket, Key: selected.key, Size: selected.size, ETag: selected.etag, Modified: selected.modified } : { Type: scope, Name: bucket || 'S3' }} />{selected && locationInspection.selected && <section aria-label="Storage extent properties"><h3 className="tw-font-semibold tw-mt-4 tw-mb-3">Storage extent</h3><Fields stacked values={{ 'Extent index': locationInspection.selected.index, 'Chunk ID': locationInspection.selected.chunk_id, 'Logical offset (bytes)': locationInspection.selected.logical_offset, 'Logical length (bytes)': locationInspection.selected.logical_length, 'Chunk offset (bytes)': locationInspection.selected.offset, 'Physical length (bytes)': locationInspection.selected.length, Generation: locationInspection.page?.generation }} /></section>}</div>}>
     <nav aria-label="S3 breadcrumbs" className="tw-flex tw-gap-2 tw-text-xs tw-text-muted"><button disabled={busy} onClick={root}>S3</button>{bucket && <><span>/</span><button disabled={busy} onClick={() => { checkpoint(); setSelected(null); setDetail(null); setPreview(''); }}>{bucket}</button></>}{selected && <><span>/</span><span className="tw-break-all">{selected.key}</span></>}</nav>
     {bucket && <><p className="tw-text-xs tw-text-muted">{scope}</p><h1 className="tw-text-lg tw-font-semibold tw-break-all">{selected?.key || bucket}</h1></>}
     <ResourceActions key={`${bucket}/${selected?.key ?? ''}`} label={`${scope} actions`}>
@@ -196,6 +201,7 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
     </>}
     {selected && <section aria-label="Object metadata" className="tw-space-y-3"><h2 className="tw-font-semibold">{selected.size === 'pending' ? 'Multipart parts' : 'HEAD metadata'}</h2>{busy && !detail ? <p>Loading metadata…</p> : selected.size === 'pending' ? <Records label="Multipart parts" headings={['Part', 'ETag', 'Size']} rows={((detail as { parts?: Array<{ number: string; etag: string; size: string }> } | null)?.parts ?? []).map(part => [part.number, part.etag, part.size])} /> : <Fields values={(detail ?? {}) as Record<string, unknown>} />}
       {partsNext && <button className={buttonClass} disabled={busy} onClick={() => void run(() => inspectParts(partsNext, partsNext.marker), 'Next parts page loaded')}>Next parts page</button>}
+      {selected.size !== 'pending' && <StorageLocations inspection={locationInspection} onChunk={onChunk} />}
       {!!preview && <><h2>Preview · first 4 KiB</h2><pre aria-label="Object preview" className="tw-whitespace-pre-wrap tw-break-all tw-text-xs">{preview}</pre></>}
     </section>}
   </Workbench>;

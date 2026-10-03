@@ -19,6 +19,7 @@ use crate::error::{err_400, err_502, ErrorBody};
 use crate::state::AppState;
 
 mod credentials;
+mod inspection;
 mod signing;
 
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
@@ -27,6 +28,7 @@ type ApiError = (StatusCode, Json<ErrorBody>);
 pub(crate) fn read_router() -> Router<AppState> {
     Router::new()
         .route("/api/access/connections", get(connections))
+        .route("/api/access/s3-inspect/locations", get(inspection::locations))
         .route("/api/access/:protocol", any(proxy))
         .route("/api/access/:protocol/", any(proxy))
         .route("/api/access/:protocol/*path", any(proxy))

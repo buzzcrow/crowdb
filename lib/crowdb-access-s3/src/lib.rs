@@ -10,6 +10,7 @@ pub mod continuation;
 pub mod copy;
 pub mod delete;
 pub mod error;
+pub mod inspection;
 pub mod integrity;
 pub mod metadata;
 pub mod metrics;

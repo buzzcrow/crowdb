@@ -762,3 +762,19 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   passed (23.7 s command). Sixteen context/header unit assertions passed.
   Remaining return contracts: KV cursor/value, Capacity zone/bitmap, Chunk-KV
   Tree/journal and new S3 extents; test stale restores and in-flight races.
+
+### Bounded S3 location inspection
+
+- Access resolves the configured tenant and ObjectRecord through metadata only;
+  management authorization runs before reads. A reference is limited to 4 MiB,
+  response to 1 MiB and page to 100 (UI 20). Exact u64 strings and revision-bound
+  HMAC cursors prevent rounding and mixing overwritten generations.
+- Console proxy rejects arbitrary targets, holds management credentials privately,
+  bounds streamed responses, and preserves 404/409/413/422 errors.
+- Source object/extent cursor and selection survive Chunk navigation; React event
+  capture uses a synchronous query reference. Interrupted initial loads restart
+  on reactivation; late responses cannot replace the current object.
+- Verified: decoder 2 cases (0.00s), HTTP admin 1 (0.02s), Web proxy 1 (0.05s),
+  S3 browser 5 (existing 0.348–1.0s, new round trip 0.883s), hook 8 cases.
+  Build and focused all-target Clippy pass. Actual native three-node bring-up
+  remains part of the outstanding provisioning acceptance, not implied by mocks.

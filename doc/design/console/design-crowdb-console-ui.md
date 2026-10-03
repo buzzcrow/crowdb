@@ -510,6 +510,28 @@ Unsupported features are explicit rather than represented as working controls.
   reports stale and requires first-page refresh. Exact 64-bit offsets survive
   JSON/JavaScript without rounding. Bounded decoding and response limits are
   mandatory; no recursive placement fetch for every extent.
+- **S3-06:** `GET /api/access/s3-inspect/locations` accepts exact bucket/key,
+  a 1–100 limit (default 20), and an opaque cursor. The Console targets only
+  the configured Access origin and supplies its server-held management token;
+  browser credentials and arbitrary endpoint parameters are rejected or ignored.
+  Access authorizes management privilege before metadata reads and resolves the
+  configured tenant's bucket/object itself. There is no object-payload client in
+  the inspection path.
+- **S3-07:** Inspection decodes at most 4 MiB of stored references and returns
+  at most 1 MiB. Access has a five-second metadata deadline; the Console proxy
+  has a six-second request deadline. Reference-limit errors are 413, corrupt
+  references 422, missing objects 404, and changed cursor generations 409.
+  Invalid, expired or oversized cursors and limits are rejected. Cursor expiry
+  is 15 minutes and its authenticated scope includes bucket identity, exact key,
+  revision-sensitive generation and next extent index. Identical overwrites also
+  invalidate old cursors.
+- **S3-08:** Location failures preserve HEAD. Empty objects show `No storage
+  extents`; null Chunk identities show `Location unavailable` without a link.
+  Previous/Next retain at most 32 cursor positions and replace the page; at most
+  four bounded location pages are cached. A stale result keeps the previous
+  page labelled stale and disables continuation until first-page refresh.
+  Selection is captured before following a Chunk link; return refetches metadata
+  against the saved generation and restores the exact selected extent.
 
 ## 23. Actions and properties
 

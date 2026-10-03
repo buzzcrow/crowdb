@@ -21,6 +21,8 @@ use tokio::net::TcpListener;
 
 pub mod copy_body;
 mod dispatcher;
+mod inspection;
+pub use inspection::{ObjectInspector, OBJECT_LOCATIONS_PATH};
 mod operations;
 
 pub use crate::http_receive::install_body_receive_provider;
