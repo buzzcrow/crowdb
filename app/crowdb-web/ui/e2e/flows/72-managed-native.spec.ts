@@ -14,7 +14,7 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
     expect(response.status(), path).toBe(503);
   }
   await page.getByTestId('domain-kv').click();
-  await page.getByTestId('kv-view-data').click();
+  await page.getByText(/^KV actions · Store/).click();
   await page.getByTestId('kv-store-select').selectOption('0');
   await page.getByTestId('kv-group-select').selectOption('1');
   await page.getByLabel('Put key').fill('console_native_ui_demo');
@@ -28,28 +28,33 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
 
   await page.getByTestId('domain-iceberg').click();
   await expect(page.getByLabel('Catalog write token')).toHaveCount(0);
+  await page.getByText('Catalog actions', { exact: true }).click();
   await page.getByRole('button', { name: 'Create metadata demo', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Demo namespace and table created' })).toBeVisible({ timeout: 3000 });
-  await page.getByRole('navigation', { name: 'Iceberg namespaces' }).getByRole('button', { name: /^console_demo_/ }).click();
-  await page.getByRole('navigation', { name: 'Iceberg tables' }).getByRole('button', { name: 'example', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Iceberg tree' }).getByRole('button', { name: /^console_demo_/ }).click();
+  await page.getByRole('navigation', { name: 'Iceberg tree' }).getByRole('button', { name: 'example', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Refresh table' })).toBeVisible({ timeout: 3000 });
   await page.getByRole('button', { name: 'Schema', exact: true }).click();
-  await expect(page.getByRole('navigation', { name: 'Table sections' }).locator('..')).toContainText('schema-id');
+  await expect(page.getByRole('navigation', { name: 'Table sections' }).locator('..')).toContainText('schema id');
   page.on('dialog', dialog => dialog.accept());
+  await page.getByRole('navigation', { name: 'Iceberg breadcrumbs' }).getByRole('button', { name: 'Catalog', exact: true }).click();
+  await page.getByText('Catalog actions', { exact: true }).click();
   await page.getByRole('button', { name: 'Clean metadata demo', exact: true }).click();
-  await expect(page.getByRole('navigation', { name: 'Iceberg namespaces' })).not.toContainText('console_demo_');
+  await expect(page.getByRole('navigation', { name: 'Iceberg tree' })).not.toContainText('console_demo_');
 
   await page.getByTestId('domain-s3').click();
   await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
   await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
+  await page.getByText('S3 actions', { exact: true }).click();
   await page.getByRole('button', { name: 'Create object demo', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Demo bucket and object created' })).toBeVisible({ timeout: 3000 });
   const demoScope = await page.getByText(/^Demo scope: console-demo-/).textContent();
   const demoBucket = demoScope!.match(/console-demo-[a-f0-9]+/)![0];
   await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: demoBucket, exact: true }).click();
   await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'example.txt', exact: true }).click();
+  await page.getByText('Object actions', { exact: true }).click();
   await page.getByRole('button', { name: 'Preview first 4 KiB' }).click();
-  await expect(page.locator('main aside pre')).toContainText('CROWDB console demo', { timeout: 3000 });
+  await expect(page.getByLabel('Object preview', { exact: true })).toContainText('CROWDB console demo', { timeout: 3000 });
 
   await page.getByTestId('domain-chunk').click();
   await page.getByLabel('Chunk type').selectOption('5');
@@ -59,8 +64,13 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
   const strips = page.getByLabel('Chunk strips').getByRole('button');
   await expect(strips).not.toHaveCount(0, { timeout: 3000 });
   await strips.nth(0).click();
-  await expect(page.locator('main aside').filter({ hasText: 'Strip sequence' })).toContainText('Rack 1 / Node 1 / DG 101', { timeout: 3000 });
+  const properties = page.getByLabel('Chunk properties');
+  for (const [field, expected] of [['Rack', '1'], ['Node', '1'], ['Diskgroup', '101']]) {
+    await expect(properties.locator('dt').filter({ hasText: new RegExp(`^${field}$`) }).locator('..').locator('dd')).toHaveText(expected);
+  }
   await page.getByTestId('domain-s3').click();
+  await page.getByRole('navigation', { name: 'S3 breadcrumbs' }).getByRole('button', { name: 'S3', exact: true }).click();
+  await page.getByText('S3 actions', { exact: true }).click();
   await page.getByRole('button', { name: 'Clean object demo', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'S3 buckets' })).not.toContainText(demoBucket);
 });

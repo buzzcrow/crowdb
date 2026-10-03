@@ -1,49 +1,56 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-import { execFileSync, spawnSync } from 'node:child_process';
 import { test, expect } from '../fixtures/realBackend';
+import { step } from '../fixtures/stepTimer';
 
-const name = `crowdb-console-s3-${process.pid}`;
-const docker = (...args: string[]) => execFileSync('docker', args, { encoding: 'utf8', timeout: 10000 }).trim();
-let origin: string;
-test.beforeAll(async ({ request }) => {
-  docker('run', '-d', '--rm', '--name', name, '-p', '127.0.0.1::9000',
-    '-e', 'MINIO_ROOT_USER=console-test', '-e', 'MINIO_ROOT_PASSWORD=console-test-secret',
-    'minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1', 'server', '/data');
-  origin = `http://${docker('port', name, '9000/tcp')}`;
-  await expect.poll(() => {
-    const result = spawnSync('docker', ['logs', name], { encoding: 'utf8', timeout: 10000 });
-    if (result.status !== 0) throw new Error(result.stderr || String(result.error));
-    return result.stdout + result.stderr;
-  }, { timeout: 3000, intervals: [100] }).toContain('API:');
-  expect((await request.get(`${origin}/minio/health/ready`)).status()).toBe(200);
-  const response = await request.post('/api/access/connections', { data: { protocol: 's3', origin } });
-  expect(response.ok(), await response.text()).toBeTruthy();
-});
-test.afterAll(() => { docker('rm', '-f', name); });
-
-test('S3 real SigV4 bucket CRUD and multipart object round trip', async ({ page }) => {
-  await page.goto('/?domain=S3');
-  await page.getByLabel('Access key', { exact: true }).fill('console-test');
-  await page.getByLabel('Secret key', { exact: true }).fill('console-test-secret');
-  await page.getByRole('button', { name: 'Create object demo', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Demo bucket and object created' })).toBeVisible({ timeout: 3000 });
-  const buckets = page.getByRole('navigation', { name: 'S3 buckets' });
-  const bucket = buckets.getByRole('button', { name: /^console-demo-/ });
-  await expect(bucket).toHaveCount(1);
-  await bucket.click();
-  await expect(page.getByRole('table', { name: 'S3 objects' })).toContainText('example.txt');
-  await page.getByLabel('Object key', { exact: true }).fill('multipart a/中文.txt');
-  await page.getByLabel('Object file').setInputFiles({ name: 'multipart.txt', mimeType: 'text/plain', buffer: Buffer.alloc(9 * 1024 * 1024, 'x') });
-  await page.getByRole('button', { name: 'Upload', exact: true }).click();
-  await expect(page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'multipart a/中文.txt', exact: true })).toBeVisible({ timeout: 3000 });
-  await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'multipart a/中文.txt', exact: true }).click();
-  await page.getByRole('button', { name: 'Preview first 4 KiB' }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Loaded first 4 KiB' })).toBeVisible({ timeout: 3000 });
-  expect(JSON.parse((await page.locator('main aside pre').textContent())!).preview).toBe('x'.repeat(4096));
-  page.on('dialog', dialog => dialog.accept());
-  await page.getByRole('button', { name: 'Delete object', exact: true }).click();
-  await expect(page.getByRole('table', { name: 'S3 objects' })).not.toContainText('multipart a/中文.txt');
-  await page.getByRole('button', { name: 'Clean object demo', exact: true }).click();
-  await expect(buckets.getByRole('button', { name: /^console-demo-/ })).toHaveCount(0, { timeout: 3000 });
+// Large transfer acceptance is separate from routine page behavior tests.
+// Baseline: 3.0s (2026-10-04); actual CROWDB multipart acceptance.
+test('S3 native multipart upload, HEAD, bounded preview and full round trip', async ({ page, request }) => {
+  const bucket = `console-multipart-${process.pid}-${Date.now()}`;
+  const key = 'multipart a/中文.txt';
+  const bucketPath = `/api/access/s3/${bucket}`;
+  const objectPath = `${bucketPath}/multipart%20a/%E4%B8%AD%E6%96%87.txt`;
+  const bytes = Buffer.alloc(9 * 1024 * 1024, 'x');
+  await step('native bucket setup', async () => {
+    const response = await request.put(bucketPath);
+    expect(response.status(), await response.text()).toBe(200);
+  });
+  try {
+    await step('native S3 DOM setup', async () => {
+      await page.goto('/?domain=S3');
+      await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
+      await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: bucket, exact: true }).click();
+      await page.getByText('Bucket actions', { exact: true }).click();
+      await page.getByLabel('Object key', { exact: true }).fill(key);
+      await page.getByLabel('Object file').setInputFiles({ name: 'multipart.txt', mimeType: 'text/plain', buffer: bytes });
+    });
+    await step('native 9 MiB multipart mutation and DOM refresh', async () => {
+      await page.getByRole('button', { name: 'Upload', exact: true }).click();
+      await expect(page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: key, exact: true })).toBeVisible();
+    });
+    await step('native object HEAD and bounded preview', async () => {
+      await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: key, exact: true }).click();
+      await expect(page.getByLabel('Object metadata')).toContainText(String(bytes.length));
+      await page.getByText('Object actions', { exact: true }).click();
+      await page.getByRole('button', { name: 'Preview first 4 KiB' }).click();
+      await expect(page.getByLabel('Object preview', { exact: true })).toHaveText('x'.repeat(4096));
+    });
+    await step('native full object byte verification', async () => {
+      const response = await request.get(objectPath);
+      expect(response.status()).toBe(200);
+      expect((await response.body()).equals(bytes)).toBe(true);
+    });
+    await step('native object delete and DOM refresh', async () => {
+      page.once('dialog', dialog => dialog.accept());
+      await page.getByRole('button', { name: 'Delete object', exact: true }).click();
+      await expect(page.getByRole('table', { name: 'S3 objects' })).not.toContainText(key);
+    });
+  } finally {
+    await step('native owned-resource teardown', async () => {
+      const object = await request.delete(objectPath);
+      expect(object.status(), await object.text()).toBe(204);
+      const response = await request.delete(bucketPath);
+      expect(response.status(), await response.text()).toBe(204);
+    });
+  }
 });

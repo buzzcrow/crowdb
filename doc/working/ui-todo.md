@@ -108,7 +108,9 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   failed with `Error: Uninitialized` after Chunk-KV became ready. Explicit
   catalog initialize/activate followed by redeployment brought all three
   Access instances up. Integrate idempotent catalog setup into provisioning,
-  preserving existing catalog identity and capabilities on restart.
+  preserving existing catalog identity and capabilities on restart. Durable
+  request recovery is implemented and unit-tested; real Access restart and the
+  native browser chain pass. Fresh normal three-node bring-up remains pending.
 - [ ] **Six-service plan recovery**: the one-dialog queue is implemented but
   lives in browser-session state. Verify Node-menu resume after reload, restart,
   partial deployment and prerequisite arrival, with no duplicate instances.
@@ -255,3 +257,9 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   private in the existing runtime secrets directory.
 - Manual binding/owner/catalog recovery above enabled this fixture; it does
   not prove that initial UI provisioning is fixed or approve deferred designs.
+
+- [ ] **Disposable E2E process ownership**: test-mode services used the shared
+  persistent console root; a failed earlier run left a KV child alive and its
+  outbound connection collided with a later test listener. Add teardown and
+  isolated runtime ownership, fail unknown mutation outcomes without blind
+  retries, and verify failed-run cleanup without touching the live cluster.

@@ -287,6 +287,11 @@ provide observable capacity and bitmap fixtures.
 - **SVC-03:** Startup observes dependencies: Group 0 before dependent metadata
   services; valid disks/ownership for storage; journal/data prerequisites before
   Chunk-KV bootstrap; Chunk-KV catalog before Access startup.
+- Access provisioning durably records catalog initialization and activation
+  request identities before issuing either mutation. Interrupted deployment
+  reconciles committed state and resumes the same request. An existing catalog
+  retains its identity and policy; restart does not reset operator changes.
+  Missing or conflicting recorded identity fails explicitly.
 - Service failures name the failing step and permit a safe retry. Existing
   instances are not silently duplicated or treated as healthy merely by presence.
 - Operational type descriptions remain available even though instance labels

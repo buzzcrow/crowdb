@@ -10,6 +10,16 @@ use crate::{error::err_502, services::Failure};
 
 /// Provision before Access starts so its initial credential snapshot includes Console.
 pub(super) async fn prepare(root: &Path, spec: &LocalLaunchSpec, seeds: &[String]) -> Result<(), Failure> {
+    let server =
+        ServerCredentials::load_existing(root).map_err(|_| err_502("Cluster credentials are unavailable"))?;
+    crowdb_monitor::IcebergBootstrap::ensure_console_catalog(
+        root,
+        Path::new(&spec.program),
+        &seeds.join(","),
+        &server,
+    )
+    .await
+    .map_err(|error| err_502(format!("Console Iceberg catalog initialization: {error}")))?;
     if root
         .join("secrets/client.env")
         .try_exists()
@@ -19,8 +29,6 @@ pub(super) async fn prepare(root: &Path, spec: &LocalLaunchSpec, seeds: &[String
             .map_err(|_| err_502("Existing Console credentials are invalid"))?;
         return Ok(());
     }
-    let server =
-        ServerCredentials::load_existing(root).map_err(|_| err_502("Cluster credentials are unavailable"))?;
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         tokio::process::Command::new(&spec.program)

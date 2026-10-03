@@ -725,3 +725,18 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   Relevant Rust clippy and frontend type/build checks passed. R203 remains
   open: native provisioning, Access catalog recovery, return history, Capacity
   scale, Chunk-KV inspections/balance and S3 locations are unfinished.
+
+- Access deployment now records initialize/activate request identities before
+  issuing commands, resumes uncertain outcomes and preserves an existing catalog
+  and subsequent operator policy changes. Two recovery tests passed (0.33 s);
+  existing bootstrap tests and Web/Monitor clippy passed. Real Access deployment
+  with signed S3 and restart passed (0.20 s); managed browser chain passed (5.2 s).
+  Fresh normal three-node deployment remains a separate acceptance item.
+- Large native S3 acceptance now uses actual CROWDB instead of MinIO and removed
+  credential controls. A 9 MiB multipart upload, HEAD, 4 KiB preview, full byte
+  comparison and owned-resource teardown passed in 3.0 s. Preserve named phases.
+- Isolation issue found: an earlier test KV process remained under the shared
+  persistent console root and occupied a test port through an outbound TCP
+  connection. Use native fixture ports outside the ephemeral client range;
+  add deterministic teardown and remove mutation retries before accepting the
+  routine management fixture. Preserve the user's live 9090 services.
