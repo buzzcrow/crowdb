@@ -14,6 +14,14 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 - Commit each tab's verified implementation separately before proceeding to the
   next tab. Shared adapters belong with the tab that introduces them; remaining
   acceptance gaps stay explicit in this plan.
+- The user is redesigning ChunkDB range ownership and routing. Defer that
+  integration and retain the simple Chunk browse/detail/placement flow against
+  existing APIs. Do not redesign the backend, hard-code Group 0 as the permanent
+  Chunk store, or present current routing as validated range distribution.
+  The user's observation that chunks currently collect in Group 0 is context
+  for the deferral, not a verified storage contract. Reconnect the UI when the
+  new range contract is available. This deferral does not cover the separate
+  Chunk-KV split/tree/journal workbench or response/rendering bounds.
 - Preserve the user's running localhost cluster and its default directory.
   Browser inspection is read-only; tests must use isolated runtime roots/ports.
 - Initial Iceberg scope is Namespace/Table metadata CRUD. Row DML and object-to-
@@ -97,9 +105,13 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
   remote auxiliary deployment is explicitly unsupported.
 - [ ] **Native deployment acceptance**: exercise Chunk-KV/Access deployment
   through the new routes and close launch/publication crash-recovery gaps.
-- [ ] **Chunk sources**: establish actual Repo metadata routing and implement
-  source/type filters, bounded per-source cursors and partial coverage. Files:
-  Web `chunk`, ChunkDB/Chunk-KV metadata adapters, UI `chunk`.
+- [ ] **Chunk sources — deferred by user**: reconnect range ownership and actual
+  Repo metadata routing after the backend redesign; then implement per-source
+  cursors and coverage. Keep the current type/prefix query, exact-ID detail,
+  Strip layout and disk/node links as the interim functional flow. The native
+  browser flow has verified these operations on the isolated preview; it does
+  not validate multi-range distribution. Files: Web `chunk`, ChunkDB/Chunk-KV
+  metadata adapters, UI `chunk`.
 - [~] **Capacity and Access**: distinguish unknown usage, suspend inactive
   polling, connect S3 and Iceberg to the same cluster's Access deployment;
   finish bounded native file inspection and real data acceptance.
