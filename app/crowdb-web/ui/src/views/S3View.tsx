@@ -3,7 +3,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Workbench, JsonView, inputClass, buttonClass } from '../access/Workbench';
-import { s3, xml, xmlText, objectPath, previewBytes, type S3Credentials } from '../access/native';
+import { s3, xml, xmlText, objectPath, previewBytes } from '../access/native';
 import { uploadObject, downloadObject } from '../access/s3Transfer';
 import { useActivity } from '../contexts/ActivityContext';
 import { useClusterOrigin } from '../s3/useClusterOrigin';
@@ -18,7 +18,6 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
   const [uploadsNext, setUploadsNext] = useState<{ key: string; id: string } | null>(null);
   const [partsNext, setPartsNext] = useState<{ key: string; id: string; marker: string } | null>(null);
   const { origin, error: originError, loading: originLoading, retry: retryOrigin } = useClusterOrigin(active);
-  const [credentials, setCredentials] = useState<S3Credentials>({ accessKey: '', secretKey: '', sessionToken: '', region: 'us-east-1' });
   const [buckets, setBuckets] = useState<string[]>([]);
   const [bucketStart, setBucketStart] = useState(0);
   const [bucketFilter, setBucketFilter] = useState('');
@@ -39,11 +38,11 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
   const controller = useRef<AbortController | null>(null);
   useEffect(() => {
     setBuckets([]); setBucketStart(0); setBucket(''); setRows([]); setNext(null); setSelected(null); setDetail(null); setUploads([]); setUploadsNext(null); setPartsNext(null); setDemoBucket(null); setError(''); setOutcome('');
-  }, [origin, credentials]);
-  const connected = !!origin && !!credentials.accessKey && !!credentials.secretKey;
+  }, [origin]);
+  const connected = !!origin;
   const request = (method: string, path: string, query: Record<string, string> = {}, body?: Blob | string) => {
     if (!origin) throw new Error('This cluster has no available S3 endpoint');
-    return s3(origin, credentials, method, path, query, body);
+    return s3( method, path, query, body);
   };
   const run = async (operation: () => Promise<void>, label: string) => {
     setBusy(true); setError(''); setOutcome('');
@@ -87,11 +86,7 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
     <p className="tw-text-xs tw-text-muted">Buckets → object prefixes</p>
     <p className="tw-text-xs tw-text-muted">Current cluster · native S3</p>
     {originLoading && <p role="status" className="tw-text-xs">Loading cluster S3 endpoint…</p>}
-    {(['accessKey', 'secretKey', 'region', 'sessionToken'] as const).map(name => <label className="tw-block tw-text-xs" key={name}>
-      {{ accessKey: 'Access key', secretKey: 'Secret key', region: 'Region', sessionToken: 'Session token' }[name]}
-      <input className={`${inputClass} tw-w-full tw-mt-1`} type={name === 'secretKey' || name === 'sessionToken' ? 'password' : 'text'} autoComplete="off" value={credentials[name]} disabled={busy} onChange={event => setCredentials(previous => ({ ...previous, [name]: event.target.value }))} />
-    </label>)}
-    <p className="tw-text-xs tw-text-muted">Credentials stay in this browser session.</p>
+    <p className="tw-text-xs tw-text-muted">Root administrator · cluster resources</p>
     <button className={buttonClass} disabled={!connected || busy} onClick={() => void run(listBuckets, 'Buckets refreshed')}>List buckets</button>
     {!readonly && <><button className={buttonClass} disabled={!connected || busy || !!demoBucket} onClick={() => void run(async () => {
       const demo = `console-demo-${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`;
@@ -114,10 +109,10 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
     <p className="tw-text-xs">Size: {selected.size} bytes · ETag: {selected.etag}</p><JsonView value={detail} />
     {partsNext && <button className={buttonClass} disabled={busy} onClick={() => void run(() => inspectParts(partsNext, partsNext.marker), 'Next parts page loaded')}>Next parts page</button>}
     <button className={buttonClass} disabled={busy} onClick={() => void run(async () => {
-      const response = await s3(origin!, credentials, 'GET', objectPath(bucket, selected.key), {}, undefined, { range: 'bytes=0-4095' });
+      const response = await s3( 'GET', objectPath(bucket, selected.key), {}, undefined, { range: 'bytes=0-4095' });
       const bytes = await previewBytes(response); setDetail({ ...selected, preview: new TextDecoder('utf-8', { fatal: false }).decode(bytes), range: response.headers.get('content-range') });
     }, 'Loaded first 4 KiB')}>Preview first 4 KiB</button>
-    <button className={buttonClass} disabled={busy} onClick={() => void run(() => downloadObject(origin!, credentials, bucket, selected.key), 'Downloaded object')}>Download</button>
+    <button className={buttonClass} disabled={busy} onClick={() => void run(() => downloadObject( bucket, selected.key), 'Downloaded object')}>Download</button>
     {!readonly && <button className={buttonClass} disabled={busy} onClick={() => { if (confirm(`Delete ${bucket}/${selected.key}?`)) void run(async () => { await request('DELETE', objectPath(bucket, selected.key)); setSelected(null); await loadObjects(bucket); }, 'Object deleted'); }}>Delete object</button>}
   </> : undefined}>
     <div className="tw-flex tw-items-center tw-justify-between"><div><h1 className="tw-text-lg tw-font-semibold">{bucket ? `Bucket / ${bucket}` : 'S3 object browser'}</h1><p className="tw-text-xs tw-text-muted">Current cluster · {readonly ? 'Read only' : 'Credential permissions apply'}</p></div>
@@ -131,7 +126,7 @@ export function S3View({ active, readonly }: { active: boolean; readonly: boolea
       {!rows.length && !busy && <p className="tw-text-xs tw-text-muted">No objects in this prefix.</p>}
       {next && rows.length < MAX_ROWS && <button className={buttonClass} disabled={busy} onClick={() => void run(() => loadObjects(bucket, next), 'Next page loaded')}>Load more</button>}
       {next && rows.length >= MAX_ROWS && <p role="status" className="tw-text-xs">Showing 1,000 objects. Narrow the object prefix to browse more.</p>}
-      {!readonly && <form className="tw-space-y-2 tw-rounded tw-border tw-border-border tw-p-4" onSubmit={event => { event.preventDefault(); if (!file) return; controller.current = new AbortController(); const signal = controller.current.signal; void run(async () => { await uploadObject(origin!, credentials, bucket, key, file, signal, (bytes, id) => setProgress({ bytes, id })); await loadObjects(bucket); }, 'Upload completed'); }}>
+      {!readonly && <form className="tw-space-y-2 tw-rounded tw-border tw-border-border tw-p-4" onSubmit={event => { event.preventDefault(); if (!file) return; controller.current = new AbortController(); const signal = controller.current.signal; void run(async () => { await uploadObject( bucket, key, file, signal, (bytes, id) => setProgress({ bytes, id })); await loadObjects(bucket); }, 'Upload completed'); }}>
         <h2 className="tw-font-semibold">Upload / replace object</h2><label className="tw-text-xs">Object key <input className={inputClass} required value={key} disabled={busy} onChange={event => setKey(event.target.value)} /></label>
         <input aria-label="Object file" type="file" disabled={busy} onChange={event => { const file = event.target.files?.[0] ?? null; setFile(file); if (file && !key) setKey(file.name); }} />
         <button className={buttonClass} disabled={busy || !file}>Upload</button>

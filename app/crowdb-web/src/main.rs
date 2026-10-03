@@ -99,7 +99,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     if let Some(config) = process_config {
         state = state.with_process_config(&config);
-        state = state.with_management_token(std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN")?)?;
     }
     if let Ok(token) = std::env::var("CROWDB_ICEBERG_READ_TOKEN") {
         state = state.with_iceberg_reader(token)?;

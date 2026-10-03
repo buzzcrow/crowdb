@@ -35,7 +35,16 @@ pub(crate) async fn http_list_stores(
             config.group(0, 0).is_some(),
         )
     };
-    if !state.managed_mode && !initialized && (!has_servers || !cluster_initialized(&state).await) {
+    if !state.managed_mode
+        && !initialized
+        && (!has_servers || !cluster_initialized(&state).await)
+        && state
+            .monitor_cache
+            .snapshot()
+            .await
+            .values()
+            .all(|node| node.stores.is_empty())
+    {
         return Ok(Json(Vec::new()));
     }
     let ctx = state

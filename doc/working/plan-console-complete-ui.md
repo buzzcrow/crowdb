@@ -465,3 +465,30 @@ Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata ch
 - Root Console verification is in progress. The real managed chain passed KV,
   Iceberg and S3 CRUD plus Chunk inspection without browser credentials (4.2 s);
   topology and disk-maintenance APIs rejected writes with 503.
+
+
+## Root Console checkpoint
+
+- Removed management/catalog/S3 credential forms. Root logical operations need
+  no browser bearer. Web injects Catalog reader/writer credentials and signs S3
+  requests; browser-provided authorization does not choose upstream privileges.
+- Container denies topology/deployment and all four disk-maintenance routes;
+  standalone retains those controls. Group 0 data-write protection remains.
+- Access deployment initializes a durable Console S3 user before child startup,
+  stores its credentials with private permissions, and reuses them across
+  restart/redeployment. Existing operation admission serializes initialization.
+- Fixed an existing Store-list bootstrap shortcut that returned empty success
+  despite observed topology and unavailable Group 0. The authority regression
+  now passes without weakening its expected 502 response.
+- Focused backend suites passed: Access 8, managed mode 5, management 4, owner
+  assignment 4, lifecycle 4. Previously completed bare-metal authority 3 and
+  launch registry 2 also passed. Rust fmt and Web/Monitor all-target Clippy passed.
+- Browser root/shell/Iceberg/S3 cases passed (13); live managed acceptance passed
+  in 4.2 s on isolated Web 43993. It verifies native data operations, real Chunk
+  placement and backend hardware rejection without submitting browser secrets.
+- Explicit native Access deployment acceptance passed against the isolated
+  preview's storage chain: private credential creation, signed S3 bucket listing,
+  Catalog reads, restart/reuse, and removal. Run with
+  `CROWDB_NATIVE_DEPLOYMENT_DATA` and `CROWDB_NATIVE_DEPLOYMENT_SEED` through
+  `pixi run cargo test -p crowdb-web --test native_access_deployment_test -- --ignored`.
+  This fixture is opt-in so ordinary tests cannot target an existing cluster.

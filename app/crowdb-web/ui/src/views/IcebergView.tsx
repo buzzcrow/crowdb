@@ -17,9 +17,8 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
   const [demoNamespace, setDemoNamespace] = useState<string | null>(null);
   const [removals, setRemovals] = useState('[]');
   const [origin, setOrigin] = useState<string | null>(null);
-  const [token, setToken] = useState('');
-  const [writeToken, setWriteToken] = useState('');
-  const readonly = domainReadonly || !token;
+  const token = '';
+  const readonly = domainReadonly;
   const [retry, setRetry] = useState(0);
   const [catalog, setCatalog] = useState<any>(null);
   const [namespaces, setNamespaces] = useState<string[][]>([]);
@@ -94,14 +93,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     </div>)}</nav>
   </>}>
     <div><h1 className="tw-text-lg tw-font-semibold">{namespace ? `Catalog / ${namespace.join('.')}${table ? ` / ${table}` : ''}` : 'Iceberg catalog'}</h1><p className="tw-text-xs tw-text-muted">Current cluster · {readonly ? 'Read only' : 'Native REST metadata operations'}</p></div>
-    {!domainReadonly && <details className="tw-text-xs tw-space-y-2"><summary className="tw-cursor-pointer">Catalog write authorization</summary>
-      <p>Use a native Iceberg write token for catalog changes. The service checks its privileges on each operation. The token is kept only in this page session.</p>
-      {token ? <button className={buttonClass} disabled={busy} onClick={() => setToken('')}>Clear catalog write token</button>
-        : <form className="tw-flex tw-gap-2 tw-items-end" onSubmit={event => { event.preventDefault(); setToken(writeToken.trim()); setWriteToken(''); }}>
-          <label>Catalog write token<input type="password" autoComplete="off" required className={`${inputClass} tw-block`} value={writeToken} onChange={event => setWriteToken(event.target.value)} /></label>
-          <button className={buttonClass} disabled={busy || !writeToken.trim()}>Use catalog write token</button>
-        </form>}
-    </details>}
+
     {loaded && <div className="tw-space-y-3">
       <button className={buttonClass} disabled={busy} onClick={() => void run(() => loadTable(table), 'Metadata refreshed')}>Refresh table</button>
       {!readonly && <details className="tw-space-y-2"><summary className="tw-text-xs tw-cursor-pointer">Table actions</summary>

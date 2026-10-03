@@ -39,19 +39,13 @@ async fn register_kv_node(sysmd: &CrowdbSysmdClient, endpoint: &str, hosted_stor
         .unwrap();
 }
 
-async fn verify_managed_store_lifecycle(
-    app: &axum::Router,
-    sysmd: &CrowdbSysmdClient,
-    endpoint: &str,
-    token: &str,
-) {
+async fn verify_managed_store_lifecycle(app: &axum::Router, sysmd: &CrowdbSysmdClient, endpoint: &str) {
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
                 .uri("/api/stores")
-                .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"store_id":7,"nodes":[1]}"#))
                 .unwrap(),
@@ -74,7 +68,6 @@ async fn verify_managed_store_lifecycle(
             Request::builder()
                 .method(Method::DELETE)
                 .uri("/api/stores/7")
-                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -90,7 +83,6 @@ async fn verify_managed_store_lifecycle(
             Request::builder()
                 .method(Method::DELETE)
                 .uri("/api/stores/7")
-                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -115,21 +107,16 @@ async fn verify_managed_store_lifecycle(
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 #[tokio::test]
-async fn docker_management_uses_existing_bearer_without_unlocking_hardware() {
+async fn docker_root_access_preserves_hardware_restrictions() {
     let token = "m".repeat(64);
-    let app = router(
-        AppState::default()
-            .with_managed_ui(PathBuf::from("/tmp/crowdb-ui"))
-            .with_management_token(token.clone())
-            .unwrap(),
-    );
+    let app = router(AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui")));
     for (authorization, expected) in [
-        (None, StatusCode::UNAUTHORIZED),
-        (Some("Bearer wrong".to_owned()), StatusCode::UNAUTHORIZED),
+        (None, StatusCode::NO_CONTENT),
+        (Some("Bearer wrong".to_owned()), StatusCode::NO_CONTENT),
         (Some(format!("Bearer {token}")), StatusCode::NO_CONTENT),
     ] {
         let mut request = Request::builder()
@@ -151,7 +138,6 @@ async fn docker_management_uses_existing_bearer_without_unlocking_hardware() {
             Request::builder()
                 .method(Method::POST)
                 .uri("/api/racks")
-                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -160,8 +146,8 @@ async fn docker_management_uses_existing_bearer_without_unlocking_hardware() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     for (authorization, expected) in [
-        (None, StatusCode::UNAUTHORIZED),
-        (Some("Bearer wrong".to_owned()), StatusCode::UNAUTHORIZED),
+        (None, StatusCode::CONFLICT),
+        (Some("Bearer wrong".to_owned()), StatusCode::CONFLICT),
         (Some(format!("Bearer {token}")), StatusCode::CONFLICT),
     ] {
         let mut request = Request::builder().method(Method::POST).uri("/api/stores");
@@ -191,6 +177,12 @@ async fn managed_mode_does_not_expose_local_topology_or_mutations() {
         (Method::POST, "/api/racks"),
         (Method::DELETE, "/api/nodes/1"),
         (Method::POST, "/internal/reset"),
+        (Method::POST, "/api/diskdb/scan"),
+        (Method::POST, "/api/diskdb/recalc"),
+        (Method::POST, "/api/diskdb/compact"),
+        (Method::POST, "/api/diskdb/rebuild"),
+        (Method::POST, "/api/nodes/1/disk-groups"),
+        (Method::DELETE, "/api/nodes/1/disk-groups/1/disks/1"),
     ] {
         let response = app
             .clone()
@@ -291,13 +283,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
         log_max_files: 5,
         request_timeout_ms: Some(5_000),
     };
-    let token = "m".repeat(64);
-    let app = router(
-        AppState::default()
-            .with_process_config(&config)
-            .with_management_token(token.clone())
-            .unwrap(),
-    );
+    let app = router(AppState::default().with_process_config(&config));
     sysmd.unregister_service("kv-server", 9).await.unwrap();
     let (code, unavailable) = get_json(app.clone(), "/api/authority").await;
     assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{unavailable}");
@@ -321,7 +307,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     assert_eq!(diskio["monitor"]["pid"], 123, "{snapshot}");
     assert_eq!(diskio["monitor"]["generation"], 2);
     verify_chunk_kv_placement(&app, &sysmd).await;
-    verify_managed_store_lifecycle(&app, &sysmd, &cluster.mgmt_endpoints[0], &token).await;
+    verify_managed_store_lifecycle(&app, &sysmd, &cluster.mgmt_endpoints[0]).await;
 
     drop(cluster);
     verify_unavailable_snapshot(app, &store, &mut status, &run_root).await;

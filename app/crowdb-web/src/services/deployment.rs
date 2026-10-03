@@ -16,6 +16,7 @@ use crate::{
     state::AppState,
 };
 
+mod credentials;
 mod launch;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -88,7 +89,11 @@ pub(super) async fn deploy(
 ) -> Result<(StatusCode, Json<Value>), Failure> {
     validate(&body)?;
     let id = format!("{}-{}", body.kind.name(), body.instance_id);
-    let operation = Operation::claim(&state, vec![format!("node/{node_id}"), format!("service/{id}")])?;
+    let mut claims = vec![format!("node/{node_id}"), format!("service/{id}")];
+    if matches!(body.kind, Kind::AccessServer) {
+        claims.push("access-credentials".into());
+    }
+    let operation = Operation::claim(&state, claims)?;
     let (node, seeds) = inputs(&state, node_id, &id, &body)?;
     // Request cancellation cannot abandon a spawned process before its registration.
     tokio::spawn(async move {

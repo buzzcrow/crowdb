@@ -188,9 +188,7 @@ async fn bare_metal_web_bootstrap_consumes_sealed_topology_input() {
         request_timeout_ms: Some(500),
     };
     let state = AppState::with_runtime_root(ConsoleConfig::default(), upstream.workspace.clone())
-        .with_process_config(&config)
-        .with_management_token("bare-metal-bootstrap-test-token-12345".into())
-        .unwrap();
+        .with_process_config(&config);
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
         .unwrap();

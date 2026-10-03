@@ -55,7 +55,6 @@ pub struct AppState {
     pub authority_seeds: Arc<Vec<String>>,
     pub monitor_status_path: Option<Arc<PathBuf>>,
     pub authority_timeout_ms: u64,
-    pub(crate) management_token: Option<Arc<str>>,
     pub(crate) iceberg_read_token: Option<Arc<str>>,
     pub(crate) launch_registry_path: Option<Arc<PathBuf>>,
 }
@@ -115,7 +114,6 @@ impl AppState {
             authority_seeds: Arc::new(Vec::new()),
             monitor_status_path: None,
             authority_timeout_ms: 3_000,
-            management_token: None,
             iceberg_read_token: None,
             launch_registry_path: None,
         }
@@ -163,20 +161,6 @@ impl AppState {
         let registry = LaunchRegistry::load(path)?;
         let runtime = LaunchRuntime::for_registry(path)?;
         Ok(runtime.start_enabled(&registry).await?.len())
-    }
-
-    /// # Errors
-    /// Rejects a weak or malformed management credential.
-    pub fn with_management_token(mut self, token: String) -> std::result::Result<Self, &'static str> {
-        if !(32..=256).contains(&token.len())
-            || !token
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/=".contains(&byte))
-        {
-            return Err("management token is invalid");
-        }
-        self.management_token = Some(Arc::from(token));
-        Ok(self)
     }
 
     /// Configures the deployment's read-only Catalog credential, retained only on the server.

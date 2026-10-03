@@ -334,7 +334,9 @@ hardware or process mutation routes. Unknown managed API routes report
 unavailable rather than entering an in-memory topology path.
 
 A mutation is accepted only after the required node-side steps and Group 0
-publication are confirmed. Authenticated management routes use a bearer token.
+publication are confirmed. The Console assumes a root operator until UI login is introduced. Container
+mode still rejects topology, deployment, and disk-management writes at the
+backend; logical and Access operations use server-held protocol credentials.
 The SPA calls the Axum backend; it does not talk directly to KV management
 endpoints.
 

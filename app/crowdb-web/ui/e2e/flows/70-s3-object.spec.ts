@@ -5,14 +5,14 @@ import { test, expect } from '../fixtures/realBackend';
 test.use({ actionTimeout: 3000 });
 
 // Baseline: 0.683s (2026-10-03).
-test('S3 signs native requests, preserves keys and bounds object previews', async ({ page }) => {
+test('Root S3 sends credential-free Console requests, preserves keys and bounds object previews', async ({ page }) => {
   await page.route('**/api/access/connections', route => route.fulfill({ json: { iceberg: null, s3: 'http://127.0.0.1:18000', configurable: false } }));
   const requests: Array<{ method: string; path: string; range?: string }> = [];
   await page.route('**/api/access/s3/**', route => {
     const request = route.request();
     const url = new URL(request.url());
-    expect(request.headers().authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=demo\//);
-    expect(request.headers()['x-amz-content-sha256']).toMatch(/^[a-f0-9]{64}$/);
+    expect(request.headers().authorization).toBeUndefined();
+    expect(request.headers()['x-amz-content-sha256']).toBeUndefined();
     requests.push({ method: request.method(), path: url.pathname, range: request.headers().range });
     if (request.method() === 'HEAD') return route.fulfill({ status: 200, headers: { 'content-length': '99999', etag: 'native-etag' } });
     if (!url.search) return route.fulfill({ contentType: 'application/xml', body: url.pathname.endsWith('/s3/')
@@ -23,8 +23,8 @@ test('S3 signs native requests, preserves keys and bounds object previews', asyn
   await page.goto('/?domain=S3');
   await expect(page.getByLabel('s3 endpoint', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Save endpoint', exact: true })).toHaveCount(0);
-  await page.getByLabel('Access key', { exact: true }).fill('demo');
-  await page.getByLabel('Secret key', { exact: true }).fill('secret');
+  await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'List buckets', exact: true }).click();
   await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'demo-bucket', exact: true }).click();
   await page.getByRole('table', { name: 'S3 objects' }).getByRole('button', { name: 'a b/中文.txt', exact: true }).click();
@@ -35,13 +35,13 @@ test('S3 signs native requests, preserves keys and bounds object previews', asyn
   expect(JSON.parse(preview!).preview).toHaveLength(4096);
   await page.getByTestId('domain-iceberg').click();
   await page.getByTestId('domain-s3').click();
-  await expect(page.getByLabel('Secret key', { exact: true })).toHaveValue('secret');
+  await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('table', { name: 'S3 objects' })).toContainText('a b/中文.txt');
 });
 
 
 // Baseline: 0.609s (2026-10-03).
-test('S3 multipart parts use native markers and credential changes clear resource scope', async ({ page }) => {
+test('S3 multipart parts use native markers without credential forms', async ({ page }) => {
   await page.route('**/api/access/connections', route => route.fulfill({ json: { iceberg: null, s3: 'http://127.0.0.1:18000', configurable: false } }));
   await page.route('**/api/access/s3/**', route => {
     const url = new URL(route.request().url());
@@ -56,8 +56,8 @@ test('S3 multipart parts use native markers and credential changes clear resourc
     return route.fulfill({ contentType: 'application/xml', body });
   });
   await page.goto('/?domain=S3');
-  await page.getByLabel('Access key', { exact: true }).fill('demo');
-  await page.getByLabel('Secret key', { exact: true }).fill('secret');
+  await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'List buckets', exact: true }).click();
   await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'parts-bucket', exact: true }).click();
   await page.getByRole('button', { name: 'List multipart uploads', exact: true }).click();
@@ -65,9 +65,8 @@ test('S3 multipart parts use native markers and credential changes clear resourc
   await page.getByRole('button', { name: 'Next parts page', exact: true }).click();
   await expect(page.locator('main aside pre')).toContainText('101');
   await expect(page.getByRole('button', { name: 'Next parts page', exact: true })).toHaveCount(0);
-  await page.getByLabel('Secret key', { exact: true }).fill('different-secret');
-  await expect(page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'S3 object browser', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
+
 });
 
 test('S3 cluster deployment retry never offers an endpoint editor', async ({ page }) => {
@@ -80,8 +79,8 @@ test('S3 cluster deployment retry never offers an endpoint editor', async ({ pag
   ready = true;
   await page.getByRole('button', { name: 'Retry cluster S3' }).click();
   await expect(page.getByRole('button', { name: 'Retry cluster S3' })).toHaveCount(0);
-  await page.getByLabel('Access key', { exact: true }).fill('demo');
-  await page.getByLabel('Secret key', { exact: true }).fill('secret');
+  await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'List buckets' })).toBeEnabled();
 });
 
@@ -98,8 +97,8 @@ test('S3 bounds bucket rendering, accumulated objects and XML responses', async 
     return route.fulfill({ contentType: 'application/xml', body: `<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>${start + 100}</NextContinuationToken>${Array.from({ length: 100 }, (_, i) => `<Contents><Key>object-${start + i}</Key><Size>1</Size></Contents>`).join('')}</ListBucketResult>` });
   });
   await page.goto('/?domain=S3');
-  await page.getByLabel('Access key', { exact: true }).fill('demo');
-  await page.getByLabel('Secret key', { exact: true }).fill('secret');
+  await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Secret key', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'List buckets' }).click();
   const buckets = page.getByRole('navigation', { name: 'S3 buckets' });
   await expect(buckets.getByRole('button')).toHaveCount(100);

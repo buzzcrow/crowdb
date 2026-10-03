@@ -106,8 +106,8 @@ test('Unavailable cluster catalog offers retry without a connection wizard', asy
   await expect(page.getByRole('button', { name: 'Retry catalog' })).toHaveCount(0);
 });
 
-test('Catalog writes use a separate session token and clear back to automatic reading', async ({ page }) => {
-  const writes: string[] = [];
+test('Root catalog writes require no browser credential', async ({ page }) => {
+  const writes: Array<string | undefined> = [];
   await page.route('**/api/access/connections', route => route.fulfill({ json: { iceberg: 'http://127.0.0.1:17000', iceberg_ready: true, s3: null, configurable: false } }));
   await page.route('**/api/access/iceberg/**', route => {
     const request = route.request();
@@ -119,16 +119,10 @@ test('Catalog writes use a separate session token and clear back to automatic re
   });
   await page.goto('/?domain=Iceberg');
   await expect(page.getByText('No namespaces in this catalog.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Create namespace', exact: true })).toHaveCount(0);
-  await page.getByText('Catalog write authorization', { exact: true }).click();
-  await page.getByLabel('Catalog write token', { exact: true }).fill('native-write-credential');
-  await page.getByRole('button', { name: 'Use catalog write token', exact: true }).click();
+  await expect(page.getByLabel('Catalog write token', { exact: true })).toHaveCount(0);
   await page.getByLabel('Namespace name', { exact: true }).fill('demo');
   await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Namespace created' })).toBeVisible();
-  expect(writes).toEqual(['Bearer native-write-credential']);
-  await page.getByRole('button', { name: 'Clear catalog write token', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Create namespace', exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('Catalog write token', { exact: true })).toHaveValue('');
-  await expect(page.getByText('No namespaces in this catalog.')).toBeVisible();
+  expect(writes).toEqual([undefined]);
+  await expect(page.getByRole('button', { name: 'Create namespace', exact: true })).toBeVisible();
 });

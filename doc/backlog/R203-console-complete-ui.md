@@ -377,10 +377,11 @@ Strip seq 8: EC 4+2 (example only; profile determines allowed placement)
   responses from cluster A must not appear on cluster B's page.
 - UI login/connection status shows effective capabilities. S3 signing credentials
   and Iceberg read/write/management roles remain separate under existing protocols;
-  a management token does not automatically grant writer permissions. Server-held
-  secrets are not returned to the browser or written to Group 0. Client credential
-  entry and storage policies must follow the selected deployment's authentication
-  contract.
+  the Console assumes root until UI login is implemented and supplies deployment
+  credentials from the server. No access-key, Catalog-token or management-token
+  form is required. Secrets are not returned to the browser or stored in plaintext
+  in Group 0. Container mode rejects topology, deployment and Capacity disk
+  management writes while allowing root logical and data operations.
 - The backend supplies available capabilities and limits; the frontend cannot
   infer them solely from domain or deployment strings. Apply `readonly`, Container
   hardware read-only restrictions, the current authenticated role, and protocol/profile
@@ -529,8 +530,9 @@ Work items:
   unauthorized request in the backend. Integration test
 - **A20a / Fixed cluster Catalog**: Configured Catalog and server reader → enter
   Iceberg without browser credentials → load the resource tree automatically,
-  keep the credential server-side, refuse endpoint changes and unauthenticated
-  mutations; an unavailable Catalog shows retry without connection inputs.
+  keep credentials server-side, refuse endpoint changes, and permit root metadata
+  mutations through the deployment writer; an unavailable Catalog shows retry
+  without connection inputs.
   Integration test and E2E test
 - **A21 / Shared Container UI**: Start single-node Container → visit all seven
   domains, perform authorized user data CRUD, and directly request physical
@@ -583,14 +585,9 @@ Additional acceptance for the seven-domain design:
 
 #### Known issues / follow-up acceptance
 
-- In the existing standalone deployment on port 9090, Rack/Node/Disk topology is
-  readable and DiskDB processes are alive, but the Group 0 instance query returns
-  empty results. DiskDB logs repeatedly report missing binds for owned DiskGroups.
-  Registration/ownership/bind state needs diagnosis. This round preserved existing
-  data and processes and did not conceal the issue with automatic reassignment.
-  Registration and actual Chunk placement passed verification in the isolated
-  managed service chain; this does not establish that Capacity in the existing
-  deployment has recovered.
+- Standalone DiskDB registration and Zone bitmap observation have recovered after
+  restoring missing data-group binds. New ownership assignment requires a valid
+  data-group binding; existing bindings remain unchanged.
 - Docker image builds are affected by proxy connection refusal; acceptance inside
   the actual image still needs to be rerun.
 - Further acceptance for Partial recovery across multiple owners, layout changes,
