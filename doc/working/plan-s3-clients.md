@@ -17,8 +17,8 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
 - [x] **Applicable quality gates**: library/server tests, shared encoding/auth tests, official embedded-copy error test, fmt/clippy, Python compilation, shell syntax and release policy checks pass.
 - [x] **Third accumulated suite**: rebuilt current services and ran the canonical full S3 task without focused selectors. All 32 cases pass with zero ignored, including accumulated thousand-key deletion and six service restarts.
 - [x] **Concurrent client progress**: fixed session-CAS contention and orphan generation poisoning. Concurrency-10 CLI and another complete 32-case accumulated suite with concurrency 10 pass on the original 1 MiB receive budget.
-- [ ] **Final container acceptance**: rerun the canonical container gate after the MPU repair and completed storage routing.
-- [ ] **Optional SDK reruns**: run Java, Go and JavaScript recipes last, sequentially; keep them outside regular CI/container/release gates.
+- [x] **Final container acceptance**: canonical gate passes after explicitly bootstrapping instance 1 onto nonzero storage group 1 in the container template.
+- [~] **Optional SDK reruns**: run Java, Go and JavaScript recipes last, sequentially; keep them outside regular CI/container/release gates.
 - [ ] **Completion cleanup**: retain requirement/index/plan until all positive client and full-stack gates pass, then remove them in the cleanup commit.
 
 ## Verification
@@ -29,6 +29,19 @@ Goal: accept reproducible client workflows with verified integrity and truthful 
   This is the third complete accumulated success; it also covers the newly
   completed typed ChunkDB slot-routing implementation. Default concurrency
   and optional SDK reruns are still separate pending checks.
+- Final container gate builds the image but fails before ChunkDB readiness.
+  An unchanged retained-log reproduction confirms `slot_bootstrap: None` and
+  `slot map is not initialized` at `/chunkdb/slot_head/storage`. The template
+  omitted initialization required by the completed routing work. Add the same
+  explicit instance-1/nonzero-group-1 bootstrap used by the real-stack harness.
+  Private service logs are retained under `container-slot-bootstrap` in the
+  persistent failure directory. Re-run the canonical gate; no startup deadline
+  or readiness assertion is changed.
+- Corrected template passes `pixi run test-single-node-container`: release
+  policy/image checks, interrupted bootstrap, empty/anonymous boot, browser and
+  S3/Iceberg/CLI/rclone writes, chunk layouts, seven service crash/hang recovery
+  paths, persisted-volume restart, exact client reads, identity/manifest/profile
+  rejection and monitor lifecycle. No image is pushed.
 
 - Post-handoff verification on 2026-10-03 uses implementation `139149b7`.
   The Python slow-upload skip was removed by that implementation, but both Rust
