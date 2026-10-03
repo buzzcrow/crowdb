@@ -24,9 +24,12 @@
 // cannot reference (the mapping slot was already swapped).
 #pragma once
 
+#include "crowdb-tree/memtable/allocation.h"
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -36,6 +39,8 @@ namespace crowdb::tree
 class EpochManager
 {
   private:
+    struct Lifetime;
+
     // Per-thread participant slot. Owned by the manager (allocated lazily on a
     // thread's first enter(), linked into participants_, freed at destruction).
     // Cache-line padded so readers on different threads don't false-share.
@@ -49,6 +54,17 @@ class EpochManager
   public:
     using Deleter = std::function<void(void *)>;
 
+    // Embedded before publication, so handing off ownership cannot allocate or
+    // invoke a destructor on the apply path. The callback destroys its ticket.
+    struct Deferred
+    {
+        Deferred *next                       = nullptr;
+        uint64_t  epoch                      = 0;
+        void (*destroy)(Deferred *) noexcept = nullptr;
+    };
+
+    void defer(Deferred *entry) noexcept;
+
     // RAII reader guard. Holds an epoch open until destroyed. Thread-bound: a
     // Guard must be released on the thread that created it (do not move across
     // threads).
@@ -57,11 +73,11 @@ class EpochManager
       public:
         Guard() = default;
 
-        explicit Guard(Participant *p) : p_(p)
+        explicit Guard(Participant *p, std::shared_ptr<Lifetime> lifetime) : p_(p), lifetime_(std::move(lifetime))
         {
         }
 
-        Guard(Guard &&o) noexcept : p_(o.p_)
+        Guard(Guard &&o) noexcept : p_(o.p_), lifetime_(std::move(o.lifetime_))
         {
             o.p_ = nullptr;
         }
@@ -70,8 +86,9 @@ class EpochManager
         {
             if (this != &o) {
                 release();
-                p_   = o.p_;
-                o.p_ = nullptr;
+                p_        = o.p_;
+                lifetime_ = std::move(o.lifetime_);
+                o.p_      = nullptr;
             }
             return *this;
         }
@@ -85,8 +102,9 @@ class EpochManager
         }
 
       private:
-        void         release();
-        Participant *p_ = nullptr;
+        void                      release();
+        Participant              *p_ = nullptr;
+        std::shared_ptr<Lifetime> lifetime_;
     };
 
     EpochManager();
@@ -110,6 +128,11 @@ class EpochManager
     // Force a reclamation sweep. Returns the number of objects freed.
     size_t try_reclaim();
 
+    [[nodiscard]] const std::shared_ptr<AllocationCounter> &memtable_allocation() const
+    {
+        return memtable_allocation_;
+    }
+
     // Diagnostics.
     [[nodiscard]] size_t pending_retired();
     [[nodiscard]] size_t active_guards();
@@ -119,6 +142,7 @@ class EpochManager
     Participant *participant_for_this_thread();
     size_t       reclaim_locked();   // caller holds reclaim_mu_
     uint64_t     min_active_epoch(); // oldest epoch any reader might still see
+    size_t       reclaim_deferred_locked();
 
     struct Retired
     {
@@ -127,9 +151,11 @@ class EpochManager
         Deleter  deleter;
     };
 
-    const uint64_t             id_; // stable key for per-thread cache
-    std::atomic<uint64_t>      global_epoch_{1};
-    std::atomic<Participant *> participants_{nullptr}; // lock-free push list head
+    std::shared_ptr<AllocationCounter> memtable_allocation_ = std::make_shared<AllocationCounter>(0);
+    std::shared_ptr<Lifetime>          lifetime_;
+    const uint64_t                     id_; // stable key for per-thread cache
+    std::atomic<uint64_t>              global_epoch_{1};
+    std::atomic<Participant *>         participants_{nullptr}; // lock-free push list head
 
     // Recursive: a retired object's deleter can legitimately trigger another
     // retire() on this *same* EpochManager before this call's reclaim_locked()
@@ -138,8 +164,10 @@ class EpochManager
     // recycle_segment_if_empty() -> epoch.retire_object(seg) -- crowdb-tree.cpp/
     // mapping_table.cpp share this one EpochManager). A plain mutex would
     // deadlock on that same-thread re-entry.
-    std::recursive_mutex reclaim_mu_; // guards retired_ (writer side)
-    std::vector<Retired> retired_;
+    std::recursive_mutex    reclaim_mu_; // guards retired_ (writer side)
+    std::vector<Retired>    retired_;
+    std::atomic<Deferred *> deferred_{nullptr};
+    Deferred               *collected_ = nullptr;
 };
 
 } // namespace crowdb::tree

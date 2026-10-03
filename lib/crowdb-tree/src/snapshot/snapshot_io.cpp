@@ -157,7 +157,7 @@ Status snapshot_export_begin_native(Crowdbtree &tree, size_t chunk_bytes, std::u
 
 Status snapshot_export_begin(Crowdbtree &tree, snapshot_format fmt, size_t chunk_bytes,
                              std::unique_ptr<SnapshotExport> *out)
-{
+try {
     switch (fmt) {
     case snapshot_format::kPortable:
         return snapshot_export_begin_portable(tree, chunk_bytes, out);
@@ -166,6 +166,12 @@ Status snapshot_export_begin(Crowdbtree &tree, snapshot_format fmt, size_t chunk
     default:
         return Status::not_supported("snapshot export: unknown format");
     }
+}
+catch (const std::bad_alloc &) {
+    return Status::resource_exhausted("snapshot export allocation failed");
+}
+catch (const std::exception &error) {
+    return Status::internal_error(error.what());
 }
 
 Status SnapshotExport::next_chunk(std::string *out, bool *done)

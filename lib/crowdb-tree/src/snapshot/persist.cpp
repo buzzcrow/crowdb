@@ -482,6 +482,10 @@ struct Crowdbtree::SnapshotPrepareContext
 Status Crowdbtree::prepare_snapshot_locked(PreparedSnapshot *out, std::vector<PrefetchedPage> prefetched,
                                            std::set<uint32_t> relocation_blocks)
 {
+    if (publication_incomplete_) {
+        return Status::unavailable("flush publication requires repair");
+    }
+
     PageStore *store = opt_.page_store;
     if (store == nullptr) {
         return Status::invalid_argument("snapshot: no page_store");

@@ -46,6 +46,9 @@ class MappingTable
     MappingTable(const MappingTable &)            = delete;
     MappingTable &operator=(const MappingTable &) = delete;
 
+    // Both owners must exclude operations before exchanging generations.
+    void swap_quiescent(MappingTable &other) noexcept;
+
     // Reader: lock-free atomic load of the raw packed slot word.
     // Use slot_word::is_empty / is_resident / is_unloaded to classify.
     [[nodiscard]] uint64_t get_word(uint64_t page_id) const;

@@ -157,7 +157,8 @@ TEST(MemTableExternal, SplitHighestSlotWins)
     std::atomic<int>     drops2{0};
     std::vector<uint8_t> v1(64, 0xA1);
     std::vector<uint8_t> v2(64, 0xA2);
-    MemTable             mt;
+    EpochManager         epoch;
+    MemTable             mt(0, &epoch);
     mt.upsert_external("k", 3, 0, buffer::wrap_external(v1.data(), v1.size(), &drops1, count_drop));
     EXPECT_EQ(drops1.load(), 0);
     // Lower slot rejected; incoming buffer freed immediately.
@@ -166,6 +167,7 @@ TEST(MemTableExternal, SplitHighestSlotWins)
     EXPECT_EQ(drops1.load(), 0);
     // Higher slot wins; old entry freed.
     EXPECT_TRUE(mt.upsert_external("k", 7, 0, buffer::wrap_external(v2.data(), v2.size(), &drops2, count_drop)));
+    epoch.try_reclaim();
     EXPECT_EQ(drops1.load(), 1);
     std::string cell;
     EXPECT_TRUE(get_cell(mt, "k", &cell));
@@ -174,13 +176,13 @@ TEST(MemTableExternal, SplitHighestSlotWins)
     EXPECT_EQ(static_cast<uint8_t>(cv.value().data()[0]), 0xA2U);
 }
 
-TEST(MemTableExternal, SplitDrainMaterializesContiguous)
+TEST(MemTableExternal, SplitSnapshotMaterializesContiguous)
 {
     std::atomic<int>     drops{0};
     std::vector<uint8_t> val(512, 0x5A);
     MemTable             mt;
     mt.upsert_external("k", 10, 0, buffer::wrap_external(val.data(), val.size(), &drops, count_drop));
-    auto drained = mt.drain_up_to(10);
+    auto drained = mt.snapshot();
     ASSERT_EQ(drained.size(), 1U);
     EXPECT_EQ(drained[0].key, "k");
     EXPECT_EQ(drained[0].slot, 10U);
@@ -188,7 +190,7 @@ TEST(MemTableExternal, SplitDrainMaterializesContiguous)
     EXPECT_EQ(cv.slot(), 10U);
     EXPECT_EQ(cv.value().size(), 512U);
     EXPECT_EQ(std::memcmp(cv.value().data(), val.data(), 512), 0);
-    EXPECT_EQ(drops.load(), 1); // drained -> external buffer freed
+    EXPECT_EQ(drops.load(), 0); // source still owns the external payload
 }
 
 TEST(MemTableExternal, SplitDeleteRoundTrip)
@@ -305,7 +307,7 @@ TEST(ApplyExternal, IntraBatchLastKeyWins)
     uint64_t    slot;
     std::string value;
     EXPECT_TRUE(t->get("k", &slot, &value));
-    EXPECT_EQ(static_cast<uint8_t>(value.data()[0]), 0xBBU);
+    EXPECT_EQ(static_cast<uint8_t>(value[0]), 0xBBU);
 }
 
 TEST(ApplyExternal, DeleteViaExternalOp)

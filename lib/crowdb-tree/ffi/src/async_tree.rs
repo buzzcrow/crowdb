@@ -41,10 +41,8 @@ impl AsyncCrowdbtree {
         Arc::clone(&self.inner)
     }
 
-    /// Drives the engine's io_uring reactor directly (Phase
-    /// 3) -- no `spawn_blocking`, since flush never touches the page
-    /// store (only the in-memory L1), this always resolves on the very
-    /// first poll.
+    /// Await the native flush completion. The native worker waits for the
+    /// captured MemTable writers without blocking this executor thread.
     pub async fn flush(&self) -> Result<(), CtError> {
         let fut = unsafe { sys::ct_flush_async(self.inner.as_ptr()) };
         drive_ct_future(FutureGuard(fut), &self.inner, FutureKind::Flush).await?;

@@ -45,7 +45,8 @@ This document specifies the storage engine abstraction used by CROWDB learners. 
 
 - Multi-version (MVCC) reads. CROWDB is single-version per key; time-travel is not supported.
 - Cross-engine queries. The engine is per-group.
-- Transactions across keys beyond a single batch. Batch-level atomicity only.
+- Transactions or snapshot isolation across keys. Batch completion certifies all
+  key publications; ordinary reads may observe partial in-flight batches.
 - Pluggable compression/encryption. Each engine handles its own internals.
 
 ---
@@ -54,16 +55,16 @@ This document specifies the storage engine abstraction used by CROWDB learners. 
 
 The engine encapsulates everything below the consensus / learner layer:
 
-| Responsibility | Notes |
-| --- | --- |
-| Persist (or hold in memory) the current `(slot, value)` for every live key | Single version, tombstones for deletions |
-| Apply a `(slot, batch)` atomically | Idempotent for slots ≤ resolved-slot of each affected key |
-| Serve point reads with their resolved-slot | Used by leader linearizable reads, follower RYW |
-| Serve ordered range scans | Required for `Scan` API |
-| Export and import snapshots | Streamable; resumable on the consumer side |
-| Provide a deterministic state digest or comparison | For test-time validation |
-| Track watermarks for compaction | `snapshot_slot`, `safe_slot` (provided by learner) |
-| Persist snapshot with slot index | The engine persists its KV state and `last_applied_slot` to a snapshot file; on restart, it loads this snapshot to skip re-applying already-applied slots |
+| Responsibility                                                             | Notes                                                                                                                                                     |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Persist (or hold in memory) the current `(slot, value)` for every live key | Single version, tombstones for deletions                                                                                                                  |
+| Apply a `(slot, batch)` to completion                                      | Per-key publication; replay is idempotent                                                                                                                 |
+| Serve point reads with their resolved-slot                                 | Used by leader linearizable reads, follower RYW                                                                                                           |
+| Serve ordered range scans                                                  | Required for `Scan` API                                                                                                                                   |
+| Export and import snapshots                                                | Streamable; resumable on the consumer side                                                                                                                |
+| Provide a deterministic state digest or comparison                         | For test-time validation                                                                                                                                  |
+| Track watermarks for compaction                                            | `snapshot_slot`, `safe_slot` (provided by learner)                                                                                                        |
+| Persist snapshot with slot index                                           | The engine persists its KV state and `last_applied_slot` to a snapshot file; on restart, it loads this snapshot to skip re-applying already-applied slots |
 
 The engine does **not** know about Paxos, terms, ballots, leaders, or the network. It receives `(slot, batch)` and applies; that is the entire write contract.
 
@@ -121,9 +122,14 @@ Tombstones occupy space until compacted away (§7).
 
 ### 3.2 Why single-version
 
-CROWDB does not provide repeatable reads or time-travel queries. Snapshot reads use the `AtSlot(N)` mode by waiting for the engine's contiguous-applied to reach `N`, then reading the current single version.
+CROWDB does not provide repeatable reads or time-travel queries. `AtSlot(N)` waits
+for the engine's contiguous-applied frontier to reach `N`, then reads current data.
 
-`Scan(AtSlot(N))` returns the engine state *after* applying everything up through the contiguous-applied frontier of the serving replica, which the replica advances to ≥ `N` before serving. If a slot `M > N` has already been applied for some key `k`, the value returned for `k` is the value at `M`, not the value at `N`. This still satisfies linearizability: slot `M` linearizes after slot `N`, so the read at "logical instant `N`" is consistent with reading at the later linearization point `M`. Both are valid linearization points for a single point in real time. `AtSlot(N)` is therefore a *lower bound on freshness*, not a snapshot pin: single-version reads always reflect the latest applied value.
+`Scan(AtSlot(N))` has a freshness precondition, without a common snapshot time.
+Each key returns its highest observed slot, which may exceed `N`; different keys
+can reflect different times and partial later batches. This does not establish
+one linearization point for the whole scan. Stable exports use the separate
+covered-prefix snapshot interface.
 
 If true historical snapshots are ever required, MVCC is a future extension. The single-version restriction comes from design-crowdb-kv.md §1 / §5.2](design-crowdb-kv.md).
 
@@ -157,7 +163,7 @@ After all tuples are processed, advance the engine's `max_applied = max(max_appl
 
 ### 4.3 Atomicity
 
-The whole `apply` is atomic with respect to readers: a reader either sees all of the batch's effects or none. This is required so that a `Scan(Linearizable)` does not observe a partial batch as the "current state".
+Batch completion is recorded only after every accepted key mutation has been published. Ordinary tree reads and scans may observe part of an in-flight batch; they do not promise a common snapshot version across keys. Equal-slot replay and intra-batch last-occurrence-wins remain required. Durable snapshot export is a separate, covered-prefix operation.
 
 In-memory engines can hold a write lock for the duration of the batch. File-based engines can use a transactional write group. crowdb-tree's btree operations on a single batch can ride on its own concurrency control.
 
@@ -266,7 +272,7 @@ The slot is returned because callers (the learner) need it to assemble responses
 
 Returns an iterator of live entries (no tombstones) within `range`, in key order, up to `limit` items. The iterator may be backed by a btree cursor (in crowdb-tree) or a sorted-tree iterator (in-memory).
 
-The iterator must reflect a consistent point-in-time view of the engine. In-memory engines use a snapshot-on-iterator-create. File engines and crowdb-tree use their natural snapshot or copy-on-write semantics. The point in time corresponds to "after some `apply` calls and before others", which is always a valid linearization point given the consensus layer's slot ordering.
+The ordinary iterator returns the highest version it observes for each key, in key order, without duplicates. Different keys may reflect different times or part of a concurrent batch. `AtSlot(N)` remains a freshness precondition at the serving layer; it does not pin all returned keys to a common version. Flush must preserve continuous visibility of stable keys and the lifetime of borrowed tuples. Stable export uses the engine's separate snapshot interface.
 
 ### 5.3 `multi_get(keys) → map<key, (slot, value)>`
 

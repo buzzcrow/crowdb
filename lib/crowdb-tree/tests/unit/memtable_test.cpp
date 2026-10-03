@@ -99,21 +99,21 @@ TEST(MemTable, DurableFloorDrops)
     EXPECT_EQ(mt.count(), 1U);
 }
 
-TEST(MemTable, DrainUpToPrefix)
+TEST(MemTable, PrefixIterationPreservesSource)
 {
     MemTable mt;
     put_op(mt, "a", 1, "x");
     put_op(mt, "b", 5, "y");
     put_op(mt, "c", 3, "z");
     put_op(mt, "d", 9, "w");
-    auto drained = mt.drain_up_to(5);
-    ASSERT_EQ(drained.size(), 3U);
-    EXPECT_EQ(drained[0].key, "a");
-    EXPECT_EQ(drained[1].key, "b");
-    EXPECT_EQ(drained[2].key, "c");
-    EXPECT_EQ(mt.count(), 1U);
+    std::string keys;
+    for (auto cur = mt.prefix_cursor(5); cur.valid(); cur.advance()) {
+        keys += cur.key().to_string();
+    }
+    EXPECT_EQ(keys, "abc");
+    EXPECT_EQ(mt.count(), 4U);
     std::string cell;
-    EXPECT_FALSE(get_cell(mt, "a", &cell));
+    EXPECT_TRUE(get_cell(mt, "a", &cell));
     EXPECT_TRUE(get_cell(mt, "d", &cell));
     EXPECT_EQ(slot_of(cell), 9U);
 }
@@ -141,8 +141,7 @@ TEST(MemTable, BytesAccounting)
     EXPECT_GT(b1, 0U);
     put_op(mt, "key", 2, "value-longer");
     EXPECT_NE(mt.approx_bytes(), 0U);
-    (void)mt.drain_up_to(100);
-    EXPECT_EQ(mt.approx_bytes(), 0U);
+    EXPECT_EQ(mt.approx_bytes(), 3U + kCellHeaderSize + 12U);
 }
 
 TEST(MemTable, HotKeyCollapse)

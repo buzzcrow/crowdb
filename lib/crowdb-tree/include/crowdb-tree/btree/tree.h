@@ -8,12 +8,17 @@
 
 #include "crowdb-common/metrics/metrics.h"
 #include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/btree/diagnostics.h"
+#include "crowdb-tree/btree/read_result.h"
 #include "crowdb-tree/btree/scan_packed.h"
 #include "crowdb-tree/config.h"
 #include "crowdb-tree/epoch.h"
 #include "crowdb-tree/maptable/mapping_table.h"
 #include "crowdb-tree/maptable/page.h"
 #include "crowdb-tree/memtable/memtable.h"
+#include "crowdb-tree/memtable/source.h"
+#include "crowdb-tree/snapshot/native_frame.h"
+#include "crowdb-tree/snapshot/prepared.h"
 #include "crowdb-tree/snapshot/snapshot.h"
 #include "crowdb-tree/status.h"
 
@@ -59,365 +64,6 @@ struct batch_op
 struct Batch
 {
     std::vector<batch_op> ops;
-};
-
-struct scan_entry
-{
-    std::string key;
-    uint64_t    slot;
-    std::string value;
-    bool        tombstone = false;
-};
-
-struct get_result
-{
-    bool        found = false;
-    uint64_t    slot  = 0;
-    std::string value;
-};
-
-// Zero-copy point-read result (plan-tree #5 B3 remaining). `value()` is a
-// borrowed `Slice` for an L1 hit resolved to a non-overflow cell -- it
-// points directly into the resident leaf's frame, kept alive for this
-// object's lifetime by the epoch guard it owns (no copy). An L0 hit (R50:
-// the MemTable's skip-list node is epoch-protected the same way an L1 frame
-// is) also borrows directly off the node's cell version. An overflow value
-// (assembled from multiple pages, no single frame to borrow) is materialized
-// into an owned `buffer` instead; `value()` is transparent to the caller
-// either way.
-//
-// Move-only (like `EpochManager::Guard`): copying would either double-free
-// the guard or silently let a caller outlive it. `get()`/`multi_get()` are
-// thin wrappers over `get_view()` that clone `value()` into a `std::string`
-// and let the guard drop before returning, preserving their existing owned-
-// copy contract for every other caller.
-class GetView
-{
-  public:
-    GetView() = default;
-
-    // Not defaulted (found this the hard way, via
-    // ASan): `owned_` (a `buffer`) relocates its bytes on move when small
-    // enough to be inline (SBO, buffer::kInlineCap) -- but `value_` is a
-    // *separate* field, a plain Slice pointer+len that a defaulted move
-    // would blindly copy byte-for-byte, still aliasing the just-moved-from
-    // `owned_`'s old (now-stale, for an inline buffer) storage. Any
-    // resolved GetView whose value is owned (owned_ non-empty) must have
-    // `value_` re-derived from *this* object's own (possibly relocated)
-    // `owned_` after the move -- a borrowed (frame-pointing) value_ is
-    // untouched either way, since it aliases external storage the move
-    // never touches.
-    GetView(GetView &&o) noexcept
-        : guard_(std::move(o.guard_)),
-          found_(o.found_),
-          slot_(o.slot_),
-          value_(o.value_),
-          owned_(std::move(o.owned_)),
-          pins_(std::move(o.pins_))
-    {
-        if (!owned_.empty()) {
-            value_ = owned_.slice();
-        }
-    }
-
-    GetView &operator=(GetView &&o) noexcept
-    {
-        if (this != &o) {
-            release_pins();
-            guard_ = std::move(o.guard_);
-            found_ = o.found_;
-            slot_  = o.slot_;
-            value_ = o.value_;
-            owned_ = std::move(o.owned_);
-            pins_  = std::move(o.pins_);
-            if (!owned_.empty()) {
-                value_ = owned_.slice();
-            }
-        }
-        return *this;
-    }
-
-    GetView(const GetView &)            = delete;
-    GetView &operator=(const GetView &) = delete;
-
-    ~GetView()
-    {
-        release_pins();
-    }
-
-    [[nodiscard]] bool found() const
-    {
-        return found_;
-    }
-
-    [[nodiscard]] uint64_t slot() const
-    {
-        return slot_;
-    }
-
-    // Valid only while this GetView is alive.
-    [[nodiscard]] Slice value() const
-    {
-        return value_;
-    }
-
-    // R6 debug-only: the frame address a borrowed value points into, or
-    // nullptr for an owned (L0 / overflow) value. Used by tests to verify
-    // the get_async slow path returns a borrowed Slice (no copy).
-    [[nodiscard]] const uint8_t *frame_base() const
-    {
-        return owned_.empty() ? value_.bytes() : nullptr;
-    }
-
-  private:
-    friend class Crowdbtree;
-    EpochManager::Guard guard_; // keeps an L1 hit's frame resident
-    bool                found_ = false;
-    uint64_t            slot_  = 0;
-    Slice               value_; // borrowed (L1) or owned_.slice() (L0 / overflow)
-    buffer              owned_; // backing storage when the value can't be borrowed
-    // R6: cross-thread pins holding the borrowed value's chain alive after
-    // the epoch guard is released (get_async slow path). Empty on the fast
-    // path (guard_ alone keeps the frame resident) and for owned values.
-    std::vector<PageBase *> pins_;
-    // R6: the chain head whose frame/entries back the borrowed value_, set
-    // by try_get_view_no_load when the value is borrowed (not L0/overflow).
-    // Used by the slow path to walk + pin the chain before releasing guard_.
-    PageBase *borrowed_chain_head_ = nullptr;
-
-    void release_pins()
-    {
-        for (PageBase *p : pins_) {
-            p->unpin();
-        }
-        pins_.clear();
-    }
-};
-
-// Result of a cadence-driven compact_sparse_blocks() pass (R129). Snapshot
-// folding drops eligible tombstones during every snapshot; this struct
-// reports the block-level relocation and deletion outcome of one compaction
-// pass.
-struct MergeGcStats
-{
-    uint64_t blocks_selected = 0; // sparse source blocks chosen for relocation
-    uint64_t pages_relocated = 0; // resident + unloaded pages moved
-    uint64_t bytes_relocated = 0; // bytes written for relocated extents
-    uint64_t blocks_deleted  = 0; // source blocks unlinked after commit
-};
-
-// Point-in-time diagnostics snapshot: batches every
-// cheap (O(1)) internal counter worth exposing to an operator into one
-// struct, so a caller/FFI/console poll costs one call instead of many
-// small ones. Deliberately excludes anything that requires walking the
-// tree (height()/leaf_count()) or the full keyspace -- every field
-// here is already an atomic counter or BufferPool::stats(), also O(1).
-struct EngineStats
-{
-    uint64_t last_applied_slot         = 0;     // durable watermark (see last_applied_slot())
-    uint64_t contiguous_slot           = 0;     // gap-free-applied watermark (see contiguous_slot())
-    uint64_t gc_watermark              = 0;     // min(snapshot_slot, safe_slot) (see gc_watermark())
-    bool     io_failed                 = false; // latched media fault (see io_failed())
-    uint64_t snapshot_pages_written    = 0;     // last snapshot()'s dirty base pages written
-    uint64_t snapshot_pages_total      = 0;     // cumulative pages written across all snapshots
-    uint64_t snapshot_segments_written = 0;     // last snapshot()'s dirty mapping segments written
-    // BufferPool::Stats as of this call -- see buffer_pool.h.
-    uint64_t buffer_pool_hits       = 0;
-    uint64_t buffer_pool_misses     = 0;
-    uint64_t buffer_pool_evictions  = 0;
-    uint64_t buffer_pool_writebacks = 0;
-    uint32_t buffer_pool_resident   = 0;
-    uint32_t buffer_pool_dirty      = 0;
-    uint32_t buffer_pool_used       = 0;
-    uint32_t buffer_pool_num_frames = 0;
-    // MemTable (L0) / flush / L1 cumulative counters (monotonic since open).
-    uint64_t mt_upsert_total     = 0; // apply() writes into L0
-    uint64_t mt_get_total        = 0; // get() lookups in L0
-    uint64_t mt_get_hit_total    = 0; // L0 lookups that found a cell
-    uint64_t flush_drain_total   = 0; // drain_all_frozen_locked calls
-    uint64_t flush_entries_total = 0; // entries drained from L0 to L1
-    uint64_t snapshot_total      = 0; // snapshot() calls (durable checkpoints)
-    uint64_t l1_get_total        = 0; // get() lookups that descended to L1
-    uint64_t l1_get_hit_total    = 0; // L1 lookups that found a cell
-    uint64_t map_lookup_total    = 0; // mapping table lookups
-    uint64_t demand_load_total   = 0; // demand-load page faults
-    uint64_t leaf_count          = 0; // live leaf pages (O(1) atomic)
-    uint64_t inner_count         = 0; // live inner pages (O(1) atomic)
-};
-
-// Per-step scan profile: each step's aggregate over the window since the last
-// scan_profile() call (the underlying LatencySummary handles are flushed, so
-// this is a destructive read -- the window resets on each call). `count` is the
-// number of scans in the window; `entries` is the total entries returned. Each
-// step's `sum_ns` / `max_ns` cover only that step; `avg_ns` is sum_ns / count.
-// Steps: l1 (B-tree descent + per-leaf resolve), merge (L0+L1 advance +
-// winner + decode), total (whole scan).
-struct ScanProfile
-{
-    uint64_t count   = 0; // scans in the window
-    uint64_t entries = 0; // total entries returned
-
-    struct Step
-    {
-        uint64_t sum_ns = 0;
-        uint64_t max_ns = 0;
-        uint64_t avg_ns = 0; // sum_ns / count (filled by scan_profile)
-    };
-
-    Step l0;
-    Step l1;
-    Step merge;
-    Step total;
-};
-
-// One durable blob to write at a fixed offset, computed ahead of time by
-// prepare_snapshot_locked() (persist.cpp) so the actual store->write_at()/
-// submit_write() call is a pure I/O op with no further encoding logic --
-// shared by snapshot()'s synchronous writes and snapshot_async()'s async
-// ones.
-struct PreparedSnapshotWrite
-{
-    uint64_t             addr = 0;
-    std::vector<uint8_t> blob; // already IU-padded
-};
-
-// A page write plus enough identity to safely mark the *live* page durable
-// once the write actually lands (see prepare_snapshot_locked's doc comment
-// on why this can't happen eagerly at prepare time for the async path).
-// `page` is never dereferenced except as an opaque identity check under
-// write_mutex_ (mapping_.get_resident(page_id) == page) -- it may have been retired
-// and its frame reused by the time the write completes (a concurrent
-// consolidate/flush/split replaced this page_id's mapping entry with a
-// fresh COW page in the meantime), in which case the identity check simply
-// fails and this write's durable-bookkeeping is skipped (harmless: the old
-// blob is still correctly on disk and referenced by *this* generation's
-// segment image; the fresh page is independently dirty and picked up by
-// the next snapshot).
-struct PreparedPageWrite
-{
-    uint64_t             page_id     = 0;
-    PageBase            *page        = nullptr; // opaque identity only
-    uint64_t             prior_addr  = kNoAddr;
-    uint64_t             addr        = 0;
-    uint32_t             logical_len = 0; // unpadded; mirrors PageBase::durable_plen
-    std::vector<uint8_t> blob;            // already IU-padded
-};
-
-// A dirty MappingSegment's fresh image write, plus enough identity to
-// safely mark it durable at commit time (mirrors PreparedPageWrite's
-// identity-check pattern, extended with `seen_write_seq` -- see
-// MappingSegment's doc comment on why a segment needs a seq check, not just
-// a pointer identity check: unlike a page, whose whole *pointer* is
-// replaced on any change, a segment's pointer stays the same across a
-// slot mutation, so identity alone can't detect "written again during the
-// prepare-to-commit gap").
-struct PreparedSegmentWrite
-{
-    uint64_t             seg_idx        = 0;
-    MappingSegment      *seg            = nullptr; // opaque identity only
-    uint64_t             seen_write_seq = 0;
-    uint64_t             new_generation = 0;
-    uint64_t             addr           = 0;
-    uint32_t             logical_len    = 0; // unpadded
-    uint32_t             image_crc      = 0; // body-only CRC, matches the directory entry prepare wrote
-    std::vector<uint8_t> blob;               // already IU-padded
-};
-
-struct PreparedUnloadedRelocation
-{
-    uint64_t page_id  = 0;
-    uint64_t old_word = slot_word::kEmpty;
-    uint64_t new_word = slot_word::kEmpty;
-};
-
-// A prefetched unloaded page read outside write_mutex_ (R129). The mapping
-// word is revalidated under the mutex during prepare; a mismatch discards
-// the prefetched blob and the page is skipped for this pass.
-struct PrefetchedPage
-{
-    uint64_t             page_id  = 0;
-    uint64_t             old_word = slot_word::kEmpty;
-    std::vector<uint8_t> blob; // IU-padded page content read from the store
-};
-
-// Output of prepare_snapshot_locked(): every byte this snapshot generation
-// needs written, computed synchronously under write_mutex_ (the segment
-// scan + delta-fold + page/segment-image/directory encode is CPU/memory-only
-// -- see the "Lock scope" note on #11). The caller writes
-// `page_writes` and `segment_writes` (any order/concurrency) then
-// `directory_write`, then a durability barrier, then `anchor_write` --
-// writing the anchor before that barrier would violate the crash-safety
-// invariant persist.cpp's header comment documents (a crash mid-snapshot
-// must fall back intact to the last *committed* anchor) -- then
-// commit_prepared_snapshot() to mark each page/segment durable and publish
-// the new version.
-struct PreparedSnapshot
-{
-    std::vector<PreparedPageWrite>          page_writes;
-    std::vector<PreparedSegmentWrite>       segment_writes;
-    std::vector<PreparedUnloadedRelocation> unloaded_relocations;
-    PreparedSnapshotWrite                   directory_write;
-    PreparedSnapshotWrite                   anchor_write;
-    uint64_t                                last_applied_slot = 0;
-    // Diagnostics for the "snapshot committed" log line (matches the
-    // pre-refactor synchronous snapshot()'s log fields exactly).
-    uint64_t           seq             = 0;
-    uint64_t           live_page_count = 0; // live slots across every present segment
-    uint64_t           pages_written   = 0;
-    uint64_t           segdir_len      = 0;
-    std::set<uint32_t> empty_blocks; // block indices with zero live bytes (block compaction)
-    // Block compaction stats (R129). blocks_selected is the count of source
-    // blocks chosen for relocation this pass; pages_relocated and
-    // bytes_relocated count only pages that were actually moved (not clean
-    // pages that kept their durable address). blocks_deleted is filled by
-    // finalize_prepared_snapshot after the finalizer runs.
-    uint64_t blocks_selected = 0;
-    uint64_t pages_relocated = 0;
-    uint64_t bytes_relocated = 0;
-    uint64_t blocks_deleted  = 0;
-};
-
-// One page's raw frame bytes, tagged with its logical PID (plan-tree #16
-// native snapshot format). Unlike the portable format's `leaf_entry`
-// (decoded key/cell tuples), this is the frame verbatim -- no
-// encode/decode, no cell-by-cell rebuild on import, so a leaf/inner/
-// overflow page round-trips as one `memcpy`-equivalent copy.
-struct NativeFrame
-{
-    uint64_t             page_id = kInvalidPageId;
-    std::vector<uint8_t> frame; // raw in-memory frame bytes (page_bytes() length)
-    uint64_t             durable_addr = kNoAddr;
-    uint32_t             durable_plen = 0;
-    bool                 inherited    = false;
-};
-
-// Resumable view over one native tree generation. Creation folds pending leaf
-// deltas, then pins only the root. Each next() call advances a bounded DFS
-// batch; concurrent writers preserve overwritten pre-generation pages under a
-// fixed pin budget, and consumed pins are released immediately. Different
-// cursors share no mutable traversal state.
-class NativeFrameIterator
-{
-  public:
-    ~NativeFrameIterator();
-
-    NativeFrameIterator(const NativeFrameIterator &)            = delete;
-    NativeFrameIterator &operator=(const NativeFrameIterator &) = delete;
-    NativeFrameIterator(NativeFrameIterator &&) noexcept;
-    NativeFrameIterator &operator=(NativeFrameIterator &&) noexcept;
-
-    Status                 next(size_t max_frames, std::vector<NativeFrame> *out, bool *complete);
-    [[nodiscard]] uint64_t root_page_id() const;
-    [[nodiscard]] uint64_t at_slot() const;
-    [[nodiscard]] uint64_t next_page_id() const;
-    [[nodiscard]] uint64_t subtrees_skipped() const;
-
-  private:
-    struct Impl;
-    explicit NativeFrameIterator(std::shared_ptr<Impl> impl);
-
-    std::shared_ptr<Impl> impl_;
-    friend class Crowdbtree;
 };
 
 class Crowdbtree
@@ -566,22 +212,11 @@ class Crowdbtree
     // write. Uses the existing snapshot gate; no new mutex or blocking lock.
     Status compact_sparse_blocks(MergeGcStats *out_stats);
 
-    // Drain the contiguous-applied prefix of every live MemTable (active_ +
-    // any queued frozen_ buffers, plan-tree #3) into L1 and publish the
-    // result. Always freezes whatever is currently in active_ first (even if
-    // it hasn't crossed the size/entry threshold) so a single flush() call
-    // fully drains all pending writes, same contract as before double
-    // buffering. Non-contiguous leftovers (slot above the current contiguous
-    // frontier) are relocated onto the live active_ MemTable rather than
-    // lost -- see the active_/frozen_ member comment for the full design.
-    //
-    // Re-check loop: after each k-way merge drain pass, re-swaps frozen_ and
-    // drains again if new memtables froze during the prior pass (apply() on
-    // other threads keeps writing and may trip the freeze threshold mid-
-    // drain). This catches the backlog in one flush() call instead of leaving
-    // it for the next maintenance tick. Capped at max_memtable_count
-    // iterations; remaining tables (if any) stay in frozen_ for the next
-    // flush().
+    // Close the selected active table, capture a finite contiguous frontier,
+    // publish its successor, then wait for only the captured writers. Publish
+    // eligible prefix versions to L1 and detach wholly covered tables. Future
+    // versions remain in their original sources until a later flush covers
+    // them. This is in-memory publication; snapshot() establishes durability.
     Status flush();
 
     // Moves the currently visible L0 tables into one split-owned shared view
@@ -609,14 +244,9 @@ class Crowdbtree
     Status publish_split_memtable_view(uint64_t generation, uint64_t journal_frontier, Crowdbtree &destination,
                                        const KeyRange &range);
 
-    // Async twin of flush(). flush() only drains
-    // L0 (MemTable) into L1 (in-memory B+tree) -- it never touches
-    // Config::page_store (only snapshot() writes durable bytes), so unlike
-    // snapshot_async() there is no genuine I/O to submit to the reactor
-    // here: this always invokes on_done synchronously with flush()'s result
-    // before returning. Exists so C API callers have a uniform
-    // ct_flush_async/ct_snapshot_async shape even though
-    // flush's own fast-path-vs-slow-path split is trivial today.
+    // Run finite flush on a completion worker. Waiting for admitted writers
+    // never blocks the submitting async caller. Destruction drains workers;
+    // completion callbacks run after the worker releases tree ownership.
     void flush_async(std::function<void(Status)> on_done);
 
     // Point read (L0 overlay then L1). Returns true if a live value is found;
@@ -725,7 +355,7 @@ class Crowdbtree
                                 bool keys_only, uint64_t deadline_ms, bool reverse,
                                 std::function<void(Status, ScanPackedBuf, bool truncated)> on_done) const;
 
-    // pin a consistent point-in-time view at `last_applied_slot` (the durable L1
+    // pin a consistent point-in-time view at `last_applied_slot` (the published L1
     // state). Used for scan-at / compare / iter_all / snapshot export.
     // R6: returns a PinnedSnapshot (zero-copy, page refcount pins keep frames
     // alive across threads). The return type is shared_ptr<Snapshot> for ABI
@@ -933,15 +563,29 @@ class Crowdbtree
     friend Status      rebuild_range(Crowdbtree &source, const KeyRange &range, Config destination_options,
                                      std::unique_ptr<Crowdbtree> *out, RangeRebuildStats *stats);
     [[nodiscard]] bool seek_reverse_guarded(Slice start_key, bool has_start_bound, bool inclusive, Slice begin_key,
-                                            const std::vector<std::shared_ptr<MemTable>> &memtables,
-                                            uint64_t root_page_id, uint64_t gc_floor, scan_entry *out) const;
+                                            const std::vector<MemTableSource> &memtables, uint64_t root_page_id,
+                                            uint64_t gc_floor, scan_entry *out) const;
 
     [[nodiscard]] bool try_scan_reverse_no_load(Slice prefix, Slice start_after, Slice end_key, size_t limit,
                                                 size_t byte_budget, bool keys_only, uint64_t deadline_ms,
                                                 ScanPackedBuf *out_packed, size_t *out_count, bool *truncated,
                                                 uint64_t *out_pending_page_id) const;
+#ifdef CROWDB_TREE_TEST_UTIL
+    friend struct MemTableAccess_for_tests;
+    void (*after_flush_group_for_tests_)() = nullptr;
+#endif
+    struct FlushBoundary
+    {
+        std::deque<std::shared_ptr<MemTable>> tables;
+        uint64_t                              frontier = 0;
+    };
+
+    FlushBoundary capture_flush_locked();
+    void          publish_flush_locked(FlushBoundary &boundary);
     // apply a batch's ops into L0 at `slot` (intra-batch last-op-wins).
-    void apply_batch(uint64_t slot, const Batch &batch);
+    void          apply_batch(uint64_t slot, const Batch &batch);
+    MemTableBatch admit_batch();
+    void          finish_batch(MemTableBatch &batch, uint64_t slot, const std::vector<std::string> &keys);
     // Shared apply()/apply_encoded() tail: slot bookkeeping (max_seen_slot_,
     // received_slots_, contiguous frontier) then a possible L0 size-based swap.
     void note_applied_slot(uint64_t slot);
@@ -949,72 +593,27 @@ class Crowdbtree
     // tracker below the new frontier. Caller holds slot_mutex_.
     void recompute_contiguous_locked();
 
-    // -- MemTable double buffering (plan-tree #3); see the active_/frozen_
-    // member comment below for the full design. --
-    // Snapshot the current active_ pointer (shared_lock on memtable_mutex_;
-    // O(1), just bumps the shared_ptr refcount).
-    [[nodiscard]] std::shared_ptr<MemTable> current_active() const;
-    // Snapshot every live MemTable (frozen_ oldest-first, then active_ last)
-    // as a list of shared_ptrs so get()/scan() can read them after releasing
-    // memtable_mutex_ -- the shared_ptrs keep each table alive even if it is
-    // concurrently drained-to-empty-and-dropped from frozen_ by a flush() on
-    // another thread (drain empties a table's *contents*; it does not free
-    // the MemTable object out from under a reader still holding a ref).
-    [[nodiscard]] std::vector<std::shared_ptr<MemTable>> all_memtables() const;
-    [[nodiscard]] std::vector<std::shared_ptr<MemTable>> local_memtables() const;
-    // If active_ meets the size/entry threshold (or `force`), freeze it
-    // (push onto frozen_) and install a fresh active_. `force` also bypasses
-    // the max_memtable_count cap on the frozen_ queue depth (flush() always
-    // needs to freeze+drain whatever is pending, regardless of size) but
-    // still no-ops on an empty active_. Returns true if a freeze happened.
-    bool maybe_freeze_active(bool force);
-    // Threshold-triggered swap only (no drain) -- called after every
-    // apply()/force_advance_slot(). Draining is the separate, explicit job
-    // of flush() (background thread or caller-invoked).
-    void maybe_swap_active();
-    // Drain all frozen memtables in one k-way sorted merge (O5) with
-    // sort-aware descent (O1). Replaces the per-memtable drain loop in
-    // flush(). Returns true if any entries were written to L1. Caller
-    // holds write_mutex_.
-    bool drain_all_frozen_locked(std::deque<std::shared_ptr<MemTable>> &to_drain, std::shared_ptr<MemTable> &active,
-                                 uint64_t cs);
-    // Publish a group of sorted leaf entries to `page_id` via the delta
-    // path (in-frame or heap BatchDelta). Returns true if a consolidate
-    // fired (caller should invalidate cached leaf info). Caller holds
-    // write_mutex_.
+    [[nodiscard]] std::shared_ptr<MemTable>   current_active() const;
+    [[nodiscard]] std::vector<MemTableSource> all_memtables() const;
+    [[nodiscard]] std::vector<MemTableSource> local_memtables(uint64_t covered = UINT64_MAX) const;
+    bool                                      maybe_freeze_active(bool force);
+    void                                      maybe_swap_active();
+    bool drain_all_frozen_locked(std::deque<std::shared_ptr<MemTable>> &to_drain, uint64_t cs);
     bool publish_group_to_leaf_locked(uint64_t page_id, uint64_t cs, std::vector<leaf_entry> group);
-    // Snapshot import (install_snapshot): drop every live MemTable's content
-    // and install one fresh, empty active_. Caller holds write_mutex_.
-    void reset_memtables_locked();
 
-    void consolidate_locked(uint64_t page_id);          // caller holds write_mutex_
-    void maybe_split_or_merge_locked(uint64_t page_id); // dispatch on leaf size
-    // O4: set parent_page_id on all children of the inner page at `page_id`.
-    // Caller holds write_mutex_.
-    void set_children_parent_locked(uint64_t page_id, uint64_t parent_page_id);
-    // O4: store `new_page` at `page_id`, preserving parent_page_id from the
-    // old page. Caller holds write_mutex_.
-    void store_preserving_parent_locked(uint64_t page_id, PageBase *new_page);
-    // Sync the leaf/inner gauge handles to the atomic counters (no-op when
-    // metrics aren't registered). Called after every SMO counter update.
-    void sync_page_count_gauges();
-    // Inner PIDs from root down to (but excluding) the leaf `target_page_id`.
+    void                  consolidate_locked(uint64_t page_id);          // caller holds write_mutex_
+    void                  maybe_split_or_merge_locked(uint64_t page_id); // dispatch on leaf size
+    void                  set_children_parent_locked(uint64_t page_id, uint64_t parent_page_id);
+    void                  store_preserving_parent_locked(uint64_t page_id, PageBase *new_page);
+    void                  sync_page_count_gauges();
     std::vector<uint64_t> path_to_page_id_locked(uint64_t target_page_id) const;
-    // Iteratively 2-way split a leaf (and its resulting halves) until every
-    // leaf fits under leaf_split_bytes. Needed because consolidation can fold
-    // a large delta chain into a leaf many times the threshold. Caller holds
-    // write_mutex_.
-    void split_leaf_to_threshold_locked(uint64_t leaf_page_id);
-    void split_leaf_locked(uint64_t leaf_page_id, std::vector<uint64_t> path);
-    void propagate_split_locked(std::vector<uint64_t> path, uint64_t child_page_id, std::string sep,
-                                uint64_t right_page_id);
-    void try_merge_leaf_locked(uint64_t leaf_page_id, const std::vector<uint64_t> &path);
-    // Merge an underfull non-root inner page with its left sibling (mirrors leaf
-    // merge), recursing up; collapses the root when it drops to a single child.
-    // `path` is the inner PIDs from root down to (but excluding) `inner_page_id`.
-    void try_merge_inner_locked(uint64_t inner_page_id, std::vector<uint64_t> path);
+    void                  split_leaf_to_threshold_locked(uint64_t leaf_page_id);
+    void                  split_leaf_locked(uint64_t leaf_page_id, std::vector<uint64_t> path);
+    void                  propagate_split_locked(std::vector<uint64_t> path, uint64_t child_page_id, std::string sep,
+                                                 uint64_t right_page_id);
+    void                  try_merge_leaf_locked(uint64_t leaf_page_id, const std::vector<uint64_t> &path);
+    void                  try_merge_inner_locked(uint64_t inner_page_id, std::vector<uint64_t> path);
 
-    // Separator-count threshold below which a non-root inner page is merged.
     [[nodiscard]] uint32_t inner_merge_keys() const
     {
         if (opt_.inner_merge_keys != 0) {
@@ -1026,183 +625,49 @@ class Crowdbtree
 
     void   retire_page(PageBase *p);
     void   preserve_native_page_locked(uint64_t page_id, PageBase *page);
+    void   preserve_native_generation_locked();
+    void   detach_native_iterators();
     Status install_range_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot,
                                          uint64_t next_page_id, bool mapping_inherited);
-    // Retire a page that becomes entirely unreachable by new readers with no
-    // replacement under its own PID (a merged-away leaf/inner, or a
-    // root-collapse's old root) -- as opposed to retire_page()'s usual
-    // "superseded by a fresh mapping_.store() under the same page_id"
-    // pattern, which needs no slot update at all. Clears `page_id`'s mapping
-    // slot to empty *inside the epoch deleter*, at the same deferred point
-    // `p` itself becomes safe to delete (plan-tree #14b/mapping-table design
-    // §6's "slot clearing runs in the epoch deleter") -- not immediately,
-    // which would race a straggler reader still walking in via a stale
-    // parent reference from before this retirement (see this method's call
-    // sites for the full argument on why the deferred point is race-free).
-    // Without this, the PID's slot keeps a dangling pointer once `p` is
-    // freed -- harmless for the old root-walk-based snapshot (which only
-    // ever visits tree-reachable PIDs) but a use-after-free for #14c/#14d's
-    // segment-scan-driven snapshot, which reads every slot directly.
-    void retire_orphaned_page(uint64_t page_id, PageBase *p);
-    // Recursively drop a subtree. `retire=false` frees pages immediately (teardown
-    // / no concurrent readers). `retire=true` epoch-retires each page and overflow
-    // chain and clears its mapping slot, so a lock-free reader still holding a page
-    // under its guard is never freed underneath it (used by install_snapshot on the
-    // live tree). Caller holds write_mutex_ for the retire path.
-    //
-    // CAUTION: this is a top-down, root->children walk -- it bails out (nothing to
-    // do) the moment it reaches an *unloaded* slot, which used to be a safe
-    // assumption (a leaf has no descendants, and only leaves were ever
-    // independently evictable) but no longer is now that plan-tree #17 D3's
-    // evict_clean_inner can leave an *inner* page unloaded while a resident
-    // descendant remains fully live underneath it -- that descendant would be
-    // silently skipped (leaked, for retire=false; never epoch-retired, for
-    // retire=true) by a call rooted above it. Only ever call this on a page_id
-    // known to still be resident (e.g. persist.cpp's freshly-built, never-evicted
-    // empty root during open()); everywhere else, use free_all_resident_pages.
-    void free_subtree(uint64_t page_id, bool retire);
-    // Drop *every* resident page, regardless of tree reachability: enumerates
-    // MappingTable's present segments/slots directly (same technique
-    // persist.cpp's snapshot uses to discover dirty pages without a
-    // reachable-page walk -- see prepare_snapshot_locked's header comment)
-    // instead of a top-down root->children walk, so it cannot miss a resident
-    // page merely because one of its *ancestors* happens to be unloaded (see
-    // free_subtree's caution above). Same retire=false/true contract as
-    // free_subtree otherwise. Caller holds write_mutex_ for the retire path.
-    void free_all_resident_pages(bool retire);
+    void   retire_orphaned_page(uint64_t page_id, PageBase *p);
+    void   free_subtree(uint64_t page_id, bool retire);
+    void   free_all_resident_pages(bool retire);
 
-    // Effective overflow spill threshold (opt_.max_inline_value or frame_bytes/4).
     [[nodiscard]] size_t max_inline_value() const
     {
         return opt_.max_inline_value != 0 ? opt_.max_inline_value : opt_.frame_bytes / 4;
     }
 
-    // Fold a leaf chain (deltas + base) to key-sorted storage entries by
-    // highest-slot-wins, dropping tombstones with slot <= gc_floor. Overflow
-    // pointer cells are carried forward unchanged; any overflow chain that a
-    // higher-slot write supersedes is appended to *dead_overflow (if non-null) so
-    // the caller can retire it. If out_tombstones_dropped/out_bytes_dropped are
-    // non-null, they are set to the number of tombstones dropped and their total
-    // key+cell byte size (snapshot folding uses the count to skip rebuilding a
-    // leaf that has nothing to reclaim, and the bytes for diagnostics --
-    // the resident *frame* size is a poor proxy since pool-backed frames are
-    // fixed-size regardless of live content). Caller holds write_mutex_.
     [[nodiscard]] static std::vector<leaf_entry>
     resolve_leaf_chain_for_rebuild(PageBase *head, uint64_t gc_floor, std::vector<uint64_t> *dead_overflow,
                                    size_t *out_tombstones_dropped = nullptr, size_t *out_bytes_dropped = nullptr);
-    // Spill `value` into a fresh overflow page chain; returns the head PID. Caller
-    // holds write_mutex_.
-    [[nodiscard]] uint64_t spill_value_to_overflow_chain_locked(const std::string &value);
-    // build a leaf base from storage entries, spilling any inline value larger
-    // than max_inline_value() into an overflow chain and replacing it with a pointer
-    // cell. Entries already in overflow-pointer form are carried forward as-is.
+    [[nodiscard]] uint64_t  spill_value_to_overflow_chain_locked(const std::string &value);
     [[nodiscard]] LeafBase *build_leaf_spilling_locked(std::vector<leaf_entry> entries, uint64_t right_sibling);
-    // Epoch-retire an overflow chain (a superseded large value). Caller holds
-    // write_mutex_.
-    void retire_overflow_chain_locked(uint64_t head_page_id);
-    // Evict an overflow chain alongside its owning leaf: re-tag each resident,
-    // clean overflow page unloaded and epoch-retire it (it demand-loads on next
-    // access). Stops at the first already-unloaded/dirty link (chains evict whole,
-    // so the tail is already unloaded). Caller holds write_mutex_.
-    void evict_overflow_chain_locked(uint64_t head_page_id);
-    // Immediately free an overflow chain's resident pages (teardown / clear; no
-    // concurrent readers). Caller holds write_mutex_.
-    void   free_overflow_chain(uint64_t head_page_id);
-    size_t evict_clean_leaves_locked(size_t max_resident_leaves); // caller holds write_mutex_
-    size_t evict_clean_inner_locked(size_t max_resident_inner);   // caller holds write_mutex_
-    void   maybe_evict_locked(); // capacity-driven auto-evict (caller holds write_mutex_)
-    // Resolve a PID to its resident chain head, demand-loading an unloaded slot
-    // (demand-load). Hot (resident) path is lock-free; the cold path locks
-    // load_mutex_ and double-checks. Returns nullptr if the slot is unset.
+    void                    retire_overflow_chain_locked(uint64_t head_page_id);
+    void                    evict_overflow_chain_locked(uint64_t head_page_id);
+    void                    free_overflow_chain(uint64_t head_page_id);
+    size_t                  evict_clean_leaves_locked(size_t max_resident_leaves); // caller holds write_mutex_
+    size_t                  evict_clean_inner_locked(size_t max_resident_inner);   // caller holds write_mutex_
+    void                    maybe_evict_locked(); // capacity-driven auto-evict (caller holds write_mutex_)
     [[nodiscard]] PageBase *resident(uint64_t page_id) const;
 
-    // R6: capture all pages in an overflow chain (for PinnedSnapshot pinning).
     void capture_overflow_chain(uint64_t head_page_id, std::vector<PageBase *> &out);
 
-    // Shared by resident()'s synchronous cold path and get_async's async
-    // completion handler: decodes+validates a
-    // just-read durable blob and installs it as the resident page for
-    // `page_id`, exactly like resident()'s cold path did inline before this
-    // was factored out. Returns the installed page, or nullptr on a
-    // decode/CRC/validation failure (io_failed_ is latched first, matching
-    // resident()). Caller holds load_mutex_ and has already re-verified the
-    // slot is still tagged unloaded (double-checked locking, same
-    // requirement resident()'s cold path has).
     [[nodiscard]] PageBase *install_loaded_page(uint64_t page_id, uint64_t addr, uint32_t plen,
                                                 const std::vector<uint8_t> &blob) const;
 
-    // One attempt at get_view()'s L0-then-L1 resolution, but NEVER performs
-    // I/O: a mapping slot tagged unloaded aborts the attempt immediately
-    // (releasing the epoch guard first, since a genuine miss is about to
-    // hand off to the reactor or fall back to a blocking load -- either way
-    // this attempt is over) instead of demand-loading it, and reports which
-    // page_id blocked via *out_pending_page_id. get_async's orchestration
-    // (get_async_attempt) re-verifies that page_id under load_mutex_ before
-    // touching its unloaded slot-word descriptor -- see the safety note on
-    // get_async_attempt's definition (mirrors resident()'s double-checked
-    // lock; the descriptor is inline in the atomic word, not epoch-protected,
-    // so it is never safe to unpack outside load_mutex_).
-    //
-    // Returns true if the attempt fully resolved (found or definitively not
-    // found) -- `*result` is populated exactly like get_view() would.
-    // Returns false on a genuine miss -- `*result` must be ignored.
     [[nodiscard]] bool try_get_view_no_load(Slice key, GetView *result, uint64_t *out_pending_page_id) const;
 
-    // get_async's retry loop: one try_get_view_no_load() attempt, then
-    // either calls on_done (resolved) or resolves the blocked page_id (via
-    // the reactor, or synchronously if no async backend is wired) and
-    // recurses. `key_owned` is a heap copy of the lookup key -- unlike
-    // get_view()'s Slice (borrowed, valid only for one synchronous call),
-    // get_async's key must survive across an arbitrary number of async
-    // round trips, each on a different call stack.
-    //
-    // `same_thread`: true iff this specific
-    // attempt is guaranteed to resolve (if it resolves at all) on the same
-    // thread that will eventually call ct_future_free -- i.e. every call
-    // except the one made from inside the io_uring completion callback
-    // below, which runs on the Reactor's own thread. Threaded through every
-    // recursive call so it stays correct across an arbitrary number of
-    // hops. Guards whether a resolved GetView's epoch guard may be
-    // deferred (zero-copy) or must be released immediately via
-    // materialize_owned() -- see EpochManager::Guard's "do not move across
-    // threads" contract.
     void get_async_attempt(std::shared_ptr<std::string> key_owned, std::function<void(Status, GetView)> on_done,
                            bool same_thread) const;
 
-    // Converts a resolved GetView into a fully-owned copy with its epoch
-    // guard already released on the calling thread -- safe to hand off to
-    // a different thread afterward (get_async_attempt's io_uring
-    // completion path). A borrowed L1 hit is materialized via a fresh
-    // buffer::copy_of(); an already-owned (L0/overflow) or not-found
-    // GetView is untouched except for releasing the guard.
     static GetView materialize_owned(GetView &&v);
 
-    // scan()'s non-blocking twin: identical logic (same L0 snapshot, same
-    // right_sibling leaf walk, same merge), but the initial descent and
-    // every leaf probe use a non-blocking check (mirrors
-    // try_get_view_no_load's `probe`) instead of resident()'s demand-load.
-    // The moment *any* page along the way is unloaded, bails out
-    // immediately (discarding whatever was collected into *out so far --
-    // scan_async_attempt retries the whole call once that page resolves)
-    // and reports it via *out_pending_page_id. Returns true if the scan
-    // fully resolved with no cold page encountered (*out/*truncated are
-    // then exactly what scan() itself would have produced).
     [[nodiscard]] bool try_scan_no_load(Slice prefix, Slice start_after, Slice end_key, size_t limit,
                                         size_t byte_budget, bool keys_only, uint64_t deadline_ms,
                                         std::vector<scan_entry> *out, bool *truncated, uint64_t *out_pending_page_id,
                                         ScanPackedBuf *out_packed = nullptr, size_t *out_count = nullptr) const;
 
-    // scan_async's retry loop, structurally identical to get_async_attempt:
-    // one try_scan_no_load() attempt, then either calls on_done (resolved)
-    // or resolves the one blocking page_id (via the reactor, or
-    // synchronously if no async backend is wired) and recurses. `prefix`,
-    // `start_after`, and `end_key` are heap copies (unlike scan()'s Slice,
-    // must survive across an arbitrary number of async round trips). Entries
-    // resolved before the cold leaf are accumulated across retries and the
-    // last resolved key becomes the resume `start_after`, so a scan over N
-    // cold leaves performs O(N) leaf loads with no re-traversal of already-
-    // resolved leaves (was quadratic). `byte_budget` is the remaining total
-    // key+value byte cap (adjusted by entries already in `accumulated`).
     void scan_async_attempt(std::shared_ptr<std::string>        prefix_owned,
                             const std::shared_ptr<std::string> &start_after_owned,
                             const std::shared_ptr<std::string> &end_key_owned, size_t limit, size_t byte_budget,
@@ -1217,22 +682,6 @@ class Crowdbtree
                                     std::shared_ptr<std::string> last_key, size_t accumulated_count,
                                     std::function<void(Status, ScanPackedBuf, bool)> on_done) const;
 
-    // Shared by snapshot() and snapshot_async() (persist.cpp,
-    // #11 Phase 2, #14c/#14d): runs the segment scan / delta-fold /
-    // page+segment-image+directory+anchor encode that snapshot() used to do
-    // inline, but defers every actual write into the returned *out instead
-    // of calling opt_.page_store->write_at() itself -- caller holds
-    // write_mutex_ for just this call, exactly like every other writer
-    // entry point (see snapshot_async's doc comment for the full
-    // lock-discipline rationale).
-    // Deliberately does *not* set PageBase::durable_addr for a dirty page
-    // it persists (unlike the pre-refactor inline version): that would let
-    // evict_clean_leaves_locked() -- which only takes write_mutex_, not
-    // snapshot_inflight_ -- evict a page whose bytes aren't durable yet on
-    // the async path, and a subsequent demand-load would then read
-    // whatever garbage/stale content actually occupies that address today.
-    // commit_prepared_snapshot() sets it instead, only once each page's
-    // specific write has actually landed.
     Status prepare_snapshot_locked(PreparedSnapshot *out, std::vector<PrefetchedPage> prefetched = {},
                                    std::set<uint32_t> relocation_blocks = {});
     struct SnapshotPrepareContext;
@@ -1253,124 +702,39 @@ class Crowdbtree
                                        PreparedSnapshot *prepared);
     void   record_compaction_metrics(const MergeGcStats &stats, uint64_t elapsed_ns);
 
-    // Marks every PreparedSnapshot::page_writes/segment_writes entry
-    // durable (see prepare_snapshot_locked's doc comment) and publishes the
-    // new version, once every byte of this generation is confirmed on disk.
-    // Re-resolves each page_id fresh under write_mutex_ and checks identity
-    // before touching it -- see PreparedPageWrite/PreparedSegmentWrite's
-    // doc comments for why a mismatch (skip, not an error) is possible and
-    // safe.
     void commit_prepared_snapshot(const PreparedSnapshot &prepared);
     void finalize_prepared_snapshot(PreparedSnapshot &prepared);
 
-    // Cross-thread-safe (unlike write_mutex_) spin-gate serializing this
-    // snapshot generation's prepare-through-commit sequence against a
-    // second overlapping snapshot(_async) call; see snapshot_async's doc
-    // comment. Acquired by snapshot()/snapshot_async() before
-    // prepare_snapshot_locked(), released after commit_prepared_snapshot()
-    // (success) or the first failing step (error) -- from whichever thread
-    // that happens to be, which is exactly why this is an atomic spin-gate
-    // and not a std::mutex.
     void acquire_snapshot_slot();
     void release_snapshot_slot();
 
-    // snapshot_async's write-and-commit chain: writes
-    // prepared->page_writes[idx..] then prepared->segment_writes[idx..]
-    // one at a time (recursing on each completion), then the directory,
-    // then a durability barrier, then the anchor, then a second barrier,
-    // then commit_prepared_snapshot() + release_snapshot_slot(), then
-    // fires on_done -- the exact sequence snapshot() runs inline, just
-    // each I/O step dispatched through opt_.async_page_store instead of
-    // blocking.
     void snapshot_write_next_async(std::shared_ptr<PreparedSnapshot> prepared, size_t idx,
                                    std::function<void(Status, uint64_t last_applied)> on_done);
 
-    Config opt_;
-    // Human-readable engine label for CT_LOG context (e.g. "s1.g1").
-    // Copied from opt_.name at construction; empty means "[unnamed]".
-    std::string name_;
-    // Base-page frame arena. shared_ptr because epoch-retired pages
-    // co-own it; the tree-owned EpochManager (epoch_, declared last so it is
-    // destroyed first) reclaims those pages before pool_ is destroyed. Declared
-    // before mapping_ so it is destroyed after the pages it backs.
+    Config                      opt_;
+    std::string                 name_;
     std::shared_ptr<BufferPool> pool_;
     MappingTable                mapping_;
 
-    // -- MemTable double buffering (plan-tree #3) --
-    //
-    // active_ is the single MemTable that apply()/apply_batch() writes land
-    // in. Once it crosses opt_.memtable_flush_bytes/_entries,
-    // maybe_swap_active() freezes it (pushes it onto frozen_, no longer
-    // reachable for new writes) and installs a fresh, empty MemTable as
-    // active_ -- a fast, memtable_mutex_-only pointer swap, decoupled from
-    // the (potentially much slower) B+tree drain. frozen_ holds zero or more
-    // frozen, write-closed MemTables awaiting drain into L1, oldest first;
-    // it normally holds at most one entry (drained to empty by the very next
-    // flush() call) but can hold up to (opt_.max_memtable_count - 1) if
-    // writes keep tripping the threshold faster than flush() (explicit call
-    // or the background thread) drains them -- see max_memtable_count's
-    // comment in options.h for the capacity/back-pressure behavior. flush()
-    // uses a re-check loop that drains frozen_ to empty (modulo the
-    // max_memtable_count iteration cap) in one call, so tables that freeze
-    // during a drain pass are caught in the same flush() rather than left
-    // for the next tick.
-    //
-    // Both members are guarded by memtable_mutex_, but *only* for the
-    // pointer/queue values themselves -- MemTable has its own internal
-    // mutex, so once a caller has copied out a shared_ptr<MemTable> (via
-    // current_active()/all_memtables()) it reads/writes/drains that table
-    // without holding memtable_mutex_ at all. This means apply_batch()
-    // (writer) and get()/scan() (lock-free readers, epoch-guarded) never
-    // contend with each other OR with an in-progress flush() drain on a
-    // *different* table -- the concurrency benefit double buffering is for.
-    //
-    // Read-side correctness (get()/scan()): because slots can arrive
-    // out of order (a Paxos-style caller may apply() a higher slot before a
-    // lower one that fills an earlier gap), the SAME key can legitimately be
-    // resident in more than one live MemTable at once with *different*
-    // slots when a freeze happens to land between two out-of-order writes to
-    // that key. Unlike the pre-#3 single-buffer design (where upsert()'s
-    // highest-slot-wins dedup made "the" MemTable hit unambiguous), reads
-    // must check every live table (active_ + all of frozen_, any order) and
-    // keep the highest-slot cell -- see get()'s and scan()'s implementation.
-    // Every live table's cell for a key is still guaranteed strictly newer
-    // than L1's (each table's durable_floor_ rejects writes for slots
-    // already folded into L1), so a hit in any live table never needs an L1
-    // fallback.
-    //
-    // Write-side correctness (flush()/drain_all_frozen_locked()): a
-    // drained key is appended to its target leaf's delta chain, never
-    // written in place, and every reader of that chain (resolve_chain /
-    // resolve_chain_sorted) resolves highest-slot-wins across the *whole*
-    // chain regardless of append order -- so draining two frozen tables that
-    // happen to hold different slots for the same key, in either order, is
-    // safe: L1 always converges to the higher slot once both are drained
-    // (see resolve_chain's header comment in delta.h).
-    //
-    // Non-contiguous slots (documented per an explicit design requirement --
-    // do not lose track of this): when a frozen table is drained
-    // (drain_up_to(cs)), any entries with slot > cs are stuck behind a gap
-    // that hasn't become contiguous yet and are NOT written to L1. Rather
-    // than leaving that frozen table sitting half-drained in the queue
-    // indefinitely (which would both leak a MemTable object and prevent the
-    // queue from ever shrinking back down), flush() extracts those leftover
-    // entries and re-upserts them into the *current* active_ MemTable, then
-    // discards the now-fully-vacated frozen table. upsert()'s highest-slot-
-    // wins makes this safe even if active_ has independently received a
-    // newer (or, for that matter, older) write for the same key in the
-    // meantime. The relocated entries simply ride along in whichever table
-    // is active_ until a later flush() (once contiguous_slot_ has advanced
-    // past their slot) finally drains them for real -- they may bounce
-    // through several freeze/relocate cycles under a sustained out-of-order
-    // write pattern, which is expected and bounded by how long the
-    // underlying gap stays open, not by this mechanism.
-    mutable std::shared_mutex              memtable_mutex_;
-    std::shared_ptr<MemTable>              active_;
-    std::deque<std::shared_ptr<MemTable>>  frozen_;
-    std::vector<std::shared_ptr<MemTable>> split_shared_memtables_;
-    std::atomic<Crowdbtree *>              split_overlay_source_{nullptr};
-    uint64_t                               split_memtable_generation_ = 0;
-    std::atomic<uint64_t>                  memtable_next_id_{1}; // monotonic MemTable id for logging
+    // The catalog lock protects source ownership and its published L1 floor.
+    // Writers register on the selected table before mutation; close/capture/
+    // successor publication is one catalog transition. Frozen tables retain
+    // their immutable future versions until a later prefix covers the table.
+    // Borrowers keep source ownership and epoch protection independently.
+    std::shared_ptr<std::atomic<Crowdbtree *>> reclamation_owner_ = std::make_shared<std::atomic<Crowdbtree *>>(this);
+    std::shared_ptr<std::atomic<uint64_t>>     async_flushes_     = std::make_shared<std::atomic<uint64_t>>(0);
+    bool                                       publication_incomplete_ = false; // protected by write_mutex_
+    MemTableCounters                           memtable_counters_;
+    GenerationGate                             generation_;
+    mutable std::shared_mutex                  memtable_mutex_;
+    std::shared_ptr<MemTable>                  active_;
+    std::deque<std::shared_ptr<MemTable>>      frozen_;
+    std::vector<std::shared_ptr<MemTable>>     split_shared_memtables_;
+    std::atomic<Crowdbtree *>                  split_overlay_source_{nullptr};
+    std::atomic<uint64_t>                      split_overlay_frontier_{0};
+    uint64_t                                   split_memtable_generation_ = 0;
+    uint64_t                                   split_memtable_frontier_   = 0;
+    std::atomic<uint64_t>                      memtable_next_id_{1}; // monotonic MemTable id for logging
 
     // internal_error slot tracker (replaces the caller-supplied contiguous_slot). Holds
     // received-but-not-yet-contiguous slots above contiguous_slot_; the contiguous
@@ -1464,6 +828,7 @@ class Crowdbtree
     // ── Metrics handles (registered in init_metrics) ──
     struct MetricsHandles
     {
+        LatencySummary *mt_version_copy_l = nullptr;
         // Buffer pool (backend I/O)
         Counter *buf_evictions  = nullptr;
         Counter *buf_writebacks = nullptr;

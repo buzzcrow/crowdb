@@ -35,6 +35,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <new>
 
 namespace crowdb::tree
 {
@@ -61,6 +63,9 @@ class buffer
     // set_size(). A zero-length request yields an empty owned buffer.
     static buffer alloc(size_t capacity, size_t header_reserve = 0)
     {
+        if (capacity > std::numeric_limits<size_t>::max() - header_reserve) {
+            throw std::bad_alloc();
+        }
         size_t total = capacity + header_reserve;
         buffer b;
         b.header_reserve_ = header_reserve;
@@ -260,7 +265,11 @@ class buffer
     // for owned buffers larger than kInlineCap.
     static uint8_t *allocate(size_t n)
     {
-        return static_cast<uint8_t *>(std::malloc(n));
+        auto *bytes = static_cast<uint8_t *>(std::malloc(n));
+        if (bytes == nullptr) {
+            throw std::bad_alloc();
+        }
+        return bytes;
     }
 
     static void deallocate(uint8_t *p)

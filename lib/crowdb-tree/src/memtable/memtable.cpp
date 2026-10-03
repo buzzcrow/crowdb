@@ -50,32 +50,31 @@ bool MemTable::upsert(Slice key, uint64_t slot, Slice cell_payload)
     return upsert(key, slot, buf_of(cell_payload));
 }
 
-bool MemTable::upsert(Slice key, uint64_t slot, buffer &&cell_payload)
+bool MemTable::upsert(Slice key, uint64_t slot, buffer &&cell_payload, uint64_t bound, MutationStats *stats)
 {
+    if (stats != nullptr) {
+        stats->admission = &writers_;
+    }
     if (slot <= durable_floor_.load(std::memory_order_relaxed) && !allow_old_slots_.load(std::memory_order_relaxed)) {
         return false;
     }
-    CellView     cv{cell_payload.slice()};
-    uint64_t     entry_slot = cv.valid() ? cv.slot() : slot;
-    uint8_t      flags      = cv.valid() ? cv.flags() : 0;
-    CellVersion *ver        = make_version(entry_slot, flags, std::move(cell_payload));
-
-    CellVersion *old = nullptr;
-    if (!list_.upsert(key, ver, &old)) {
-        delete ver; // rejected — caller cleans up
+    CellView cv{cell_payload.slice()};
+    uint64_t entry_slot = cv.valid() ? cv.slot() : slot;
+    uint8_t  flags      = cv.valid() ? cv.flags() : 0;
+    auto ver = std::make_shared<CellVersion>(std::move(cell_payload), entry_slot, flags, epoch_->memtable_allocation());
+    if (!list_.upsert(key, std::move(ver), bound, stats)) {
         return false;
     }
-    list_.add_bytes(key.size() + ver->cell.size());
-    if (old != nullptr) {
-        list_.sub_bytes(key.size() + old->cell.size());
-    }
-    retire_version(old);
     update_slot_range(entry_slot);
     return true;
 }
 
-bool MemTable::upsert_external(Slice key, uint64_t slot, uint8_t flags, buffer &&value)
+bool MemTable::upsert_external(Slice key, uint64_t slot, uint8_t flags, buffer &&value, uint64_t bound,
+                               MutationStats *stats)
 {
+    if (stats != nullptr) {
+        stats->admission = &writers_;
+    }
     if (slot <= durable_floor_.load(std::memory_order_relaxed) && !allow_old_slots_.load(std::memory_order_relaxed)) {
         return false;
     }
@@ -92,18 +91,10 @@ bool MemTable::upsert_external(Slice key, uint64_t slot, uint8_t flags, buffer &
             value = buffer::wrap_external(nullptr, 0, nullptr, nullptr);
         }
     }
-    CellVersion *ver = make_version(slot, flags, std::move(value));
-
-    CellVersion *old = nullptr;
-    if (!list_.upsert(key, ver, &old)) {
-        delete ver;
+    auto ver = std::make_shared<CellVersion>(std::move(value), slot, flags, epoch_->memtable_allocation());
+    if (!list_.upsert(key, std::move(ver), bound, stats)) {
         return false;
     }
-    list_.add_bytes(key.size() + ver->cell.size());
-    if (old != nullptr) {
-        list_.sub_bytes(key.size() + old->cell.size());
-    }
-    retire_version(old);
     update_slot_range(slot);
     return true;
 }
@@ -116,51 +107,22 @@ void MemTable::set_durable_floor(uint64_t slot)
     }
 }
 
-void MemTable::reset()
+std::vector<mem_entry> MemTable::snapshot(uint64_t frontier) const
 {
-    auto drained = list_.drain_all();
-    for (auto &e : drained) {
-        size_t entry_bytes = e.key.size() + e.cv->cell.size();
-        list_.sub_bytes(entry_bytes);
-        retire_version(e.cv);
-        retire_node(e.node);
-    }
-    durable_floor_.store(0, std::memory_order_relaxed);
-    allow_old_slots_.store(false, std::memory_order_relaxed);
-    reset_slot_range();
-}
-
-std::vector<mem_entry> MemTable::drain_up_to(uint64_t cs)
-{
-    auto                   drained = list_.drain_up_to(cs);
+    auto                   guard = epoch_->enter();
     std::vector<mem_entry> out;
-    out.reserve(drained.size());
-    for (auto &e : drained) {
-        size_t entry_bytes = e.key.size() + e.cv->cell.size();
-        buffer cell        = materialize_cell(e.cv);
-        out.push_back({.key = std::move(e.key), .cell = std::move(cell), .slot = e.slot});
-        list_.sub_bytes(entry_bytes);
-        retire_version(e.cv);
-        retire_node(e.node);
-    }
-    if (list_.empty()) {
-        reset_slot_range();
-    }
-    return out;
-}
-
-std::vector<mem_entry> MemTable::snapshot() const
-{
-    std::vector<mem_entry> out;
-    auto                   cur = list_.cursor(Slice());
+    auto                   cur = list_.prefix_cursor(frontier);
     while (cur.valid()) {
         const CellVersion *cv = cur.cell_version();
         if (cv != nullptr) {
-            out.push_back({.key = cur.key().to_string(), .cell = materialize_cell(cv), .slot = cv->slot});
+            auto &entry = out.emplace_back();
+            entry.key   = cur.key().to_string();
+            entry.cell  = materialize_cell(cv);
+            entry.slot  = cv->slot;
         }
         cur.advance();
     }
     return out;
-} // NOLINT(clang-analyzer-unix.Malloc)
+}
 
 } // namespace crowdb::tree
