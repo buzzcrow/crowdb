@@ -11,6 +11,8 @@ import { crowdbKvServerByNodeId } from '../data/crowdbKvServers';
 import { DEFAULT_DC_ID, DEFAULT_DC_NAME } from '../data/defaultDatacenter';
 import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, serverLabel, storeLabel, toUiHealth, toUiReplicaRole, toUiRole } from '../utils/entityDisplay';
 import type { NodeDiskGroups } from '../data/useCapacityTree';
+import type { ServerSummary } from '../api';
+import { isAuxiliaryKind, serviceNames } from '../services/client';
 
 /** Fixed UI-only datacenter root wrapping the rack/store children. */
 function datacenterRoot(children: TreeNode[]): TreeNode {
@@ -25,6 +27,7 @@ function datacenterRoot(children: TreeNode[]): TreeNode {
 }
 
 interface SidebarProps {
+  allServers?: ServerSummary[];
   racks?: Rack[];
   servers?: CrowdbKVServerView[];
   stores?: EnrichedStoreView[];
@@ -48,6 +51,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  allServers = [],
   racks = [],
   servers = [],
   stores = [],
@@ -113,6 +117,14 @@ export function Sidebar({
           const diskdbInstance = diskdbInstances.find((instance) => instance.instance_id === diskdbInstanceId);
           const ownedDgIds = new Set(diskdbInstance?.owned_dg_ids || []);
           const children: TreeNode[] = [];
+
+          for (const service of allServers.filter(service => service.node_id === nodeId)) {
+            if (!service.id || !isAuxiliaryKind(service.service_type)) continue;
+            children.push({ id: `SERVICE-${service.id}`, rawId: service.id, label: `${serviceNames[service.service_type]} · ${service.id}`,
+              type: 'Server', serviceType: service.service_type, icon: <Cog className="tw-h-4 tw-w-4 tw-text-muted" />,
+              health: toUiHealth(service.health), parentIds: { rack_id: rack.id, node_id: nodeId },
+            });
+          }
 
           // Cluster projects services and DiskDB-owned disk groups.
           const server = serverByNodeId.get(nodeId);
@@ -324,7 +336,7 @@ export function Sidebar({
         }),
       };
     }))];
-  }, [nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId]);
+  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId]);
 
   const filtered = useMemo(() => {
     if (!filterQuery.trim()) return treeNodes;

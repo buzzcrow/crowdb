@@ -21,6 +21,7 @@ use crowdb_console_shared::{config::ServerEntry, ConsoleConfig};
 /// request (the service registry may not be ready at console startup).
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) service_operations: Arc<arc_swap::ArcSwap<std::collections::HashSet<String>>>,
     pub config: Arc<RwLock<ConsoleConfig>>,
     pub(crate) config_path: Option<PathBuf>,
     pub runtime_root: Arc<PathBuf>,
@@ -55,6 +56,7 @@ pub struct AppState {
     pub monitor_status_path: Option<Arc<PathBuf>>,
     pub authority_timeout_ms: u64,
     pub(crate) management_token: Option<Arc<str>>,
+    pub(crate) iceberg_read_token: Option<Arc<str>>,
     pub(crate) launch_registry_path: Option<Arc<PathBuf>>,
 }
 
@@ -94,6 +96,7 @@ impl AppState {
     #[must_use]
     pub fn with_runtime_root(config: ConsoleConfig, runtime_root: PathBuf) -> Self {
         Self {
+            service_operations: Arc::new(arc_swap::ArcSwap::from_pointee(std::collections::HashSet::new())),
             config: Arc::new(RwLock::new(config)),
             config_path: None,
             runtime_root: Arc::new(runtime_root),
@@ -113,6 +116,7 @@ impl AppState {
             monitor_status_path: None,
             authority_timeout_ms: 3_000,
             management_token: None,
+            iceberg_read_token: None,
             launch_registry_path: None,
         }
     }
@@ -172,6 +176,21 @@ impl AppState {
             return Err("management token is invalid");
         }
         self.management_token = Some(Arc::from(token));
+        Ok(self)
+    }
+
+    /// Configures the deployment's read-only Catalog credential, retained only on the server.
+    /// # Errors
+    /// Rejects malformed credentials.
+    pub fn with_iceberg_reader(mut self, token: String) -> std::result::Result<Self, &'static str> {
+        if !(32..=256).contains(&token.len())
+            || !token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/=".contains(&byte))
+        {
+            return Err("Iceberg reader token is invalid");
+        }
+        self.iceberg_read_token = Some(Arc::from(token));
         Ok(self)
     }
 

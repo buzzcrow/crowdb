@@ -14,6 +14,7 @@ export interface ConsoleDialogState {
     assignDiskGroup?: { rackId: number; nodeId: number; dgId: number; dgName?: string };
     deployServer?: { nodeId: number };
     deployDiskdb?: { nodeId: number } | null;
+    deployAuxiliary?: { nodeId: number; kind: import('../services/client').AuxiliaryKind };
     delete?: { type: string; id: string | number; onDelete: () => Promise<void>; cascadeWarning?: string };
     initCluster?: boolean;
     compactZones?: { diskId: string; zoneCount?: number };
@@ -31,5 +32,6 @@ export interface MenuContext {
   runMutation: (action: string, target: string, operation: () => Promise<unknown>) => Promise<void>;
   serverNodeIds: Set<number>;
   diskdbNodeIds: Set<number>;
+  allServers?: import('../api').ServerSummary[];
   capacityUsage: CapacityUsageResponse | null;
 }

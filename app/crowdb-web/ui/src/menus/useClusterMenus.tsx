@@ -8,13 +8,23 @@ import type { MenuTarget } from '../topology/TopologyCanvas';
 import type { MenuItemOrSeparator } from '../components/ContextMenu';
 import { buildStatusSubmenu } from './status';
 import type { MenuContext } from './context';
-export function useClusterMenus({ readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, setDialog }: MenuContext) {
+import { isAuxiliaryKind, serviceNames, serviceRequest, type AuxiliaryKind } from '../services/client';
+export function useClusterMenus({ readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog }: MenuContext) {
   /** Build per-layer context menu items for a normalized target. */
   return useCallback(
     (t: MenuTarget): MenuItemOrSeparator[] => {
       if (readonly || (managed && domain !== Domain.KV) || (managed && !managementAuthorized)) return [];
       const items: MenuItemOrSeparator[] = [];
       const p = t.parentIds || {};
+      if (physicalActive && t.type === 'Server' && isAuxiliaryKind(t.serviceType)) {
+        const label = serviceNames[t.serviceType];
+        const id = String(t.rawId ?? t.id);
+        return [
+          { id: 'aux-restart', label: `Start / Restart ${label}`, onSelect: () => runMutation(`Restart ${label}`, id, () => serviceRequest(`/services/${encodeURIComponent(id)}/restart`, 'POST')) },
+          { id: 'aux-stop', label: `Stop ${label}`, onSelect: () => runMutation(`Stop ${label}`, id, () => serviceRequest(`/services/${encodeURIComponent(id)}/stop`, 'POST')) },
+          { id: 'aux-delete', label: `Remove ${label}`, destructive: true, onSelect: () => requestDelete(label, id, () => runMutation(`Remove ${label}`, id, () => serviceRequest(`/services/${encodeURIComponent(id)}`, 'DELETE')), 'Stops this instance and removes its deployment record. Stored data is preserved.') },
+        ];
+      }
 
       if (physicalActive) {
         if (t.type === 'Datacenter') {
@@ -62,6 +72,11 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
               onSelect: () => setDialog((d) => ({ ...d, deployDiskdb: { nodeId } })),
             });
           }
+          for (const kind of Object.keys(serviceNames) as AuxiliaryKind[]) {
+            items.push({ id: `deploy-${kind}`, label: `Deploy ${serviceNames[kind]}`, icon: <Server className="tw-h-4 tw-w-4" />,
+              onSelect: () => setDialog(dialog => ({ ...dialog, deployAuxiliary: { nodeId, kind } })),
+            });
+          }
           items.push({
             id: 'ping',
             label: 'Ping',
@@ -89,6 +104,9 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
             // cascade.
             onSelect: () => requestDelete('Node', nodeId, async () => {
               await runMutation('Delete Node', t.label || t.id, async () => {
+                if (allServers?.some(server => server.node_id === nodeId && isAuxiliaryKind(server.service_type))) {
+                  throw new Error('Remove auxiliary service deployments before removing this node');
+                }
                 if (hasDiskdb) await removeDiskdb(nodeId);
                 await removeNode(nodeId);
               });
@@ -134,7 +152,7 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
                 await runMutation('Delete DiskDB', t.label || t.id, () => removeDiskdb(nodeId));
               }),
             });
-          } else {
+          } else if (t.serviceType === 'kv') {
             // CrowdbKV service context menu: restart, stop, delete.
             items.push({
               id: 'restart',
@@ -187,7 +205,7 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
                 await runMutation('Delete DiskDB', t.label || t.id, () => removeDiskdb(nodeId));
               }),
             });
-          } else {
+          } else if (t.serviceType === 'kv') {
             items.push({
               id: 'restart',
               label: 'Restart CrowDB Storage',
@@ -277,7 +295,7 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
       }
       return items;
     },
-    [readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, buildStatusSubmenu],
+    [readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, buildStatusSubmenu],
   );
 
 }

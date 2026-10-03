@@ -716,6 +716,7 @@ async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String], protected_test: bool)
         ),
     )?;
     let launch = LocalLaunchSpec {
+        env_file: None,
         program: binary.to_string_lossy().into_owned(),
         args: vec![
             "--config".into(),
@@ -749,6 +750,7 @@ async fn spawn_access(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServic
     env.insert("CROWDB_S3_EC_DATA".into(), "2".into());
     env.insert("CROWDB_S3_EC_CODE".into(), "1".into());
     let runtime_launch = LocalLaunchSpec {
+        env_file: None,
         program: binary.to_string_lossy().into_owned(),
         args: vec!["s3".into()],
         workdir: workdir.to_string_lossy().into_owned(),
@@ -799,6 +801,7 @@ async fn spawn_web(data_dir: &Path) -> Result<(String, u32)> {
     let mut env = BTreeMap::new();
     env.insert("CROWDB_ICEBERG_MANAGE_TOKEN".into(), web_token(&root)?);
     let launch = LocalLaunchSpec {
+        env_file: None,
         program: binary.to_string_lossy().into_owned(),
         args: vec!["--config".into(), config_path.to_string_lossy().into_owned()],
         workdir: workdir.to_string_lossy().into_owned(),

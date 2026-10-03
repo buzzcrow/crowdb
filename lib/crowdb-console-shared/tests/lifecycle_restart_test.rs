@@ -19,6 +19,7 @@ async fn retained_launch_restarts_with_a_new_pid() {
         .unwrap();
     let old_pid = child.id();
     let spec = LocalLaunchSpec {
+        env_file: None,
         program: "/bin/sh".into(),
         args: vec![
             "-c".into(),
@@ -38,4 +39,41 @@ async fn retained_launch_restarts_with_a_new_pid() {
 
     lifecycle::stop_pid_with_timeout(new_pid, Duration::from_secs(5)).unwrap();
     let _ = child.wait();
+}
+
+#[tokio::test]
+async fn private_environment_is_loaded_before_stopping_the_old_process() {
+    use std::os::unix::fs::PermissionsExt;
+    let workdir = test_dirs::test_data_dir().join(format!("private-environment-{}", std::process::id()));
+    std::fs::create_dir_all(&workdir).unwrap();
+    let env = workdir.join("server.env");
+    std::fs::write(&env, "CROWDB_TEST_CREDENTIAL=private-value\n").unwrap();
+    std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut old = Command::new("/bin/sleep").arg("600").spawn().unwrap();
+    let spec = LocalLaunchSpec {
+        program: "/bin/sh".into(),
+        args: vec![
+            "-c".into(),
+            "printf '%s' \"$CROWDB_TEST_CREDENTIAL\" > observed; exec sleep 600".into(),
+        ],
+        workdir: workdir.to_string_lossy().into_owned(),
+        env: BTreeMap::new(),
+        env_file: Some(env.to_string_lossy().into_owned()),
+        readiness_url: None,
+    };
+    let result = lifecycle::restart_local_service("secret-test", old.id(), &spec).await;
+    assert!(result.is_err());
+    assert!(lifecycle::process_is_alive(old.id()));
+    assert!(!serde_json::to_string(&spec).unwrap().contains("private-value"));
+    std::fs::set_permissions(&env, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let pid = lifecycle::restart_local_service("secret-test", old.id(), &spec)
+        .await
+        .unwrap();
+    old.wait().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workdir.join("observed")).unwrap(),
+        "private-value"
+    );
+    lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(3)).unwrap();
+    std::fs::remove_file(env).unwrap();
 }

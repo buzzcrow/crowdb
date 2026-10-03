@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { Domain } from '../types';
+import { Domain, type ServiceKind } from '../types';
 import { useDomain } from './DomainContext';
 
 export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk';
@@ -19,7 +19,7 @@ export interface SelectedEntity {
   domain: Domain;
   name?: string;
   /** Service flavor for `Server` entities: KV vs DiskDB. */
-  serviceType?: 'kv' | 'diskdb';
+  serviceType?: ServiceKind;
 }
 
 interface SelectionContextType {

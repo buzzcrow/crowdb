@@ -9,6 +9,7 @@ import type { NodeDiskGroups } from '../data/useClusterTree';
 const TopologyCanvas = lazy(() => import('../topology/TopologyCanvas').then((m) => ({ default: m.TopologyCanvas })));
 
 export interface ClusterViewProps {
+  allServers?: import('../api').ServerSummary[];
   racks: Rack[];
   nodes: Node[];
   servers: CrowdbKVServerView[];

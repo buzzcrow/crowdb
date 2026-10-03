@@ -20,6 +20,8 @@ import { Rack, Node as NodeEntity, EnrichedStoreView, NodeStore, Domain, CrowdbK
 import { DEFAULT_DC_ID } from '../data/defaultDatacenter';
 import { buildFlowForDomain, FlowNodeData } from './buildFlow';
 import { layoutTree } from './layout';
+import { addServiceNodes } from '../services/topology';
+import { isAuxiliaryKind } from '../services/client';
 import { CrowdbKVNode } from './CrowdbKVNode';
 import { Button } from '../components/ui/Button';
 
@@ -30,10 +32,11 @@ export interface MenuTarget {
   parentIds?: Record<string, string | number>;
   label?: string;
   /** Service flavor for `Server` targets: KV vs DiskDB. */
-  serviceType?: 'kv' | 'diskdb';
+  serviceType?: SelectedEntity['serviceType'];
 }
 
 interface TopologyCanvasProps {
+  allServers?: import('../api').ServerSummary[];
   racks: Rack[];
   nodes: NodeEntity[];
   servers: CrowdbKVServerView[];
@@ -88,6 +91,7 @@ function selectedNodeId(entity: SelectedEntity): string | null {
       case 'Rack': return `R-${entity.id}`;
       case 'Node': return `N-${entity.id}`;
       case 'Server': {
+        if (isAuxiliaryKind(entity.serviceType)) return `SERVICE-${entity.id}`;
         // DDB server nodes use `DDB-` prefix; KV servers use `KV-`.
         if (entity.id?.startsWith?.('DDB-')) return p.node_id ? `DDB-${p.node_id}` : null;
         return p.node_id ? `KV-${p.node_id}` : null;
@@ -118,7 +122,7 @@ function selectedNodeId(entity: SelectedEntity): string | null {
   }
 }
 
-function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
+function TopologyCanvasInner({ allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
   const { domain } = useDomain();
   const { selectedEntity, selectEntity } = useSelection();
   const { fitView, setViewport, setCenter, getZoom, getNodes } = useReactFlow();
@@ -139,8 +143,8 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
   const fitRafIdRef = useRef<number | undefined>(undefined);
 
   const { nodes: rawNodes, edges } = useMemo(
-    () => buildFlowForDomain(domain, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups),
-    [domain, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups],
+    () => addServiceNodes(domain, buildFlowForDomain(domain, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups), allServers ?? [], nodes),
+    [domain, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups],
   );
 
   const positioned = useMemo(() => layoutTree(rawNodes, edges), [rawNodes, edges]);

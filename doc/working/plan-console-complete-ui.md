@@ -11,6 +11,9 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 
 - User approved the seven-domain design and authorized planning and implementation.
   The formal UI design §§18–21 defines the expanded scope and known gaps.
+- Commit each tab's verified implementation separately before proceeding to the
+  next tab. Shared adapters belong with the tab that introduces them; remaining
+  acceptance gaps stay explicit in this plan.
 - Preserve the user's running localhost cluster and its default directory.
   Browser inspection is read-only; tests must use isolated runtime roots/ports.
 - Initial Iceberg scope is Namespace/Table metadata CRUD. Row DML and object-to-
@@ -80,16 +83,19 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
   endpoints; unmatched placement remains explicit. Head/page limits: 1/2 MiB;
   at most 100 returned partitions; five-second observation deadline.
   Files: Web `chunk_kv.rs`, UI `chunk-kv/`, `chunk_kv_catalog_test.rs`, E2E 55.
-- [~] **Chunk-KV runtime observation**: add authoritative server placement and runtime
+- [ ] **Chunk-KV runtime observation**: add authoritative server placement and runtime
   observations, then bounded tree/journal inspection without reading all pages.
   Files: Web `chunk_kv/`, UI `chunk-kv/`, protocol/client observation adapters.
 - [x] **Paxos overview**: default KV to Group/Replica management; retain Data
   subview with explicit scope and Group 0 protection. Files: `views/KvView`,
   KV panels and corresponding topology/data E2E specs.
-- [ ] **Typed services**: consolidate all six service lifecycle operations in
+- [~] **Typed services**: consolidate all six service lifecycle operations in
   Cluster, eliminate non-KV fallthrough, add validated deployment forms and
   current-cluster dependency inputs. Files: Web lifecycle domain, shared launch
   adapters, `useClusterMenus`, deploy dialogs, physical server projections.
+  Local deployment/lifecycle and UI dispatch are implemented and tested. Native
+  Chunk-KV/Access deployment through these routes still needs integration
+  acceptance; remote auxiliary deployment is explicitly unsupported.
 - [ ] **Chunk sources**: establish actual Repo metadata routing and implement
   source/type filters, bounded per-source cursors and partial coverage. Files:
   Web `chunk`, ChunkDB/Chunk-KV metadata adapters, UI `chunk`.
@@ -118,6 +124,18 @@ Baseline before domain separation: shell embedding 5 tests passed; Chunk layout
   UI suite unless specifically needed/authorized; focused specs first.
 
 ## Results
+
+- Cluster typed-service checkpoint: local CDB, DiskIO, Chunk-KV and Access
+  deployment forms, stable service identities, tree/canvas/properties and
+  typed stop/restart/remove routes are implemented. Lifecycle integration:
+  4 passed, including a real CDB deployment against Group 0; private launch
+  environment/restart: 2 passed; Access routing: 8 passed. Web/shared/Monitor
+  all-target Clippy and Rust formatting passed.
+- Cluster browser acceptance: 5 passed, including existing real KV deployment
+  and cascade flows and the four auxiliary forms (2.4 s). Frontend TypeScript
+  passed. Native Chunk-KV/Access deployment via the new forms, crash recovery
+  between launch and publication, and overall topology population bounds remain
+  integration work. These results do not mark the full redesign complete.
 
 - Focused standalone/managed/DiskDB startup verification: 10 passed, including
   three-member Group 0 recovery, DiskDB replay with preserved custom ports, and

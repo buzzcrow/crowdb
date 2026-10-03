@@ -27,6 +27,7 @@ mod managed_logical;
 pub mod mgmt;
 pub mod owner_assignment;
 pub mod physical;
+mod services;
 pub mod spa;
 mod standalone;
 pub mod state;
@@ -178,6 +179,7 @@ pub fn router(state: AppState) -> axum::Router {
     }
 
     axum::Router::new()
+        .merge(services::routes())
         .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
         .route("/api/chunk-kv/runtime", get(chunk_kv::runtime))
         .route("/api/chunks", get(chunk::list))

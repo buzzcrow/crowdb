@@ -891,9 +891,22 @@ The remaining integration boundaries are:
   top-level catalog workbench. `domain=Capacity` selects physical capacity;
   `domain=Chunk` selects the Chunk explorer, including for embedding hosts.
   Legacy capacity links must explicitly migrate to `Capacity`.
-- Extend typed Cluster lifecycle dispatch beyond KV/DiskDB. Reuse existing
-  deployment capabilities where present; unsupported types must not fall
-  through to another service's operation.
+- Cluster supports local CDB, DiskIO, Chunk-KV and Access deployments alongside
+  KV and DiskDB. Each instance has a stable typed identity, its own PID and
+  retained launch inputs; auxiliary actions cannot dispatch to KV. Physical
+  trees, the topology canvas and properties show the same service identity.
+  Deployment validates local listeners and dependencies. Single-node reduced
+  redundancy is explicit. Remote auxiliary deployment remains unavailable.
+- Auxiliary lifecycle operations reserve the selected node and instance using
+  atomic admission. Stop/restart verifies executable, arguments and workspace
+  before signalling a PID. Failed startup kills its child, failed attempts retain
+  separate workspaces, and removal preserves data. Publication failure stops the
+  new child. Nodes with auxiliary services must remove those deployments first.
+- Native Access instances supply both fixed-cluster protocol origins. Private
+  environment files retain cluster credentials outside serialized launch inputs;
+  restart validates their permissions before stopping the old process. Catalog
+  reads inject only the server's reader token. Native mutations retain their
+  separate privileges. S3 credential provisioning remains a separate boundary.
 - KV opens on the Paxos overview, with group membership, replica placement,
   election terms and read frontiers. Data mounts on first use, inherits a
   selected Store/Group/Replica scope, and cancels scans when hidden or when
