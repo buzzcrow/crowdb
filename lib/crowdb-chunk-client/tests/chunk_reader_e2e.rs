@@ -112,7 +112,7 @@ fn small_policy(copies: u32) -> SmallWritePolicy {
     SmallWritePolicy {
         mirror_copies: copies,
         conversion_enabled: false,
-        ..SmallWritePolicy::default()
+        ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
     }
 }
 
@@ -121,7 +121,7 @@ fn large_policy() -> LargeWritePolicy {
         ec_scheme: EcScheme::new(4, 1),
         client: Arc::new(ChunkClientConfig {
             max_chunk_size: 64 * MIB as u64,
-            ..ChunkClientConfig::default()
+            ..ChunkClientConfig::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         }),
     }
 }
@@ -161,7 +161,11 @@ async fn reader_with_failures(stack: &E2eStack, failed: Vec<DiskId>) -> (ChunkIo
         corrupt: false,
         max_read: AtomicUsize::new(0),
     });
-    let reader = ChunkIoClient::from_parts(chunkdb, fault.clone());
+    let reader = ChunkIoClient::from_parts(
+        chunkdb,
+        fault.clone(),
+        crowdb_protocol::chunkdb::rpc::ChunkType::S3,
+    );
     (reader, fault)
 }
 
@@ -175,7 +179,7 @@ async fn reader_with_segment_failures(stack: &E2eStack, failed_segments: Vec<Seg
         corrupt: false,
         max_read: AtomicUsize::new(0),
     });
-    ChunkIoClient::from_parts(chunkdb, fault)
+    ChunkIoClient::from_parts(chunkdb, fault, crowdb_protocol::chunkdb::rpc::ChunkType::S3)
 }
 
 async fn reader_with_transient_failure(stack: &E2eStack, failed: DiskId) -> ChunkIoClient {
@@ -190,6 +194,7 @@ async fn reader_with_transient_failure(stack: &E2eStack, failed: DiskId) -> Chun
             corrupt: false,
             max_read: AtomicUsize::new(0),
         }),
+        crowdb_protocol::chunkdb::rpc::ChunkType::S3,
     )
 }
 
@@ -206,7 +211,14 @@ async fn reader_with_corruption(
         corrupt: true,
         max_read: AtomicUsize::new(0),
     });
-    (ChunkIoClient::from_parts(chunkdb, fault.clone()), fault)
+    (
+        ChunkIoClient::from_parts(
+            chunkdb,
+            fault.clone(),
+            crowdb_protocol::chunkdb::rpc::ChunkType::S3,
+        ),
+        fault,
+    )
 }
 
 #[tokio::test]

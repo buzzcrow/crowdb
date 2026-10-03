@@ -29,7 +29,7 @@ fn small_policy() -> SmallWritePolicy {
         max_batch_objects: 4,
         scale_out_queue_bytes: 2 * KIB,
         scale_out_queue_objects: 2,
-        ..SmallWritePolicy::default()
+        ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
     }
 }
 
@@ -40,7 +40,7 @@ fn large_policy() -> LargeWritePolicy {
             read_buffer_size: MIB,
             max_cached_buffer: 4 * MIB,
             max_chunk_size: 16 * MIB as u64,
-            ..ChunkClientConfig::default()
+            ..ChunkClientConfig::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         }),
     }
 }

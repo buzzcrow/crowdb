@@ -271,6 +271,12 @@ impl StreamMetadataStore for KvStreamMetadataStore {
         let observed = self.get_head(manifest.stream_name).await?;
         if observed
             .as_ref()
+            .is_some_and(|(head, _)| head.purpose != manifest.purpose)
+        {
+            return Err(StreamError::Corruption("stream purpose is immutable".into()));
+        }
+        if observed
+            .as_ref()
             .map(|(head, _)| (head.writer_epoch, head.generation))
             != expected
         {

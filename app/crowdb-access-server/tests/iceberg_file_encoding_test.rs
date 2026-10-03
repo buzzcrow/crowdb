@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use crowdb_access_s3::auth::{RawAuthRequest, SigV4Verifier};
-use crowdb_access_server::iceberg::{FileEncodingError, FileUploadBody};
+use crowdb_access_server::upload_flow::body_encoding::{UploadBody, UploadEncodingError};
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes, Frame};
 use hyper::{header::HeaderValue, HeaderMap};
@@ -17,7 +17,7 @@ struct TestFrames(VecDeque<Bytes>);
 #[test]
 fn upload_integrity_is_present_only_with_a_declared_checksum_or_signed_chunks() {
     let empty = HeaderMap::new();
-    assert!(!FileUploadBody::new(Full::new(Bytes::new()), &empty, None, 100)
+    assert!(!UploadBody::new(Full::new(Bytes::new()), &empty, None, 100)
         .unwrap()
         .has_integrity());
     let mut md5 = HeaderMap::new();
@@ -25,17 +25,17 @@ fn upload_integrity_is_present_only_with_a_declared_checksum_or_signed_chunks() 
         "content-md5",
         HeaderValue::from_static("1B2M2Y8AsgTpgAmY7PhCfg=="),
     );
-    assert!(FileUploadBody::new(Full::new(Bytes::new()), &md5, None, 100)
+    assert!(UploadBody::new(Full::new(Bytes::new()), &md5, None, 100)
         .unwrap()
         .has_integrity());
     let mut crc = HeaderMap::new();
     crc.insert("x-amz-checksum-crc32c", HeaderValue::from_static("AAAAAA=="));
-    assert!(FileUploadBody::new(Full::new(Bytes::new()), &crc, None, 100)
+    assert!(UploadBody::new(Full::new(Bytes::new()), &crc, None, 100)
         .unwrap()
         .has_integrity());
     let (headers, verifier, wire) = signed::fixture();
     assert!(
-        FileUploadBody::new(Full::new(Bytes::from(wire)), &headers, Some(verifier), 100_000)
+        UploadBody::new(Full::new(Bytes::from(wire)), &headers, Some(verifier), 100_000)
             .unwrap()
             .has_integrity()
     );
@@ -61,12 +61,12 @@ async fn content_md5_checks_decoded_bytes_before_successful_eof() {
             headers.insert("content-md5", STANDARD.encode(digest).parse().unwrap());
             let bytes = if streaming { wire } else { decoded };
             let input = TestFrames(bytes.chunks(997).map(Bytes::copy_from_slice).collect());
-            let body = FileUploadBody::new(input, &headers, streaming.then_some(verifier), 100_000).unwrap();
+            let body = UploadBody::new(input, &headers, streaming.then_some(verifier), 100_000).unwrap();
             let result = body.collect().await;
             if valid {
                 assert_eq!(result.unwrap().to_bytes(), vec![b'a'; 66560]);
             } else {
-                assert!(matches!(result, Err(FileEncodingError::Checksum)));
+                assert!(matches!(result, Err(UploadEncodingError::Checksum)));
             }
         }
     }
@@ -77,7 +77,7 @@ fn content_md5_rejects_malformed_and_duplicate_headers() {
     for value in ["invalid", "YQ=="] {
         let mut headers = HeaderMap::new();
         headers.insert("content-md5", value.parse().unwrap());
-        assert!(FileUploadBody::new(Full::new(Bytes::new()), &headers, None, 100).is_err());
+        assert!(UploadBody::new(Full::new(Bytes::new()), &headers, None, 100).is_err());
     }
     let mut headers = HeaderMap::new();
     headers.append(
@@ -88,7 +88,7 @@ fn content_md5_rejects_malformed_and_duplicate_headers() {
         "content-md5",
         HeaderValue::from_static("1B2M2Y8AsgTpgAmY7PhCfg=="),
     );
-    assert!(FileUploadBody::new(Full::new(Bytes::new()), &headers, None, 100).is_err());
+    assert!(UploadBody::new(Full::new(Bytes::new()), &headers, None, 100).is_err());
 }
 
 impl Body for TestFrames {
@@ -107,7 +107,7 @@ async fn aws_published_signed_trailer_vector_survives_arbitrary_http_boundaries(
     for width in [1, 7, 16 * 1024, 100_000] {
         let (headers, verifier, bytes) = signed::fixture();
         let input = TestFrames(bytes.chunks(width).map(Bytes::copy_from_slice).collect());
-        let mut body = FileUploadBody::new(input, &headers, Some(verifier), 100_000).unwrap();
+        let mut body = UploadBody::new(input, &headers, Some(verifier), 100_000).unwrap();
         assert_eq!(body.decoded_length(), Some(66560));
         let mut output = Vec::new();
         while let Some(frame) = body.frame().await {
@@ -148,7 +148,7 @@ async fn corrupt_chunks_checksums_signatures_suffixes_and_truncation_fail_closed
             _ => unreachable!(),
         }
         let mut body =
-            FileUploadBody::new(Full::new(Bytes::from(bytes)), &headers, Some(verifier), 100_000).unwrap();
+            UploadBody::new(Full::new(Bytes::from(bytes)), &headers, Some(verifier), 100_000).unwrap();
         loop {
             match body.frame().await {
                 Some(Ok(_)) => {}
@@ -164,8 +164,8 @@ async fn corrupt_chunks_checksums_signatures_suffixes_and_truncation_fail_closed
 #[tokio::test]
 async fn encoded_byte_budget_and_plain_checksum_headers_are_enforced() {
     let (headers, verifier, bytes) = signed::fixture();
-    let body = FileUploadBody::new(Full::new(Bytes::from(bytes)), &headers, Some(verifier), 66560).unwrap();
-    assert!(matches!(body.collect().await, Err(FileEncodingError::Length)));
+    let body = UploadBody::new(Full::new(Bytes::from(bytes)), &headers, Some(verifier), 66560).unwrap();
+    assert!(matches!(body.collect().await, Err(UploadEncodingError::Length)));
     for (name, value) in [("crc32", "y/Q5Jg=="), ("crc32c", "4waSgw==")] {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -174,12 +174,10 @@ async fn encoded_byte_budget_and_plain_checksum_headers_are_enforced() {
                 .unwrap(),
             HeaderValue::from_static(value),
         );
-        let body =
-            FileUploadBody::new(Full::new(Bytes::from_static(b"123456789")), &headers, None, 100).unwrap();
+        let body = UploadBody::new(Full::new(Bytes::from_static(b"123456789")), &headers, None, 100).unwrap();
         assert_eq!(body.collect().await.unwrap().to_bytes(), b"123456789".as_slice());
-        let body =
-            FileUploadBody::new(Full::new(Bytes::from_static(b"123456788")), &headers, None, 100).unwrap();
-        assert!(matches!(body.collect().await, Err(FileEncodingError::Checksum)));
+        let body = UploadBody::new(Full::new(Bytes::from_static(b"123456788")), &headers, None, 100).unwrap();
+        assert!(matches!(body.collect().await, Err(UploadEncodingError::Checksum)));
     }
 }
 
@@ -213,7 +211,7 @@ fn altered_streaming_seed_and_duplicate_framing_headers_are_rejected() {
     }
     let (mut headers, verifier, _) = signed::fixture();
     headers.append("x-amz-decoded-content-length", HeaderValue::from_static("66560"));
-    assert!(FileUploadBody::new(Full::new(Bytes::new()), &headers, Some(verifier), 100_000).is_err());
+    assert!(UploadBody::new(Full::new(Bytes::new()), &headers, Some(verifier), 100_000).is_err());
 }
 
 #[tokio::test]
@@ -222,7 +220,7 @@ async fn signed_without_trailers_and_unsigned_trailers_require_complete_framing(
         for empty in [false, true] {
             let (headers, verifier, bytes) = signed::other_fixture(unsigned, empty);
             let input = TestFrames(bytes.chunks(1).map(Bytes::copy_from_slice).collect());
-            let body = FileUploadBody::new(input, &headers, Some(verifier), 1000).unwrap();
+            let body = UploadBody::new(input, &headers, Some(verifier), 1000).unwrap();
             assert_eq!(
                 body.collect().await.unwrap().to_bytes().as_ref(),
                 if empty { b"".as_slice() } else { b"abc".as_slice() }
@@ -230,7 +228,7 @@ async fn signed_without_trailers_and_unsigned_trailers_require_complete_framing(
             let (headers, verifier, mut bytes) = signed::other_fixture(unsigned, empty);
             bytes.truncate(bytes.len() - 2);
             let body =
-                FileUploadBody::new(Full::new(Bytes::from(bytes)), &headers, Some(verifier), 1000).unwrap();
+                UploadBody::new(Full::new(Bytes::from(bytes)), &headers, Some(verifier), 1000).unwrap();
             assert!(body.collect().await.is_err());
         }
     }

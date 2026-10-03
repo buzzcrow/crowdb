@@ -15,9 +15,7 @@ use std::sync::Arc;
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::lifecycle::LifecycleHandler;
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
-use crowdb_chunkdb::routing::{
-    default_binding_table, BindingCache, BindingTable, BucketBinding, MigrationState,
-};
+use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::topology::TopologyCache;
@@ -58,7 +56,7 @@ fn build_handler() -> LifecycleHandler {
     let pool = Arc::new(DiskdbClientPool::new(svc));
     let allocator = Arc::new(ChunkAllocator::new(pool));
     let bindings = BindingCache::new();
-    bindings.replace(default_binding_table(0, 0));
+    bindings.replace(default_binding_table(0, 1)).unwrap();
     let store = Arc::new(ChunkStore::new(kv, bindings));
     let topology = build_test_topology();
     LifecycleHandler::new(store, allocator, topology)
@@ -110,15 +108,7 @@ async fn routing_and_storage_integration() {
     use crowdb_chunkdb::routing::{hash_to_bucket, route};
 
     let cache = BindingCache::new();
-    cache.replace(BindingTable::new(vec![BucketBinding {
-        start: 0,
-        end: 65535,
-        kv_store_id: 0,
-        kv_group_id: 1,
-        old_kv_store_id: None,
-        old_kv_group_id: None,
-        migration_state: MigrationState::NotMigrating,
-    }]));
+    cache.replace(default_binding_table(0, 1)).unwrap();
 
     let id = ChunkId { high: 1, low: 3 };
     let bucket = hash_to_bucket(&id);
@@ -127,7 +117,6 @@ async fn routing_and_storage_integration() {
     let r = route(&cache, &id).unwrap();
     assert_eq!(r.kv_store_id, 0);
     assert_eq!(r.kv_group_id, 1);
-    assert_eq!(r.migration_state, MigrationState::NotMigrating);
 }
 
 #[tokio::test]
@@ -146,28 +135,4 @@ async fn placement_selector_integration() {
     let ec_plan = EcPlacement::select(&snap, 4, 2, &PlacementConstraints::new()).unwrap();
     assert_eq!(ec_plan.entries.len(), 6);
     assert!(ec_plan.safe_mode);
-}
-
-#[tokio::test]
-async fn migration_cursor_advances_on_out_of_range() {
-    // Verify the migration cursor fix: out-of-range items must not
-    // cause an infinite loop. We test the key_to_chunk_id + bucket
-    // range check logic directly.
-    use crowdb_chunkdb::routing::hash_to_bucket;
-
-    let id = ChunkId { high: 1, low: 3 };
-    let bucket = hash_to_bucket(&id);
-
-    // Simulate the in-range check from migration.rs.
-    let start = 0u16;
-    let end = 65535u16;
-    let in_range = bucket >= start && bucket < end;
-    assert!(in_range, "bucket {bucket} should be in range [0, 65535)");
-
-    // Out-of-range check.
-    let in_range = (60000..65535).contains(&bucket);
-    // Most buckets won't be in this narrow range.
-    if !in_range {
-        // The cursor must still advance — this is the fix for C2.
-    }
 }

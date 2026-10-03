@@ -34,7 +34,8 @@ pub enum S3ErrorCode {
 }
 
 impl S3ErrorCode {
-    const fn code(self) -> &'static str {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
         match self {
             Self::NotImplemented => "NotImplemented",
             Self::NoSuchBucket => "NoSuchBucket",
@@ -60,7 +61,8 @@ impl S3ErrorCode {
         }
     }
 
-    const fn message(self) -> &'static str {
+    #[must_use]
+    pub const fn message(self) -> &'static str {
         match self {
             Self::NotImplemented => NOT_IMPLEMENTED_MESSAGE,
             Self::NoSuchBucket => "The specified bucket does not exist.",

@@ -1,5 +1,6 @@
 use crowdb_access_iceberg::file::{FileOperation, TableLocation};
 use crowdb_access_iceberg::key::{CatalogId, TableId};
+use crowdb_access_server::iceberg::parse_file_list;
 use crowdb_access_server::iceberg::{FileRequest, MultipartRequest};
 use hyper::Method;
 
@@ -8,6 +9,61 @@ fn table() -> TableLocation {
         catalog: CatalogId::random(),
         table: TableId::random(),
     }
+}
+
+#[test]
+fn native_list_requests_preserve_table_prefix_and_validate_all_selectors() {
+    let table = table();
+    let base = format!(
+        "/{}?list-type=2&prefix={}data%2F%E9%9B%AA%252B&encoding-type=url&delimiter=%2F&max-keys=3",
+        table.bucket(),
+        table.object_prefix()
+    );
+    let list = parse_file_list(&Method::GET, &base.parse().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(list.table, table);
+    assert_eq!(list.prefix, format!("{}data/雪%2B", table.object_prefix()));
+    assert_eq!(list.delimiter.as_deref(), Some("/"));
+    assert!(list.encoding_url);
+    assert_eq!(list.max_keys, 3);
+    for query in [
+        "list-type=2",
+        "list-type=1&prefix=t/",
+        "list-type=2&prefix=",
+        "list-type=2&prefix=t/../",
+        "list-type=2&prefix=%ff",
+        "list-type=2&prefix=%",
+        "list-type=2&prefix=a&list-type=2",
+    ] {
+        let uri = format!("/{}?{query}", table.bucket()).parse().unwrap();
+        assert!(parse_file_list(&Method::GET, &uri).is_err(), "{query}");
+    }
+    for extra in [
+        "&max-keys=1001",
+        "&max-keys=-1",
+        "&max-keys=1&max-keys=2",
+        "&encoding-type=unknown",
+        "&delimiter=other",
+        "&uploadId=x",
+        "&versionId=1",
+        "&fetch-owner=true",
+        "&continuation-token=x&start-after=x",
+    ] {
+        let uri = format!(
+            "/{}?list-type=2&prefix={}{}",
+            table.bucket(),
+            table.object_prefix(),
+            extra
+        )
+        .parse()
+        .unwrap();
+        assert!(parse_file_list(&Method::GET, &uri).is_err(), "{extra}");
+    }
+    assert!(parse_file_list(&Method::PUT, &base.parse().unwrap()).is_err());
+    assert!(parse_file_list(&Method::GET, &path(table, "file"))
+        .unwrap()
+        .is_none());
 }
 
 fn path(table: TableLocation, suffix: &str) -> hyper::Uri {

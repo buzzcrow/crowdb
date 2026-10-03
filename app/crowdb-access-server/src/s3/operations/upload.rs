@@ -16,6 +16,7 @@ use http_body_util::BodyExt;
 use hyper::body::{Bytes, Incoming};
 use tokio::sync::mpsc;
 
+use crate::upload_flow::body_encoding::{UploadBody, UploadEncodingError};
 use crate::upload_flow::digest_pipe::DigestPipe;
 use crate::upload_flow::{drive_transfer, write_buffers, OfferStatus, UploadBuffer, WriteFlow};
 
@@ -32,7 +33,7 @@ fn failed(code: PutErrorCode, message: &impl ToString) -> PutOutcome {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn write_object_body(
-    body: &mut Incoming,
+    body: &mut UploadBody<Incoming>,
     writer: &mut ObjectWriter,
     native_receiver: Option<&NativeBodyReceiver>,
     declared_length: Option<u64>,
@@ -50,7 +51,18 @@ pub(super) async fn write_object_body(
     let write = write_buffers(writer, receiver, &progress, |error| {
         failed(PutErrorCode::ChunkWrite, &error)
     });
-    let (length, _) = drive_transfer(receive, write, &progress).await?;
+    let transfer = drive_transfer(receive, write, &progress).await;
+    if let Some(error) = body.failure() {
+        return Err(failed(
+            if matches!(error, UploadEncodingError::Checksum) {
+                PutErrorCode::BadDigest
+            } else {
+                PutErrorCode::BodyRead
+            },
+            &error,
+        ));
+    }
+    let (length, _) = transfer?;
     if declared_length.is_some_and(|expected| expected != length) {
         return Err(failed(
             PutErrorCode::BodyRead,
@@ -76,7 +88,7 @@ pub(super) async fn write_object_body(
 }
 
 async fn receive_body(
-    body: &mut Incoming,
+    body: &mut UploadBody<Incoming>,
     native_receiver: Option<&NativeBodyReceiver>,
     declared_length: Option<u64>,
     flow: WriteFlow<'_>,

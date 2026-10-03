@@ -4,6 +4,15 @@
 use crowdb_kv_client::{compute_sub_range_assignment, DEFAULT_SUB_RANGE_COUNT};
 use crowdb_protocol::common::InstanceValue;
 
+#[tokio::test]
+async fn legacy_partition_writer_cannot_publish_assignments() {
+    use crowdb_kv_client::{BindingStrategy, ChunkdbRangeStrategy, ClientConfig, CrowdbKvClient};
+    let client = CrowdbKvClient::new(ClientConfig::new(Vec::new()));
+    let strategy = ChunkdbRangeStrategy::new();
+    let error = strategy.write_bindings(&client, &[]).await.unwrap_err();
+    assert!(error.to_string().contains("legacy range assignment is disabled"));
+}
+
 #[test]
 fn twelve_partitions_cover_the_hash_space_with_balanced_widths() {
     assert_eq!(DEFAULT_SUB_RANGE_COUNT, 12);

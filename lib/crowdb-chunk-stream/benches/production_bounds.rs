@@ -46,7 +46,7 @@ async fn run(config: BenchConfig) -> ExitCode {
         management_seeds: vec![config.management_seed.clone()],
         diskio_connections_per_endpoint: config.diskio_connections,
         diskio_rpc_workers: config.diskio_rpc_workers,
-        small_write: SmallWritePolicy::default(),
+        small_write: SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::Stream),
     })
     .await
     {

@@ -31,10 +31,26 @@ use crowdb_test_harness::test_dirs::TestRuntime;
 use hyper::body::Bytes;
 use serde_json::json;
 
+#[path = "common/s3_sdks.rs"]
+mod s3_sdks;
+
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const TEST_COUNT: usize = 19;
-const SKIPPED_CASE: &str = "test_slow_signed_upload_releases_native_buffers";
+const TEST_COUNT: usize = 32;
+const CLIENT_CASES: &[&str] = &["test_aws_cli_workflow", "test_rclone_workflow"];
+const COPY_CASES: &[&str] = &[
+    "test_server_side_copy_preserves_bytes_and_supported_metadata",
+    "test_multipart_copy_selects_ranges_and_replaces_parts",
+    "test_copy_captures_source_before_overwrite_and_delete",
+];
 const BOTO3_CASES: &[&str] = &[
+    "test_default_boto3_checksums_and_multipart",
+    "test_presigned_transfers_tamper_and_expiry",
+    "test_aws_chunked_trailers_are_verified_before_publication",
+    "test_user_metadata_publication_copy_and_multipart",
+    "test_invalid_user_metadata_preserves_objects_and_sessions",
+    "test_batch_delete_preserves_exact_keys_and_quiet",
+    "test_batch_delete_thousand_keys_and_unversioned_retry",
+    "test_batch_delete_rejects_entire_invalid_request",
     "test_signed_raw_http_wire_contract",
     "test_multipart_replaces_parts_and_publishes_selected_bytes",
     "test_independent_frontends_share_one_namespace",
@@ -131,12 +147,27 @@ fn main() {
 
 async fn run_suite() {
     let mut stack = start_full_stack().await;
+    if let Ok(language) = std::env::var("CROWDB_S3_E2E_SDK") {
+        s3_sdks::run(&language, &stack.listen, &stack.access_key, &stack.secret_key);
+        stack.rpc.stop();
+        return;
+    }
+    if std::env::var("CROWDB_S3_E2E_ONLY").is_ok_and(|method| method == "restart") {
+        stack.run_restart_cases().await;
+        stack.cleanup();
+        return;
+    }
     if let Ok(method) = std::env::var("CROWDB_S3_E2E_ONLY") {
         assert!(
-            BOTO3_CASES.contains(&method.as_str()),
+            BOTO3_CASES.contains(&method.as_str())
+                || COPY_CASES.contains(&method.as_str())
+                || CLIENT_CASES.contains(&method.as_str()),
             "unknown focused S3 case: {method}"
         );
         stack.run_one_boto3_case(&method);
+        if method == "test_default_boto3_checksums_and_multipart" {
+            assert_native_write_metrics(&stack.listen, 0);
+        }
         stack.rpc.stop();
         return;
     }
@@ -145,18 +176,11 @@ async fn run_suite() {
     stack.run_restart_cases().await;
     stack.run_benchmarks().await;
     stack.cleanup();
-    println!(
-        "\ntest result: ok. {} passed; 0 failed; 1 ignored\n",
-        TEST_COUNT - 1
-    );
+    println!("\ntest result: ok. {TEST_COUNT} passed; 0 failed; 0 ignored\n");
 }
 
 impl FullStackSetup {
     fn run_one_boto3_case(&self, method: &str) {
-        if method == SKIPPED_CASE {
-            println!("test boto3::{method} ... ignored (MemTable batch/flush handoff race)");
-            return;
-        }
         let context = Boto3CaseContext {
             listen: &self.listen,
             second_listen: &self.second_listen,
@@ -171,6 +195,16 @@ impl FullStackSetup {
     }
 
     fn run_boto3_cases(&self) {
+        for method in COPY_CASES {
+            self.run_one_boto3_case(method);
+        }
+        // Storage-to-storage streaming copies use the ordinary writer's bounded
+        // payload copy path. HTTP uploads must add no further payload copies.
+        let copy_baseline = metric_value(
+            &http_get(&self.listen, "/_crowdb/metrics"),
+            "crowdb_s3_large_write_payload_copy_operations_total",
+        );
+        assert!(copy_baseline > 0);
         let context = Boto3CaseContext {
             listen: &self.listen,
             second_listen: &self.second_listen,
@@ -180,17 +214,16 @@ impl FullStackSetup {
             chunk_kv: &self.chunk_kv,
         };
         for method in BOTO3_CASES {
-            if *method == SKIPPED_CASE {
-                println!("test boto3::{method} ... ignored (MemTable batch/flush handoff race)");
-                continue;
-            }
             let case = TestCase::start(&format!("boto3::{method}"));
             run_boto3_case(method, &context);
             case.pass();
         }
+        assert_native_write_metrics(&self.listen, copy_baseline);
+        for method in CLIENT_CASES {
+            self.run_one_boto3_case(method);
+        }
         let case = TestCase::start("boto3::lost_put_and_multipart_replies_are_idempotent");
         run_restart_phase("lost-reply", &self.listen, &self.access_key, &self.secret_key);
-        assert_native_write_metrics(&self.listen);
         case.pass();
     }
 
@@ -485,7 +518,7 @@ fn assert_access_ready(listen: &str) {
     );
 }
 
-fn assert_native_write_metrics(listen: &str) {
+fn assert_native_write_metrics(listen: &str, copy_baseline: u64) {
     let exported = http_get(listen, "/_crowdb/metrics");
     let native_body_bytes = metric_value(&exported, "crowdb_s3_native_direct_bytes_total")
         + metric_value(&exported, "crowdb_s3_native_prefix_copy_bytes_total");
@@ -495,7 +528,7 @@ fn assert_native_write_metrics(listen: &str) {
     assert!(metric_value(&exported, "crowdb_s3_small_write_completed_total") > 0);
     assert_eq!(
         metric_value(&exported, "crowdb_s3_large_write_payload_copy_operations_total"),
-        0
+        copy_baseline
     );
     assert!(metric_value(&exported, "crowdb_s3_chunk_read_location_normalizations_total") > 0);
     assert!(metric_value(&exported, "crowdb_s3_chunk_read_range_locations_examined_total") > 0);
@@ -575,6 +608,10 @@ fn start_access_server(
         .env("CROWDB_S3_REGION", "us-east-1")
         .env("CROWDB_S3_EC_DATA", "2")
         .env("CROWDB_S3_EC_CODE", "1")
+        .env(
+            "RUST_LOG",
+            "warn,crowdb_access_s3::route=debug,crowdb_access_s3::copy=debug",
+        )
         .env("CROWDB_S3_NATIVE_BUDGET_BYTES", (1024 * 1024).to_string())
         .env("CROWDB_S3_MAX_CHUNK_SIZE", (4 * 1024 * 1024).to_string())
         .stdout(Stdio::from(log.try_clone().expect("clone access-server log")))
@@ -610,7 +647,7 @@ fn run_boto3_case(method: &str, context: &Boto3CaseContext<'_>) {
         context.access_server.log_content(),
         context.chunk_kv.log_content(),
     );
-    if method == "test_ordinary_put_size_matrix" {
+    if method == "test_ordinary_put_size_matrix" || method.contains("workflow") {
         print!("{}", String::from_utf8_lossy(&python.stdout));
     }
 }
@@ -689,7 +726,7 @@ async fn run_direct_chunk_benchmark(seeds: &[String], artifacts_dir: &Path) {
             management_seeds: seeds.to_vec(),
             diskio_connections_per_endpoint: 2,
             diskio_rpc_workers: 1,
-            small_write: SmallWritePolicy::default(),
+            small_write: SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3),
         })
         .await
         .expect("connect benchmark chunk client"),
@@ -698,7 +735,7 @@ async fn run_direct_chunk_benchmark(seeds: &[String], artifacts_dir: &Path) {
         ec_scheme: EcScheme::new(2, 1),
         client: Arc::new(ChunkClientConfig {
             max_chunk_size: 4 * 1024 * 1024,
-            ..ChunkClientConfig::default()
+            ..ChunkClientConfig::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         }),
     };
     let mut samples = Vec::new();

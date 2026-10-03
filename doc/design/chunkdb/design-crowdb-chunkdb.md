@@ -118,7 +118,7 @@ lifecycle management, placement policy, and EC coordination, nothing more.
 - **No GC operations in v1.** Garbage collection (reclaim, collapse, merge)
   is deferred to a future requirement. Chunks are allocated and deleted as
   whole units in v1.
-- **No EC strip type restrictions.** Chunk type (repo/WAL/btree-page/page-index)
+- **No EC strip type restrictions.** Chunk type (Wal/BtreePage/PageIndex/Stream/S3/IcebergTable)
   is independent of strip type (mirror/EC). Any chunk can use either strip type
   based on configuration. v1 supports both mirror and EC strips for all chunk types.
 - **No native SMR / zoned-namespace SSD support (v1).** Start with
@@ -205,15 +205,18 @@ The FFI wrapper isolates unsafe C code from the rest of the Rust codebase.
 
 ### 3.6 Stateless with KV persistence
 
-chunkdb is stateless on disk. All chunk metadata is persisted to CROWDB KV.
+chunkdb is stateless on disk. All chunk metadata and maintenance state is persisted to selected nonzero
+direct Paxos KV groups by ChunkId slot. System and user-data lifecycle/task
+runtimes have separate authority, queues, and execution capacity.
 On restart, chunkdb rebuilds in-memory structures (topology cache,
 allocator state) by replaying KV records and fetching fresh topology from
 group-0.
 
 **Rationale:** Simplifies operations (no local data to manage), enables
 crash recovery without local WAL, and relies on CROWDB KV's durability
-guarantees. Stateless design also makes scaling out easier. New instances
-can start without data migration.
+guarantees. Restart under the same logical instance reloads durable state.
+Changing ownership requires a fenced handoff; adding storage groups requires
+metadata migration.
 
 ### 3.7 Common protocol crate; crowdb-rpc
 
@@ -238,12 +241,12 @@ definition; Rust code works with proto types directly.
 
 ### 3.9 Chunk types for different use cases
 
-Seven chunk types are defined for CROWDB's storage hierarchy:
-- **Repo chunk**: Historical general user data storage.
+Six concrete chunk types are supported. Repo chunk is the collective
+discussion term for user data, not an implementation type:
 - **WAL chunk**: Write-ahead log entries.
 - **BTree page chunk**: B-tree page storage for the crowdb-tree engine.
-- **Page index chunk**: Page index metadata.
-- **Stream chunk**: Native chunk stream data.
+- **Page index chunk**: Persistent tree page mapping payload.
+- **Stream chunk**: Non-system business stream data.
 - **S3 chunk**: S3 object data.
 - **Iceberg table chunk**: Iceberg immutable file data.
 
@@ -349,9 +352,9 @@ Each strip tracks:
 A **chunk** is a container for strips. Chunk properties:
 - **128-bit ID**: Chunk type (8 bits) + Timestamp (48 bits) + Randomness (72 bits).
 - **State**: `Init` → `Active` → `Sealed` → `Deleted`.
-- **Type**: Repo, WAL, B-tree page, page index, stream, S3, or Iceberg table.
-  The ID's high-byte prefix and the stored type must agree. Historical Repo
-  references remain readable by both access protocols.
+- **Type**: Wal, BtreePage, PageIndex, Stream, S3, or IcebergTable.
+  The ID's high-byte prefix and the stored type must agree. Retired type-0
+  records are rejected; legacy conversion is unsupported.
 - **Capacity**: Total data capacity across all strips.
 - **Write granularity**: Minimum write alignment (e.g., 4 KB).
 - **Strips**: Ordered list of strips (mirror or EC).
@@ -385,162 +388,38 @@ The 128-bit chunk ID uses a custom format optimized for chunkdb:
 
 **Generation**: Chunk IDs are generated using `getrandom` for cryptographically secure randomness combined with system timestamp. The generation function will be added to `crowdb-common` for reuse across components.
 
-**Chunk type values (8 bits, 0-255):**
-- 0: Repo chunk (user data)
-- 1: WAL chunk
-- 2: BTree page chunk
-- 3: Page index chunk
-- 4-255: Reserved for future use
-
-The chunk ID is hashed to a **logical hash bucket** (16-bit bucket ID, 0-65535),
-which is then mapped to a physical KV group via a binding table stored in group-0.
-This two-level approach allows KV group topology changes without chunk data migration.
+The first byte has an explicit supported purpose (see §5.5). Value zero is
+retired and cannot be allocated or silently reclassified.
 
 ### 5.4a Logical Hash Bucket System
 
-**Two-level routing design:**
-1. **Chunk ID → Logical Bucket**: Hash chunk ID (128-bit) to a 16-bit logical bucket ID (0-65535)
-2. **Logical Bucket → Physical KV Group**: Consult group-0 binding table to map bucket to KV group
+The fixed logical hash space contains 1024 slots. XXH64 seed zero hashes the
+canonical big-endian 128-bit ChunkId, modulo 1024. Group/server counts never
+change this calculation. Group 0 holds one 128-byte bitmap per service instance
+and one per selected nonzero storage group, under independent generation heads.
 
-**Benefits:**
-- **Predictable migration**: Only chunks in affected bucket ranges need migration when KV groups change
-- **Deterministic queries**: Chunk ID always hashes to same logical bucket, then consults current mapping
-- **Gradual rebalancing**: Update mappings incrementally to move load between KV groups
-- **Independent scaling**: Logical bucket space (65536 buckets) can map to any number of physical KV groups
+Clients resolve slots to ChunkDB instances; ChunkDB independently resolves
+slots to direct Paxos KV groups. All canonical chunk/task/index/reservation
+records follow the owning ChunkId route and preserve group-local conditional
+atomic writes. Payload remains on DiskIO. A service owner can span groups.
 
-**Hash function:**
-```
-logical_bucket = hash(chunk_id) % 65536
-```
-Using a fast, uniform hash function (e.g., xxHash, FarmHash) on the 128-bit chunk ID.
-
-**Group-0 binding table schema:**
-```
-LogicalBucketBindingValue:
-  bucket_range_start: uint16  # Start of bucket range (inclusive)
-  bucket_range_end: uint16    # End of bucket range (exclusive)  
-  kv_group_id: uint16         # Target physical KV group
-  version: uint64             # Binding version for cache invalidation
-```
-
-Stored in group-0 with key pattern: `chunkdb_bucket_binding:<range_start>`
-
-Example mapping:
-- Buckets 0-16383 → KV group 1
-- Buckets 16384-32767 → KV group 2
-- Buckets 32768-49151 → KV group 3
-- Buckets 49152-65535 → KV group 4
-
-**Query flow:**
-1. Hash chunk ID → logical bucket (e.g., 25000)
-2. Consult group-0 binding table (cached locally) → KV group 2
-3. Query chunk metadata from KV group 2 using chunk ID as key
-
-**Adding/removing KV groups:**
-- To add KV group: Split an existing bucket range, update binding table in group-0
-- To remove KV group: Merge its bucket range into neighboring ranges, update binding table
-- **Chunk record migration required**: When bucket mappings change, affected chunk
-  records must be physically moved from old KV group to new KV group
-- Migration strategy: Background task copies chunk records to new KV group,
-  then deletes from old KV group after successful copy
-
-**Load rebalancing:**
-- Gradually shift bucket range boundaries to balance load across KV groups
-- Example: If KV group 2 is overloaded, move some buckets to KV group 3 by updating ranges
-- Changes take effect immediately as chunkdb servers refresh their binding cache
-
-**Instance sharding:** The bucket space is also used to shard chunkdb
-instances. Each instance owns a range of buckets and rejects requests
-for chunks outside its range. See sub-design
-[`design-crowdb-chunkdb-range-binding.md`](design-crowdb-chunkdb-range-binding.md).
+See [fixed slot routing](design-crowdb-chunkdb-range-binding.md) for publication,
+cache costs, task-domain scope, startup validation, and immutable assignments.
 
 ### 5.4b Request Handling During Migration
 
-When chunk records are being migrated from old KV group to new KV group, requests
-must be handled correctly to avoid data loss or inconsistencies.
-
-**Migration phases:**
-1. **Pre-migration**: Chunk exists only in old KV group
-2. **Copying**: Chunk being copied from old KV group to new KV group
-3. **Cutover**: Chunk exists in both KV groups (new location authoritative)
-4. **Cleanup**: Old copy deleted from old KV group
-
-**Request handling strategies:**
-
-**Option 1: Dual-write during migration (Recommended)**
-- During migration: Write to both old and new KV groups
-- Reads: Try new KV group first, fall back to old KV group if not found
-- After migration complete: Delete from old KV group, switch to single-location reads
-- Pros: No data loss, minimal read latency impact
-- Cons: Temporary write amplification during migration
-
-**Option 2: Version-based routing**
-- Add migration state to binding table: `in_migration`, `migration_complete`
-- During migration: Route all requests to old KV group
-- After copy complete: Update binding table to route to new KV group
-- Pros: Simple routing logic, no dual writes
-- Cons: Longer migration window, old KV group handles all traffic
-
-**Option 3: Background copy with read repair**
-- Background task copies to new KV group
-- Reads: Always try new KV group first, fall back to old if not found
-- When chunk found in old location during migration: trigger copy to new location
-- Pros: Eventual consistency, can start serving from new location immediately
-- Cons: Read latency spikes during migration, complex coordination
-
-**Recommended approach (Option 1 - Dual-write):**
-```rust
-fn read_chunk(chunk_id: ChunkId) -> Result<Chunk> {
-    let bucket = hash_to_bucket(chunk_id);
-    let kv_group = get_binding(bucket);
-    
-    // Try new location first
-    match kv_read(kv_group, chunk_id) {
-        Ok(chunk) => return Ok(chunk),
-        Err(_) => {
-            // Fall back to old location if in migration
-            if is_bucket_in_migration(bucket) {
-                let old_kv_group = get_old_binding(bucket);
-                return kv_read(old_kv_group, chunk_id);
-            }
-            return Err(NotFound);
-        }
-    }
-}
-
-fn write_chunk(chunk: Chunk) -> Result<()> {
-    let bucket = hash_to_bucket(chunk.id);
-    let kv_group = get_binding(bucket);
-    
-    // Write to new location
-    kv_write(kv_group, &chunk)?;
-    
-    // Dual-write during migration
-    if is_bucket_in_migration(bucket) {
-        let old_kv_group = get_old_binding(bucket);
-        kv_write(old_kv_group, &chunk)?;
-    }
-    
-    Ok(())
-}
-```
-
-**Migration state tracking in group-0:**
-```
-BucketMigrationState:
-  bucket_range_start: uint16
-  bucket_range_end: uint16
-  old_kv_group: uint16
-  new_kv_group: uint16
-  state: enum { NotMigrating, Copying, Cutover, Cleanup, Complete }
-  version: uint64
-```
+Live service handoff, storage-group add/remove/remap, and legacy conversion are
+unsupported. Initialized maps reject ownership changes. Same-owner restart and
+endpoint refresh preserve authority. A storage ownership change requires complete
+chunk/task/index/reservation migration and a fenced cutover before bitmap changes;
+a service ownership change requires task-authority handoff without metadata copy.
+There is no steady-state group-0 destination or old-owner mutation fallback.
 
 ### 5.5 Chunk types
 
 | Type          | Chunk Type Value | Description                          |
 | ------------- | ---------------- | ------------------------------------ |
-| Repo          | 0                | Historical general user data         |
+| Retired       | 0                | Rejected; never reused               |
 | WAL           | 1                | Write-ahead log entries              |
 | BTree page    | 2                | B-tree page storage                  |
 | Page index    | 3                | Page index metadata                  |
@@ -1128,12 +1007,9 @@ HTTP endpoints (`main.rs` HTTP server, alongside `/ready` +
 
 All internal (no auth, same as `/ready` and `/health`).
 
-For strict range-guard deployments, `/ready` returns success only after the
-process has loaded at least one owned bucket range. This is stronger than the
-group-0 binding table being complete: operators cannot admit routed requests
-during the interval between binding publication and the process's periodic
-guard refresh. Compatibility deployments with `allow_all_when_empty=true`
-remain ready with an empty guard.
+`/ready` requires validated storage routing and at least one owned service
+slot. Empty or uninitialized ownership rejects work, including reads; there
+is no allow-all compatibility mode.
 
 ### 10.9 Edge cases
 
@@ -1217,7 +1093,7 @@ app/crowdb-chunkdb/              # chunkdb server binary
 │   ├── storage.rs            # KV persistence
 │   ├── routing.rs            # bucket routing
 │   ├── range_guard.rs        # owned-range enforcement
-│   └── migration.rs          # range migration
+│   └── runtime_context.rs    # isolated lifecycle/task runtimes
 
 lib/crowdb-chunkdb-client/       # chunkdb client library
 ├── Cargo.toml
@@ -1319,7 +1195,7 @@ nonzero aggregate status.
 - Basic chunk lifecycle (allocate/seal/delete)
 - EC wrapper (crowdb-common module)
 - Chunk ID generation (crowdb-common): 128-bit format with getrandom
-- Repo, WAL, BTree page, Page index chunk types (mirror and EC strips supported)
+- Wal, BtreePage, PageIndex, Stream, S3 and IcebergTable purposes
 - E2E tests
 
 **Future work** (separate requirements):

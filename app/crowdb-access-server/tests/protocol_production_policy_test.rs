@@ -11,8 +11,12 @@ use crowdb_chunk_client::{
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_console_shared::{config::ServiceType, ops::s3};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_kv_client::{
+    ChunkSlotMapClient, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode, ServiceRegistryClient,
+};
+use crowdb_protocol::chunk_slot::ChunkSlot;
 use crowdb_protocol::chunkdb::rpc::{ChunkType, Location, QueryChunkRequest, Strip};
+use crowdb_protocol::common::ChunkId;
 use crowdb_test_harness::test_dirs::TestDir;
 use hyper::body::Bytes;
 
@@ -36,8 +40,8 @@ fn production_policies() -> (S3WritePolicies, LargeWritePolicy, SmallWritePolicy
     let s3_small = SmallWritePolicy {
         conversion_enabled: false,
         mirror_copies: 2,
-        memory_budget: 64 * MIB,
-        ..SmallWritePolicy::default()
+        memory_budget: 288 * MIB,
+        ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
     };
     let s3 = S3WriteSettings {
         small: s3_small,
@@ -72,8 +76,8 @@ fn production_policies() -> (S3WritePolicies, LargeWritePolicy, SmallWritePolicy
     let iceberg_small = SmallWritePolicy {
         conversion_enabled: false,
         mirror_copies: 2,
-        memory_budget: 96 * MIB,
-        ..SmallWritePolicy::default()
+        memory_budget: 384 * MIB,
+        ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
     };
     (s3, iceberg_large, iceberg_small)
 }
@@ -85,7 +89,12 @@ async fn assert_chunk_layouts(
     s3_large: Location,
     iceberg_large: Location,
 ) {
-    let registry = ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(seeds)));
+    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds)));
+    let maps = ChunkSlotMapClient::new(Arc::clone(&kv));
+    let storage = maps.read_storage().await.unwrap();
+    assert_eq!(storage.bindings().len(), 3);
+    assert_eq!(maps.read_service().await.unwrap().bindings().len(), 3);
+    let registry = ServiceRegistryClient::from_shared(Arc::clone(&kv));
     let chunkdb = ChunkdbClient::new(registry, Arc::new(ChunkdbRpcTransport::new()));
     for (location, expected_type, expected_ec) in [
         (s3_small, ChunkType::S3, None),
@@ -103,6 +112,22 @@ async fn assert_chunk_layouts(
             .unwrap();
         assert_eq!(chunk.chunk_type, expected_type as i32);
         assert_eq!(chunk.id.unwrap().high >> 56, expected_type as u64);
+        let id = chunk.id.unwrap();
+        let destination = storage.owner(ChunkSlot::for_chunk(&id));
+        let mut key = b"/chunk/".to_vec();
+        key.extend_from_slice(&id.high.to_be_bytes());
+        key.extend_from_slice(&id.low.to_be_bytes());
+        for group in 0..=3 {
+            assert_eq!(
+                matches!(
+                    kv.get(0, group, &key, ReadMode::Linearizable, None)
+                        .await
+                        .unwrap(),
+                    GetOutcome::Found { .. }
+                ),
+                group == destination.group_id
+            );
+        }
         let strip = &chunk.strips[0];
         match (strip.strip.as_ref().unwrap(), expected_ec) {
             (Strip::MirrorStrip(mirror), None) => assert_eq!(mirror.segments.len(), 2),
@@ -111,6 +136,57 @@ async fn assert_chunk_layouts(
             }
             _ => panic!("protocol chunk used a different protection policy"),
         }
+    }
+    assert_system_chunk_purposes(&kv, &storage).await;
+}
+
+async fn assert_system_chunk_purposes(
+    kv: &CrowdbKvClient,
+    storage: &crowdb_protocol::chunk_slot::ChunkSlotMap<crowdb_protocol::chunk_slot::ChunkStorageGroup>,
+) {
+    let mut purposes = std::collections::HashSet::new();
+    for group in 0..=3 {
+        let mut cursor = Vec::new();
+        loop {
+            let page = kv
+                .scan(
+                    0,
+                    group,
+                    b"/chunk/",
+                    &cursor,
+                    &[],
+                    256,
+                    ReadMode::Linearizable,
+                    None,
+                    true,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(!page.timed_out);
+            for (key, _) in &page.items {
+                assert_ne!(group, 0, "group zero contains chunk metadata");
+                assert_eq!(key.len(), 23);
+                let id = ChunkId {
+                    high: u64::from_be_bytes(key[7..15].try_into().unwrap()),
+                    low: u64::from_be_bytes(key[15..23].try_into().unwrap()),
+                };
+                assert_eq!(storage.owner(ChunkSlot::for_chunk(&id)).group_id, group);
+                purposes.insert(id.high >> 56);
+            }
+            if !page.truncated {
+                break;
+            }
+            cursor = page.items.last().unwrap().0.to_vec();
+        }
+    }
+    // Native chunk-kv bootstrap performs real WAL appends and tree checkpoint
+    // publication before exposing its partition catalog.
+    for purpose in [ChunkType::Wal, ChunkType::BtreePage, ChunkType::PageIndex] {
+        assert!(
+            purposes.contains(&(purpose as u64)),
+            "missing system purpose {purpose:?}"
+        );
     }
 }
 

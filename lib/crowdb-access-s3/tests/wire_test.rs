@@ -21,6 +21,7 @@ fn list_buckets_escapes_names_and_uses_the_s3_namespace() {
     );
     assert!(xml.contains("xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\""));
     assert!(xml.contains("<Name>a&amp;b</Name>"));
+    assert!(xml.contains("<CreationDate>1970-01-01T00:00:00Z</CreationDate>"));
 }
 
 #[test]
@@ -42,12 +43,25 @@ fn list_objects_serializes_stable_etag_time_and_continuation() {
         common_prefixes: vec![b"prefix/sub/".to_vec()],
         next_continuation_token: Some("opaque".into()),
     };
-    let xml = wire::list_objects(b"bucket", b"prefix/", Some(b"/"), 2, &page);
+    let xml = wire::list_objects(b"bucket", b"prefix/", Some(b"/"), 2, &page, false, None);
     assert!(xml.contains("<Key>prefix/a&lt;b</Key>"));
     assert!(xml.contains("<ETag>&quot;etag&quot;</ETag>"));
     assert!(xml.contains("<LastModified>1970-01-01T00:00:01Z</LastModified>"));
     assert!(xml.contains("<IsTruncated>true</IsTruncated>"));
     assert!(xml.contains("<NextContinuationToken>opaque</NextContinuationToken>"));
+    let encoded = wire::list_objects(
+        b"bucket",
+        b"prefix/",
+        Some(b"/"),
+        2,
+        &page,
+        true,
+        Some(b"a%+\x01"),
+    );
+    assert!(encoded.contains("<EncodingType>url</EncodingType>"));
+    assert!(encoded.contains("<Key>prefix%2Fa%3Cb</Key>"));
+    assert!(encoded.contains("<StartAfter>a%25%2B%01</StartAfter>"));
+    assert!(encoded.contains("<Prefix>prefix%2Fsub%2F</Prefix>"));
 }
 
 #[test]
@@ -93,6 +107,7 @@ fn multipart_upload_listing_emits_stable_markers_and_initiation_time() {
         created_ms: 1_000,
         expires_ms: 2_000,
         content_type: "application/octet-stream".into(),
+        attributes: Vec::new(),
         max_parts: 1,
         max_part_bytes: 5,
         max_object_bytes: 5,

@@ -8,6 +8,8 @@
 //! crowdb-rpc server, registers it in the service registry, and wires the
 //! chunkdb lifecycle handler. Tests call the handler directly.
 
+#![allow(dead_code)]
+
 use std::future::Future;
 use std::io as std_io;
 use std::path::PathBuf;
@@ -80,6 +82,9 @@ impl ServerHandle {
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return;
+        }
         let pid = self.child.id();
         let _ = std::process::Command::new("kill")
             .arg("-TERM")
@@ -114,6 +119,11 @@ pub struct KvNode {
 impl KvNode {
     pub fn base_url(&self) -> &str {
         self.handle.base_url()
+    }
+
+    pub fn stop(&mut self) {
+        self.handle.child.kill().expect("stop KV node");
+        self.handle.child.wait().expect("wait for stopped KV node");
     }
 }
 
@@ -253,6 +263,10 @@ pub struct KvCluster {
 
 impl KvCluster {
     pub async fn start() -> Self {
+        Self::start_with_groups(&[0, 1]).await
+    }
+
+    pub async fn start_with_groups(groups: &[u64]) -> Self {
         let permit = FULL_STACK_PERMITS
             .get_or_init(|| Arc::new(Semaphore::new(1)))
             .clone()
@@ -262,15 +276,16 @@ impl KvCluster {
         let mut nodes = Vec::new();
         for (idx, nid) in [0u64, 1, 2].iter().enumerate() {
             let replica_id = u64::try_from(idx + 1).unwrap();
-            let node = start_kv_node_with_groups(*nid, &[0, 1], replica_id)
+            let node = start_kv_node_with_groups(*nid, groups, replica_id)
                 .await
                 .unwrap_or_else(|e| panic!("start kv node {nid}: {e}"));
             nodes.push(node);
         }
 
-        // Wire topology for both groups.
-        wire_topology(&nodes, 0).await;
-        wire_topology(&nodes, 1).await;
+        for group in groups {
+            wire_topology(&nodes, *group).await;
+            wait_for_leader(&nodes, *group, Duration::from_secs(30)).await;
+        }
 
         // Wait for leaders.
         let g0_idx = wait_for_leader(&nodes, 0, Duration::from_secs(30)).await;
@@ -325,7 +340,7 @@ fn test_client_config(mgmt_seeds: Vec<String>) -> ClientConfig {
 }
 
 async fn start_kv_node_with_groups(
-    node_id: u64,
+    _node_id: u64,
     group_ids: &[u64],
     replica_id: u64,
 ) -> std_io::Result<KvNode> {
@@ -341,7 +356,7 @@ async fn start_kv_node_with_groups(
         "--root",
         root.path().to_str().unwrap(),
         "--stores",
-        &node_id.to_string(),
+        "0",
         "--groups",
         &group_str,
         "--replica",
@@ -401,7 +416,7 @@ async fn start_kv_node_with_groups(
     handle.wait_for_ready(Duration::from_secs(10)).await?;
     Ok(KvNode {
         handle,
-        node_id,
+        node_id: 0,
         replica_id,
     })
 }
@@ -864,7 +879,9 @@ impl ChunkdbHarness {
 
         // Binding cache — all buckets to store 0, group 1.
         let bindings = BindingCache::new();
-        bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+        bindings
+            .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
+            .unwrap();
         let store = Arc::new(ChunkStore::new(Arc::clone(&kv), bindings));
 
         // Diskdb client pool.

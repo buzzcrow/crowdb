@@ -3,6 +3,7 @@
 
 #include "backend/chunk/rpc_chunk_transport.h"
 #include "chunkdb_generated.h"
+#include "common/test_chunk_route_service.h"
 #include "crowdb-rpc/c_api.h"
 #include "diskdb_generated.h"
 #include "diskio_generated.h"
@@ -62,12 +63,14 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16
     const auto *request = flatbuffers::GetRoot<FBAllocateChunkRequest>(control);
     state->request_valid.store(request->chunk_id() == nullptr && request->write_granularity() == 256U * 1024U &&
                                    request->strip_count() == 1 && request->strip_type() == FBStripType_Mirror &&
-                                   request->copy_count() == 3 && request->chunk_type() == FBChunkType_BtreePage &&
+                                   request->copy_count() == 3 &&
+                                   (request->chunk_type() == FBChunkType_BtreePage ||
+                                    request->chunk_type() == crowdb::chunkdb::proto::FBChunkType_PageIndex) &&
                                    request->writer_epoch() == 17,
                                std::memory_order_release);
 
     flatbuffers::FlatBufferBuilder builder;
-    const FBInt128                 chunk_id(0x0200'0000'0000'0042ULL, 0x1234);
+    const FBInt128                 chunk_id((static_cast<uint64_t>(request->chunk_type()) << 56U) | 0x42U, 0x1234);
     const FBInt128                 disk_id(9, 10);
     std::vector<FBSegment>         segments;
     segments.reserve(3);
@@ -81,7 +84,7 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16
     const auto strips =
         builder.CreateVector(std::vector<flatbuffers::Offset<crowdb::chunkdb::proto::FBChunkStrip>>{strip});
     const auto chunk    = CreateFBChunk(builder, &chunk_id, 3, FBChunkState_Active, 1, 0, 256U * 1024U, 0, strips,
-                                        FBChunkType_BtreePage, 17, 4);
+                                        request->chunk_type(), 17, 4);
     const auto response = CreateFBAllocateChunkResponse(
         builder, request_id, 0, crowdb::chunkdb::proto::FBChunkdbRetCode_Success, 0, 0, 0, chunk);
     builder.Finish(response);
@@ -195,10 +198,13 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
         .rpc_timeout_ms      = 1000,
         .completion_capacity = 16,
         .mirror_copies       = 3,
+        .chunkdb_resolver    = {},
     };
     RpcChunkTransport transport(options);
     ChunkId           allocated;
-    ASSERT_TRUE(transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated).ok());
+    ASSERT_TRUE(
+        transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated, crowdb::tree::PagePurpose::kBtreePage)
+            .ok());
     EXPECT_TRUE(handler.request_valid.load(std::memory_order_acquire));
     EXPECT_EQ(allocated, ChunkId(0x0200'0000'0000'0042ULL, 0x1234));
     std::array<uint8_t, 4> read{};
@@ -213,11 +219,90 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     write_result.done.wait(false, std::memory_order_acquire);
     EXPECT_TRUE(write_result.status.ok()) << write_result.status.to_string();
 
+    ChunkId mapping;
+    ASSERT_TRUE(
+        transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &mapping, crowdb::tree::PagePurpose::kPageIndex)
+            .ok());
+    EXPECT_TRUE(handler.request_valid.load(std::memory_order_acquire));
+    EXPECT_EQ(mapping.high >> 56U, 3U);
+    EXPECT_NE(mapping, allocated);
+
     crowdb_rpc_conn_destroy(connection);
     crowdb_rpc_client_destroy(client);
     crowdb_rpc_server_stop(server);
     crowdb_rpc_server_destroy(server);
     crowdb_rpc_pool_destroy(pool);
+}
+
+TEST(RpcChunkTransport, ResolvesEachChunkOwnerAndReleasesRouteLeases)
+{
+    TestChunkRouteFixture         fixture;
+    const ct_chunk_rpc_disk_route disk{.disk_id_high = 9, .disk_id_low = 10, .route = fixture.routes[0]};
+    {
+        ct_chunk_rpc_transport_options options{};
+        options.disk_routes      = &disk;
+        options.disk_route_count = 1;
+        options.chunkdb_resolver = fixture.resolver();
+        RpcChunkTransport transport(options);
+        ChunkId           allocated;
+        ASSERT_TRUE(
+            transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated, crowdb::tree::PagePurpose::kBtreePage)
+                .ok());
+        EXPECT_EQ(allocated.low, 100);
+        EXPECT_TRUE(transport.advance_write(allocated, 0, 4).ok());
+        EXPECT_TRUE(transport.seal_chunk(allocated, 17, 4).ok());
+        ChunkLayout other;
+        EXPECT_TRUE(transport.query_chunk(ChunkId(allocated.high, 101), &other).ok());
+        EXPECT_EQ(other.chunk_id.low, 101);
+        EXPECT_EQ(fixture.services[0].allocations.load(), 1U);
+        EXPECT_EQ(fixture.services[0].advances.load(), 1U);
+        EXPECT_EQ(fixture.services[0].seals.load(), 1U);
+        EXPECT_EQ(fixture.services[1].queries.load(), 1U);
+        EXPECT_EQ(fixture.retains.load(), 1U);
+        EXPECT_EQ(fixture.leases.load(), 0U);
+    }
+    EXPECT_EQ(fixture.releases.load(), 1U);
+}
+
+TEST(RpcChunkTransport, RefreshesOnOwnershipRejectionWithoutWrongOwnerFallback)
+{
+    TestChunkRouteFixture fixture;
+    fixture.stale = true;
+    const ct_chunk_rpc_disk_route  disk{.disk_id_high = 9, .disk_id_low = 10, .route = fixture.routes[0]};
+    ct_chunk_rpc_transport_options options{};
+    options.disk_routes      = &disk;
+    options.disk_route_count = 1;
+    options.chunkdb_resolver = fixture.resolver();
+    RpcChunkTransport transport(options);
+    ChunkLayout       layout;
+    EXPECT_TRUE(transport.query_chunk(ChunkId(0x0200'0000'0000'0042ULL, 101), &layout).ok());
+    EXPECT_EQ(layout.chunk_id.low, 101);
+    EXPECT_EQ(fixture.services[0].queries.load(), 1U);
+    EXPECT_EQ(fixture.services[1].queries.load(), 1U);
+    EXPECT_EQ(fixture.refreshes.load(), 1U);
+    EXPECT_EQ(fixture.leases.load(), 0U);
+}
+
+TEST(RpcChunkTransport, DoesNotResubmitAllocationAfterAnUnknownOutcome)
+{
+    TestChunkRouteFixture fixture;
+    fixture.services[0].drop_allocation = true;
+    const ct_chunk_rpc_disk_route  disk{.disk_id_high = 9, .disk_id_low = 10, .route = fixture.routes[0]};
+    ct_chunk_rpc_transport_options options{};
+    options.disk_routes      = &disk;
+    options.disk_route_count = 1;
+    options.rpc_timeout_ms   = 100;
+    options.chunkdb_resolver = fixture.resolver();
+    RpcChunkTransport transport(options);
+    ChunkId           allocated;
+    EXPECT_EQ(
+        transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated, crowdb::tree::PagePurpose::kBtreePage)
+            .code(),
+        Code::kUnavailable);
+    EXPECT_EQ(fixture.services[0].allocations.load(), 1U);
+    EXPECT_EQ(fixture.services[1].allocations.load(), 0U);
+    EXPECT_EQ(fixture.refreshes.load(), 1U);
+    EXPECT_EQ(fixture.leases.load(), 0U);
 }
 
 } // namespace

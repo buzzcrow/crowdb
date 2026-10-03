@@ -16,7 +16,10 @@ pub fn list_buckets(tenant: &[u8], buckets: &[BucketNameRecord]) -> String {
     for bucket in buckets {
         output.push_str("<Bucket><Name>");
         push_escaped(&mut output, &String::from_utf8_lossy(&bucket.name));
-        output.push_str("</Name></Bucket>");
+        output.push_str("</Name>");
+        // Bucket records do not persist creation time; use a stable placeholder.
+        element(&mut output, "CreationDate", &iso8601(0));
+        output.push_str("</Bucket>");
     }
     output.push_str("</Buckets></ListAllMyBucketsResult>");
     output
@@ -152,12 +155,24 @@ pub fn list_objects(
     delimiter: Option<&[u8]>,
     max_keys: usize,
     page: &ListObjectsV2Page,
+    url_encoding: bool,
+    start_after: Option<&[u8]>,
 ) -> String {
     let mut output = xml_start("ListBucketResult");
     element(&mut output, "Name", &String::from_utf8_lossy(bucket));
-    element(&mut output, "Prefix", &String::from_utf8_lossy(prefix));
+    element(&mut output, "Prefix", &listing_text(prefix, url_encoding));
+    if url_encoding {
+        element(&mut output, "EncodingType", "url");
+    }
+    if let Some(start_after) = start_after {
+        element(
+            &mut output,
+            "StartAfter",
+            &listing_text(start_after, url_encoding),
+        );
+    }
     if let Some(delimiter) = delimiter {
-        element(&mut output, "Delimiter", &String::from_utf8_lossy(delimiter));
+        element(&mut output, "Delimiter", &listing_text(delimiter, url_encoding));
     }
     element(&mut output, "MaxKeys", &max_keys.to_string());
     element(
@@ -175,11 +190,11 @@ pub fn list_objects(
         },
     );
     for object in &page.objects {
-        object_entry(&mut output, object);
+        object_entry(&mut output, object, url_encoding);
     }
     for common_prefix in &page.common_prefixes {
         output.push_str("<CommonPrefixes>");
-        element(&mut output, "Prefix", &String::from_utf8_lossy(common_prefix));
+        element(&mut output, "Prefix", &listing_text(common_prefix, url_encoding));
         output.push_str("</CommonPrefixes>");
     }
     if let Some(token) = &page.next_continuation_token {
@@ -189,9 +204,9 @@ pub fn list_objects(
     output
 }
 
-fn object_entry(output: &mut String, object: &ObjectRecord) {
+fn object_entry(output: &mut String, object: &ObjectRecord, url_encoding: bool) {
     output.push_str("<Contents>");
-    element(output, "Key", &String::from_utf8_lossy(&object.key));
+    element(output, "Key", &listing_text(&object.key, url_encoding));
     element(output, "LastModified", &iso8601(object.modified_at_ms));
     element(output, "ETag", &format!("\"{}\"", object.etag));
     element(output, "Size", &object.logical_length.to_string());
@@ -199,10 +214,63 @@ fn object_entry(output: &mut String, object: &ObjectRecord) {
     output.push_str("</Contents>");
 }
 
+fn listing_text(bytes: &[u8], url_encoding: bool) -> String {
+    const SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    if url_encoding {
+        percent_encoding::percent_encode(bytes, SET).to_string()
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
 fn xml_start(root: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><{root} xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
     )
+}
+
+#[must_use]
+pub fn copy_result(etag: &str, modified_ms: u64, part: bool) -> String {
+    let root = if part {
+        "CopyPartResult"
+    } else {
+        "CopyObjectResult"
+    };
+    let mut output = xml_start(root);
+    element(&mut output, "LastModified", &iso8601(modified_ms));
+    element(&mut output, "ETag", &format!("\"{etag}\""));
+    output.push_str("</");
+    output.push_str(root);
+    output.push('>');
+    output
+}
+
+#[must_use]
+pub fn delete_objects(results: &[(Vec<u8>, Result<(), crate::error::S3ErrorCode>)], quiet: bool) -> String {
+    let mut output = xml_start("DeleteResult");
+    for (key, result) in results {
+        match result {
+            Ok(()) if quiet => {}
+            Ok(()) => {
+                output.push_str("<Deleted>");
+                element(&mut output, "Key", &String::from_utf8_lossy(key));
+                output.push_str("</Deleted>");
+            }
+            Err(code) => {
+                output.push_str("<Error>");
+                element(&mut output, "Key", &String::from_utf8_lossy(key));
+                element(&mut output, "Code", code.code());
+                element(&mut output, "Message", code.message());
+                output.push_str("</Error>");
+            }
+        }
+    }
+    output.push_str("</DeleteResult>");
+    output
 }
 
 fn element(output: &mut String, name: &str, value: &str) {
@@ -226,6 +294,7 @@ fn iso8601(timestamp_ms: u64) -> String {
 fn push_escaped(output: &mut String, value: &str) {
     for character in value.chars() {
         match character {
+            '\r' => output.push_str("&#13;"),
             '&' => output.push_str("&amp;"),
             '<' => output.push_str("&lt;"),
             '>' => output.push_str("&gt;"),

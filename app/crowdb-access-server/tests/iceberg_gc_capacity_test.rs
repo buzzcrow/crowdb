@@ -67,7 +67,7 @@ async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
             chunk_capacity: 1024 * 1024 * 1024,
             mirror_copies: 1,
             conversion_enabled: false,
-            ..SmallWritePolicy::default()
+            ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable)
         },
     })
     .await
@@ -76,7 +76,8 @@ async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
 
 async fn fill_disk(client: &DiskdbClient) -> Vec<Segment> {
     let mut held = Vec::new();
-    for sequence in 1..=256_u64 {
+    let mut sequence = 1_u64;
+    loop {
         let mut allocated = None;
         for units in [1024, 128, 1] {
             match client
@@ -113,6 +114,9 @@ async fn fill_disk(client: &DiskdbClient) -> Vec<Segment> {
             u32::try_from(segments.len()).unwrap()
         );
         held.extend(segments);
+        sequence = sequence
+            .checked_add(1)
+            .expect("disk fill allocation sequence overflowed");
     }
     assert!(!held.is_empty());
     assert_eq!(

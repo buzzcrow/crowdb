@@ -79,6 +79,10 @@ name = "domain_monitor_test"
 path = "tests/domain_monitor_test.rs"
 
 [[test]]
+name = "chunk_slot_monitor_test"
+path = "tests/chunk_slot_monitor_test.rs"
+
+[[test]]
 name = "reconcile_test"
 path = "tests/reconcile_test.rs"
 

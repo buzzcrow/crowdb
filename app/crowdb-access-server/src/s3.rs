@@ -19,6 +19,7 @@ use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
+pub mod copy_body;
 mod dispatcher;
 mod operations;
 

@@ -49,11 +49,13 @@ pub struct SmallWritePolicy {
     pub repair_attempts_per_replica: usize,
 }
 
-impl Default for SmallWritePolicy {
-    fn default() -> Self {
+impl SmallWritePolicy {
+    /// Creates default tuning with an explicit chunk purpose.
+    #[must_use]
+    pub fn new(chunk_type: ChunkType) -> Self {
         const MIB: usize = 1024 * 1024;
         Self {
-            chunk_type: ChunkType::Repo,
+            chunk_type,
             object_limit: 8 * MIB,
             // 1,000 concurrent 1 MiB objects are a normal S3 small-object
             // workload.  3,000 and 5,000 require roughly 3.25 GiB and 5.25
@@ -197,12 +199,14 @@ pub struct ChunkClientConfig {
     pub memory_budget: usize,
 }
 
-impl Default for ChunkClientConfig {
-    fn default() -> Self {
+impl ChunkClientConfig {
+    /// Creates default tuning with an explicit chunk purpose.
+    #[must_use]
+    pub fn new(chunk_type: ChunkType) -> Self {
         const MB: usize = 1024 * 1024;
         const GB: usize = 1024 * 1024 * 1024;
         Self {
-            chunk_type: ChunkType::Repo,
+            chunk_type,
             large_mirror_copies: None,
             read_buffer_size: MB,
             max_cached_buffer: 4 * MB,

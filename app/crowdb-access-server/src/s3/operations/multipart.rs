@@ -66,11 +66,14 @@ impl ProductionS3Operations {
         Ok(expired)
     }
 
-    fn multipart(&self) -> MultipartRepository {
+    pub(super) fn multipart(&self) -> MultipartRepository {
         MultipartRepository::new(self.storage.metadata.clone(), self.config.tenant.clone())
     }
 
-    async fn multipart_identity(&self, route: &S3Route) -> Result<MultipartSessionRecord, S3ErrorCode> {
+    pub(super) async fn multipart_identity(
+        &self,
+        route: &S3Route,
+    ) -> Result<MultipartSessionRecord, S3ErrorCode> {
         let bucket = self.resolve_bucket(required_bucket(route)?).await?;
         let key = required_key(route)?;
         let upload_id = route.upload_id.ok_or(S3ErrorCode::InvalidRequest)?;
@@ -119,6 +122,8 @@ impl ProductionS3Operations {
             content_type: strict_header(request, "content-type", S3ErrorCode::InvalidRequest)?
                 .unwrap_or("application/octet-stream")
                 .to_owned(),
+            attributes: crowdb_access_s3::metadata::UserMetadata::from_headers(request.headers())?
+                .encode()?,
             max_parts: MAX_PARTS,
             max_part_bytes: MAX_PART_BYTES,
             max_object_bytes: MAX_OBJECT_BYTES,
@@ -150,21 +155,22 @@ impl ProductionS3Operations {
     ) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let session = self.multipart_identity(&route).await?;
         let number = route.part_number.ok_or(S3ErrorCode::InvalidRequest)?;
-        let length = content_length(&request)?.ok_or(S3ErrorCode::InvalidRequest)?;
+        let streaming = super::take_streaming(&mut request)?;
+        let length =
+            super::upload_length(&request, streaming.is_some())?.ok_or(S3ErrorCode::InvalidRequest)?;
         if length > session.max_part_bytes {
             return Err(S3ErrorCode::InvalidRequest);
         }
-        let content_md5 =
-            strict_header(&request, "content-md5", S3ErrorCode::InvalidDigest)?.map(str::to_owned);
+        let content_md5 = super::content_md5_header(&request)?.map(str::to_owned);
         let payload_sha256 = strict_header(&request, "x-amz-content-sha256", S3ErrorCode::InvalidRequest)?
-            .filter(|value| *value != "UNSIGNED-PAYLOAD")
+            .filter(|value| *value != "UNSIGNED-PAYLOAD" && streaming.is_none())
             .map(str::to_owned);
         let mut route_key = self.config.tenant.as_bytes().to_vec();
         route_key.extend_from_slice(session.bucket_id.as_bytes());
         route_key.extend_from_slice(&session.upload_id);
         route_key.extend_from_slice(&number.to_be_bytes());
         let mut writer = self.prepare_writer(Some(length), &route_key).await?;
-        let native_receiver = if writer.is_large() {
+        let native_receiver = if writer.is_large() && streaming.is_none() {
             install_body_receive_provider(&mut request)
         } else {
             None
@@ -172,7 +178,15 @@ impl ProductionS3Operations {
         if let Some(receiver) = &native_receiver {
             receiver.enable_owner_handoff();
         }
-        let mut body = request.into_body();
+        let (parts, body) = request.into_parts();
+        let mut body = crate::upload_flow::body_encoding::UploadBody::new(
+            body,
+            &parts.headers,
+            streaming,
+            session.max_part_bytes.saturating_add(1024 * 1024),
+        )
+        .map_err(super::encoding_error)?;
+        body.defer_md5();
         let written = write_object_body(
             &mut body,
             &mut writer,
@@ -188,7 +202,9 @@ impl ProductionS3Operations {
             Ok(value) => value,
             Err(outcome) => {
                 let _ = writer.on_error().await;
-                return Err(map_put_outcome(&outcome));
+                return Err(body
+                    .failure()
+                    .map_or_else(|| map_put_outcome(&outcome), super::encoding_error));
             }
         };
         let locations = writer
@@ -347,7 +363,7 @@ impl ProductionS3Operations {
     }
 }
 
-fn map_multipart_error(error: &MultipartRepositoryError) -> S3ErrorCode {
+pub(super) fn map_multipart_error(error: &MultipartRepositoryError) -> S3ErrorCode {
     match error {
         MultipartRepositoryError::Key(_) | MultipartRepositoryError::Record(_) => S3ErrorCode::InvalidRequest,
         MultipartRepositoryError::Store(_) => S3ErrorCode::ServiceUnavailable,
@@ -395,7 +411,7 @@ fn parse_upload_id(value: &str) -> Result<[u8; 16], S3ErrorCode> {
     (id != [0; 16]).then_some(id).ok_or(S3ErrorCode::InvalidRequest)
 }
 
-fn parse_md5(value: &str) -> Result<[u8; 16], S3ErrorCode> {
+pub(super) fn parse_md5(value: &str) -> Result<[u8; 16], S3ErrorCode> {
     if value.len() != 32 {
         return Err(S3ErrorCode::InternalError);
     }

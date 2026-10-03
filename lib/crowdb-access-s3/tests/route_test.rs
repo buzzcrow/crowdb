@@ -15,6 +15,9 @@ fn classifies_the_finite_path_style_surface() {
         (Method::HEAD, "/bucket", S3Operation::HeadBucket),
         (Method::DELETE, "/bucket", S3Operation::DeleteBucket),
         (Method::GET, "/bucket?list-type=2", S3Operation::ListObjectsV2),
+        (Method::GET, "/bucket/?list-type=2", S3Operation::ListObjectsV2),
+        (Method::HEAD, "/bucket/", S3Operation::HeadBucket),
+        (Method::GET, "/bucket//", S3Operation::GetObject),
         (Method::PUT, "/bucket/key", S3Operation::PutObject),
         (Method::HEAD, "/bucket/key", S3Operation::HeadObject),
         (Method::GET, "/bucket/key", S3Operation::GetObject),
@@ -41,12 +44,84 @@ fn rejects_extensions_before_dispatch() {
 }
 
 #[test]
+fn copy_headers_select_only_object_or_multipart_part_puts() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-amz-copy-source", HeaderValue::from_static("source/key"));
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers)
+            .unwrap()
+            .operation,
+        S3Operation::CopyObject
+    );
+    let uri = format!("/bucket/key?uploadId={}&partNumber=2", "ab".repeat(16))
+        .parse()
+        .unwrap();
+    assert_eq!(
+        classify_request(&Method::PUT, &uri, &headers).unwrap().operation,
+        S3Operation::UploadPartCopy
+    );
+    for (method, uri) in [
+        (Method::GET, "/bucket/key"),
+        (Method::PUT, "/bucket"),
+        (Method::POST, "/bucket/key?uploads"),
+    ] {
+        assert_eq!(
+            classify_request(&method, &uri.parse().unwrap(), &headers),
+            Err(RouteError::Invalid)
+        );
+    }
+    headers.remove("x-amz-copy-source");
+    headers.insert("x-amz-copy-source-if-match", HeaderValue::from_static("abc"));
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers),
+        Err(RouteError::Invalid)
+    );
+}
+
+#[test]
 fn rejects_headers_that_select_excluded_behavior() {
     let mut headers = HeaderMap::new();
     headers.insert("x-amz-storage-class", HeaderValue::from_static("GLACIER"));
     assert_eq!(
         classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers),
         Err(RouteError::NotImplemented)
+    );
+    headers.clear();
+    assert_eq!(
+        classify(&Method::GET, &"/bucket?location".parse().unwrap()),
+        Err(RouteError::NotImplemented)
+    );
+}
+
+#[test]
+fn metadata_is_only_accepted_on_object_publication_requests() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-amz-meta-mtime", HeaderValue::from_static("123"));
+    for (method, path) in [
+        (Method::PUT, "/bucket/key"),
+        (Method::POST, "/bucket/key?uploads"),
+    ] {
+        assert!(classify_request(&method, &path.parse().unwrap(), &headers).is_ok());
+    }
+    for (method, path) in [
+        (Method::PUT, "/bucket"),
+        (Method::GET, "/bucket/key"),
+        (
+            Method::PUT,
+            "/bucket/key?uploadId=abababababababababababababababab&partNumber=1",
+        ),
+    ] {
+        assert_eq!(
+            classify_request(&method, &path.parse().unwrap(), &headers),
+            Err(RouteError::Invalid)
+        );
+    }
+    headers.insert("x-amz-copy-source", HeaderValue::from_static("/source/key"));
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers)
+            .unwrap()
+            .operation,
+        S3Operation::CopyObject
     );
 }
 
@@ -116,6 +191,35 @@ fn multipart_queries_have_unambiguous_paths_and_identities() {
     );
     assert_eq!(
         classify_multipart(&Method::PUT, &"/bucket/key?partNumber=7".parse().unwrap()),
+        Err(RouteError::Invalid)
+    );
+}
+
+#[test]
+fn standard_storage_class_is_the_only_supported_publication_class() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-amz-storage-class", HeaderValue::from_static("STANDARD"));
+    for (method, path) in [
+        (Method::PUT, "/bucket/key"),
+        (Method::POST, "/bucket/key?uploads"),
+    ] {
+        assert!(classify_request(&method, &path.parse().unwrap(), &headers).is_ok());
+    }
+    headers.insert("x-amz-copy-source", HeaderValue::from_static("/source/key"));
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers)
+            .unwrap()
+            .operation,
+        S3Operation::CopyObject
+    );
+    headers.remove("x-amz-copy-source");
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket".parse().unwrap(), &headers),
+        Err(RouteError::Invalid)
+    );
+    headers.append("x-amz-storage-class", HeaderValue::from_static("STANDARD"));
+    assert_eq!(
+        classify_request(&Method::PUT, &"/bucket/key".parse().unwrap(), &headers),
         Err(RouteError::Invalid)
     );
 }

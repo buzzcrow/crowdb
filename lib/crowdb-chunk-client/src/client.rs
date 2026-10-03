@@ -166,8 +166,12 @@ impl ChunkIoClient {
     }
 
     /// Construct from low-level seams. Intended for focused tests and embedded fixtures.
-    pub fn from_parts(allocator: Arc<dyn crate::ChunkAllocator>, disk_writer: Arc<dyn DiskWriter>) -> Self {
-        Self::from_parts_with_small_policy(allocator, disk_writer, SmallWritePolicy::default())
+    pub fn from_parts(
+        allocator: Arc<dyn crate::ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        chunk_type: crowdb_protocol::chunkdb::rpc::ChunkType,
+    ) -> Self {
+        Self::from_parts_with_small_policy(allocator, disk_writer, SmallWritePolicy::new(chunk_type))
             .unwrap_or_else(|_| unreachable!("default small-write policy is valid"))
     }
 
@@ -183,7 +187,7 @@ impl ChunkIoClient {
     pub async fn native_storage_routes(
         &self,
     ) -> Result<(
-        OwnedClientRoute,
+        Arc<crowdb_chunkdb_client::NativeChunkRoutes>,
         Vec<(crowdb_diskio_client::DiskId, OwnedClientRoute)>,
     )> {
         let topology = self
@@ -192,7 +196,7 @@ impl ChunkIoClient {
             .ok_or_else(|| crate::IoError::Topology("client has no discovered production topology".into()))?;
         let chunkdb = topology
             .chunkdb
-            .storage_route()
+            .native_routes()
             .await
             .map_err(|error| crate::IoError::Topology(format!("resolve ChunkDB route: {error}")))?;
         Ok((

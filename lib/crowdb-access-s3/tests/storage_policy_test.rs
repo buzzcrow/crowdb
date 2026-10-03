@@ -8,7 +8,7 @@ use crowdb_protocol::chunkdb::rpc::ChunkType;
 #[test]
 fn s3_policies_own_both_chunk_types_and_independent_limits() {
     let policies = S3WriteSettings {
-        small: SmallWritePolicy::default(),
+        small: SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3),
         threshold_ratio: 0.9,
         disk_block_bytes: 1024 * 1024,
         ec_data: 4,
@@ -35,7 +35,7 @@ fn s3_policies_own_both_chunk_types_and_independent_limits() {
 #[test]
 fn s3_policy_rejects_invalid_large_capacity() {
     let result = S3WriteSettings {
-        small: SmallWritePolicy::default(),
+        small: SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3),
         threshold_ratio: 0.9,
         disk_block_bytes: 1024 * 1024,
         ec_data: 8,

@@ -21,11 +21,17 @@ class LatencySummary
 
     void observe(uint64_t ns)
     {
-        count_.fetch_add(1, std::memory_order_relaxed);
-        sum_.fetch_add(ns, std::memory_order_relaxed);
-        total_count_.fetch_add(1, std::memory_order_relaxed);
+        observe_batch(1, ns, ns);
+    }
+
+    // Merge locally measured samples without a shared update per operation.
+    void observe_batch(uint64_t count, uint64_t sum, uint64_t max)
+    {
+        count_.fetch_add(count, std::memory_order_relaxed);
+        sum_.fetch_add(sum, std::memory_order_relaxed);
+        total_count_.fetch_add(count, std::memory_order_relaxed);
         uint64_t old_max = max_.load(std::memory_order_relaxed);
-        while (ns > old_max && !max_.compare_exchange_weak(old_max, ns, std::memory_order_relaxed)) {
+        while (max > old_max && !max_.compare_exchange_weak(old_max, max, std::memory_order_relaxed)) {
         }
     }
 

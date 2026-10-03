@@ -116,7 +116,7 @@ pub struct SmallWriteConfig {
 
 impl Default for SmallWriteConfig {
     fn default() -> Self {
-        let policy = SmallWritePolicy::default();
+        let policy = SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3);
         Self {
             threshold_ratio: 0.9,
             disk_block_bytes: 1024 * 1024,
@@ -153,7 +153,7 @@ impl SmallWriteConfig {
             conversion_enabled: self.conversion_enabled,
             mirror_copies: self
                 .mirror_copies
-                .unwrap_or(SmallWritePolicy::default().mirror_copies),
+                .unwrap_or(SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3).mirror_copies),
             conversion_data_num: self.ec_data,
             conversion_code_num: self.ec_code,
             memory_budget: self.memory_budget_bytes,
@@ -163,7 +163,7 @@ impl SmallWriteConfig {
             max_batch_bytes: self.max_batch_bytes,
             chunk_capacity: self.chunk_capacity_bytes,
             small_strip_prefetch_count: self.small_strip_prefetch_count,
-            ..SmallWritePolicy::default()
+            ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3)
         }
     }
 }

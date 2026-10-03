@@ -46,12 +46,38 @@ S3 is authoritative for bucket and object visibility, overwrite behavior,
 listing position, multipart publication, deletion, and S3 credentials. It
 stores opaque data references rather than physical storage topology.
 
+The current listener uses one configured tenant for all accepted credentials.
+Signature verification authenticates a key but does not pass a user/grant
+identity to operations. Accepted keys therefore share that listener namespace;
+per-user bucket ACLs and IAM policies are not part of the installed surface.
+Namespace isolation currently means the configured tenant/bucket identity
+boundaries, not isolation between multiple accepted users on one listener.
+Presigned request expiry is enforced independently of the allowed future-clock
+skew; clock tolerance cannot extend an issued URL's lifetime.
+
 ## 3. HTTP data path
 
 PUT and multipart upload stream HTTP bodies into bounded CROWDB writers. GET
 streams owner-backed CROWDB data into an HTTP response. Backpressure bounds
 memory and storage work independently of object size; slow peers cannot create
 unbounded buffering.
+
+Uploads use the shared bounded `UploadBody` decoder. It verifies supported
+CRC32, CRC32C, CRC64NVME, SHA1 and SHA256 headers or declared AWS trailers,
+alongside Content-MD5 and signed payload hashes. Streaming SigV4 first verifies
+the request seed, then every signed chunk and signed trailer. Unsigned chunks
+require a verified declared trailer. Encoded and decoded lengths, frame size,
+terminal chunks and trailing bytes are checked before publication; malformed
+or corrupt bodies cannot replace a selected object. Checksum calculation on
+requests is supported; arbitrary response checksum negotiation is outside the
+installed surface.
+
+Presigned PUT and UploadPart also accept those checksum values and their SDK
+algorithm declaration in the signed query. Authentication verifies the original
+URI first; normalized checksum fields then enter the same upload verifier.
+Duplicate query fields, header/query overlap and declarations on other
+operations are rejected before publication. Signed query values cannot bypass
+body integrity checks.
 
 The ordinary HTTP path is always available. An optional direct data plane may
 move an authenticated object range between DiskIO and registered client memory
@@ -72,6 +98,71 @@ reused.
 
 Listings are ordered and continuation-safe within their documented consistency
 model. Continuation state is opaque and bound to the original request scope.
+Bucket paths accept a single trailing slash. ListObjectsV2 supports URL encoding
+of XML-incompatible keys and selected prefix/delimiter fields. ListBuckets
+reports the Unix epoch as a stable CreationDate placeholder because bucket
+records do not retain creation timestamps.
+
+User metadata is accepted through x-amz-meta-* headers on ordinary PUT,
+multipart initiation and CopyObject. Nonempty HTTP token names are normalized
+to lowercase; values are opaque printable ASCII strings. Combined key/value
+bytes, excluding the header prefix, are limited to 2 KiB. Duplicate names,
+invalid values and unsupported operation placement are rejected before writes.
+The complete attribute map is published with the object's immutable generation
+and returned on HEAD, GET and ranged GET. A new upload without metadata clears
+the previous generation's attributes. Multipart sessions persist initiation
+attributes across part replacement and recovery and publish them on completion.
+The session schema has a distinct version; old-version data migration is outside
+the supported contract.
+
+STANDARD is the sole storage class reported by listings and accepted explicitly
+on PUT, multipart initiation and CopyObject. Other classes are rejected; this
+selector does not alter the configured storage policy or introduce tiering.
+
+Server-side CopyObject and UploadPartCopy resolve source and destination through
+the configured S3 tenant. Copy selects one immutable source record before
+returning response headers; subsequent source overwrite or logical deletion
+does not select new bytes. The source is streamed through bounded readers and
+writers, respecting writer capacity, and publication uses the ordinary object
+or multipart-part fences. No source reference is shared with the destination.
+Copy never deletes the source. Unpublished candidates use ordinary reclamation.
+
+CopyObject supports at most 5 GiB and copies the entire payload. COPY preserves
+Content-Type and user metadata; REPLACE selects the supplied Content-Type
+or application/octet-stream and replaces the entire user metadata map, including
+clearing it when omitted. A self-copy requires REPLACE.
+Cache/disposition/encoding/language/expiry metadata, version selectors, tags,
+encryption, storage-class changes and destination conditions are unsupported
+and rejected. Source ETag/date conditions apply to the captured generation;
+their failure returns PreconditionFailed. Copy selectors must be signed.
+The optional SDK x-id query marker must match CopyObject or UploadPartCopy and
+occur at most once; it does not change operation selection.
+
+UploadPartCopy supports complete objects and explicit inclusive byte ranges
+from source objects larger than 5 MiB, with the session's normal part bounds.
+It replaces a part using the durable generation-selection protocol below.
+Neither interrupted copy path publishes partial bytes. After request validation
+and source selection, the HTTP 200 response carries whitespace keepalives and
+ends with CopyObjectResult, CopyPartResult, or an embedded Error. Clients must
+consume and validate the whole response. The body owns the copy future, cancels
+it on disconnect, and caps execution at 300 seconds. A retry after response loss
+can select a newer source generation; copy is not an exactly-once operation.
+
+DeleteObjects validates its entire request before issuing a mutation: at most
+1,000 nonempty UTF-8/XML keys of 1,024 bytes each, a 2 MiB body, and no versions
+or conditional object selectors. Content-MD5 is supported; verified CRC32 may
+replace it for the current SDK serializer. This is an explicit integrity
+compatibility extension to the general-bucket MD5 rule. Every supplied supported
+checksum and signed payload hash is verified; unknown integrity extensions are
+rejected. Neither missing integrity nor malformed XML can delete any key.
+
+A valid batch uses the same logical deletion as DeleteObject, sequentially in
+input order. Each occurrence of a duplicate key gets its own result, and absent
+keys are successes. Failures do not undo preceding successes; Quiet omits only
+success entries. Dropping the request cancels remaining work. Batch deletion is
+not a transaction or an exactly-once operation: retries converge for keys with
+no intervening writes, but can delete a new unversioned PUT after response loss.
+Physical reclamation remains independent of this request.
 
 Multipart uploads keep a durable session, current part pointers, and immutable
 part generations under one upload prefix. Replacing a part number advances its
@@ -82,6 +173,15 @@ durable reservation: a writer stores the immutable generation, reserves the
 pointer update with a session compare-and-swap, publishes the pointer, then
 clears the reservation. A later request can finish an interrupted reservation.
 Completion cannot freeze while one is pending.
+
+Different part numbers can publish concurrently. A writer helps a pending
+reservation and re-evaluates its own publication when the durable session
+revision advances, retaining its already-written bytes. An immutable candidate
+left by a failed reservation does not block that part number: matching length
+and raw MD5 reuse the retained candidate under the same idempotency rule as a
+published part; different contents select the next unused generation. Generation
+numbers therefore increase monotonically and can have gaps. Retained candidates
+remain immutable, and accounting changes only through the session fence.
 
 Completion validates the ordered selected part numbers, raw MD5 values,
 minimum nonfinal size, and current generations. It freezes the selection under

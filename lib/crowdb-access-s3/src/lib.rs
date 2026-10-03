@@ -7,6 +7,8 @@ pub mod auth;
 pub mod bucket;
 pub mod condition;
 pub mod continuation;
+pub mod copy;
+pub mod delete;
 pub mod error;
 pub mod integrity;
 pub mod metadata;

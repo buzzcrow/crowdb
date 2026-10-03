@@ -1,21 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// MemTable (L0) — epoch-protected lock-free (R50).
-//
-// A concurrent in-memory ordered map `key -> encoded cell` that absorbs apply()
-// (concurrent, possibly out-of-order by slot). It keeps one (highest-slot) cell
-// per key and drops writes already durable in L1 (slot <= durable_floor), so any
-// key present in L0 is strictly newer than L1 -> L0-first reads are correct.
-//
-// R50: the backing structure is a ConcurrentSkipList with inline keys and
-// versioned cells. Readers (scan, get) traverse lock-free under an epoch guard
-// with zero copy — a cursor borrows key/cell Slices directly off the node,
-// and the epoch guard keeps the node alive past any concurrent drain/overwrite.
-// Writers are serialized by the skip list's internal spinlock. Every freed
-// node and overwritten cell version is epoch-retired through the engine's
-// EpochManager (passed in at construction), so reclamation defers past every
-// in-flight reader guard — the same EBR scheme L1 pages already use.
+// One node per key, with prefix versions retained until their coverage is
+// published. Writer admission is per batch; reader lifetime is epoch protected.
 #pragma once
 
 #include "crowdb-tree/btree/cell.h"
@@ -45,8 +32,18 @@ class MemTable
     // `epoch` is the engine's EpochManager — used to retire unlinked nodes
     // and overwritten cell versions. Must outlive this MemTable (owned by
     // the Crowdbtree, which outlives all MemTables via shared_ptr).
-    explicit MemTable(uint64_t id = 0, EpochManager *epoch = nullptr) : epoch_(epoch), id_(id)
+    explicit MemTable(uint64_t id = 0, EpochManager *epoch = nullptr) : list_(epoch), epoch_(&list_.epoch()), id_(id)
     {
+    }
+
+    [[nodiscard]] VersionMemory memory() const
+    {
+        return list_.memory();
+    }
+
+    [[nodiscard]] EpochManager::Guard read_guard() const
+    {
+        return epoch_->enter();
     }
 
     [[nodiscard]] uint64_t id() const
@@ -58,12 +55,14 @@ class MemTable
     // Drops the write if an existing entry has a >= slot. Also drops writes with
     // slot <= durable_floor (already in L1) unless allow_old_slots is set.
     bool upsert(Slice key, uint64_t slot, Slice cell_payload);
-    bool upsert(Slice key, uint64_t slot, buffer &&cell_payload);
+    bool upsert(Slice key, uint64_t slot, buffer &&cell_payload, uint64_t bound = UINT64_MAX,
+                MutationStats *stats = nullptr);
 
     // Zero-copy apply path (R30): store a split cell — the value is borrowed
     // from a Rust `bytes::Bytes` via a kExternal buffer (no value memcpy), and
     // the 9-byte cell header is stored as `slot`/`flags` fields.
-    bool upsert_external(Slice key, uint64_t slot, uint8_t flags, buffer &&value);
+    bool upsert_external(Slice key, uint64_t slot, uint8_t flags, buffer &&value, uint64_t bound = UINT64_MAX,
+                         MutationStats *stats = nullptr);
 
     void set_durable_floor(uint64_t slot);
 
@@ -94,10 +93,6 @@ class MemTable
         return {.min = mn, .max = mx, .empty = false};
     }
 
-    // Drop all entries and reset the durable floor to 0 (snapshot import).
-    // Epoch-retires every node and cell version.
-    void reset();
-
     // Point lookup (lock-free, zero-copy): returns the CellVersion* for `key`,
     // or nullptr. The returned pointer is valid only while the caller's epoch
     // guard is held — a concurrent overwrite retires the old version via epoch.
@@ -124,15 +119,42 @@ class MemTable
         return list_.cursor_reverse(start_key, has_start_bound, inclusive);
     }
 
-    // Remove and return, in key order, all entries with slot <= cs. Entries
-    // with slot > cs are retained. The returned entries have materialized
-    // contiguous cells (copied — this is the drain/flush path, not the hot
-    // read path). Unlinked nodes and old cell versions are epoch-retired.
-    [[nodiscard]] std::vector<mem_entry> drain_up_to(uint64_t cs);
+    // Prefix iteration is non-destructive; a frozen source stays readable.
+    [[nodiscard]] ConcurrentSkipList::Cursor prefix_cursor(uint64_t frontier, uint64_t floor = 0) const
+    {
+        return list_.prefix_cursor(frontier, floor);
+    }
+
+    void prune(Slice key, uint64_t bound, MutationStats *stats = nullptr)
+    {
+        list_.prune(key, bound, stats);
+    }
+#ifdef CROWDB_TREE_TEST_UTIL
+    void set_hook_for_tests(void *context, ConcurrentSkipList::TestHook hook)
+    {
+        list_.set_hook_for_tests(context, hook);
+    }
+#endif
+
+    bool try_enter() noexcept;
+    bool validate_open() noexcept;
+    void leave() noexcept;
+    void close() noexcept;
+    void wait_frozen() const noexcept;
+
+    [[nodiscard]] bool closed() const
+    {
+        return (writers_.load(std::memory_order_acquire) & kClosed) != 0;
+    }
+
+    [[nodiscard]] uint64_t writers() const
+    {
+        return writers_.load(std::memory_order_acquire) & ~kClosed;
+    }
 
     // Ordered immutable copy of the current contents (for full-set paths:
     // iter_all, compare, snapshot_export). O(N) copy is correct there.
-    [[nodiscard]] std::vector<mem_entry> snapshot() const;
+    [[nodiscard]] std::vector<mem_entry> snapshot(uint64_t frontier = UINT64_MAX) const;
 
     [[nodiscard]] size_t approx_bytes() const
     {
@@ -149,56 +171,26 @@ class MemTable
         return list_.empty();
     }
 
+    bool mark_backlog_warning()
+    {
+        return !backlog_warned_.exchange(true, std::memory_order_relaxed);
+    }
+
   private:
     void update_slot_range(uint64_t slot)
     {
-        // Relaxed: only the writer updates these, and readers use them as hints.
+        // Concurrent extrema are monotonic until the whole table is retired.
         uint64_t mn = min_slot_.load(std::memory_order_relaxed);
         uint64_t mx = max_slot_.load(std::memory_order_relaxed);
-        if (slot < mn) {
-            min_slot_.store(slot, std::memory_order_relaxed);
+        while (slot < mn && !min_slot_.compare_exchange_weak(mn, slot, std::memory_order_relaxed)) {
         }
-        if (slot > mx) {
-            max_slot_.store(slot, std::memory_order_relaxed);
+        while (slot > mx && !max_slot_.compare_exchange_weak(mx, slot, std::memory_order_relaxed)) {
         }
     }
 
-    void reset_slot_range()
-    {
-        min_slot_.store(UINT64_MAX, std::memory_order_relaxed);
-        max_slot_.store(0, std::memory_order_relaxed);
-    }
-
-    // Create a CellVersion from a contiguous cell buffer.
-    [[nodiscard]] static CellVersion *make_version(uint64_t slot, uint8_t flags, buffer &&cell)
-    {
-        auto *cv  = new CellVersion{};
-        cv->slot  = slot;
-        cv->flags = flags;
-        cv->cell  = std::move(cell);
-        return cv;
-    }
-
-    // Retire a CellVersion via epoch (the deleter destroys the buffer,
-    // firing the R30 drop_fn for kExternal cells).
-    void retire_version(CellVersion *cv)
-    {
-        if (cv == nullptr || epoch_ == nullptr) {
-            delete cv; // no epoch manager (tests) — immediate free
-            return;
-        }
-        epoch_->retire(cv, [](void *p) { delete static_cast<CellVersion *>(p); });
-    }
-
-    // Retire a Node via epoch.
-    void retire_node(Node *n)
-    {
-        if (n == nullptr || epoch_ == nullptr) {
-            ConcurrentSkipList::free_node(n); // no epoch manager (tests) — immediate free
-            return;
-        }
-        epoch_->retire(n, ConcurrentSkipList::free_node);
-    }
+    static constexpr uint64_t kClosed = uint64_t{1} << 63;
+    std::atomic<uint64_t>     writers_{0};
+    std::atomic<bool>         backlog_warned_{false};
 
     ConcurrentSkipList    list_;
     EpochManager         *epoch_;

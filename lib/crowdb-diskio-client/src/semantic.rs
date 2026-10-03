@@ -21,6 +21,7 @@ use crate::client::{DiskIoRetCode, WireClient, WireError, WireWriteTarget};
 use crate::topology::{self, DiskRoute};
 use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 
+mod native_routes;
 mod write_views;
 
 const TOPOLOGY_REFRESH_INTERVAL_MS: u64 = 5_000;
@@ -737,34 +738,6 @@ impl DiskioClient {
             write_average_us: average(&self.counters.write_latency_us, &self.counters.write_operations),
             fsync_average_us: average(&self.counters.fsync_latency_us, &self.counters.fsync_operations),
         }
-    }
-
-    /// Retain one priority-lane route per disk for the native tree page store.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DiskioError::TransportUnavailable`] if a published endpoint
-    /// has no healthy priority connection.
-    pub fn native_routes(&self) -> DiskioResult<NativeDiskIoRoutes> {
-        let snapshot = self.routes.load();
-        let mut routes = Vec::with_capacity(snapshot.routes.len());
-        for (disk_id, route) in &snapshot.routes {
-            let selected = self.priority.get_first(&route.pool_key).ok_or_else(|| {
-                DiskioError::TransportUnavailable(format!(
-                    "DiskIO endpoint {} has no healthy priority connection",
-                    route.endpoint
-                ))
-            })?;
-            routes.push((
-                *disk_id,
-                OwnedClientRoute::new(
-                    Arc::clone(&self.wire),
-                    Arc::clone(&self.server),
-                    selected.into_connection(),
-                ),
-            ));
-        }
-        Ok(NativeDiskIoRoutes { routes })
     }
 
     fn begin_operation(&self, kind: OperationKind, lane: TrafficLane) -> DiskioResult<InflightGuard<'_>> {

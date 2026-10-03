@@ -8,13 +8,14 @@
 //! design §3.8). The chunk ID (24 bytes) is the KV key.
 
 pub mod reservation;
+mod scope;
 
 use std::sync::Arc;
 
 use tracing::warn;
 
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode, ScanOutcome};
+use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_task::ChunkTaskValue;
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, Strip, StripCleanupIntent};
 use crowdb_protocol::common::ChunkId;
@@ -22,7 +23,9 @@ use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::{encode_chunk_task_value, BinaryKey, ChunkTaskKey, FinalizeChunkTaskKey};
 use serde::Deserialize;
 
-use crate::routing::{route, BindingCache, MigrationState, Route};
+use crate::range_guard::RangeGuard;
+use crate::routing::{BindingCache, Route};
+use crowdb_protocol::chunk_domain::ChunkDomain;
 
 /// Storage error.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +42,8 @@ pub enum StoreError {
     Kv(String),
     #[error("serialization error: {0}")]
     Serde(String),
+    #[error("chunk is outside this runtime domain or service slot authority")]
+    Authority,
 }
 
 /// Result alias.
@@ -48,6 +53,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 pub struct ChunkStore {
     pub(super) kv: Arc<CrowdbKvClient>,
     pub(super) bindings: BindingCache,
+    scope: Option<(Arc<RangeGuard>, ChunkDomain)>,
 }
 
 #[derive(Deserialize)]
@@ -178,7 +184,11 @@ impl From<PreviousChunk> for Chunk {
 impl ChunkStore {
     #[must_use]
     pub fn new(kv: Arc<CrowdbKvClient>, bindings: BindingCache) -> Self {
-        Self { kv, bindings }
+        Self {
+            kv,
+            bindings,
+            scope: None,
+        }
     }
 
     /// Atomically create an Active chunk and its sole FinalizeChunk task in
@@ -189,7 +199,7 @@ impl ChunkStore {
         if task.partition_id != *id || task.task_id != *id {
             return Err(StoreError::Conflict);
         }
-        let route = route(&self.bindings, id)?;
+        let route = self.route(id)?;
         let chunk_key = chunk_key(id);
         let task_key = ChunkTaskKey {
             partition_id: *id,
@@ -240,21 +250,12 @@ impl ChunkStore {
     /// An ambiguous response is reconciled by reading the current record.
     pub async fn put_chunk(&self, chunk: &Chunk) -> Result<()> {
         let id = chunk.id.as_ref().expect("chunk has id");
-        let r = route(&self.bindings, id)?;
+        let r = self.route(id)?;
         let key = chunk_key(id);
         let value = encode_chunk(chunk);
 
         self.put_chunk_at(r.kv_store_id, r.kv_group_id, &key, &value, chunk)
             .await?;
-        if r.migration_state == MigrationState::Copying || r.migration_state == MigrationState::Cutover {
-            // The new route is authoritative. Mirror the same guarded logical
-            // transition to the old route during migration.
-            if let (Some(old_store), Some(old_group)) = (r.old_kv_store_id, r.old_kv_group_id) {
-                if let Err(e) = self.put_chunk_at(old_store, old_group, &key, &value, chunk).await {
-                    warn!(error = %e, "dual-write: old group write failed (new group has data)");
-                }
-            }
-        }
         Ok(())
     }
 
@@ -314,28 +315,11 @@ impl ChunkStore {
 
     /// Read a chunk by ID.
     pub async fn get_chunk(&self, id: &ChunkId) -> Result<Chunk> {
-        let r = route(&self.bindings, id)?;
+        let r = self.route(id)?;
         let key = chunk_key(id);
 
-        // Try new group first.
         if let Some(data) = self.get_chunk_raw(&r, &key).await? {
             return decode_chunk(&data);
-        }
-
-        // During migration, fall back to old group.
-        if r.migration_state == MigrationState::Copying || r.migration_state == MigrationState::Cutover {
-            if let (Some(old_store), Some(old_group)) = (r.old_kv_store_id, r.old_kv_group_id) {
-                let old_route = Route {
-                    kv_store_id: old_store,
-                    kv_group_id: old_group,
-                    migration_state: MigrationState::NotMigrating,
-                    old_kv_store_id: None,
-                    old_kv_group_id: None,
-                };
-                if let Some(data) = self.get_chunk_raw(&old_route, &key).await? {
-                    return decode_chunk(&data);
-                }
-            }
         }
 
         Err(StoreError::ChunkNotFound)
@@ -343,21 +327,13 @@ impl ChunkStore {
 
     /// Delete a chunk by ID.
     pub async fn delete_chunk(&self, id: &ChunkId) -> Result<()> {
-        let r = route(&self.bindings, id)?;
+        let r = self.route(id)?;
         let key = chunk_key(id);
 
-        // Delete from new group.
         self.kv
             .delete(r.kv_store_id, r.kv_group_id, &key, None)
             .await
             .map_err(|e| StoreError::Kv(e.to_string()))?;
-
-        // During migration, also delete from old group.
-        if r.migration_state == MigrationState::Copying || r.migration_state == MigrationState::Cutover {
-            if let (Some(old_store), Some(old_group)) = (r.old_kv_store_id, r.old_kv_group_id) {
-                let _ = self.kv.delete(old_store, old_group, &key, None).await;
-            }
-        }
 
         Ok(())
     }
@@ -365,50 +341,12 @@ impl ChunkStore {
     /// List chunks with pagination. Scans the routed KV group's
     /// keyspace starting from `start_after`.
     pub async fn list_chunks(&self, start_after: Option<&ChunkId>, max_keys: u32) -> Result<Vec<Chunk>> {
-        let table = self.bindings.snapshot();
-        if table.is_empty() {
-            return Err(StoreError::Route(crate::routing::RouteError::NoBinding));
-        }
-
-        let prefix = b"/chunk/";
         let start = start_after.map(chunk_key).unwrap_or_default();
-        let start_key: &[u8] = if start.is_empty() { &[] } else { &start };
-
-        // Scan all bindings — chunks may be spread across multiple KV
-        // groups. Each binding gets up to `max_keys` results; the
-        // caller merges them.
-        let mut chunks = Vec::new();
-        for binding in table.bindings() {
-            let outcome: ScanOutcome = self
-                .kv
-                .scan(
-                    binding.kv_store_id,
-                    binding.kv_group_id,
-                    prefix,
-                    start_key,
-                    &[],
-                    max_keys,
-                    ReadMode::Linearizable,
-                    None,
-                    false,
-                    None,
-                )
-                .await
-                .map_err(|e| StoreError::Kv(e.to_string()))?;
-
-            for (_key, value) in outcome.items {
-                match decode_chunk(&value) {
-                    Ok(chunk) => chunks.push(chunk),
-                    Err(e) => {
-                        warn!(error = %e, "list_chunks: failed to decode chunk, skipping");
-                    }
-                }
-            }
-        }
-        chunks.sort_unstable_by_key(|chunk| chunk.id.map(|id| (id.high, id.low)));
-        chunks.dedup_by_key(|chunk| chunk.id);
-        chunks.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
-        Ok(chunks)
+        self.scan_owned_records(b"/chunk/", &start, max_keys)
+            .await?
+            .into_iter()
+            .map(|(_, value)| decode_chunk(&value))
+            .collect()
     }
 
     /// Raw get from a specific route.

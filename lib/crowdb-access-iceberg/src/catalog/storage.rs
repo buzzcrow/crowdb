@@ -98,6 +98,15 @@ pub trait CatalogStore: Send + Sync {
     }
 
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError>;
+    /// Scans only a bounded native file-location interval.
+    /// # Errors
+    /// Stores without listing support reject the request rather than return an empty page.
+    async fn scan_file_locations(
+        &self,
+        _scan: crate::file::FileLocationScan,
+    ) -> Result<MultiScanPage, StoreError> {
+        Err(StoreError::Budget)
+    }
     async fn compare_exchange(
         &self,
         key: &[u8],
@@ -226,6 +235,12 @@ impl RoutedCatalogStore {
 
 #[async_trait]
 impl CatalogStore for RoutedCatalogStore {
+    async fn scan_file_locations(
+        &self,
+        scan: crate::file::FileLocationScan,
+    ) -> Result<MultiScanPage, StoreError> {
+        self.scan(scan.request()?).await
+    }
     fn operation_counts(&self) -> Option<CatalogStoreOperationCounts> {
         Some(self.counters.snapshot())
     }

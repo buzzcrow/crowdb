@@ -52,11 +52,10 @@ string compared lexicographically, `slot` is the resolved consensus slot, and
 `cell` is a live value or a tombstone. It is a **bounded 2-level** structure
 (`design-crowdb-tree.md` D3):
 
-- **L0 — MemTable.** A concurrent in-memory ordered map (**`absl::btree_map`**,
-  D9) that absorbs `apply` (concurrent, possibly out-of-order by slot; §1.3).
-  Keeps one (highest-slot) cell per key. Key/value bytes are stored as
-  move-only `buffer`s (§2), not `std::string`, so the write path is
-  single-allocation and zero-copy down to the frame build.
+- **L0 — MemTable.** A concurrent skip list with one node per key. CAS
+  publishes nodes and immutable version descriptors. Ordinary reads resolve the
+  highest observed slot; retained prefix versions support contiguous flush.
+  Payloads may borrow external buffers without copying (§2).
 - **L1 — B+tree.** A **single-writer / multi-reader** B+tree with
   copy-on-write base pages and a per-leaf delta chain. Inner pages hold
   separator keys + child PIDs; leaf pages hold sorted `(key, slot, cell)`
@@ -64,9 +63,9 @@ string compared lexicographically, `slot` is the resolved consensus slot, and
   `root_pid` through the mapping table
   ([`design-crowdb-tree-storage.md §8`](design-crowdb-tree-storage.md#8-mapping-table)).
 
-The single **Flusher** thread merges the MemTable's contiguous-applied prefix
-into L1 ("flush = the persistent write"; §1.3). Reads overlay L0 on L1 (§1.7),
-so read amplification is bounded at 2. The B+tree has exactly one writer.
+L1 mutation is serialized by the existing tree write mutex. Flush publishes
+only the captured contiguous prefix into L1; snapshot persistence establishes
+the durable replay point. Reads merge retained L0 sources with L1 (§1.7).
 
 Every value carries the slot and a kind flag:
 
@@ -110,69 +109,39 @@ abort delta because there is no competing writer.
 
 ### 1.3 Write Path: MemTable Ingest + Flush
 
-`apply(slot, batch)` does **not** touch the B+tree. It folds the batch into
-the concurrent MemTable:
-
-```
-apply(slot, batch):
-    for (key, op, value) in batch:              // intra-batch: last occurrence wins
-        if slot <= last_applied_slot: continue  // already durable in L1; drop
-        memtable.try_emplace(std::move(key_buf), std::move(cell_buf))  // move-only
-    maybe_signal_flush()                         // size/entry/time threshold crossed
-```
-
-- The consensus apply path stores **split cells** — the value is
-  borrowed from the payload `Bytes` via a `kExternal` buffer (no value
-  memcpy), and the 9-byte cell header is stored as `slot`/`flags` fields
-  in `cell_entry`. The contiguous cell is materialized at flush / L0-read.
-  See §2.4 for the full design. The pseudocode above shows the
-  contiguous-cell path (used by snapshot import and the direct C API);
-  both paths coexist in the same MemTable.
-- The MemTable keeps **one cell per key** (highest slot wins), so repeated
-  writes to a hot key collapse in memory before ever reaching the tree.
-- `apply` drops cells already durable in L1 (`slot <= last_applied_slot`) and
-  keeps the highest slot per key, so the MemTable always holds cells
-  **strictly newer** than L1 for any shared key. This is what makes the
-  L0-first read (§1.7) correct.
-- A NoOp / empty batch still advances the contiguous frontier via
-  `force_advance_slot` (the learner counts it), so the Flusher never blocks on
-  the gap a NoOp leaves (`design-crowdb-tree.md §3.1`).
-
-The single Flusher thread, when a size/entry or time threshold trips, drains
-the **contiguous-applied prefix** of the MemTable into L1:
-
-```
-flush():
-    cs = contiguous.load()
-    drained = memtable.take_while(entry.slot <= cs)     // ordered by key
-    guard = epoch.enter()
-    for (pid, group) in group_by_leaf(drained):          // find_leaf(key) per run
-        delta = build_batch_delta(flushed_slot = cs, group)
-        prepend delta onto pid's chain; mapping.Store(pid, delta)  // sole writer, plain store
-        if chain exceeds max_delta_len / max_delta_bytes: consolidate(pid)  // may split/merge
-    publish_root_version(version++, root_pid, last_applied_slot = cs)   // §1.5
-```
-
-- Every cell in a flush has `slot <= cs <= last_applied_slot`, so the
-  published `RootVersion` is an **exact point-in-time** state (§1.5); no
-  slot beyond the frontier ever reaches the tree. `flush` *is* snapshot
-  creation *is* snapshot: the public API is unified under snapshot
-  terminology (`create_snapshot` = drain + publish + **persist to disk**),
-  and `snapshot_view` returns the latest pinned root rather than
-  materializing a copy. Every snapshot is durable; there is no
-  "in-memory-only flush." Recovery uses the latest durable snapshot's slot as
-  the replay starting point.
-- The Flusher is the sole tree mutator, so mapping stores need no CAS; a
-  multi-leaf flush is atomic to readers per leaf (each head swap is one
-  atomic store), and the L0 overlay (§1.7) covers any cross-leaf read
-  consistency during the flush.
-- **Highest-slot-wins placement** is resolved consistently in three places:
-  MemTable upsert (memory), consolidation (chain fold), and read (L0 overlay
-  + chain scan). A higher-slot cell always shadows a lower-slot one.
-- **Batching benefit:** hot keys collapse in the MemTable; each flush does
-  one atomic store + at most one consolidation per affected leaf per flushed
-  slot, not per key. This is LSM-style write batching without global
-  compaction.
+- `apply(slot, batch)` deduplicates each batch by key, with its last operation
+  winning. It selects Active, samples a pruning bound, and conditionally
+  registers one outstanding batch in that table's combined closed/count word.
+  Losing admission to closure retries against the successor.
+- Independent writers publish skip-list links and version descriptors by CAS.
+  Writers hold epoch protection through publication, accounting and retirement
+  submission. Successful slot bookkeeping precedes admission release; a failed
+  batch cannot complete its slot. Empty batches use the same admission path.
+- Encoded and external-value paths share this contract. Encoded cells must carry
+  the batch slot. External values retain their buffer owner; reads reconstruct
+  the header from the immutable slot/flags tuple.
+- A validated bound D allows retaining the highest version at or below D and
+  every version above D. A writer samples D before successful admission. After
+  slot completion it may refresh D only through another successful open-state
+  RMW. Descriptor bounds are monotonic. Allocation failure in optional merging
+  leaves the successful apply intact.
+- Rotation prepares the successor and pending capacity before closing Active.
+  Flush closes A, captures frontier F, then publishes B under source-selection
+  synchronization. Thus every pruning permission issued for A satisfies D <= F.
+  It captures a finite source set and waits only for its admitted writers.
+- Prefix cursors choose each key's highest slot <= F across the captured tables,
+  including retained versions. L1 publication uses sorted leaf groups. Only
+  after every group is published does the source catalog advance its floor to F
+  and detach wholly covered tables. Above-F records stay in their source table;
+  there is no drain-and-reinsert relocation.
+- A partially published flush retains its sources and old coverage floor.
+  Snapshot preparation is rejected until a successful flush repairs publication.
+  L1 publication alone does not authorize WAL reclamation; the persisted snapshot
+  frontier remains the durable recovery boundary.
+- Size and pending-table thresholds are soft. A stalled writer, reader or slot
+  gap can retain memory; this path does not impose a hard write-admission limit.
+  Native async flush uses a completion worker, and maintenance/split callers
+  offload waits from executor threads.
 
 ### 1.4 Consolidation, Split, and Merge
 
@@ -203,28 +172,19 @@ oscillation.
 
 ### 1.5 Versioned Root (Consistent Snapshots)
 
-Steady-state reads use epoch pinning (§1.6) on the live chain. For
-**long-lived consistent views** (`scan` with a large result, `compare`,
-`snapshot_export`, and recovery anchoring), crowdb-tree maintains an immutable
-**versioned root**: `{version, root_pid, last_applied_slot, refcount}`.
+Ordinary point/range reads traverse the live overlay. `snapshot_view()` instead
+serializes with L1 publication, records the published slot and version, and pins
+L1 page chains for a stable `PinnedSnapshot`. It excludes unpublished L0 data.
+Pinned pages remain alive independently of subsequent COW publication and epoch
+retirement. Historical queries at an arbitrary older slot are not supported.
 
-- At `persist_snapshot` (and optionally on a cadence), the writer **freezes**
-  the current tree: consolidates dirty leaves into immutable base pages,
-  records a new `RootVersion`, and makes it current. This is the
-  copy-on-write boundary.
-- A reader takes `snapshot_view()` → pins the current `RootVersion`
-  (refcount++). All `EngineView` methods read that fixed tree; writes after
-  the pin allocate new pages and never mutate the pinned version's pages.
-- A `RootVersion` (and pages reachable only from it) is reclaimable when
-  `refcount == 0` **and** `last_applied_slot < gc watermark`
-  ([`design-crowdb-tree-storage.md §9`](design-crowdb-tree-storage.md#9-garbage-collection)).
-
-This gives true MVCC snapshots for readers/export without multi-version
-per-key storage: only whole *tree versions* are retained briefly, not
-multiple versions per key. Steady state keeps just one live version; older
-versions exist only while a long reader holds them. Snapshot export always
-pins the **current** version; exporting an arbitrary past slot is not
-supported. Install-snapshot always installs the latest durable state.
+Snapshot persistence writes the covered L1 state and its recovery frontier to
+the configured store. A stable in-memory view and a successfully persisted
+snapshot have different durability guarantees. Import builds a private candidate
+mapping before closing engine-generation admission. It drains old operations,
+publishes mappings, sources and slot state together, then admits new operations.
+Preparation failure preserves the old logical generation; borrowed allocations
+survive replacement through their lifetime owners.
 
 ### 1.6 Epoch-Based Reclamation
 
@@ -241,20 +201,18 @@ into resident frames that stay valid for the read guard's lifetime (§2.2).
 - A retired page is freed only after every thread that could hold a pointer
   has left the epoch in which it was retired.
 
-Because there is a single writer, `Retire` is uncontended; readers pay only
-the enter/exit. This is the one mechanism that answers page deletion, page
-references, and concurrent-read performance together.
+L1 page retirement uses `retire()` under the reclamation mutex. Concurrent
+MemTable writers enqueue preallocated retirement tickets through `defer()`'s
+lock-free CAS list; per-record publication never takes that mutex. Maintenance
+collects tickets, assigns retirement epochs and frees entries only below the
+minimum active participant epoch. Idle maintenance also drives reclamation.
 
-**`enter()`/`exit()` are lock-free** (a single atomic store each; no mutex,
-no CAS). The writer path (`retire`/`reclaim`) keeps a mutex since there is
-only one writer (the Flusher), so no contention there. This follows the classic
-epoch-based reclamation (EBR) design (Fraser, *Practical Lock-Freedom*, 2004;
-the same idea underlies Linux kernel RCU and Rust's `crossbeam-epoch`): a
-monotonic global epoch, per-thread local-epoch slots (cache-padded,
-fixed-capacity pool, no dynamic allocation on the hot path), and reclamation
-deferred to whichever thread calls `try_reclaim()` (the writer or a periodic
-tick), which frees any retired entry whose epoch is below the minimum active
-participant's epoch.
+**Guard entry and exit do not acquire a mutex.** First use on a thread allocates
+and CAS-registers a participant, then caches it by manager identity. Subsequent
+outermost entry publishes the current epoch; the outermost exit clears it.
+Nested guards share that participant. Participants are dynamically registered,
+not drawn from a fixed-capacity writer registry. The lifetime owner preserves
+participants and pending retirements while borrowed results outlive the tree.
 
 **Why not sharding instead?** Sharding (multiple `EpochManager` instances,
 reader hashed by thread) reduces contention but does not eliminate it. Each
@@ -303,28 +261,20 @@ Three disciplines solve this:
 
 ### 1.7 Read Path
 
-```
-get(key):
-    guard = epoch.enter()                 // keeps frames resident
-    if cell = memtable.get(key):          // L0 first: holds the newest cell if present
-        return cell.tombstone ? None : (cell.slot, cell.value.clone())  // L0 must COPY (mutex)
-    pid  = find_leaf(key)                  // L1: descend inner pages from root_pid
-    for node in chain(pid):                // head → base
-        if node has key: return cell_of(node) (tombstone → None)
-    return None
-```
-
-- **L0 overlay.** Because `apply` drops cells `<= last_applied_slot` and keeps
-  the highest slot per key (§1.3), any key present in the MemTable has a slot
-  strictly newer than L1, so checking L0 first is correct (read amplification
-  2).
+- **L0 overlay.** Capture source owners and their L1 coverage floor together,
+  before loading L1 pointers. Ignore L0 cells at or below that captured floor,
+  including stale replays admitted before a new floor was published. Among
+  eligible L0 candidates choose the highest observed slot; a tombstone wins by
+  the same comparison. A hit can borrow its value while retaining its source
+  epoch. If L0 has no eligible candidate, resolve the L1 chain.
 - `scan(prefix, start_after, limit)` uses a **merge cursor** over L0 and the
   L1 leaf chain: at each step take the smaller key, and on a key tie take the
-  L0 cell (newer). Within L1, walk the current leaf's live entries with a
+  highest observed slot. Within L1, walk the current leaf's live entries with a
   `LeafChainCursor` (resolving the delta chain by highest slot), then follow
   `right_sibling`.
-  For bounded `limit` the live overlay is fine; for large scans the cursor
-  runs on a pinned `RootVersion` merged with an L0 snapshot. `start_after`
+  Each cursor caches a coherent key/slot/value candidate. Ordinary scans do
+  not pin a common version, regardless of result size: different keys may
+  reflect different times or part of a concurrent batch. `start_after`
   (empty = start from beginning) is an **exclusive lower bound** pushed down
   into the engine: the descent targets the leaf that would contain
   `start_after` (instead of the prefix start), and the merge loop skips keys
@@ -365,95 +315,83 @@ get(key):
   exactly as it keeps an L1 frame resident. An overflow value (assembled
   from multiple pages, no single frame to borrow) is materialized into an
   owned `buffer`.
-- `iter_all` (for `compare`) always runs on a pinned `RootVersion` (merged
-  with an L0 snapshot) and includes tombstones.
+- `iter_all` traverses the live overlay and includes tombstones. Stable snapshot
+  export uses the separately pinned L1 view.
 
-Reads never block apply and apply never blocks reads: readers see immutable
-pages; the writer only ever publishes new pages via atomic stores and retires
-old ones via the epoch manager.
+Ordinary mutation does not hold a table-wide read/write token. Generation
+replacement fences new operations and waits for old operations to finish;
+borrowed results retain their allocation lifetime independently.
 
 ### 1.8 Concurrency Summary
 
-| Actor | Mechanism |
-| --- | --- |
-| MemTable ingest (`apply`, ≥ 1) | Concurrent ordered-map upsert; no tree access |
-| Flusher (1 per tree) | Sole tree writer: drain prefix → batch delta → plain store; epoch retire |
-| Point/range readers (N) | Epoch enter/exit; L0 overlay + lock-free atomic loads of immutable pages |
-| Long readers / export | Pin a `RootVersion` (refcount) + L0 snapshot for a stable MVCC view |
+- Ingest: per-batch table admission, CAS node/version publication and epoch
+  protection. Existing source-selection and slot-bookkeeping locks remain.
+- Flush: serialized L1 mutation, finite old-writer wait and prefix publication.
+- Reads: owned source bundle, captured coverage floor and coherent cursor
+  candidates. Forward/reverse and async retry paths use observed versions.
+- Replacement: engine-generation admission excludes old apply/NoOp/read
+  operations while publishing privately prepared state. It does not reuse or
+  reset the outstanding count of an older table.
+- Split: a journal cutover is not L1 coverage. Overlay sources remain queryable
+  until prefix publication; an unpublished overlay prevents destination flush
+  from advertising that inherited frontier. Uncovered parent sources remain
+  pending when split ownership is released.
 
-Demand-load serialization is intentionally confined to the cold
-`Crowdbtree::resident` path. The first lookup is lock-free; only an unloaded
-mapping takes `load_mutex_`, rechecks, reads, and installs. Per-page in-flight
-state would improve simultaneous cold misses but adds another lifetime state
-machine, so it is deferred until cold-load contention is measured. The applied
-slot gap set likewise retains its short mutex: slots are normally contiguous
-and the set stays small.
+Demand loading retains the existing cold-path mutex. Allocation, source
+selection and slot bookkeeping mean the complete apply operation is not claimed
+to be lock-free merely because skip-list mutation is concurrent.
 
-Invariants:
-
-- **I1** A page is freed only after no reader epoch can reference it.
-- **I2** A pinned `RootVersion`'s pages are immutable until its refcount hits 0.
-- **I3** Per-key resolved slot is monotone (highest-slot-wins at upsert, read
-  & consolidate).
-- **I4** A reader observes a linearizable point-in-time state (L0 overlay on
-  the live tree, or a pinned version), never a partial multi-leaf flush.
-- **I5** For any key in both, the MemTable cell's slot is strictly newer than
-  L1's (apply drops `slot <= last_applied_slot`), so L0-first reads are
-  correct.
-- **I6** The B+tree only ever holds slots `<= last_applied_slot` (flush
-  drains the contiguous prefix only), so every `RootVersion` is an exact
-  point-in-time state.
+- **I1 — Lifetime:** epoch borrowers and source owners jointly protect nodes,
+  descriptors, payloads and page chains through their final access.
+- **I2 — Completion:** Frozen means admission is closed and the batch count is
+  zero. Reader lifetime does not delay this transition.
+- **I3 — Resolution:** one node per key and coherent immutable descriptors
+  preserve highest-slot-wins, tombstones and equal-slot replay deduplication.
+- **I4 — Scan:** observed-version scans preserve ordering and uniqueness; a
+  stable key cannot disappear due to flush. No common snapshot slot is promised.
+- **I5 — Coverage filter:** a source bundle's floor excludes already-covered L0
+  versions without changing the traversal of older bundles.
+- **I6 — Publication:** L1 receives only versions within the captured contiguous
+  target. Complete L1 coverage and durable snapshot coverage remain separate.
 
 ### 1.9 Epoch-Protected MemTable (L0)
 
-The MemTable (L0) is a `ConcurrentSkipList` with inline keys and versioned
-cell pointers, epoch-retired exactly as L1 pages are. This brings L0 into
-the same EBR scheme as L1, closing the gap that previously forced
-`snapshot()` to deep-copy every live L0 entry on every scan.
-
-**Structure.** Each skip-list node holds a `next[]` tower of
-`std::atomic<Node*>`, an atomic `CellVersion*` pointer, a logical-deleted
-flag, and the key bytes inline in the node's tail allocation (RocksDB
-`InlineSkipList` style: one allocation, no `std::string` header). Height
-is drawn at insert (p=0.25, max 12). Keys are immutable for a node's
-lifetime; only the cell version pointer is mutable, which makes the read
-path a pure atomic load.
-
-**Cell version.** A `CellVersion` holds the `buffer` (contiguous
-`[header][value]` or split `kExternal` raw value) + slot + flags. Overwrite
-publishes a new `CellVersion*` with a release store, then
-`epoch_.retire(old_version)`. A reader that loaded the old pointer under
-its guard keeps it alive, no use-after-free. This is the key difference
-from the previous in-place overwrite.
-
-**Write path.** Writers are serialized by a write spinlock (replacing the
-old `mu_`). `apply()` already serialized on `mu_` and is not the scan
-bottleneck; CAS-based concurrent insert is out of scope. Insert splices
-the node in bottom-up with release stores. Erase (`drain_up_to`) sets
-`deleted`, unlinks the tower, then epoch-retires the node and cell version.
-`reset()` epoch-retires every node. `upsert_external` always tags the
-buffer as `kExternal` (split cell) since it stores the raw value without
-the 9-byte header. The header is reconstructed from `slot`/`flags` at
-read time.
-
-**Read path.** `MemTable::cursor(start_after)` returns a cursor seeded by
-an O(log N) `lower_bound`, exposing `key()`, `cell_version()`, `advance()`.
-Traversal is atomic acquire loads on `next[]`; logically-deleted nodes are
-skipped. The scan's `L0Cursor` is a skip-list cursor; the merge loop is
-otherwise unchanged (min-key select, highest-slot-wins on collision, early
-stop past prefix). Cell materialization runs only for entries that reach
-the output: O(limit), not O(N_l0). The `upper_bound` skip pass and its
-`scan_l0_skip_l` metric are deleted; the cursor seeks directly.
-`get_view()` and `try_get_view_no_load()` borrow the value directly from
-the `CellVersion`, no `std::string` staging, no second copy.
-
-**Counters.** `bytes_`, `min_slot_`, `max_slot_`, `count()`, and `empty()`
-are relaxed atomics maintained by the writer (read by
-`maybe_freeze_active`'s thresholds and diagnostics).
-
-**`snapshot()` retained.** `iter_all`, `compare`, and `snapshot_export`
-need every entry, O(N) is correct there. `snapshot()` is a cursor walk;
-the point of L0 is that it is no longer on the scan or get path.
+- **Structure:** nodes contain immutable inline keys, atomic forward links and
+  an atomic `VersionSet*`. Level-zero CAS establishes membership; upper links
+  are an optimization. A paused insertion does not own unrelated keys. Height
+  selection uses thread-local state. Published nodes are never unlinked.
+- **Versions:** each immutable descriptor owns its current `CellVersion` and
+  retained history through shared payload references. It stores a monotonic
+  pruning bound. The common one-version descriptor has no history allocation.
+  CAS failure recomputes selection from the winning descriptor; an older writer
+  cannot restore a discarded redundant prefix version.
+- **Retention:** D=100 with versions 2, 80, 102 and 105 retains 80, 102 and 105.
+  Prefix targets 100, 102 and 105 therefore choose 80, 102 and 105. Reversed
+  arrival and future tombstones follow the same rule. A slot gap can retain many
+  versions; an admission window is not a bound on the global slot span.
+- **Reclamation:** retired descriptors use embedded, preallocated queue tickets.
+  Apply submits ownership by lock-free push; maintenance collects tickets into
+  epoch retirement. It does not acquire the reclamation mutex per overwrite or
+  run a collection pass on the apply path. Shared payload ownership prevents
+  descriptor copies from freeing values still used by newer descriptors.
+- **Readers:** cursor creation and advancement capture one candidate pointer.
+  Ranking and materialization use that same immutable tuple. Frozen tables stay
+  intact until fully covered and source owners are detached. Destruction queues
+  remaining nodes; outstanding guards retain the detached reclamation lifetime.
+- **Metrics:** successful overwrite, history retention and merging events are
+  aggregated once per batch. Retention distinguishes a gap at admission from
+  temporary pending-batch retention; these are event counts, not a gap rate.
+  Separate gauges report live history, descriptor/node/payload charges and
+  allocations awaiting reclamation. Managed byte charges include object sizes
+  and retained buffer lengths; allocator overhead and external-owner sharing
+  require process-memory measurements. Concurrent gauge samples are approximate.
+- **Descriptor copying:** `mt.version.copy.l` is a latency counter for rebuilding
+  an existing descriptor's payload-reference set, including pruning, candidates
+  discarded after a CAS conflict and aborted preparation. Its count is the
+  number of reconstruction attempts; sum/maximum measure individual attempt
+  durations. Samples are aggregated locally and submitted once per batch,
+  including failed batches. Payload bytes are shared, not copied. This is not
+  an I/O bandwidth metric or a count of successfully published versions.
 
 ### 1.10 Scan Path Perf Baseline
 
@@ -602,7 +540,7 @@ Write (contiguous-cell path — snapshot import / direct C API):
   → MemTable::upsert(key_buf, cell_buf): std::move into the map   (no copy)
 
 Flush (off the apply critical path):
-  → drain_up_to: materialize split cells → contiguous [header][value] (value memcpy HERE)
+  → prefix snapshot: materialize selected cells → contiguous [header][value] (value memcpy HERE)
   → frame builder copies bytes into the slotted frame layout     ← unavoidable (page construction)
 
 Read: get(key):
@@ -660,7 +598,7 @@ Three options for how Rust hands value memory to C++:
   in the MemTable — `cell_entry{slot, flags, value:kExternal}` — where
   the 9-byte cell header is stored as fields, not as adjacent bytes. The
   contiguous `[header][value]` cell is materialized at the MemTable API
-  boundary (`get`/`drain_up_to`/`snapshot`), where a copy already exists,
+  boundary (`get`/prefix snapshot/`snapshot`), where a copy already exists,
   all off the apply critical path. When the `kExternal` buffer is freed
   (drain/overwrite), C++ calls back into Rust (`ct_release_bytes`) to
   drop the `Arc<Bytes>` clone, keeping the payload allocation alive until
@@ -696,7 +634,7 @@ at apply time) is not adjacent to them.
 
 **Design.** Split the cell **only while it lives in the MemTable**;
 materialize the contiguous form at the memtable API boundary
-(`get`/`drain_up_to`/`snapshot`), points where a copy already exists, all
+(`get`/prefix snapshot/`snapshot`), points where a copy already exists, all
 off the apply critical path. Everything downstream (flush, delta, frame,
 `leaf_entry`, `CellView`, snapshot I/O) sees contiguous cells unchanged.
 

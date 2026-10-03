@@ -1,3 +1,4 @@
+use crate::upload_flow::body_encoding::UploadBody;
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
@@ -13,14 +14,13 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 
 use super::{
-    admission_error, multipart, DigestPipe, FileS3ErrorCode, FileTransferAdmission, FileUploadBody,
-    UploadObservation,
+    admission_error, multipart, DigestPipe, FileS3ErrorCode, FileTransferAdmission, UploadObservation,
 };
 use crate::upload_flow::WriteStats;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn receive(
-    body: &mut FileUploadBody<Incoming>,
+    body: &mut UploadBody<Incoming>,
     writer: &mut IcebergFileWriter,
     digest: &mut DigestPipe,
     admission: &FileTransferAdmission,

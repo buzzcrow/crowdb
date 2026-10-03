@@ -6,10 +6,10 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crowdb_protocol::chunk_stream::StreamName;
+use crowdb_protocol::chunk_stream::{StreamName, StreamPurpose};
 use crowdb_protocol::chunkdb::rpc::{
-    AdvanceChunkWriteRequest, AllocateChunkRequest, AppendChunkRequest, Chunk, ChunkState, ChunkType,
-    SealChunkRequest, Strip, StripType,
+    AdvanceChunkWriteRequest, AllocateChunkRequest, AppendChunkRequest, Chunk, ChunkState, SealChunkRequest,
+    Strip, StripType,
 };
 use crowdb_protocol::common::ChunkId;
 use tokio::task::JoinSet;
@@ -34,7 +34,7 @@ pub struct MirrorChunkWriter {
 }
 
 impl MirrorChunkWriter {
-    /// Allocates one WAL chunk with the default mirror policy.
+    /// Allocates one stream chunk with the default mirror policy.
     ///
     /// # Errors
     ///
@@ -46,6 +46,7 @@ impl MirrorChunkWriter {
         stream_name: StreamName,
         writer_epoch: u64,
         writer_lease_ms: u64,
+        purpose: StreamPurpose,
     ) -> Result<Self> {
         Self::allocate_with_copy_count(
             allocator,
@@ -54,11 +55,12 @@ impl MirrorChunkWriter {
             writer_epoch,
             writer_lease_ms,
             2,
+            purpose,
         )
         .await
     }
 
-    /// Allocates one WAL chunk with an explicit mirror count.
+    /// Allocates one stream chunk with an explicit mirror count.
     ///
     /// # Errors
     ///
@@ -70,6 +72,7 @@ impl MirrorChunkWriter {
         writer_epoch: u64,
         writer_lease_ms: u64,
         copy_count: u32,
+        purpose: StreamPurpose,
     ) -> Result<Self> {
         if writer_epoch == 0 || writer_lease_ms == 0 || !(1..=5).contains(&copy_count) {
             return Err(IoError::AllocationFailed(
@@ -85,7 +88,7 @@ impl MirrorChunkWriter {
                 data_num: 0,
                 code_num: 0,
                 copy_count,
-                chunk_type: ChunkType::Stream as i32,
+                chunk_type: purpose.chunk_type() as i32,
                 writer_epoch,
                 writer_lease_ms,
                 owner_key: stream_name.chunk_owner_key(),
@@ -102,6 +105,7 @@ impl MirrorChunkWriter {
             writer_epoch,
             writer_lease_ms,
             copy_count,
+            purpose,
         )
     }
 
@@ -117,6 +121,7 @@ impl MirrorChunkWriter {
         stream_name: StreamName,
         writer_epoch: u64,
         writer_lease_ms: u64,
+        purpose: StreamPurpose,
     ) -> Result<Self> {
         Self::open_with_copy_count(
             allocator,
@@ -126,6 +131,7 @@ impl MirrorChunkWriter {
             writer_epoch,
             writer_lease_ms,
             2,
+            purpose,
         )
     }
 
@@ -134,6 +140,7 @@ impl MirrorChunkWriter {
     /// # Errors
     ///
     /// Returns an error for a mismatched epoch, state, capacity, or mirror count.
+    #[allow(clippy::too_many_arguments)]
     pub fn open_with_copy_count(
         allocator: Arc<dyn ChunkAllocator>,
         disk_writer: Arc<dyn DiskWriter>,
@@ -142,13 +149,15 @@ impl MirrorChunkWriter {
         writer_epoch: u64,
         writer_lease_ms: u64,
         copy_count: u32,
+        purpose: StreamPurpose,
     ) -> Result<Self> {
         let chunk_id = chunk
             .id
             .ok_or_else(|| IoError::AllocationFailed("stream chunk has no identity".into()))?;
         if chunk.writer_epoch != writer_epoch
             || chunk.state != ChunkState::Active as i32
-            || chunk.chunk_type != ChunkType::Stream as i32
+            || chunk.chunk_type != purpose.chunk_type() as i32
+            || !purpose.matches(chunk_id)
             || chunk.owner_key != stream_name.chunk_owner_key()
             || chunk.strips.is_empty()
         {

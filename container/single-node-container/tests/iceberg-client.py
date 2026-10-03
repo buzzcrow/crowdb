@@ -4,6 +4,7 @@ import sys
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.fs as fs
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField
@@ -54,6 +55,7 @@ def main():
     assert LARGE in catalog.list_tables(NAMESPACE)
     assert catalog.load_table(TABLE).properties["preview"] == "persisted"
     assert catalog.load_table(LARGE).scan().to_arrow().column("payload")[0].as_py() == LARGE_PAYLOAD
+    verify_native_listing(catalog.load_table(ORDERS))
     saved = catalog.load_table(ORDERS).scan().to_pandas()
     revenue = (
         saved[saved["status"] == "paid"]
@@ -67,6 +69,19 @@ def main():
         columns=["city", "orders", "revenue_usd"],
     )
     pd.testing.assert_frame_equal(revenue, expected, check_dtype=False)
+
+
+def verify_native_listing(table):
+    # Exact metadata access and directory discovery use the same delegated FileIO.
+    file = table.io.new_input(table.metadata_location)
+    assert file.exists()
+    with file.open() as stream:
+        assert stream.read(1) == b"{"
+    prefix = file._path.rsplit("/", 1)[0]
+    files = file._filesystem.get_file_info(fs.FileSelector(prefix, recursive=True))
+    assert file._path in [entry.path for entry in files if entry.type == fs.FileType.File]
+    missing = table.io.new_input(table.location().rstrip("/") + "/data/listing-probe-missing.parquet")
+    assert not missing.exists()
 
 
 if __name__ == "__main__":

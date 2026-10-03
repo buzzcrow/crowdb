@@ -21,6 +21,7 @@ pub struct ObjectHeaders {
     pub checksum: Vec<u8>,
     pub last_modified: String,
     pub content_type: String,
+    pub attributes: Vec<u8>,
     pub content_range: Option<String>,
 }
 
@@ -166,6 +167,7 @@ fn headers(record: &ObjectRecord, range: Option<ByteRange>) -> ObjectHeaders {
         checksum: record.checksum.clone(),
         last_modified: httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_millis(record.modified_at_ms)),
         content_type: record.content_type.clone(),
+        attributes: record.attributes.clone(),
         content_range,
     }
 }

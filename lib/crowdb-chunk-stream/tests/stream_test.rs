@@ -13,6 +13,7 @@ use crowdb_chunk_stream::{
 
 fn binding(name: StreamName) -> StreamBinding {
     StreamBinding {
+        purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
         stream_name: name,
         metadata_group_id: 7,
         binding_generation: 1,
@@ -429,15 +430,11 @@ async fn request_admission_counts_the_inflight_batch() {
 async fn trim_hides_prefix_before_reclaiming_complete_chunks() {
     let store = Arc::new(MemoryStreamStore::new(4));
     let stream = create_stream(&store, 4, StreamConfig::default()).await;
-    stream.append(&[Bytes::from_static(b"abcd")]).await.unwrap();
+    let first = stream.append(&[Bytes::from_static(b"abcd")]).await.unwrap();
     stream.append(&[Bytes::from_static(b"ef")]).await.unwrap();
 
     assert_eq!(stream.trim_prefix(4).await.unwrap(), 38);
-    assert!(
-        store
-            .is_released(crowdb_protocol::common::ChunkId { high: 0, low: 1 })
-            .await
-    );
+    assert!(store.is_released(first.chunk_id.unwrap()).await);
     assert!(matches!(
         stream.read_at(0, 1).await,
         Err(StreamError::InvalidRequest(_))

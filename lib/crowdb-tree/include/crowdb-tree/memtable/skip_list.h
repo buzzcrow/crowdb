@@ -1,33 +1,20 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// ConcurrentSkipList: a lock-free-read, single-writer ordered map for
-// the epoch-protected MemTable (R50). Keys are byte slices stored inline
-// in each node (RocksDB InlineSkipList style); values are CellVersion
-// pointers atomically swapped on overwrite so a reader under an epoch
-// guard can borrow the old version safely while the writer retires it.
-//
-// Writers are serialized by an internal spinlock (apply() already
-// serializes today; CAS-based concurrent insert is out of scope). Readers
-// traverse the next[] tower with acquire loads — no lock, no copy. Erase
-// is a logical tombstone + unlink + epoch-deferred reclamation; a cursor
-// already positioned on an unlinked node can still read it and advance
-// via its next[0] (which still points forward), skipping deleted nodes.
-//
-// The list does NOT own reclamation — the caller (MemTable) retires nodes
-// and cell versions through the engine's EpochManager. This keeps one EBR
-// instance covering both L0 nodes and L1 pages.
+// Concurrent one-node-per-key map. Level zero establishes membership; upper
+// links accelerate lookup. Published nodes remain linked for their lifetime.
+// Callers protect borrowed pointers with the list's epoch manager.
 #pragma once
 
 #include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/buffer.h"
+#include "crowdb-tree/epoch.h"
 #include "crowdb-tree/slice.h"
 
 #include <atomic>
 #include <cstdint>
-#include <random>
+#include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace crowdb::tree
@@ -40,22 +27,68 @@ namespace crowdb::tree
 // value-only borrowed from a Rust Bytes (drop_fn fires on destruction).
 struct CellVersion
 {
-    buffer   cell;
-    uint64_t slot;
-    uint8_t  flags;
+    buffer           cell;
+    uint64_t         slot;
+    uint8_t          flags;
+    AllocationCharge allocation;
+
+    CellVersion(buffer bytes, uint64_t version, uint8_t kind, std::shared_ptr<AllocationCounter> counter = nullptr)
+        : cell(std::move(bytes)),
+          slot(version),
+          flags(kind)
+    {
+        if (counter != nullptr) {
+            allocation.set(std::move(counter), sizeof(CellVersion) + cell.size());
+        }
+    }
 };
 
-// Skip-list node with inline key. Layout: fixed fields, then the
-// next_[height] tower, then the key bytes. Allocated via operator new
-// with the exact size. The key bytes are immutable for the node's
-// lifetime; only the cell version pointer is mutable (atomic release
-// store on overwrite, acquire load on read).
-struct Node
+// Immutable descriptor. The common case has no history allocation. History
+// is ordered newest first; payload ownership is shared across descriptors.
+struct VersionSet : EpochManager::Deferred
 {
-    std::atomic<CellVersion *> cell_{nullptr};  // current cell version
-    std::atomic<bool>          deleted_{false}; // logical tombstone
-    uint32_t                   height_{1};      // tower height
-    uint32_t                   key_len_{0};     // inline key length
+    std::shared_ptr<const CellVersion>              current;
+    std::vector<std::shared_ptr<const CellVersion>> history;
+    uint64_t                                        bound = 0;
+    size_t                                          bytes = 0;
+    AllocationCharge                                allocation;
+
+    VersionSet();
+    [[nodiscard]] const CellVersion *at(uint64_t frontier) const;
+};
+
+struct VersionMemory
+{
+    uint64_t history_count    = 0;
+    uint64_t history_bytes    = 0;
+    uint64_t descriptor_bytes = 0;
+    uint64_t node_bytes       = 0;
+    uint64_t payload_bytes    = 0;
+};
+
+struct MutationStats
+{
+    uint64_t                     copy_count    = 0;
+    uint64_t                     copy_ns       = 0;
+    uint64_t                     copy_max_ns   = 0;
+    bool                         measure_copy  = false;
+    uint64_t                     cas_retries   = 0;
+    uint64_t                     overwrite     = 0;
+    uint64_t                     keep          = 0;
+    uint64_t                     merged        = 0;
+    uint64_t                     keep_gap      = 0;
+    uint64_t                     keep_pending  = 0;
+    uint64_t                     keep_boundary = 0;
+    const std::atomic<uint64_t> *admission     = nullptr;
+    bool                         gap           = false;
+};
+
+struct Node : EpochManager::Deferred
+{
+    AllocationCharge          allocation;
+    std::atomic<VersionSet *> versions_{nullptr};
+    uint32_t                  height_{1};  // tower height
+    uint32_t                  key_len_{0}; // inline key length
 
     // The tower follows the fixed fields. Access via next_ptr(level).
     [[nodiscard]] std::atomic<Node *> *next_ptr(uint32_t level)
@@ -101,18 +134,19 @@ class ConcurrentSkipList
   public:
     static constexpr uint32_t kMaxHeight = 12;
 
-    // RAII cursor for lock-free ordered iteration. Seeded by a lower_bound
-    // seek; advance() skips logically-deleted nodes. A cursor may be
-    // positioned on a node that has been unlinked — the node's key/cell
-    // remain readable (epoch guard keeps it alive) and next[0] still points
-    // forward, so advance() continues correctly.
+    // Ordered cursor with one coherent version candidate per position. The
+    // caller retains source ownership and epoch protection for its lifetime.
     class Cursor
     {
       public:
         Cursor() = default;
 
-        explicit Cursor(const Node *n) : cur_(n)
+        explicit Cursor(const Node *n, uint64_t frontier = UINT64_MAX, uint64_t floor = 0)
+            : cur_(n),
+              frontier_(frontier),
+              floor_(floor)
         {
+            select();
         }
 
         [[nodiscard]] bool valid() const
@@ -127,12 +161,16 @@ class ConcurrentSkipList
 
         [[nodiscard]] const CellVersion *cell_version() const
         {
-            return cur_->cell_.load(std::memory_order_acquire);
+            return candidate_;
         }
 
-        // Advance to the next live (non-deleted) node. Skips deleted nodes
-        // by following next[0] until a live one is found or the tail is
-        // reached.
+        void set_floor(uint64_t floor)
+        {
+            floor_ = floor;
+            select();
+        }
+
+        // Advance to the next key with an eligible version.
         void advance();
 
         // Prefetch the next node's memory (the one advance() will move to).
@@ -149,21 +187,40 @@ class ConcurrentSkipList
         }
 
       private:
-        const Node *cur_ = nullptr;
+        void               select();
+        const Node        *cur_       = nullptr;
+        const CellVersion *candidate_ = nullptr;
+        uint64_t           frontier_  = UINT64_MAX;
+        uint64_t           floor_     = 0;
     };
 
-    ConcurrentSkipList();
+    explicit ConcurrentSkipList(EpochManager *epoch = nullptr);
     ~ConcurrentSkipList();
 
     ConcurrentSkipList(const ConcurrentSkipList &)            = delete;
     ConcurrentSkipList &operator=(const ConcurrentSkipList &) = delete;
 
-    // Insert a new key or overwrite an existing key's cell version.
-    // Returns true if accepted (list takes ownership of `cv`; `*out_old`
-    // is the previous version on overwrite, nullptr on new insert — caller
-    // retires it via epoch). Returns false if rejected (existing entry has
-    // a >= slot; caller retains ownership of `cv`; `*out_old` is nullptr).
-    bool upsert(Slice key, CellVersion *cv, CellVersion **out_old);
+#ifdef CROWDB_TREE_TEST_UTIL
+    enum class PausePoint : uint8_t { kBeforeSearch, kAfterLevelZero, kBeforeVersionCas };
+    using TestHook = void (*)(void *, PausePoint, Slice);
+
+    void set_hook_for_tests(void *context, TestHook hook)
+    {
+        test_context_ = context;
+        test_hook_    = hook;
+    }
+#endif
+
+    // Consumes the payload on every outcome. Bound is validated by admission.
+    bool upsert(Slice key, std::shared_ptr<const CellVersion> cv, uint64_t bound, MutationStats *stats = nullptr);
+    void prune(Slice key, uint64_t bound, MutationStats *stats = nullptr);
+    [[nodiscard]] Cursor        prefix_cursor(uint64_t frontier, uint64_t floor = 0) const;
+    [[nodiscard]] VersionMemory memory() const;
+
+    [[nodiscard]] EpochManager &epoch() const
+    {
+        return *epoch_;
+    }
 
     // Point lookup: returns the CellVersion* for `key`, or nullptr. The
     // returned pointer is valid only while the caller's epoch guard is held
@@ -182,24 +239,6 @@ class ConcurrentSkipList
     // Return the final live node <= `start_key`, or < it when `inclusive` is
     // false. When `has_start_bound` is false, return the final live node.
     [[nodiscard]] Cursor cursor_reverse(Slice start_key, bool has_start_bound, bool inclusive) const;
-
-    // Remove and return all live entries with slot <= `cs`, in key order.
-    // Each removed entry's node is unlinked and returned (caller retires the
-    // node and its CellVersion via epoch). The key is copied into the
-    // returned entry (the node's inline key is freed at reclamation).
-    struct DrainedEntry
-    {
-        std::string  key;
-        CellVersion *cv;
-        Node        *node; // unlinked node — caller retires via epoch
-        uint64_t     slot;
-    };
-
-    std::vector<DrainedEntry> drain_up_to(uint64_t cs);
-
-    // Remove and return ALL live entries (for reset()). Same retirement
-    // contract as drain_up_to.
-    std::vector<DrainedEntry> drain_all();
 
     [[nodiscard]] size_t count() const
     {
@@ -232,54 +271,25 @@ class ConcurrentSkipList
   private:
     friend class Cursor;
 
-    // RAII spinlock guard for writer serialization.
-    struct SpinlockGuard
-    {
-        std::atomic<bool> &lock;
-
-        explicit SpinlockGuard(std::atomic<bool> &l) : lock(l)
-        {
-            uint32_t attempts = 0;
-            while (lock.exchange(true, std::memory_order_acquire)) {
-                if (++attempts < 16) {
-#if defined(__x86_64__) || defined(_M_X64)
-                    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-                    asm volatile("yield");
-#endif
-                }
-                else {
-                    std::this_thread::yield();
-                    attempts = 0;
-                }
-            }
-        }
-
-        ~SpinlockGuard()
-        {
-            lock.store(false, std::memory_order_release);
-        }
-
-        SpinlockGuard(const SpinlockGuard &)            = delete;
-        SpinlockGuard &operator=(const SpinlockGuard &) = delete;
-    };
-
     [[nodiscard]] static Node *alloc_node(uint32_t height, Slice key);
 
-    uint32_t random_height();
+    static uint32_t random_height();
+    Node           *find_or_insert(Slice key, VersionSet *versions, bool *inserted);
+    void            link_upper(Node *node);
+    bool            replace(Node *node, std::shared_ptr<const CellVersion> cv, uint64_t bound, MutationStats *stats);
 
-    // Find the predecessors of the first node with key >= `key` at each
-    // level. Fills `prev` (size kMaxHeight). Returns the node at level 0
-    // with key >= `key` (or nullptr if none). Must be called under
-    // spinlock_ for write paths; readers use find()/cursor() without it.
-    Node *find_ge(Slice key, Node **prev) const;
+    Node *find_ge(Slice key, Node **prev, Node **successors = nullptr) const;
 
-    Node                 *head_;
-    std::atomic<uint32_t> max_height_{1};
-    std::atomic<bool>     spinlock_{false};
-    std::atomic<size_t>   count_{0};
-    std::atomic<size_t>   bytes_{0};
-    std::mt19937          rng_;
+#ifdef CROWDB_TREE_TEST_UTIL
+    void    *test_context_ = nullptr;
+    TestHook test_hook_    = nullptr;
+#endif
+    Node                         *head_;
+    std::atomic<uint32_t>         max_height_{1};
+    std::atomic<size_t>           count_{0};
+    std::atomic<size_t>           bytes_{0};
+    std::unique_ptr<EpochManager> owned_epoch_;
+    EpochManager                 *epoch_;
 };
 
 } // namespace crowdb::tree

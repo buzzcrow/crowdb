@@ -104,3 +104,39 @@ fn malformed_task_key_is_rejected() {
     trailing.push(0);
     assert!(ChunkTaskKey::from_bytes(&trailing).is_err());
 }
+
+#[test]
+fn task_index_scope_is_bound_to_partition_identity() {
+    use crowdb_protocol::chunk_domain::ChunkDomain;
+    use crowdb_protocol::chunk_slot::ChunkSlot;
+
+    for purpose in 1_u64..=6 {
+        let partition_id = id(purpose << 56, 12);
+        let key = ReadyChunkTaskKey {
+            priority_inverse: 0,
+            eligible_at_ms: 100,
+            partition_id,
+            kind: 1,
+            task_id: partition_id,
+        };
+        let bytes = key.to_bytes();
+        let domain = if purpose <= 3 {
+            ChunkDomain::System
+        } else {
+            ChunkDomain::UserData
+        };
+        assert_eq!(ChunkDomain::for_chunk(&partition_id), Some(domain));
+        assert_eq!(bytes[3], domain as u8);
+        assert_eq!(
+            &bytes[4..6],
+            &ChunkSlot::for_chunk(&partition_id).value().to_be_bytes()
+        );
+        for offset in 3..6 {
+            let mut corrupt = bytes.clone();
+            corrupt[offset] ^= 1;
+            assert!(ReadyChunkTaskKey::from_bytes(&corrupt).is_err());
+        }
+    }
+    assert_eq!(ChunkDomain::for_chunk(&id(0, 1)), None);
+    assert_eq!(ChunkDomain::for_chunk(&id(7 << 56, 1)), None);
+}

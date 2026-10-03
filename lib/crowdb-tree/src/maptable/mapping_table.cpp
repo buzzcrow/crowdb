@@ -19,6 +19,12 @@ MappingTable::MappingTable() : segments_(kMaxSegments)
     }
 }
 
+void MappingTable::swap_quiescent(MappingTable &other) noexcept
+{
+    segments_.swap(other.segments_);
+    std::swap(next_page_id_, other.next_page_id_);
+}
+
 MappingTable::~MappingTable()
 {
     // The mapping table does not own resident pages (the epoch manager frees

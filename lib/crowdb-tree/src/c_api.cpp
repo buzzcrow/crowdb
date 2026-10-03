@@ -788,7 +788,7 @@ ct_status ct_apply_delete(ct_tree *t, uint64_t slot, const uint8_t *key, size_t 
 }
 
 ct_status ct_apply_batch(ct_tree *t, uint64_t slot, const uint8_t *ops, size_t ops_len, uint64_t count)
-{
+try {
     if (t == nullptr || (ops == nullptr && ops_len != 0)) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
@@ -824,9 +824,15 @@ ct_status ct_apply_batch(ct_tree *t, uint64_t slot, const uint8_t *ops, size_t o
     }
     return to_status(t->tree->apply_encoded(slot, std::move(encoded)));
 }
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
+}
 
 ct_status ct_apply_batch_slices(ct_tree *t, uint64_t slot, const ct_kv_ref *ops, uint64_t count)
-{
+try {
     if (t == nullptr || (ops == nullptr && count != 0)) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
@@ -848,10 +854,36 @@ ct_status ct_apply_batch_slices(ct_tree *t, uint64_t slot, const ct_kv_ref *ops,
     }
     return to_status(t->tree->apply_encoded(slot, std::move(encoded)));
 }
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
+}
 
 ct_status ct_apply_batch_external(ct_tree *t, uint64_t slot, const ct_ext_op *ops, uint64_t count)
-{
-    if (t == nullptr || (ops == nullptr && count != 0)) {
+try {
+    if (ops == nullptr && count != 0) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+
+    struct Unclaimed
+    {
+        const ct_ext_op *ops;
+        uint64_t         count;
+        uint64_t         next = 0;
+
+        ~Unclaimed()
+        {
+            for (; next < count; ++next) {
+                if (ops[next].kind == 0 && ops[next].drop_fn != nullptr) {
+                    ops[next].drop_fn(ops[next].bytes_ref);
+                }
+            }
+        }
+    } unclaimed{.ops = ops, .count = count};
+
+    if (t == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
     std::vector<Crowdbtree::external_op> external;
@@ -867,19 +899,22 @@ ct_status ct_apply_batch_external(ct_tree *t, uint64_t slot, const ct_ext_op *op
         std::string key(reinterpret_cast<const char *>(op.key), op.key_len);
         uint8_t     flags = (op.kind == 1) ? kFlagTombstone : 0;
         buffer      value;
-        if (op.kind == 0 && op.value_len > 0) {
+        if (op.kind == 0) {
             // Borrow the value bytes from Rust-owned memory; crowdb-tree calls
             // drop_fn(bytes_ref) when this buffer is freed (drain/overwrite).
             value = buffer::wrap_external(op.value, op.value_len, op.bytes_ref, op.drop_fn);
         }
-        else if (op.kind == 0 && op.value_len == 0) {
-            // Put with empty value: no external borrow needed (empty owned buf).
-            value = buffer::alloc(0);
-        }
+        unclaimed.next = i + 1;
         // Delete: value stays default (empty); flags = kFlagTombstone.
         external.push_back({.key = std::move(key), .flags = flags, .value = std::move(value)});
     }
     return to_status(t->tree->apply_external(slot, std::move(external)));
+}
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
 }
 
 void ct_force_advance_slot(ct_tree *t, uint64_t slot)
@@ -892,7 +927,7 @@ void ct_force_advance_slot(ct_tree *t, uint64_t slot)
 // ── Zero-copy write path (R3) ──────────────────────────────────────
 
 ct_status ct_alloc(ct_tree *t, size_t key_len, size_t val_len, ct_write_handle **out_handle, ct_write_ptrs *out_ptrs)
-{
+try {
     if (out_handle == nullptr || out_ptrs == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
@@ -910,13 +945,20 @@ ct_status ct_alloc(ct_tree *t, size_t key_len, size_t val_len, ct_write_handle *
     *out_handle   = h.release();
     return static_cast<ct_status>(Code::kOk);
 }
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
+}
 
 ct_status ct_apply_put_owned(ct_tree *t, uint64_t slot, ct_write_handle *handle)
-{
+try {
     if (t == nullptr || handle == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    uint8_t *p = handle->cell.data();
+    std::unique_ptr<ct_write_handle> owner(handle);
+    uint8_t                         *p = handle->cell.data();
     for (int i = 0; i < 8; ++i) {
         p[i] = static_cast<uint8_t>((slot >> (8 * i)) & 0xff);
     }
@@ -924,8 +966,13 @@ ct_status ct_apply_put_owned(ct_tree *t, uint64_t slot, ct_write_handle *handle)
     std::vector<Crowdbtree::encoded_op> ops;
     ops.push_back({.key = std::move(handle->key), .cell = std::move(handle->cell)});
     auto status = to_status(t->tree->apply_encoded(slot, std::move(ops)));
-    delete handle;
     return status;
+}
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
 }
 
 void ct_free_handle(ct_write_handle *handle)
@@ -1439,7 +1486,7 @@ ct_status ct_scan_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, in
 // ── Snapshot view + iterator ──────────────────────────────────────
 
 ct_status ct_snapshot_view(ct_tree *t, ct_view **out)
-{
+try {
     if (t == nullptr || out == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
@@ -1447,6 +1494,12 @@ ct_status ct_snapshot_view(ct_tree *t, ct_view **out)
     v->snap = t->tree->snapshot_view();
     *out    = v.release();
     return static_cast<ct_status>(Code::kOk);
+}
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
 }
 
 uint64_t ct_view_at_slot(const ct_view *v)
@@ -1508,7 +1561,7 @@ void ct_view_release(ct_view *v)
 // ── Snapshot export / import ──────────────────────────────────────
 
 ct_status ct_snapshot_export_begin(ct_tree *t, size_t chunk_bytes, ct_export **out)
-{
+try {
     if (t == nullptr || out == nullptr || chunk_bytes == 0) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
@@ -1519,6 +1572,12 @@ ct_status ct_snapshot_export_begin(ct_tree *t, size_t chunk_bytes, ct_export **o
     }
     *out = e.release();
     return static_cast<ct_status>(Code::kOk);
+}
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (const std::exception &) {
+    return static_cast<ct_status>(Code::kInternal);
 }
 
 uint64_t ct_snapshot_export_at_slot(const ct_export *e)

@@ -19,6 +19,7 @@ pub enum FileOperation {
     AbortMultipart = 7,
     DeleteObject = 8,
     DeleteObjects = 9,
+    ListObjects = 10,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,7 +29,7 @@ impl FileOperations {
     /// # Errors
     /// Rejects empty and unknown operation sets.
     pub fn from_bits(bits: u16) -> Result<Self, FileGrantError> {
-        if bits == 0 || bits & !0x3ff != 0 {
+        if bits == 0 || bits & !0x7ff != 0 {
             return Err(FileGrantError::Invalid);
         }
         Ok(Self(bits))

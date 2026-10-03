@@ -80,11 +80,9 @@ pub enum PlacementPriority {
 }
 impl_enum_conversions!(PlacementPriority, RackFirst = 0, NodeFirst = 1);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum ChunkType {
-    #[default]
-    Repo = 0,
     Wal = 1,
     BtreePage = 2,
     PageIndex = 3,
@@ -94,7 +92,6 @@ pub enum ChunkType {
 }
 impl_enum_conversions!(
     ChunkType,
-    Repo = 0,
     Wal = 1,
     BtreePage = 2,
     PageIndex = 3,

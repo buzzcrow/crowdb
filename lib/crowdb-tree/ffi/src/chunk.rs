@@ -8,9 +8,6 @@ use std::sync::Arc;
 use crate::error::{check, CtError};
 use crate::{sys, PageStore};
 
-#[cfg(feature = "chunk-rpc")]
-use crowdb_rpc_ffi::OwnedClientRoute;
-
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkPageStoreOptions {
     pub tree_id: u64,
@@ -417,159 +414,10 @@ impl Drop for ChunkRootCatalog {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ChunkRpcRoute {
-    pub client: *mut c_void,
-    pub server: *mut c_void,
-    pub connection: *mut c_void,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ChunkRpcDiskRoute {
-    pub disk_id_high: u64,
-    pub disk_id_low: u64,
-    pub route: ChunkRpcRoute,
-}
-
-pub struct ChunkRpcTransportOptions<'a> {
-    pub chunkdb: ChunkRpcRoute,
-    pub disk_routes: &'a [ChunkRpcDiskRoute],
-    pub writer_lease_ms: u64,
-    pub rpc_timeout_ms: u64,
-    pub completion_capacity: u32,
-    pub mirror_copies: u32,
-}
-
+mod transport;
+pub use transport::{ChunkRpcDiskRoute, ChunkRpcRoute, ChunkRpcTransportOptions, ChunkTransport};
 #[cfg(feature = "chunk-rpc")]
-#[derive(Debug, Clone)]
-pub struct OwnedChunkRpcDiskRoute {
-    pub disk_id_high: u64,
-    pub disk_id_low: u64,
-    pub route: OwnedClientRoute,
-}
-
-#[cfg(feature = "chunk-rpc")]
-#[derive(Debug)]
-pub struct OwnedChunkRpcTransportOptions {
-    pub chunkdb: OwnedClientRoute,
-    pub disk_routes: Vec<OwnedChunkRpcDiskRoute>,
-    pub writer_lease_ms: u64,
-    pub rpc_timeout_ms: u64,
-    pub completion_capacity: u32,
-    pub mirror_copies: u32,
-}
-
-#[cfg(feature = "chunk-rpc")]
-#[derive(Debug)]
-struct OwnedTransportRoutes {
-    _chunkdb: OwnedClientRoute,
-    _disk_routes: Vec<OwnedChunkRpcDiskRoute>,
-}
-
-pub struct ChunkTransport {
-    ptr: NonNull<sys::ct_chunk_transport>,
-    #[cfg(feature = "chunk-rpc")]
-    _routes: Option<OwnedTransportRoutes>,
-}
-
-impl ChunkTransport {
-    /// Create a direct C++ ChunkDB/DiskIO transport.
-    ///
-    /// # Safety
-    ///
-    /// Every route must contain matching live `crowdb-rpc` client, server,
-    /// and connection handles. Those objects must outlive every page store
-    /// opened from this transport.
-    pub unsafe fn open_rpc(options: &ChunkRpcTransportOptions<'_>) -> Result<Self, CtError> {
-        let disk_routes: Vec<_> = options
-            .disk_routes
-            .iter()
-            .map(|route| sys::ct_chunk_rpc_disk_route {
-                disk_id_high: route.disk_id_high,
-                disk_id_low: route.disk_id_low,
-                route: raw_route(route.route),
-            })
-            .collect();
-        let raw = sys::ct_chunk_rpc_transport_options {
-            chunkdb: raw_route(options.chunkdb),
-            disk_routes: disk_routes.as_ptr(),
-            disk_route_count: disk_routes.len(),
-            writer_lease_ms: options.writer_lease_ms,
-            rpc_timeout_ms: options.rpc_timeout_ms,
-            completion_capacity: options.completion_capacity,
-            mirror_copies: options.mirror_copies,
-        };
-        let mut out = std::ptr::null_mut();
-        check(unsafe { sys::ct_rpc_chunk_transport_open(&raw, &mut out) })?;
-        Ok(Self {
-            ptr: NonNull::new(out).ok_or(CtError::Internal)?,
-            #[cfg(feature = "chunk-rpc")]
-            _routes: None,
-        })
-    }
-
-    /// Create a direct C++ transport while retaining all crowdb-rpc owners.
-    #[cfg(feature = "chunk-rpc")]
-    pub fn open_owned_rpc(options: OwnedChunkRpcTransportOptions) -> Result<Self, CtError> {
-        let chunkdb = owned_raw_route(&options.chunkdb);
-        let disk_routes: Vec<_> = options
-            .disk_routes
-            .iter()
-            .map(|route| ChunkRpcDiskRoute {
-                disk_id_high: route.disk_id_high,
-                disk_id_low: route.disk_id_low,
-                route: owned_raw_route(&route.route),
-            })
-            .collect();
-        let raw_options = ChunkRpcTransportOptions {
-            chunkdb,
-            disk_routes: &disk_routes,
-            writer_lease_ms: options.writer_lease_ms,
-            rpc_timeout_ms: options.rpc_timeout_ms,
-            completion_capacity: options.completion_capacity,
-            mirror_copies: options.mirror_copies,
-        };
-        let mut transport = unsafe { Self::open_rpc(&raw_options) }?;
-        transport._routes = Some(OwnedTransportRoutes {
-            _chunkdb: options.chunkdb,
-            _disk_routes: options.disk_routes,
-        });
-        Ok(transport)
-    }
-}
-
-#[cfg(feature = "chunk-rpc")]
-fn owned_raw_route(route: &OwnedClientRoute) -> ChunkRpcRoute {
-    let (client, server, connection) = route.raw_handles();
-    ChunkRpcRoute {
-        client,
-        server,
-        connection,
-    }
-}
-
-const fn raw_route(route: ChunkRpcRoute) -> sys::ct_chunk_rpc_route {
-    sys::ct_chunk_rpc_route {
-        client: route.client,
-        server: route.server,
-        connection: route.connection,
-    }
-}
-
-impl std::fmt::Debug for ChunkTransport {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("ChunkTransport").finish_non_exhaustive()
-    }
-}
-
-unsafe impl Send for ChunkTransport {}
-unsafe impl Sync for ChunkTransport {}
-
-impl Drop for ChunkTransport {
-    fn drop(&mut self) {
-        unsafe { sys::ct_chunk_transport_free(self.ptr.as_ptr()) };
-    }
-}
+pub use transport::{ChunkRpcRouteResolver, OwnedChunkRpcDiskRoute, OwnedChunkRpcTransportOptions};
 
 impl PageStore {
     pub fn open_chunk(

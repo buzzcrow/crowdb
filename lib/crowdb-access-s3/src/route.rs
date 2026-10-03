@@ -28,6 +28,9 @@ pub enum S3Operation {
     CompleteMultipartUpload,
     AbortMultipartUpload,
     ListMultipartUploads,
+    CopyObject,
+    UploadPartCopy,
+    DeleteObjects,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,15 +70,18 @@ pub fn classify(method: &Method, uri: &Uri) -> Result<S3Route, RouteError> {
             })
             .ok_or(RouteError::Invalid);
     }
-    let (bucket, key) = path
-        .split_once('/')
-        .map_or((path, None), |(bucket, key)| (bucket, Some(key)));
+    let (bucket, key) = path.split_once('/').map_or((path, None), |(bucket, key)| {
+        (bucket, (!key.is_empty()).then_some(key))
+    });
     let bucket = decode(bucket);
     if bucket.is_empty() {
         return Err(RouteError::Invalid);
     }
     let key = key.map(decode);
     let operation = match (method, key.as_deref(), query_value(uri.query(), "list-type")) {
+        (&Method::POST, None, _) if uri.query() == Some("delete") || uri.query() == Some("delete=") => {
+            S3Operation::DeleteObjects
+        }
         (&Method::PUT, None, _) => S3Operation::CreateBucket,
         (&Method::HEAD, None, _) => S3Operation::HeadBucket,
         (&Method::DELETE, None, _) => S3Operation::DeleteBucket,
@@ -103,11 +109,17 @@ pub fn classify(method: &Method, uri: &Uri) -> Result<S3Route, RouteError> {
 /// Returns `NotImplemented` for an excluded header and otherwise delegates to
 /// [`classify`].
 pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Result<S3Route, RouteError> {
-    if headers.keys().any(|name| {
+    if !headers.contains_key("x-amz-copy-source")
+        && headers.keys().any(|name| {
+            name.as_str().starts_with("x-amz-copy-source") || name.as_str() == "x-amz-metadata-directive"
+        })
+    {
+        return Err(RouteError::Invalid);
+    }
+    if let Some(name) = headers.keys().find(|name| {
         matches!(
             name.as_str(),
             "x-amz-acl"
-                | "x-amz-storage-class"
                 | "x-amz-server-side-encryption"
                 | "x-amz-server-side-encryption-aws-kms-key-id"
                 | "x-amz-server-side-encryption-context"
@@ -121,17 +133,26 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
                 | "x-amz-object-lock-legal-hold"
         )
     }) {
+        tracing::debug!(header = %name, "unsupported S3 selector");
         return Err(RouteError::NotImplemented);
     }
     if let Some(multipart) = classify_multipart(method, uri)? {
+        if headers.contains_key("x-amz-copy-source") && multipart.operation != MultipartOperation::UploadPart
+        {
+            return Err(RouteError::Invalid);
+        }
         let operation = match multipart.operation {
             MultipartOperation::Create => S3Operation::CreateMultipartUpload,
+            MultipartOperation::UploadPart if headers.contains_key("x-amz-copy-source") => {
+                S3Operation::UploadPartCopy
+            }
             MultipartOperation::UploadPart => S3Operation::UploadPart,
             MultipartOperation::ListParts => S3Operation::ListParts,
             MultipartOperation::Complete => S3Operation::CompleteMultipartUpload,
             MultipartOperation::Abort => S3Operation::AbortMultipartUpload,
             MultipartOperation::ListUploads => S3Operation::ListMultipartUploads,
         };
+        validate_publication_headers(operation, headers)?;
         return Ok(S3Route {
             operation,
             bucket: Some(multipart.bucket),
@@ -140,7 +161,40 @@ pub fn classify_request(method: &Method, uri: &Uri, headers: &HeaderMap) -> Resu
             part_number: multipart.part_number,
         });
     }
-    classify(method, uri)
+    let mut route = classify(method, uri)?;
+    if headers.contains_key("x-amz-copy-source") {
+        if route.operation != S3Operation::PutObject {
+            return Err(RouteError::Invalid);
+        }
+        route.operation = S3Operation::CopyObject;
+    }
+    validate_publication_headers(route.operation, headers)?;
+    Ok(route)
+}
+
+fn validate_publication_headers(operation: S3Operation, headers: &HeaderMap) -> Result<(), RouteError> {
+    let storage_class = headers.get_all("x-amz-storage-class");
+    let mut values = storage_class.iter();
+    if let Some(value) = values.next() {
+        if values.next().is_some() {
+            return Err(RouteError::Invalid);
+        }
+        if value != "STANDARD" {
+            return Err(RouteError::NotImplemented);
+        }
+    }
+    if (headers.contains_key("x-amz-storage-class")
+        || headers
+            .keys()
+            .any(|name| name.as_str().starts_with("x-amz-meta-")))
+        && !matches!(
+            operation,
+            S3Operation::PutObject | S3Operation::CreateMultipartUpload | S3Operation::CopyObject
+        )
+    {
+        return Err(RouteError::Invalid);
+    }
+    Ok(())
 }
 
 fn decode(value: &str) -> Vec<u8> {
@@ -154,6 +208,11 @@ fn selects_extension(query: Option<&str>) -> bool {
             matches!(
                 name,
                 "uploads"
+                    | "location"
+                    | "acl"
+                    | "versioning"
+                    | "annotations"
+                    | "annotation"
                     | "uploadId"
                     | "partNumber"
                     | "versionId"

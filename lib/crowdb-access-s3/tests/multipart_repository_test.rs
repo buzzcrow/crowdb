@@ -28,6 +28,9 @@ use crowdb_protocol::common::ChunkId;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
+#[path = "common/multipart_progress.rs"]
+mod progress;
+
 struct Catalog(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>);
 
 #[async_trait]
@@ -246,6 +249,13 @@ fn session() -> MultipartSessionRecord {
         created_ms: 100,
         expires_ms: 200,
         content_type: "application/octet-stream".into(),
+        attributes: crowdb_access_s3::metadata::UserMetadata::from_headers(&hyper::HeaderMap::from_iter([(
+            hyper::header::HeaderName::from_static("x-amz-meta-mtime"),
+            hyper::header::HeaderValue::from_static("123.456"),
+        )]))
+        .unwrap()
+        .encode()
+        .unwrap(),
         max_parts: 10,
         max_part_bytes: 100,
         max_object_bytes: 500,
@@ -394,6 +404,7 @@ async fn completion_freezes_exact_part_revision_and_replays_the_same_request() {
     )
     .unwrap();
     let object = ObjectRecord::decode(&store.get(key).await.unwrap().unwrap().value).unwrap();
+    assert_eq!(object.attributes, session.attributes);
     assert_eq!(object.logical_length, 5);
     assert_eq!(object.etag, frozen.etag.unwrap());
     assert_eq!(object.checksum.len(), 18);

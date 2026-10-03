@@ -1,3 +1,4 @@
+use crate::upload_flow::body_encoding::UploadBody;
 use std::fmt::Write;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,8 +20,7 @@ use tokio::sync::mpsc;
 
 use super::metrics::{UploadFlowMetrics, UploadObservation};
 use super::{
-    admission_error, catalog_error, multipart, FileS3ErrorCode, FileTransferAdmission, FileUploadBody,
-    FileUploadBudget,
+    admission_error, catalog_error, multipart, FileS3ErrorCode, FileTransferAdmission, FileUploadBudget,
 };
 use crate::upload_flow::digest_pipe::{DigestPipe, Digests};
 use crate::upload_flow::{drive_transfer, write_buffers, OfferStatus, UploadBuffer, WriteFlow};
@@ -31,7 +31,7 @@ use crate::upload_flow::{drive_transfer, write_buffers, OfferStatus, UploadBuffe
 const TARGET_BUFFER_BYTES: usize = 16 * MAX_FRAME_PAYLOAD_BYTES;
 
 struct WriteObject<'a> {
-    body: FileUploadBody<Incoming>,
+    body: UploadBody<Incoming>,
     object: object::ObjectWriter,
     frame_magic: FrameMagic,
     held_buffers: usize,
@@ -69,7 +69,7 @@ pub(super) async fn upload(
     blocks: &dyn FileBlockStore,
     budget: &FileUploadBudget,
     admission: &FileTransferAdmission,
-    mut body: FileUploadBody<Incoming>,
+    mut body: UploadBody<Incoming>,
     owner: FileIdentity,
     location: FileLocation,
     declared_length: Option<u64>,
@@ -300,7 +300,7 @@ impl WriteObject<'_> {
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn receive_body(
-    body: &mut FileUploadBody<Incoming>,
+    body: &mut UploadBody<Incoming>,
     digest: &mut DigestPipe,
     admission: &FileTransferAdmission,
     native_receiver: Option<&NativeBodyReceiver>,

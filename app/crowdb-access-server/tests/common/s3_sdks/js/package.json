@@ -1,0 +1,11 @@
+{
+  "name": "crowdb-s3-sdk-verification",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc" },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1146.0",
+    "@aws-sdk/s3-request-presigner": "3.1146.0"
+  },
+  "devDependencies": { "@types/node": "22.19.15", "typescript": "5.9.3" }
+}

@@ -51,6 +51,23 @@ TEST(MetricsGauge, ReportsLastValue)
     EXPECT_EQ(g.get(), 0U);
 }
 
+TEST(MetricsLatency, BatchAggregationPreservesIndividualCountAndMaximum)
+{
+    LatencySummary latency("test.l");
+    latency.observe_batch(3, 60, 30);
+    latency.observe(25);
+    auto snapshot = latency.flush();
+    EXPECT_EQ(snapshot.count, 4U);
+    EXPECT_EQ(snapshot.sum, 85U);
+    EXPECT_EQ(snapshot.max, 30U);
+    EXPECT_EQ(snapshot.total_count, 4U);
+    snapshot = latency.flush();
+    EXPECT_EQ(snapshot.count, 0U);
+    EXPECT_EQ(snapshot.sum, 0U);
+    EXPECT_EQ(snapshot.max, 0U);
+    EXPECT_EQ(snapshot.total_count, 4U);
+}
+
 TEST(MetricsBandwidth, BasicFlush)
 {
     Bandwidth bw("test.bw");

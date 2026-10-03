@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::BucketId;
 
-const SESSION_MAGIC: [u8; 5] = *b"S3MS\x02";
+const SESSION_MAGIC: [u8; 5] = *b"S3MS\x03";
 const PART_MAGIC: [u8; 5] = *b"S3MP\x01";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 const MAX_OBJECT_KEY_BYTES: usize = 1024;
@@ -40,6 +40,7 @@ pub struct MultipartSessionRecord {
     pub created_ms: u64,
     pub expires_ms: u64,
     pub content_type: String,
+    pub attributes: Vec<u8>,
     pub max_parts: u16,
     pub max_part_bytes: u64,
     pub max_object_bytes: u64,
@@ -129,6 +130,7 @@ impl MultipartSessionRecord {
             || self.revision == 0
             || self.created_ms >= self.expires_ms
             || self.content_type.len() > MAX_CONTENT_TYPE_BYTES
+            || super::UserMetadata::decode(&self.attributes).is_err()
             || !(MultipartBounds {
                 max_parts: self.max_parts,
                 max_part_bytes: self.max_part_bytes,
@@ -155,7 +157,8 @@ impl MultipartSessionRecord {
                 || pending.after_length > self.max_part_bytes
                 || self.staged_bytes < pending.after_length
                 || pending.before_revision.is_some() != pending.before_digest.is_some()
-                || next_part_revision(pending.before_revision) != Some(pending.after_revision)
+                || next_part_revision(pending.before_revision)
+                    .map_or(true, |minimum| pending.after_revision < minimum)
             {
                 return Err(MultipartRecordError::Invalid);
             }

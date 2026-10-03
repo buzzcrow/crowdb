@@ -236,6 +236,7 @@ fn storage_configs(
     };
     let chunk = LocalChunkdbDeployConfig {
         instance_count: 3,
+        storage_groups: vec![1, 2, 3],
         allow_unsafe_ec: !protected_test,
         rpc_workers: None,
         diskio_rpc_workers: None,

@@ -23,12 +23,13 @@ use super::body::IcebergBody;
 use super::file_admission::{FileAdmissionError, FileServiceLimits, FileTransferAdmission};
 use super::file_auth::authenticate_file_transfer;
 use super::file_body::FileResponseBudget;
-use super::file_encoding::FileUploadBody;
 use super::file_request::{FileRequest, FileRequestError};
 use super::file_response::{FileS3ErrorCode, MultipartResponses};
 use super::file_upload::FileUploadBudget;
+use crate::upload_flow::body_encoding::UploadBody;
 
 mod delete;
+mod listing;
 mod metrics;
 mod multipart;
 mod stream;
@@ -52,6 +53,7 @@ pub(super) struct FileHttp {
     upload_metrics: Arc<UploadFlowMetrics>,
     region: String,
     limits: FileServiceLimits,
+    list_tokens: crowdb_access_iceberg::file::FileListTokens,
 }
 
 impl FileHttp {
@@ -92,6 +94,8 @@ impl FileHttp {
             return Err(FileGrantError::Invalid);
         }
         Ok(Self {
+            list_tokens: crowdb_access_iceberg::file::FileListTokens::new(secret)
+                .map_err(|_| FileGrantError::Invalid)?,
             repository: FileRepository::new(store.clone()),
             store: store.clone(),
             gc: GcRepository::new(store.clone()),
@@ -159,6 +163,11 @@ impl FileHttp {
     ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
         if request.method() == Method::POST && matches!(request.uri().query(), Some("delete" | "delete=")) {
             return self.delete_objects(catalog, request, request_timeout).await;
+        }
+        if let Some(list) = super::file_list_request::parse_file_list(request.method(), request.uri())
+            .map_err(request_error)?
+        {
+            return self.list_files(catalog, &request, &list, request_timeout).await;
         }
         let file_request = FileRequest::parse(request.method(), request.uri()).map_err(request_error)?;
         let (root, authority) = catalog.status().await.map_err(catalog_error)?;
@@ -266,8 +275,9 @@ impl FileHttp {
             multipart::signed_digest(request.headers().get("x-amz-content-sha256"))?
         };
         let (parts, body) = request.into_parts();
-        let mut body = FileUploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
-            .map_err(multipart::encoding_error)?;
+        let mut body = UploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
+            .map_err(multipart::encoding_error)?
+            .with_metrics(super::metrics::record_request_bytes);
         if digest.is_none() && !body.has_integrity() {
             return Err(FileS3ErrorCode::InvalidRequest);
         }

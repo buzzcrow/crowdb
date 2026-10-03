@@ -51,7 +51,7 @@ EpochManager::Guard EpochManager::enter()
         uint64_t e = global_epoch_.load(std::memory_order_seq_cst);
         p->local_epoch.store(e, std::memory_order_seq_cst);
     }
-    return Guard(p);
+    return Guard(p, lifetime_);
 }
 
 void EpochManager::Guard::release()
@@ -68,12 +68,51 @@ void EpochManager::Guard::release()
 
 // ── Writer side (reclaim_mu_) ─────────────────────────────────────
 
-EpochManager::EpochManager() : id_(g_epoch_mgr_id.fetch_add(1, std::memory_order_relaxed))
+// Detached borrows may outlive their manager. Once detached, no producer can
+// enqueue further work; the last guard owns the remaining reclamation batch.
+struct EpochManager::Lifetime
+{
+    Participant         *participants = nullptr;
+    Deferred            *pending      = nullptr;
+    Deferred            *collected    = nullptr;
+    std::vector<Retired> retired;
+
+    ~Lifetime()
+    {
+        for (auto *head : {pending, collected}) {
+            while (head != nullptr) {
+                auto *next = head->next;
+                head->destroy(head);
+                head = next;
+            }
+        }
+        for (auto &entry : retired) {
+            entry.deleter(entry.ptr);
+        }
+        while (participants != nullptr) {
+            auto *next = participants->next;
+            delete participants;
+            participants = next;
+        }
+    }
+};
+
+EpochManager::EpochManager()
+    : lifetime_(std::make_shared<Lifetime>()),
+      id_(g_epoch_mgr_id.fetch_add(1, std::memory_order_relaxed))
 {
 }
 
 EpochManager::~EpochManager()
 {
+    if (active_guards() != 0) {
+        lifetime_->participants = participants_.exchange(nullptr);
+        lifetime_->pending      = deferred_.exchange(nullptr);
+        lifetime_->collected    = std::exchange(collected_, nullptr);
+        lifetime_->retired      = std::move(retired_);
+        return;
+    }
+
     // By destruction time no guards must remain. Free anything still pending, then
     // free the participant nodes. Drain in a loop (not once): a deleter can
     // retire something else on this same manager (see reclaim_locked()'s doc
@@ -82,7 +121,8 @@ EpochManager::~EpochManager()
     // being silently dropped.
     {
         std::scoped_lock lk(reclaim_mu_);
-        while (!retired_.empty()) {
+        while (!retired_.empty() || deferred_.load() != nullptr || collected_ != nullptr) {
+            reclaim_deferred_locked();
             std::vector<Retired> pending;
             pending.swap(retired_);
             for (auto &r : pending) {
@@ -160,13 +200,60 @@ size_t EpochManager::reclaim_locked()
 size_t EpochManager::try_reclaim()
 {
     std::scoped_lock lk(reclaim_mu_);
-    return reclaim_locked();
+    return reclaim_deferred_locked() + reclaim_locked();
 }
 
 size_t EpochManager::pending_retired()
 {
     std::scoped_lock lk(reclaim_mu_);
-    return retired_.size();
+    size_t           count = retired_.size();
+    // Diagnostic snapshot; tickets can only be reclaimed while this lock is held.
+    for (auto *p = deferred_.load(std::memory_order_acquire); p != nullptr; p = p->next) {
+        ++count;
+    }
+    for (auto *p = collected_; p != nullptr; p = p->next) {
+        ++count;
+    }
+    return count;
+}
+
+void EpochManager::defer(Deferred *entry) noexcept
+{
+    auto *head = deferred_.load(std::memory_order_relaxed);
+    do {
+        entry->next = head;
+    } while (!deferred_.compare_exchange_weak(head, entry, std::memory_order_release, std::memory_order_relaxed));
+}
+
+size_t EpochManager::reclaim_deferred_locked()
+{
+    auto *pending = deferred_.exchange(nullptr, std::memory_order_acquire);
+    if (pending != nullptr) {
+        const auto epoch = global_epoch_.fetch_add(1, std::memory_order_seq_cst);
+        while (pending != nullptr) {
+            auto *next     = pending->next;
+            pending->epoch = epoch;
+            pending->next  = collected_;
+            collected_     = pending;
+            pending        = next;
+        }
+    }
+    const auto oldest = min_active_epoch();
+    pending           = std::exchange(collected_, nullptr);
+    size_t freed      = 0;
+    while (pending != nullptr) {
+        auto *next = pending->next;
+        if (pending->epoch < oldest) {
+            pending->destroy(pending);
+            ++freed;
+        }
+        else {
+            pending->next = collected_;
+            collected_    = pending;
+        }
+        pending = next;
+    }
+    return freed;
 }
 
 size_t EpochManager::active_guards()

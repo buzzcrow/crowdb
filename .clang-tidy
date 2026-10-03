@@ -3,9 +3,13 @@
 # third-party macro noise. See coding SKILL.md § "C++ clang-tidy".
 # These checks can change ownership, ABI, overload resolution, or hot-path
 # behavior through their fix-its; keep them visible only when reviewed locally.
+# Fixed async completion tokens transfer heap ownership through opaque context
+# pointers. NewDeleteLeaks does not model the backend invoking their deleters;
+# completion ownership is covered by ASan and async lifetime tests instead.
 Checks: >-
   -*,
   clang-analyzer-*,
+  -clang-analyzer-cplusplus.NewDeleteLeaks,
   bugprone-*,
   modernize-*,
   performance-*,

@@ -3,6 +3,9 @@
 
 //! Single-part S3 integrity values independent of storage chunk boundaries.
 
+mod query;
+pub use query::merge_presigned_upload_checksums;
+
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use hyper::body::Bytes;

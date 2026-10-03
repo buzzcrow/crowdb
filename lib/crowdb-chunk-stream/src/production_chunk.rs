@@ -125,6 +125,20 @@ impl ProductionStreamChunkStore {
         let chunk_id = chunk
             .id
             .ok_or_else(|| StreamError::Corruption("chunk metadata has no identity".into()))?;
+        let purpose = match chunk.chunk_type {
+            1 => crowdb_protocol::chunk_stream::StreamPurpose::Wal,
+            4 => crowdb_protocol::chunk_stream::StreamPurpose::Stream,
+            _ => {
+                return Err(StreamError::Corruption(
+                    "non-stream chunk in stream storage".into(),
+                ))
+            }
+        };
+        if !purpose.matches(chunk_id) || StreamName::from_chunk_owner_key(&chunk.owner_key).is_none() {
+            return Err(StreamError::Corruption(
+                "invalid stream chunk identity or owner".into(),
+            ));
+        }
         let key = (chunk_id.high, chunk_id.low);
         if let Some(existing) = self.chunks.get(&key) {
             let existing = Arc::clone(existing.value());
@@ -188,6 +202,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         &self,
         stream_name: StreamName,
         writer_epoch: u64,
+        purpose: crowdb_protocol::chunk_stream::StreamPurpose,
     ) -> Result<ActiveChunkDescriptor> {
         let writer = MirrorChunkWriter::allocate_with_copy_count(
             Arc::clone(&self.allocator),
@@ -196,6 +211,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             writer_epoch,
             self.writer_lease_ms,
             self.mirror_copies,
+            purpose,
         )
         .await
         .map_err(io_error)?;

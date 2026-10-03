@@ -19,7 +19,7 @@ use super::{admission_error, catalog_error, FileHttp, FileS3ErrorCode, FileTrans
 use crate::iceberg::body::IcebergBody;
 use crate::iceberg::file_request::{FileRequest, MultipartRequest};
 use crate::iceberg::file_response::MultipartResponses;
-use crate::iceberg::{FileEncodingError, FileUploadBody};
+use crate::upload_flow::body_encoding::{UploadBody, UploadEncodingError};
 
 impl FileHttp {
     pub(super) async fn load_session(
@@ -159,8 +159,9 @@ impl FileHttp {
             signed_digest(request.headers().get("x-amz-content-sha256"))?
         };
         let (parts, body) = request.into_parts();
-        let mut body = FileUploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
-            .map_err(encoding_error)?;
+        let mut body = UploadBody::new(body, &parts.headers, streaming, admission.request_byte_limit())
+            .map_err(encoding_error)?
+            .with_metrics(super::super::metrics::record_request_bytes);
         if digest.is_none() && !body.has_integrity() {
             return Err(FileS3ErrorCode::InvalidRequest);
         }
@@ -443,12 +444,12 @@ pub(super) fn seal_error(error: FileSealError) -> FileS3ErrorCode {
     }
 }
 
-pub(super) fn encoding_error(error: FileEncodingError) -> FileS3ErrorCode {
+pub(super) fn encoding_error(error: UploadEncodingError) -> FileS3ErrorCode {
     match error {
-        FileEncodingError::Length => FileS3ErrorCode::EntityTooLarge,
-        FileEncodingError::Checksum => FileS3ErrorCode::BadDigest,
-        FileEncodingError::Signature => FileS3ErrorCode::AccessDenied,
-        FileEncodingError::Framing | FileEncodingError::Transport => FileS3ErrorCode::InvalidRequest,
+        UploadEncodingError::Length => FileS3ErrorCode::EntityTooLarge,
+        UploadEncodingError::Checksum => FileS3ErrorCode::BadDigest,
+        UploadEncodingError::Signature => FileS3ErrorCode::AccessDenied,
+        UploadEncodingError::Framing | UploadEncodingError::Transport => FileS3ErrorCode::InvalidRequest,
     }
 }
 

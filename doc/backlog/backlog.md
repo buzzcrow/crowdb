@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R203** — Bump this line in the same commit when adding a new item.
+**Next R number: R208** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -40,19 +40,6 @@ R152–R166 delivered the limited basic S3 service, including the restart
 acceptance baseline. Multipart upload is available; R168–R169 defer
 shared-storage GC without blocking basic large-object deletion. R170 adds
 optional cuObject/RDMA acceleration after the TCP baseline is correct and measured.
-- **[R198](R198-s3-server-side-copy.md)** — server-side object and multipart
-  copy — Area: S3 / access server / chunk IO — Medium priority, high complexity.
-  Add CopyObject and UploadPartCopy with authorized stable source generations,
-  bounded streaming, atomic publication, and durable multipart replacement.
-- **[R199](R199-s3-batch-delete.md)** — multi-object deletion — Area: S3 /
-  access server — Medium priority, medium complexity. Add bounded DeleteObjects
-  parsing, per-key outcomes, Quiet responses, and existing logical deletion
-  semantics without introducing batch transactions.
-- **[R200](R200-s3-client-compatibility.md)** — real-client compatibility and
-  default checksum coverage — Area: S3 / clients / container — High priority,
-  high complexity. Verify default boto3, AWS CLI, rclone, and FUSE-enabled s3fs
-  workflows; trace gaps and gate published compatibility recipes. Research can
-  start independently; copy/batch-delete recipes depend on R198/R199 as needed.
 - **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
   upload benchmark regression — Area: CLI / access server / benchmark — Add a
   shared real-protocol CLI workload and retained local regression scripts for
@@ -102,34 +89,24 @@ Caches, selected ORC and container engine workflows remain separate.
   writes are covered. Retain historical/batched/Polars reads, direct DuckDB REST
   verification, Spark/Flink/Trino interoperability and the executable client
   matrix. ORC is deferred independently under R186.
-- **[R194](R194-access-iceberg-object-listing.md)** — native object listing and
-  S3-style address semantics — Area: Iceberg / native FileIO / clients —
-  **Deferred pending client and address-model research.** Determine which clients
-  need intentional prefix listing, whether the bucket field should identify a
-  catalog, table, or opaque scope, and implement a bounded authorized listing
-  contract only if that evidence warrants it.
 
 ### High Priority
 
-- **[R202](R202-chunkdb-key-partition-design.md)** — ChunkDB key partition
-  model and storage ownership — Area: chunkdb / Paxos KV / chunk-kv — High
-  priority, high complexity. **Deferred pending architecture review.** Retain
-  12 temporary bootstrap ranges; define service versus storage ownership,
-  backend paths, tree mapping and generation-fenced partition conversion.
-- **[R201](R201-tree-memtable-write-handoff.md)** — MemTable write handoff
-  before flush — Area: crowdb-tree / KV — High priority, high complexity.
-  **Deferred pending user review of synchronization and performance.** Separate
-  Active, Freezing and Frozen; close old-table admission, wait for admitted
-  batches before drain, and evaluate bounded writer-owned announcement slots.
-- **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
-  migration — Area: chunkdb / kv — Implement the full
-  `Copying`/`Cutover`/`Complete` migration flow for transferring chunkdb
-  instance range ownership. Dual-serve reads during cutover, new-owner-only
-  writes, background metadata verification, graceful client redirect.
-  Distinct from R102: R103 transfers which chunkdb instance serves a hash
-  range; R102 rebinds which paxos group stores a disk-group's data. Both
-  reuse the common `BindingStrategy` framework
-  (`doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md` §5).
+- **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
+  tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
+  **Deferred beyond the completed direct-KV stage.** When selected, migrate
+  S3/IcebergTable/business Stream metadata and associated tasks to chunk-kv;
+  system Wal/BtreePage/PageIndex metadata stays in KV groups. Define range-local
+  publication, key/split rules, isolated tasks, safe conversion and measured
+  Paxos relief. Future Dataset follows the user-data layer with its own type.
+- **[R103](R103-chunkdb-range-migration.md)** — dynamic slot ownership and
+  KV-group expansion/shrink — Area: chunkdb / kv — **Deferred until dynamic
+  changes are requested.** The fixed-topology stage is implemented. Independently
+  support fenced server-slot handoff without metadata copy, and storage-slot
+  migration of complete chunk/task/index/reservation state when groups are
+  added, drained or rebalanced. Include durable recovery and safe cleanup;
+  preserve independent bitmap maps, fixed slot identity and DiskIO payload.
+  R207 owns future backend conversion; legacy conversion is not a prerequisite.
 - **[R102](R102-diskdb-dynamic-binding-migration.md)** — diskdb dynamic
   disk-group binding migration — Area: diskdb / kv — Reuse the common
   `BindingStrategy` framework

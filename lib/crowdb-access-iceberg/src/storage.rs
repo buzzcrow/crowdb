@@ -31,7 +31,9 @@ pub fn own_large_write(policy: &mut LargeWritePolicy) {
 pub fn default_large_write() -> LargeWritePolicy {
     let mut policy = LargeWritePolicy {
         ec_scheme: EcScheme::new(8, 4),
-        client: Arc::new(ChunkClientConfig::default()),
+        client: Arc::new(ChunkClientConfig::new(
+            crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable,
+        )),
     };
     own_large_write(&mut policy);
     policy
@@ -190,7 +192,7 @@ impl IcebergLargeWriteSettings {
             chunk_type: ChunkType::IcebergTable,
             large_mirror_copies: self.mirror_copies,
             read_buffer_size: self.disk_block_bytes,
-            ..ChunkClientConfig::default()
+            ..ChunkClientConfig::new(crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable)
         };
         if let Some(value) = self.max_chunk_size {
             client.max_chunk_size = value;

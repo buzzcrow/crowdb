@@ -4,10 +4,12 @@
 #include "rpc_chunk_transport.h"
 
 #include "chunk_c_api_internal.h"
+#include "chunk_purpose.h"
 #include "chunkdb_generated.h"
 #include "crowdb-rpc/c_api.h"
 #include "diskio_generated.h"
 #include "msg_type_generated.h"
+#include "rpc_chunk_route.h"
 
 #include <algorithm>
 #include <array>
@@ -31,7 +33,6 @@ using crowdb::chunkdb::proto::FBChunk;
 using crowdb::chunkdb::proto::FBChunkdbRetCode;
 using crowdb::chunkdb::proto::FBChunkdbRetCode_Success;
 using crowdb::chunkdb::proto::FBChunkState_Sealed;
-using crowdb::chunkdb::proto::FBChunkType_BtreePage;
 using crowdb::chunkdb::proto::FBStripType_Mirror;
 using crowdb::rpc::proto::FBInt128;
 
@@ -238,7 +239,7 @@ struct RpcChunkTransport::Impl
 
     using RemoteChunks = std::vector<RemoteChunk>;
 
-    explicit Impl(const ct_chunk_rpc_transport_options &configured) : options(configured)
+    explicit Impl(const ct_chunk_rpc_transport_options &configured) : chunkdb_routes(configured), options(configured)
     {
         if (configured.disk_routes != nullptr) {
             disk_routes.assign(configured.disk_routes, configured.disk_routes + configured.disk_route_count);
@@ -252,13 +253,13 @@ struct RpcChunkTransport::Impl
                                                        completion_capacity);
             crowdb_rpc_client_start_reaper(reinterpret_cast<crowdb_rpc_client_t>(configured.chunkdb.client),
                                            timeout_ms * 1'000'000, 100'000'000);
-            for (const auto &disk : disk_routes) {
-                if (disk.route.client != nullptr) {
-                    crowdb_rpc_client_set_completion_pool_size(reinterpret_cast<crowdb_rpc_client_t>(disk.route.client),
-                                                               completion_capacity);
-                    crowdb_rpc_client_start_reaper(reinterpret_cast<crowdb_rpc_client_t>(disk.route.client),
-                                                   timeout_ms * 1'000'000, 100'000'000);
-                }
+        }
+        for (const auto &disk : disk_routes) {
+            if (disk.route.client != nullptr) {
+                crowdb_rpc_client_set_completion_pool_size(reinterpret_cast<crowdb_rpc_client_t>(disk.route.client),
+                                                           completion_capacity);
+                crowdb_rpc_client_start_reaper(reinterpret_cast<crowdb_rpc_client_t>(disk.route.client),
+                                               timeout_ms * 1'000'000, 100'000'000);
             }
         }
         liveness_thread = std::jthread([this](std::stop_token stop) {
@@ -275,8 +276,48 @@ struct RpcChunkTransport::Impl
 
     [[nodiscard]] bool valid() const
     {
-        return options.mirror_copies <= kMaxMirrorCopies && options.chunkdb.client != nullptr &&
-               options.chunkdb.server != nullptr && options.chunkdb.connection != nullptr && !disk_routes.empty();
+        return options.mirror_copies <= kMaxMirrorCopies && chunkdb_routes.valid() && !disk_routes.empty();
+    }
+
+    template <typename Response>
+    Status call_chunkdb(ChunkId chunk, uint64_t request_id, uint16_t message_type, const std::vector<uint8_t> &control,
+                        RpcResult *result, bool read_only = false) const
+    {
+        Status status = Status::unavailable("chunk service route retries exhausted");
+        for (uint32_t attempt = 0; attempt != 3; ++attempt) {
+            bool               submitted = false;
+            RpcChunkRouteLease lease;
+            status = chunkdb_routes.resolve(chunk, attempt != 0, &lease);
+            if (attempt != 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));
+                RpcChunkRouteLease refreshed;
+                status = chunkdb_routes.resolve(chunk, false, &refreshed);
+                if (status.ok()) {
+                    submitted = true;
+                    status    = call_rpc(refreshed.route, request_id, message_type, control, nullptr, 0, result);
+                }
+            }
+            else if (status.ok()) {
+                submitted = true;
+                status    = call_rpc(lease.route, request_id, message_type, control, nullptr, 0, result);
+            }
+            if (!status.ok()) {
+                RpcChunkRouteLease refresh_hint;
+                static_cast<void>(chunkdb_routes.resolve(chunk, true, &refresh_hint));
+                // A write transport failure can have committed; never blindly
+                // repeat allocation or a fenced mutation with an unknown result.
+                if (submitted && !read_only) {
+                    return status;
+                }
+                continue;
+            }
+            const auto *response = verified_response<Response>(result->control);
+            if (response == nullptr || response->ret_code() != crowdb::chunkdb::proto::FBChunkdbRetCode_NotMyRange) {
+                return status;
+            }
+            status = Status::unavailable("chunk service rejected slot authority");
+        }
+        return status;
     }
 
     uint64_t next_request_id() const
@@ -309,6 +350,11 @@ struct RpcChunkTransport::Impl
             .acknowledged_bytes = chunk->acknowledged_cursor(),
             .sealed             = chunk->state() == FBChunkState_Sealed,
         };
+        const auto purpose = chunk_purpose(parsed.layout.chunk_id);
+        if (!valid_page_purpose(purpose) ||
+            static_cast<uint8_t>(chunk->chunk_type()) != static_cast<uint8_t>(purpose)) {
+            return Status::corruption("ChunkDB tree chunk purpose mismatch");
+        }
         parsed.owner_epoch = chunk->writer_epoch();
         parsed.modify_ts   = chunk->modify_ts();
         for (const auto *wire_strip : *chunk->strips()) {
@@ -412,9 +458,9 @@ struct RpcChunkTransport::Impl
             builder.Finish(request);
             std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
             RpcResult            result;
-            Status               status =
-                call_rpc(options.chunkdb, request_id, crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control,
-                         nullptr, 0, &result);
+            Status               status = call_chunkdb<crowdb::chunkdb::proto::FBAdvanceChunkWriteResponse>(
+                chunk.layout.chunk_id, request_id, crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control,
+                &result);
             const auto *response =
                 status.ok() ? verified_response<crowdb::chunkdb::proto::FBAdvanceChunkWriteResponse>(result.control)
                             : nullptr;
@@ -445,8 +491,8 @@ struct RpcChunkTransport::Impl
         builder.Finish(request);
         std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
         RpcResult            result;
-        Status status = call_rpc(options.chunkdb, request_id, crowdb::rpc::proto::FBMsgType_EQueryChunkRequest, control,
-                                 nullptr, 0, &result);
+        Status               status = call_chunkdb<crowdb::chunkdb::proto::FBQueryChunkResponse>(
+            chunk_id, request_id, crowdb::rpc::proto::FBMsgType_EQueryChunkRequest, control, &result, true);
         if (!status.ok()) {
             return status;
         }
@@ -469,9 +515,10 @@ struct RpcChunkTransport::Impl
         return status;
     }
 
+    RpcChunkRouteResolver                                    chunkdb_routes;
     ct_chunk_rpc_transport_options                           options;
     std::vector<ct_chunk_rpc_disk_route>                     disk_routes;
-    mutable std::atomic<uint64_t>                            request_ids{1};
+    inline static std::atomic<uint64_t>                      request_ids{1};
     mutable std::atomic<std::shared_ptr<const RemoteChunks>> chunks;
     std::jthread                                             liveness_thread;
 };
@@ -611,9 +658,10 @@ bool RpcChunkTransport::valid() const
     return impl_->valid();
 }
 
-Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id)
+Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id,
+                                                PagePurpose purpose)
 {
-    if (!valid() || chunk_id == nullptr || logical_capacity == 0 ||
+    if (!valid() || chunk_id == nullptr || logical_capacity == 0 || !valid_page_purpose(purpose) ||
         logical_capacity > std::numeric_limits<uint32_t>::max()) {
         return Status::invalid_argument("tree chunk RPC allocation arguments are invalid");
     }
@@ -625,13 +673,13 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
     flatbuffers::FlatBufferBuilder builder;
     auto                           request = crowdb::chunkdb::proto::CreateFBAllocateChunkRequest(
         builder, request_id, monotonic_nanos(), nullptr, granularity_kb, strip_count, FBStripType_Mirror, 0, 0,
-        impl_->options.mirror_copies == 0 ? 2 : impl_->options.mirror_copies, FBChunkType_BtreePage, owner_epoch,
-        impl_->options.writer_lease_ms);
+        impl_->options.mirror_copies == 0 ? 2 : impl_->options.mirror_copies,
+        static_cast<crowdb::chunkdb::proto::FBChunkType>(purpose), owner_epoch, impl_->options.writer_lease_ms);
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;
-    Status status = call_rpc(impl_->options.chunkdb, request_id, crowdb::rpc::proto::FBMsgType_EAllocateChunkRequest,
-                             control, nullptr, 0, &result);
+    Status               status = impl_->call_chunkdb<crowdb::chunkdb::proto::FBAllocateChunkResponse>(
+        {}, request_id, crowdb::rpc::proto::FBMsgType_EAllocateChunkRequest, control, &result);
     if (!status.ok()) {
         return status;
     }
@@ -646,7 +694,7 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
     Impl::RemoteChunk remote;
     status = crowdb::tree::detail::RpcChunkTransport::Impl::parse_chunk(response->chunk(), &remote);
     if (!status.ok() || remote.layout.chunk_id.empty() || remote.owner_epoch != owner_epoch ||
-        remote.layout.logical_capacity < logical_capacity) {
+        remote.layout.logical_capacity < logical_capacity || chunk_purpose(remote.layout.chunk_id) != purpose) {
         return status.ok() ? Status::corruption("ChunkDB allocation metadata mismatch") : status;
     }
     remote.valid_until_ms         = std::numeric_limits<uint64_t>::max();
@@ -762,8 +810,8 @@ Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_byte
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;
-    Status status = call_rpc(impl_->options.chunkdb, request_id,
-                             crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control, nullptr, 0, &result);
+    Status               status = impl_->call_chunkdb<crowdb::chunkdb::proto::FBAdvanceChunkWriteResponse>(
+        chunk_id, request_id, crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control, &result);
     if (!status.ok()) {
         return status;
     }
@@ -876,7 +924,7 @@ Status RpcChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uin
         acknowledged_bytes > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) * kKiB) {
         return Status::unavailable("tree chunk RPC seal is fenced by owner epoch or cursor");
     }
-    const uint32_t                 seal_length_kib = static_cast<uint32_t>((acknowledged_bytes + kKiB - 1) / kKiB);
+    const auto                     seal_length_kib = static_cast<uint32_t>((acknowledged_bytes + kKiB - 1) / kKiB);
     const uint64_t                 request_id      = impl_->next_request_id();
     const FBInt128                 id(chunk_id.high, chunk_id.low);
     flatbuffers::FlatBufferBuilder builder;
@@ -885,8 +933,8 @@ Status RpcChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uin
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;
-    status = call_rpc(impl_->options.chunkdb, request_id, crowdb::rpc::proto::FBMsgType_ESealChunkRequest, control,
-                      nullptr, 0, &result);
+    status = impl_->call_chunkdb<crowdb::chunkdb::proto::FBSealChunkResponse>(
+        chunk_id, request_id, crowdb::rpc::proto::FBMsgType_ESealChunkRequest, control, &result);
     if (!status.ok()) {
         return status;
     }

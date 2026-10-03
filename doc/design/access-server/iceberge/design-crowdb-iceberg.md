@@ -261,6 +261,35 @@ bytes. Dot traversal, leading slash, backslash, controls, query and fragment
 delimiters are rejected rather than normalized. HTTP percent decoding belongs
 only at the transport boundary, not in stored S3-shaped locations.
 
+Native `ListObjectsV2` retains this address model. A list request must specify
+an explicit `t/<table-id>/` prefix and a table-bound delegated list capability;
+catalog-wide discovery and general S3 credentials are rejected. Reader and
+writer FileIO credentials include listing; cleanup-only credentials do not.
+Exact-object HEAD/GET/PUT remain independently usable. PyArrow missing-file
+probes may issue listing to distinguish a missing object from a directory.
+
+Listing enumerates selected, fully published immutable file-location records,
+including files awaiting a table commit or later reclamation. It excludes
+incomplete uploads, unselected draft/losing candidates and logical deletion
+markers. It does not enumerate the files reachable from a current snapshot;
+clients use Iceberg metadata and manifests for that selection. Names, lengths
+and ETags come from the selected record. Since file records do not store a
+wall-clock publication time, listing returns the fixed Unix epoch timestamp;
+clients must not use it as a file-age or reclamation signal.
+
+Each page scans at most 256 records and 4 MiB, possibly returning fewer than
+the requested maximum of 1,000 keys. The supported delimiter is `/`; URL
+encoding, zero-key pages and table-scoped `start-after` are supported. XML is
+bounded to 2 MiB. Unsupported or ambiguous selectors fail before scanning.
+Pagination is a forward live traversal rather than a snapshot: unchanged
+eligible sets have no omissions or duplicates, publication behind the cursor
+is seen by a new traversal, deletion ahead removes that entry, and publication
+ahead may appear. Common-prefix rollups advance past the entire subtree.
+Authenticated continuation tokens bind the principal, credential nonce,
+catalog epoch, table, prefix, delimiter and encoding. Their fixed expiry is
+no later than the originating grant, and invalid or foreign tokens fail before
+storage access. A credential refresh requires starting a new traversal.
+
 Native file records bind FileId to exact location, kind, format and canonical length.
 Legacy tree and inline records also bind a whole-file SHA-256 digest; streamed
 records bind a bounded array of complete Chunk locations and an HTTP ETag, and

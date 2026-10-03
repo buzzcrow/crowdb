@@ -27,8 +27,6 @@ def main():
         aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
         config=Config(
             s3={"addressing_style": "path"},
-            request_checksum_calculation="when_required",
-            response_checksum_validation="when_required",
         ),
     )
     if sys.argv[1] == "write":

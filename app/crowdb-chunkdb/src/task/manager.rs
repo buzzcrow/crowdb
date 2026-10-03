@@ -39,6 +39,17 @@ pub struct TaskManager {
 }
 
 impl TaskManager {
+    pub(crate) async fn verify_claim(&self, claim: &TaskClaim) -> Result<(), TaskManagerError> {
+        let current = self
+            .load(&claim.task)
+            .await?
+            .ok_or(TaskManagerError::StaleClaim)?;
+        if !owns_claim(&current, self.instance_id, claim.task.claim_generation) {
+            return Err(TaskManagerError::StaleClaim);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn new(store: Arc<TaskStore>, instance_id: u64, lease_ms: u64) -> Self {
         Self {

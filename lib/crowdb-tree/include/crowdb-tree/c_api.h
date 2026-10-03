@@ -206,6 +206,19 @@ struct ct_chunk_rpc_disk_route
     ct_chunk_rpc_route route;
 };
 
+// Synchronous snapshot lookup; discovery/refresh must run outside this callback.
+// Each successful lookup returns a lease retained through the RPC completion.
+// The transport retains context until its last page-store reference is released.
+struct ct_chunk_rpc_resolver
+{
+    void *context;
+    ct_status (*resolve)(void *context, uint64_t chunk_high, uint64_t chunk_low, bool refresh,
+                         ct_chunk_rpc_route *route, void **lease);
+    void (*release_route)(void *lease);
+    void (*retain_context)(void *context);
+    void (*release_context)(void *context);
+};
+
 struct ct_chunk_rpc_transport_options
 {
     ct_chunk_rpc_route             chunkdb;
@@ -215,6 +228,7 @@ struct ct_chunk_rpc_transport_options
     uint64_t                       rpc_timeout_ms; // 0 => 30 seconds
     uint32_t                       completion_capacity;
     uint32_t                       mirror_copies; // 0 => 2
+    ct_chunk_rpc_resolver          chunkdb_resolver;
 };
 
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out);

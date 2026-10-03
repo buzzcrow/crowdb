@@ -424,7 +424,7 @@ async fn write_s3_during_gc(seeds: Vec<String>, progress: Arc<AtomicUsize>) {
         SmallWritePolicy {
             conversion_enabled: false,
             mirror_copies: 1,
-            ..SmallWritePolicy::default()
+            ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable)
         },
         ChunkReadPolicy::default(),
     )

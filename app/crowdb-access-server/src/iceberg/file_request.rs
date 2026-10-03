@@ -133,7 +133,7 @@ fn number(value: Option<String>, default: Option<u16>, min: u16, max: u16) -> Re
     Ok(value)
 }
 
-fn query(query: Option<&str>) -> Result<BTreeMap<String, String>, FileRequestError> {
+pub(super) fn query(query: Option<&str>) -> Result<BTreeMap<String, String>, FileRequestError> {
     let mut fields = BTreeMap::new();
     let Some(query) = query else {
         return Ok(fields);
@@ -160,7 +160,7 @@ fn query(query: Option<&str>) -> Result<BTreeMap<String, String>, FileRequestErr
     Ok(fields)
 }
 
-fn decode(value: &str) -> Result<String, FileRequestError> {
+pub(super) fn decode(value: &str) -> Result<String, FileRequestError> {
     let bytes = value.as_bytes();
     for (offset, byte) in bytes.iter().enumerate() {
         if *byte == b'%'

@@ -43,7 +43,7 @@ pub async fn run() {
             small_write: SmallWritePolicy {
                 mirror_copies: 1,
                 conversion_enabled: false,
-                ..SmallWritePolicy::default()
+                ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable)
             },
         },
         control,

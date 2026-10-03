@@ -1,186 +1,125 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Routing unit tests — hash bucket, binding cache, route.
-
-#![allow(clippy::cast_possible_truncation)]
-
-use crowdb_chunkdb::range_guard::{OwnedRange, RangeGuard};
-use crowdb_chunkdb::routing::{self, BindingCache, BindingTable, BucketBinding, MigrationState, RouteError};
+use crowdb_chunkdb::range_guard::RangeGuard;
+use crowdb_chunkdb::routing::{route, BindingCache, BindingTable, RouteError};
+use crowdb_protocol::chunk_slot::{
+    ChunkSlot, ChunkSlotBinding, ChunkSlotBitmap, ChunkSlotBootstrap, ChunkSlotMap, ChunkStorageGroup,
+};
 use crowdb_protocol::common::ChunkId;
 
-fn make_chunk_id(n: u64) -> ChunkId {
-    ChunkId {
-        high: n,
-        low: n.wrapping_mul(37),
-    }
-}
-
-fn binding(start: u16, end: u16, store: u64, group: u64) -> BucketBinding {
-    BucketBinding {
-        start,
-        end,
-        kv_store_id: store,
-        kv_group_id: group,
-        old_kv_store_id: None,
-        old_kv_group_id: None,
-        migration_state: MigrationState::NotMigrating,
+fn layout() -> ChunkSlotBootstrap {
+    ChunkSlotBootstrap {
+        service_instances: vec![11, 12, 13],
+        storage_groups: (1..=3)
+            .map(|group_id| ChunkStorageGroup {
+                store_id: 0,
+                group_id,
+            })
+            .collect(),
     }
 }
 
 #[test]
-fn hash_to_bucket_is_in_range() {
-    for i in 0..1000_u64 {
-        let id = make_chunk_id(i);
-        let bucket = routing::hash_to_bucket(&id);
-        let _ = bucket;
+fn fixed_storage_map_routes_every_slot_and_owning_chunk() {
+    let map = layout().storage_map().unwrap();
+    let cache = BindingCache::new();
+    cache.replace(BindingTable::new(map.clone())).unwrap();
+    assert_eq!(cache.snapshot().bindings().len(), 3);
+    for slot in ChunkSlot::all() {
+        assert_eq!(
+            cache.route_slot(slot).unwrap().kv_group_id,
+            map.owner(slot).group_id
+        );
+    }
+    for low in 0..4096 {
+        let id = ChunkId { high: 1 << 56, low };
+        let destination = route(&cache, &id).unwrap();
+        assert_eq!(destination.kv_store_id, 0);
+        assert_eq!(
+            destination.kv_group_id,
+            map.owner(ChunkSlot::for_chunk(&id)).group_id
+        );
+        assert_ne!(destination.kv_group_id, 0);
     }
 }
 
 #[test]
-fn hash_to_bucket_is_uniform() {
-    // 10000 chunk IDs → no single bucket has > 1% (100) of IDs.
-    let mut counts = std::collections::HashMap::<u16, u32>::new();
-    for i in 0..10000_u64 {
-        let id = make_chunk_id(i);
-        let bucket = routing::hash_to_bucket(&id);
-        *counts.entry(bucket).or_insert(0) += 1;
+fn empty_cache_and_storage_remap_fail_closed() {
+    let cache = BindingCache::new();
+    let id = ChunkId { high: 1, low: 1 };
+    assert!(matches!(route(&cache, &id), Err(RouteError::NoBinding)));
+    let initial = layout().storage_map().unwrap();
+    cache.replace(BindingTable::new(initial.clone())).unwrap();
+    cache.replace(BindingTable::new(initial.clone())).unwrap();
+    let mut different = layout();
+    different.storage_groups.reverse();
+    assert!(matches!(
+        cache.replace(BindingTable::new(different.storage_map().unwrap())),
+        Err(RouteError::FixedLayout)
+    ));
+    for slot in ChunkSlot::all() {
+        assert_eq!(
+            cache.route_slot(slot).unwrap().kv_group_id,
+            initial.owner(slot).group_id
+        );
     }
+}
 
-    let max = counts.values().copied().max().unwrap_or(0);
-    assert!(
-        max <= 100,
-        "uniform distribution violated: max bucket count = {max} (expected <= 100)"
+#[test]
+fn service_guards_admit_only_owned_slots_with_bounded_quotas() {
+    let map = layout().service_map().unwrap();
+    let guards: Vec<_> = [11, 12, 13]
+        .map(|instance_id| {
+            let guard = RangeGuard::new();
+            guard.install(&map, instance_id).unwrap();
+            (instance_id, guard)
+        })
+        .into_iter()
+        .collect();
+    assert_eq!(
+        guards
+            .iter()
+            .map(|(_, guard)| guard.owned_bucket_count())
+            .sum::<u64>(),
+        1024
     );
-}
-
-#[test]
-fn route_returns_binding_for_bucket() {
-    let cache = BindingCache::new();
-    cache.replace(BindingTable::new(vec![binding(0, 16384, 1, 10)]));
-
-    // Find a chunk ID that hashes to bucket < 16384.
-    for i in 0..10000_u64 {
-        let id = make_chunk_id(i);
-        let bucket = routing::hash_to_bucket(&id);
-        if bucket < 16384 {
-            let r = routing::route(&cache, &id).unwrap();
-            assert_eq!(r.kv_store_id, 1);
-            assert_eq!(r.kv_group_id, 10);
-            assert_eq!(r.migration_state, MigrationState::NotMigrating);
-            return;
+    assert!(
+        guards
+            .iter()
+            .map(|(_, guard)| guard.quota_share(1001))
+            .sum::<u64>()
+            <= 1001
+    );
+    for low in 0..8192 {
+        let id = ChunkId { high: 1 << 56, low };
+        let owner = map.owner(ChunkSlot::for_chunk(&id));
+        for (instance_id, guard) in &guards {
+            assert_eq!(guard.check(&id).is_ok(), *instance_id == owner);
         }
     }
-    panic!("no chunk ID hashed to bucket < 16384 in 10000 tries");
 }
 
 #[test]
-fn route_empty_cache_returns_error() {
-    let cache = BindingCache::new();
-    let id = make_chunk_id(1);
-    let result = routing::route(&cache, &id);
-    assert!(matches!(result, Err(RouteError::NoBinding)));
-}
-
-#[test]
-fn route_unbound_bucket_returns_error() {
-    let cache = BindingCache::new();
-    cache.replace(BindingTable::new(vec![binding(0, 100, 1, 10)]));
-
-    // Find a chunk ID that hashes to bucket >= 100.
-    for i in 0..10000_u64 {
-        let id = make_chunk_id(i);
-        let bucket = routing::hash_to_bucket(&id);
-        if bucket >= 100 {
-            let result = routing::route(&cache, &id);
-            assert!(matches!(result, Err(RouteError::BucketUnbound { .. })));
-            return;
-        }
-    }
-    panic!("no chunk ID hashed to bucket >= 100 in 10000 tries");
-}
-
-#[test]
-fn route_with_migration_returns_old_group() {
-    let cache = BindingCache::new();
-    cache.replace(BindingTable::new(vec![BucketBinding {
-        start: 0,
-        end: 16384,
-        kv_store_id: 2,
-        kv_group_id: 20,
-        old_kv_store_id: Some(1),
-        old_kv_group_id: Some(10),
-        migration_state: MigrationState::Copying,
-    }]));
-
-    for i in 0..10000_u64 {
-        let id = make_chunk_id(i);
-        let bucket = routing::hash_to_bucket(&id);
-        if bucket < 16384 {
-            let r = routing::route(&cache, &id).unwrap();
-            assert_eq!(r.kv_store_id, 2);
-            assert_eq!(r.kv_group_id, 20);
-            assert_eq!(r.migration_state, MigrationState::Copying);
-            assert_eq!(r.old_kv_store_id, Some(1));
-            assert_eq!(r.old_kv_group_id, Some(10));
-            return;
-        }
-    }
-    panic!("no chunk ID hashed to bucket < 16384 in 10000 tries");
-}
-
-#[test]
-fn default_binding_table_covers_all_buckets() {
-    let table = routing::default_binding_table(1, 1);
-    assert_eq!(table.len(), 1);
-    let b = &table.bindings()[0];
-    assert_eq!(b.start, 0);
-    assert_eq!(b.end, 65535);
-    assert_eq!(b.kv_store_id, 1);
-    assert_eq!(b.kv_group_id, 1);
-}
-
-#[test]
-fn terminal_binding_includes_max_bucket() {
-    let table = BindingTable::new(vec![binding(32_768, u16::MAX, 0, 1)]);
-    assert!(table.route(u16::MAX).is_some());
-}
-
-#[test]
-fn binding_cache_route_bucket_directly() {
-    let cache = BindingCache::new();
-    cache.replace(BindingTable::new(vec![
-        binding(0, 100, 1, 10),
-        binding(100, 65535, 2, 20),
-    ]));
-
-    let r1 = cache.route_bucket(50).unwrap();
-    assert_eq!(r1.kv_group_id, 10);
-
-    let r2 = cache.route_bucket(200).unwrap();
-    assert_eq!(r2.kv_group_id, 20);
-
-    assert_eq!(cache.route_bucket(u16::MAX).unwrap().kv_group_id, 20);
-}
-
-#[test]
-fn range_owner_quota_shares_are_cluster_bounded() {
-    let left = RangeGuard::new(false);
-    left.replace(vec![OwnedRange {
-        start: 0,
-        end: 32_767,
-        sub_range_index: 0,
-    }]);
-    let right = RangeGuard::new(false);
-    right.replace(vec![OwnedRange {
-        start: 32_768,
-        end: u16::MAX,
-        sub_range_index: 1,
-    }]);
-
-    assert_eq!(left.owned_bucket_count(), 32_768);
-    assert_eq!(right.owned_bucket_count(), 32_768);
-    assert_eq!(left.quota_share(101) + right.quota_share(101), 100);
-    assert_eq!(RangeGuard::allow_all().quota_share(101), 101);
-    assert_eq!(RangeGuard::new(false).quota_share(101), 0);
+fn uninitialized_and_zero_slot_owners_never_allow_all() {
+    let guard = RangeGuard::new();
+    let id = ChunkId { high: 1, low: 1 };
+    assert!(!guard.is_ready());
+    assert!(guard.check(&id).is_err());
+    let initial = layout().service_map().unwrap();
+    let mut bindings = initial.bindings().to_vec();
+    bindings.push(ChunkSlotBinding {
+        generation: 1,
+        owner: 14,
+        slots: ChunkSlotBitmap::default(),
+    });
+    let mut head = initial.head().clone();
+    head.owner_count += 1;
+    let map = ChunkSlotMap::new(head, bindings).unwrap();
+    guard.install(&map, 14).unwrap();
+    assert!(guard.is_empty());
+    assert_eq!(guard.quota_share(u64::MAX), 0);
+    assert!(guard.check(&id).is_err());
+    assert!(guard.install(&map, 11).is_err());
+    assert!(RangeGuard::new().install(&map, 99).is_err());
 }

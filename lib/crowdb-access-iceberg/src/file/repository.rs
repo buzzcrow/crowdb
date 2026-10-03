@@ -10,7 +10,7 @@ use super::{file_key, location_key, DeletedFile, FileLocation, FileRecord};
 
 #[derive(Clone)]
 pub struct FileRepository {
-    store: Arc<dyn CatalogStore>,
+    pub(super) store: Arc<dyn CatalogStore>,
 }
 
 impl FileRepository {
@@ -192,7 +192,11 @@ impl FileRepository {
         self.resolve_value(location, &value.bytes).await.map(Some)
     }
 
-    async fn resolve_value(&self, location: &FileLocation, bytes: &[u8]) -> Result<FileRecord, CatalogError> {
+    pub(super) async fn resolve_value(
+        &self,
+        location: &FileLocation,
+        bytes: &[u8],
+    ) -> Result<FileRecord, CatalogError> {
         let key = location_key(location);
         let record = match StorageRecord::decode(&key, bytes)? {
             StorageRecord::File(record) => record,

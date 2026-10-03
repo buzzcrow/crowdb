@@ -14,7 +14,7 @@
 pub mod client;
 pub mod rpc_transport;
 
-pub use client::{ChunkdbClient, RetryConfig};
+pub use client::{ChunkdbClient, NativeChunkRoutes, RetryConfig};
 pub use rpc_transport::ChunkdbRpcTransport;
 
 // Re-export RangeBindingClient so callers can construct it without a

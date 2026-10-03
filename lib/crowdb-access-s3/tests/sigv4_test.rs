@@ -97,7 +97,7 @@ fn verifies_presigned_request_and_rejects_expiry() {
         .header("host", "localhost")
         .body(())
         .unwrap();
-    let verifier = SigV4Verifier::new(Provider, "us-east-1".into(), 0);
+    let verifier = SigV4Verifier::new(Provider, "us-east-1".into(), 900);
     let timestamp = u64::try_from(
         chrono::DateTime::parse_from_rfc3339("2015-08-30T12:36:00Z")
             .unwrap()

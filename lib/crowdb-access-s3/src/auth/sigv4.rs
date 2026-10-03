@@ -63,6 +63,27 @@ impl<P: CredentialProvider> RequestAuthenticator for SigV4Verifier<P> {
             .as_secs();
         self.verify(request, now)
     }
+
+    async fn authenticate_upload(
+        &self,
+        request: RawAuthRequest<'_>,
+    ) -> Result<Option<StreamingPayloadVerifier>, AuthError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| AuthError::Unavailable)?
+            .as_secs();
+        if request
+            .headers
+            .get("x-amz-content-sha256")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("STREAMING-"))
+        {
+            self.verify_streaming(request, now).map(Some)
+        } else {
+            self.verify(request, now)?;
+            Ok(None)
+        }
+    }
 }
 
 impl<P: CredentialProvider> SigV4Verifier<P> {
@@ -137,10 +158,7 @@ impl<P: CredentialProvider> SigV4Verifier<P> {
         }
         let timestamp = parse_timestamp(&amz_date)?;
         if now.saturating_add(self.max_clock_skew_seconds) < timestamp
-            || now
-                > timestamp
-                    .saturating_add(expires)
-                    .saturating_add(self.max_clock_skew_seconds)
+            || now > timestamp.saturating_add(expires)
         {
             return Err(AuthError::Rejected);
         }

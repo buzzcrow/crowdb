@@ -90,9 +90,10 @@ void publish_raw_generation(ChunkPageStore *store, uint8_t value)
 class BlockingReadTransport final : public ChunkTransport
 {
   public:
-    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id,
+                                 PagePurpose purpose) override
     {
-        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id, purpose);
     }
 
     Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
@@ -163,9 +164,10 @@ class BlockingReadTransport final : public ChunkTransport
 class BlockingWriteTransport final : public ChunkTransport
 {
   public:
-    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id,
+                                 PagePurpose purpose) override
     {
-        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id, purpose);
     }
 
     Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
@@ -241,9 +243,10 @@ class BlockingWriteTransport final : public ChunkTransport
 class InlineWriteTransport final : public ChunkTransport
 {
   public:
-    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id,
+                                 PagePurpose purpose) override
     {
-        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id, purpose);
     }
 
     Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
@@ -284,9 +287,10 @@ class InlineWriteTransport final : public ChunkTransport
 class FailingAdvanceTransport final : public ChunkTransport
 {
   public:
-    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id,
+                                 PagePurpose purpose) override
     {
-        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id, purpose);
     }
 
     Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
@@ -338,9 +342,10 @@ class FailingAdvanceTransport final : public ChunkTransport
 class AmbiguousAdvanceTransport final : public ChunkTransport
 {
   public:
-    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id,
+                                 PagePurpose purpose) override
     {
-        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id, purpose);
     }
 
     Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
@@ -572,7 +577,11 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
         ASSERT_NE(manifest, nullptr);
         ASSERT_GT(manifest->packs.size(), 1U);
         ASSERT_FALSE(manifest->reference_segments.empty());
+        bool saw_page  = false;
+        bool saw_index = false;
         for (const auto &pack : manifest->packs) {
+            saw_page |= chunk_purpose(pack.ref.chunk_id) == PagePurpose::kBtreePage;
+            saw_index |= chunk_purpose(pack.ref.chunk_id) == PagePurpose::kPageIndex;
             EXPECT_LE(pack.ref.length, 4096U);
             std::vector<uint8_t> first(pack.ref.length);
             std::vector<uint8_t> second(pack.ref.length);
@@ -584,6 +593,8 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
             EXPECT_EQ(first, second);
             EXPECT_EQ(second, third);
         }
+        EXPECT_TRUE(saw_page);
+        EXPECT_TRUE(saw_index);
         EXPECT_EQ(manifest->reference_segments[0].ref_count, manifest->packs.size());
         auto segment = catalog->load_reference_segment(42, manifest->reference_segments[0].object_id);
         ASSERT_NE(segment, nullptr);

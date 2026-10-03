@@ -60,7 +60,7 @@ fn location_proto_bytes_round_trip_3_entries() {
 
 #[test]
 fn chunk_client_config_defaults() {
-    let cfg = ChunkClientConfig::default();
+    let cfg = ChunkClientConfig::new(crowdb_protocol::chunkdb::rpc::ChunkType::S3);
     assert_eq!(cfg.max_chunk_size, 1024 * 1024 * 1024);
     assert_eq!(cfg.prefetch_strips_per_chunk, 1);
     assert_eq!(cfg.parity_depth, 2);

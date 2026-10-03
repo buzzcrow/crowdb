@@ -34,15 +34,15 @@ listed document or section needed by the task.
 Temporary plans live under `doc/working/`; flow analyses live under
 `doc/design/{access-server,kv,chunkio,rpc}/`.
 
-| Doc                                                                     | When to read                                            |
-| ----------------------------------------------------------------------- | ------------------------------------------------------- |
-| `doc/design/kv/kv-read-flow-analysis.md`                                | KV point-read flow and benchmarks.                      |
-| `doc/design/kv/kv-scan-flow-analysis.md`                                | KV scan flow and benchmarks.                            |
-| `doc/design/kv/kv-write-flow-analysis.md`                               | KV write flow and optimization evidence.                |
-| `doc/design/chunkio/chunkio-write-flow-analysis.md`                     | Chunk I/O large-write flow and benchmarks.              |
-| `doc/design/chunkio/chunkio-small-io-flow-analysis.md`                  | Chunk I/O small-I/O flow and benchmarks.                |
+| Doc                                                                      | When to read                                            |
+| ------------------------------------------------------------------------ | ------------------------------------------------------- |
+| `doc/design/kv/kv-read-flow-analysis.md`                                 | KV point-read flow and benchmarks.                      |
+| `doc/design/kv/kv-scan-flow-analysis.md`                                 | KV scan flow and benchmarks.                            |
+| `doc/design/kv/kv-write-flow-analysis.md`                                | KV write flow and optimization evidence.                |
+| `doc/design/chunkio/chunkio-write-flow-analysis.md`                      | Chunk I/O large-write flow and benchmarks.              |
+| `doc/design/chunkio/chunkio-small-io-flow-analysis.md`                   | Chunk I/O small-I/O flow and benchmarks.                |
 | `doc/design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md` | Iceberg FileIO upload path and container measurements.  |
-| `doc/design/rpc/rpc-flow-analysis.md`                                   | RPC flow, benchmarks, and performance history.          |
+| `doc/design/rpc/rpc-flow-analysis.md`                                    | RPC flow, benchmarks, and performance history.          |
 
 ## Dev Environment (`doc/dev/`)
 
@@ -87,12 +87,13 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/tree/design-crowdb-tree-storage.md`                               | Durable pages, buffer pool, snapshot, mapping, GC.      |
 | `doc/design/tree/design-crowdb-tree-chunk-storage.md`                         | Mirrored page packs, manifests, rebuild, reclaim.       |
 | `doc/design/tree/design-crowdb-tree-engine-flush-flow.md`                     | L0→L1 flush path and bottlenecks.                       |
+| `lib/crowdb-tree/bench/README.md`                                            | MemTable handoff benchmark results and reproduction.    |
 | `doc/design/tree/design-crowdb-tree-engine-snapshot-flow.md`                  | Snapshot persist path and bottlenecks.                  |
 | `doc/design/console/design-crowdb-console-ui.md`                              | Web UI shell, canvas, inspector, KV operator.           |
 | `doc/design/protocol/design-crowdb-protocol-key.md`                           | Binary/text key encoding and evolution.                 |
 | `doc/design/protocol/design-crowdb-protocol-types.md`                         | Wire types, ID aliases, schemas, re-exports.            |
 | `doc/design/chunkdb/design-crowdb-chunkdb-mirror-to-ec.md`                    | Mirror-to-EC tasks, leases, publication, recovery.      |
-| `doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md`                   | Range binding, routing, migration, precise free.        |
+| `doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md`                   | Fixed hash slots, service/storage maps, task scope.     |
 | `doc/design/chunkdb/design-crowdb-chunkdb-rpc.md`                             | Chunkdb RPC schema, service, transport, errors.         |
 | `doc/design/chunkdb/chunkdb-allocate-flow-analysis.md`                        | EC allocation benchmark and bottlenecks.                |
 | `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md`             | Shared-chunk admission, routing, recovery, elasticity.  |
@@ -104,7 +105,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/rpc/design-crowdb-rpc-tcp.md`                                     | TCP engines, worker loop, zero-copy I/O, scaling.       |
 | `doc/design/rpc/design-crowdb-rpc-rdma.md`                                    | RDMA setup, CQ polling, registered buffers.             |
 | `doc/design/rpc/design-crowdb-rpc-diskdb-migration.md`                        | Diskdb RPC migration, rollout, connection lifetime.     |
-| `doc/design/access-server/s3/design-crowdb-access-s3.md`                      | S3 namespace, publication, TCP streaming, list, delete. |
+| `doc/design/access-server/s3/design-crowdb-access-s3.md`                      | S3 namespace, publication, integrity, list, delete.     |
 | `doc/design/access-server/s3/design-crowdb-access-s3-rdma.md`                 | Optional RDMA and direct-to-GPU data planes.            |
 | `doc/design/access-server/iceberge/design-crowdb-iceberg.md`                  | Native Iceberg authority, commits, files, and recovery. |
 | `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification. |

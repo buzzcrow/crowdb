@@ -1,13 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// R50: ConcurrentSkipList unit tests.
 #include "crowdb-tree/memtable/skip_list.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <mutex>
+#include <barrier>
 #include <string>
 #include <thread>
 #include <vector>
@@ -16,296 +15,238 @@ using namespace crowdb::tree;
 
 namespace
 {
-CellVersion *make_cv(uint64_t slot, uint8_t flags, const std::string &value)
+std::shared_ptr<const CellVersion> version(uint64_t slot, std::string value = "v", bool deleted = false)
 {
-    auto *cv  = new CellVersion{};
-    cv->slot  = slot;
-    cv->flags = flags;
-    if ((flags & kFlagTombstone) != 0) {
-        cv->cell = encode_cell_buf(slot, OpKind::kDelete);
-    }
-    else {
-        cv->cell = encode_cell_buf(slot, OpKind::kPut, Slice(value));
-    }
-    return cv;
-}
-
-CellVersion *make_cv_simple(uint64_t slot, const std::string &value)
-{
-    return make_cv(slot, 0, value);
-}
-
-// Helper: upsert, return the old version (or nullptr). On rejection, deletes cv.
-CellVersion *do_upsert(ConcurrentSkipList &sl, Slice key, CellVersion *cv)
-{
-    CellVersion *old = nullptr;
-    if (!sl.upsert(key, cv, &old)) {
-        delete cv; // rejected — caller cleans up
-        return nullptr;
-    }
-    return old;
+    return std::make_shared<CellVersion>(encode_cell_buf(slot, deleted ? OpKind::kDelete : OpKind::kPut, Slice(value)),
+                                         slot, static_cast<uint8_t>(deleted ? kFlagTombstone : 0));
 }
 } // namespace
 
-TEST(SkipList, BasicInsertFind)
+TEST(SkipList, OrderedInsertionAndBounds)
 {
-    ConcurrentSkipList sl;
-    EXPECT_TRUE(sl.empty());
-    EXPECT_EQ(sl.count(), 0U);
-
-    CellVersion *a = make_cv_simple(1, "va");
-    EXPECT_EQ(do_upsert(sl, "a", a), nullptr); // new insert
-    EXPECT_EQ(sl.count(), 1U);
-    EXPECT_FALSE(sl.empty());
-
-    const CellVersion *found = sl.find("a");
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->slot, 1U);
-    EXPECT_EQ(CellView{found->cell.slice()}.value().to_string(), "va");
-
-    EXPECT_EQ(sl.find("b"), nullptr);
-}
-
-TEST(SkipList, OrderedIteration)
-{
-    ConcurrentSkipList sl;
-    (void)do_upsert(sl, "c", make_cv_simple(1, "vc"));
-    (void)do_upsert(sl, "a", make_cv_simple(2, "va"));
-    (void)do_upsert(sl, "b", make_cv_simple(3, "vb"));
-
-    auto                     cur = sl.cursor(Slice());
-    std::vector<std::string> keys;
-    while (cur.valid()) {
-        keys.push_back(cur.key().to_string());
-        cur.advance();
+    ConcurrentSkipList list;
+    EXPECT_TRUE(list.empty());
+    for (const auto *key : {"d", "b", "a", "c"}) {
+        EXPECT_TRUE(list.upsert(key, version(1), 0));
     }
-    ASSERT_EQ(keys.size(), 3U);
-    EXPECT_EQ(keys[0], "a");
-    EXPECT_EQ(keys[1], "b");
-    EXPECT_EQ(keys[2], "c");
-}
-
-TEST(SkipList, CursorStartAfter)
-{
-    ConcurrentSkipList sl;
-    (void)do_upsert(sl, "a", make_cv_simple(1, "va"));
-    (void)do_upsert(sl, "b", make_cv_simple(2, "vb"));
-    (void)do_upsert(sl, "c", make_cv_simple(3, "vc"));
-    (void)do_upsert(sl, "d", make_cv_simple(4, "vd"));
-
-    auto                     cur = sl.cursor(Slice("b"));
-    std::vector<std::string> keys;
-    while (cur.valid()) {
-        keys.push_back(cur.key().to_string());
-        cur.advance();
+    EXPECT_EQ(list.count(), 4U);
+    std::string keys;
+    for (auto cur = list.cursor({}); cur.valid(); cur.advance()) {
+        keys += cur.key().to_string();
     }
-    ASSERT_EQ(keys.size(), 2U);
-    EXPECT_EQ(keys[0], "c");
-    EXPECT_EQ(keys[1], "d");
+    EXPECT_EQ(keys, "abcd");
+    EXPECT_EQ(list.cursor("b").key().to_string(), "c");
+    EXPECT_EQ(list.cursor_from("b", true).key().to_string(), "b");
+    EXPECT_EQ(list.cursor_reverse("b", true, false).key().to_string(), "a");
+    EXPECT_EQ(list.cursor_reverse({}, false, false).key().to_string(), "d");
+    EXPECT_EQ(list.find("missing"), nullptr);
 }
 
-TEST(SkipList, OverwriteHighestSlotWins)
+TEST(SkipList, HighestSlotReplayAndTombstone)
 {
-    ConcurrentSkipList sl;
-    (void)do_upsert(sl, "k", make_cv_simple(5, "v5"));
-    CellVersion *old = do_upsert(sl, "k", make_cv_simple(8, "v8"));
-    ASSERT_NE(old, nullptr);
-    EXPECT_EQ(old->slot, 5U);
-    delete old;
-
-    // Lower slot rejected.
-    CellVersion *v3   = make_cv_simple(3, "v3");
-    CellVersion *old2 = nullptr;
-    EXPECT_FALSE(sl.upsert("k", v3, &old2));
-    EXPECT_EQ(old2, nullptr);
-    delete v3; // rejected — caller cleans up
-
-    const CellVersion *found = sl.find("k");
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->slot, 8U);
-    EXPECT_EQ(CellView{found->cell.slice()}.value().to_string(), "v8");
+    ConcurrentSkipList list;
+    EXPECT_TRUE(list.upsert("x", version(5), 5));
+    EXPECT_TRUE(list.upsert("x", version(8, "", true), 8));
+    EXPECT_FALSE(list.upsert("x", version(3), 8));
+    EXPECT_FALSE(list.upsert("x", version(8, "replay"), 8));
+    EXPECT_EQ(list.find("x")->slot, 8U);
+    EXPECT_EQ(list.find("x")->flags, kFlagTombstone);
+    EXPECT_EQ(list.count(), 1U);
 }
 
-TEST(SkipList, OverwriteReturnsOld)
+TEST(SkipList, SelectivePrefixRetentionInEitherArrivalOrder)
 {
-    ConcurrentSkipList sl;
-    CellVersion       *v1 = make_cv_simple(1, "v1");
-    EXPECT_EQ(do_upsert(sl, "k", v1), nullptr);
-
-    CellVersion *v2  = make_cv_simple(2, "v2");
-    CellVersion *old = do_upsert(sl, "k", v2);
-    ASSERT_NE(old, nullptr);
-    EXPECT_EQ(old, v1);
-    delete old;
-
-    CellVersion *v3   = make_cv_simple(1, "v3");
-    CellVersion *old2 = nullptr;
-    EXPECT_FALSE(sl.upsert("k", v3, &old2));
-    delete v3;
-}
-
-TEST(SkipList, DrainUpTo)
-{
-    ConcurrentSkipList sl;
-    (void)do_upsert(sl, "a", make_cv_simple(1, "va"));
-    (void)do_upsert(sl, "b", make_cv_simple(5, "vb"));
-    (void)do_upsert(sl, "c", make_cv_simple(3, "vc"));
-    (void)do_upsert(sl, "d", make_cv_simple(9, "vd"));
-
-    auto drained = sl.drain_up_to(5);
-    ASSERT_EQ(drained.size(), 3U);
-    EXPECT_EQ(drained[0].key, "a");
-    EXPECT_EQ(drained[0].slot, 1U);
-    EXPECT_EQ(drained[1].key, "b");
-    EXPECT_EQ(drained[1].slot, 5U);
-    EXPECT_EQ(drained[2].key, "c");
-    EXPECT_EQ(drained[2].slot, 3U);
-
-    for (auto &e : drained) {
-        delete e.cv;
-        ConcurrentSkipList::free_node(e.node);
+    for (const auto &slots : {
+             std::vector<uint64_t>{2,   80,  102, 105},
+             std::vector<uint64_t>{105, 102, 80,  2  }
+    }) {
+        ConcurrentSkipList list;
+        for (auto slot : slots) {
+            list.upsert("x", version(slot), 100);
+        }
+        EXPECT_EQ(list.find("x")->slot, 105U);
+        EXPECT_FALSE(list.prefix_cursor(79).valid());
+        EXPECT_EQ(list.prefix_cursor(100).cell_version()->slot, 80U);
+        EXPECT_EQ(list.prefix_cursor(102).cell_version()->slot, 102U);
+        EXPECT_EQ(list.prefix_cursor(105).cell_version()->slot, 105U);
+        EXPECT_EQ(list.count(), 1U);
+        list.prune("x", 105);
+        EXPECT_FALSE(list.prefix_cursor(104).valid());
+        EXPECT_EQ(list.approx_bytes(), 1U + kCellHeaderSize + 1U);
     }
-
-    EXPECT_EQ(sl.count(), 1U);
-    EXPECT_NE(sl.find("d"), nullptr);
-    EXPECT_EQ(sl.find("a"), nullptr);
 }
 
-TEST(SkipList, DrainAll)
+TEST(SkipList, DelayedBoundCannotReintroduceRedundantHistory)
 {
-    ConcurrentSkipList sl;
-    (void)do_upsert(sl, "x", make_cv_simple(1, "vx"));
-    (void)do_upsert(sl, "y", make_cv_simple(2, "vy"));
-
-    auto drained = sl.drain_all();
-    ASSERT_EQ(drained.size(), 2U);
-    for (auto &e : drained) {
-        delete e.cv;
-        ConcurrentSkipList::free_node(e.node);
-    }
-    EXPECT_TRUE(sl.empty());
+    ConcurrentSkipList list;
+    list.upsert("x", version(80), 80);
+    list.upsert("x", version(105), 105);
+    EXPECT_FALSE(list.upsert("x", version(90), 0));
+    EXPECT_FALSE(list.prefix_cursor(100).valid());
+    EXPECT_TRUE(list.upsert("x", version(110), 0));
+    EXPECT_EQ(list.prefix_cursor(105).cell_version()->slot, 105U);
 }
 
-TEST(SkipList, HotKeyCollapse)
+TEST(SkipList, FutureTombstoneDoesNotSuppressEligibleValue)
 {
-    ConcurrentSkipList sl;
-    for (uint64_t s = 1; s <= 1000; ++s) {
-        CellVersion *cv  = make_cv_simple(s, "v" + std::to_string(s));
-        CellVersion *old = do_upsert(sl, "hot", cv);
-        delete old;
-    }
-    EXPECT_EQ(sl.count(), 1U);
-    const CellVersion *found = sl.find("hot");
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->slot, 1000U);
+    ConcurrentSkipList list;
+    list.upsert("x", version(102, "", true), 100);
+    list.upsert("x", version(2), 100);
+    EXPECT_EQ(list.prefix_cursor(100).cell_version()->slot, 2U);
+    EXPECT_EQ(list.find("x")->flags, kFlagTombstone);
 }
 
-TEST(SkipList, TombstoneOverwrite)
+TEST(SkipList, CursorKeepsOneCoherentCandidate)
 {
-    ConcurrentSkipList sl;
-    CellVersion       *v1 = make_cv_simple(1, "v");
-    (void)do_upsert(sl, "k", v1);
-
-    CellVersion *del = make_cv(2, kFlagTombstone, "");
-    CellVersion *old = do_upsert(sl, "k", del);
-    ASSERT_NE(old, nullptr);
-    EXPECT_EQ(old, v1);
-    delete old;
-
-    const CellVersion *found = sl.find("k");
-    ASSERT_NE(found, nullptr);
-    EXPECT_TRUE(CellView{found->cell.slice()}.is_tombstone());
+    ConcurrentSkipList list;
+    list.upsert("x", version(1, "old"), 1);
+    auto cur = list.cursor({});
+    list.upsert("x", version(2, "new"), 2);
+    EXPECT_EQ(cur.cell_version()->slot, 1U);
+    EXPECT_EQ(CellView{cur.cell_version()->cell.slice()}.value().to_string(), "old");
+    EXPECT_EQ(list.find("x")->slot, 2U);
 }
 
-TEST(SkipList, ConcurrentInsertAndIterate)
+TEST(SkipList, ConcurrentInsertionUpdatesAndCollection)
 {
-    ConcurrentSkipList       sl;
+    EpochManager             epoch;
+    ConcurrentSkipList       list(&epoch);
+    std::barrier             start(5);
     std::atomic<bool>        stop{false};
     std::vector<std::thread> writers;
     writers.reserve(4);
     for (int w = 0; w < 4; ++w) {
         writers.emplace_back([&, w] {
-            for (uint64_t s = 1; s <= 1000; ++s) {
-                std::string key = "key" + std::to_string(w) + "_" + std::to_string(s);
-                (void)do_upsert(sl, key, make_cv_simple(s, "v"));
+            start.arrive_and_wait();
+            for (uint64_t i = 1; i <= 1000; ++i) {
+                list.upsert("key" + std::to_string(i), version((i * 4) + w), UINT64_MAX);
+                list.upsert("hot", version((i * 4) + w), UINT64_MAX);
             }
         });
     }
-
+    start.arrive_and_wait();
     std::thread reader([&] {
-        while (!stop.load(std::memory_order_relaxed)) {
-            auto cur = sl.cursor(Slice());
-            while (cur.valid()) {
-                (void)cur.key();
-                (void)cur.cell_version();
-                cur.advance();
+        while (!stop.load()) {
+            auto        guard = epoch.enter();
+            std::string previous;
+            for (auto cur = list.cursor({}); cur.valid(); cur.advance()) {
+                EXPECT_LT(previous, cur.key().to_string());
+                previous = cur.key().to_string();
+                EXPECT_EQ(CellView{cur.cell_version()->cell.slice()}.slot(), cur.cell_version()->slot);
             }
         }
     });
-
-    for (auto &t : writers) {
-        t.join();
+    std::thread collector([&] {
+        while (!stop.load()) {
+            epoch.try_reclaim();
+            std::this_thread::yield();
+        }
+    });
+    for (auto &writer : writers) {
+        writer.join();
     }
     stop.store(true);
     reader.join();
-
-    EXPECT_EQ(sl.count(), 4000U);
+    collector.join();
+    EXPECT_EQ(list.count(), 1001U);
+    EXPECT_EQ(list.find("hot")->slot, 4003U);
+    EXPECT_EQ(list.approx_bytes(), (1001U * (kCellHeaderSize + 1)) + 3 + 5893);
 }
 
-TEST(SkipList, ConcurrentOverwriteAndIterate)
+TEST(SkipList, BorrowedPayloadSurvivesSourceDestruction)
 {
-    // 4 writers all writing to the SAME key — tests versioned overwrite
-    // under concurrent iteration. Old versions are collected (not freed
-    // during the test) because the reader may still hold a pointer to
-    // them; in the real engine they are epoch-retired. Under TSAN this
-    // catches any memory-ordering bug in the acquire/release protocol.
-    ConcurrentSkipList         sl;
-    std::atomic<bool>          stop{false};
-    std::vector<CellVersion *> old_versions;
-    std::mutex                 old_mu;
+    EpochManager       epoch;
+    auto               guard = epoch.enter();
+    const CellVersion *borrowed;
+    {
+        ConcurrentSkipList list(&epoch);
+        list.upsert("x", version(1, "value"), 0);
+        borrowed = list.find("x");
+    }
+    EXPECT_EQ(epoch.try_reclaim(), 0U);
+    EXPECT_EQ(CellView{borrowed->cell.slice()}.value().to_string(), "value");
+    guard = {};
+    EXPECT_GT(epoch.try_reclaim(), 0U);
+    EXPECT_EQ(epoch.pending_retired(), 0U);
+}
 
-    (void)do_upsert(sl, "hot", make_cv_simple(0, "init"));
+#ifdef CROWDB_TREE_TEST_UTIL
+#    include <future>
+#    include <semaphore>
 
-    std::vector<std::thread> writers;
-    writers.reserve(4);
-    for (int w = 0; w < 4; ++w) {
-        writers.emplace_back([&, w] {
-            for (uint64_t s = 1; s <= 2000; ++s) {
-                CellVersion *cv  = make_cv_simple(s, "v" + std::to_string(w));
-                CellVersion *old = do_upsert(sl, "hot", cv);
-                if (old != nullptr) {
-                    std::scoped_lock lk(old_mu);
-                    old_versions.push_back(old);
-                }
+TEST(SkipList, PausedInsertionDoesNotOwnOtherKeysMutation)
+{
+    using Point = ConcurrentSkipList::PausePoint;
+    for (auto point : {Point::kBeforeSearch, Point::kAfterLevelZero}) {
+        struct Pause
+        {
+            Point                 point;
+            std::binary_semaphore entered{0};
+            std::binary_semaphore resume{0};
+        } pause{.point = point};
+
+        ConcurrentSkipList list;
+        list.set_hook_for_tests(&pause, [](void *context, Point current, Slice key) {
+            auto &state = *static_cast<Pause *>(context);
+            if (current == state.point && key.compare("paused") == 0) {
+                state.entered.release();
+                state.resume.acquire();
             }
         });
-    }
-
-    std::thread reader([&] {
-        while (!stop.load(std::memory_order_relaxed)) {
-            auto cur = sl.cursor(Slice());
-            while (cur.valid()) {
-                const CellVersion *cv = cur.cell_version();
-                if (cv != nullptr) {
-                    (void)cv->slot;
-                }
-                cur.advance();
-            }
+        std::thread paused([&] { list.upsert("paused", version(1), 0); });
+        pause.entered.acquire();
+        auto       independent = std::async(std::launch::async, [&] { return list.upsert("other", version(2), 0); });
+        const auto progress    = independent.wait_for(std::chrono::seconds(5));
+        EXPECT_EQ(progress, std::future_status::ready);
+        if (progress == std::future_status::ready) {
+            EXPECT_TRUE(independent.get());
+            EXPECT_EQ(list.find("other")->slot, 2U);
         }
-    });
-
-    for (auto &t : writers) {
-        t.join();
+        pause.resume.release();
+        paused.join();
     }
-    stop.store(true);
-    reader.join();
-
-    for (CellVersion *cv : old_versions) {
-        delete cv;
-    }
-
-    EXPECT_EQ(sl.count(), 1U);
-    const CellVersion *found = sl.find("hot");
-    ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->slot, 2000U);
 }
+
+TEST(SkipList, RetriedLowerInsertionUsesTheWinningPruningBound)
+{
+    for (uint64_t bound : {100U, 105U}) {
+        ConcurrentSkipList list;
+        list.upsert("x", version(80), 0);
+        list.upsert("x", version(105), 0);
+
+        struct Pause
+        {
+            std::atomic<bool>     once{true};
+            std::binary_semaphore entered{0};
+            std::binary_semaphore resume{0};
+        } pause;
+
+        list.set_hook_for_tests(&pause, [](void *context, ConcurrentSkipList::PausePoint point, Slice) {
+            auto &state = *static_cast<Pause *>(context);
+            if (point == ConcurrentSkipList::PausePoint::kBeforeVersionCas && state.once.exchange(false)) {
+                state.entered.release();
+                state.resume.acquire();
+            }
+        });
+        MutationStats stats{.measure_copy = true};
+        auto writer = std::async(std::launch::async, [&] { return list.upsert("x", version(102), 0, &stats); });
+        pause.entered.acquire();
+        list.prune("x", bound);
+        pause.resume.release();
+        EXPECT_EQ(writer.get(), bound == 100);
+        EXPECT_EQ(list.find("x")->slot, 105U);
+        EXPECT_EQ(list.count(), 1U);
+        EXPECT_EQ(stats.keep, bound == 100 ? 1U : 0U);
+        EXPECT_GE(stats.cas_retries, 1U);
+        EXPECT_EQ(stats.copy_count, stats.cas_retries + 1);
+        EXPECT_GE(stats.copy_ns, stats.copy_max_ns);
+        if (bound == 100) {
+            EXPECT_EQ(list.prefix_cursor(100).cell_version()->slot, 80U);
+            EXPECT_EQ(list.prefix_cursor(102).cell_version()->slot, 102U);
+        }
+        else {
+            EXPECT_FALSE(list.prefix_cursor(102).valid());
+        }
+    }
+}
+#endif

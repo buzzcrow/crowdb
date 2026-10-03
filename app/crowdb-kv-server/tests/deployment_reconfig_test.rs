@@ -528,7 +528,7 @@ async fn reconfig_via_api_remove_leader() {
     let mut nodes = start_cluster(&[3001, 3002, 3003], group_id).await;
     wire_topology(&nodes, group_id).await;
 
-    let leader_idx = wait_for_leader(&nodes, group_id, Duration::from_secs(10)).await;
+    let mut leader_idx = wait_for_leader(&nodes, group_id, Duration::from_secs(10)).await;
 
     // Write initial data through the leader.
     assert!(
@@ -537,35 +537,41 @@ async fn reconfig_via_api_remove_leader() {
     );
 
     // 1. Step the leader down via the management API.
-    let leader_node_id = nodes[leader_idx].node_id;
-    let leader_replica_id = nodes[leader_idx].replica_id;
-    let step_url = format!(
-        "{}/stores/{}/groups/{}/step-down?sync=true",
-        nodes[leader_idx].mgmt_base(),
-        leader_node_id,
-        group_id,
-    );
-    let step_resp: Value = {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let resp = http_send_with_retry(
-                client()
-                    .post(&step_url)
-                    .json(&serde_json::json!({"reason": "remove-leader reconfig"})),
-                "step-down",
-            )
-            .await;
-            match resp.json().await {
-                Ok(v) => break v,
-                Err(e) => {
-                    assert!(
-                        Instant::now() <= deadline,
-                        "step-down JSON parse from {step_url} failed within 10 s: {e}"
-                    );
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (leader_replica_id, step_resp) = loop {
+        let leader = &nodes[leader_idx];
+        let step_url = format!(
+            "{}/stores/{}/groups/{}/step-down?sync=true",
+            leader.mgmt_base(),
+            leader.node_id,
+            group_id,
+        );
+        let resp = http_send_with_retry(
+            client()
+                .post(&step_url)
+                .json(&serde_json::json!({"reason": "remove-leader reconfig"})),
+            "step-down",
+        )
+        .await;
+        let step_resp: Value = resp
+            .json()
+            .await
+            .unwrap_or_else(|e| panic!("step-down JSON parse from {step_url} failed: {e}"));
+        if step_resp["accepted"] == true {
+            break (leader.replica_id, step_resp);
         }
+
+        assert!(
+            Instant::now() < deadline,
+            "no current leader accepted step-down within 10 s; last response: {step_resp}"
+        );
+        let current_leader_id = step_resp["current_leader_id"].as_u64().unwrap_or(0);
+        leader_idx = if let Some(index) = nodes.iter().position(|node| node.replica_id == current_leader_id) {
+            index
+        } else {
+            wait_for_leader(&nodes, group_id, deadline - Instant::now()).await
+        };
+        tokio::time::sleep(Duration::from_millis(200)).await;
     };
     assert_eq!(
         step_resp["accepted"], true,

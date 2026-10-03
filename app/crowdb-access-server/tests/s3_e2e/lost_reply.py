@@ -5,6 +5,7 @@
 
 import os
 import socket
+from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import md5, sha256
 from http.client import HTTPConnection, RemoteDisconnected
@@ -49,7 +50,7 @@ def swallow_reply(listener, endpoint, expected_status):
             return bytes(response)
 
 
-def drop_reply(endpoint, credentials, method, path, payload, expected_status):
+def drop_reply(endpoint, credentials, method, path, payload, expected_status, headers=None):
     parsed = urlsplit(endpoint)
     request = AWSRequest(
         method=method,
@@ -60,6 +61,7 @@ def drop_reply(endpoint, credentials, method, path, payload, expected_status):
             "Content-Length": str(len(payload)),
             "Connection": "close",
             "x-amz-content-sha256": sha256(payload).hexdigest(),
+            **(headers or {}),
         },
     )
     S3SigV4Auth(credentials, "s3", os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1")).add_auth(request)
@@ -107,7 +109,23 @@ def main():
     assert client.get_object(Bucket=bucket, Key=key)["Body"].read() == payload
     listed = client.list_objects_v2(Bucket=bucket, Prefix="retry/")
     assert [item["Key"] for item in listed["Contents"]] == [key]
+    copied = "retry/copied-response-loss.bin"
+    drop_reply(endpoint, credentials, "PUT", f"/{bucket}/{copied}", b"", 200,
+               {"x-amz-copy-source": f"/{bucket}/{key}"})
+    assert client.get_object(Bucket=bucket, Key=copied)["Body"].read() == payload
+    result = client.copy_object(Bucket=bucket, Key=copied, CopySource={"Bucket": bucket, "Key": key})
+    assert result["CopyObjectResult"]["ETag"] == etag
+    assert client.get_object(Bucket=bucket, Key=copied)["Body"].read() == payload
+    client.delete_object(Bucket=bucket, Key=copied)
     client.delete_object(Bucket=bucket, Key=key)
+    batch_key = "retry/batch-response-loss.bin"
+    client.put_object(Bucket=bucket, Key=batch_key, Body=payload)
+    batch_body = f"<Delete><Object><Key>{batch_key}</Key></Object></Delete>".encode()
+    drop_reply(endpoint, credentials, "POST", f"/{bucket}?delete", batch_body, 200,
+               {"Content-MD5": b64encode(md5(batch_body).digest()).decode()})
+    assert client.list_objects_v2(Bucket=bucket, Prefix=batch_key)["KeyCount"] == 0
+    retried = client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": batch_key}]})
+    assert [item["Key"] for item in retried["Deleted"]] == [batch_key]
 
     multipart_key = "retry/multipart.bin"
     part = b"multipart-response-loss" * 512
@@ -118,6 +136,13 @@ def main():
     assert f"\r\netag: {part_etag}\r\n".lower().encode() in response.lower(), response[:512]
     assert client.upload_part(Bucket=bucket, Key=multipart_key, UploadId=upload_id,
                               PartNumber=1, Body=part)["ETag"] == part_etag
+    copy_source = "retry/part-copy-source.bin"
+    client.put_object(Bucket=bucket, Key=copy_source, Body=part)
+    drop_reply(endpoint, credentials, "PUT", f"/{bucket}/{multipart_key}{query}", b"", 200,
+               {"x-amz-copy-source": f"/{bucket}/{copy_source}"})
+    assert client.upload_part_copy(Bucket=bucket, Key=multipart_key, UploadId=upload_id,
+                                   PartNumber=1, CopySource={"Bucket": bucket, "Key": copy_source})["CopyPartResult"]["ETag"] == part_etag
+    client.delete_object(Bucket=bucket, Key=copy_source)
     assert len(client.list_parts(Bucket=bucket, Key=multipart_key, UploadId=upload_id)["Parts"]) == 1
 
     complete = (

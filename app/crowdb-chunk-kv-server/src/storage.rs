@@ -68,7 +68,7 @@ impl ChunkKvStorage {
                 management_seeds: config.group0_mgmt_seeds.clone(),
                 diskio_connections_per_endpoint: config.storage.diskio_connections_per_endpoint,
                 diskio_rpc_workers: config.storage.diskio_rpc_workers,
-                small_write: SmallWritePolicy::default(),
+                small_write: SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::Wal),
             },
             Arc::clone(&kv),
         )
@@ -169,7 +169,12 @@ impl ChunkKvStorage {
             .collect();
         let tree_transport = Arc::new(
             ChunkTransport::open_owned_rpc(OwnedChunkRpcTransportOptions {
-                chunkdb,
+                chunkdb: Arc::new(move |id, refresh| {
+                    chunkdb.resolve(
+                        id.map(|(high, low)| crowdb_protocol::common::ChunkId { high, low }),
+                        refresh,
+                    )
+                }),
                 disk_routes,
                 writer_lease_ms,
                 rpc_timeout_ms: writer_lease_ms,
@@ -405,10 +410,10 @@ impl ChunkKvStorage {
             )
             .await
             .map_err(|error| storage_plan_error(&error.to_string()))?;
-        let parent_journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(
-            parent_stream,
-            overlay.source_stream_name,
-        ));
+        let parent_journal: Arc<dyn PartitionJournal> = Arc::new(
+            StreamPartitionJournal::new(parent_stream, overlay.source_stream_name)
+                .map_err(|error| storage_plan_error(&error.to_string()))?,
+        );
         target
             .catch_up_prepared_transfer(prepared_overlay_artifact(entry, overlay), parent_journal)
             .await
@@ -427,6 +432,7 @@ impl ChunkKvStorage {
         config: &BootstrapPartitionConfig,
     ) -> Result<Partition, StorageRuntimeError> {
         let binding = StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name: config.stream_name,
             metadata_group_id: config.metadata_group_id,
             binding_generation: 1,
@@ -681,7 +687,10 @@ impl ChunkKvStorage {
                 page_store: Some(page_store),
                 ..crowdb_tree_ffi::Config::default()
             },
-            journal: Arc::new(StreamPartitionJournal::new(stream, artifact.stream_name)),
+            journal: Arc::new(
+                StreamPartitionJournal::new(stream, artifact.stream_name)
+                    .map_err(|error| storage_plan_error(&error.to_string()))?,
+            ),
         })
     }
 
@@ -694,6 +703,7 @@ impl ChunkKvStorage {
     ) -> Result<ChunkStream, crate::MonitorError> {
         let registry = self.streams.registry();
         let expected = StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
             stream_name,
             metadata_group_id,
             binding_generation: 1,

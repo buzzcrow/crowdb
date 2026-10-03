@@ -61,9 +61,9 @@ pub fn classify_multipart(method: &Method, uri: &Uri) -> Result<Option<Multipart
         return Err(RouteError::Invalid);
     }
     let path = uri.path().strip_prefix('/').ok_or(RouteError::Invalid)?;
-    let (bucket, key) = path
-        .split_once('/')
-        .map_or((path, None), |(bucket, key)| (bucket, Some(key)));
+    let (bucket, key) = path.split_once('/').map_or((path, None), |(bucket, key)| {
+        (bucket, (!key.is_empty()).then_some(key))
+    });
     let bucket = decode(bucket);
     if bucket.is_empty() {
         return Err(RouteError::Invalid);

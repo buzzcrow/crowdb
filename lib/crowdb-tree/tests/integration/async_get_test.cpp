@@ -227,13 +227,8 @@ TEST(AsyncGet, FutureFreeBeforeCompletionDoesNotCrashOrLeak)
 // to the same result their synchronous twins would. snapshot_async does
 // genuine I/O ("flush / snapshot ... Always: write dirty pages
 // to disk") and is pending on its first poll whenever a Reactor is wired.
-// flush_async, in *this* engine, only drains the in-memory MemTable into
-// L1 (Crowdbtree::flush() never touches page_store -- see its doc comment on
-// crowdb-tree.h) so it has no I/O to submit and always completes on the first
-// poll; this is a deliberate, documented deviation from the design doc's
-// literal table for this one case (verified against the real
-// Crowdbtree::flush() implementation, not assumed).
-TEST(AsyncFlushSnapshot, FlushCompletesImmediatelySnapshotEventually)
+// Flush waits for its captured MemTable writers on a native worker.
+TEST(AsyncFlushSnapshot, FlushAndSnapshotCompleteWithTheirPublishedFrontier)
 {
     crowdb::tree_test::TempDir tmp;
     ct_options                 opt = {};
@@ -248,9 +243,7 @@ TEST(AsyncFlushSnapshot, FlushCompletesImmediatelySnapshotEventually)
 
     ct_future *ff = ct_flush_async(t);
     ASSERT_NE(ff, nullptr);
-    int32_t   fdone = 0;
-    ct_status fst   = ct_future_poll(ff, &fdone, nullptr, nullptr, nullptr);
-    EXPECT_EQ(fdone, 1) << "flush_async never has genuine I/O to wait on in this engine";
+    ct_status fst = poll_until_done(ff, nullptr, nullptr, nullptr);
     EXPECT_EQ(fst, 0);
 
     ct_future *sf = ct_snapshot_async(t);

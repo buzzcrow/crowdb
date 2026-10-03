@@ -3,6 +3,8 @@
 
 #include "chunk_transport.h"
 
+#include "chunk_purpose.h"
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -223,15 +225,17 @@ template <typename Mutation> Status MemoryChunkTransport::mutate(ChunkId chunk_i
     }
 }
 
-Status MemoryChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id)
+Status MemoryChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id,
+                                                   PagePurpose purpose)
 {
-    if (logical_capacity == 0 || chunk_id == nullptr) {
+    if (logical_capacity == 0 || chunk_id == nullptr || !valid_page_purpose(purpose)) {
         return Status::invalid_argument("chunk allocation arguments are invalid");
     }
     if (unavailable_.load(std::memory_order_acquire)) {
         return Status::unavailable("chunk transport is unavailable");
     }
-    const ChunkId allocated(next_chunk_id_.fetch_add(1, std::memory_order_relaxed));
+    const ChunkId allocated(static_cast<uint64_t>(purpose) << 56U,
+                            next_chunk_id_.fetch_add(1, std::memory_order_relaxed));
     auto          current = chunks_.load(std::memory_order_acquire);
     for (;;) {
         auto next = current == nullptr ? std::make_shared<Chunks>() : std::make_shared<Chunks>(*current);

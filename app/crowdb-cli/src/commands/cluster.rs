@@ -352,6 +352,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 };
                 let chunk = crowdb_console_shared::ops::cluster::LocalChunkdbDeployConfig {
                     instance_count: chunkdb_instances,
+                    storage_groups: vec![1, 2, 3],
                     allow_unsafe_ec,
                     rpc_workers: nonzero(rpc_workers),
                     diskio_rpc_workers: nonzero(diskio_rpc_workers),
@@ -529,6 +530,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     deploy_workspace(cli).unwrap_or_else(|| std::path::PathBuf::from("cli-deploy"));
                 let chunk = crowdb_console_shared::ops::cluster::LocalChunkdbDeployConfig {
                     instance_count: chunkdb_instances,
+                    storage_groups: vec![1, 2, 3],
                     allow_unsafe_ec,
                     rpc_workers: nonzero(rpc_workers),
                     diskio_rpc_workers: nonzero(diskio_rpc_workers),

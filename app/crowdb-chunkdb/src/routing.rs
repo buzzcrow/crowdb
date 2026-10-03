@@ -1,86 +1,66 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Hash bucket router — chunk ID → 16-bit bucket → KV group.
-//!
-//! Design §5.4a: logical hash bucket system. The binding table maps
-//! bucket ranges to KV group IDs, stored in group-0. A watch/notify
-//! cache keeps the binding table fresh for immediate routing.
-
-use std::sync::Arc;
+//! Chunk ID -> fixed logical slot -> explicitly selected nonzero KV group.
 
 use arc_swap::ArcSwap;
-use tracing::warn;
-
-use crowdb_protocol::chunk_id::ChunkIdParts;
+use crowdb_protocol::chunk_slot::{ChunkSlot, ChunkSlotMap, ChunkStorageGroup};
 use crowdb_protocol::common::ChunkId;
+use std::sync::Arc;
 
-/// Migration state for a bucket range (design §5.4b).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MigrationState {
-    NotMigrating,
-    Copying,
-    Cutover,
-    Cleanup,
-    Complete,
-}
-
-/// A bucket range binding: `[start, end)` → KV group.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BucketBinding {
-    pub start: u16,
-    pub end: u16,
-    pub kv_store_id: u64,
-    pub kv_group_id: u64,
-    /// During migration, the old group for fallback reads.
-    pub old_kv_store_id: Option<u64>,
-    pub old_kv_group_id: Option<u64>,
-    pub migration_state: MigrationState,
-}
-
-/// The binding table — a list of bucket range bindings.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct BindingTable {
-    bindings: Vec<BucketBinding>,
+    map: Option<ChunkSlotMap<ChunkStorageGroup>>,
+    destinations: Vec<Route>,
 }
 
 impl BindingTable {
-    /// Create a new binding table from a list of bindings.
     #[must_use]
-    pub fn new(bindings: Vec<BucketBinding>) -> Self {
-        Self { bindings }
-    }
-
-    /// Route a bucket to its binding.
-    pub fn route(&self, bucket: u16) -> Option<&BucketBinding> {
-        self.bindings
+    pub fn new(map: ChunkSlotMap<ChunkStorageGroup>) -> Self {
+        let destinations = map
+            .bindings()
             .iter()
-            .find(|b| bucket >= b.start && (bucket < b.end || (b.end == u16::MAX && bucket == u16::MAX)))
+            .filter(|binding| !binding.slots.is_empty())
+            .map(|binding| Route::from(binding.owner))
+            .collect();
+        Self {
+            map: Some(map),
+            destinations,
+        }
     }
 
-    /// Number of bindings.
-    pub fn len(&self) -> usize {
-        self.bindings.len()
+    #[must_use]
+    pub fn bindings(&self) -> &[Route] {
+        &self.destinations
     }
 
-    /// Is the table empty?
+    #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.bindings.is_empty()
+        self.map.is_none()
     }
 
-    /// Get all bindings.
-    pub fn bindings(&self) -> &[BucketBinding] {
-        &self.bindings
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.destinations.len()
     }
 
-    /// Get all bindings (mutable).
-    pub fn bindings_mut(&mut self) -> &mut Vec<BucketBinding> {
-        &mut self.bindings
+    fn same_layout(&self, other: &Self) -> bool {
+        match (&self.map, &other.map) {
+            (Some(left), Some(right)) => {
+                left.head() == right.head()
+                    && left
+                        .bindings()
+                        .iter()
+                        .all(|binding| right.bindings().contains(binding))
+            }
+            (None, None) => true,
+            _ => false,
+        }
     }
 }
 
-/// Thread-safe binding cache.
-#[derive(Clone)]
+/// One immutable initialized layout. Refresh may confirm it, never remap it.
+#[derive(Clone, Default)]
 pub struct BindingCache {
     inner: Arc<ArcSwap<BindingTable>>,
 }
@@ -88,107 +68,107 @@ pub struct BindingCache {
 impl BindingCache {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(ArcSwap::from_pointee(BindingTable::default())),
+        Self::default()
+    }
+
+    /// Install a validated map once; concurrent conflicting installs fail closed.
+    ///
+    /// # Errors
+    /// Returns an error for missing routing or an unsupported placement change.
+    pub fn replace(&self, table: BindingTable) -> Result<(), RouteError> {
+        if table.is_empty() {
+            return Err(RouteError::NoBinding);
+        }
+        let replacement = Arc::new(table);
+        loop {
+            let current = self.inner.load_full();
+            if !current.is_empty() {
+                return if current.same_layout(&replacement) {
+                    Ok(())
+                } else {
+                    Err(RouteError::FixedLayout)
+                };
+            }
+            let previous = self.inner.compare_and_swap(&current, Arc::clone(&replacement));
+            if Arc::ptr_eq(&previous, &current) {
+                return Ok(());
+            }
         }
     }
 
-    /// Replace the entire binding table.
-    pub fn replace(&self, table: BindingTable) {
-        self.inner.store(Arc::new(table));
+    #[must_use]
+    pub fn route(&self, chunk_id: &ChunkId) -> Option<Route> {
+        self.route_slot(ChunkSlot::for_chunk(chunk_id))
     }
 
-    /// Route a chunk ID to its binding.
-    pub fn route(&self, chunk_id: &ChunkId) -> Option<BucketBinding> {
-        let parts = chunk_id_to_parts(chunk_id);
-        let bucket = parts.hash_to_bucket();
-        self.inner.load().route(bucket).cloned()
+    #[must_use]
+    pub fn route_slot(&self, slot: ChunkSlot) -> Option<Route> {
+        self.inner
+            .load()
+            .map
+            .as_ref()
+            .map(|map| Route::from(map.owner(slot)))
     }
 
-    /// Route a bucket directly.
-    pub fn route_bucket(&self, bucket: u16) -> Option<BucketBinding> {
-        self.inner.load().route(bucket).cloned()
-    }
-
-    /// Check if the cache is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.load().is_empty()
     }
 
-    /// Get a snapshot of the binding table.
+    #[must_use]
     pub fn snapshot(&self) -> BindingTable {
         (**self.inner.load()).clone()
     }
 }
 
-impl Default for BindingCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Convert a proto `ChunkId` to `ChunkIdParts` for hashing.
-pub fn chunk_id_to_parts(id: &ChunkId) -> ChunkIdParts {
-    ChunkIdParts {
-        high: id.high,
-        low: id.low,
-    }
-}
-
-/// Hash a chunk ID to a 16-bit bucket (0-65535).
+/// Hashing is shared by lifecycle admission and storage placement.
+#[must_use]
 pub fn hash_to_bucket(id: &ChunkId) -> u16 {
-    chunk_id_to_parts(id).hash_to_bucket()
+    ChunkSlot::for_chunk(id).value()
 }
 
-/// Build a default binding table that maps all buckets to a single
-/// KV group. Used when no binding table exists in group-0 yet.
+/// Construct a single-group test fixture; production loads its map from group 0.
+#[cfg(feature = "test-util")]
+#[must_use]
 pub fn default_binding_table(store_id: u64, group_id: u64) -> BindingTable {
-    BindingTable {
-        bindings: vec![BucketBinding {
-            start: 0,
-            end: 65535,
-            kv_store_id: store_id,
-            kv_group_id: group_id,
-            old_kv_store_id: None,
-            old_kv_group_id: None,
-            migration_state: MigrationState::NotMigrating,
-        }],
-    }
+    use crowdb_protocol::chunk_slot::ChunkSlotBootstrap;
+    BindingTable::new(
+        ChunkSlotBootstrap {
+            service_instances: vec![1],
+            storage_groups: vec![ChunkStorageGroup { store_id, group_id }],
+        }
+        .storage_map()
+        .expect("test storage group must be nonzero"),
+    )
 }
 
-/// Routing error.
 #[derive(Debug, thiserror::Error)]
 pub enum RouteError {
-    #[error("binding table empty — no routing information")]
+    #[error("chunk storage slot map is not initialized")]
     NoBinding,
-    #[error("bucket {bucket} has no binding")]
-    BucketUnbound { bucket: u16 },
+    #[error("chunk storage slot map is fixed; remapping requires migration")]
+    FixedLayout,
 }
 
-/// Route result: where to read/write the chunk metadata.
-#[derive(Debug, Clone)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Route {
     pub kv_store_id: u64,
     pub kv_group_id: u64,
-    pub migration_state: MigrationState,
-    pub old_kv_store_id: Option<u64>,
-    pub old_kv_group_id: Option<u64>,
 }
 
-/// Route a chunk ID using the binding cache.
-pub fn route(cache: &BindingCache, chunk_id: &ChunkId) -> Result<Route, RouteError> {
-    if cache.is_empty() {
-        warn!("routing: binding cache empty, no route available");
-        return Err(RouteError::NoBinding);
+impl From<ChunkStorageGroup> for Route {
+    fn from(group: ChunkStorageGroup) -> Self {
+        Self {
+            kv_store_id: group.store_id,
+            kv_group_id: group.group_id,
+        }
     }
-    let binding = cache.route(chunk_id).ok_or_else(|| RouteError::BucketUnbound {
-        bucket: hash_to_bucket(chunk_id),
-    })?;
-    Ok(Route {
-        kv_store_id: binding.kv_store_id,
-        kv_group_id: binding.kv_group_id,
-        migration_state: binding.migration_state,
-        old_kv_store_id: binding.old_kv_store_id,
-        old_kv_group_id: binding.old_kv_group_id,
-    })
+}
+
+/// Resolve every chunk record and associated task using the same owning ID.
+///
+/// # Errors
+/// Returns an error until the complete storage map is initialized.
+pub fn route(cache: &BindingCache, chunk_id: &ChunkId) -> Result<Route, RouteError> {
+    cache.route(chunk_id).ok_or(RouteError::NoBinding)
 }

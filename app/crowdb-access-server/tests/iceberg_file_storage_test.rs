@@ -29,7 +29,7 @@ async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
             memory_budget: 8 * 1024 * 1024,
             mirror_copies: 1,
             conversion_enabled: false,
-            ..SmallWritePolicy::default()
+            ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable)
         },
     })
     .await

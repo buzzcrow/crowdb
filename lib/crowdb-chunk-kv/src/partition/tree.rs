@@ -157,7 +157,7 @@ pub trait PartitionTree: Send + Sync {
 
 pub struct CrowdbPartitionTree {
     tree_id: u64,
-    tree: crowdb_tree_ffi::Crowdbtree,
+    tree: std::sync::Arc<crowdb_tree_ffi::Crowdbtree>,
     config: Option<crowdb_tree_ffi::Config>,
 }
 
@@ -166,7 +166,7 @@ impl CrowdbPartitionTree {
     pub fn new(tree_id: u64, tree: crowdb_tree_ffi::Crowdbtree) -> Self {
         Self {
             tree_id,
-            tree,
+            tree: std::sync::Arc::new(tree),
             config: None,
         }
     }
@@ -187,7 +187,7 @@ impl CrowdbPartitionTree {
         crowdb_tree_ffi::Crowdbtree::open(config)
             .map(|tree| Self {
                 tree_id,
-                tree,
+                tree: std::sync::Arc::new(tree),
                 config: Some(retained_config),
             })
             .map_err(map_tree_read_error)
@@ -340,11 +340,14 @@ impl PartitionTree for CrowdbPartitionTree {
                 .set_wal_replay_offset(wal_replay_offset)
                 .map_err(map_tree_read_error)?;
         }
-        self.tree.flush().map_err(|error| match error {
-            crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
-            _ => ChunkKvError::MaintenanceDegraded(error.to_string()),
-        })?;
-        let (generation, applied_seq) = self.tree.snapshot_info().map_err(|error| match error {
+        let tree = std::sync::Arc::clone(&self.tree);
+        let (generation, applied_seq) = tokio::task::spawn_blocking(move || {
+            tree.flush()?;
+            tree.snapshot_info()
+        })
+        .await
+        .map_err(|error| ChunkKvError::MaintenanceDegraded(error.to_string()))?
+        .map_err(|error| match error {
             crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
             _ => ChunkKvError::MaintenanceDegraded(error.to_string()),
         })?;
@@ -395,7 +398,7 @@ impl PartitionTree for CrowdbPartitionTree {
         Ok((
             std::sync::Arc::new(Self {
                 tree_id,
-                tree,
+                tree: std::sync::Arc::new(tree),
                 config: Some(retained_config),
             }),
             stats,
@@ -403,7 +406,11 @@ impl PartitionTree for CrowdbPartitionTree {
     }
 
     async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
-        self.tree.begin_split_memtable_view().map_err(map_tree_read_error)
+        let tree = std::sync::Arc::clone(&self.tree);
+        tokio::task::spawn_blocking(move || tree.begin_split_memtable_view())
+            .await
+            .map_err(|error| ChunkKvError::MaintenanceDegraded(error.to_string()))?
+            .map_err(map_tree_read_error)
     }
 
     async fn install_split_memtable_overlay(
@@ -443,9 +450,14 @@ impl PartitionTree for CrowdbPartitionTree {
             start: range.start.clone(),
             end: range.end.clone(),
         };
-        self.tree
-            .publish_split_memtable_view(generation, journal_frontier, &destination.tree, &range)
-            .map_err(map_tree_read_error)
+        let source = std::sync::Arc::clone(&self.tree);
+        let destination = std::sync::Arc::clone(&destination.tree);
+        tokio::task::spawn_blocking(move || {
+            source.publish_split_memtable_view(generation, journal_frontier, &destination, &range)
+        })
+        .await
+        .map_err(|error| ChunkKvError::MaintenanceDegraded(error.to_string()))?
+        .map_err(map_tree_read_error)
     }
 
     async fn release_split_memtable_view(&self, generation: u64) -> Result<()> {
