@@ -9,8 +9,12 @@ use crowdb_web::{router, AppState};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+#[path = "common/native_balance.rs"]
+mod native_balance;
 #[path = "common/native_chunks.rs"]
 mod native_chunks;
+#[path = "common/native_journal.rs"]
+mod native_journal;
 #[path = "common/native_load.rs"]
 mod native_load;
 
@@ -161,7 +165,17 @@ async fn assert_mixed_geometry_rejected(app: &axum::Router, state: &AppState) {
 
 async fn add_native_disk(app: &axum::Router, node: u64, root: &std::path::Path) {
     let device = root.join(format!("disk-{node}.img"));
-    let capacity = if node == 1 { 80u64 } else { 8u64 } * 1024 * 1024 * 1024;
+    // Repeated production splits reserve whole 256-MiB mirrored Chunks.
+    // Keep the ordinary browser geometry, but provision the slow fixture for
+    // every retained writer and its split/transfer preparation artifacts.
+    let gib = if std::env::var_os("CROWDB_NATIVE_WEIGHTED_ACCEPTANCE").is_some() {
+        256
+    } else if node == 1 {
+        80
+    } else {
+        8
+    };
+    let capacity = gib * 1024 * 1024 * 1024;
     let unit_size = if node != 1 && std::env::var_os("CROWDB_NATIVE_MIXED_UNITS").is_some() {
         1024u64 * 1024
     } else {
@@ -466,24 +480,22 @@ async fn native_cluster(inspection_only: bool) {
         assert_mixed_geometry_rejected(&app, &state).await;
         return;
     }
-    // All Nodes exist before sealing the fixed CDB service ownership plan.
-    for kind in ["chunkdb", "diskio", "chunk-kv", "access-server"] {
-        for node in 1..=3 {
-            deploy(&app, node, kind).await;
-        }
-        if kind == "diskio" && std::env::var_os("CROWDB_NATIVE_PLAN_PREREQUISITES").is_some() {
-            assert_native_browser_diagnostics(app.clone(), None).await;
-            return;
-        }
+    if !deploy_native_services(&app).await {
+        return;
     }
     assert_services(&app).await;
+    if std::env::var_os("CROWDB_NATIVE_JOURNAL_WINDOWS").is_some() {
+        native_journal::TestNativeJournal::seed(&app, &state).await;
+        assert_native_browser_diagnostics(app.clone(), None).await;
+        return;
+    }
     if inspection_only {
-        let chunks = if std::env::var_os("CROWDB_NATIVE_DATA_WINDOWS").is_some() {
-            Some(native_chunks::seed(&state).await)
-        } else {
-            None
-        };
+        let chunks = native_chunk_windows(&state).await;
         assert_native_browser_diagnostics(app.clone(), chunks).await;
+        return;
+    }
+    if std::env::var_os("CROWDB_NATIVE_WEIGHTED_ACCEPTANCE").is_some() {
+        assert_native_balance(&app, &state).await;
         return;
     }
     if std::env::var_os("CROWDB_NATIVE_LOAD_ACCEPTANCE").is_some() {
@@ -495,7 +507,25 @@ async fn native_cluster(inspection_only: bool) {
     assert_native_restarts(&app, &state).await;
     assert_native_locations(&app, &state).await;
     if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
-        assert_native_browser_diagnostics(app.clone(), None).await;
+        let chunks = native_chunk_windows(&state).await;
+        assert_native_browser_diagnostics(app.clone(), chunks).await;
+    }
+}
+
+async fn native_chunk_windows(state: &AppState) -> Option<Value> {
+    if std::env::var_os("CROWDB_NATIVE_DATA_WINDOWS").is_some() {
+        Some(native_chunks::seed(state).await)
+    } else {
+        None
+    }
+}
+
+async fn assert_native_balance(app: &axum::Router, state: &AppState) {
+    let browser = std::env::var_os("CROWDB_NATIVE_TRANSITION_ACCEPTANCE")
+        .map(|_| tokio::spawn(assert_native_browser_diagnostics(app.clone(), None)));
+    native_balance::TestNativeBalance::verify(state).await;
+    if let Some(browser) = browser {
+        browser.await.unwrap();
     }
 }
 
@@ -608,6 +638,12 @@ async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
 }
 
 fn preserve_failure_logs(state: &AppState) {
+    for entry in &state.config.read().unwrap().servers {
+        if let Some(pid) = entry.pid {
+            let status = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+            eprintln!("[PHASE] failed native service {} pid={pid}: {status:?}", entry.id);
+        }
+    }
     let root = &state.runtime_root;
     let target = crowdb_test_harness::test_dirs::artifacts_root()
         .join(format!("native-restart-failure-{}", std::process::id()));
@@ -638,4 +674,18 @@ fn preserve_failure_logs(state: &AppState) {
         }
     }
     eprintln!("[PHASE] native failure logs: {}", target.display());
+}
+
+async fn deploy_native_services(app: &axum::Router) -> bool {
+    // All Nodes exist before sealing the fixed CDB service ownership plan.
+    for kind in ["chunkdb", "diskio", "chunk-kv", "access-server"] {
+        for node in 1..=3 {
+            deploy(app, node, kind).await;
+        }
+        if kind == "diskio" && std::env::var_os("CROWDB_NATIVE_PLAN_PREREQUISITES").is_some() {
+            assert_native_browser_diagnostics(app.clone(), None).await;
+            return false;
+        }
+    }
+    true
 }

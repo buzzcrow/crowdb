@@ -92,11 +92,6 @@ Caches, selected ORC and container engine workflows remain separate.
 
 ### High Priority
 
-- **[R203](R203-console-complete-ui.md)** — complete Web UI and Container
-  console — Area: console / KV / DiskDB / ChunkDB / Iceberg / S3 — High
-  priority, high complexity. Design five domains, standalone bootstrap and
-  recovery, Chunk/Strip placement inspection, native access CRUD, and one
-  Container UI with physical topology and deployment writes disabled.
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
   **Deferred beyond the completed direct-KV stage.** When selected, migrate

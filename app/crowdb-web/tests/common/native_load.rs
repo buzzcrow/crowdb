@@ -139,11 +139,11 @@ async fn check_value(client: &ChunkKvClient, index: u64) {
     assert_eq!(record.value, value(index));
 }
 
-fn key(index: u64) -> Vec<u8> {
+pub(super) fn key(index: u64) -> Vec<u8> {
     format!("native-load-{index:04}").into_bytes()
 }
 
-fn value(index: u64) -> Vec<u8> {
+pub(super) fn value(index: u64) -> Vec<u8> {
     let mut state = index + 1;
     let mut bytes = Vec::with_capacity(64 * 1024);
     for _ in 0..8 * 1024 {

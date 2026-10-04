@@ -125,7 +125,12 @@ test.describe('cluster · rack + node CRUD', () => {
         // Right-click the rack → Add Node. Both "Enable CrowDB Storage" and
         // "Enable DiskDB" checkboxes default to checked.
         await aside.getByText(`R-${rackId} (Rack Thirty-One)`).click({ button: 'right' });
+        const defaultsResponse = page.waitForResponse((response) =>
+          response.url().endsWith('/api/deployment-defaults') && response.request().method() === 'GET');
         await page.getByRole('menuitem', { name: /add node/i }).click();
+        const defaults = await defaultsResponse;
+        expect(defaults.ok(), await defaults.text()).toBeTruthy();
+        const suggestedPorts = await defaults.json();
 
         await expect(page.getByRole('dialog', { name: 'Add Node' })).toBeVisible();
         await page.getByLabel('Node ID').fill(String(nodeId));
@@ -135,15 +140,12 @@ test.describe('cluster · rack + node CRUD', () => {
         await expect(page.getByLabel('Enable CrowDB Storage on this node')).toBeChecked();
         await expect(page.getByLabel('Enable DiskDB on this node')).toBeChecked();
 
-        // Fill in unique ports for KV (REST + RPC) and DiskDB (RPC).
-        // The DiskDB RPC Port field should be pre-filled with an
-        // auto-incremented value (not the hardcoded 29920 base) —
-        // regression: previously always 29920, causing port collisions
-        // when creating multiple nodes with DiskDB.
+        // Defaults come from the backend's listener reservations. The base
+        // port is valid when unused; compare with the authoritative response.
         const diskdbPortInput = page.getByTestId('diskdb-rpc-port');
-        const preFilledDiskdbPort = await diskdbPortInput.inputValue();
-        expect(preFilledDiskdbPort).toMatch(/^\d+$/);
-        expect(preFilledDiskdbPort).not.toBe('29920');
+        await expect(diskdbPortInput).toHaveValue(String(suggestedPorts.diskdb.rpc_port));
+        expect(suggestedPorts.diskdb.rpc_port).toBeGreaterThan(0);
+        expect(suggestedPorts.diskdb.rpc_port).toBeLessThan(65534);
 
         await page.getByLabel('REST Port').fill(String(restPort));
         await page.getByTestId('kv-rpc-port').fill(String(rpcPort));

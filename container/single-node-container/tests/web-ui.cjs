@@ -17,7 +17,7 @@ async function main() {
     const page = await browser.newPage();
     await page.goto(process.argv[2]);
     await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0', { timeout: 3000 });
-    await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only', { timeout: 3000 });
+    await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology and disk management are read-only', { timeout: 3000 });
     await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible({ timeout: 3000 });
     for (const domain of ['cluster', 'kv', 'capacity', 'chunk', 'chunk-kv', 'iceberg', 's3']) {
       await expect(page.getByTestId(`domain-${domain}`)).toBeVisible({ timeout: 3000 });

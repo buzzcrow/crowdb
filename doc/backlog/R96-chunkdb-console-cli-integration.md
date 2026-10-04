@@ -8,5 +8,5 @@
 **Solution**: Add chunkdb panel to crowdb-web console with chunk overview, distribution visualization, and query capabilities. Implement crowdb-cli chunkdb subcommands for chunk management operations. Integrate with group-0 for topology display.
 
 **Scope**: The complete Web UI, including Chunk listing and Strip placement,
-is specified by [R203](R203-console-complete-ui.md). This item retains CLI
+is specified by [Console UI specification](../design/console/design-crowdb-console-ui.md). This item retains CLI
 integration and shared operation reuse; do not implement a second Web panel.
