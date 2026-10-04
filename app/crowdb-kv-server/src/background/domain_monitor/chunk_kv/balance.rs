@@ -182,13 +182,12 @@ async fn plan_split(
             }
         }
     }
-    candidates.sort_unstable_by(|left, right| {
-        right
-            .2
-            .cmp(&left.2)
-            .then_with(|| left.0.partition_id.cmp(&right.0.partition_id))
+    let candidate = candidates.into_iter().max_by(|left, right| {
+        left.2
+            .cmp(&right.2)
+            .then_with(|| right.0.partition_id.cmp(&left.0.partition_id))
     });
-    let Some((entry, split_key, _)) = candidates.into_iter().next() else {
+    let Some((entry, split_key, _)) = candidate else {
         return Ok(false);
     };
     let transition = split_transition(entry, split_key, now_ms)?;

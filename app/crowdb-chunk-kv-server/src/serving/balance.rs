@@ -91,17 +91,18 @@ pub fn choose_split(
         .filter(|partition| eligible_partition(partition, now_ms, config))
         .filter(|partition| partition.durable_bytes > config.target_partition_bytes)
         .filter_map(|partition| {
-            live_byte_median(&partition.range, &partition.live_byte_samples).map(|split_key| SplitProposal {
-                partition_id: partition.partition_id,
-                split_key,
+            live_byte_median(&partition.range, &partition.live_byte_samples).map(|split_key| {
+                (
+                    SplitProposal {
+                        partition_id: partition.partition_id,
+                        split_key,
+                    },
+                    partition.durable_bytes,
+                )
             })
         })
-        .max_by_key(|proposal| {
-            partitions
-                .iter()
-                .find(|partition| partition.partition_id == proposal.partition_id)
-                .map_or(0, |partition| partition.durable_bytes)
-        })
+        .max_by_key(|(_, bytes)| *bytes)
+        .map(|(proposal, _)| proposal)
 }
 
 #[must_use]
@@ -180,6 +181,7 @@ fn live_byte_median(range: &KeyRange, samples: &[(Vec<u8>, u64)]) -> Option<Vec<
         if accumulated.saturating_mul(2) >= total
             && key.as_slice() > range.start.as_slice()
             && range.end.as_deref().map_or(true, |end| key.as_slice() < end)
+            && samples.first().is_some_and(|(left, _)| left < key)
         {
             return Some(key.clone());
         }

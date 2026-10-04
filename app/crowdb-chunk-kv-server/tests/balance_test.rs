@@ -58,6 +58,30 @@ fn split_uses_largest_eligible_partition_live_byte_median() {
 }
 
 #[test]
+fn larger_unsplittable_or_ineligible_ranges_do_not_block_a_valid_split() {
+    let config = BalanceConfig {
+        target_partition_bytes: 100,
+        cooldown_ms: 0,
+        ..BalanceConfig::default()
+    };
+    let mut valid = partition(1, 1, 120, 0);
+    valid.live_byte_samples = vec![(b"g".to_vec(), 60), (b"m".to_vec(), 60)];
+    let mut unsplittable = partition(2, 1, 10_000, 0);
+    unsplittable.live_byte_samples = vec![(b"g".to_vec(), 10_000)];
+    let mut moving = valid.clone();
+    moving.partition_id.low = 3;
+    moving.durable_bytes = 20_000;
+    moving.transition_active = true;
+    let mut overlay = valid.clone();
+    overlay.partition_id.low = 4;
+    overlay.durable_bytes = 30_000;
+    overlay.independently_recoverable = false;
+    let proposal = choose_split(&[unsplittable, moving, overlay, valid], 1, &config).unwrap();
+    assert_eq!(proposal.partition_id.low, 1);
+    assert_eq!(proposal.split_key, b"m");
+}
+
+#[test]
 fn count_imbalance_precedes_bytes_and_respects_cooldown() {
     let config = BalanceConfig::default();
     let owners = vec![owner(1, 5, 500), owner(2, 3, 300), owner(3, 3, 300)];
