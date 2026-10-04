@@ -9,13 +9,10 @@ use bytes::Bytes;
 use crowdb_kv::cluster::group_operations::KvGroupOperationError;
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState,
-    DomainMonitorDescriptor, Id128, KeyRange, OwnerDescriptor, PartitionArtifact, SplitChildAssignment,
-    SplitPhase, SplitTransition, TransferPhase, TransferTransition,
+    DomainMonitorDescriptor, Id128, OwnerDescriptor, SplitPhase, TransferPhase, TransferTransition,
 };
-use crowdb_protocol::chunk_stream::StreamName;
-use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad, InstanceValue};
+use crowdb_protocol::common::{ChunkKvExtra, InstanceValue};
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
-use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::group0_control_plane::Group0ControlPlane;
@@ -24,11 +21,18 @@ use super::{
     catalog, operation_error, read_instances, read_splits, read_transfers, transfer_id, wall_time_ms,
 };
 
+mod selection;
+mod split;
+
+use selection::{choose_transfer, cooled_down, effective_bytes, eligible, live_byte_median, partition_load};
+use split::split_transition;
+
 struct PlanningState {
     healthy: HashMap<u64, (InstanceValue, ChunkKvExtra)>,
     active_partitions: HashSet<Id128>,
     busy_owners: HashSet<u64>,
     last_changed_ms: HashMap<Id128, u64>,
+    last_transferred_ms: HashMap<Id128, u64>,
     pending_split_increase: usize,
 }
 
@@ -82,10 +86,13 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
         return Ok(());
     };
     policy.validate().map_err(|error| error.to_string())?;
-    if plan_split(control, &entries, &state, policy, now_ms).await? {
+    if plan_transfer(control, &entries, &state, policy, now_ms, true).await?
+        || plan_split(control, &entries, &state, policy, now_ms).await?
+    {
         return Ok(());
     }
-    plan_transfer(control, &entries, &state, policy, now_ms).await
+    plan_transfer(control, &entries, &state, policy, now_ms, false).await?;
+    Ok(())
 }
 
 async fn planning_state(
@@ -112,9 +119,15 @@ async fn planning_state(
         active_partitions: HashSet::new(),
         busy_owners: HashSet::new(),
         last_changed_ms: HashMap::new(),
+        last_transferred_ms: HashMap::new(),
         pending_split_increase: 0,
     };
     for (transition, _) in read_transfers(control).await? {
+        remember_change(
+            &mut state.last_transferred_ms,
+            transition.partition_id,
+            transition.planned_at_ms,
+        );
         remember_change(
             &mut state.last_changed_ms,
             transition.partition_id,
@@ -175,7 +188,8 @@ async fn plan_split(
         };
         let effective_bytes = effective_bytes(load);
         if (count_shortfall || effective_bytes > policy.target_partition_bytes)
-            && eligible(entry, state, policy, now_ms)
+            && eligible(entry, state)
+            && cooled_down(entry, &state.last_changed_ms, policy, now_ms)
         {
             if let Some(split_key) = live_byte_median(&entry.range, &load.live_byte_samples) {
                 candidates.push((*entry, split_key, effective_bytes));
@@ -220,10 +234,13 @@ async fn plan_transfer(
     state: &PlanningState,
     policy: &ChunkKvRangeBalancePolicy,
     now_ms: u64,
-) -> Result<(), String> {
+    count_only: bool,
+) -> Result<bool, String> {
     let (counts, bytes) = owner_loads(entries, state);
-    let Some((entry, target_id)) = choose_transfer(entries, state, policy, now_ms, &counts, &bytes) else {
-        return Ok(());
+    let Some((entry, target_id)) =
+        choose_transfer(entries, state, policy, now_ms, &counts, &bytes, count_only)
+    else {
+        return Ok(false);
     };
     let (target, _) = state
         .healthy
@@ -256,9 +273,9 @@ async fn plan_transfer(
         readiness_limits: crowdb_protocol::chunk_kv::TransferReadinessLimits {
             max_tail_records: 65_536,
             max_tail_bytes: 256 * 1024 * 1024,
-            max_estimated_catchup_ms: policy.cooldown_ms.max(1),
-            prepare_deadline_ms: now_ms.saturating_add(policy.cooldown_ms.max(1)),
-            forwarding_grace_ms: policy.cooldown_ms.max(1),
+            max_estimated_catchup_ms: TRANSFER_SAFETY_WINDOW_MS,
+            prepare_deadline_ms: now_ms.saturating_add(TRANSFER_SAFETY_WINDOW_MS),
+            forwarding_grace_ms: TRANSFER_SAFETY_WINDOW_MS,
         },
         planned_at_ms: now_ms,
         old_grant_expires_at_ms: 0,
@@ -277,8 +294,12 @@ async fn plan_transfer(
         .to_path(),
         &transition,
     )
-    .await
+    .await?;
+    Ok(true)
 }
+
+// Preparation and forwarding bounds are independent of placement pacing.
+const TRANSFER_SAFETY_WINDOW_MS: u64 = 10 * 60 * 1_000;
 
 fn owner_loads(
     entries: &[&ChunkKvRangeCatalogEntry],
@@ -303,227 +324,6 @@ fn owner_loads(
         }
     }
     (counts, bytes)
-}
-
-fn choose_transfer<'a>(
-    entries: &[&'a ChunkKvRangeCatalogEntry],
-    state: &PlanningState,
-    policy: &ChunkKvRangeBalancePolicy,
-    now_ms: u64,
-    counts: &HashMap<u64, usize>,
-    bytes: &HashMap<u64, u64>,
-) -> Option<(&'a ChunkKvRangeCatalogEntry, u64)> {
-    let mut best = None;
-    for entry in entries
-        .iter()
-        .copied()
-        .filter(|entry| eligible(entry, state, policy, now_ms))
-    {
-        let source_id = entry.owner.instance_id;
-        let partition_bytes = partition_load(state, entry).map_or(0, effective_bytes);
-        for (&target_id, (_, target)) in &state.healthy {
-            if !target_accepts(state, policy, source_id, target_id, target, partition_bytes) {
-                continue;
-            }
-            let source_count = counts.get(&source_id).copied().unwrap_or_default();
-            let target_count = counts.get(&target_id).copied().unwrap_or_default();
-            let fixes_count = source_count > target_count.saturating_add(1);
-            let source_bytes = bytes.get(&source_id).copied().unwrap_or_default();
-            let target_bytes = bytes.get(&target_id).copied().unwrap_or_default();
-            let old_spread = source_bytes.abs_diff(target_bytes);
-            let new_spread = source_bytes
-                .saturating_sub(partition_bytes)
-                .abs_diff(target_bytes.saturating_add(partition_bytes));
-            let improvement = old_spread.saturating_sub(new_spread);
-            let weighted = old_spread != 0
-                && u128::from(improvement) * 100
-                    >= u128::from(old_spread) * u128::from(policy.minimum_weighted_improvement_percent);
-            let score = (
-                fixes_count,
-                improvement,
-                std::cmp::Reverse(entry.partition_id),
-                std::cmp::Reverse(target_id),
-            );
-            if (fixes_count || weighted)
-                && best
-                    .as_ref()
-                    .map_or(true, |(best_score, _, _)| score > *best_score)
-            {
-                best = Some((score, entry, target_id));
-            }
-        }
-    }
-    best.map(|(_, entry, target_id)| (entry, target_id))
-}
-
-fn target_accepts(
-    state: &PlanningState,
-    policy: &ChunkKvRangeBalancePolicy,
-    source_id: u64,
-    target_id: u64,
-    target: &ChunkKvExtra,
-    partition_bytes: u64,
-) -> bool {
-    target_id != source_id
-        && !state.busy_owners.contains(&target_id)
-        && target.capacity_bytes.saturating_sub(target.durable_bytes) >= partition_bytes
-        && (policy.max_owner_request_rate == 0 || target.request_rate <= policy.max_owner_request_rate)
-}
-
-fn partition_load<'a>(
-    state: &'a PlanningState,
-    entry: &ChunkKvRangeCatalogEntry,
-) -> Option<&'a ChunkKvPartitionLoad> {
-    state
-        .healthy
-        .get(&entry.owner.instance_id)?
-        .1
-        .partition_loads
-        .iter()
-        .find(|load| load.partition_id == entry.partition_id)
-}
-
-fn effective_bytes(load: &ChunkKvPartitionLoad) -> u64 {
-    load.durable_bytes
-        .max(load.live_byte_samples.iter().map(|(_, bytes)| *bytes).sum())
-}
-
-fn eligible(
-    entry: &ChunkKvRangeCatalogEntry,
-    state: &PlanningState,
-    policy: &ChunkKvRangeBalancePolicy,
-    now_ms: u64,
-) -> bool {
-    entry.state == ChunkKvRangeCatalogPartitionState::Serving
-        && entry.transition_id.is_none()
-        && entry.artifact.tail_overlay.is_none()
-        && partition_load(state, entry).is_some_and(|load| load.independently_recoverable)
-        && state.healthy.contains_key(&entry.owner.instance_id)
-        && !state.active_partitions.contains(&entry.partition_id)
-        && !state.busy_owners.contains(&entry.owner.instance_id)
-        && now_ms.saturating_sub(
-            state
-                .last_changed_ms
-                .get(&entry.partition_id)
-                .copied()
-                .unwrap_or_default(),
-        ) >= policy.cooldown_ms
-}
-
-fn live_byte_median(range: &KeyRange, samples: &[(Vec<u8>, u64)]) -> Option<Vec<u8>> {
-    let total: u128 = samples.iter().map(|(_, bytes)| u128::from(*bytes)).sum();
-    if total == 0 {
-        return None;
-    }
-    let mut accumulated = 0_u128;
-    for (index, (key, bytes)) in samples.iter().enumerate() {
-        accumulated = accumulated.saturating_add(u128::from(*bytes));
-        if accumulated.saturating_mul(2) >= total
-            && key > &range.start
-            && range.end.as_ref().map_or(true, |end| key < end)
-            && samples[..index].iter().any(|(left, _)| left < key)
-        {
-            return Some(key.clone());
-        }
-    }
-    None
-}
-
-fn split_transition(
-    parent: &ChunkKvRangeCatalogEntry,
-    split_key: Vec<u8>,
-    now_ms: u64,
-) -> Result<SplitTransition, String> {
-    let transition_id = derived_id(parent, &split_key, b"transition");
-    let child_epoch = parent
-        .owner_epoch
-        .checked_add(1)
-        .ok_or_else(|| "chunk-KV split owner epoch overflowed".to_string())?;
-    let child = split_child(
-        parent,
-        &split_key,
-        b"right",
-        parent.owner.clone(),
-        child_epoch,
-        KeyRange {
-            start: split_key.clone(),
-            end: parent.range.end.clone(),
-        },
-    );
-    let transition = SplitTransition {
-        transition_id,
-        parent_id: parent.partition_id,
-        parent_range: parent.range.clone(),
-        parent_owner: parent.owner.clone(),
-        parent_epoch: parent.owner_epoch,
-        parent_artifact: parent.artifact.clone(),
-        retained_parent_artifact: split_artifact(parent, &split_key, b"left"),
-        parent_next_epoch: child_epoch,
-        split_key,
-        child,
-        planned_at_ms: now_ms,
-        phase: SplitPhase::Planned,
-        readiness_proof: None,
-        failure: None,
-    };
-    transition.validate().map_err(|error| error.to_string())?;
-    Ok(transition)
-}
-
-fn split_child(
-    parent: &ChunkKvRangeCatalogEntry,
-    split_key: &[u8],
-    side: &[u8],
-    owner: OwnerDescriptor,
-    owner_epoch: u64,
-    range: KeyRange,
-) -> SplitChildAssignment {
-    SplitChildAssignment {
-        partition_id: derived_id(parent, split_key, &[side, b"-partition"].concat()),
-        range,
-        owner,
-        owner_epoch,
-        artifact: split_artifact(parent, split_key, side),
-    }
-}
-
-fn split_artifact(parent: &ChunkKvRangeCatalogEntry, split_key: &[u8], side: &[u8]) -> PartitionArtifact {
-    PartitionArtifact {
-        tree_id: derived_u64(parent, split_key, &[side, b"-tree"].concat()),
-        stream_name: StreamName {
-            high: derived_u64(parent, split_key, &[side, b"-stream-high"].concat()),
-            low: derived_u64(parent, split_key, &[side, b"-stream-low"].concat()),
-        },
-        tail_overlay: None,
-    }
-}
-
-fn derived_id(parent: &ChunkKvRangeCatalogEntry, split_key: &[u8], label: &[u8]) -> Id128 {
-    let digest = split_digest(parent, split_key, label);
-    Id128 {
-        high: nonzero(u64::from_be_bytes(digest[0..8].try_into().unwrap_or([0; 8]))),
-        low: nonzero(u64::from_be_bytes(digest[8..16].try_into().unwrap_or([0; 8]))),
-    }
-}
-
-fn derived_u64(parent: &ChunkKvRangeCatalogEntry, split_key: &[u8], label: &[u8]) -> u64 {
-    let digest = split_digest(parent, split_key, label);
-    nonzero(u64::from_be_bytes(digest[0..8].try_into().unwrap_or([0; 8])))
-}
-
-fn split_digest(parent: &ChunkKvRangeCatalogEntry, split_key: &[u8], label: &[u8]) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    digest.update(b"chunk-kv-split-v1");
-    digest.update(label);
-    digest.update(parent.partition_id.high.to_be_bytes());
-    digest.update(parent.partition_id.low.to_be_bytes());
-    digest.update(parent.owner_epoch.to_be_bytes());
-    digest.update(split_key);
-    digest.finalize().into()
-}
-
-fn nonzero(value: u64) -> u64 {
-    value.max(1)
 }
 
 async fn persist_new<T: serde::Serialize + PartialEq + serde::de::DeserializeOwned>(

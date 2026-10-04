@@ -240,7 +240,7 @@ impl Default for ChunkKvRangeBalancePolicy {
             target_partitions_per_owner: 4,
             target_partition_bytes: 1 << 30,
             minimum_weighted_improvement_percent: 25,
-            cooldown_ms: 10 * 60 * 1_000,
+            cooldown_ms: 60 * 1_000,
             max_owner_request_rate: 0,
         }
     }

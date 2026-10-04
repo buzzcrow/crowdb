@@ -317,12 +317,19 @@ an unsplittable largest partition does not exclude the remaining candidates.
 Retained pack estimates use the opened manifest, including shared packs, rather
 than cumulative write counters. The estimate is deliberately coarse and can
 lag unsnapshotted mutations; observation does not scan remote metadata or data.
-The retained parent and new split child stay local. Placement later minimizes partition-count
+The retained parent and new split child stay local. Once independently
+recoverable, count-correcting placement takes priority over further splitting;
+weighted placement follows eligible splits. Placement minimizes partition-count
 difference first, then durable-byte spread. A move must repair count imbalance
 or improve weighted spread by at least 25%. Request rate and target headroom are
 safety filters. A child with a parent-tail overlay is ineligible. The default
-per-partition cooldown is ten minutes and an owner participates in at most one
-transfer at a time.
+per-partition cooldown is one minute. Split pacing includes recent splits and
+transfers; repeat-placement pacing includes only recent transfers, so a split
+does not postpone a child's first placement. An owner participates in at most
+one transition at a time. Transfer preparation, estimated catch-up and forwarding
+retain independent ten-minute safety windows. Healthy, independently recoverable
+partitions with capacity on an idle target must make actual balance progress
+within forty seconds; splitting alone is not placement progress.
 
 ## 9. Lifecycle and Observability
 

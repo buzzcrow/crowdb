@@ -18,7 +18,7 @@ fn defaults_close_the_documented_timing_contract() {
     assert!(config.monitor.chunk_kv_range_balance.is_some());
     assert_eq!(config.balance.target_partitions_per_owner, 4);
     assert_eq!(config.balance.minimum_weighted_improvement_percent, 25);
-    assert_eq!(config.balance.cooldown_ms, 600_000);
+    assert_eq!(config.balance.cooldown_ms, 60_000);
     assert_eq!(config.max_split_catchup_lag_records, 1_024);
     assert_eq!(config.storage.metadata_store_id, 1);
     assert_eq!(config.storage.stream_writer_lease_ms, 30_000);
