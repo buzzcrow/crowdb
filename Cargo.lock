@@ -1228,6 +1228,7 @@ dependencies = [
  "chrono",
  "clap",
  "crowdb-access-s3",
+ "crowdb-chunk-kv-client",
  "crowdb-chunkdb-client",
  "crowdb-common",
  "crowdb-console-shared",

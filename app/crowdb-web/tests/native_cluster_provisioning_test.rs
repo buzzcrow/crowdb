@@ -9,6 +9,9 @@ use crowdb_web::{router, AppState};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+#[path = "common/native_load.rs"]
+mod native_load;
+
 struct TestServices(AppState);
 
 async fn assert_initialization_budget(state: &AppState) {
@@ -459,6 +462,10 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         }
     }
     assert_services(&app).await;
+    if std::env::var_os("CROWDB_NATIVE_LOAD_ACCEPTANCE").is_some() {
+        native_load::TestNativeLoad::verify(&app, &state).await;
+        return;
+    }
     let namespaces = call(&app, "GET", "/api/access/iceberg/v1/namespaces", Value::Null).await;
     assert!(namespaces["namespaces"].is_array());
     // Listing validates native signing and automatic catalog provisioning.

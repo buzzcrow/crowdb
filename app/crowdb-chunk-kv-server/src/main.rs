@@ -642,6 +642,15 @@ async fn activate_granted_assignment(
             )
             .map_err(|error| error.to_string());
     }
+    if let Some((transition, _)) = store
+        .load_split_transition(transition_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return service
+            .activate_recovered_split_partition(assignment.partition_id, assignment.owner_epoch, &transition)
+            .map_err(|error| error.to_string());
+    }
     service
         .activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
         .map_err(|error| error.to_string())

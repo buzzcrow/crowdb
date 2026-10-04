@@ -160,6 +160,14 @@ monitor advance them in this order:
    the actual writer or writers used by the operation.
 
 Before child materialization, heartbeat load reports the child as dependent.
+After process restart, either split half may reopen with its historical tail
+overlay in Prepared state. A matching serving grant alone cannot activate that
+overlay. Startup loads the persisted split transition and requires its committed
+phase, transition identity, range, owner, epoch and complete storage artifact to
+match the current Serving catalog entry. Transfer overlays retain their separate
+committed-transfer validation. Missing or conflicting evidence leaves the writer
+Prepared; repeated matching grant refresh is idempotent.
+
 The local maintenance loop performs bounded ownership materialization and a
 serving checkpoint. A heartbeat then proves independent recovery, group 0
 publishes a generation that clears both the overlay and the completed split

@@ -1851,20 +1851,20 @@ impl Partition {
     }
 
     /// Activates a replayed overlay after its owner validates an exact
-    /// committed transfer and matching serving authority.
+    /// committed split or transfer and matching serving authority.
     ///
     /// # Errors
     ///
     /// Returns a stale-epoch or lifecycle error, or rejects an assignment
     /// that was not recovered from an overlay artifact.
-    pub fn activate_recovered_transfer(&self, ownership_epoch: u64) -> Result<()> {
+    pub fn activate_recovered_overlay(&self, ownership_epoch: u64) -> Result<()> {
         self.validate_epoch(ownership_epoch)?;
         if self.lifecycle() == PartitionLifecycle::Serving {
             return Ok(());
         }
         if self.prepared_artifact.load().is_none() {
             return Err(ChunkKvError::InvalidRequest(
-                "recovered transfer target has no overlay artifact".into(),
+                "recovered assignment has no overlay artifact".into(),
             ));
         }
         self.lifecycle

@@ -232,6 +232,10 @@ unaccepted; this is not a full-suite result.
 - [ ] **Balance byte-weight correctness**: reported owner/partition load must
   approximately represent retained data and remain meaningful after process restart,
   recovery and reclamation. Verify count balance separately from byte balance.
+  The native 32-MiB incompressible workload preserves exact aggregate retained
+  estimates across owner restart (46,244,412 bytes and 118,165,608 bytes in
+  separate observed layouts), with exact sample data readback. Reclamation and
+  weighted redistribution remain unaccepted.
 - [x] **Low-cost approximate split and weights**: prioritize efficiency,
   simplicity and low system overhead. Split boundaries need not divide keys or
   bytes exactly in half; estimated weights need not be exact. Obtain a valid
@@ -240,10 +244,21 @@ unaccepted; this is not a full-suite result.
   scans and unnecessary background work.
   Native index hints, bounded sampling and cached retained-pack estimates are
   implemented and verified by focused tests. Candidate selection is linear.
-  Real large-data liveness and weighted placement remain separately unaccepted.
-- [ ] **Balance observation liveness**: inspecting a large partition must not
+  Real large-data liveness is verified below; weighted placement remains open.
+- [x] **Balance observation liveness**: inspecting a large partition must not
   delay heartbeat publication or serving-grant renewal past their deadlines.
   Bound observation work and verify the behavior with real large data.
+  Native 32-MiB writes and bounded sampling preserve all three heartbeats below
+  the normal six-second suspect deadline, including gaps between observed
+  heartbeat timestamps. Reads/writes span the normal 12-second serving lease.
+  No cadence change, extra client retry or single-node mode. The latest owned
+  workload/restart/data fixture passes in 44.02 s.
+- [x] **Committed split recovery activation**: startup recovered split overlays
+  but looked up only transfer commit evidence, leaving both halves Prepared.
+  Load and validate the exact committed split against the current catalog before
+  activation. Native large-data owner restart/readback passes; component cases
+  reject uncommitted, mismatched transition/owner/artifact and stale epoch proofs,
+  cover both halves and retain idempotent grant refresh.
 
 - [x] **S3 bucket discovery during range transitions**: a successfully created
   bucket must remain discoverable while Chunk-KV splits or changes owners. A

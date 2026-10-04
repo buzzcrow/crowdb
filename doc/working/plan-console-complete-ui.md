@@ -1252,3 +1252,47 @@ completed fix or remove R203. Preserve the user's original plan edits.
   Complete normal fixture after the fix passes five native browser cases in
   34.65 s, including all six Node 1 restarts and exact retained S3 data; the
   partial fixture case is selected separately and deliberately skipped here.
+
+### Native retained-load verification (2026-10-04)
+
+- [x] **Measure native load and lease progress**: extend the owned six-service
+  fixture with a separate native load phase. Write incompressible bounded batches
+  through Chunk-KV, compare advisory retained bytes with actual payload scale,
+  observe all three registry heartbeats while sampling, and verify reads across
+  lease renewal and owner restart. Diagnose any divergence before selecting a
+  weight or sampling change. Files: provisioning fixture and
+  `tests/common/native_load.rs`. Reclamation/weighted redistribution remain
+  separate acceptance until their authoritative outcomes are measured.
+  First native run writes 32 MiB in 25.08 s, keeps all owner heartbeats below
+  the normal 6-second suspect deadline and reads across the 12-second lease.
+  Retained estimate is 64,846,980 bytes. Owner restart then fails a read with
+  client Deadline: recovered split overlays remain Prepared because startup
+  looks up transfer proof only. Exact logs repeatedly reject activation with
+  `prepared split child requires a split commit proof`; saved diagnostic copy
+  is `/tmp/crowdb-native-load-failure-1031003`. The 60-second command boundary
+  also interrupted failure teardown; clean-env ran after evidence capture.
+- [x] **Activate committed split recovery**: load the split transition after
+  transfer lookup misses, validate committed phase and exact partition/range,
+  owner, epoch, stream/tree/overlay and transition identity against the current
+  catalog, then activate the prepared overlay. Extract activation from oversized
+  `server.rs` into `server/activation.rs`. Keep uncommitted/mismatched evidence
+  rejected; verify both retained and child halves plus idempotent grant refresh.
+
+  Focused recovered split regression and 21 existing server/transition/load
+  cases pass; all 33 partition cases pass. Affected all-target clippy passes.
+  A pre-load initialization repeat was contaminated by one KV Node 1 left
+  from the command-interrupted first fixture; verified its exact command/root
+  before terminating only PID 1031016. The next load run uses a clean runtime.
+  Uncontaminated load/restart acceptance passes in 47.33 s: 32-MiB writes take
+  27.56 s and retained estimates are exactly 46,244,412 bytes before/after
+  restart. Add an inter-observation heartbeat-gap assertion, in addition to
+  freshness and repeated value reads across the normal lease. The strengthened
+  run passes in 44.02 s (writes 28.33 s, restart 2.14 s), with retained estimates
+  exactly 118,165,608 bytes before/after restart. Layouts can differ between
+  fixtures due to ongoing split/materialization; compare each fixture with its
+  own recovered state. Reclamation and weighted redistribution remain open.
+  Final normal six-service/restart/data fixture and five native browser cases
+  pass in 35.67 s after the split fix (plan 1.3 s, Zone 1.2 s, graph 1.9 s,
+  Iceberg 7.3 s, S3 5.5 s). Partial prerequisite acceptance remains selected
+  separately. All 55 affected component cases, Rust fmt and all-target clippy
+  pass. No sampling/lease interval, request deadline or retry budget changed.
