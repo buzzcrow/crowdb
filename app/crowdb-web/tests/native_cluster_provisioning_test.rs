@@ -9,6 +9,8 @@ use crowdb_web::{router, AppState};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+#[path = "common/native_chunks.rs"]
+mod native_chunks;
 #[path = "common/native_load.rs"]
 mod native_load;
 
@@ -345,12 +347,15 @@ async fn assert_native_locations(app: &axum::Router, state: &AppState) {
     assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
 }
 
-async fn assert_native_browser_diagnostics(app: axum::Router) {
+async fn assert_native_browser_diagnostics(app: axum::Router, chunks: Option<Value>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
     let mut command = tokio::process::Command::new("pixi");
+    if let Some(chunks) = chunks {
+        command.env("CROWDB_NATIVE_CHUNK_FIXTURE", chunks.to_string());
+    }
     if let Ok(grep) = std::env::var("CROWDB_NATIVE_UI_E2E_GREP") {
         command.args([
             "run",
@@ -467,13 +472,18 @@ async fn native_cluster(inspection_only: bool) {
             deploy(&app, node, kind).await;
         }
         if kind == "diskio" && std::env::var_os("CROWDB_NATIVE_PLAN_PREREQUISITES").is_some() {
-            assert_native_browser_diagnostics(app.clone()).await;
+            assert_native_browser_diagnostics(app.clone(), None).await;
             return;
         }
     }
     assert_services(&app).await;
     if inspection_only {
-        assert_native_browser_diagnostics(app.clone()).await;
+        let chunks = if std::env::var_os("CROWDB_NATIVE_DATA_WINDOWS").is_some() {
+            Some(native_chunks::seed(&state).await)
+        } else {
+            None
+        };
+        assert_native_browser_diagnostics(app.clone(), chunks).await;
         return;
     }
     if std::env::var_os("CROWDB_NATIVE_LOAD_ACCEPTANCE").is_some() {
@@ -485,7 +495,7 @@ async fn native_cluster(inspection_only: bool) {
     assert_native_restarts(&app, &state).await;
     assert_native_locations(&app, &state).await;
     if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
-        assert_native_browser_diagnostics(app.clone()).await;
+        assert_native_browser_diagnostics(app.clone(), None).await;
     }
 }
 
