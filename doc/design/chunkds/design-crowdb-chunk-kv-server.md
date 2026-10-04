@@ -203,6 +203,12 @@ failure. The live-source phases and actions are:
    coroutine survive into final catch-up; reopening the same pinned generation
    is required only after target process or handle loss. Failure here may abort;
    source authority is unchanged.
+   Prepared transfer handles are staged separately from catalog-owned handles.
+   Refreshing unrelated catalog entries cannot evict their heartbeat readiness.
+   Publishing the matching target assignment promotes the same handle before
+   retiring staging; authoritative abort removes only the exact prepared epoch.
+   After restart, persisted `TargetPrepared` or `AwaitingFence` evidence restores
+   that readiness without rewinding the transition or granting serving authority.
 3. `TargetPrepared` or `AwaitingFence`: the monitor requests release only when
    record, byte, estimated catch-up, deadline, capacity, request-rate,
    cooldown, and one-transition-per-owner bounds pass. The source enters one

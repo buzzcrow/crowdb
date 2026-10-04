@@ -450,7 +450,7 @@ async fn source_worker_quiesces_before_returning_release_proof() {
 
 #[tokio::test]
 async fn target_worker_recovers_but_does_not_activate_assignment() {
-    let target_artifact = artifact(11);
+    let target_artifact = transfer(TransferPhase::TargetPreparing).target_artifact;
     let recovered = partition(id(1), KeyRange::default(), 4, &target_artifact, true).await;
     let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
     let worker = TransitionExecutor::with_storage(
@@ -472,6 +472,59 @@ async fn target_worker_recovers_but_does_not_activate_assignment() {
     assert_eq!(proof.target_instance_id, 2);
     assert_eq!(proof.target_epoch, 4);
     assert_eq!(proof.durable_tail, 0);
+    assert_eq!(recovered.lifecycle(), PartitionLifecycle::Prepared);
+    let transition = transfer(TransferPhase::TargetPreparing);
+    service
+        .reconcile_partitions(
+            &[crowdb_protocol::chunk_kv::ChunkKvRangeCatalogPage {
+                generation: 2,
+                page_index: 0,
+                checksum: [0; 32],
+                entries: vec![ChunkKvRangeCatalogEntry {
+                    partition_id: transition.partition_id,
+                    range: transition.range,
+                    owner: transition.source,
+                    owner_epoch: transition.source_epoch,
+                    state: crowdb_protocol::chunk_kv::ChunkKvRangeCatalogPartitionState::Serving,
+                    artifact: transition.artifact,
+                    transition_id: None,
+                }],
+            }],
+            &[],
+        )
+        .unwrap();
+    assert!(
+        service
+            .registry_observation(1024, 0)
+            .hosted
+            .iter()
+            .any(|hosted| { hosted.partition_id == id(1) && hosted.owner_epoch == 4 && !hosted.recovering }),
+        "a catalog refresh before cutover must retain the prepared target readiness"
+    );
+    assert_eq!(recovered.lifecycle(), PartitionLifecycle::Prepared);
+    let transition = transfer(TransferPhase::TargetPreparing);
+    let assignment = ChunkKvRangeCatalogEntry {
+        partition_id: transition.partition_id,
+        range: transition.range,
+        owner: transition.target,
+        owner_epoch: transition.target_epoch,
+        state: crowdb_protocol::chunk_kv::ChunkKvRangeCatalogPartitionState::Prepared,
+        artifact: transition.target_artifact,
+        transition_id: Some(transition.transition_id),
+    };
+    assert!(service.hosts_catalog_assignment(&assignment));
+    service
+        .reconcile_partitions(
+            &[crowdb_protocol::chunk_kv::ChunkKvRangeCatalogPage {
+                generation: 3,
+                page_index: 0,
+                checksum: [0; 32],
+                entries: vec![assignment],
+            }],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(service.registry_observation(1024, 0).hosted.len(), 1);
     assert_eq!(recovered.lifecycle(), PartitionLifecycle::Prepared);
 }
 
@@ -735,6 +788,53 @@ async fn processor_persists_target_preparing_before_readiness() {
     assert_eq!(stored.phase, TransferPhase::TargetPrepared);
     assert!(stored.readiness_proof.is_some());
     assert_eq!(revision, 2);
+}
+
+#[tokio::test]
+async fn processor_recovers_durable_prepared_target_and_cleans_authoritative_abort() {
+    for phase in [TransferPhase::TargetPrepared, TransferPhase::AwaitingFence] {
+        let store = Arc::new(Group0ControlStore::new(Arc::new(MemoryKv::default())));
+        let mut transition = transfer(phase);
+        transition.readiness_proof = Some(TargetReadinessProof {
+            target_instance_id: 2,
+            target_epoch: 4,
+            artifact: transition.target_artifact.clone(),
+            durable_tail: 0,
+        });
+        store.persist_transfer_transition(&transition, 0).await.unwrap();
+        let recovered = partition(id(1), KeyRange::default(), 4, &artifact(11), true).await;
+        let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+        let storage = Arc::new(LiveCatchupStorage {
+            recovered: recovered.clone(),
+            recover_calls: AtomicUsize::new(0),
+            catchup_calls: AtomicUsize::new(0),
+        });
+        let executor =
+            Arc::new(TransitionExecutor::with_storage(2, service.clone(), storage.clone(), 8).unwrap());
+        let processor = TransitionProcessor::new(2, store.clone(), executor);
+        processor.tick().await.unwrap();
+        processor.tick().await.unwrap();
+        assert_eq!(storage.recover_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(recovered.lifecycle(), PartitionLifecycle::Prepared);
+        assert_eq!(service.registry_observation(1024, 0).hosted.len(), 1);
+        let (stored, revision) = store
+            .load_transfer_transition(transition.transition_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.phase, phase);
+        assert_eq!(revision, 1, "recovery must not rewind the durable transition");
+        let mut machine = crowdb_chunk_kv_server::TransferStateMachine::restore(stored).unwrap();
+        machine.abort("authoritative cancellation").unwrap();
+        store
+            .persist_transfer_transition(machine.transition(), revision)
+            .await
+            .unwrap();
+        processor.tick().await.unwrap();
+        assert!(service.registry_observation(1024, 0).hosted.is_empty());
+        processor.tick().await.unwrap();
+        assert!(service.registry_observation(1024, 0).hosted.is_empty());
+    }
 }
 
 #[tokio::test]
