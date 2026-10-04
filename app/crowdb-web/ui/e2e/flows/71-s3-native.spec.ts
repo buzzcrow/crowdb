@@ -66,6 +66,31 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
       await expect(page.getByTestId('domain-chunk')).toHaveAttribute('aria-pressed', 'true');
       await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(extent.chunk_id);
       await expect(page.getByRole('region', { name: 'Chunk layout', exact: true })).toBeVisible();
+      const chunkResponse = await request.get(`/api/chunks/${extent.chunk_id}`);
+      expect(chunkResponse.status(), await chunkResponse.text()).toBe(200);
+      const detail = await chunkResponse.json();
+      expect(detail.chunk.id_hex).toBe(extent.chunk_id);
+      const ordered = [...detail.chunk.strips].sort((left, right) => left.strip_sequence - right.strip_sequence).slice(0, 16);
+      expect(ordered.length).toBeGreaterThan(0);
+      const stripLayout = page.getByLabel('Chunk strips', { exact: true });
+      await expect(stripLayout.getByTestId('chunk-strip')).toHaveCount(ordered.length);
+      for (const strip of ordered) {
+        const card = stripLayout.getByTestId('chunk-strip').filter({ has: page.getByRole('button', { name: new RegExp(`^Sequence ${strip.strip_sequence} ·`) }) });
+        const segments = strip.strip.MirrorStrip?.segments ?? strip.strip.EcStrip?.segments;
+        expect(segments.length).toBeGreaterThan(0);
+        await expect(card.getByTestId('chunk-disk-block')).toHaveCount(segments.length);
+      }
+      const strip = ordered[0];
+      const segment = (strip.strip.MirrorStrip?.segments ?? strip.strip.EcStrip?.segments)[0];
+      const diskId = BigInt(segment.disk_id.high).toString(16).padStart(16, '0') + BigInt(segment.disk_id.low).toString(16).padStart(16, '0');
+      const placement = detail.placements.find((entry: { disk_id: string }) => entry.disk_id.replace(/-/g, '').toLowerCase() === diskId);
+      expect(placement).toBeDefined();
+      const card = stripLayout.getByTestId('chunk-strip').filter({ has: page.getByRole('button', { name: new RegExp(`^Sequence ${strip.strip_sequence} ·`) }) });
+      await card.getByRole('button', { name: /^(Mirror 1|Data 0)( · unavailable)?$/, exact: true }).click();
+      const chunkProperties = page.getByLabel('Chunk properties', { exact: true });
+      for (const [label, value] of [['Disk', diskId], ['Node', placement.node_id], ['Diskgroup', placement.disk_group_id], ['Zone', segment.zone_index], ['Zone offset (units)', segment.unit_offset]]) {
+        await expect(chunkProperties.locator('dt').filter({ hasText: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).locator('..').locator('dd')).toHaveText(String(value));
+      }
       await page.getByRole('button', { name: 'Back', exact: true }).click();
       await expect(page.getByRole('heading', { level: 1 })).toHaveText(key);
       await expect(locations.getByRole('button', { name: `Select extent ${extent.index}`, exact: true })).toHaveAttribute('aria-pressed', 'true');

@@ -1,6 +1,78 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
+import { step } from '../fixtures/stepTimer';
+
+// Baseline: 4.7s (2026-10-04); native metadata, no intercepted responses.
+test('native diagnostics: Iceberg actual catalog tables and nested schema preserve scope', async ({ page, request }) => {
+  const namespace = `console_schema_${process.pid}_${Date.now()}`;
+  const path = `/api/access/iceberg/v1/namespaces/${namespace}`;
+  const names = ['region', 'nation', 'supplier', 'customer', 'part', 'partsupp', 'orders', 'lineitem'];
+  const created: string[] = [];
+  const response = await request.post('/api/access/iceberg/v1/namespaces', { data: { namespace: [namespace] } });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  try {
+    await step('native Iceberg table setup', async () => {
+      for (const name of names) {
+        const response = await step(`native Iceberg create ${name}`, () => request.post(`${path}/tables`, { data: {
+          name,
+          schema: { type: 'struct', 'schema-id': 0, fields: [
+            { id: 1, name: 'id', required: true, type: 'long' },
+            { id: 2, name: 'details', required: false, type: { type: 'struct', fields: [
+              { id: 3, name: 'tags', required: false, type: { type: 'list', 'element-id': 4, 'element-required': false, element: 'string' } },
+            ] } },
+          ] },
+        } }));
+        expect(response.ok(), await response.text()).toBeTruthy();
+        created.push(name);
+      }
+      const response = await request.get(`${path}/tables`);
+      expect(response.ok(), await response.text()).toBeTruthy();
+      const catalog = await response.json();
+      expect(catalog.identifiers.map((entry: { name: string }) => entry.name).sort()).toEqual([...names].sort());
+    });
+    await step('native Iceberg tree and schema', async () => {
+      await page.goto('/?domain=Iceberg');
+      const tree = page.getByRole('navigation', { name: 'Iceberg tree', exact: true });
+      await tree.getByRole('button', { name: namespace, exact: true }).click();
+      for (const name of names) await expect(tree.getByRole('button', { name, exact: true })).toBeVisible();
+      await tree.getByRole('button', { name: 'lineitem', exact: true }).click();
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('lineitem');
+      await expect(tree.getByRole('button', { name: 'Metadata', exact: true })).toHaveCount(0);
+      await page.getByRole('button', { name: 'Schema', exact: true }).click();
+      const schema = page.getByRole('table', { name: 'Table schema', exact: true });
+      await expect(schema.getByRole('row')).toHaveCount(5);
+      await expect(schema).toContainText('element');
+      await schema.getByRole('button', { name: 'Collapse field details', exact: true }).click();
+      await expect(schema.getByRole('row')).toHaveCount(3);
+      await schema.getByRole('button', { name: 'Expand field details', exact: true }).click();
+      await expect(schema.getByRole('row')).toHaveCount(5);
+      const actions = page.getByLabel('Table actions', { exact: true });
+      await expect(actions).not.toHaveAttribute('open', '');
+      await actions.getByText('Table actions', { exact: true }).click();
+      await expect(actions).toContainText(`Target: ${namespace} / lineitem`);
+      await expect(page.getByText('Catalog actions', { exact: true })).toHaveCount(0);
+      await page.getByRole('separator', { name: 'Sidebar width' }).press('ArrowRight');
+      await expect(page.getByRole('separator', { name: 'Sidebar width' })).toHaveAttribute('aria-valuenow', '300');
+    });
+    await step('native Iceberg domain return', async () => {
+      await page.getByTestId('domain-chunk').click();
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('lineitem');
+      await expect(page.getByRole('button', { name: 'Schema', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByRole('table', { name: 'Table schema', exact: true }).getByRole('row')).toHaveCount(5);
+    });
+  } finally {
+    await step('native Iceberg owned metadata teardown', async () => {
+      for (const name of created) {
+        const response = await step(`native Iceberg delete ${name}`, () => request.delete(`${path}/tables/${name}`));
+        expect(response.ok(), await response.text()).toBeTruthy();
+      }
+      const response = await request.delete(path);
+      expect(response.ok(), await response.text()).toBeTruthy();
+    });
+  }
+});
 
 // Baseline: 0.711s (2026-10-03)
 test('Iceberg cluster catalog loads automatically and retains scope across domains', async ({ page }) => {

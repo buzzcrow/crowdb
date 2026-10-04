@@ -5,6 +5,6 @@ export default {
   ...config,
   grepInvert: undefined,
   use: { ...config.use, screenshot: 'on' as const },
-  testMatch: ['**/55-chunk-kv-catalog.spec.ts', '**/52-chunk-capacity-zone.spec.ts', '**/71-s3-native.spec.ts'],
+  testMatch: ['**/55-chunk-kv-catalog.spec.ts', '**/52-chunk-capacity-zone.spec.ts', '**/60-iceberg-catalog.spec.ts', '**/71-s3-native.spec.ts'],
   grep: /native diagnostics|S3 native multipart/,
 };

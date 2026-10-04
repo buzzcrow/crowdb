@@ -1016,3 +1016,32 @@ UI todo acceptance items.
   (Zone 0.927 s, graph 3.2 s, multipart/location 3.8 s; 23.89 s owned fixture).
 - [ ] **S3 native full-read latency**: one 9-MiB GET exceeded the unchanged
   3-second browser deadline. Retain this failure and investigate its slow phase.
+- [x] **Advanced KV real acceptance**: run existing spec 31 before changes
+  (0.847/4.9/2.8 s). Keep its mutation/demo coverage and assert first-page keys
+  000–019, replacement keys 020–039, exclusion of previous keys and Previous
+  restoration. All three cases still pass in 0.847/4.9/2.8 s; no new waits.
+- [x] **Native Iceberg metadata behavior**: provision eight actual catalog
+  tables with nested schemas in an owned namespace. Verify namespace/table
+  tree, schema expansion, scoped collapsed Actions, sidebar resizing and domain
+  return. Integrate into the same normal three-node diagnostic fixture. This
+  does not close Manifest, file-pagination or Parquet/Avro acceptance. Native
+  case passes in 4.7 seconds with unchanged three-second API/DOM deadlines.
+- [x] **Metadata transition latency**: native table deletion twice exceeded
+  3 seconds, and one table GET took 2.99 seconds. Debug point timing shows a
+  warm client ahead of the server's local catalog/grant returning repeated
+  NotMyRange. Server catalog reconciliation only ran every five seconds.
+  Subscribe to catalog-head notifications with the existing watch client;
+  retain periodic fallback and check grants after reconciliation. Preserve
+  client discovery budget for an actual newer/different route. Verify the
+  same native four-case selection and remove temporary timing instrumentation.
+  Instance grant notifications also activate authority without catalog scans.
+  All four native cases pass (0.902/2.9/4.7/3.9 seconds; 28.42-second owned
+  fixture). This resolves the observed catalog/grant propagation delay; broader
+  large-data load and full-read latency acceptance remain separate tasks.
+- [x] **Split candidate eligibility and planning cost**: match the standalone
+  planner's live-left witness contract to the production monitor, so a single
+  sampled key cannot create an empty child. Verify larger ineligible or
+  unsplittable ranges do not hide a valid candidate. Select maximum candidates
+  in linear work rather than sorting or repeated partition lookups.
+  Six balance cases, bounded sampling and startup reporting pass; five
+  production monitor cases pass. Affected fmt/clippy gates pass.

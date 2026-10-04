@@ -176,18 +176,24 @@ unaccepted; this is not a full-suite result.
   count convergence and byte-load placement separately. Current live catalog
   has 12 splits distributed 4/4/4; that alone does not prove weighted balance.
 
-- [ ] **Balance split eligibility**: an ineligible or unsplittable largest
+- [x] **Balance split eligibility**: an ineligible or unsplittable largest
   partition must not prevent other eligible partitions from being sampled and
   split when the cluster needs more owned subranges.
+  Regression coverage includes a single-key largest range, an active transition
+  and an inherited overlay; the valid smaller range remains selectable. The
+  standalone planner also requires a live key below the boundary.
 - [ ] **Balance byte-weight correctness**: reported owner/partition load must
   approximately represent retained data and remain meaningful after process restart,
   recovery and reclamation. Verify count balance separately from byte balance.
-- [ ] **Low-cost approximate split and weights**: prioritize efficiency,
+- [x] **Low-cost approximate split and weights**: prioritize efficiency,
   simplicity and low system overhead. Split boundaries need not divide keys or
   bytes exactly in half; estimated weights need not be exact. Obtain a valid
   boundary with nonempty children using bounded work instead of iterating the
   entire partition for a median. Load observation must likewise avoid full
   scans and unnecessary background work.
+  Native index hints, bounded sampling and cached retained-pack estimates are
+  implemented and verified by focused tests. Candidate selection is linear.
+  Real large-data liveness and weighted placement remain separately unaccepted.
 - [ ] **Balance observation liveness**: inspecting a large partition must not
   delay heartbeat publication or serving-grant renewal past their deadlines.
   Bound observation work and verify the behavior with real large data.
@@ -209,11 +215,26 @@ unaccepted; this is not a full-suite result.
   the first slow backend boundary and retain phase timings; do not increase
   the browser timeout or conceal the failure with retries.
 
+- [x] **Iceberg native metadata latency**: deleting tables in an owned
+  eight-table namespace twice exceeded the unchanged 3-second API deadline.
+  Creation, nested schema inspection and navigation completed, but cleanup did
+  not. A later table GET took 2.99 seconds and missed the Schema control's
+  existing deadline. Locate the slow backend boundary and verify reads/deletion without
+  browser retries or extended deadlines before accepting this flow.
+  Confirmed catalog/grant propagation delay; watch-triggered synchronization
+  resolves the observed failure. The same four-case native selection passes;
+  Iceberg metadata/schema/navigation/cleanup takes 4.7 seconds in total.
+
+- [ ] **Chunk-stream idle rollover authority**: a native three-node run logged
+  repeated liveness renewal against a sealed chunk, followed by a manifest
+  mismatch and stalled stream. Verify that superseded split/transfer writers
+  stop renewing and cannot publish a new manifest after authority changes.
+
 ## Native feature inventory (2026-10-04)
 
 - Collection: the routine configuration collects 85 cases in 22 files; the
   managed deployment configuration collects one separate case, and native
-  diagnostics collect three separate cases. The multipart-only configuration
+  diagnostics collect four separate cases. The multipart-only configuration
   selects the same multipart case, so it adds no distinct case. Collection is
   not a passing result. The routine set still includes interception-dependent
   cases, which the shared fixture now rejects.
@@ -226,8 +247,8 @@ unaccepted; this is not a full-suite result.
   separate normal three-node API fixture proves all 18 service deployments.
 - KV management/data (`20`–`22`, `30`, `31`): real Store/Group membership, quorum,
   CRUD and byte-preserving pagination. The retained KV presentation/return
-  selection has real passing evidence. Older advanced cases still target
-  append/load-more controls and need alignment with replacement pagination.
+  selection has real passing evidence. All three advanced cases pass; exact
+  replacement-page boundaries and Previous restoration are now asserted.
 - Shared graphs/activity (`40`, `41`): real physical graph expand/collapse,
   pan/fit and selection restoration; existing focused passing evidence. Verify
   activity failures and resource deletion in the final ordered acceptance.
@@ -235,21 +256,22 @@ unaccepted; this is not a full-suite result.
   verification. Large inventory, unavailable usage and several window/return
   cases still use interception and lack real equivalents.
 - Chunk (`54`): paged lists, types, exact IDs, multi-Strip Mirror/EC layout and
-  placement return. S3 location navigation resolves an actual Chunk layout;
+  placement return. S3 location navigation verifies actual Strip/block counts
+  and selected block Node/Disk/DiskGroup/Zone/offset against native API data;
   bounded multi-page, mixed placement and independent list navigation remain
   uncovered by native browser acceptance.
 - Chunk-KV (`55`): native catalog graph survives three returns, three refreshes
   and resize. Paged split counts, journal extent fences/continuations, ownership
   changes and failed/empty catalog cases still need real equivalents. KV Page
   inspection remains a separate missing API contract.
-- Iceberg (`60`): catalog/namespace/table CRUD, eight-table hierarchy, nested
-  schema, snapshots/manifests/files and footer layout. Current page scenarios
-  still intercept responses; the normal fixture's namespace API success does
-  not establish browser/parser acceptance.
+- Iceberg (`60`): a new native case creates eight actual catalog tables and
+  verifies nested schema, scoped Actions, tree navigation and return. The flow
+  passes after resolving catalog/grant propagation latency. Snapshot/manifest/file and footer scenarios still intercept
+  responses and lack native browser/parser acceptance.
 - S3 (`70`, `71`): actual multipart upload, HEAD, bounded preview, full read,
   authoritative locations and Chunk-return navigation have passing native
-  executions. Bucket-list transition rejection and one full-read deadline
-  remain unresolved. Large listing/cursors, stale revisions and error feedback
+  executions. Transition-time bucket listing now passes; one full-read deadline
+  remains unresolved. Large listing/cursors, stale revisions and error feedback
   still need real browser equivalents.
 - Cross-domain (`72`, `90`): real management smoke exists. The managed native
   case has stale selectors and fixed single-node placement assumptions; its
@@ -261,8 +283,10 @@ unaccepted; this is not a full-suite result.
   and container services, without intercepted responses.
 - [ ] Verify all auxiliary service menus, deployment progress, failures and
   resume/restart behavior with real service processes.
-- [ ] Bring advanced KV acceptance into agreement with replacement pagination
+- [x] Bring advanced KV acceptance into agreement with replacement pagination
   and current scoped Actions; retain raw-byte identity and mutation coverage.
+  Three real cases pass (0.847/4.9/2.8 s), preserving bulk/selected/inline delete,
+  all-group restrictions, auto-scan and session-owned demo cleanup.
 - [ ] Cover large real Capacity windows and unavailable allocation/owner data,
   including restoration after navigation and late responses.
 - [ ] Cover actual Chunk type/list pages, multi-Strip Mirror/EC and physical
