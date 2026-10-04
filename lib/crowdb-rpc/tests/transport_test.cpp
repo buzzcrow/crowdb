@@ -366,3 +366,45 @@ TEST_F(TransportLoopbackTest, LargeDataPayloadDirectRead)
     transport.stop();
     ::close(client_fd);
 }
+
+TEST_F(TransportLoopbackTest, CrossThreadSubmitRejectsUnregisteredHandleWithoutTakingFrame)
+{
+    SocketTransport transport(1, 1);
+    transport.start();
+    auto connection = std::make_shared<Connection>(42, "unregistered", transport.pool());
+    transport.register_conn(connection);
+    transport.unregister_conn(connection.get());
+    auto *frame    = new OutFrame;
+    frame->control = transport.pool()->alloc(1);
+    EXPECT_FALSE(transport.submit(connection.get(), frame));
+    EXPECT_EQ(frame->create_nano, 0U);
+    frame->control->release();
+    delete frame;
+    transport.stop();
+}
+
+TEST_F(TransportLoopbackTest, CrossThreadSubmitRejectsFreedPeerAfterClose)
+{
+    SocketTransport transport(1, 1);
+    transport.start();
+    int sockets[2]{};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sockets), 0);
+    auto                      connection = transport.create_connection(sockets[0], "peer-close");
+    auto                     *handle     = connection.get();
+    std::weak_ptr<Connection> lifetime   = connection;
+    connection.reset();
+    ::close(sockets[1]);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!lifetime.expired() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(lifetime.expired());
+    EXPECT_EQ(transport.connection_count(), 0U);
+    auto *frame    = new OutFrame;
+    frame->control = transport.pool()->alloc(1);
+    EXPECT_FALSE(transport.submit(handle, frame));
+    EXPECT_EQ(frame->create_nano, 0U);
+    frame->control->release();
+    delete frame;
+    transport.stop();
+}
