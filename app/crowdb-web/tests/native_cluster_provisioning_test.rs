@@ -126,6 +126,150 @@ async fn assert_services(app: &axum::Router) {
     }
 }
 
+async fn s3_request(app: &axum::Router, method: &str, path: &str, body: Vec<u8>) -> Vec<u8> {
+    let started = std::time::Instant::now();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        app.clone().oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .body(Body::from(body))
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("bounded native S3 response")
+    .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
+        .await
+        .unwrap();
+    eprintln!("[PHASE] {method} {path}: {}ms", started.elapsed().as_millis());
+    assert!(
+        status.is_success(),
+        "{path}: {status}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    bytes.to_vec()
+}
+
+async fn upload_native_multipart(app: &axum::Router, object: &str) -> Vec<u8> {
+    let initialized = s3_request(app, "POST", &format!("{object}?uploads"), vec![]).await;
+    let xml = String::from_utf8(initialized).unwrap();
+    let upload = xml
+        .split_once("<UploadId>")
+        .unwrap()
+        .1
+        .split_once("</UploadId>")
+        .unwrap()
+        .0;
+    let mut payload = vec![0x51; 5 * 1024 * 1024];
+    let tail = vec![0xa3; 1024 * 1024];
+    s3_request(
+        app,
+        "PUT",
+        &format!("{object}?uploadId={upload}&partNumber=1"),
+        payload.clone(),
+    )
+    .await;
+    s3_request(
+        app,
+        "PUT",
+        &format!("{object}?uploadId={upload}&partNumber=2"),
+        tail.clone(),
+    )
+    .await;
+    // Completion validates the actual part digests, not synthetic location records.
+    let parts = s3_request(app, "GET", &format!("{object}?uploadId={upload}"), vec![]).await;
+    let parts = String::from_utf8(parts).unwrap();
+    let etags: Vec<_> = parts
+        .split("<ETag>")
+        .skip(1)
+        .map(|part| part.split_once("</ETag>").unwrap().0)
+        .collect();
+    assert_eq!(etags.len(), 2);
+    let completion = format!("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>", etags[0], etags[1]);
+    s3_request(
+        app,
+        "POST",
+        &format!("{object}?uploadId={upload}"),
+        completion.into_bytes(),
+    )
+    .await;
+    payload.extend(tail);
+    payload
+}
+
+async fn assert_native_locations(app: &axum::Router) {
+    let bucket = "/api/access/s3/native-locations";
+    s3_request(app, "PUT", bucket, vec![]).await;
+    let object = format!("{bucket}/multipart.bin");
+    let payload = upload_native_multipart(app, &object).await;
+    assert_eq!(s3_request(app, "GET", &object, vec![]).await, payload);
+    let inspect = "/api/access/s3-inspect/locations?bucket=native-locations&key=multipart.bin&limit=1";
+    let first = call(app, "GET", inspect, Value::Null).await;
+    assert_eq!(first["logical_length"], payload.len().to_string());
+    assert_eq!(first["locations"].as_array().unwrap().len(), 1);
+    assert_eq!(first["locations"][0]["logical_offset"], "0");
+    assert_eq!(
+        first["locations"][0]["logical_length"],
+        (5 * 1024 * 1024).to_string()
+    );
+    let cursor = first["next_cursor"]
+        .as_str()
+        .expect("multipart location continuation");
+    let cursor: String =
+        percent_encoding::utf8_percent_encode(cursor, percent_encoding::NON_ALPHANUMERIC).collect();
+    let next_path = format!("{inspect}&cursor={cursor}");
+    let second = call(app, "GET", &next_path, Value::Null).await;
+    assert_eq!(second["generation"], first["generation"]);
+    assert!(second["next_cursor"].is_null());
+    assert_eq!(
+        second["locations"][0]["logical_offset"],
+        (5 * 1024 * 1024).to_string()
+    );
+    assert_eq!(
+        second["locations"][0]["logical_length"],
+        (1024 * 1024).to_string()
+    );
+    assert_eq!(
+        first["locations"][0]["chunk_id"],
+        second["locations"][0]["chunk_id"]
+    );
+    let end = first["locations"][0]["offset"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        + first["locations"][0]["length"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+    assert!(
+        second["locations"][0]["offset"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            >= end
+    );
+    for page in [&first, &second] {
+        let id = page["locations"][0]["chunk_id"].as_str().unwrap();
+        let detail = call(app, "GET", &format!("/api/chunks/{id}"), Value::Null).await;
+        assert_eq!(detail["chunk"]["id_hex"], id);
+        assert!(!detail["chunk"]["strips"].as_array().unwrap().is_empty());
+    }
+    s3_request(app, "PUT", &object, b"replacement".to_vec()).await;
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(next_path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+}
+
 #[tokio::test]
 #[ignore = "Cold normal three-node chain; requires all six installed native server binaries"]
 async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() {
@@ -209,6 +353,7 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
     assert!(namespaces["namespaces"].is_array());
     // Listing validates native signing and automatic catalog provisioning.
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/access/s3/")
@@ -222,4 +367,5 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         .await
         .unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("ListAllMyBucketsResult"));
+    assert_native_locations(&app).await;
 }

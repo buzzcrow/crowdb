@@ -854,7 +854,7 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   cadence only; every service retains normal multi-node protection policy.
   Await the measured rerun before recording a completion claim.
 
-## Blocked
+## Previous provisioning blocker — resolved
 
 R203 remains unfinished. Do not remove its backlog item, this plan, or remaining
 UI todo acceptance items.
@@ -876,19 +876,17 @@ UI todo acceptance items.
      initialization, both mutations, checkpoint, and root-ready. Stage output
      lacks elapsed timing and may include detached work after the response
      deadline; it does not prove timely catalog publication/readiness.
-- Diagnostic fixture: `.crowdb-runtime/ephemeral/native-console-provisioning-378561-0`;
-  temporary instrumentation was removed. Do not clean this fixture until its
-  logs have been reviewed; its tracked process owners enable safe cleanup.
-- Next investigation must measure journal/Tree checkpoint, catalog publication,
-  serving startup and readiness separately, and verify no detached unregistered
-  child remains. Keep the 20-second contract and normal multi-node policy.
+- Previous diagnostic logs were reviewed and saved under
+  `.crowdb-runtime/artifacts/native-startup-before`; the disposable fixture
+  was then cleaned through the ownership-aware runtime command.
+- The resumed investigation below retains the 20-second response contract and
+  normal multi-node policy. Temporary bootstrap instrumentation was removed.
 - The full UI suite on the preceding binary reported 81 pass / 4 fail in
   3.8 minutes: reset deadlines in specs 13/20 and reelection status in spec 21.
   The isolated spec 21 passed all four in 32.9 seconds; this does not establish
   ordered-suite stability. Keep the failing assertions and slow-step reports.
-- Applicable `/implement-requirement` rule requires committing this blocked
-  state and asking the user after five root-cause-driven attempts. Request
-  authorization to continue this backend diagnosis; no R203 completion claim.
+- This historical blocked state was committed after five attempts. The user
+  subsequently authorized continued backend/test work; UI design remains deferred.
 
 - Final focused gate after local reset optimization and cadence serialization:
   specs 13, 20, 21 and 50 all passed (13 cases; 1.5-minute command). DiskDB
@@ -900,3 +898,36 @@ UI todo acceptance items.
   and the eight-second DiskGroup deadline regression passed.
 - Remaining reset acceptance must include client cancellation during cleanup;
   the current reset guard is handler-owned, unlike detached deployment work.
+
+### Resumed backend readiness and native S3 verification (2026-10-04)
+
+- [x] **Locate readiness delay**: bootstrap/root checkpoint finished in 138 ms,
+  and native RPC began listening in 163 ms. Readiness required a serving grant;
+  the KV supervisor discovered newly persisted domain descriptors only every
+  30 seconds. This exceeded the existing 20-second deployment response budget.
+- [x] **Reduce discovery latency**: the normal KV CLI defaults descriptor
+  discovery to 1 second. The existing override and zero-disable remain; driver
+  tick intervals still come from persisted descriptors. Readiness still requires
+  Serving authority. Files: `app/crowdb-kv-server/src/cli.rs`,
+  `app/crowdb-kv-server/tests/cli_parse_test.rs`.
+- [x] **Verify normal provisioning**: the real one-Rack/three-Node fixture creates
+  Group 0/1 and all 18 services, reconciles DiskGroup ownership without manual
+  metadata edits, and reaches native Iceberg/S3. Initial successful run: 13.09 s;
+  first Chunk-KV readiness 2.274 s, following deployments 0.092/0.116 s.
+- [x] **Verify native S3 locations**: extend the same isolated fixture with a
+  5 MiB + 1 MiB multipart object, full payload readback, one-location pages,
+  exact logical coverage, shared Chunk physical extent separation, Chunk detail
+  resolution and revision-bound stale cursor rejection after overwrite. No mock
+  transport, response or browser route participates. Initial extended run: 14.24 s,
+  metadata pages 11/9 ms, Chunk queries 8/6 ms. Preserve per-phase measurements.
+- Live location failure came from outdated Access processes: the internal route
+  fell through to ordinary S3 authentication (403 XML), causing Console's JSON
+  error. Rebuilt Access and restarted all three instances through the lifecycle
+  API; actual Parquet/Avro inspection now returns bounded 200 responses. No
+  decoder rewrite or UI layout change was needed for this failure.
+- UI navigation acceptance, remaining mock-based browser conversions and deferred
+  Chunk-KV/Zone designs remain open in `ui-todo.md`; this does not complete R203.
+- Final verification after physical extent assertions: native provisioning +
+  multipart test passes in 16.05 s, with first Chunk-KV readiness 2.257 s,
+  S3 location pages 10/9 ms, Chunk details 9/7 ms and teardown 5.086 s.
+  CLI parsing 17 cases pass; affected all-target Clippy and Rust fmt pass.

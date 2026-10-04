@@ -74,6 +74,7 @@ fn parse_root_cli_option() {
     assert_eq!(cli.root, std::path::PathBuf::from("/data/N-1"));
     // --config is now optional.
     assert!(cli.config.is_none());
+    assert_eq!(cli.binding_monitor_interval, 1);
 }
 
 #[test]

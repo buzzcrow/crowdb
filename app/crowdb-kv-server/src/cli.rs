@@ -166,11 +166,10 @@ pub struct Cli {
     #[arg(long = "group0-management-seed")]
     pub group0_management_seeds: Vec<String>,
 
-    /// chunkdb range binding monitor tick interval in seconds. 0
-    /// disables the monitor (the binding table is then operator-manual).
-    /// Only the group-0 leader writes the table; followers run the tick
-    /// but skip the write. Default: 30.
-    #[arg(long, default_value_t = 30)]
+    /// Domain monitor descriptor discovery interval in seconds. 0 disables
+    /// discovery. Drivers use the tick interval in their persisted descriptor;
+    /// only the group-0 leader performs writes. Default: 1.
+    #[arg(long, default_value_t = 1)]
     pub binding_monitor_interval: u64,
 
     /// Number of crowdb-rpc I/O worker threads. Overrides
