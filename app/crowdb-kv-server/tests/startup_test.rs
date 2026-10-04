@@ -29,6 +29,45 @@ fn encode_put_payload(key: &[u8], value: &[u8]) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn incomplete_group_creation_retains_replica_identity_before_wal_is_discoverable() {
+    let temp = crowdb_test_harness::test_dirs::tempdir_in_test_data("startup-identity");
+    let blocked_tree = temp.path().join("blocked-tree");
+    std::fs::write(&blocked_tree, b"not a directory").unwrap();
+    let config = CrowDBConfig {
+        wal_root: temp.path().join("wal"),
+        config_root: temp.path().join("conf"),
+        data_root: blocked_tree,
+        ..CrowDBConfig::for_tests()
+    };
+    let result = create_group_with_wal(
+        0,
+        1,
+        2,
+        PxLocalReplicaRole::Leader,
+        &config,
+        Arc::new(IoBackend::detect()),
+        CrowdbTreeBackend::File,
+    )
+    .await;
+    assert!(result.is_err());
+    let groups = crowdb_kv_server::recovery::restore::scan_local_groups(&config.wal_root)
+        .await
+        .unwrap();
+    assert!(groups
+        .iter()
+        .any(|group| group.store_id == 0 && group.group_id == 1));
+    let persisted = crowdb_kv::cluster::node_config::NodeConfigStore::new(&config.config_root)
+        .load()
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted.group(0, 1).map(|group| group.replica_id),
+        Some(2),
+        "an interrupted creation must never restore using CLI replica 1"
+    );
+}
+
+#[tokio::test]
 async fn create_group_with_wal_restores_and_resumes_at_next_slot() {
     let temp = crowdb_test_harness::test_dirs::tempdir_in_test_data("startup");
     let wal_root = temp.path().join("wal-root");
