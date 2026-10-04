@@ -125,7 +125,7 @@ unaccepted; this is not a full-suite result.
   passes. No mutation retries were added.
 
 
-- [ ] **Automatic DiskGroup data binding**: creating a DiskGroup must resolve
+- [x] **Automatic DiskGroup data binding**: creating a DiskGroup must resolve
   its ordinary data group and establish its binding and owner automatically.
   On 2026-10-03, Store 0 had Group 0 and Store 1 had Group 1, but the current
   binding path required an ordinary group in Store 0. Bring-up required manual
@@ -134,12 +134,22 @@ unaccepted; this is not a full-suite result.
   DG 1 with no disks and reconcile partial creations before retrying. Verify
   fresh creation, existing unbound groups, retries, and usable owner routing.
   Files: shared hardware operations, web `owner_assignment.rs`.
-- [ ] **Reconcile missing DiskGroup owners**: DG 1 survived an earlier failed
+  Native normal three-node acceptance now starts with Store 0 / Group 0 and
+  Store 1 / Group 1. DG 1 binds automatically to Store 1; adding Store 0 / Group 1
+  preserves that destination. Exact-ID retries preserve ownership and renew
+  leases. Removing real binding/owner records from existing DG 3 reproduces
+  partial persisted state; ordinary creation restores both automatically.
+- [x] **Reconcile missing DiskGroup owners**: DG 1 survived an earlier failed
   creation without an owner. Adding its binding and disk did not repair owner
   registration. Chunk-KV bootstrap then failed repeatedly with `no endpoint
   for disk_group 1`. Explicit owner assignment restored normal bootstrap.
   Existing incomplete groups must be reconciled automatically and readiness
   must check usable allocation routing, not only running DiskIO processes.
+  Pending DG creation before DDB registration, DDB arrival, and existing-group
+  recovery all pass without manual repair. Actual multipart writes/readback,
+  Chunk physical mapping, and DG 1 allocation bitmap succeed with mixed Store
+  bindings. Four native browser diagnostics pass; the owned fixture takes
+  27.91 seconds, with unchanged waits and slow-step measurement.
 - [ ] **Native executable staging race**: one default-concurrency lifecycle
   run failed before its first service started with `ETXTBSY` at
   `upgraded_executable_can_restart_without_relaxing_pid_identity`. The exact

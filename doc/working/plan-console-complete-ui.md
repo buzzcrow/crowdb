@@ -1057,4 +1057,5 @@ UI todo acceptance items.
 - [x] **Cancellation and Reset process ownership**: move KV and DiskDB deploy/restart into owned tasks with node claims held until registration finishes. Verify cancellation after an actual child starts, concurrent Reset and child/workspace cleanup; keep existing auxiliary fence coverage.
   Four actual KV/DDB deployment and restart cancellation cases pass (4.41 seconds total); six existing lifecycle routes and seven service lifecycle cases also pass.
 
-- [~] **Cross-Store DiskGroup recovery acceptance**: provision Store 1 / Group 1 before Store 0 has an ordinary Group. Verify pending creation binds automatically, DDB arrival repairs owner, retries preserve both after a lower Store destination appears, and actual S3/Chunk allocation works across these bindings.
+- [x] **Cross-Store DiskGroup recovery acceptance**: provision Store 1 / Group 1 before Store 0 has an ordinary Group. Verify pending creation binds automatically, DDB arrival repairs owner, retries preserve both after a lower Store destination appears, and actual S3/Chunk allocation works across these bindings.
+  Extend the same case with actual removal of existing DG 3 binding/owner records. Normal creation repairs both; actual multipart/Chunk and four native browser diagnostics pass in a 27.91-second owned fixture.

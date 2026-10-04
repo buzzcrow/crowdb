@@ -320,10 +320,12 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         deploy(&app, node, "kv").await;
     }
     call(&app, "POST", "/api/cluster/init", json!({"nodes":[1,2,3]})).await;
+    // An ordinary data destination may live outside the system Store.
+    call(&app, "POST", "/api/stores", json!({"store_id":1,"nodes":[1,2,3]})).await;
     call(
         &app,
         "POST",
-        "/api/stores/0/groups",
+        "/api/stores/1/groups",
         json!({"group_id":1,"replica_id":10,"nodes":[1,2,3]}),
     )
     .await;
@@ -332,7 +334,15 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
     pending_group(&app).await;
     let hardware = crowdb_kv_client::HardwareClient::from_shared(state.kv_client().await);
     let binding = hardware.get_bind(1, 1, 1).await.unwrap().unwrap();
-    assert_eq!((binding.store_id, binding.group_id), (0, 1));
+    assert_eq!((binding.store_id, binding.group_id), (1, 1));
+    // Adding a lower Store destination must not rewrite an established binding.
+    call(
+        &app,
+        "POST",
+        "/api/stores/0/groups",
+        json!({"group_id":1,"replica_id":20,"nodes":[1,2,3]}),
+    )
+    .await;
     assert!(hardware.get_owner(1, 1, 1).await.unwrap().is_none());
     for node in 1..=3 {
         deploy(&app, node, "diskdb").await;
@@ -361,9 +371,7 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         )
         .await;
     }
-    for node in 1..=3 {
-        assert!(hardware.get_owner(1, node, node).await.unwrap().is_some());
-    }
+    assert_bound_groups(&app, &hardware).await;
     // All Nodes exist before sealing the fixed CDB service ownership plan.
     for kind in ["chunkdb", "diskio", "chunk-kv", "access-server"] {
         for node in 1..=3 {
@@ -392,5 +400,39 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
     assert_native_locations(&app).await;
     if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
         assert_native_browser_diagnostics(app.clone()).await;
+    }
+}
+
+async fn assert_bound_groups(app: &axum::Router, hardware: &crowdb_kv_client::HardwareClient) {
+    for node in 1..=3 {
+        assert!(hardware.get_owner(1, node, node).await.unwrap().is_some());
+        let binding = hardware.get_bind(1, node, node).await.unwrap().unwrap();
+        let expected_store = u64::from(node == 1);
+        assert_eq!((binding.store_id, binding.group_id), (expected_store, 1));
+        // An exact-ID retry preserves both the automatic binding and owner.
+        let owner = hardware.get_owner(1, node, node).await.unwrap();
+        if node == 3 {
+            // Reproduce persisted partial state using real authoritative records.
+            hardware.remove_bind(1, node, node).await.unwrap();
+            hardware.remove_owner(1, node, node).await.unwrap();
+            assert!(hardware.get_bind(1, node, node).await.unwrap().is_none());
+            assert!(hardware.get_owner(1, node, node).await.unwrap().is_none());
+        }
+        call(
+            app,
+            "POST",
+            &format!("/api/nodes/{node}/disk-groups"),
+            json!({"id":node,"name":"storage"}),
+        )
+        .await;
+        let renewed = hardware.get_owner(1, node, node).await.unwrap().unwrap();
+        let previous = owner.unwrap();
+        assert_eq!((renewed.rack_id, renewed.node_id, renewed.dg_id), (1, node, node));
+        if node != 3 {
+            assert_eq!(renewed.instance_id, previous.instance_id);
+        }
+        let repaired = hardware.get_bind(1, node, node).await.unwrap().unwrap();
+        assert_eq!((repaired.store_id, repaired.group_id), (expected_store, 1));
+        assert!(renewed.lease_expiry_ms >= previous.lease_expiry_ms);
     }
 }
