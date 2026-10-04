@@ -113,11 +113,16 @@ unaccepted; this is not a full-suite result.
 
 ## Cluster and provisioning
 
-- [ ] **Reset versus in-flight deployment**: the full browser suite exposed
+- [x] **Reset versus in-flight deployment**: the full browser suite exposed
   `Directory not empty` during reset while a recovered six-service plan was
   launching an auxiliary service. Quiesce accepted deployments and fence new
   plan/deployment writes before removing workspaces; cancellation must not
   orphan an unregistered child. Preserve the regression, no mutation retries.
+  KV/DDB deploy and restart now retain node claims in owned tasks through
+  readiness and registration. Four real-process cancellation cases cancel
+  after spawn but before registration, then Reset; all children stop and
+  workspaces disappear. Existing auxiliary lifecycle and Reset fence coverage
+  passes. No mutation retries were added.
 
 
 - [ ] **Automatic DiskGroup data binding**: creating a DiskGroup must resolve
@@ -135,6 +140,12 @@ unaccepted; this is not a full-suite result.
   for disk_group 1`. Explicit owner assignment restored normal bootstrap.
   Existing incomplete groups must be reconciled automatically and readiness
   must check usable allocation routing, not only running DiskIO processes.
+- [ ] **Native executable staging race**: one default-concurrency lifecycle
+  run failed before its first service started with `ETXTBSY` at
+  `upgraded_executable_can_restart_without_relaxing_pid_identity`. The exact
+  case and subsequent affected suite pass, so the intermittent staging/fork
+  failure remains unaccepted. Diagnose concurrent writable executable handles;
+  preserve process identity checks and do not mask this with spawn retries.
 - [ ] **Six-service plan recovery**: the one-dialog queue is implemented but
   now persists on the server with revision fencing. Reload restoration and
   competing-browser fencing pass. Verify native service restart,

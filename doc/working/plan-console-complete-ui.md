@@ -1053,3 +1053,8 @@ UI todo acceptance items.
   managed service contract, not Docker image packaging.
   Spec passes in 7.7 seconds with unchanged waits; all seven native processes
   report ready. Phase measurements remain active; KV demo key is cleaned up.
+
+- [x] **Cancellation and Reset process ownership**: move KV and DiskDB deploy/restart into owned tasks with node claims held until registration finishes. Verify cancellation after an actual child starts, concurrent Reset and child/workspace cleanup; keep existing auxiliary fence coverage.
+  Four actual KV/DDB deployment and restart cancellation cases pass (4.41 seconds total); six existing lifecycle routes and seven service lifecycle cases also pass.
+
+- [~] **Cross-Store DiskGroup recovery acceptance**: provision Store 1 / Group 1 before Store 0 has an ordinary Group. Verify pending creation binds automatically, DDB arrival repairs owner, retries preserve both after a lower Store destination appears, and actual S3/Chunk allocation works across these bindings.

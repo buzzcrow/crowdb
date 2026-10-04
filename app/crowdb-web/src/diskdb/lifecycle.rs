@@ -62,7 +62,20 @@ pub async fn http_deploy_diskdb(
     Path(node_id): Path<u64>,
     Json(body): Json<DeployDiskdbBody>,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), (StatusCode, Json<ErrorBody>)> {
-    let _operation = crate::services::Operation::claim(&state, vec![format!("node/{node_id}")])?;
+    let operation = crate::services::Operation::claim(&state, vec![format!("node/{node_id}")])?;
+    tokio::spawn(async move {
+        let _operation = operation;
+        deploy_diskdb(state, node_id, body).await
+    })
+    .await
+    .map_err(|error| err_500(format!("DiskDB lifecycle task failed: {error}")))?
+}
+
+async fn deploy_diskdb(
+    state: AppState,
+    node_id: u64,
+    body: DeployDiskdbBody,
+) -> Result<(StatusCode, Json<DiskdbDeployResult>), (StatusCode, Json<ErrorBody>)> {
     let (listen_port, http_port, rpc_listen_port) = validate_diskdb_ports(&body)?;
     let _ports = crate::services::defaults::claim_ports(&state, &[listen_port, http_port, rpc_listen_port])?;
     let node = {
@@ -189,31 +202,20 @@ pub async fn http_restart_diskdb(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<Json<DiskdbDeployResult>, (StatusCode, Json<ErrorBody>)> {
-    let (entry, node) = {
-        let cfg = state.config.read().unwrap();
-        let entry = cfg
-            .servers
-            .iter()
-            .find(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::Diskdb)
-            .cloned()
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorBody {
-                        error: format!("no diskdb instance registered on node {node_id}"),
-                    }),
-                )
-            })?;
-        let node = cfg.node(node_id).cloned().ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    error: format!("node {node_id} not found"),
-                }),
-            )
-        })?;
-        (entry, node)
-    };
+    let operation = crate::services::Operation::claim(&state, vec![format!("node/{node_id}")])?;
+    tokio::spawn(async move {
+        let _operation = operation;
+        restart_diskdb(state, node_id).await
+    })
+    .await
+    .map_err(|error| err_500(format!("DiskDB lifecycle task failed: {error}")))?
+}
+
+async fn restart_diskdb(
+    state: AppState,
+    node_id: u64,
+) -> Result<Json<DiskdbDeployResult>, (StatusCode, Json<ErrorBody>)> {
+    let (entry, node) = diskdb_restart_inputs(&state, node_id)?;
 
     let rpc_port = entry
         .rpc_port
@@ -298,23 +300,7 @@ pub async fn http_restart_diskdb(
         cfg.add_server(new_entry).map_err(|e| err_500(format!("{e}")))?;
     }
     state.persist().map_err(|e| err_500(format!("{e}")))?;
-    // Refresh the monitor cache so health badges reflect the restarted
-    // DDB process. The process may not be listening yet, so retry a few
-    // times with short delays until the probe succeeds.
-    crate::mgmt::refresh_node_cache(&state, node_id).await;
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        for _ in 0..10 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            crate::mgmt::refresh_node_cache(&state_clone, node_id).await;
-            let snap = state_clone.monitor_cache.snapshot().await;
-            if let Some(rec) = snap.get(&node_id) {
-                if rec.health == crowdb_console_shared::cluster::NodeHealth::Up {
-                    break;
-                }
-            }
-        }
-    });
+    refresh_started_diskdb(&state, node_id).await;
 
     Ok(Json(DiskdbDeployResult {
         node_id,
@@ -440,4 +426,59 @@ pub struct DiskdbDeployResult {
     /// Public crowdb-rpc endpoint used by `DiskDB` clients.
     pub endpoint: String,
     pub pid: u32,
+}
+
+fn diskdb_restart_inputs(
+    state: &AppState,
+    node_id: u64,
+) -> Result<
+    (
+        crowdb_console_shared::config::ServerEntry,
+        crowdb_console_shared::config::NodeEntry,
+    ),
+    (StatusCode, Json<ErrorBody>),
+> {
+    let cfg = state.config.read().unwrap();
+    let entry = cfg
+        .servers
+        .iter()
+        .find(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::Diskdb)
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: format!("no diskdb instance registered on node {node_id}"),
+                }),
+            )
+        })?;
+    let node = cfg.node(node_id).cloned().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: format!("node {node_id} not found"),
+            }),
+        )
+    })?;
+    Ok((entry, node))
+}
+
+async fn refresh_started_diskdb(state: &AppState, node_id: u64) {
+    // Refresh the monitor cache so health badges reflect the restarted
+    // DDB process. The process may not be listening yet, so retry a few
+    // times with short delays until the probe succeeds.
+    crate::mgmt::refresh_node_cache(state, node_id).await;
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            crate::mgmt::refresh_node_cache(&state_clone, node_id).await;
+            let snap = state_clone.monitor_cache.snapshot().await;
+            if let Some(rec) = snap.get(&node_id) {
+                if rec.health == crowdb_console_shared::cluster::NodeHealth::Up {
+                    break;
+                }
+            }
+        }
+    });
 }
