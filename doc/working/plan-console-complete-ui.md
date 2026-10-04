@@ -1045,3 +1045,11 @@ UI todo acceptance items.
   in linear work rather than sorting or repeated partition lookups.
   Six balance cases, bounded sampling and startup reporting pass; five
   production monitor cases pass. Affected fmt/clippy gates pass.
+- [x] **Managed native contract**: provision an isolated real monitor-owned
+  deployment from the container profile with fresh paths and free ports. Run
+  exact spec 72 before edits (6.0 seconds), preserve hardware rejection and
+  KV/Iceberg/S3 behavior, compare selected physical block properties with actual
+  ObjectRecord/Chunk placements, and retain phase timing. This validates the
+  managed service contract, not Docker image packaging.
+  Spec passes in 7.7 seconds with unchanged waits; all seven native processes
+  report ready. Phase measurements remain active; KV demo key is cleaned up.

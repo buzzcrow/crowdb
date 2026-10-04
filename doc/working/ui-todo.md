@@ -274,8 +274,9 @@ unaccepted; this is not a full-suite result.
   remains unresolved. Large listing/cursors, stale revisions and error feedback
   still need real browser equivalents.
 - Cross-domain (`72`, `90`): real management smoke exists. The managed native
-  case has stale selectors and fixed single-node placement assumptions; its
-  current collection does not establish container acceptance.
+  case passes against an isolated actual monitor and seven service processes;
+  physical properties are compared to actual Chunk placements. Docker image
+  packaging remains a separate unaccepted boundary.
 
 ### Remaining acceptance tasks from the inventory
 
@@ -297,8 +298,11 @@ unaccepted; this is not a full-suite result.
   pagination and Parquet/Avro metadata inspection without payload scans.
 - [ ] Cover real bounded S3 bucket/object windows, continuation revisions and
   unavailable locations; retain exact multipart interval and return assertions.
-- [ ] Verify the managed container cross-domain case against the current UI
+- [x] Verify the managed container cross-domain case against the current UI
   contracts and actual placement; remove stale control/placement assumptions.
+  Native monitor-owned profile passes in 7.7 seconds, retaining hardware
+  rejection and KV/Iceberg/S3 operations. No browser interception is used;
+  Docker image packaging is not established by this host-native run.
 
 ## Verification layers
 
