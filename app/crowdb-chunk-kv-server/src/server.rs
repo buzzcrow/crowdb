@@ -28,6 +28,8 @@ use crate::{
 };
 
 mod activation;
+mod assignments;
+use assignments::{local_partition_for_entry, partition_matches_entry};
 mod load_sampling;
 mod observation;
 mod prepared_transfer;
@@ -1554,16 +1556,6 @@ fn recoverable_local_entry(entry: &ChunkKvRangeCatalogEntry, instance_id: u64) -
         )
 }
 
-fn partition_matches_entry(partition: &Partition, entry: &ChunkKvRangeCatalogEntry) -> bool {
-    let snapshot = partition.snapshot();
-    snapshot.partition_id.high == entry.partition_id.high
-        && snapshot.partition_id.low == entry.partition_id.low
-        && snapshot.ownership_epoch == entry.owner_epoch
-        && snapshot.range.start.as_deref() == Some(entry.range.start.as_slice())
-        && snapshot.range.end == entry.range.end
-        && snapshot.stream_name == entry.artifact.stream_name
-}
-
 fn final_transfer_artifact(
     partition: &Partition,
     entry: &ChunkKvRangeCatalogEntry,
@@ -1591,16 +1583,6 @@ fn final_transfer_artifact(
     artifact.applied_seq = overlay.cutover_seq;
     artifact.child_stream_start_seq = overlay.target_stream_start_seq;
     Some(artifact)
-}
-
-fn local_partition_for_entry(partition: &Partition, entry: &ChunkKvRangeCatalogEntry) -> Option<Partition> {
-    if partition_matches_entry(partition, entry) {
-        return Some(partition.clone());
-    }
-    let ingress = partition.split_ingress()?;
-    [ingress.retained_parent(), ingress.child()]
-        .into_iter()
-        .find(|writer| partition_matches_entry(writer, entry))
 }
 
 fn split_writer_matches_artifact(

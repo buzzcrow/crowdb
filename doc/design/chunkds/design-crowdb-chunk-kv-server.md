@@ -74,6 +74,13 @@ the selected partition repeats the epoch check at its WAL and tree boundary.
 This separates stale-client tolerance from owner fencing without weakening
 either fence.
 
+Catalog reconciliation matches the tree identity as well as partition identity,
+epoch, range, and stream. When a Serving descriptor has materialized its tail
+overlay, an unactivated Prepared overlay handle must be replaced by recovery
+from the independent checkpoint. It cannot satisfy the materialized assignment
+or bypass the split commit proof. Ordinary grant activation applies only after
+that independent recovery has completed.
+
 ## 4. Request Contract
 
 Every request carries a random 128-bit client instance ID, nonzero monotonic

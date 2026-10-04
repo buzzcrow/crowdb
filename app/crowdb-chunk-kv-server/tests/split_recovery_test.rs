@@ -77,6 +77,55 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
     }
 }
 
+#[tokio::test]
+async fn materialized_catalog_replaces_unactivated_overlay_with_independent_recovery() {
+    let transition = transition();
+    let original = entry(&transition, true);
+    let overlay = recovered(&original).await;
+    let service = ChunkKvService::new(1, 4).unwrap();
+    install(&service, &original, &overlay);
+    let mut clean = original;
+    clean.artifact.tail_overlay = None;
+    clean.transition_id = None;
+    assert!(
+        !service.hosts_catalog_assignment(&clean),
+        "a prepared overlay cannot serve a materialized catalog without independent recovery"
+    );
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 2,
+        page_index: 0,
+        checksum: [0; 32],
+        entries: vec![clean.clone()],
+    };
+    let plain = recovered(&clean).await;
+    service
+        .reconcile_partitions(std::slice::from_ref(&page), std::slice::from_ref(&plain))
+        .unwrap();
+    let mut sibling = entry(&transition, false);
+    sibling.artifact.tail_overlay = None;
+    sibling.transition_id = None;
+    page.entries.push(sibling);
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 2,
+        previous_generation: Some(1),
+        checksum: [0; 32],
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 2,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+    };
+    head.seal().unwrap();
+    service.install_catalog(&head, &[page]).unwrap();
+    service
+        .activate_recovered_partition(clean.partition_id, 2)
+        .unwrap();
+    assert_eq!(plain.lifecycle(), PartitionLifecycle::Serving);
+    assert_eq!(overlay.lifecycle(), PartitionLifecycle::Prepared);
+}
+
 fn transition() -> SplitTransition {
     let parent_id = Id128 { high: 1, low: 1 };
     let overlay = TailOverlayArtifact {
@@ -209,7 +258,14 @@ async fn recovered(entry: &ChunkKvRangeCatalogEntry) -> Partition {
     )
     .await
     .unwrap();
-    let overlay = entry.artifact.tail_overlay.as_ref().unwrap();
+    let Some(overlay) = entry.artifact.tail_overlay.as_ref() else {
+        return recover_plain(
+            entry,
+            tree,
+            Arc::new(StreamPartitionJournal::new(stream, name).unwrap()),
+        )
+        .await;
+    };
     Partition::recover_prepared(
         PreparedSplitWriterArtifact {
             partition_id: PartitionId {
@@ -250,6 +306,38 @@ async fn recovered(entry: &ChunkKvRangeCatalogEntry) -> Partition {
         PartitionConfig::default(),
         tree,
         Arc::new(StreamPartitionJournal::new(stream, name).unwrap()),
+    )
+    .await
+    .unwrap()
+}
+
+async fn recover_plain(
+    entry: &ChunkKvRangeCatalogEntry,
+    tree: Arc<MemoryPartitionTree>,
+    journal: Arc<StreamPartitionJournal>,
+) -> Partition {
+    Partition::recover_prepared_assignment(
+        PartitionId {
+            high: entry.partition_id.high,
+            low: entry.partition_id.low,
+        },
+        PartitionRange {
+            start: Some(entry.range.start.clone()),
+            end: entry.range.end.clone(),
+        },
+        entry.owner_epoch,
+        Checkpoint {
+            tree_id: entry.artifact.tree_id,
+            tree_manifest: 1,
+            root_manifest_generation: 1,
+            applied_seq: 1,
+            stream_name: entry.artifact.stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        tree,
+        journal,
     )
     .await
     .unwrap()
