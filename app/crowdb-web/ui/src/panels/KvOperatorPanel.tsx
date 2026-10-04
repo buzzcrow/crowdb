@@ -5,7 +5,8 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Search, Info, Database, Trash2, Loader2, Copy, AlertTriangle, FlaskConical } from 'lucide-react';
 import { useNavigationSnapshot } from '../contexts/DomainContext';
 import { Domain } from '../types';
-import { displayBytes } from '../kv/displayBytes';
+import { displayBytes, printableBytes } from '../kv/displayBytes';
+import { ByteDisplay } from '../kv/ByteDisplay';
 import { ResourceActions } from '../access/ResourceActions';
 import { buttonClass } from '../access/Workbench';
 import { useToast } from '../contexts/ToastContext';
@@ -578,7 +579,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
               <span className="tw-text-xs tw-text-text tw-flex tw-items-center tw-gap-1">
                 {getResult.found ? (
                   <>
-                    <span className="tw-font-mono tw-text-muted" data-testid="kv-get-result">{displayBytes(getResult.value_utf8, getResult.value_hex)}</span>
+                    <span className="tw-font-mono" data-testid="kv-get-result"><ByteDisplay text={getResult.value_utf8} hex={getResult.value_hex} /></span>
                     <span className="tw-text-muted tw-text-[10px]">rev: {getResult.revision}</span>
                     <button onClick={() => copy(displayBytes(getResult.value_utf8, getResult.value_hex))} className="tw-text-muted hover:tw-text-text" data-testid="kv-copy-value">
                       <Copy className="tw-h-3 tw-w-3" />
@@ -808,16 +809,16 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
                       <tr
                         key={`${row.groupId}-${row.key_utf8}-${idx}`}
                         className="hover:tw-bg-panel/30 tw-cursor-pointer"
-                        onClick={() => { setFocusedRow(row); const readable = displayBytes(row.key_utf8, row.key_hex) === row.key_utf8 && displayBytes(row.value_utf8, row.value_hex) === row.value_utf8; setGetKey(readable ? row.key_utf8 : ''); setPutKey(''); setPutValue(''); setDeleteKey(''); if (groupId !== ALL_GROUPS && readable) { setPutKey(row.key_utf8); setPutValue(row.value_utf8 ?? ''); setDeleteKey(row.key_utf8); } }}
+                        onClick={() => { setFocusedRow(row); const readable = printableBytes(row.key_utf8, row.key_hex) && printableBytes(row.value_utf8, row.value_hex); setGetKey(readable ? row.key_utf8 : ''); setPutKey(''); setPutValue(''); setDeleteKey(''); if (groupId !== ALL_GROUPS && readable) { setPutKey(row.key_utf8); setPutValue(row.value_utf8 ?? ''); setDeleteKey(row.key_utf8); } }}
                       >
                         <td className="tw-p-2 tw-text-center" onClick={(e) => { e.stopPropagation(); toggleRow(idx); }}>
                           <input type="checkbox" checked={row.selected} readOnly />
                         </td>
                         <td className="tw-p-2 tw-font-mono tw-truncate tw-max-w-[200px]" title={displayBytes(row.key_utf8, row.key_hex)}>
-                          {displayBytes(row.key_utf8, row.key_hex)}
+                          <ByteDisplay text={row.key_utf8} hex={row.key_hex} />
                         </td>
                         <td className="tw-p-2 tw-font-mono tw-truncate tw-max-w-[200px]" title={displayBytes(row.value_utf8, row.value_hex)}>
-                          {displayBytes(row.value_utf8, row.value_hex)}
+                          <ByteDisplay text={row.value_utf8} hex={row.value_hex} />
                         </td>
                         {showGroupColumn && (
                           <td className="tw-p-2 tw-text-muted">{row.groupId}</td>
@@ -860,7 +861,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
             No results. Click Scan to list keys.
           </div>
         )}
-        {focusedRow && <section aria-label="Selected key" className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4 tw-space-y-3"><h2 className="tw-font-semibold">Key / Value · Store {storeId} / Group {focusedRow.groupId}</h2><div className="tw-text-xs tw-text-muted">Key</div><pre className="tw-whitespace-pre-wrap tw-break-all tw-text-xs">{displayBytes(focusedRow.key_utf8, focusedRow.key_hex)}</pre><div className="tw-text-xs tw-text-muted">Value</div><pre className="tw-whitespace-pre-wrap tw-break-all tw-text-xs">{displayBytes(focusedRow.value_utf8, focusedRow.value_hex)}</pre></section>}
+        {focusedRow && <section aria-label="Selected key" className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4 tw-space-y-3"><h2 className="tw-font-semibold">Key / Value · Store {storeId} / Group {focusedRow.groupId}</h2><div className="tw-text-xs tw-text-muted">Key</div><pre className="tw-whitespace-pre-wrap tw-break-all tw-text-xs"><ByteDisplay text={focusedRow.key_utf8} hex={focusedRow.key_hex} /></pre><div className="tw-text-xs tw-text-muted">Value</div><pre className="tw-whitespace-pre-wrap tw-break-all tw-text-xs"><ByteDisplay text={focusedRow.value_utf8} hex={focusedRow.value_hex} /></pre></section>}
 
       </div>
 

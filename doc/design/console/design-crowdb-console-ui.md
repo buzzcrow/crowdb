@@ -114,6 +114,8 @@ provide observable capacity and bitmap fixtures.
   children on click while selecting the parent. Children retain their own
   expansion state. Sidebar focus reveals hidden ancestors. Right-click opens
   the entity menu without toggling expansion. Fit All fits visible cards.
+  Cluster initially expands Datacenter/Rack and stops at visible Node cards;
+  service descendants appear when a Node is explicitly expanded.
 
 ## 4. Visual language and service identity
 
@@ -260,7 +262,9 @@ provide observable capacity and bitmap fixtures.
 ## 11. Verification contract
 
 - **TEST-01:** Prepare and verify backend prerequisites through APIs before
-  visual acceptance. A mock response tests rendering, not backend success.
+  visual acceptance. Browser E2E uses real services, persisted metadata and file
+  bytes. Response mocks, interception and HAR replay are forbidden. Pure unit
+  tests remain separate and cannot satisfy end-to-end acceptance.
 - Every acceptance result records: contract/scenario ID, fixture, actions,
   visible result, relevant bounded API result, pass/fail, and concrete defect.
 - Use role/label/test-id selectors. Prefer a short scripted flow to repeated
@@ -293,8 +297,9 @@ provide observable capacity and bitmap fixtures.
   physical Cluster diagram does not replace the logical KV workbench.
 - **KV-05:** A data window contains at most 20 entries. Previous/Next replace
   rows; each Group has an independent cursor when browsing a Store. Clicking
-  a row shows the full Key and Value. Strictly valid printable UTF-8 is text;
-  other bytes display their original hexadecimal encoding prefixed by `0x`.
+  a row shows the full Key and Value. Printable UTF-8 runs remain text; only
+  undisplayable characters and malformed bytes become uppercase hexadecimal
+  runs without `0x`, distinguished by warm gold text, a dark background and border.
   Display conversion cannot change bytes sent in a mutation or continuation.
 - **KV-06:** Get/Put/Delete occupy the shared collapsed Actions strip below
   the heading/path. Its expanded content names Store and Group. System Store 0 /
@@ -597,10 +602,10 @@ Unsupported features are explicit rather than represented as working controls.
   Capacity/Chunk/Chunk-KV `5x`, Iceberg `6x`, S3 `7x`, cross-function `9x`.
   Dedicated creation/reconfiguration specs retain their UI mutations; a smoke
   chain does not repeat every dialog or failure permutation.
-- **TEST-03:** Use three layers: fast deterministic rendering/failure fixtures;
-  real API-backed management/data tests; isolated native full-stack acceptance
-  including deployment and container capability enforcement. A mock layer never
-  substitutes for a missing native contract. Share setup per spec and keep
+- **TEST-03:** Use separate unit, backend integration and native browser E2E
+  layers. Browser fixtures provision actual services, metadata and files;
+  outages use actual service lifecycle. Deployment and container capability
+  enforcement require real API acceptance. Share setup per spec and keep
   destructive cases last. Reset only for cases that require empty authority.
 - **TEST-04:** Keep the step timer and slow-test reporter. Measure setup, mutation
   response, lifecycle readiness, DOM refresh and teardown separately. Slow steps

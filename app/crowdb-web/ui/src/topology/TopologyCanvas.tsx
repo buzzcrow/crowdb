@@ -148,7 +148,9 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   // reference but the same action key) don't cancel an in-flight fit.
   const fitRafIdRef = useRef<number | undefined>(undefined);
   const [collapsedByDomain, setCollapsedByDomain] = useState<Partial<Record<Domain, Set<string>>>>({});
-  const collapsed = collapsedByDomain[domain] ?? EMPTY_COLLAPSED;
+  const defaultCollapsed = useMemo(() => domain === Domain.Cluster
+    ? new Set(nodes.map(node => `N-${node.id}`)) : EMPTY_COLLAPSED, [domain, nodes]);
+  const collapsed = collapsedByDomain[domain] ?? defaultCollapsed;
   useNavigationSnapshot(domain, 'topology', () => {
     const viewport = getViewport();
     const hidden = [...collapsed];
@@ -183,14 +185,14 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   useEffect(() => {
     if (!focusRequest) return;
     setCollapsedByDomain(previous => {
-      const next = new Set(previous[domain]);
+      const next = new Set(previous[domain] ?? defaultCollapsed);
       next.forEach(id => {
         if (id !== focusRequest.targetId && descendantIds(id, edges).has(focusRequest.targetId)) next.delete(id);
       });
-      if (next.size === previous[domain]?.size) return previous;
+      if (next.size === (previous[domain] ?? defaultCollapsed).size) return previous;
       return { ...previous, [domain]: next };
     });
-  }, [domain, edges, focusRequest]);
+  }, [domain, edges, focusRequest, defaultCollapsed]);
 
   useEffect(() => {
     if (refreshToken !== lastRefreshTokenRef.current) {
@@ -321,12 +323,12 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
       const entity = (node.data as FlowNodeData).entity;
       if (entity) selectEntity({ ...entity, domain });
       if (childCounts.has(node.id)) setCollapsedByDomain(previous => {
-        const next = new Set(previous[domain]);
+        const next = new Set(previous[domain] ?? defaultCollapsed);
         if (next.has(node.id)) next.delete(node.id); else next.add(node.id);
         return { ...previous, [domain]: next };
       });
     },
-    [selectEntity, domain, childCounts],
+    [selectEntity, domain, childCounts, defaultCollapsed],
   );
 
   const onNodeContextMenu = useCallback(

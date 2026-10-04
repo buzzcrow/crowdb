@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 import config from './realBackend.config';
 
-// Deterministic domain rendering, pagination and failure contracts. Native
-// deployment/data acceptance remains in realBackend and managedNative.
+// Historical configuration retained while scenarios migrate to native fixtures.
+// The shared fixture forbids interception; these cases cannot pass using mocks.
 export default {
   ...config,
   testMatch: ['**/54-chunk-layout.spec.ts', '**/55-chunk-kv-catalog.spec.ts',

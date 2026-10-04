@@ -5,6 +5,15 @@
 
 Behavior authority: [Console UI specification](../../../../doc/design/console/design-crowdb-console-ui.md).
 
+## Acceptance policy
+
+- E2E must use real services, APIs, persisted metadata and file bytes. The shared
+  fixture rejects Page/Context routing and HAR replay. Mocked scenarios remain
+  unaccepted until real equivalents exist; see [UI tasks](../../../../doc/working/ui-todo.md).
+- Collection counts do not imply native coverage or passing acceptance. Existing
+  page-only configurations and mocked observations below describe historical
+  coverage; they cannot satisfy the current acceptance policy.
+
 ## Layers
 
 - Page behavior: deterministic large windows, selection, shared layout, failure
@@ -14,7 +23,8 @@ Behavior authority: [Console UI specification](../../../../doc/design/console/de
 - Real management/data: `realBackend.config.ts` owns one isolated mutable Web
   runtime and one worker. Test-mode children live in a disposable namespace;
   global teardown and SIGTERM await stop before deleting their files. Cluster lifecycle, KV membership/CRUD, Capacity and
-  cross-links use actual APIs; fixture-specific observation mocks remain explicit.
+  cross-links must use actual APIs. Remaining observation mocks require migration
+  before those scenarios can pass.
 - Native service chain: `managedNative.config.ts` uses an explicitly supplied,
   isolated populated deployment. It verifies shared UI against actual KV,
   Iceberg, S3 and Chunk services and backend hardware capability rejection.
@@ -54,12 +64,9 @@ Behavior authority: [Console UI specification](../../../../doc/design/console/de
   sleep to wait for state, or extend an assertion timeout to conceal failure.
   UI actions/assertions have a 3-second deadline; Group 0 election/init has an
   explicit 10-second deadline. Longer transfer deadlines require their own reason.
-- Changes run the exact affected spec first. Full acceptance uses
-  `pixi run test-console-ui`; quick page iteration uses:
-
-```sh
-pixi run bash -c 'cd app/crowdb-web/ui && npx playwright test --config=e2e/pageBehavior.config.ts'
-```
+- Changes run the exact affected native spec first. Full acceptance uses
+  `pixi run test-console-ui`; it remains incomplete while mocked scenarios
+  await migration. Do not use `pageBehavior.config.ts` as a passing acceptance gate.
 
 - Native acceptance requires `CROWDB_WEB_E2E_BASE_URL` for a disposable deployment:
 

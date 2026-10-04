@@ -77,6 +77,12 @@ test.describe('canvas · fit + pan', () => {
     const rack = page.locator('.react-flow__node[data-id="R-480"]');
     const node = page.locator('.react-flow__node[data-id="N-480"]');
     const server = page.locator('.react-flow__node[data-id="KV-480"]');
+    await expect(rack).toBeVisible();
+    await expect(node).toBeVisible();
+    await expect(server).toHaveCount(0);
+    await page.getByTestId('fit-all-btn').click();
+    await expect(server).toHaveCount(0);
+    await node.click();
     await expect(server).toBeVisible();
     await node.click();
     await expect(server).toHaveCount(0);
