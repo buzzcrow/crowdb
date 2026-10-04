@@ -348,6 +348,7 @@ async fn topology_replan_resumes_strictly_after_last_emitted_key() {
 
 struct ActivatingTransport {
     failures: u32,
+    latest_map_revision: Option<u64>,
     calls: AtomicU32,
     ordered: OrderedTransport,
 }
@@ -371,7 +372,7 @@ impl ChunkKvTransport for ActivatingTransport {
                     code: ChunkKvRpcErrorCode::NotMyRange,
                     message: "catalog owner has not activated yet".into(),
                     retry_after_ms: None,
-                    latest_map_revision: Some(request.routing.map_revision),
+                    latest_map_revision: self.latest_map_revision,
                     owner_hint: None,
                 }),
             });
@@ -380,11 +381,30 @@ impl ChunkKvTransport for ActivatingTransport {
     }
 }
 
-async fn scan_during_activation(failures: u32) -> (crowdb_chunk_kv_client::MultiScanPage, u32) {
+struct ObservedCatalog {
+    loads: AtomicU32,
+}
+
+#[async_trait]
+impl ChunkKvRangeCatalogSource for ObservedCatalog {
+    async fn load(&self) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)> {
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        Ok(catalog(1, &[(b"".as_slice(), None, 1)]))
+    }
+}
+
+async fn scan_during_activation(
+    failures: u32,
+    latest_map_revision: Option<u64>,
+) -> (crowdb_chunk_kv_client::MultiScanPage, u32, u32) {
     let transport = Arc::new(ActivatingTransport {
         failures,
+        latest_map_revision,
         calls: AtomicU32::new(0),
         ordered: OrderedTransport::stable(),
+    });
+    let source = Arc::new(ObservedCatalog {
+        loads: AtomicU32::new(0),
     });
     let client = ChunkKvClient::new(
         ClientConfig {
@@ -393,31 +413,44 @@ async fn scan_during_activation(failures: u32) -> (crowdb_chunk_kv_client::Multi
             retry_backoff: Duration::from_millis(1),
             ..ClientConfig::default()
         },
-        Arc::new(ScriptedCatalog {
-            versions: Mutex::new(vec![catalog(1, &[(b"".as_slice(), None, 1)])]),
-        }),
+        source.clone(),
         transport.clone(),
     )
     .unwrap();
     let page = client.scan(scan(ScanDirection::Forward, 10)).await.unwrap();
-    (page, transport.calls.load(Ordering::Relaxed))
+    (
+        page,
+        transport.calls.load(Ordering::Relaxed),
+        source.loads.load(Ordering::Relaxed),
+    )
 }
 
 #[tokio::test]
 async fn owner_activation_can_settle_after_catalog_refresh_budget_is_exhausted() {
-    let (page, calls) = scan_during_activation(3).await;
+    let (page, calls, loads) = scan_during_activation(3, None).await;
     assert!(page.terminal_failure.is_none());
     assert_eq!(page.items.len(), 2);
     assert_eq!(calls, 4);
+    assert_eq!(loads, 2);
 }
 
 #[tokio::test]
 async fn persistent_owner_rejection_still_exhausts_bounded_scan_attempts() {
-    let (page, calls) = scan_during_activation(u32::MAX).await;
+    let (page, calls, loads) = scan_during_activation(u32::MAX, None).await;
     assert_eq!(
         page.terminal_failure.unwrap().code,
         ChunkKvRpcErrorCode::NotMyRange
     );
     assert!(page.items.is_empty());
     assert_eq!(calls, 5);
+    assert_eq!(loads, 2);
+}
+
+#[tokio::test]
+async fn same_generation_activation_preserves_the_discovery_budget() {
+    let (page, calls, loads) = scan_during_activation(3, Some(1)).await;
+    assert!(page.terminal_failure.is_none());
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(calls, 4);
+    assert_eq!(loads, 1);
 }

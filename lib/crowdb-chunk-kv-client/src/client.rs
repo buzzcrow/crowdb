@@ -223,7 +223,15 @@ impl ChunkKvClient {
                         return Ok(response);
                     };
                     last_response = Some(response);
-                    if refresh_route && refreshes < self.config.max_route_refreshes {
+                    if refresh_route
+                        && last_response
+                            .as_ref()
+                            .and_then(|response| response.result.as_ref().err())
+                            .is_some_and(|failure| {
+                                route_failure_needs_refresh(failure, map.generation(), entry)
+                            })
+                        && refreshes < self.config.max_route_refreshes
+                    {
                         refreshes += 1;
                         let _ = self.refresh_with_deadline(deadline).await;
                     }
@@ -316,6 +324,30 @@ fn response_retry_route(
                 | ChunkKvRpcErrorCode::LeaseExpired
         )
     })
+}
+
+pub(crate) fn route_failure_needs_refresh(
+    failure: &crowdb_protocol::chunk_kv::RpcFailure,
+    generation: u64,
+    entry: &crowdb_protocol::chunk_kv::ChunkKvRangeCatalogEntry,
+) -> bool {
+    // A caught-up route can arrive before its serving grant. Re-reading the
+    // same catalog neither activates the owner nor provides a different route.
+    if failure.code != ChunkKvRpcErrorCode::NotMyRange {
+        return true;
+    }
+    let Some(revision) = failure.latest_map_revision else {
+        return true;
+    };
+    if revision < generation {
+        return false;
+    }
+    revision != generation
+        || failure.owner_hint.as_ref().is_some_and(|hint| {
+            hint.instance_id != entry.owner.instance_id
+                || hint.rpc_endpoint != entry.owner.rpc_endpoint
+                || hint.owner_epoch != entry.owner_epoch
+        })
 }
 
 pub(crate) fn wall_now_ms() -> u64 {

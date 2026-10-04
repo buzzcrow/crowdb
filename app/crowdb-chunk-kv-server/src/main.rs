@@ -20,7 +20,9 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, KeyRange,
     OwnerDescriptor, PartitionArtifact,
 };
-use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
+use crowdb_protocol::key::{
+    ChunkKvRangeCatalogHeadKey, ChunkKvSplitKey, ChunkKvTransferKey, ServingGrantKey, TextKey,
+};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
@@ -238,13 +240,56 @@ async fn main() -> std::process::ExitCode {
     let refresh_service = Arc::clone(&service);
     let refresh_catalog = Arc::clone(&catalog);
     let refresh_storage = Arc::clone(&storage);
+    let refresh_store = Arc::clone(&control_store);
+    let refresh_config = config.clone();
     let refresh_instance_id = config.instance_id;
+    let watch = WatchNotifyClient::from_shared(Arc::clone(storage.kv()));
+    let mut catalog_watch = match watch.subscribe(0, 0, ChunkKvRangeCatalogHeadKey.to_path().as_bytes()) {
+        Ok(subscription) => Some(subscription),
+        Err(error) => {
+            warn!(%error, "catalog watch unavailable; periodic refresh remains active");
+            None
+        }
+    };
+    let mut grant_watch = match watch.subscribe(
+        0,
+        0,
+        ServingGrantKey {
+            instance_id: config.instance_id,
+        }
+        .to_path()
+        .as_bytes(),
+    ) {
+        Ok(subscription) => Some(subscription),
+        Err(error) => {
+            warn!(%error, "serving-grant watch unavailable; heartbeat refresh remains active");
+            None
+        }
+    };
     let refresh_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
     let refresh_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(refresh_interval);
         interval.tick().await;
         loop {
-            interval.tick().await;
+            let grant_only = tokio::select! {
+                _ = interval.tick() => false,
+                alive = receive_transition_notify(&mut catalog_watch) => {
+                    if !alive {
+                        catalog_watch = None;
+                    }
+                    false
+                }
+                alive = receive_transition_notify(&mut grant_watch) => {
+                    if !alive {
+                        grant_watch = None;
+                    }
+                    true
+                }
+            };
+            if grant_only {
+                install_latest_grant(&refresh_store, &refresh_service, &refresh_config).await;
+                continue;
+            }
             match refresh_catalog.load_current().await {
                 Ok(Some((head, pages))) => {
                     let recovered = match recover_assigned_partitions(
@@ -272,6 +317,7 @@ async fn main() -> std::process::ExitCode {
                         )) => {}
                         Err(error) => warn!(%error, "rejected refreshed chunk KV catalog"),
                     }
+                    install_latest_grant(&refresh_store, &refresh_service, &refresh_config).await;
                 }
                 Ok(None) => warn!("chunk KV catalog head is absent; retaining installed catalog"),
                 Err(error) => warn!(%error, "catalog refresh failed; retaining installed catalog"),
@@ -296,7 +342,6 @@ async fn main() -> std::process::ExitCode {
         Arc::clone(&control_store),
         transition_executor,
     );
-    let watch = WatchNotifyClient::from_shared(Arc::clone(storage.kv()));
     let mut transfer_watch =
         match watch.subscribe(0, 0, <ChunkKvTransferKey as TextKey>::prefix_all().as_bytes()) {
             Ok(subscription) => Some(subscription),

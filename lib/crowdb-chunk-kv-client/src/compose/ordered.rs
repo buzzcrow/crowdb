@@ -91,7 +91,10 @@ impl ChunkKvClient {
                 }
                 Ok(Ok(response)) if !response_is_transient(&response) => return Ok(response),
                 Ok(Ok(response)) => {
-                    let refresh = response_has_topology_failure(&response);
+                    let refresh = response_has_topology_failure(&response)
+                        && response.result.as_ref().err().is_some_and(|failure| {
+                            crate::client::route_failure_needs_refresh(failure, map.generation(), entry)
+                        });
                     last_response = Some(response);
                     refresh
                 }
@@ -305,7 +308,13 @@ impl ChunkKvClient {
                                     Some(failure),
                                 ));
                             }
-                            if replans < self.config.max_route_refreshes {
+                            if replans < self.config.max_route_refreshes
+                                && crate::client::route_failure_needs_refresh(
+                                    &failure,
+                                    map.generation(),
+                                    &entry,
+                                )
+                            {
                                 replans += 1;
                                 self.refresh_with_deadline(deadline).await?;
                                 scan_backoff(self, deadline).await?;

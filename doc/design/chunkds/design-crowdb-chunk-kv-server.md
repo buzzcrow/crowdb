@@ -328,6 +328,13 @@ operations retain handles and finish before bounded checkpoint/drain work.
 Catalog refresh recovers every new or changed local assignment first, then
 replaces the catalog and hosted-partition snapshots; unchanged exact-epoch
 handles remain live and departed assignments are dropped.
+Catalog-head watch notifications trigger reconciliation immediately and check
+the matching serving grant afterward. Instance-specific grant notifications
+install authority without reopening or rescanning catalog assignments.
+The configured periodic refresh remains
+the fallback when notifications are unavailable; grant renewal also continues
+on the heartbeat path. Publication therefore does not wait for a full polling
+interval before a healthy owner observes a new routing generation.
 
 Configuration exposes identity, group-0 seeds, separate RPC listen and routable
 advertise addresses, dedicated 15xxx HTTP/RPC ports, hosted-partition capacity,
