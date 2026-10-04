@@ -186,6 +186,8 @@ pub struct StorageConfig {
     pub stream_mirror_copies: u32,
     pub tree_chunk_capacity_bytes: u64,
     pub stream_chunk_capacity_bytes: u64,
+    /// Maximum sealed extents per immutable stream directory page.
+    pub stream_extent_page_entries: usize,
     pub diskio_connections_per_endpoint: usize,
     pub diskio_rpc_workers: u32,
 }
@@ -198,6 +200,7 @@ impl Default for StorageConfig {
             stream_mirror_copies: 2,
             tree_chunk_capacity_bytes: 256 * 1024 * 1024,
             stream_chunk_capacity_bytes: 256 * 1024 * 1024,
+            stream_extent_page_entries: 1_024,
             diskio_connections_per_endpoint: 1,
             diskio_rpc_workers: 2,
         }
@@ -211,11 +214,12 @@ impl StorageConfig {
             || self.stream_mirror_copies > 5
             || !(1024 * 1024..=256 * 1024 * 1024).contains(&self.tree_chunk_capacity_bytes)
             || !(1024 * 1024..=256 * 1024 * 1024).contains(&self.stream_chunk_capacity_bytes)
+            || self.stream_extent_page_entries == 0
             || self.diskio_connections_per_endpoint == 0
             || self.diskio_rpc_workers == 0
         {
             return Err(ConfigError::Invalid(
-                "storage lease, mirror copies, connections, workers, and tree chunk capacity must be valid"
+                "storage lease, mirror copies, connections, workers, tree/stream chunk capacities, and extent page entries must be valid"
                     .into(),
             ));
         }

@@ -81,7 +81,11 @@ impl ChunkKvStorage {
             config.storage.stream_writer_lease_ms,
             config.storage.stream_mirror_copies,
             config.storage.tree_chunk_capacity_bytes,
-            config.storage.stream_chunk_capacity_bytes,
+            StreamConfig {
+                chunk_capacity_bytes: config.storage.stream_chunk_capacity_bytes,
+                extent_page_entries: config.storage.stream_extent_page_entries,
+                ..StreamConfig::default()
+            },
         )
         .await
     }
@@ -93,12 +97,8 @@ impl ChunkKvStorage {
         writer_lease_ms: u64,
         stream_mirror_copies: u32,
         tree_chunk_capacity_bytes: u64,
-        stream_chunk_capacity_bytes: u64,
+        stream_config: StreamConfig,
     ) -> Result<Self, StorageRuntimeError> {
-        let stream_config = StreamConfig {
-            chunk_capacity_bytes: stream_chunk_capacity_bytes,
-            ..StreamConfig::default()
-        };
         let streams = Arc::new(
             ProductionStreamRuntime::new_with_mirror_copies(
                 Arc::clone(&kv),
@@ -141,7 +141,7 @@ impl ChunkKvStorage {
             writer_lease_ms,
             stream_mirror_copies,
             256 * 1024 * 1024,
-            256 * 1024 * 1024,
+            StreamConfig::default(),
         )
         .await
     }
