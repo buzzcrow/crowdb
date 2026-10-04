@@ -124,7 +124,9 @@ impl CrowdbKvClient {
             .topology
             .leader(store_id, group_id)
             .unwrap_or_else(|| current.to_string());
-        if !no_seeds {
+        // A newly discovered route can make progress immediately. Backoff
+        // belongs to another attempt against the same failed endpoint.
+        if !no_seeds && endpoint == current {
             tokio::time::sleep(*backoff).await;
             *backoff = (*backoff * 2).min(self.retry.backoff_max);
         }

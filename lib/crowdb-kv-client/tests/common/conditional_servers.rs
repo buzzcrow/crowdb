@@ -77,11 +77,15 @@ impl TestServers {
         }
     }
 
-    pub fn client(&self) -> CrowdbKvClient {
+    pub fn client_config(&self) -> ClientConfig {
         let mut config = ClientConfig::new(vec![self.seed.clone()]);
         config.retry.max_retries = 2;
         config.retry.unknown_leader_wait = Duration::from_millis(1);
-        let client = CrowdbKvClient::new(config);
+        config
+    }
+
+    pub fn client(&self) -> CrowdbKvClient {
+        let client = CrowdbKvClient::new(self.client_config());
         client.seed_leader(1, 1, self.follower.listen_addr().unwrap().to_string());
         client
     }
