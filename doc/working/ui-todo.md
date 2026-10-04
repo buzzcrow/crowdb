@@ -162,6 +162,19 @@ unaccepted; this is not a full-suite result.
   partial deployment and prerequisite arrival, with no duplicate instances.
   Do not mark the normal three-node bring-up accepted until all six service
   types run on each Node.
+- [x] **Native six-service restart and retained data**: the ordinary three-node
+  fixture restarts KV, DDB, CDB, DiskIO, Chunk-KV and Access on Node 1. Each old
+  PID exits, each new PID is alive, all 18 exact service identities remain
+  unique, and pre-restart S3 content reads back. The latest post-restart native
+  browser run passes all four domain cases in a 34.49-second owned fixture.
+  This does not close the queue's partial-plan/prerequisite-arrival acceptance.
+- [ ] **Post-restart inspection latency**: one native browser run after the
+  same six restarts timed out at 3 seconds on DG 1 Zone usage and Chunk-KV
+  catalog; DDB restart took 6.532 seconds and teardown took 18.198 seconds.
+  Subsequent same-boundary diagnostics pass, so this is still unresolved.
+  Preserve failure logs and client route counters, identify the first slow
+  boundary, and keep existing browser deadlines; no warming requests or
+  mutation retries may hide the failure.
 - [ ] **Create defaults acceptance**: conflict-free defaults are implemented;
   complete repeated-create and reopen acceptance across IDs, host listener
   ports, DiskDB port ranges and dependency references.

@@ -1059,3 +1059,14 @@ UI todo acceptance items.
 
 - [x] **Cross-Store DiskGroup recovery acceptance**: provision Store 1 / Group 1 before Store 0 has an ordinary Group. Verify pending creation binds automatically, DDB arrival repairs owner, retries preserve both after a lower Store destination appears, and actual S3/Chunk allocation works across these bindings.
   Extend the same case with actual removal of existing DG 3 binding/owner records. Normal creation repairs both; actual multipart/Chunk and four native browser diagnostics pass in a 27.91-second owned fixture.
+
+- [x] **Native six-service restart acceptance**: restart each actual service on Node 1 in the same normal three-node fixture, verify old PID exits and exact identity remains unique among 18 services, then read back persisted S3 bytes and run native domain diagnostics. No response interception or mutation retries.
+  Actual service identity/PID and retained S3 checks pass; post-restart native
+  diagnostics pass in 34.49 seconds. One earlier Zone/catalog deadline failure
+  remains separately open; this is not an accepted latency guarantee. Record
+  route counters without warming additional management requests and preserve
+  owned failure logs before process teardown.
+- [ ] **Post-restart inspection delay**: diagnose the retained Zone/catalog
+  3-second failure and 6.532-second DDB restart; latest warm-route counters show
+  one transport retry and no unknown-leader waits. A passing repetition alone
+  does not close this task.

@@ -12,6 +12,9 @@ use tower::ServiceExt;
 struct TestServices(AppState);
 impl Drop for TestServices {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            preserve_failure_logs(&self.0.runtime_root);
+        }
         let pids: Vec<_> = self
             .0
             .config
@@ -398,6 +401,7 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         .unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("ListAllMyBucketsResult"));
     assert_native_locations(&app).await;
+    assert_native_restarts(&app, &state).await;
     if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
         assert_native_browser_diagnostics(app.clone()).await;
     }
@@ -435,4 +439,76 @@ async fn assert_bound_groups(app: &axum::Router, hardware: &crowdb_kv_client::Ha
         assert_eq!((repaired.store_id, repaired.group_id), (expected_store, 1));
         assert!(renewed.lease_expiry_ms >= previous.lease_expiry_ms);
     }
+}
+
+async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
+    for kind in ["kv", "diskdb", "chunkdb", "diskio", "chunk-kv", "access-server"] {
+        let before = call(app, "GET", "/api/servers", Value::Null).await;
+        let entry = before
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["service_type"] == kind && entry["node_id"].as_u64() == Some(1))
+            .expect("actual service on Node 1");
+        let id = entry["id"].as_str().unwrap();
+        let old_pid = u32::try_from(entry["pid"].as_u64().unwrap()).unwrap();
+        let path = match kind {
+            "kv" => "/api/nodes/1/server/restart".to_owned(),
+            "diskdb" => "/api/nodes/1/diskdb/restart".to_owned(),
+            _ => format!("/api/services/{id}/restart"),
+        };
+        let restarted = call(app, "POST", &path, json!({})).await;
+        let new_pid = u32::try_from(restarted["pid"].as_u64().unwrap()).unwrap();
+        assert_ne!(new_pid, old_pid);
+        assert!(!crowdb_console_shared::lifecycle::process_is_alive(old_pid));
+        assert!(crowdb_console_shared::lifecycle::process_is_alive(new_pid));
+        let after = call(app, "GET", "/api/servers", Value::Null).await;
+        assert_eq!(after.as_array().unwrap().len(), 18);
+        let matches: Vec<_> = after
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["id"] == id)
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["pid"], new_pid);
+        let metrics = state.kv_client().await.metrics();
+        eprintln!(
+            "[PHASE] {kind} restart client state: hints={} unknown={} transport={} exhausted={} leader={:?}",
+            metrics.not_leader_hint_followed,
+            metrics.unknown_leader_wait,
+            metrics.transport_error_retry,
+            metrics.retries_exhausted,
+            state.monitor_cache.group0_leader_endpoint().await
+        );
+    }
+    assert_eq!(
+        s3_request(
+            app,
+            "GET",
+            "/api/access/s3/native-locations/multipart.bin",
+            vec![]
+        )
+        .await,
+        b"replacement"
+    );
+}
+
+fn preserve_failure_logs(root: &std::path::Path) {
+    let target = crowdb_test_harness::test_dirs::artifacts_root()
+        .join(format!("native-restart-failure-{}", std::process::id()));
+    for node in 1..=3 {
+        let source = root.join(format!("N-{node}/log"));
+        let destination = target.join(format!("N-{node}"));
+        std::fs::create_dir_all(&destination).unwrap();
+        if let Ok(entries) = std::fs::read_dir(source) {
+            for entry in entries {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_file() {
+                    std::fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+                }
+            }
+        }
+    }
+    eprintln!("[PHASE] native failure logs: {}", target.display());
 }
