@@ -478,6 +478,20 @@ loss beyond recovery capacity.
   child list. SIGTERM and forced SIGKILL/cleanup tests pass in 0.26s; persistent
   sentinel data is preserved. Protocol regression excludes persistent namespaces.
 
+## Continued backend verification (2026-10-04)
+
+- Existing Stream observation fixture includes `purpose`; its exact test passes
+  in 0.02 seconds. Real background mirror-to-EC conversion and four-shard repair
+  pass in 2.88 seconds with actual KV/DDB and six DiskIO processes, exact seals
+  and stale-tail checks.
+- Baseline post-restart native browsers pass all four cases in a 32.48-second
+  fixture. The leader-hint candidate drops 4,105 hints to 9, but subsequent cold
+  native runs fail live KV registration, metadata readiness or multipart upload.
+  The candidate is unaccepted and uncommitted; five-run diagnosis and exact
+  failures are recorded under the execution plan's `Blocked` section.
+- Node ownership and separate metrics UI designs remain deferred. R203 and the
+  real-browser coverage, geometry, recovery and balance tasks remain open.
+
 ## Current verification (2026-10-04)
 
 - The complete browser run has 81 passing / 4 failing cases in 3.8 minutes;

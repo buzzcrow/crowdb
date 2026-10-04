@@ -1014,10 +1014,8 @@ UI todo acceptance items.
   persistent rejection remains bounded, then rerun the three native diagnostics.
   All 18 client tests and affected clippy pass; native diagnostics all pass
   (Zone 0.927 s, graph 3.2 s, multipart/location 3.8 s; 23.89 s owned fixture).
-- [x] **S3 native full-read latency**: the 9-MiB failure exposed incorrect EC
-  shard geometry and rounded logical seals. Exact geometry/seals, physical
-  partition scan bounds and forwarded RPC correlation are corrected below;
-  full real browser acceptance passes with the unchanged 3-second deadlines.
+- [ ] **S3 native full-read latency**: one 9-MiB GET exceeded the unchanged
+  3-second browser deadline. Retain this failure and investigate its slow phase.
 - [x] **Advanced KV real acceptance**: run existing spec 31 before changes
   (0.847/4.9/2.8 s). Keep its mutation/demo coverage and assert first-page keys
   000–019, replacement keys 020–039, exclusion of previous keys and Previous
@@ -1090,48 +1088,57 @@ UI todo acceptance items.
   including exact seal inspection, 9-MiB full reads and six service restarts.
   Affected Rust fmt/clippy pass. This is API acceptance, not a passing complete
   browser selection. Existing browser deadlines remain unchanged.
-- [x] **Partition scan bounds**: the retained parent dispatcher can still serve
-  both children during a split. Clip each physical request to its catalog
-  partition's intersection with the caller range. Forward/reverse regressions
-  pass (seven ordered-client tests); actual native S3 bucket listing passes.
-- [x] **Exact backend conversion and repair acceptance**: six actual DiskIO
-  processes and real KV/DDB exercise mirror-to-EC conversion of 7 MiB + 17
-  bytes, followed by four missing data/parity shard repairs. Source and target
-  storage starts with nonzero stale bytes; valid prefixes match, tails remain
-  unwritten, and the exact seal survives. Latest case: 2.92 seconds.
-- [x] **Stream observation fixture**: supply its required Stream purpose.
-  Observation acceptance and all-target affected Rust clippy now pass.
-- [x] **RPC disconnect completion and lifetime**: fail both slab/map requests
-  immediately when their outbound connection closes, preserving unrelated
-  requests and transport cleanup. FFI connections retain callback ownership
-  after the client handle is dropped. Actual peer-close and handle-drop
-  regressions pass; full C++/FFI gate passes.
-- [x] **Forwarded KV response correlation**: Scan RPCs to the restarted former
-  leader timed out after 5.4 seconds even though the service responded. Get,
-  Scan and JournalScan now restore the original control-table RPC ID; failed
-  forwarding keeps the RPC ID distinct from the business request ID when
-  adding leader hints. Direct real follower requests cover successful and
-  failed forwarding without client retries or the timeout reaper.
-- [x] **Capacity observation snapshot**: compare rendered bitmap pixels with
-  the actual response consumed by the UI. Concurrent background allocation
-  can change bits between an earlier API probe and the selected Zone request.
-  No display behavior or allocation-bit semantics changed.
-- [x] **Complete post-restart native browser acceptance**: all four cases pass
-  against the ordinary three-node, eighteen-service fixture: Capacity 1.3 s,
-  Chunk-KV 1.9 s, Iceberg 7.1 s and S3 4.9 s. Individual existing 3-second
-  deadlines remain unchanged. Owned fixture: 33.37 s; DDB restart 0.923 s,
-  post-restart Chunk queries 7–9 ms and full 9-MiB reads 33–34 ms. Keep phase
-  timing instrumentation and preserve earlier failure artifacts.
+- [ ] **S3 browser timing and scan follow-up**: retain the separate 3.054-second
+  mutation, 3.003-second cleanup and bucket-list scan-order/bounds/continuation
+  failures. The corrected complete-body API reads take 35/37 ms, but do not
+  close these browser/backend transition issues.
+- [x] **Pre-existing stream test build failure — verified resolved**: all-target ChunkStream checks
+  fail because `tests/observation_test.rs` constructs StreamBinding without
+  `purpose`. Focused production stream tests and clippy pass; repair the unrelated
+  fixture before claiming the entire crate gate passed.
+  Current code already supplies `purpose`; the exact observation test passes
+  in 0.02 seconds. No whole-crate result is inferred.
 
-- Final gates: affected Rust fmt and all-target clippy pass; focused forwarded
-  reads pass in 0.18 s, existing forwarding tests 3/3 in 0.57 s, and complete
-  C++/FFI tests pass. Changed C++ tree-lint exits zero; existing empty-catch,
-  enum and sign-comparison warnings remain outside the changed behavior.
-- Record a separate cold Group 0 convergence work-budget issue: one successful
-  initialization followed 4,878 leader hints in 3.75 s. This is not a renewed
-  transport timeout or a failure of EC validity; do not infer its efficiency
-  from the successful browser selection.
+Stop at this coherent EC/alignment boundary as requested for account handoff.
+Background repair/conversion partial-prefix behavior is covered by the shared
+EC matrix and focused policy checks; dedicated real repair/conversion acceptance
+remains to be run and must not be inferred from the S3 API fixture.
 
-Stop at this completed EC/alignment and discovered API regression boundary for
-account handoff. UI design changes remain outside this task. Other deferred
-requirements remain in ui-todo.md; no requirement-wide completion is claimed.
+### Continued non-design execution (2026-10-04)
+
+- [x] **Verify retained implementation after history reconciliation**: the current Stream observation fixture has its required purpose and its exact test passes. The fresh three-node API/service-restart fixture and all four native browser cases pass (32.48-second fixture; Zone 1.3 s, graph 2.0 s, Iceberg 7.1 s, S3 4.0 s). Full 9-MiB reads are 31 ms; DDB restart is 918 ms. This does not close unconverted browser coverage.
+- [ ] **Bound repeated Group 0 hints — candidate blocked**: cold initialization still follows 4,105 hints. Share per-operation repeated/cyclic redirect accounting across ordinary and conditional writes and scans, retain immediate progress to new endpoints, and use the existing election wait/budget for stalled hints. Extract oversized core operations into owning modules before edits. Files: `lib/crowdb-kv-client/src/client/core.rs`, `core/operations.rs`, `core/scans.rs`, `core/conditional.rs`, `client/retry.rs`, `config.rs`, `tests/conditional_retry_test.rs`, `tests/common/conditional_servers.rs`. Verify real pinned-role cycles, existing client tests, cold native initialization and affected clippy/fmt.
+- [ ] **Continue remaining native acceptance**: executable staging race, mixed allocation units, plan recovery, balance weight/liveness, stream rollover, bounded inspection API and unconverted real browser contracts remain open. Node ownership and separate metrics UI designs remain deferred.
+
+- [x] **Verify retained native EC background acceptance**: `pixi run timeout 60s cargo test -p crowdb-chunkdb --test partial_ec_background_test -- --nocapture` passes in 2.88 seconds. Actual KV/DDB and six DiskIO processes cover 7 MiB + 17-byte mirror-to-EC conversion, four missing shard repairs, exact seal and nonzero unwritten tails. This confirms the existing regression; no production change was needed.
+
+## Blocked
+
+Cold native provisioning remains unaccepted after five diagnostic runs of the
+leader-hint candidate. Do not commit the candidate production changes as a
+completed fix or remove R203. Preserve the user's original plan edits.
+
+- Candidate: per-operation new endpoint hints remain immediate; repeats/cycles
+  use the existing 200-ms election wait and ten-retry budget. Oversized client
+  core operations were extracted into `core/operations.rs` and `core/scans.rs`.
+  Real pinned-role cyclic writes pass; all 68 KV client cases pass. Affected
+  all-target Web/client clippy and Rust formatting pass. Production/test changes
+  remain uncommitted, including the native hint-count regression.
+- Baseline before the candidate: the complete four-case native browser selection
+  passed in a 32.48-second fixture; cold startup followed 4,105 hints.
+- First candidate command: `pixi run timeout 60s env CROWDB_NATIVE_UI_E2E=1 cargo test -p crowdb-web --test native_cluster_provisioning_test -- --ignored --nocapture`. Hint count dropped to 9 with zero exhausted Web retries. Three browser cases passed, but S3 multipart failed: first part returned 503 in 281 ms, then the unchanged 3-second DOM assertion failed. Full API part upload also took 7.912 seconds. Trace XML reported ServiceUnavailable; Access diagnostics reported no cached DiskDB endpoint for DG 2. Node 2 management/RPC had become unreachable. Logs: `.crowdb-runtime/artifacts/native-restart-failure-930735`. The outer 60-second shell timeout interrupted teardown; subsequent ownership-aware `clean-env` removed disposable processes and preserved persistent data.
+- Second run enabled temporary lifecycle tracing, but inherited `RUST_LOG=warn` suppressed debug events. Initialization failed after 12.321 seconds with `Group 0 does not show exactly one live KV registration per node`. Logs: `.crowdb-runtime/artifacts/native-restart-failure-935233`.
+- Third run set `RUST_LOG=crowdb_console_shared::lifecycle=debug` explicitly. Initialization succeeded, but first Chunk-KV deployment failed after 3.876 seconds: `Metadata group is not readable: retries exhausted after 11 attempts, last error: not leader`. Logs: `.crowdb-runtime/artifacts/native-restart-failure-936239`.
+- Fourth run removed temporary tracing and checked a clean owned environment. Initialization failed after 10.998 seconds with the same live-registration error. Logs: `.crowdb-runtime/artifacts/native-restart-failure-937644`.
+- Fifth run explicitly rebuilt KV and set `RUST_LOG=warn,crowdb_kv_server::background::keepalive=debug`. Initialization failed after 11.254 seconds. Nodes 1/2 registered at approximately 1 second. Node 3 exhausted a not-leader operation, then repeatedly reported `no known leader for group (store_id=0, group_id=0)`. Logs: `.crowdb-runtime/artifacts/native-restart-failure-942339`.
+- Diagnosis: repeated-hint refresh can remove or replace a usable hinted route
+  through a topology observation lacking a leader; the operation currently
+  resumes from the refreshed route. This is a code-level hypothesis supported
+  by Node 3's route loss, not a verified root cause. The unexplained Node 2 exit
+  remains separate: no relevant Apport crash report or cgroup OOM was found,
+  and kernel log access was denied. Do not label it a routing-only failure.
+- Next alternatives: retain RPC hint priority while still bounding repeats and
+  explicitly distinguish self/cyclic hints; or reconcile leaderless topology
+  across seeds before replacing the hinted route. Keep retry budgets, browser
+  deadlines and mutation identity unchanged. Continue only after the required
+  user checkpoint; do not infer readiness from unit tests or a passing repeat.
