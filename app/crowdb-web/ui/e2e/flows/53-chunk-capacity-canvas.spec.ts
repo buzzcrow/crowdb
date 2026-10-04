@@ -3,6 +3,38 @@
 // Baseline: 15s (2026-08-17)
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
+
+// Native fixture owns all three DDB processes and hardware resources.
+test('native diagnostics: Capacity retains hardware and marks interrupted DDB usage unknown', async ({ page, request }) => {
+  await page.goto('/?domain=Capacity');
+  const totals = page.getByTestId('capacity-summary');
+  const panel = totals.locator('..');
+  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(0);
+  expect((await request.post('/api/nodes/1/diskdb/stop', { data: {} })).ok()).toBe(true);
+  try {
+    await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    await expect(page.getByRole('alert').filter({ hasText: 'Capacity observation unavailable' })).toBeVisible();
+    await panel.getByRole('button', { name: /R-1 / }).click();
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    await panel.getByRole('button', { name: /N-1 / }).click();
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    await panel.getByRole('button', { name: /DG-1 / }).click();
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    const disk = panel.getByRole('button', { name: /00000000…/ });
+    await expect(disk).toHaveAttribute('title', /Usage unknown/);
+    await disk.click();
+    await expect(page.getByTestId('disk-geometry')).toContainText(/80 zones.*Usage unknown/);
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    await expect(totals).not.toContainText('100% free');
+  } finally {
+    expect((await request.post('/api/nodes/1/diskdb/restart', { data: {} })).ok()).toBe(true);
+  }
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('disk-geometry')).not.toContainText('Usage unknown');
+  await expect(page.getByRole('heading', { name: /^Capacity — Disk/ })).toBeVisible();
+});
 import {
   apiContext,
   createRack,
@@ -298,40 +330,3 @@ function formatBytesAssert(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
-test('Capacity preserves hardware and shows unknown usage at every scope', async ({ page }) => {
-  page.setDefaultTimeout(3000);
-  let reported = false;
-  const diskId = '0000000000000001-0000000000000002';
-  const disk = { rack_id: 1, node_id: 1, disk_group_id: 1, disk_id: diskId, capacity_bytes: 1024, busy_bytes: 512, free_bytes: 256, disk_type: 1, status: 1, zone_count: 1, zone_usages: [] };
-  const group = { rack_id: 1, node_id: 1, disk_group_id: 1, capacity_bytes: 1024, busy_bytes: 512, free_bytes: 256, disks: [disk] };
-  await page.route('**/api/hardware/capacity', route => route.fulfill({ json: {
-    datacenter_capacity_bytes: 1024, racks: [{ rack_id: 1, node_count: 1, capacity_bytes: 1024 }],
-    nodes: [{ rack_id: 1, node_id: 1, disk_group_count: 1, capacity_bytes: 1024 }], disk_groups: [group],
-  } }));
-  await page.route('**/api/diskdb/instances', route => route.fulfill({ json: [] }));
-  await page.route('**/api/diskdb/usage**', route => route.fulfill({ json: { disk_groups: reported ? [group] : [] } }));
-  await page.goto('/?domain=Capacity');
-  const totals = page.getByTestId('capacity-summary');
-  await expect(totals).toContainText('1.0 KB', { timeout: 3000 });
-  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
-  const panel = totals.locator('..');
-  await panel.getByRole('button', { name: /R-1 / }).click();
-  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
-  await panel.getByRole('button', { name: /N-1 / }).click();
-  await panel.getByRole('button', { name: /DG-1 / }).click();
-  const unknownDisk = panel.getByRole('button', { name: /00000000…/ });
-  await expect(unknownDisk).toHaveAttribute('title', /Usage unknown/);
-  await unknownDisk.click();
-  await expect(page.getByTestId('disk-geometry')).toContainText(/1 zones.*Usage unknown/);
-  const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
-  const free = inspector.locator('dl > div').filter({ has: page.locator('dt', { hasText: /^Free$/ }) }).locator('dd');
-  await expect(free).toHaveText('Unknown');
-  reported = true;
-  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(free).toHaveText('256.0 B');
-  await expect(totals).toContainText('25% free');
-  reported = false;
-  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(free).toHaveText('Unknown');
-  await expect(totals).not.toContainText('100% free');
-});

@@ -5,6 +5,54 @@
 import { test, expect } from '../fixtures/realBackend';
 import { apiContext, clusterInit, createNode, createRack, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
+import { readFileSync } from 'node:fs';
+
+test('native diagnostics: auxiliary menus stop and restart the actual typed process', async ({ page, request }) => {
+  const alive = (pid: number) => {
+    if (process.platform === 'linux') {
+      try { return !readFileSync(`/proc/${pid}/stat`, 'utf8').split(')').pop()!.trimStart().startsWith('Z'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+    }
+    try { process.kill(pid, 0); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error; }
+  };
+  const list = async () => {
+    const response = await request.get('/api/servers');
+    expect(response.ok(), await response.text()).toBe(true);
+    return response.json();
+  };
+  await page.goto('/?domain=Cluster');
+  const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  for (const [kind, label, prefix] of [['chunkdb', 'CDB (ChunkDB)', 'CDB'], ['diskio', 'DiskIO', 'DIO'], ['chunk-kv', 'Chunk-KV', 'CKV'], ['access-server', 'Access Server', 'AS']]) {
+    const original = (await list()).find((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === kind);
+    expect(original.pid).toBeGreaterThan(0); expect(alive(original.pid)).toBe(true);
+    const node = sidebar.getByRole('button', { name: 'N-1', exact: true });
+    const item = sidebar.getByText(`${prefix}-1`, { exact: true });
+    await expect(item).toBeVisible();
+    await node.click({ button: 'right' });
+    await page.getByRole('menuitem', { name: `${prefix}-1 Running`, exact: true }).hover();
+    await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
+    await expect.poll(() => alive(original.pid), { intervals: [100] }).toBe(false);
+    await expect.poll(async () => {
+      const stopped = (await list()).find((row: { id: string }) => row.id === original.id);
+      return { id: stopped?.id, pid: stopped?.pid ?? null };
+    }, { intervals: [100] }).toEqual({ id: original.id, pid: null });
+    try {
+      await node.click({ button: 'right' });
+      await page.getByRole('menuitem', { name: `${prefix}-1 Stopped`, exact: true }).hover();
+      await page.getByRole('menuitem', { name: `Start ${label}`, exact: true }).click();
+      await expect.poll(async () => {
+        const current = (await list()).find((row: { id: string }) => row.id === original.id);
+        return current?.pid && current.pid !== original.pid && alive(current.pid);
+      }, { intervals: [100] }).toBe(true);
+      expect((await list()).filter((row: { id: string }) => row.id === original.id)).toHaveLength(1);
+    } finally {
+      const current = (await list()).find((row: { id: string }) => row.id === original.id);
+      if (!current?.pid) expect((await request.post(`/api/services/${original.id}/restart`, { data: {} })).ok()).toBe(true);
+    }
+  }
+  expect(await list()).toHaveLength(18);
+});
 
 test.describe('cluster · server lifecycle', () => {
   test('context menu items differ for node without server, node with server, and server', async ({ page, baseURL }) => {
