@@ -497,6 +497,59 @@ fn callback_root_catalog_persists_transition_generation_pin() {
 }
 
 #[test]
+fn retained_pack_estimate_survives_old_generation_reclamation_and_reopen() {
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(9).unwrap());
+    let options = ChunkPageStoreOptions {
+        tree_id: 46,
+        owner_epoch: 9,
+        open_generation: 0,
+        pack_bytes: 4096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4096,
+        max_chunk_bytes: 0,
+        mirror_copies: 0,
+    };
+    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    let tree = Crowdbtree::open(&Config {
+        page_store: Some(Arc::clone(&store)),
+        ..Config::default()
+    })
+    .unwrap();
+    for sequence in 1..=4 {
+        tree.apply_put(sequence, b"retained-key", &vec![sequence as u8; 64 * 1024])
+            .unwrap();
+        tree.flush().unwrap();
+        tree.snapshot_info().unwrap();
+    }
+    let estimate = store.chunk_estimated_bytes().unwrap();
+    let written = store.chunk_stats().unwrap().pack_bytes_written;
+    assert!(estimate >= 64 * 1024);
+    assert!(
+        written > estimate,
+        "estimate must describe current retained packs rather than cumulative writes"
+    );
+    let generation = store.chunk_manifest_generation().unwrap();
+    assert!(catalog.reclaim_before(46, generation) > 0);
+    store.reclaim_chunk_orphans();
+    assert_eq!(store.chunk_estimated_bytes().unwrap(), estimate);
+    assert_eq!(tree.get(b"retained-key").unwrap(), Some((4, vec![4; 64 * 1024])));
+    drop(tree);
+    drop(store);
+    let reopened = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+    let recovered = Crowdbtree::open(&Config {
+        page_store: Some(Arc::clone(&reopened)),
+        ..Config::default()
+    })
+    .unwrap();
+    assert_eq!(reopened.chunk_estimated_bytes().unwrap(), estimate);
+    assert_eq!(
+        recovered.get(b"retained-key").unwrap(),
+        Some((4, vec![4; 64 * 1024]))
+    );
+}
+
+#[test]
 fn memory_root_catalog_pin_blocks_generation_reclaim_until_unpin() {
     let catalog = Arc::new(ChunkRootCatalog::open_memory(9).unwrap());
     let options = ChunkPageStoreOptions {
