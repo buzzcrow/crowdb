@@ -63,7 +63,10 @@ impl TableHttp {
         } else {
             continuation.parse::<usize>().map_err(|_| bad_request())?
         };
-        if !query.is_empty() || offset > MAX_SCAN - PAGE || file.is_some() && manifest.is_none() {
+        if !query.is_empty()
+            || offset > MAX_SCAN - PAGE
+            || file.is_some() && (manifest.is_none() || cursor_token.is_some())
+        {
             return Err(bad_request());
         }
         let loaded = self

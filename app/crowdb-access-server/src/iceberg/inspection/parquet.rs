@@ -27,6 +27,9 @@ pub(super) async fn inspect(
     )
     .await
     .map_err(failed)?;
+    if offset % 20 != 0 || offset > 0 && offset >= metadata.groups.len() {
+        return Err(super::bad_request());
+    }
     let next = (offset.saturating_add(20) < metadata.groups.len()).then_some(offset + 20);
     let groups: Vec<_> = metadata.groups.iter().enumerate().skip(offset).take(20).map(|(index,group)|json!({"index":index,"rows":group.rows,"columns":group.columns.iter().map(|column|column_json(column,&metadata.schema[column.schema_index])).collect::<Vec<_>>()})).collect();
     Ok(
@@ -90,7 +93,7 @@ fn bound(bytes: &[u8], field: &ParquetSchemaElement) -> String {
         (Some(6), _)
             if field.converted_type == Some(0) || field.logical_type == Some(ParquetLogicalType::String) =>
         {
-            String::from_utf8_lossy(bytes).into_owned()
+            String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| format!("hex:{}", hex::encode(bytes)))
         }
         _ => format!("hex:{}", hex::encode(bytes)),
     }

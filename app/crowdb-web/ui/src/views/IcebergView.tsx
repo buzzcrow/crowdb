@@ -13,7 +13,7 @@ import { CatalogTree, type NamespacePage } from '../iceberg/CatalogTree';
 import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { Domain } from '../types';
 import { navigationSelection } from '../iceberg/navigation';
-import type { Selection } from '../iceberg/types';
+import type { Selection, ParquetQuery } from '../iceberg/types';
 import { useActivity } from '../contexts/ActivityContext';
 
 const namespacePath = (namespace: string[]): string => `/v1/namespaces/${encodeURIComponent(namespace.join('\x1f'))}`;
@@ -23,6 +23,7 @@ interface IcebergQuery {
   namespace: string[] | null; table: string; section: typeof sections[number];
   catalogCursor?: string; tableCursor?: string; namespaceCursor?: string;
   metadata?: string; selection: Selection | null; offset?: string;
+  detail?: ParquetQuery;
 }
 export function IcebergView({ active, readonly: domainReadonly }: { active: boolean; readonly: boolean }) {
   const { log } = useActivity();
@@ -116,7 +117,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     const state: IcebergQuery = { namespace: namespace ? [...namespace] : null, table, section,
       catalogCursor, tableCursor: namespaceCursor.table, namespaceCursor: namespaceCursor.namespace,
       metadata: loaded?.['metadata-location'], selection: navigationSelection(inspector.selection),
-      offset: inspector.pageToken };
+      offset: inspector.pageToken, detail: inspector.detail };
     return () => restoreQuery.current(state);
   });
   restoreQuery.current = state => {
@@ -142,7 +143,10 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
     const snapshot = loaded.metadata?.snapshots?.find((value: { 'snapshot-id': string | number }) =>
       String(value['snapshot-id']) === String(pending.selection!.snapshot['snapshot-id']));
     if (!snapshot) { setError('Saved snapshot no longer exists. Refresh the table.'); return; }
-    void inspector.select({ ...pending.selection, snapshot }, pending.offset, false, false);
+    const request = navigation.current;
+    void inspector.select({ ...pending.selection, snapshot }, pending.offset, false, false).then(current => {
+      if (current && pending.detail && request === navigation.current) inspector.setDetail(pending.detail);
+    });
   }, [loaded]);
   const metadata = loaded?.metadata;
   const supported = (method: string, template: string) => !catalog?.endpoints || catalog.endpoints.some((entry: string) => entry === `${method} ${template}` || entry === `${method} ${template.replace('/v1/', '/v1/{prefix}/')}`);
