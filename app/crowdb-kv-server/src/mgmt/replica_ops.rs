@@ -9,6 +9,7 @@ use axum::Json;
 use tracing::{debug, info};
 
 use crowdb_kv::cluster::group_election::LeaderElection;
+use crowdb_kv::cluster::kv_server::KvServer;
 use crowdb_kv::cluster::remote_replica::PxRemoteReplica;
 use crowdb_protocol::mgmt::{RemoteListResponse, RemoteReplicaInfo, TopologyResponse};
 
@@ -119,11 +120,19 @@ pub(super) async fn add_remote_replicas(
         .map(|r| (r.replica_id, r.endpoint.clone(), r.voting))
         .collect();
     let new_group = rebuild_group_with_new_remotes(&group, &new_remotes);
-    store.add_group(new_group);
-    // Re-persist after add_group so the local replica's endpoint is set.
-    if let Some(g) = store.get_group(gid) {
-        g.persist_config().await;
+    new_group.local_replica().set_endpoint(
+        store
+            .listen_addr()
+            .unwrap_or_else(|| store.configured_listen_addr())
+            .to_string(),
+    );
+    if let Err(error) = new_group.persist_config_strict().await {
+        return Err(err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to persist membership before publication: {error}"),
+        ));
     }
+    store.add_group(new_group);
 
     info!(
         s = sid,
@@ -211,11 +220,19 @@ pub(super) async fn remove_remote_replica(
         new_group.local_replica().become_follower(current_term);
         new_group.local_replica().clear_vote_lockout();
     }
-    store.add_group(new_group);
-    // Re-persist after add_group so the local replica's endpoint is set.
-    if let Some(g) = store.get_group(gid) {
-        g.persist_config().await;
+    new_group.local_replica().set_endpoint(
+        store
+            .listen_addr()
+            .unwrap_or_else(|| store.configured_listen_addr())
+            .to_string(),
+    );
+    if let Err(error) = new_group.persist_config_strict().await {
+        return Err(err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to persist membership before publication: {error}"),
+        ));
     }
+    store.add_group(new_group);
 
     info!(
         s = sid,
@@ -300,11 +317,19 @@ pub(super) async fn batch_add_remote_replicas(
         .map(|r| (r.replica_id, r.endpoint.clone(), r.voting))
         .collect();
     let new_group = rebuild_group_with_new_remotes(&group, &remotes_tuple);
-    store.add_group(new_group);
-    // Re-persist after add_group so the local replica's endpoint is set.
-    if let Some(g) = store.get_group(gid) {
-        g.persist_config().await;
+    new_group.local_replica().set_endpoint(
+        store
+            .listen_addr()
+            .unwrap_or_else(|| store.configured_listen_addr())
+            .to_string(),
+    );
+    if let Err(error) = new_group.persist_config_strict().await {
+        return Err(err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to persist membership before publication: {error}"),
+        ));
     }
+    store.add_group(new_group);
 
     info!(
         s = sid,

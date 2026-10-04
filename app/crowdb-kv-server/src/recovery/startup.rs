@@ -24,7 +24,11 @@ use crowdb_kv::wal::{IoBackend, WalEngine};
 /// membership so it does not start as a `quorum=1` singleton in the
 /// restore window. The node config store is also set on the group so
 /// future `persist_config` calls write to the same file.
-async fn maybe_apply_persisted_config(group: &mut PxGroup, config_root: &Path, store_id: u64) {
+async fn maybe_apply_persisted_config(
+    group: &mut PxGroup,
+    config_root: &Path,
+    store_id: u64,
+) -> io::Result<()> {
     let node_store = NodeConfigStore::new(config_root);
     match node_store.load_group(store_id, group.group_id()).await {
         Ok(Some(config)) => {
@@ -43,23 +47,16 @@ async fn maybe_apply_persisted_config(group: &mut PxGroup, config_root: &Path, s
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    tracing::warn!(
-                        g = group.group_id(),
-                        error = %e,
-                        "failed to load persisted group config"
-                    );
+                    return Err(e);
                 }
             }
         }
         Err(e) => {
-            tracing::warn!(
-                g = group.group_id(),
-                error = %e,
-                "failed to load node-config.json"
-            );
+            return Err(e);
         }
     }
     group.set_node_config_store(node_store, store_id, group.group_id());
+    Ok(())
 }
 
 async fn persist_creation_identity(
@@ -205,7 +202,7 @@ pub async fn create_group_with_wal(
     local_replica.set_wal(wal);
 
     let mut group = PxGroup::new(group_id, local_replica);
-    maybe_apply_persisted_config(&mut group, &config.config_root, store_id).await;
+    maybe_apply_persisted_config(&mut group, &config.config_root, store_id).await?;
     // If the caller initialized the group as Leader, the proposal leadership
     // gate (current_term == proposing_term) will not open until the term is
     // stamped. The election driver handles this on a real win, but groups

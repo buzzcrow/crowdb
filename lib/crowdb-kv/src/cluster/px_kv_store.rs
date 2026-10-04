@@ -104,6 +104,13 @@ impl PxKvStore {
         }
     }
 
+    /// Configured endpoint used when persisting a candidate group before the
+    /// RPC server has bound its runtime address.
+    #[must_use]
+    pub fn configured_listen_addr(&self) -> SocketAddr {
+        self.listen_addr
+    }
+
     /// Attach a metrics registry so the KV service can register and
     /// record metrics. Called before `start()`.
     pub fn set_metrics_registry(&mut self, registry: Arc<std::sync::Mutex<MetricsRegistry>>) {

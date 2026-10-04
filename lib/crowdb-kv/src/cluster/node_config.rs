@@ -13,8 +13,10 @@
 //! this node share one file, so a membership update for any group
 //! triggers a read-modify-write of the single file.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -22,6 +24,19 @@ use tokio::io::AsyncWriteExt;
 use serde::{Deserialize, Serialize};
 
 use crate::cluster::group_config::{PxGroupConfig, PxGroupMember};
+
+static CONFIG_LOCKS: OnceLock<parking_lot::Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+fn config_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let locks = CONFIG_LOCKS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+    let mut locks = locks.lock();
+    Arc::clone(
+        locks
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+    )
+}
 
 /// One group entry within a store entry in `node-config.json`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +202,9 @@ impl NodeConfigStore {
     /// # Errors
     /// Returns IO error if read, write, sync, or rename fails.
     pub async fn save_group(&self, store_id: u64, config: &PxGroupConfig, replica_id: u64) -> io::Result<()> {
-        let mut node_config = self.load().await.unwrap_or_default();
+        let lock = config_lock(&self.config_path);
+        let _guard = lock.lock().await;
+        let mut node_config = self.load().await?;
         node_config.upsert_group(store_id, config, replica_id);
         self.write_atomic(&node_config).await
     }
@@ -197,7 +214,9 @@ impl NodeConfigStore {
     /// # Errors
     /// Returns IO error if read or write fails.
     pub async fn remove_group(&self, store_id: u64, group_id: u64) -> io::Result<()> {
-        let mut node_config = self.load().await.unwrap_or_default();
+        let lock = config_lock(&self.config_path);
+        let _guard = lock.lock().await;
+        let mut node_config = self.load().await?;
         node_config.remove_group(store_id, group_id);
         self.write_atomic(&node_config).await
     }
@@ -207,7 +226,9 @@ impl NodeConfigStore {
     /// # Errors
     /// Returns IO error if read or write fails.
     pub async fn remove_store(&self, store_id: u64) -> io::Result<()> {
-        let mut node_config = self.load().await.unwrap_or_default();
+        let lock = config_lock(&self.config_path);
+        let _guard = lock.lock().await;
+        let mut node_config = self.load().await?;
         node_config.remove_store(store_id);
         self.write_atomic(&node_config).await
     }

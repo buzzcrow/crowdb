@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info_span, Instrument};
 
 use crate::cluster::group_config::GroupConfigStore;
+use crate::cluster::group_config::{PxGroupConfig, PxGroupMember};
 use crate::cluster::group_election::{LeaderElection, PendingLeaderHandoff, ReadBarrierOutcome};
 use crate::cluster::group_fetchgap::run_fetchgap_driver;
 use crate::cluster::local_replica::PxLocalReplica;
@@ -550,6 +551,44 @@ impl PxGroup {
     #[must_use]
     pub fn node_config_store_sid(&self) -> Option<u64> {
         self.node_config_store.as_ref().map(|(_, sid, _)| *sid)
+    }
+
+    /// Persist membership strictly, returning the storage error to the caller.
+    /// Used before publishing a rebuilt group so an in-memory membership cannot
+    /// become authoritative ahead of its durable epoch fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the durable group configuration cannot be
+    /// read or written.
+    pub async fn persist_config_strict(&self) -> std::io::Result<()> {
+        let local_id = self.local_replica().id;
+        let term = self.local_replica().current_term_snapshot();
+        let mut members = vec![PxGroupMember {
+            replica_id: local_id,
+            endpoint: self.local_replica().get_endpoint().unwrap_or_default(),
+            voting: self.local_replica().voting(),
+        }];
+        members.extend(self.remote_replicas.iter().filter_map(|r| {
+            r.as_real().map(|remote| PxGroupMember {
+                replica_id: remote.node_id,
+                endpoint: remote.endpoint.clone(),
+                voting: remote.voting,
+            })
+        }));
+        let config = PxGroupConfig {
+            group_id: self.group_id,
+            term,
+            members,
+            membership_epoch: self.membership_epoch(),
+        };
+        if let Some((store, sid, _)) = &self.node_config_store {
+            store.save_group(*sid, &config, local_id).await
+        } else if let Some(store) = &self.config_store {
+            store.save(&config).await
+        } else {
+            Ok(())
+        }
     }
 
     /// Spawn the per-group engine-durability + WAL GC maintenance loop

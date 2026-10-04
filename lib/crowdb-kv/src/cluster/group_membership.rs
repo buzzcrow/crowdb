@@ -322,8 +322,9 @@ impl PxGroup {
 
     /// Persist the current group membership to a dedicated config file.
     ///
-    /// Writes the local replica plus every real remote replica. Non-fatal on
-    /// error: the group continues running but logs the failure.
+    /// Writes the local replica plus every real remote replica. Existing
+    /// best-effort callers retain their logging behavior; management paths that
+    /// publish a rebuilt group use `persist_config_strict` before publication.
     pub async fn persist_config(&self) {
         let local_id = self.local_replica().id;
         let term = self.local_replica().current_term_snapshot();
