@@ -1826,6 +1826,13 @@ are historical. The behavior and non-goals in `ui-todo.md` remain binding.
 
 ### User-requested pause and next step
 
+- Latest user acceptance bound: when healthy serving partitions can be moved
+  and an idle healthy owner has sufficient capacity, forty seconds without
+  actual balance progress is a bug. Do not wait tens of minutes to excuse the
+  delay. Inspect split priority and shared cooldown first; a one-minute default
+  change alone does not establish this acceptance. Do not define eligibility
+  circularly by excluding the disputed cooldown delay. Retain ownership fences,
+  overlay recovery and request/heartbeat/lease safety budgets.
 - The user requested stopping work to go offline. The slow test is intentionally
   terminated; this is neither a test pass nor a spontaneous failure. Latest
   observation at 1242 s is 6/1/0 (seven partitions), so a first migration did

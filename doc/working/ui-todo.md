@@ -759,6 +759,11 @@ raw Chunk layout editing, storage reclamation promises, or unrelated features.
   heartbeat, lease and transfer safety budgets, then repeat native acceptance.
   All eighteen owned services and the test process are stopped; progress log
   is retained in console-weighted-final/artifacts/weighted-acceptance-stopped.log.
+  Latest user criterion: with healthy movable serving partitions and a healthy
+  idle target that has capacity, forty seconds without actual balance progress
+  is a bug. Diagnose split priority/shared cooldown rather than waiting tens of
+  minutes. A one-minute cooldown change alone cannot close this gap; do not
+  exclude the disputed cooldown from the measurement or weaken safety fences.
 - Task 7: standalone embedding and host-native managed shell/capability/data
   operations pass. Actual Docker image build/acceptance remains unverified:
   the pinned Ubuntu base image cannot be fetched through the configured registry
