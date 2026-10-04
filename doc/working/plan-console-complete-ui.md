@@ -7,6 +7,9 @@ Upstream: [R203](../backlog/R203-console-complete-ui.md).
 Goal: seven domains with explicit scope, real operations/diagnostics, persistent
 standalone bootstrap, and the same UI in Container with topology writes disabled.
 
+Current authorized scope: [Page and Iceberg inspection](#current-execution-scope-page-and-iceberg-inspection-2026-10-04).
+Later model handoff: [Remaining work contract](ui-todo.md#remaining-work-contract-2026-10-04).
+
 ## Baseline and scope
 
 - User approved the seven-domain design and authorized planning and implementation.
@@ -1348,7 +1351,27 @@ and byte-weight balance work remains outside this user-requested stopping point.
   domain/selection history and shared sidebar pass. Latest slot API integration
   passes in 0.96 s; production UI build and E2E TypeScript lint pass.
 
-### Final verification and stopping point
+## Current execution scope: Page and Iceberg inspection (2026-10-04)
+
+The user reopened only tasks 1–2 for this model. The authoritative remaining
+task boundaries are in [Remaining work contract](ui-todo.md#remaining-work-contract-2026-10-04).
+Tasks 3–8 are reserved for the next model; historical unchecked items do not
+override that scope. The prior stopping point below records the previous pass.
+
+- [~] **Inspect Page interface and existing Iceberg implementation**: trace
+  runtime/tree inspection through transport and Web; identify bounded stable
+  observations and existing parser/UI gaps before extending them.
+- [ ] **Page API and explorer**: implement actual page metadata/key windows,
+  generation/owner fencing, lazy navigation and exact byte presentation.
+- [ ] **Iceberg inspection completion**: finish actual reference/file inspection
+  and structured UI, including independent pagination and stale references.
+- [ ] **Focused acceptance and gates**: baseline and run affected real browser
+  specs; add backend tests for bounds/fences and metadata-only reads; run fmt,
+  affected lint/build gates, update evidence and commit coherent changes.
+- [ ] **Stop after these two items**: retain explicit task 3–8 boundaries and
+  leave the broader requirement open for the user's next model.
+
+### Final verification and previous stopping point
 
 - Final ordered native diagnostic run: 8 collected, 7 passed, 0 failed, 1
   deliberate partial-deployment phase skip; browser time 22.4 s, complete owned

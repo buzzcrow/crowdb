@@ -10,6 +10,9 @@ API problems here, including workarounds that do not constitute fixes.
 Design: [Console UI specification](../design/console/design-crowdb-console-ui.md).
 Execution history: [UI implementation plan](plan-console-complete-ui.md).
 
+Current handoff: [Remaining work contract](#remaining-work-contract-2026-10-04).
+Read it before selecting historical unchecked tasks below.
+
 Goal: make the normal one-rack, three-node flow work without manual repairs.
 
 
@@ -607,6 +610,71 @@ loss beyond recovery capacity.
   Zone 0.927 s, graph 3.2 s and multipart/location 3.8 s. The owned one-Rack,
   three-Node provisioning/data/browser/teardown chain takes 23.89 s. This is
   targeted acceptance, not a passing full ordered browser suite.
+
+## Remaining work contract (2026-10-04)
+
+This section is the current handoff scope. Older unchecked inventories are
+historical evidence, not permission to repeat completed work or redesign it.
+The current model implements only items 1–2; items 3–8 are reserved for the
+user's next model. Fix defects necessary for each item, without expanding into
+unrelated product features. Record exact verification and remaining gaps.
+
+1. **Chunk-KV Page explorer**: add bounded real root/child/leaf inspection,
+   exact page/tree identity and key bytes. Hex is default; text must validate
+   UTF-8. Keep Tree and Journal distinct. Bind inspection to the selected
+   owner/catalog and tree observation; reject stale continuations. Retain the
+   existing graph, scoped tabs and navigation. Do not fabricate pages from
+   journal extents or implement a new storage engine.
+2. **Iceberg file inspector**: finish the existing reference explorer and
+   metadata-only inspection, including snapshot/manifest/file windows and
+   Parquet footer, row groups and columns. Follow the existing domain design;
+   improve structured presentation and exact reference navigation. Never scan
+   data pages to obtain inspection metadata or load all references for counts.
+   Test committed files through real Access routes, including stale references.
+3. **Large windows and unavailable data**: complete the remaining Capacity,
+   Chunk, Chunk-KV and S3 native cases. Replacement windows must exclude prior
+   rows; keep prescribed sizes (zones 32, Chunk 10, S3 20). Verify actual
+   multi-Strip Mirror/EC placement, journal transitions and stale cursors.
+   Unknown allocation/owner data is unknown, never empty or zero. Preserve
+   scope on failure, disable actions using stale data, discard late responses,
+   and recover by explicit refresh. Preserve verified history/scroll behavior.
+   No new dashboard, polling loop, fetch-all counts or automatic mutation.
+4. **Creation and lifecycle acceptance**: repeated create/reopen must choose
+   unused IDs and listener/DiskDB port ranges and valid dependencies. Verify
+   auxiliary service menus, progress, partial failure, resume, stop and restart
+   using actual processes. Show authoritative completion or unknown outcome;
+   never report success on request acceptance alone. Resume must not duplicate
+   live services or discard successful steps. Preserve container capability
+   rejection and reset cancellation. No deployment workflow redesign.
+5. **Retained-byte balancing**: verify estimates after reclamation and actual
+   weighted redistribution with unequal retained data. Separate count balance
+   from byte balance; accept approximate shared-pack overcount as documented.
+   Preserve bounded sampling, heartbeats, serving leases and recovery data.
+   No exact full-tree scans, new locks, changed lease/deadline budgets or new
+   placement policy without a specific demonstrated need and user decision.
+6. **Allocation geometry closure**: confirm the existing early 409 rejection
+   of incompatible allocation units, useful causal error and no partial
+   bootstrap. Update the stale task checkbox with evidence. Mixed-unit support
+   is not authorized by this cleanup; do not silently implement it or weaken
+   the allocator invariant.
+7. **Mode and packaging acceptance**: test actual standalone/container shell,
+   embedding and capability failures. Backend rejects forbidden physical writes;
+   allowed data operations remain usable. Validate the Docker image separately
+   from host-native managed tests. An unavailable registry/build prerequisite
+   is an explicit unverified boundary, not a reason to substitute a mock or
+   redesign packaging/authentication.
+8. **Final integration and documentation**: replace remaining mocked acceptance
+   with owned real fixtures, keep mutation cleanup in teardown even on failure,
+   and run the ordered suite and applicable gates. Preserve persistent user
+   deployments. Record collected/passed/failed/skipped counts and timings;
+   targeted success does not establish full-suite success. Reconcile obsolete
+   checkboxes and close R203 only after all remaining acceptance is established.
+
+Completed constraints remain binding: Chunk ownership uses two independent
+1024-slot maps (Storage Group and Serving ChunkDB), not Chunk-KV partitions.
+Metrics UI cleanup is complete; no Metrics page or metrics publishing is in
+this scope. Do not reopen the parked test-orphan cleanup redesign or add auth,
+raw Chunk layout editing, storage reclamation promises, or unrelated features.
 
 ## Approved ownership and navigation completion (2026-10-04)
 
