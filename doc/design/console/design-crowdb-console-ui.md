@@ -519,6 +519,16 @@ Unsupported features are explicit rather than represented as working controls.
   Continuation pins catalog/stream generation. Stale generation requires refresh
   from the first page; parent/child recovery dependencies retain separate stream
   offsets. Placement and split lineage are separate fields.
+- **CKV-05:** Page inspection follows actual inner-child indices from the root,
+  with at most 32 child steps, one 1 MiB base frame and 20 entries per window.
+  It may load cold structural pages, but never flushes, checkpoints, scans live
+  KV records or follows overflow values. Physical base records, inline deltas
+  and the count of external delta pages remain explicit; pending writes are not
+  presented as part of this base-page view. Keys and inline values have bounded
+  256-byte previews with exact lengths and truncation markers. Version fences
+  protect paths; page fingerprints additionally protect entry continuations.
+  Changed observations require an explicit root refresh. History retains path,
+  fences, offset, selected entry and byte format, then revalidates on return.
 
 ## 21. Iceberg
 
@@ -547,6 +557,13 @@ Unsupported features are explicit rather than represented as working controls.
 - **ICE-06:** Actions follow selected Catalog, Namespace or Table. Catalog
   actions disappear when a Table is selected. Paths, titles and summaries name
   the focused item once; properties must not merge unrelated parent identities.
+- **ICE-07:** Reference windows contain at most 100 entries; Parquet windows
+  contain 20 Row Groups and 12 columns. Paging replaces the visible window.
+  Column widths represent compressed sizes and file spans retain exact byte
+  identities. History restores the selected reference, footer/layout view and
+  column selection, then revalidates the table head, snapshot and file identity.
+  Cached branches do not bypass revalidation. A failed or stale inspection
+  preserves selection context but removes data and continuation actions.
 
 ## 22. S3
 

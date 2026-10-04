@@ -314,25 +314,30 @@ Baseline before domain separation: shell embedding 5 tests passed; Chunk layout
 
 ## Iceberg file inspector — approved design, 2026-10-03
 
-- [ ] **Inspection service (partially implemented)**: add authenticated, generation-bound reference
+Historical checkpoint: the later approved domain design in Console UI §21
+supersedes the two-column arrangement below. The current implementation uses
+the shared navigation, center inspector and right properties; completion and
+native evidence are recorded in the current execution scope at the end.
+
+- [x] **Inspection service**: authenticated, generation-bound reference
   inspection to Access table routes; reuse ManifestListReader/ManifestReader and
   footer parsing with bounded work and responses. Extend footer diagnostic fields.
   Files: Access `iceberg/inspection/`, table routes, Iceberg `file/parquet/`.
-- [ ] **Explorer UI**: retain Catalog operations and replace primary JSON views
+- [x] **Explorer UI**: retain Catalog operations and replace primary JSON views
   with the reference tree, structured metadata and Parquet layout/column detail.
-  Use two columns for Iceberg: no right property panel; refresh/table actions and
-  column details belong in the center.
+  Follow the later approved shared three-panel layout, with column details in
+  right properties and scoped actions in the center.
   Files: Web `ui/src/iceberg/`, `views/IcebergView.tsx`, native JSON transport.
-- [ ] **Focused acceptance**: parser/integration tests, Iceberg browser spec,
-  isolated TPC loader data, fmt/Clippy/TypeScript. Baseline existing Iceberg
+- [x] **Focused acceptance**: parser/integration tests, Iceberg browser spec,
+  owned committed Parquet/Avro data, fmt/Clippy/TypeScript. Baseline existing Iceberg
   browser case: 0.732 s. Preserve the persistent localhost deployment.
-- [ ] **Document and commit**: update Console UI architecture and record results;
+- [x] **Document and commit**: update Console UI architecture and record results;
   keep the broader requirement/plan open for unrelated remaining acceptance.
 
 Tests: Iceberg footer metadata tests; Access table inspection HTTP tests; Web
 Access proxy tests; `e2e/flows/60-iceberg-catalog.spec.ts`; real TPC metadata chain.
 
-- Iceberg two-column layout verified: the right panel is absent, table refresh
+- Historical two-column layout verification: the right panel was absent, table refresh
   and actions remain in the center. The browser spec passes both catalog and
   file-inspection cases (0.778 s / 0.969 s): exact 64-bit snapshot identity,
   100-entry replacement pages, signed continuation history, selected footer
@@ -1358,17 +1363,17 @@ task boundaries are in [Remaining work contract](ui-todo.md#remaining-work-contr
 Tasks 3–8 are reserved for the next model; historical unchecked items do not
 override that scope. The prior stopping point below records the previous pass.
 
-- [~] **Inspect Page interface and existing Iceberg implementation**: trace
+- [x] **Inspect Page interface and existing Iceberg implementation**: trace
   runtime/tree inspection through transport and Web; identify bounded stable
   observations and existing parser/UI gaps before extending them.
-- [ ] **Page API and explorer**: implement actual page metadata/key windows,
+- [x] **Page API and explorer**: implement actual page metadata/key windows,
   generation/owner fencing, lazy navigation and exact byte presentation.
-- [ ] **Iceberg inspection completion**: finish actual reference/file inspection
+- [x] **Iceberg inspection completion**: finish actual reference/file inspection
   and structured UI, including independent pagination and stale references.
-- [ ] **Focused acceptance and gates**: baseline and run affected real browser
+- [x] **Focused acceptance and gates**: baseline and run affected real browser
   specs; add backend tests for bounds/fences and metadata-only reads; run fmt,
   affected lint/build gates, update evidence and commit coherent changes.
-- [ ] **Stop after these two items**: retain explicit task 3–8 boundaries and
+- [x] **Stop after these two items**: retain explicit task 3–8 boundaries and
   leave the broader requirement open for the user's next model.
 
 ### Final verification and previous stopping point
@@ -1388,3 +1393,51 @@ override that scope. The prior stopping point below records the previous pass.
   and state-consistency fixes are complete for the tested contracts above; broader
   domain data/transfer/parser coverage remains separately recorded. Stop after
   this coherent commit, as requested; do not continue other requirement tasks.
+
+### Page and Iceberg completion evidence
+
+- Actual tree inspection is lazy and read-only: root/inner/leaf frames, cold
+  loading, 20-entry windows, exact identities and byte previews. It neither
+  checkpoints pending writes nor follows overflow values. Tree FFI tests: 3
+  passed; owner observation HTTP tests: 3 passed, including 20/5 replacement
+  windows, raw binary keys, truncated values and stale continuation rejection.
+- Parquet metadata tests: 9 passed, including readable footer with deliberately
+  unreadable data payload. Access inspection tests: 2 passed. Invalid Parquet
+  offsets and manifest cursors return 400; changed table heads return 409.
+- Final affected native selection: 3 collected, 3 passed, 0 failed/skipped in
+  20.7 s. Page observation: 0.734 s; committed Iceberg references: 12.4 s;
+  catalog/schema navigation: 6.2 s. The owned three-node fixture, including
+  ordinary deployment and teardown, takes 38.74 s. Its 101-file setup took
+  6.97 s and complete owned process teardown 8.24 s; no waits were increased.
+- The committed-file case creates two snapshots and actual Avro/Parquet files,
+  checks 20/2 Row Group and 100/1 manifest-file replacement pages, column and
+  footer details, browser Back restoration, stale-head rejection, and cleanup.
+  Screenshot inspection caught absent byte-span colors from unsupported theme
+  opacity classes; corrected colors and nonzero widths now have native checks.
+- Five focused frontend unit tests pass, covering old-owner/reference response
+  isolation, cache revalidation, wrong-file identity and exact large IDs. Rust
+  fmt, affected all-target clippy, changed C++ format/tree-lint, production UI
+  build and E2E TypeScript checks pass. Screenshots were visually inspected.
+- Reproduction: build the UI, then run `pixi run clean-env` followed by
+  `pixi run env CROWDB_NATIVE_UI_E2E_GREP='native diagnostics:.*(Page observation|committed references|Iceberg actual)' cargo test -p crowdb-web --test native_cluster_provisioning_test native_page_and_iceberg_inspection -- --ignored --nocapture`.
+  Select this fixture explicitly; the separate full restart fixture retains
+  its original acceptance and is not replaced by inspection success.
+
+### Remaining diagnostic boundaries for the next model
+
+- The broader restart baseline is not green: one earlier run timed out deleting
+  an Iceberg table; a focused restart run later failed before the browser on S3
+  multipart initiation (503), with Node 2's Chunk-KV process gone. Logs are in
+  `.crowdb-runtime/artifacts/native-restart-failure-1137891`. Do not mark this
+  restart/lifecycle work complete based on the inspection-only fixture.
+- An earlier inspection run observed a 4.044 s successful Row Group response
+  alongside a committed-split activation warning; this exceeded the unchanged
+  3 s browser assertion. Evidence is in artifact directory
+  `native-restart-failure-1146658`. Two final complete inspection runs pass,
+  but that does not establish transition-time latency under all workloads.
+- Test-only failures were corrected from actual evidence: native Page test had
+  stale built UI assets; Parquet actions used the wrong label; the 101-file
+  producer needed explicit Iceberg field IDs. No response interception,
+  retry policy or relaxed assertions were introduced.
+- Tasks 1–2 are complete. Stop here. Tasks 3–8 retain the explicit behavior and
+  non-goals in `ui-todo.md`; R203, its backlog entry and this plan remain open.

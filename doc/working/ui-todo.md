@@ -216,11 +216,12 @@ unaccepted; this is not a full-suite result.
 
 ## Data environment and deferred design
 
-- [ ] **Chunk-KV KV Page inspection API missing**: current runtime exposes
-  checkpoint/memory/maintenance counters and bounded journal extent fences,
-  not root/child/leaf Page links or key/value bytes. Add bounded metadata/key
-  inspection before implementing the Page tree. Default key rendering to hex,
-  with optional text rendering; do not represent journal extents as KV Pages.
+- [x] **Chunk-KV KV Page inspection API and explorer**: actual root/child/base
+  frames, 20-entry replacement windows and 256-byte key/value previews are
+  implemented. Hex is default; UTF-8 is validated. Catalog/owner, tree version
+  and page fingerprint fences reject stale continuation. This physical base
+  view does not flush pending writes or fetch overflow values. FFI, owner HTTP
+  and native browser checks cover the contract; journal extents remain separate.
 
 
 - [ ] **Chunk-KV split/balance backend correctness**: this is a backend issue,
@@ -340,12 +341,14 @@ loss beyond recovery capacity.
   uncovered by native browser acceptance.
 - Chunk-KV (`55`): native catalog graph survives three returns, three refreshes
   and resize. Paged split counts, journal extent fences/continuations, ownership
-  changes and failed/empty catalog cases still need real equivalents. KV Page
-  inspection remains a separate missing API contract.
+  changes and failed/empty catalog cases still need real equivalents. Actual
+  KV Page inspection now has native API/browser and FFI acceptance.
 - Iceberg (`60`): a new native case creates eight actual catalog tables and
   verifies nested schema, scoped Actions, tree navigation and return. The flow
-  passes after resolving catalog/grant propagation latency. Snapshot/manifest/file and footer scenarios still intercept
-  responses and lack native browser/parser acceptance.
+  passes after resolving catalog/grant propagation latency. A second native
+  case now covers two committed snapshots, Avro manifests, 101 actual files,
+  Parquet 20/2 Row Group windows, footer/column return and stale table heads.
+  Historical intercepted cases are not counted as native acceptance.
 - S3 (`70`, `71`): actual multipart upload, HEAD, bounded preview, full read,
   authoritative locations and Chunk-return navigation have passing native
   executions. Transition-time bucket listing now passes; one full-read deadline
@@ -377,7 +380,7 @@ loss beyond recovery capacity.
   placement return; independent windows must replace previous results.
 - [ ] Cover real Chunk-KV journal paging, transition/stale fences, empty catalog
   and service outages while keeping the graph and selection accurate.
-- [ ] Cover actual Iceberg nested schemas, multiple snapshots/manifests, file
+- [x] Cover actual Iceberg nested schemas, multiple snapshots/manifests, file
   pagination and Parquet/Avro metadata inspection without payload scans.
 - [ ] Cover real bounded S3 bucket/object windows, continuation revisions and
   unavailable locations; retain exact multipart interval and return assertions.
@@ -689,3 +692,18 @@ raw Chunk layout editing, storage reclamation promises, or unrelated features.
   service outage/recovery and old-owner response isolation are verified at their
   stated layers. This is not completion of the entire native feature inventory.
 - User-requested stopping point reached; remaining requirement work stays open.
+
+## Page and Iceberg inspection completion (2026-10-04)
+
+- Tasks 1–2 are complete: actual bounded KV base-page inspection and native
+  Iceberg reference/file inspection, with exact identities and stale fences.
+  The existing shared layout is retained; no new domain redesign is authorized.
+- Final native browser selection: 3 passed, 0 failed/skipped (20.7 s); owned
+  deployment/teardown chain: 38.74 s. It covers actual Parquet 20/2 Row Groups,
+  101-file manifest pagination, footer/column return and stale table heads.
+  Backend checks: 3 Page FFI, 3 owner HTTP, 9 Parquet metadata and 2 Access
+  inspection tests passed. Five focused frontend unit tests and applicable
+  format/lint/build gates passed. See the execution plan for commands/evidence.
+- This is targeted completion, not full-suite or restart acceptance. The plan
+  records prior restart/process-loss and transition-latency failures for tasks
+  4–5/8. Tasks 3–8 remain for the user's next model; stop after this handoff.
