@@ -183,6 +183,9 @@ class Crowdbtree
     Status batch_put(const Batch &batch);
 
     [[nodiscard]] Status validate_key(Slice key) const;
+    // Advisory separator from bounded resident index pages, without I/O or flush.
+    // Callers validate live keys on both sides before publishing a split.
+    [[nodiscard]] std::optional<std::string> approximate_split_key() const;
 
     // Logical retention GC watermark:
     // stores both slots and computes gc_floor_ = min(snapshot_slot, safe_slot).

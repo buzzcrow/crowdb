@@ -2046,6 +2046,24 @@ impl Partition {
         self.tree.chunk_stats()
     }
 
+    /// Estimates current retained pack bytes without scanning data or storage metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree error if the estimate is unavailable.
+    pub fn estimated_bytes(&self) -> Result<u64> {
+        self.tree.estimated_bytes()
+    }
+
+    /// Returns an advisory separator without scanning keys or loading pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree error if the structural hint is unavailable.
+    pub fn approximate_split_key(&self) -> Result<Option<Vec<u8>>> {
+        self.tree.approximate_split_key()
+    }
+
     /// Runs one bounded R140 ownership-materialization pass after a split
     /// child has been activated. Call again until `complete` is true.
     ///

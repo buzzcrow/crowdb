@@ -641,6 +641,18 @@ ct_status ct_clear(ct_tree *t)
     return to_status(t->tree->clear());
 }
 
+ct_status ct_approximate_split_key(const ct_tree *t, int32_t *found, ct_buf *key)
+{
+    if (t == nullptr || found == nullptr || key == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    const auto hint = t->tree->approximate_split_key();
+    *found          = hint.has_value() ? 1 : 0;
+    *key            = hint ? make_buf(hint->data(), hint->size()) : ct_buf{.data = nullptr, .len = 0};
+    return static_cast<ct_status>(hint && !hint->empty() && key->data == nullptr ? Code::kResourceExhausted
+                                                                                 : Code::kOk);
+}
+
 void ct_get_stats(const ct_tree *t, ct_stats *out)
 {
     if (t == nullptr || out == nullptr) {

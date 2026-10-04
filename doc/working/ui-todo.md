@@ -190,6 +190,13 @@ unaccepted; this is not a full-suite result.
   delay heartbeat publication or serving-grant renewal past their deadlines.
   Bound observation work and verify the behavior with real large data.
 
+- [ ] **S3 bucket discovery during range transitions**: a successfully created
+  bucket must remain discoverable while Chunk-KV splits or changes owners. A
+  native browser run received HTTP 503 from bucket listing immediately after
+  a successful bucket creation. Preserve the underlying metadata/routing error
+  in service diagnostics and verify transition-time listing without browser
+  retries before closing this issue.
+
 ## Verification layers
 
 - Unit: conflict/default selection, plan reconciliation, service labels.
@@ -372,3 +379,21 @@ unaccepted; this is not a full-suite result.
   count/size split planning, transfer/grant publication and failover, but do not
   establish the missing restart-weight, sampling-eligibility or large-data
   heartbeat contracts recorded above. Node ownership UI design is deferred.
+
+## Low-cost backend verification (2026-10-04)
+
+- Tree split hints read resident structural boundaries without page fetches.
+  Bounded-range and resident-index regressions pass. Split observations use
+  live witnesses or one window of at most 64 records; the requested byte budget
+  is 64 KiB. A single oversized record may exceed that soft byte budget.
+- One background observation job per service samples every Serving partition;
+  cached samples are fenced by ownership epoch. A 1,000-record regression
+  verifies the 64-record ceiling and that an unsplittable partition does not
+  prevent sampling another partition. Observation publication stays synchronous.
+- Retained-pack estimates survive reopening and reclamation, and querying the
+  cached estimate does not access a hidden catalog. Estimates deliberately lag
+  uncheckpointed data and can overcount packs shared by split children. Weighted
+  placement and real large-data lease liveness remain acceptance tasks.
+- All 59 Chunk-KV Server tests pass; Tree FFI has 51 passing tests, including
+  the two new split-hint cases. C++ Tree has 611 passing cases. Rust fmt and
+  affected clippy gates pass. Native browser verification continues separately.

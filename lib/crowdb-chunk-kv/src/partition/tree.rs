@@ -105,6 +105,20 @@ pub trait PartitionTree: Send + Sync {
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
         None
     }
+    /// Estimates retained pack bytes without reading keys, pages or remote metadata.
+    ///
+    /// # Errors
+    /// Returns a storage error when the cached estimate cannot be read.
+    fn estimated_bytes(&self) -> Result<u64> {
+        Ok(0)
+    }
+    /// Returns an advisory structural separator without I/O or a full scan.
+    ///
+    /// # Errors
+    /// Returns a tree error when the structural hint cannot be read.
+    fn approximate_split_key(&self) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
     /// Returns chunk-backend counters, or `None` for another backend.
     ///
     /// # Errors
@@ -500,6 +514,20 @@ impl PartitionTree for CrowdbPartitionTree {
             .filter(|store| store.is_chunk_backed())
             .map(|store| store.chunk_stats().map_err(map_tree_read_error))
             .transpose()
+    }
+
+    fn estimated_bytes(&self) -> Result<u64> {
+        self.config
+            .as_ref()
+            .and_then(|config| config.page_store.as_ref())
+            .filter(|store| store.is_chunk_backed())
+            .map_or(Ok(0), |store| {
+                store.chunk_estimated_bytes().map_err(map_tree_read_error)
+            })
+    }
+
+    fn approximate_split_key(&self) -> Result<Option<Vec<u8>>> {
+        self.tree.approximate_split_key().map_err(map_tree_read_error)
     }
 
     fn reclaim_before(&self, generation: u64) -> Result<u64> {

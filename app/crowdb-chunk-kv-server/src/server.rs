@@ -28,6 +28,7 @@ use crate::{
     ServerMetrics, ServingAuthority,
 };
 
+mod load_sampling;
 mod observation;
 
 const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
@@ -112,6 +113,7 @@ pub struct ChunkKvService {
     partitions: ArcSwap<HashMap<Id128, Partition>>,
     local_split_sessions: ArcSwap<HashMap<Id128, LocalSplitSession>>,
     independently_recoverable: ArcSwap<HashSet<(Id128, u64)>>,
+    load_sampling: Arc<load_sampling::LoadSampling>,
     max_partitions: usize,
     max_scan_response_bytes: usize,
     max_initialization_waiters: usize,
@@ -187,6 +189,7 @@ impl ChunkKvService {
             partitions: ArcSwap::from_pointee(HashMap::new()),
             local_split_sessions: ArcSwap::from_pointee(HashMap::new()),
             independently_recoverable: ArcSwap::from_pointee(HashSet::new()),
+            load_sampling: Arc::new(load_sampling::LoadSampling::default()),
             max_partitions,
             max_scan_response_bytes,
             max_initialization_waiters,
@@ -342,9 +345,8 @@ impl ChunkKvService {
         let partitions = self.partitions.load_full();
         let durable_bytes = partitions
             .values()
-            .filter_map(|partition| partition.chunk_storage_stats().ok().flatten())
-            .map(|stats| stats.pack_bytes_written.saturating_sub(stats.orphan_bytes))
-            .sum();
+            .filter_map(|partition| partition.estimated_bytes().ok())
+            .fold(0_u64, u64::saturating_add);
         let mut hosted: Vec<_> = partitions
             .values()
             .map(|partition| {
@@ -376,44 +378,32 @@ impl ChunkKvService {
         }
     }
 
-    /// Builds a heartbeat observation and samples the largest serving
-    /// partition with bounded memory for median split planning.
+    /// Builds a heartbeat using cached bounded split samples. Starts at most
+    /// one background observation job, without delaying heartbeat publication.
     ///
     /// # Errors
     ///
-    /// Returns a partition read error when the sampled view cannot be scanned.
-    pub async fn registry_observation_with_load_samples(
+    /// Storage read errors leave the affected partition unsampled.
+    pub fn registry_observation_with_load_samples(
         &self,
         capacity_bytes: u64,
         request_rate: u64,
         max_samples: usize,
-    ) -> Result<ChunkKvExtra, ChunkKvError> {
+    ) -> std::future::Ready<Result<ChunkKvExtra, ChunkKvError>> {
         let mut observation = self.registry_observation(capacity_bytes, request_rate);
         let partitions = self.partitions.load_full();
-        let mut loads: Vec<_> = partitions
-            .values()
-            .map(|partition| {
-                let snapshot = partition.snapshot();
-                let durable_bytes = partition.chunk_storage_stats().ok().flatten().map_or(0, |stats| {
-                    stats.pack_bytes_written.saturating_sub(stats.orphan_bytes)
-                });
-                (partition.clone(), snapshot, durable_bytes)
-            })
-            .collect();
-        let largest = loads
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, snapshot, _))| {
-                snapshot.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Serving
-            })
-            .max_by_key(|(_, (_, _, durable_bytes))| *durable_bytes)
-            .map(|(index, _)| index);
-        for (index, (partition, snapshot, durable_bytes)) in loads.drain(..).enumerate() {
-            let live_byte_samples = if Some(index) == largest && max_samples > 0 {
-                sample_live_bytes(&partition, snapshot.ownership_epoch, max_samples).await?
-            } else {
-                Vec::new()
-            };
+        if max_samples >= 2 {
+            self.load_sampling.launch(Arc::clone(&partitions), max_samples);
+        }
+        for (id, partition) in partitions.iter() {
+            let snapshot = partition.snapshot();
+            let durable_bytes = partition.estimated_bytes().unwrap_or_default();
+            let live_byte_samples =
+                if max_samples >= 2 && snapshot.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Serving {
+                    self.load_sampling.samples(*id, snapshot.ownership_epoch)
+                } else {
+                    Vec::new()
+                };
             observation.partition_loads.push(ChunkKvPartitionLoad {
                 partition_id: Id128 {
                     high: snapshot.partition_id.high,
@@ -435,14 +425,14 @@ impl ChunkKvService {
                         low: snapshot.partition_id.low,
                     })
                     .is_some_and(|entry| {
-                        entry.artifact.tail_overlay.is_none() && partition_matches_entry(&partition, entry)
+                        entry.artifact.tail_overlay.is_none() && partition_matches_entry(partition, entry)
                     }),
             });
         }
         observation
             .partition_loads
             .sort_unstable_by_key(|load| load.partition_id);
-        Ok(observation)
+        std::future::ready(Ok(observation))
     }
 
     /// Runs one bounded ownership-materialization pass for every local split child.
@@ -1755,66 +1745,6 @@ fn scan_page_bytes(page: &crowdb_chunk_kv::ScanPage) -> usize {
     page.entries.iter().fold(0usize, |total, entry| {
         total.saturating_add(entry.key.len().saturating_add(entry.value.value.len()))
     })
-}
-
-async fn sample_live_bytes(
-    partition: &Partition,
-    ownership_epoch: u64,
-    max_samples: usize,
-) -> Result<Vec<(Vec<u8>, u64)>, ChunkKvError> {
-    const PAGE_ENTRIES: usize = 256;
-    const PAGE_BYTES: usize = 4 * 1024 * 1024;
-
-    let mut samples = Vec::with_capacity(max_samples.saturating_add(1));
-    let mut start_after: Option<Vec<u8>> = None;
-    loop {
-        let page = match start_after.as_deref() {
-            Some(key) => {
-                partition
-                    .scan_forward_after(ownership_epoch, key, None, PAGE_ENTRIES, PAGE_BYTES, None)
-                    .await?
-            }
-            None => {
-                partition
-                    .scan_forward(ownership_epoch, None, None, PAGE_ENTRIES, PAGE_BYTES, None)
-                    .await?
-            }
-        };
-        if page.entries.is_empty() {
-            break;
-        }
-        for entry in &page.entries {
-            let bytes =
-                u64::try_from(entry.key.len().saturating_add(entry.value.value.len())).unwrap_or(u64::MAX);
-            samples.push((entry.key.to_vec(), bytes));
-        }
-        compact_live_byte_samples(&mut samples, max_samples);
-        start_after = page.entries.last().map(|entry| entry.key.to_vec());
-        if !page.truncated {
-            break;
-        }
-    }
-    Ok(samples)
-}
-
-fn compact_live_byte_samples(samples: &mut Vec<(Vec<u8>, u64)>, max_samples: usize) {
-    while samples.len() > max_samples {
-        let mut compacted = Vec::with_capacity(samples.len().div_ceil(2));
-        for pair in samples.chunks(2) {
-            if let [left, right] = pair {
-                let total = left.1.saturating_add(right.1);
-                let key = if left.1.saturating_mul(2) >= total {
-                    left.0.clone()
-                } else {
-                    right.0.clone()
-                };
-                compacted.push((key, total));
-            } else {
-                compacted.push(pair[0].clone());
-            }
-        }
-        *samples = compacted;
-    }
 }
 
 fn recoverable_local_entry(entry: &ChunkKvRangeCatalogEntry, instance_id: u64) -> bool {

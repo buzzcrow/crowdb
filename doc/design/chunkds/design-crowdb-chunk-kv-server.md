@@ -298,7 +298,17 @@ The balance invariants are:
 
 Balancing targets at least `live_owner_count * target_partitions_per_owner`,
 defaulting to four partitions per owner. Split chooses the largest eligible
-partition and a key near the cumulative live-byte median, never an empty child.
+partition using approximate retained pack weights. A split boundary comes from
+a resident index separator or a bounded small key window; exact byte or key
+medians are unnecessary. Live-key witnesses establish nonempty children when
+the observation is made. Concurrent mutations can change that observation.
+The structural query never loads cold pages or flushes the tree. A service
+allows only one background sampling job, and heartbeats use epoch-fenced cached
+samples without waiting for that job. Every serving partition is considered;
+an unsplittable largest partition does not exclude the remaining candidates.
+Retained pack estimates use the opened manifest, including shared packs, rather
+than cumulative write counters. The estimate is deliberately coarse and can
+lag unsnapshotted mutations; observation does not scan remote metadata or data.
 The retained parent and new split child stay local. Placement later minimizes partition-count
 difference first, then durable-byte spread. A move must repair count imbalance
 or improve weighted spread by at least 25%. Request rate and target headroom are

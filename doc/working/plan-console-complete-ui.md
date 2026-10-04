@@ -982,3 +982,27 @@ UI todo acceptance items.
   structural boundaries with bounded reads, preserving valid nonempty child
   ranges. Estimate load cheaply; do not replace the scan with another expensive
   recurring job. Backend implementation remains pending in ui-todo.
+
+### Remaining backend and native acceptance execution (2026-10-04)
+
+- [x] **Low-cost split/load observations**: expose a resident-page structural
+  hint through Tree/FFI/PartitionTree. Use bounded live-key witnesses or one
+  64-key/64-KiB fallback window. Sample all Serving partitions on one owned
+  background job, fence cache entries by epoch, and publish heartbeats without
+  waiting. Estimate retained packs from cached manifests instead of write
+  counters. Verify range boundaries, restart/reclaim estimates, sampling bounds,
+  candidate coverage and existing monitor behavior.
+  Verified: 59 server tests, 51 Tree FFI tests, 611 C++ Tree tests, RPC FFI
+  tests and five real Group-0 monitor cases. Affected fmt/clippy/tree-lint pass.
+  Real large-data lease liveness and weighted placement remain in ui-todo.
+- [x] **Native S3 navigation acceptance**: extend multipart acceptance with
+  authoritative locations, shared Chunk navigation and return restoration.
+  Native baseline is 5.3 s in the three-node fixture. One execution exposed
+  real bucket-list HTTP 503 after successful creation during split activity;
+  navigation and 9-MiB payload acceptance now pass in 3.6/4.3 s. The bucket-list
+  503 remains a separate unclosed transition-time backend issue in ui-todo.
+- [~] **Graph lifecycle follow-up**: native refresh still reproduced empty
+  nodes once. Give the Chunk-KV canvas an explicit independent ReactFlowProvider
+  and identity; exercise three consecutive refresh actions, without retries.
+  One targeted execution passes, but native tab return still fails. Retaining
+  the mounted graph alone did not resolve it; trace graph-store clearing next.

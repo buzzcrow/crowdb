@@ -396,7 +396,7 @@ fn callback_root_catalog_reopens_published_manifest() {
         next_reference: AtomicU64::new(1),
         hide_current: AtomicBool::new(false),
     });
-    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend).unwrap());
+    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend.clone()).unwrap());
     let options = ChunkPageStoreOptions {
         tree_id: 42,
         owner_epoch: 9,
@@ -409,6 +409,7 @@ fn callback_root_catalog_reopens_published_manifest() {
         mirror_copies: 0,
     };
     let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    assert_eq!(store.chunk_estimated_bytes().unwrap(), 0);
     {
         store.set_wal_replay_offset(4_096).unwrap();
         assert_eq!(store.set_wal_replay_offset(4_095), Err(CtError::InvalidArgument));
@@ -422,17 +423,27 @@ fn callback_root_catalog_reopens_published_manifest() {
         assert_eq!(tree.snapshot_info().unwrap(), (1, 1));
     }
 
+    let estimated = store.chunk_estimated_bytes().unwrap();
+    assert!(estimated > 0);
     let reopened_store = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+    assert_eq!(reopened_store.chunk_stats().unwrap().pack_bytes_written, 0);
     assert_eq!(reopened_store.wal_replay_offset().unwrap(), 4_096);
     assert_eq!(
         reopened_store.set_wal_replay_offset(4_095),
         Err(CtError::InvalidArgument)
     );
     let reopened = Crowdbtree::open(&Config {
-        page_store: Some(reopened_store),
+        page_store: Some(Arc::clone(&reopened_store)),
         ..Config::default()
     })
     .unwrap();
+    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
+    // Observation must keep working when the remote catalog becomes unavailable.
+    backend.hide_current.store(true, Ordering::Release);
+    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
+    reopened_store.reclaim_chunk_orphans();
+    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
+    backend.hide_current.store(false, Ordering::Release);
     assert_eq!(
         reopened.get(b"durable-root").unwrap(),
         Some((1, b"chunk-value".to_vec()))

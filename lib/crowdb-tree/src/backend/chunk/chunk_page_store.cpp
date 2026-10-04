@@ -2076,6 +2076,20 @@ Status ChunkPageStore::manifest_generation(uint64_t *generation) const
     return Status::Ok();
 }
 
+uint64_t ChunkPageStore::estimated_bytes() const
+{
+    auto manifest = bootstrap_layout_.load(std::memory_order_acquire);
+    if (manifest == nullptr) {
+        manifest = cached_layout_.load(std::memory_order_acquire);
+    }
+    if (manifest == nullptr) {
+        return 0;
+    }
+    const uint64_t count = manifest->packs.size();
+    return count > std::numeric_limits<uint64_t>::max() / config_.pack_bytes ? std::numeric_limits<uint64_t>::max()
+                                                                             : count * config_.pack_bytes;
+}
+
 ChunkPageStoreStats ChunkPageStore::stats() const
 {
     auto     manifest                 = catalog_->load(config_.tree_id);
@@ -2335,6 +2349,19 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
     handle->bundle->store            = std::move(store);
     handle->bundle->backend_label    = "chunk";
     *out                             = handle.release();
+    return static_cast<ct_status>(crowdb::tree::Code::kOk);
+}
+
+ct_status ct_chunk_page_store_estimated_bytes(const ct_page_store *store, uint64_t *out)
+{
+    if (store == nullptr || store->bundle == nullptr || out == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    auto *chunk = dynamic_cast<crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
+    if (chunk == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    *out = chunk->estimated_bytes();
     return static_cast<ct_status>(crowdb::tree::Code::kOk);
 }
 

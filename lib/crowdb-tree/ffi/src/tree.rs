@@ -111,6 +111,18 @@ impl Crowdbtree {
         self.ptr.as_ptr()
     }
 
+    /// Returns an advisory resident index separator without I/O or a full scan.
+    pub fn approximate_split_key(&self) -> Result<Option<Vec<u8>>, CtError> {
+        let mut found = 0;
+        let mut key = sys::ct_buf {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        check(unsafe { sys::ct_approximate_split_key(self.ptr.as_ptr(), &mut found, &mut key) })?;
+        let key = take_buf(key);
+        Ok((found != 0).then_some(key))
+    }
+
     /// Build an independently owned tree containing exactly `opt.key_range`.
     /// The destination must use an injected store, whose ownership is retained
     /// by the returned tree handle.

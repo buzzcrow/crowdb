@@ -268,6 +268,8 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
 ct_status ct_rpc_chunk_transport_open(const ct_chunk_rpc_transport_options *options, ct_chunk_transport **out);
 void      ct_chunk_transport_free(ct_chunk_transport *transport);
 ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_page_store_stats *out);
+// O(1), no storage/catalog reads; estimate from the opened manifest's pack count.
+ct_status ct_chunk_page_store_estimated_bytes(const ct_page_store *store, uint64_t *out);
 ct_status ct_chunk_page_store_set_wal_replay_offset(ct_page_store *store, uint64_t offset);
 ct_status ct_chunk_page_store_get_wal_replay_offset(const ct_page_store *store, uint64_t *offset);
 ct_status ct_chunk_page_store_get_manifest_generation(const ct_page_store *store, uint64_t *generation);
@@ -323,6 +325,8 @@ ct_status ct_clear(ct_tree *t);
 // own doc comment). `out` must be non-null; a no-op (out left untouched)
 // if `t` is null.
 void ct_get_stats(const ct_tree *t, ct_stats *out);
+// Advisory resident-page separator; owned key buffer, no page or catalog I/O.
+ct_status ct_approximate_split_key(const ct_tree *t, int32_t *found, ct_buf *key);
 
 // Flush C++ metrics into a formatted string (for FFI return to Rust).
 // Returns a malloc'd null-terminated string; caller must ct_free_string it.
