@@ -168,13 +168,20 @@ unaccepted; this is not a full-suite result.
   unique, and pre-restart S3 content reads back. The latest post-restart native
   browser run passes all four domain cases in a 34.49-second owned fixture.
   This does not close the queue's partial-plan/prerequisite-arrival acceptance.
-- [ ] **Mixed allocation-unit provisioning failure**: accepting a 128-KiB
+- [x] **Mixed allocation-unit provisioning failure**: accepting a 128-KiB
   unit on DG 1 beside 1-MiB units on DG 2/3 makes Chunk-KV bootstrap fail with
   `maintenance is degraded: Internal`. Native DDB logs report a 2048-unit
   block request against a 1024-unit Zone on DG 2. Determine the supported
   geometry contract and either make allocation byte-correct across different
   units or reject incompatible topology before service bootstrap. Do not
   present this as an unexplained generic internal error.
+  Current Strip format requires one shared physical unit. Deployment rejects
+  mixed active units explicitly with both sizes before spawning ChunkDB or
+  Chunk-KV. Runtime normal/replacement/conversion allocation rejects changed
+  incompatible topology before fragment RPCs. Native mixed-unit acceptance
+  passes in 5.09 s; ordinary six-service/data/four-browser acceptance passes
+  in 32.49 s. Fourteen focused ChunkDB cases, protocol geometry test, affected
+  all-target clippy and Rust fmt pass.
 - [ ] **Create defaults acceptance**: conflict-free defaults are implemented;
   complete repeated-create and reopen acceptance across IDs, host listener
   ports, DiskDB port ranges and dependency references.

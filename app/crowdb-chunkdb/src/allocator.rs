@@ -95,6 +95,7 @@ impl ChunkAllocator {
             )
             .into());
         }
+        snap.validate_allocation_geometry()?;
         self.pool.update_disk_id_lookup(&snap.disk_groups());
         let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
         let constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
@@ -204,6 +205,7 @@ impl ChunkAllocator {
         strip_sequence: u32,
         constraints: &PlacementConstraints,
     ) -> Result<ChunkStrip, AllocError> {
+        snap.validate_allocation_geometry()?;
         self.pool.update_disk_id_lookup(&snap.disk_groups());
         let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
         let mut retry_constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
@@ -335,6 +337,7 @@ impl ChunkAllocator {
         constraints: &PlacementConstraints,
         exclude_disk_ids: Vec<DiskId>,
     ) -> Result<Segment, AllocError> {
+        snap.validate_allocation_geometry()?;
         self.pool.update_disk_id_lookup(&snap.disk_groups());
         let mut constraints = constraints.clone();
         let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));

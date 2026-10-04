@@ -18,6 +18,7 @@ use crate::{
 
 mod chunk_slots;
 mod credentials;
+mod geometry;
 mod launch;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -101,6 +102,9 @@ pub(super) async fn deploy(
         .collect();
     let port_claim = super::defaults::claim_ports(&state, &ports)?;
     let (node, seeds) = inputs(&state, node_id, &id, &body)?;
+    if matches!(body.kind, Kind::Chunkdb | Kind::ChunkKv) && !body.test_single_node {
+        geometry::validate(&state).await?;
+    }
     // Request cancellation cannot abandon a spawned process before its registration.
     tokio::spawn(async move {
         let _operation = operation;

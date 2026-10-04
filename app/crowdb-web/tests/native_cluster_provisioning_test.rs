@@ -119,6 +119,60 @@ async fn pending_group(app: &axum::Router) {
     assert!(String::from_utf8_lossy(&bytes).contains("deploy a registered DiskDB service"));
 }
 
+async fn assert_mixed_geometry_rejected(app: &axum::Router, state: &AppState) {
+    for kind in ["chunkdb", "chunk-kv"] {
+        let mut body = call(app, "GET", "/api/deployment-defaults?node_id=1", Value::Null).await;
+        body = body[kind].clone();
+        body["kind"] = json!(kind);
+        body["test_single_node"] = json!(false);
+        if kind == "chunk-kv" {
+            body["metadata_store_id"] = json!(0);
+            body["bootstrap_group_id"] = json!(1);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/nodes/1/services/deploy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let error = String::from_utf8_lossy(&bytes);
+        assert!(error.contains("uniform allocation unit"), "{error}");
+        assert!(error.contains("131072") && error.contains("1048576"), "{error}");
+    }
+    assert_eq!(
+        state.config.read().unwrap().servers.len(),
+        6,
+        "no incompatible service spawned"
+    );
+}
+
+async fn add_native_disk(app: &axum::Router, node: u64, root: &std::path::Path) {
+    let device = root.join(format!("disk-{node}.img"));
+    let capacity = if node == 1 { 80u64 } else { 8u64 } * 1024 * 1024 * 1024;
+    let unit_size = if node != 1 && std::env::var_os("CROWDB_NATIVE_MIXED_UNITS").is_some() {
+        1024u64 * 1024
+    } else {
+        128u64 * 1024
+    };
+    std::fs::File::create(&device).unwrap().set_len(capacity).unwrap();
+    call(
+        app,
+        "POST",
+        &format!("/api/nodes/{node}/disk-groups/{node}/disks"),
+        json!({"disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":capacity,
+            "zone_size_bytes":1024*1024*1024,"unit_size_bytes":unit_size,"device_path":device}),
+    )
+    .await;
+}
+
 async fn assert_services(app: &axum::Router) {
     let services = call(app, "GET", "/api/servers", Value::Null).await;
     assert_eq!(services.as_array().unwrap().len(), 18);
@@ -387,22 +441,13 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
             json!({"id":node,"name":"storage"}),
         )
         .await;
-        let device = root.path().join(format!("disk-{node}.img"));
-        let capacity = if node == 1 { 80u64 } else { 8u64 } * 1024 * 1024 * 1024;
-        let unit_size = 128u64 * 1024;
-        std::fs::File::create(&device).unwrap().set_len(capacity).unwrap();
-        call(
-            &app,
-            "POST",
-            &format!("/api/nodes/{node}/disk-groups/{node}/disks"),
-            json!({
-                "disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":capacity,
-                "zone_size_bytes":1024*1024*1024,"unit_size_bytes":unit_size,"device_path":device,
-            }),
-        )
-        .await;
+        add_native_disk(&app, node, root.path()).await;
     }
     assert_bound_groups(&app, &hardware).await;
+    if std::env::var_os("CROWDB_NATIVE_MIXED_UNITS").is_some() {
+        assert_mixed_geometry_rejected(&app, &state).await;
+        return;
+    }
     // All Nodes exist before sealing the fixed CDB service ownership plan.
     for kind in ["chunkdb", "diskio", "chunk-kv", "access-server"] {
         for node in 1..=3 {

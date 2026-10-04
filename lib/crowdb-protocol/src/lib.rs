@@ -10,6 +10,7 @@
 
 mod types;
 
+pub mod chunk_allocation_geometry;
 pub mod chunk_kv;
 pub mod chunk_kv_group_wire;
 pub mod chunk_kv_ordered_wire;

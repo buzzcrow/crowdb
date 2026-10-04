@@ -324,6 +324,14 @@ zone_offset, size, tag }` (from diskdb proto).
 
 ### 5.2 Strip
 
+Current Strip metadata has one physical `unit_kb` shared by all fragments.
+Chunk placement therefore requires a uniform allocation unit across active
+disks. Independent DiskDB groups may use different units, but Console rejects
+ChunkDB/Chunk-KV deployment against mixed active units before spawning a
+process. Runtime topology records incompatible geometry and rejects normal,
+replacement and conversion allocation before any DiskDB fragment request.
+It must not silently reuse the first disk's unit for other groups.
+
 A **strip** is the atomic redundancy unit. Two strip types:
 
 **Mirror Strip**: A configured number of disk allocation units replicated

@@ -1181,3 +1181,24 @@ completed fix or remove R203. Preserve the user's original plan edits.
   Iceberg 6.9 s, S3 4.4 s. All 68 client tests and affected Web/client all-target
   clippy and Rust fmt pass. Earlier blocked evidence remains above for context;
   its contaminated repeats do not establish a routing-cache defect.
+
+### Mixed physical allocation geometry (2026-10-04)
+
+- [x] **Reject incompatible Chunk placement before allocation**: native mixed
+  128-KiB/1-MiB fixture reproduces failed Chunk-KV bootstrap. Strip has one
+  shared unit field; DiskDB physical segment offsets/counts use their own disk
+  units. Keep independent DiskDB geometry valid, but reject mixed active units
+  for current Chunk placement. Files: protocol `chunk_allocation_geometry.rs`,
+  ChunkDB `topology.rs` and `allocator.rs`, Web deployment `geometry.rs`.
+  Publish invalid geometry in the runtime snapshot rather than keeping a
+  previously valid snapshot after topology changes. Validate normal, conversion
+  and replacement allocation paths before any fragment RPC.
+- [x] **Native geometry acceptance**: check explicit deployment conflict with
+  both sizes and no spawned service; verify runtime rejection after authoritative
+  disk geometry changes. Preserve ordinary homogeneous six-service/data/browser
+  acceptance. Run affected fmt/clippy and tests before committing.
+  Mixed native fixture passes in 5.09 s, runtime mutation/three allocation
+  paths pass in 1.29 s, and ordinary six-service/data/four-browser fixture
+  passes in 32.49 s (Zone 1.3 s, graph 2.0 s, Iceberg 6.7 s, S3 4.3 s).
+  Fourteen affected ChunkDB cases and protocol geometry case pass; affected
+  all-target clippy and formatting pass.
