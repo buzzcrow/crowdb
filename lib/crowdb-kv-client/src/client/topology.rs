@@ -178,6 +178,14 @@ impl TopologyCache {
         loop {
             let current = self.snapshot.load_full();
             let old_route = current.groups.get(&key);
+            // Repeating a hint is not a new observation. Advancing the
+            // generation here would fence out an in-flight discovery result.
+            if old_route
+                .and_then(|route| route.leader.as_ref())
+                .is_some_and(|leader| leader.endpoint == endpoint)
+            {
+                return;
+            }
             let leader = Self::reuse_endpoint(old_route, endpoint);
             let route = Arc::new(GroupRoute {
                 leader: Some(leader),
