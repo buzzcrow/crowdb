@@ -223,7 +223,7 @@ test('Managed Chunk-KV placement uses registered node identity instead of instan
   await expect(page.getByRole('button', { name: 'Add Rack', exact: true })).toHaveCount(0);
 });
 
-// Baseline: native graph 1.4s (2026-10-04).
+// Baseline: native graph 3.2s (2026-10-04), three returns/refreshes plus resize.
 // Native cluster is owned by native_cluster_provisioning_test; no response interception.
 test('native diagnostics: Chunk-KV graph survives tab changes, refresh and resizing', async ({ page, request }) => {
   const { step } = await import('../fixtures/stepTimer');
@@ -261,9 +261,11 @@ test('native diagnostics: Chunk-KV graph survives tab changes, refresh and resiz
   };
   await step('native graph initial visible bounds', verify);
   await step('native graph tab return', async () => {
-    await page.getByRole('button', { name: 'KV', exact: true }).click();
-    await observeCatalog(() => page.getByRole('button', { name: 'Chunk-KV', exact: true }).click());
-    await verify();
+    for (let index = 0; index < 3; index++) {
+      await page.getByRole('button', { name: 'KV', exact: true }).click();
+      await observeCatalog(() => page.getByRole('button', { name: 'Chunk-KV', exact: true }).click());
+      await verify();
+    }
   });
   await step('native graph panel resize', async () => {
     const divider = page.getByRole('separator', { name: 'Sidebar width' });
@@ -276,8 +278,10 @@ test('native diagnostics: Chunk-KV graph survives tab changes, refresh and resiz
     await verify();
   });
   await step('native graph catalog refresh', async () => {
-    await observeCatalog(() => page.getByRole('button', { name: 'Refresh catalog', exact: true }).click());
-    await expect(page.getByRole('button', { name: 'Refresh catalog', exact: true })).toBeEnabled();
-    await verify();
+    for (let index = 0; index < 3; index++) {
+      await observeCatalog(() => page.getByRole('button', { name: 'Refresh catalog', exact: true }).click());
+      await expect(page.getByRole('button', { name: 'Refresh catalog', exact: true })).toBeEnabled();
+      await verify();
+    }
   });
 });

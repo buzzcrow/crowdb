@@ -3,7 +3,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { GraphQuery } from './query';
-import ReactFlow, { Background, Controls, Handle, Position, type Node, type Edge, type NodeProps, useNodesInitialized, useReactFlow } from 'reactflow';
+import ReactFlow, { ReactFlowProvider, Background, Controls, Handle, Position, type Node, type Edge, type NodeProps, useNodesInitialized, useReactFlow, useNodesState } from 'reactflow';
 import 'reactflow/dist/style.css';
 import type { ServerSummary } from '../api';
 import { buttonClass } from '../access/Workbench';
@@ -58,6 +58,24 @@ function FitVisibleGraph({ layoutKey }: { layoutKey: string }) {
     return () => observer.disconnect();
   }, [initialized, fitView, layoutKey]);
   return <span ref={marker} hidden />;
+}
+
+function GraphCanvas({ layout, edges, layoutKey }: { layout: Node<Card>[]; edges: Edge[]; layoutKey: string }) {
+  const [nodes, setNodes, onNodesChange] = useNodesState<Card>(layout);
+  useEffect(() => {
+    setNodes(previous => {
+      // Keep measured dimensions across catalog/selection updates; otherwise
+      // unchanged cards can remain hidden awaiting a size change that never occurs.
+      const measured = new Map(previous.map(node => [node.id, node]));
+      return layout.map(node => ({ ...node, width: measured.get(node.id)?.width, height: measured.get(node.id)?.height }));
+    });
+  }, [layout, setNodes]);
+  return <ReactFlow id="chunk-kv" nodes={nodes} edges={edges} onNodesChange={onNodesChange} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.15 }}
+    minZoom={0.1} maxZoom={2} nodesFocusable={false} edgesFocusable={false} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} preventScrolling={false}>
+    <FitVisibleGraph layoutKey={layoutKey} />
+    <Background gap={24} color="#2e3440" />
+    <Controls showInteractive={false} />
+  </ReactFlow>;
 }
 
 export function PartitionGraph({ entries, servers, selectedId, disabled, onSelect, onTree, query, onQuery }: {
@@ -126,12 +144,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
       </>}
     </div>
     <div className="tw-rounded-lg tw-border tw-border-border tw-overflow-hidden" style={{ height: 640 }} data-testid="chunk-kv-graph">
-      <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.15 }}
-        minZoom={0.1} maxZoom={2} nodesFocusable={false} edgesFocusable={false} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} preventScrolling={false}>
-        <FitVisibleGraph layoutKey={layoutKey} />
-        <Background gap={24} color="#2e3440" />
-        <Controls showInteractive={false} />
-      </ReactFlow>
+      <ReactFlowProvider><GraphCanvas layout={nodes} edges={edges} layoutKey={layoutKey} /></ReactFlowProvider>
     </div>
     <p className="tw-text-xs tw-text-muted">At most 8 servers × 5 splits per canvas window. Subtree/Page links require a server inspection API.</p>
   </section>;

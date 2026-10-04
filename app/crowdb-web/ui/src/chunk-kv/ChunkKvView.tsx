@@ -102,9 +102,9 @@ export function ChunkKvView({ active, racks, nodes, servers, onChunk }: { onChun
     {!page && !busy && error && <p className="tw-text-sm tw-text-muted">Catalog unavailable. Check Group 0 and the current cluster's Chunk-KV deployment in Cluster.</p>}
     {page && <>
       <p className="tw-text-xs tw-text-muted">Generation {page.generation} · catalog page {page.page + 1} / {page.catalog_pages} · {page.entries.length} loaded partitions. Catalog assignment; live serving state is not observed.</p>
-      <Suspense fallback={<p role="status">Loading topology…</p>}>{active && <PartitionGraph entries={entries} servers={registered}
+      <Suspense fallback={<p role="status">Loading topology…</p>}><PartitionGraph entries={entries} servers={registered}
         query={graph} onQuery={setGraph} selectedId={selected?.partition.id} disabled={busy || !!error} onSelect={select}
-        onTree={entry => { select(entry); changeQuery({ ...queryRef.current, tab: 'Tree' }); }} />}</Suspense>
+        onTree={entry => { select(entry); changeQuery({ ...queryRef.current, tab: 'Tree' }); }} /></Suspense>
       {!entries.length && <p>No splits in this catalog window.</p>}
       {page.next && <button className={buttonClass} disabled={busy || !!error} onClick={() => { setCursor({ ...page.next!, generation: page.generation }); }}>Next partitions</button>}
     </>}
