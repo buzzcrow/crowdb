@@ -287,8 +287,9 @@ describe('Add Node dialog', () => {
     expect(captured[0].url).toBe('/api/nodes');
     expect(captured[1].url).toBe('/api/nodes/1/server/deploy');
     expect(captured[2].url).toBe('/api/nodes/1/diskdb/deploy');
-    // A failed prerequisite must not start the dependent service plan.
-    expect(onDefaultServices).not.toHaveBeenCalled();
+    // The complete service plan remains visible/retriable after a prerequisite
+    // failure; it records the failure instead of recreating the node.
+    expect(onDefaultServices).toHaveBeenCalledWith(1);
     fireEvent.click(screen.getByRole('button', { name: 'Retry failed services' }));
     await waitFor(() => expect(captured.length).toBe(4));
     expect(captured[3].url).toBe('/api/nodes/1/diskdb/deploy');

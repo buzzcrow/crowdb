@@ -12,7 +12,7 @@ import { nextIdFromSuffix } from './defaults';
 import { NodeServiceProgress } from '../../services/NodeServiceProgress';
 import { serviceRequest } from '../../services/client';
 import type { DeploymentDefaults } from '../../services/useDeploymentDefaults';
-import type { NodeServicePlan } from '../../services/useNodeServicePlans';
+import { serviceLabels, serviceOrder, type NodeServicePlan } from '../../services/useNodeServicePlans';
 
 export interface AddNodeDialogProps {
   isOpen: boolean;
@@ -144,6 +144,11 @@ export function AddNodeDialog({
         }
       }
 
+      // Start the complete service plan even when a directly deployed
+      // prerequisite failed. The plan records the failure and keeps the
+      // remaining default services visible/retriable instead of silently
+      // stopping after KV or DiskDB.
+      if (completeSet) onDefaultServices?.(numericNodeId);
       if (serviceErrors.length > 0) {
         setServiceError(serviceErrors.join('; '));
       } else {
@@ -155,7 +160,6 @@ export function AddNodeDialog({
       await onSuccess?.();
       if (serviceErrors.length === 0) {
         setInitialDone(true);
-        if (completeSet) onDefaultServices?.(numericNodeId);
         if (!enableCrowdbKV && !enableDiskdb) onClose();
       }
     } catch (err) {
@@ -202,7 +206,12 @@ export function AddNodeDialog({
         {plan && <NodeServiceProgress plan={plan} />}
         <fieldset disabled={createdId != null || isLoading} className={initialDone ? 'tw-hidden' : 'tw-space-y-4'}>
         <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={completeSet} onChange={event => { setCompleteSet(event.target.checked); if (event.target.checked) { setEnableCrowdbKV(true); setEnableDiskdb(true); } }} />Deploy complete service set</label>
-        {completeSet && <p className="tw-text-xs tw-text-muted">KV and DiskDB start first. CDB, DiskIO, Chunk-KV and Access Server deploy automatically when their prerequisites are ready.</p>}
+        {completeSet && <>
+          <p className="tw-text-xs tw-text-muted">The complete default service set will be created for this node. Services with cluster prerequisites wait and start automatically when ready.</p>
+          <ul aria-label="Default services" className="tw-grid tw-grid-cols-2 tw-gap-2 tw-text-xs">
+            {serviceOrder.map(kind => <li key={kind} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1.5 tw-text-muted">{serviceLabels[kind]}</li>)}
+          </ul>
+        </>}
         {racks.length > 0 ? (
           <Select
             label="Rack"

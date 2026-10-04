@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R208** — Bump this line in the same commit when adding a new item.
+**Next R number: R210** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -87,6 +87,15 @@ independent deferred work.
   complete; ORC does not block container or client-ecosystem acceptance.
 
 ### High Priority
+
+- **[R209](R209-chunk-kv-split-recovery-fencing.md)** — durable split abort and
+  recovery fencing — Area: chunk-kv / tree / group 0 — Make pre-publication
+  abort cleanup restart-safe, reject abort after catalog commit, and reconcile
+  child overlays and generation pins from durable catalog evidence.
+- **[R208](R208-kv-membership-epoch-persistence.md)** — crash-safe membership
+  epoch persistence — Area: KV / configuration — Persist the voting set and
+  membership epoch as one durable update before publishing a rebuilt group;
+  restore or fail closed without regressing the fencing token.
 
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.

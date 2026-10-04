@@ -6,8 +6,11 @@
 [![CI](https://github.com/buzzcrow/crowdb/actions/workflows/ci.yml/badge.svg)](https://github.com/buzzcrow/crowdb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-CROWDB is a distributed storage platform for Iceberg tables, AI datasets, and
-S3 objects. Each access model keeps its own semantics while sharing one storage
+**A distributed storage platform where ownership, data movement, and recovery
+share one durable control model.**
+
+CROWDB provides a shared storage core for **Iceberg tables, S3 objects, and AI
+datasets**. Each access model keeps its own semantics while sharing one storage
 core for distributed state, placement, protection, streaming, and recovery.
 
 - **Iceberg:** native catalog and FileIO, implemented.
@@ -15,6 +18,11 @@ core for distributed state, placement, protection, streaming, and recovery.
 - **Dataset:** native access and direct GPU delivery, in design.
 
 ## Why CROWDB?
+
+The hard part of distributed storage is keeping authority correct while data
+moves and workers fail. CROWDB treats ownership and these transitions as
+durable state, so physical preparation does not implicitly grant serving
+authority.
 
 Storage bottlenecks move—from disks to CPUs, networks, and data movement—but
 system boundaries tend to stay. A change that crosses a metadata service, an
