@@ -13,7 +13,8 @@ mod topology;
 pub use address::{DiskId, SegmentTarget};
 pub use error::{DiskioError, DiskioResult};
 pub use semantic::{
-    DiskioClient, DiskioClientConfig, Durability, NativeDiskIoRoutes, OperationOptions, TrafficLane,
+    DiskioClient, DiskioClientConfig, Durability, NativeDiskIoRoutes, NativeDiskRouteResolver,
+    OperationOptions, TrafficLane,
 };
 pub use status::DiskioStatus;
 

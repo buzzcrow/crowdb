@@ -229,6 +229,7 @@ struct ct_chunk_rpc_transport_options
     uint32_t                       completion_capacity;
     uint32_t                       mirror_copies; // 0 => 2
     ct_chunk_rpc_resolver          chunkdb_resolver;
+    ct_chunk_rpc_resolver          disk_resolver;
 };
 
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out);

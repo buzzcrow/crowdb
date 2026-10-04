@@ -22,6 +22,7 @@ use crate::topology::{self, DiskRoute};
 use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 
 mod native_routes;
+pub use native_routes::NativeDiskRouteResolver;
 mod write_views;
 
 const TOPOLOGY_REFRESH_INTERVAL_MS: u64 = 5_000;

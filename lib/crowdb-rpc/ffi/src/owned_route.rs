@@ -32,6 +32,12 @@ pub struct OwnedClientRoute {
 }
 
 impl OwnedClientRoute {
+    /// Whether this retained connection can still accept requests.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.connection.is_open()
+    }
+
     #[must_use]
     pub fn new<C>(client: Arc<C>, server: Arc<RpcServer>, connection: Connection) -> Self
     where

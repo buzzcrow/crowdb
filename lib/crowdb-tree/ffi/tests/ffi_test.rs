@@ -136,6 +136,7 @@ fn owned_chunk_rpc_transport_retains_route_handles() {
     let lifetime = Arc::new(());
     let weak = Arc::downgrade(&lifetime);
     let transport = crowdb_tree_ffi::ChunkTransport::open_owned_rpc(OwnedChunkRpcTransportOptions {
+        disks: None,
         chunkdb: Arc::new({
             let route = route.clone();
             move |_, _| {

@@ -110,6 +110,7 @@ pub struct ct_chunk_rpc_transport_options {
     pub completion_capacity: u32,
     pub mirror_copies: u32,
     pub chunkdb_resolver: ct_chunk_rpc_resolver,
+    pub disk_resolver: ct_chunk_rpc_resolver,
 }
 
 #[repr(C)]

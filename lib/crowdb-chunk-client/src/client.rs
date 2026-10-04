@@ -24,7 +24,6 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
-use crowdb_rpc_ffi::OwnedClientRoute;
 
 use crate::metrics::SmallWriteMetrics;
 use crate::negative_list::FailedDiskList;
@@ -186,9 +185,10 @@ impl ChunkIoClient {
     /// store. Clients assembled from test seams do not have production routes.
     pub async fn native_storage_routes(
         &self,
+        timeout_ms: u64,
     ) -> Result<(
         Arc<crowdb_chunkdb_client::NativeChunkRoutes>,
-        Vec<(crowdb_diskio_client::DiskId, OwnedClientRoute)>,
+        Arc<crowdb_diskio_client::NativeDiskRouteResolver>,
     )> {
         let topology = self
             .topology
@@ -199,10 +199,7 @@ impl ChunkIoClient {
             .native_routes()
             .await
             .map_err(|error| crate::IoError::Topology(format!("resolve ChunkDB route: {error}")))?;
-        Ok((
-            chunkdb,
-            topology.disk_writer.storage_routes()?.into_owned_routes(),
-        ))
+        Ok((chunkdb, topology.disk_writer.storage_route_resolver(timeout_ms)?))
     }
 
     /// Construct low-level seams with an explicit small-write policy.
