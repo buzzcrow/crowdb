@@ -185,6 +185,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
         await expect(page.getByRole('menuitem', { name: /add disk group/i })).toHaveCount(0);
         await page.keyboard.press('Escape');
 
+        await page.getByRole('button', { name: /^N-701 Expand children/ }).click();
         const canvasDiskGroup = page.locator('.react-flow__node').filter({ hasText: /Physical Group.*DG-7710/ });
         await expect(canvasDiskGroup).toBeVisible({ timeout: 10_000 });
         await expect(canvasDiskGroup.getByTestId('compact-disk-stack')).toContainText(DISK_ID.slice(0, 12));
@@ -321,7 +322,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
       // Force a UI refresh — the dialog's onSuccess callback may have
       // raced with the server registration. Clicking Refresh guarantees
       // allServers is updated so DDB-704 appears in the sidebar.
-      await page.getByRole('button', { name: /refresh/i }).click();
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
       await expect(aside.getByText('DDB-704', { exact: true })).toBeVisible({ timeout: 30_000 });
     } finally {
       await destroyAndClose(blocker);

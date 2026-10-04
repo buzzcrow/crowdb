@@ -7,8 +7,8 @@ Upstream: [R203](../backlog/R203-console-complete-ui.md).
 Goal: seven domains with explicit scope, real operations/diagnostics, persistent
 standalone bootstrap, and the same UI in Container with topology writes disabled.
 
-Current authorized scope: [Page and Iceberg inspection](#current-execution-scope-page-and-iceberg-inspection-2026-10-04).
-Later model handoff: [Remaining work contract](ui-todo.md#remaining-work-contract-2026-10-04).
+Current authorized scope: remaining tasks 3–8, following completed Page and Iceberg inspection.
+Behavior contract: [Remaining work contract](ui-todo.md#remaining-work-contract-2026-10-04).
 
 ## Baseline and scope
 
@@ -1596,3 +1596,32 @@ are historical. The behavior and non-goals in `ui-todo.md` remain binding.
   its 90-minute observation horizon is distinct from request/lease deadlines.
 - The standalone container release-policy shell check passes. Docker image
   build/acceptance is still unverified because the base-image proxy is unavailable.
+
+
+### Ordered suite regressions and current inventory
+
+- Routine suite: 57 collected, 51 passed, 6 failed, no skips, 2.9 minutes.
+  Two old Refresh locators became ambiguous after independent Refresh slots
+  controls were added. Use exact button names. A topology assertion expanded
+  the sidebar but not the separately collapsed canvas; expand its Node first.
+- Capacity used a union of current hardware and stale DiskDB usage membership,
+  so deleted groups reappeared. Hardware inventory now defines list membership
+  at Cluster/Rack/Node scopes. DiskDB reserved space also makes usable capacity
+  lower than physical geometry; match physical allocation units/size rather
+  than equating the two byte fields. Invalid or missing usage remains Unknown.
+  Real ordered disk operations retain current membership and valid usage.
+- Capacity canvas cases individually remove their DiskDB deployment. Shared
+  teardown stops its remaining KV deployment rather than issuing a second stop
+  for an already removed DiskDB. No missing-resource error is suppressed.
+- Targeted ordered selection: 10 passed, 0 failed/skipped, 1.0 minute;
+  three-node creation 16.0 s, partial failure/resume 3.3 s, reconfiguration
+  5.5/2.9/1.9/2.4 s, disk cases 4.5/1.1/0.589/0.048 s. Owned teardown 6 ms.
+  Earlier Group-status reelection timeout is intermittent: an instrumented
+  reproduction and a subsequent uninstrumented ordered selection pass, without
+  changing production behavior or test deadlines. Full ordered acceptance is
+  still required; this does not establish a root cause for that timeout.
+- New component regressions cover deleted-group membership, preserved Unknown,
+  reserved space and mismatched allocation geometry. Frontend: 137 tests across
+  26 files pass; E2E TypeScript passes. Partition graph's stale unavailable-API
+  message is corrected to bounded Page inspection; its native verification is
+  pending with the full diagnostics run.

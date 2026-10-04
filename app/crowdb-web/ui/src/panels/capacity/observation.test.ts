@@ -18,9 +18,20 @@ it('keeps unknown and partial usage separate from known zero and free space', ()
 
 it('uses reported free bytes and refuses mismatched inventory coverage', () => {
   expect(observeCapacity(hardware, usage)).toEqual({ capacity: 200, busy: 40, free: 140 });
-  const changed = { disk_groups: usage.disk_groups.map(group => ({ ...group, capacity_bytes: 90 })) };
+  const changed = { disk_groups: usage.disk_groups.map(group => ({ ...group, capacity_bytes: 190 })) };
   expect(observeCapacity(hardware, changed).free).toBeNull();
   const missingDisk = { disk_groups: usage.disk_groups.map(group => ({ ...group, disks: [] })) };
   expect(observeCapacity(hardware, missingDisk).busy).toBeNull();
   expect(observeCapacity(null, usage).capacity).toBeNull();
+});
+
+
+it('accepts reserved space with matching physical geometry and ignores removed groups', () => {
+  const actual = { disk_groups: usage.disk_groups.map(group => ({ ...group, capacity_bytes: 90,
+    free_bytes: 70, disks: group.disks.map(disk => ({ ...disk, capacity_bytes: 90,
+      capacity_units: 10, unit_size_bytes: 10 })) })) } as CapacityUsageResponse;
+  expect(observeCapacity(hardware, actual)).toEqual({ capacity: 200, busy: 40, free: 140 });
+  expect(observeCapacity(hardware, actual, { diskId: 'disk1' })).toEqual({ capacity: 100, busy: 20, free: 70 });
+  const removed = { ...usage.disk_groups[0], disk_group_id: 99 };
+  expect(observeCapacity(hardware, { disk_groups: [...actual.disk_groups, removed] })).toEqual({ capacity: 200, busy: 40, free: 140 });
 });

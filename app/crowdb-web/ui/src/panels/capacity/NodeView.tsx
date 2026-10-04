@@ -26,7 +26,7 @@ export function NodeView({ nodeId, usage, hardwareCapacity, onSelectDg }: NodeVi
   const dgs = useMemo<DgAgg[]>(() => {
     const hardware = (hardwareCapacity?.disk_groups ?? []).filter(group => group.node_id === nodeId);
     const reports = (usage?.disk_groups ?? []).filter(group => group.node_id === nodeId);
-    const ids = new Set([...hardware, ...reports].map(group => group.disk_group_id));
+    const ids = new Set((hardwareCapacity ? hardware : reports).map(group => group.disk_group_id));
     return [...ids].sort((a, b) => a - b).map(dgId => ({ dgId,
       diskCount: (hardware.find(group => group.disk_group_id === dgId) ?? reports.find(group => group.disk_group_id === dgId))!.disks.length,
     }));

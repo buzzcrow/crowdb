@@ -198,7 +198,7 @@ test.describe('cluster · rack + node CRUD', () => {
           // Node creation refreshes before DiskDB registration necessarily
           // completes. The API poll above establishes that registration has
           // finished; refresh once now so the tree observes that state.
-          await page.getByRole('button', { name: 'Refresh' }).click();
+          await page.getByRole('button', { name: 'Refresh', exact: true }).click();
           const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
           const expandNode = aside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` }).locator('button[aria-label="Expand"]');
           if (await expandNode.count() > 0) await expandNode.first().click();

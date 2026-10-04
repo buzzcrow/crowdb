@@ -25,7 +25,7 @@ interface NodeAgg {
 export function RackView({ rackId, usage, hardwareCapacity, onSelectNode }: RackViewProps) {
   const nodes = useMemo<NodeAgg[]>(() => {
     const hwNodes = (hardwareCapacity?.nodes ?? []).filter(node => node.rack_id === rackId);
-    const groups = [...(hardwareCapacity?.disk_groups ?? []), ...(usage?.disk_groups ?? [])].filter(group => group.rack_id === rackId);
+    const groups = (hardwareCapacity ? hardwareCapacity.disk_groups : (usage?.disk_groups ?? [])).filter(group => group.rack_id === rackId);
     const ids = new Set([...hwNodes.map(node => node.node_id), ...groups.map(group => group.node_id)]);
     return [...ids].sort((a, b) => a - b).map(nodeId => ({ nodeId,
       dgCount: new Set(groups.filter(group => group.node_id === nodeId).map(group => group.disk_group_id)).size,

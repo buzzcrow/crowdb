@@ -87,7 +87,7 @@ test.describe('capacity · canvas + scanner/recalc', () => {
   test.afterAll(async () => {
     const api = await apiContext(consoleBaseURL());
     try {
-      for (const service of ['diskdb', 'server']) {
+      for (const service of ['server']) {
         const response = await api.post(`/api/nodes/${CANVAS_NODE}/${service}/stop`, { data: {} });
         expect(response.ok(), await response.text()).toBe(true);
       }

@@ -25,7 +25,7 @@ interface RackAgg {
 export function ClusterView({ usage, hardwareCapacity, onSelectRack }: ClusterViewProps) {
   const racks = useMemo<RackAgg[]>(() => {
     const hwRacks = hardwareCapacity?.racks ?? [];
-    const groups = [...(hardwareCapacity?.disk_groups ?? []), ...(usage?.disk_groups ?? [])];
+    const groups = (hardwareCapacity ? hardwareCapacity.disk_groups : (usage?.disk_groups ?? []));
     const ids = new Set([...hwRacks.map(rack => rack.rack_id), ...groups.map(group => group.rack_id)]);
     return [...ids].sort((a, b) => a - b).map(rackId => {
       const members = groups.filter(group => group.rack_id === rackId);
