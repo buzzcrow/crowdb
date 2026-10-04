@@ -1673,3 +1673,177 @@ are historical. The behavior and non-goals in `ui-todo.md` remain binding.
 - Actual Docker image acceptance remains unverified after the pinned base image
   registry proxy connection failed. Host-native managed acceptance is separate.
   Keep R203 and its final cleanup open.
+
+### Continued native scale and diagnostic acceptance
+
+- All temporary Group status/reset phase printing is removed from production
+  code. The next uninstrumented ordered run had 54 passes and 3 reset-request
+  timeouts (57 collected, 0 skipped, 2.7 minutes); leader reelection passed.
+  Isolated reset diagnosis passes 2 cases in 34.2 s. Its original ordered
+  lifecycle/cross-page/create/KV selection passes 10 cases in 50.0 s. Measured
+  reset children/workspace cleanup is 115–210 ms, with no guard wait in those
+  passing runs. These timings do not establish the cause of the full-suite
+  failures. Run final acceptance serially after the slow owned native fixture.
+- Normal-policy count convergence continues: the corrected sparse fixture has
+  seven ranges and has transferred one range to a second owner. Fresh normal
+  heartbeat observations continue. Equal counts and unequal-byte acceptance
+  are not yet complete.
+- [x] **Large native Journal directory**: expose the existing StreamConfig
+  extent-page bound through owner StorageConfig (default 1024, nonzero), retain
+  all lease/cooldown policies, and generate directory pages by actual mutations
+  with 1-MiB stream chunks/one extent per page. Files: Chunk-KV server config/
+  storage/config tests, Web tests/common/native_journal.rs and flow 55.
+  No catalog, manifest or extent records are administratively manufactured.
+  The first owned run fails before browser startup during owner restart with
+  `journal is corrupt: sealed offset is not covered by extent directory`.
+  All owned processes stop in 1744 ms; failure logs remain in the scoped
+  console-journal-acceptance artifacts. A focused smaller-page reopen regression
+  reads old bytes before any new append and passes; native diagnosis continues.
+
+### First-divergence fixes during Journal acceptance
+
+- The first native restart failure exposed a real durable-cursor/publication
+  gap: offset 11795 was requested from a manifest reporting sealed tail 12380
+  with only 19 published fences. Writer reopen had counted unpublished physical
+  frame bytes as logical bytes without adding their extent mappings. Recovery
+  now reads bounded frames beyond the captured published cursor, validates
+  framing/CRC/Chunk identity and publishes recovered mappings before admitting
+  writes. Read-only handles continue observing only their captured boundary.
+  Files: ChunkStream stream/recovery.rs, stream.rs, read_publication_test.rs.
+  Positive cursor-before-publication takeover and corrupt-tail rejection pass;
+  smaller-page reopen reads old bytes before any new append. Original 30 Stream
+  tests and three publication/recovery tests pass, scoped clippy passes.
+- All three real owner stop/restart operations subsequently pass. The large
+  native window and remainder render successfully. Its new history assertion
+  initially treated an intra-tab page change as a browser history entry; the
+  contract restores that window across an actual Chunk-domain navigation.
+  The test now checks exact Chunk identity, Back/Forward window+extent selection,
+  explicit previous/next replacement, stale generation 409 and Refresh reset.
+- The next fixture lost KV Node 1 during initial-split preparation. Its stdout
+  includes `std::bad_alloc` at SocketTransport::submit's connection-name access
+  after watch send queues rejected frames. Host has available memory; relevant
+  cgroup OOM counts remain zero. No native crash report is available; do not
+  attribute the prior exits to kernel OOM or external signals.
+- RPC code independently confirms missing connection-lifetime protection:
+  unregister erases the weak registry entry, but submit formerly dereferenced
+  an absent raw handle; a successful lookup's strong reference also expired
+  before enqueue/direct write. Cross-thread submit now rejects absent/closed
+  handles and keeps its existing strong reference through completion. Worker
+  fast path and existing locks are unchanged. Two deterministic stale/freed
+  handle regressions plus eight transport/disconnect cases pass (150 ms).
+  Files: SocketTransport header/source and transport_test.cpp. Full C++ gate,
+  relinked native acceptance and final routine suite are pending.
+- Slow weighted fixture fails at 1971.25 s (counts 9/2, eleven ranges), before
+  equal counts or unequal-byte acceptance. Actual Group 0/1 accept RPCs to both
+  peers time out at the original 2000-ms budget; all three KV metrics streams
+  still emit through the failure window. Cause is not established by the later
+  stale-handle finding. Failure logs are preserved, all owned services stop in
+  3202 ms. No retry/deadline/lease/policy relaxation is made.
+- Three remaining KV children belonged to the earlier whole-process ptrace
+  diagnostic's exact ephemeral root. They are explicitly stopped and verified
+  exited; user persistent deployments are preserved. No orphan-reaper redesign.
+
+- Complete C++ gate now exits 0: Tree-linked 615, common 29, RPC 76, DiskIO
+  134, Tree FFI 55 and RPC FFI 23 checks pass (counts overlap linked C++ suites).
+  Full ChunkStream passes 54 integration tests, including all four native
+  service failure/restart cases; formatting is clean. RPC and recovery fixes
+  are committed separately as d9905b90 and 66787336.
+- Large native Journal acceptance passes after these fixes: actual initial
+  split settles in 14502 ms; eight real mutations produce the bounded 100-fence
+  first window and remaining window. Exact Chunk navigation, Back/Forward
+  selected-extent restoration, previous/next replacement, actual owner restart,
+  stale cursor 409 and Refresh reset pass in 2.8 s (one collected/pass, no skip).
+  Owned chain 35.94 s; all owned services exit in 2545 ms. This closes the
+  large-directory task-3 gap. Globally serial uninstrumented routine suite is
+  running in console-routine-final; unequal-byte acceptance remains pending.
+
+- First post-RPC uninstrumented routine run collects 57 cases: 56 pass, one
+  Group status GET fails at the original 3000-ms request budget during leader
+  stop; reset cases pass and teardown takes 14 ms. Same-order phase diagnosis
+  reproduces 56/1 in 2.7 minutes, teardown 7 ms. Context construction takes 0 ms;
+  the stalled request never finishes the Group-0 group lookup. Successful runtime
+  report stages are 3–5 ms. Temporary production printing is removed.
+- A deterministic public-client regression then reproduces a topology cache
+  publication race: an identical repeated leader hint advances the generation
+  while discovery is in flight, discards its new leader, and attempts the dead
+  old address. Identical hints now leave the snapshot unchanged; changed hints
+  retain existing priority. Before fix the regression fails; afterward it passes
+  in 0.04 s. All 69 KV client tests and scoped clippy pass. The actual 21 spec
+  passes four cases in 39.3 s; final original ordered suite is running. Files:
+  client/topology.rs and tests/topology_publication_test.rs. No budgets changed.
+
+- The subsequent globally serial uninstrumented ordered suite still has 56
+  passes / one 3000-ms Group GET timeout (2.5 minutes). The identical-hint race
+  is independently fixed and committed as 80b314c4; it does not establish that
+  the complete leader-stop failure is resolved. Logs still show Group-0 reads
+  retrying the dead prior address through attempt 4. Topology merge diagnosis
+  is now collecting the returned and chosen leader plus base/current generation
+  in the original full order; no further retry/policy change has been made.
+
+- The topology diagnostic ordered run passes all 57 cases in 2.5 minutes,
+  teardown 8 ms. Diagnostic printing is removed; this pass alone does not close
+  the intermittent uninstrumented failure.
+- Replacement route discovery also retained the failed endpoint's exponential
+  backoff. A real RPC/HTTP client regression reproduces an elapsed 250-ms
+  operation while a healthy replacement is already known. Only retries to the
+  same failed endpoint now retain that backoff; replacement routes progress
+  immediately, with unchanged production retry counts and deadlines. The
+  regression and all 70 KV client tests pass, scoped clippy/fmt pass, and all
+  six native service binaries are relinked. Committed as 5f3d85c0. Original
+  uninstrumented 57-case acceptance is running in console-routine-redirect-fixed.
+- The final uninstrumented ordered routine passes all 57 cases in 2.7 minutes;
+  leader-stop/re-election passes in 5.1 s, owned cleanup 6 ms. Frontend 138 tests
+  in 26 files pass in the same command. The original three-second GET budget,
+  election window and retry counts are unchanged. Native full-chain acceptance
+  now runs serially in console-native-redirect-fixed before the slow balance
+  fixture. Stream geometry configuration is committed as 6f4a1934 after its five
+  config tests and Web/Chunk-KV all-target scoped clippy pass.
+- The first final native invocation omitted the required Chunk data-window
+  fixture: 21 browser cases collect, 17 pass, three phase skips, one fails
+  immediately with `Run with CROWDB_NATIVE_DATA_WINDOWS=1` / null fixture.
+  Native S3 checks and all six service restarts had passed; owned cleanup takes
+  8135 ms (chain 87.04 s). This is an invocation/fixture wiring failure, not
+  production evidence. The normal restart branch now honors the same explicit
+  data-window flag as the inspection branch and seeds real Mirror/EC data after
+  restart. Corrected full-chain acceptance runs in console-native-data-final.
+- Corrected final full restart/browser chain passes: 21 browser cases collected,
+  18 passed, zero failed, three explicit phase skips (prerequisite arrival,
+  production split overlay, large Journal). These phases have separate accepted
+  native runs. All six native service restart/data checks pass; browser 1.2
+  minutes, owned chain 94.42 s, teardown 8464 ms. The shared data-window helper
+  removes duplicate seeding code; scoped native-fixture clippy passes. Slow
+  equal-count/unequal-byte acceptance now runs globally serially.
+- Slow acceptance observes two local partitions through 577 s, then four local
+  partitions at 637 s, all on owner 1 while owners 2/3 remain empty. Heartbeats
+  and Group-0 reads stay healthy. Current planner prioritizes a successful split
+  before transfer and both actions use the same per-partition cooldown measured
+  from split planning. Placement design specifies local split children and
+  later placement with ten-minute cooldown; it does not require reaching twelve
+  partitions before any migration. The user questioned the idle-owner delay.
+  Distinguish cooldown waiting from split priority starving an otherwise
+  eligible transfer; do not call this intermediate state weighted acceptance
+  or silently change the placement policy.
+
+### User-requested pause and next step
+
+- The user requested stopping work to go offline. The slow test is intentionally
+  terminated; this is neither a test pass nor a spontaneous failure. Latest
+  observation at 1242 s is 6/1/0 (seven partitions), so a first migration did
+  occur before twelve partitions. Earlier observations were 2/0/0 at 577 s,
+  4/0/0 at 637 s and 6/0/0 at 1211 s. The current split-first scheduling and
+  shared ten-minute cooldown cause substantial idle-owner delay; they do not
+  categorically prevent every transfer until the desired count is reached.
+- The user approved reducing the default cooldown to one minute; do not choose
+  a shorter value without new evidence. This change is not implemented yet.
+  Resume by updating the protocol and server balance defaults, default-contract
+  test and placement documentation, then relink affected services and repeat
+  actual count/byte acceptance. Preserve request, heartbeat and lease budgets.
+  Transfer planning currently derives preparation/catch-up/forwarding limits
+  from cooldown; inspect that coupling so reducing placement cooldown does not
+  inadvertently shorten unrelated transfer safety budgets.
+- The owned test process and all eighteen services are stopped. Cleanup is
+  limited to console-weighted-final; persistent user services are preserved.
+  Acceptance progress and intentional SIGTERM are saved in
+  `.crowdb-runtime/test-data/console-weighted-final/artifacts/weighted-acceptance-stopped.log`.
+  Existing uncommitted Journal/balance fixture work is preserved. Docker image
+  acceptance remains externally blocked; R203 remains open.

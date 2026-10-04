@@ -82,10 +82,12 @@ unaccepted; this is not a full-suite result.
   retry, reload, restart, concurrent operators, prerequisite arrival and reset
   cancellation. No duplicate service, orphan process or inconsistent resource
   state may remain.
-- [ ] **Creation defaults and mode boundaries**: every create dialog supplies
+- [x] **Creation defaults and mode boundaries**: every create dialog supplies
   valid conflict-free IDs, ports and dependencies on repeated use. Container
   mode rejects topology/disk management in both UI and API while permitting
   supported data operations. Verify readonly embedding and outage recovery.
+  Actual standalone and host-native managed-profile acceptance passes. Docker
+  image packaging remains a separate unverified boundary under task 7.
 - [x] **Navigation and changing resources — shared flow**: browser and header
   Back/Forward restore bounded selection/query windows, tree expansion and scroll.
   Native acceptance covers KV replacement pages, Capacity zone pages, Iceberg
@@ -97,7 +99,7 @@ unaccepted; this is not a full-suite result.
   late responses from the previous owner. Fixed Chunk maps have no
   online reassignment operation. Advanced Chunk-KV transfer/journal and Iceberg
   reference parser scenarios remain in their domain acceptance inventory below.
-- [ ] **Real data-browser completeness**: verify paged Chunk lists and multi-
+- [x] **Real data-browser completeness**: verify paged Chunk lists and multi-
   Strip layouts, Chunk-KV splits/journals, Iceberg schemas/snapshots/manifests/
   files/Parquet metadata, and S3 buckets/objects/previews/multipart/locations.
   Large collections stay bounded; independent pages replace rather than
@@ -186,7 +188,7 @@ unaccepted; this is not a full-suite result.
   early 409 for ChunkDB and Chunk-KV, with both unit sizes and the uniform-unit
   invariant. No rejected service is spawned. Native fixture passes in 5.64 s;
   mixed-unit support remains outside scope.
-- [ ] **Create defaults acceptance**: conflict-free defaults are implemented;
+- [x] **Create defaults acceptance**: conflict-free defaults are implemented;
   complete repeated-create and reopen acceptance across IDs, host listener
   ports, DiskDB port ranges and dependency references.
 - [x] **Group 0 convergence retry volume**: one successful native initialization
@@ -199,14 +201,14 @@ unaccepted; this is not a full-suite result.
   cold fixture records nine hints and completes in 33.15 seconds.
 ## Capacity and shared behavior
 
-- [ ] **Navigation return history across all views**: every button/link that
+- [x] **Navigation return history across all views**: every button/link that
   navigates to another resource or view must retain a return route. Back and
   Forward restore the source domain, resource, list cursor, tree expansion,
   selected detail and scroll position. Keep ancestry breadcrumbs separate
   from visit history; refresh and mutations must not create navigation entries.
   Include property links and graphical nodes, not only sidebar navigation.
 
-- [ ] **Cross-view and failure acceptance**: verify scope restoration,
+- [x] **Cross-view and failure acceptance**: verify scope restoration,
   disk/node navigation, owner movement, stale cursors, unavailable services,
   and container-mode topology/disk mutation restrictions against the current
   Cluster, Capacity and KV specification.
@@ -242,7 +244,8 @@ unaccepted; this is not a full-suite result.
   The native 32-MiB incompressible workload preserves exact aggregate retained
   estimates across owner restart (46,244,412 bytes and 118,165,608 bytes in
   separate observed layouts), with exact sample data readback. Reclamation and
-  weighted redistribution remain unaccepted.
+  reopen estimates now pass the native retained-tree-pack regression. Actual
+  weighted redistribution remains unaccepted.
 - [x] **Low-cost approximate split and weights**: prioritize efficiency,
   simplicity and low system overhead. Split boundaries need not divide keys or
   bytes exactly in half; estimated weights need not be exact. Obtain a valid
@@ -358,8 +361,10 @@ loss beyond recovery capacity.
 
 ### Remaining acceptance tasks from the inventory
 
-- [ ] Verify shell embedding and capability failures against actual standalone
+- [x] Verify shell embedding and capability failures against actual standalone
   and container services, without intercepted responses.
+  Actual managed-profile services cover container-mode shell/capability/data
+  behavior on the host; this does not establish Docker image acceptance.
 - [x] Verify all auxiliary service menus, deployment progress, failures and
   resume/restart behavior with real service processes.
 - [x] Bring advanced KV acceptance into agreement with replacement pagination
@@ -375,7 +380,7 @@ loss beyond recovery capacity.
   including restoration after navigation and late responses.
 - [x] Cover actual Chunk type/list pages, multi-Strip Mirror/EC and physical
   placement return; independent windows must replace previous results.
-- [ ] Cover real Chunk-KV journal paging, transition/stale fences, empty catalog
+- [x] Cover real Chunk-KV journal paging, transition/stale fences, empty catalog
   and service outages while keeping the graph and selection accurate.
 - [x] Cover actual Iceberg nested schemas, multiple snapshots/manifests, file
   pagination and Parquet/Avro metadata inspection without payload scans.
@@ -727,27 +732,45 @@ raw Chunk layout editing, storage reclamation promises, or unrelated features.
 - Full uninstrumented native browser chain: 19 collected, 18 passed, 0 failed,
   1 prerequisite-phase skip, browser 1.2 minutes; owned chain 91.60 s and teardown
   7660 ms. Separate prerequisite phase passes in 7.8 s (chain 17.11 s).
+  Final post-fix full six-service restart/browser chain: 21 collected, 18 passed,
+  zero failed, three phase skips covered by separate prerequisite/overlay/large
+  Journal runs; browser 1.2 minutes, owned chain 94.42 s, teardown 8464 ms.
 - Latest frontend gate: 138 passed in 26 files. Web server and console-shared
   tasks pass, plus 24 focused lifecycle/cancellation/managed/startup cases.
-- Task 3 retains one explicit scale gap: large Journal directory replacement
-  (100 page fences followed by the remainder) is component/handler coverage.
-  Native Journal identity, actual active Chunk, owner interruption and stale
-  observations are accepted; a real production split browser case additionally
-  passes inherited/current journals, cutover and dependencies in 32.3 s.
-  Do not relabel small native directories as large-page acceptance.
+- Task 3 is complete: actual large Journal 100-fence/remainder replacement,
+  selected-extent restoration across Chunk Back/Forward, owner restart, stale
+  cursor 409 and Refresh reset pass in 2.8 s (owned chain 35.94 s, teardown
+  2545 ms). A real production split browser case separately passes inherited/
+  current journals, cutover and dependencies in 32.3 s. Both use real services
+  and persisted data.
 - Task 5: reclamation/reopen estimates pass native FFI regression. Actual unequal
-  load redistribution is running with unchanged production policy and normal
-  heartbeats/leases. The initial slow fixture exhausted the usable portion of
+  load redistribution remains unverified: the corrected fixture failed after
+  1971.25 s with eleven ranges (owner counts 9/2) when normal Group-0 reads
+  lost quorum. All owned services were cleaned up; normal policy and request/
+  heartbeat/lease budgets remain unchanged. The initial slow fixture exhausted the usable portion of
   an 8-GiB disk during split; the corrected fixture provisions 256-GiB sparse
   virtual disks and retains the ordinary cooldown. Do not mark byte balance done
   from count convergence alone or change deadlines to make acceptance pass.
+  Final serial run was intentionally stopped at the user's offline request:
+  2/0/0 at 577 s, 4/0/0 at 637 s, then 6/1/0 at 1242 s. This demonstrates one
+  actual count transfer, not weighted redistribution. The user approved a
+  one-minute default cooldown; it is not implemented yet. On resume update both
+  protocol/server defaults and documentation, preserving unrelated request,
+  heartbeat, lease and transfer safety budgets, then repeat native acceptance.
+  All eighteen owned services and the test process are stopped; progress log
+  is retained in console-weighted-final/artifacts/weighted-acceptance-stopped.log.
 - Task 7: standalone embedding and host-native managed shell/capability/data
   operations pass. Actual Docker image build/acceptance remains unverified:
   the pinned Ubuntu base image cannot be fetched through the configured registry
   proxy. Do not change the host proxy/authentication or substitute host-native
   acceptance for image evidence.
-- Task 8: ordered routine acceptance remains under verification. A 57-case run
-  had 56 passes and a 3-s Group-status timeout during leader reelection; temporary
-  diagnostics then passed all 57 in 2.4 minutes. An uninstrumented ordered run
-  follows. Preserve the earlier failure and do not claim its root cause was fixed.
+- Task 8: final uninstrumented ordered routine passes all 57 cases in 2.7
+  minutes, cleanup 6 ms; frontend 138 tests in 26 files pass. Earlier runs had
+  Group-status/reset timeouts. Deterministic regressions reproduce and verify
+  two client defects: repeated identical hints discarded in-flight topology
+  discovery, and a newly discovered endpoint inherited the failed route's
+  exponential backoff. Both are fixed without increasing request, retry or
+  election budgets. Temporary production diagnostics are removed. Final native
+  restart/browser acceptance also passes as recorded above; slow byte-balance
+  acceptance and the Docker external boundary remain separate open items.
   R203 stays open while required boundaries remain unverified.
