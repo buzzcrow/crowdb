@@ -1108,7 +1108,7 @@ remains to be run and must not be inferred from the S3 API fixture.
 
 - [x] **Verify retained implementation after history reconciliation**: the current Stream observation fixture has its required purpose and its exact test passes. The fresh three-node API/service-restart fixture and all four native browser cases pass (32.48-second fixture; Zone 1.3 s, graph 2.0 s, Iceberg 7.1 s, S3 4.0 s). Full 9-MiB reads are 31 ms; DDB restart is 918 ms. This does not close unconverted browser coverage.
 - [ ] **Bound repeated Group 0 hints — candidate blocked**: cold initialization still follows 4,105 hints. Share per-operation repeated/cyclic redirect accounting across ordinary and conditional writes and scans, retain immediate progress to new endpoints, and use the existing election wait/budget for stalled hints. Extract oversized core operations into owning modules before edits. Files: `lib/crowdb-kv-client/src/client/core.rs`, `core/operations.rs`, `core/scans.rs`, `core/conditional.rs`, `client/retry.rs`, `config.rs`, `tests/conditional_retry_test.rs`, `tests/common/conditional_servers.rs`. Verify real pinned-role cycles, existing client tests, cold native initialization and affected clippy/fmt.
-- [ ] **Continue remaining native acceptance**: executable staging race, mixed allocation units, plan recovery, balance weight/liveness, stream rollover, bounded inspection API and unconverted real browser contracts remain open. Node ownership and separate metrics UI designs remain deferred.
+- [ ] **Continue remaining native acceptance**: mixed allocation units, plan recovery, balance weight/liveness, bounded inspection API and unconverted real browser contracts remain open. Node ownership and separate metrics UI designs remain deferred.
 
 - [x] **Verify retained native EC background acceptance**: `pixi run timeout 60s cargo test -p crowdb-chunkdb --test partial_ec_background_test -- --nocapture` passes in 2.88 seconds. Actual KV/DDB and six DiskIO processes cover 7 MiB + 17-byte mirror-to-EC conversion, four missing shard repairs, exact seal and nonzero unwritten tails. This confirms the existing regression; no production change was needed.
 
@@ -1218,3 +1218,22 @@ completed fix or remove R203. Preserve the user's original plan edits.
   29 stream cases and nine production-adapter cases pass. Four native-process
   cases pass in 6.47 s, including higher-epoch idle takeover, restart readback
   and killed/live-error DiskIO paths. Affected clippy and Rust fmt pass.
+
+### Executable staging fork isolation (2026-10-04)
+
+- [x] **Remove parent-held executable writers**: default-concurrency and serial
+  lifecycle suites pass before the change. A controlled Linux fork retains a
+  CLOEXEC executable writer after the parent closes it: exec returns ETXTBSY
+  until that child exits. The original failure has no descriptor snapshot;
+  attribution remains inferred, rather than a captured historical root cause.
+  Stage the upgrade-test binary through a completed `cp` child, so concurrent
+  forks of the shared test parent cannot inherit the destination writer.
+  Production staging prefers symlinks and is unchanged. Files:
+  `app/crowdb-web/tests/service_lifecycle_test.rs`. Both seven-case lifecycle
+  suites pass after the change, preserving stale-PID refusal, exact command
+  matching, replacement inode restart and retained data. Web all-target clippy
+  and Rust fmt pass; no unsafe, lock or spawn retry is added.
+- [~] **Native interrupted plan reconciliation**: exercise persisted deployment
+  steps against registered native services after reload and verify Retry cannot
+  duplicate existing instances. Extend the ordered lifecycle browser spec and
+  owned native provisioning fixture, then cover prerequisite arrival separately.

@@ -150,12 +150,14 @@ unaccepted; this is not a full-suite result.
   Chunk physical mapping, and DG 1 allocation bitmap succeed with mixed Store
   bindings. Four native browser diagnostics pass; the owned fixture takes
   27.91 seconds, with unchanged waits and slow-step measurement.
-- [ ] **Native executable staging race**: one default-concurrency lifecycle
-  run failed before its first service started with `ETXTBSY` at
-  `upgraded_executable_can_restart_without_relaxing_pid_identity`. The exact
-  case and subsequent affected suite pass, so the intermittent staging/fork
-  failure remains unaccepted. Diagnose concurrent writable executable handles;
-  preserve process identity checks and do not mask this with spawn retries.
+- [x] **Native executable staging fork window**: executable copies now run in
+  an isolated child, keeping writable executable handles out of the shared
+  multithreaded test parent. A controlled Linux fork reproduces `ETXTBSY`
+  after the parent closes a CLOEXEC writer, and succeeds after the inheriting
+  child exits. Default-concurrency and serial lifecycle suites pass with exact
+  PID/argument checks and upgrade restart retained; no spawn retries. The
+  original intermittent failure lacked a descriptor snapshot, so attribution
+  to this reproduced mechanism remains an inference.
 - [ ] **Six-service plan recovery**: the one-dialog queue is implemented but
   now persists on the server with revision fencing. Reload restoration and
   competing-browser fencing pass. Verify native service restart,

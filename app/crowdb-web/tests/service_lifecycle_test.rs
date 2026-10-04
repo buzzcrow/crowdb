@@ -156,7 +156,7 @@ async fn auxiliary_lifecycle_keeps_exact_identity_and_preserves_data() {
 async fn upgraded_executable_can_restart_without_relaxing_pid_identity() {
     let workdir = crowdb_test_harness::test_dirs::tempdir_in_test_data("upgraded-service");
     let program = workdir.path().join("service");
-    std::fs::copy("/bin/sleep", &program).unwrap();
+    stage_sleep_executable(&program);
     let mut child = std::process::Command::new(&program)
         .arg("600")
         .current_dir(workdir.path())
@@ -164,7 +164,7 @@ async fn upgraded_executable_can_restart_without_relaxing_pid_identity() {
         .unwrap();
     let old_pid = child.id();
     std::fs::remove_file(&program).unwrap();
-    std::fs::copy("/bin/sleep", &program).unwrap();
+    stage_sleep_executable(&program);
     let mut cfg = config();
     let mut entry = ServerEntry::new("chunkdb-1", "http://127.0.0.1:43000");
     entry.service_type = ServiceType::Chunkdb;
@@ -210,6 +210,17 @@ async fn upgraded_executable_can_restart_without_relaxing_pid_identity() {
     child.wait().unwrap();
     let (status, result) = request(&app, "POST", "/api/services/chunkdb-1/stop", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{result}");
+}
+
+fn stage_sleep_executable(program: &std::path::Path) {
+    // Keep writable executable handles out of the multithreaded test parent:
+    // concurrent forks inherit even CLOEXEC handles until their exec completes.
+    let output = std::process::Command::new("cp")
+        .arg("/bin/sleep")
+        .arg(program)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
 }
 
 #[tokio::test]
