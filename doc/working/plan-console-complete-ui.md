@@ -1070,3 +1070,11 @@ UI todo acceptance items.
   3-second failure and 6.532-second DDB restart; latest warm-route counters show
   one transport retry and no unknown-leader waits. A passing repetition alone
   does not close this task.
+
+- [x] **Real Capacity replacement windows**: use an actual 80-GiB sparse disk with 80 zones and 128-KiB allocation blocks. Verify 32/32/16 Zone pages replace each other, both actual 4096-bit windows match authoritative pixels, Previous restores selection, and no browser timeout changes.
+  The expanded native Zone case passes in 1.3 seconds (previous 0.918 seconds),
+  including both 4096-bit windows and 32/32/16 zone pages. Shared fixture uses
+  uniform 128-KiB units; mixed geometry is retained as a separate backend task.
+  The same run fails the already-open S3 full-read deadline: a 9-MiB GET returns
+  200 headers, but response-body completion exceeds 3 seconds. Keep that failure;
+  do not claim the entire native selection passed.

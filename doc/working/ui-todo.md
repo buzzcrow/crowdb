@@ -168,6 +168,13 @@ unaccepted; this is not a full-suite result.
   unique, and pre-restart S3 content reads back. The latest post-restart native
   browser run passes all four domain cases in a 34.49-second owned fixture.
   This does not close the queue's partial-plan/prerequisite-arrival acceptance.
+- [ ] **Mixed allocation-unit provisioning failure**: accepting a 128-KiB
+  unit on DG 1 beside 1-MiB units on DG 2/3 makes Chunk-KV bootstrap fail with
+  `maintenance is degraded: Internal`. Native DDB logs report a 2048-unit
+  block request against a 1024-unit Zone on DG 2. Determine the supported
+  geometry contract and either make allocation byte-correct across different
+  units or reject incompatible topology before service bootstrap. Do not
+  present this as an unexplained generic internal error.
 - [ ] **Post-restart inspection latency**: one native browser run after the
   same six restarts timed out at 3 seconds on DG 1 Zone usage and Chunk-KV
   catalog; DDB restart took 6.532 seconds and teardown took 18.198 seconds.
@@ -322,6 +329,11 @@ unaccepted; this is not a full-suite result.
   and current scoped Actions; retain raw-byte identity and mutation coverage.
   Three real cases pass (0.847/4.9/2.8 s), preserving bulk/selected/inline delete,
   all-group restrictions, auto-scan and session-owned demo cleanup.
+- [x] Verify real Capacity replacement windows: an actual 80-GiB sparse disk
+  has 80 zones and 8192 blocks per zone. The browser verifies 32/32/16 zone
+  pages, exclusion of earlier rows, final Next disabling and selected Zone 0
+  restoration. Both displayed 4096-bit windows match actual allocation pixels;
+  the case takes 1.3 seconds without changing timeouts or injecting responses.
 - [ ] Cover large real Capacity windows and unavailable allocation/owner data,
   including restoration after navigation and late responses.
 - [ ] Cover actual Chunk type/list pages, multi-Strip Mirror/EC and physical

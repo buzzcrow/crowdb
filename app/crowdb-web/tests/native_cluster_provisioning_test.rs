@@ -359,17 +359,16 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         )
         .await;
         let device = root.path().join(format!("disk-{node}.img"));
-        std::fs::File::create(&device)
-            .unwrap()
-            .set_len(8 * 1024 * 1024 * 1024)
-            .unwrap();
+        let capacity = if node == 1 { 80u64 } else { 8u64 } * 1024 * 1024 * 1024;
+        let unit_size = 128u64 * 1024;
+        std::fs::File::create(&device).unwrap().set_len(capacity).unwrap();
         call(
             &app,
             "POST",
             &format!("/api/nodes/{node}/disk-groups/{node}/disks"),
             json!({
-                "disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":8u64*1024*1024*1024,
-                "zone_size_bytes":1024*1024*1024,"unit_size_bytes":1024*1024,"device_path":device,
+                "disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":capacity,
+                "zone_size_bytes":1024*1024*1024,"unit_size_bytes":unit_size,"device_path":device,
             }),
         )
         .await;

@@ -310,6 +310,7 @@ test.describe('chunk · capacity · zone', () => {
 
 // Baseline: native bitmap 0.828s (2026-10-04).
 // Native cluster/payload allocation is owned by native_cluster_provisioning_test.
+// Baseline: 0.918s (2026-10-04); two block windows and 80 real zones: 1.3s.
 test('native diagnostics: Zone canvas colors match every actual allocation bit', async ({ page, request }) => {
   const { step } = await import('../fixtures/stepTimer');
   const response = await request.get('/api/diskdb/usage?dg=1&disk=00000000000000000000000000000001&zone=0');
@@ -340,7 +341,8 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
   await step('native zone bitmap DOM and pixels', async () => {
     const bitmap = page.getByTestId('zone-bitmap');
     await expect(bitmap).toBeVisible();
-    await expect(bitmap.getByLabel('Displayed block window usage')).toContainText(`${zone.busy_block_count} used`);
+    const firstWindow = states.slice(0, 4096);
+    await expect(bitmap.getByLabel('Displayed block window usage')).toContainText(`${firstWindow.reduce((sum, bit) => sum + bit, 0)} used`);
     const canvas = bitmap.getByLabel('Zone block usage');
     const colors = await canvas.evaluate((element, count) => {
       const canvas = element as HTMLCanvasElement;
@@ -349,7 +351,35 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
         const rgba = context.getImageData((index % 64) * 6 + 2, Math.floor(index / 64) * 6 + 2, 1, 1).data;
         return [...rgba].join(',');
       });
-    }, total);
-    expect(colors).toEqual(states.map(bit => bit ? '85,127,165,255' : '82,125,104,255'));
+    }, Math.min(total, 4096));
+    expect(colors).toEqual(states.slice(0, 4096).map(bit => bit ? '85,127,165,255' : '82,125,104,255'));
+    expect(total).toBeGreaterThan(4096);
+    await bitmap.getByRole('button', { name: 'Next blocks', exact: true }).click();
+    await expect(bitmap).toContainText(`Blocks 4096–${total - 1} of ${total}`);
+    const secondColors = await canvas.evaluate((element, count) => {
+      const context = (element as HTMLCanvasElement).getContext('2d')!;
+      return Array.from({ length: count }, (_, index) => [...context.getImageData((index % 64) * 6 + 2, Math.floor(index / 64) * 6 + 2, 1, 1).data].join(','));
+    }, total - 4096);
+    expect(secondColors).toEqual(states.slice(4096).map(bit => bit ? '85,127,165,255' : '82,125,104,255'));
+    await expect(bitmap.getByRole('button', { name: 'Next blocks', exact: true })).toBeDisabled();
+    await bitmap.getByRole('button', { name: 'Previous blocks', exact: true }).click();
+    await expect(bitmap).toContainText('Blocks 0–4095');
+  });
+  await step('native zone replacement pages', async () => {
+    const zones = page.getByRole('group', { name: 'Disk zones', exact: true });
+    const zoneButtons = zones.getByRole('button', { name: /^Zone \d+$/ });
+    await expect(zoneButtons).toHaveCount(32);
+    await expect(zones.getByRole('button', { name: 'Previous zones', exact: true })).toBeDisabled();
+    await zones.getByRole('button', { name: 'Next zones', exact: true }).click();
+    await expect(zoneButtons).toHaveCount(32);
+    await expect(zones.getByRole('button', { name: 'Zone 32', exact: true })).toBeVisible();
+    await expect(zones.getByRole('button', { name: 'Zone 0', exact: true })).toHaveCount(0);
+    await zones.getByRole('button', { name: 'Next zones', exact: true }).click();
+    await expect(zoneButtons).toHaveCount(16);
+    await expect(zones.getByRole('button', { name: 'Zone 79', exact: true })).toBeVisible();
+    await expect(zones.getByRole('button', { name: 'Next zones', exact: true })).toBeDisabled();
+    await zones.getByRole('button', { name: 'Previous zones', exact: true }).click();
+    await zones.getByRole('button', { name: 'Previous zones', exact: true }).click();
+    await expect(zones.getByRole('button', { name: 'Zone 0', exact: true })).toHaveAttribute('aria-pressed', 'true');
   });
 });
