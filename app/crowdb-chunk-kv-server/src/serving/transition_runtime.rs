@@ -165,11 +165,12 @@ impl TransitionProcessor {
                 .persist_split_transition(machine.transition(), revision)
                 .await?;
         }
-        if matches!(
-            machine.transition().phase,
-            SplitPhase::CatalogCommitted | SplitPhase::Aborted
-        ) {
+        if machine.transition().phase == SplitPhase::CatalogCommitted {
             self.executor.release_split_generation_pin(machine.transition())?;
+        }
+        if machine.transition().phase == SplitPhase::Aborted {
+            self.executor.release_split_generation_pin(machine.transition())?;
+            self.executor.abort_split(machine.transition(), revision).await?;
         }
         Ok(())
     }

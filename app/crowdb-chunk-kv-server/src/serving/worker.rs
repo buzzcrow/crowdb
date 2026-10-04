@@ -204,6 +204,24 @@ impl TransitionExecutor {
             .map_err(|error| plan_error(&error.to_string()))
     }
 
+    /// Aborts local split ingress and removes the unpublished child using the
+    /// catalog's authoritative abort revision as the fencing proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the parent cannot validate the abort proof or a
+    /// matching child cannot be cleaned up.
+    pub async fn abort_split(
+        &self,
+        transition: &SplitTransition,
+        catalog_revision: u64,
+    ) -> Result<(), MonitorError> {
+        self.service
+            .abort_local_split(transition, catalog_revision)
+            .await
+            .map_err(|error| plan_error(&error.to_string()))
+    }
+
     /// Reopens and replays the exact transfer target without activating it.
     ///
     /// # Errors

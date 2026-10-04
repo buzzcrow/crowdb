@@ -694,6 +694,73 @@ impl ChunkKvService {
         })
     }
 
+    /// Clears a locally prepared split after the catalog durably rejected it.
+    /// The transition identity and child epoch fence every removal so a late
+    /// abort cannot discard a newer assignment that reused the child handle.
+    pub(crate) async fn abort_local_split(
+        &self,
+        transition: &crowdb_protocol::chunk_kv::SplitTransition,
+        catalog_revision: u64,
+    ) -> Result<(), ChunkKvError> {
+        let parent_id = transition.parent_id;
+        let parent_key = Id128 {
+            high: parent_id.high,
+            low: parent_id.low,
+        };
+        let parent = self.split_transition_parent(parent_key);
+        let session = self.local_split_sessions.load().get(&parent_key).cloned();
+        let proof = crowdb_chunk_kv::SplitAbortProof {
+            catalog_revision,
+            transition_id: crowdb_chunk_kv::TransitionId {
+                high: transition.transition_id.high,
+                low: transition.transition_id.low,
+            },
+            parent_id: crowdb_chunk_kv::PartitionId {
+                high: parent_id.high,
+                low: parent_id.low,
+            },
+            parent_epoch: transition.parent_epoch,
+        };
+        if let Some(parent) = parent {
+            match parent.abort_split(&proof).await {
+                Ok(()) | Err(ChunkKvError::SplitRetry(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.local_split_sessions.rcu(|current| {
+            let mut next = (**current).clone();
+            if next.get(&parent_key).is_some_and(|active| {
+                active.artifact.transition_id.high == transition.transition_id.high
+                    && active.artifact.transition_id.low == transition.transition_id.low
+            }) {
+                next.remove(&parent_key);
+            }
+            Arc::new(next)
+        });
+        self.partitions.rcu(|current| {
+            let mut next = (**current).clone();
+            if let Some(session) = &session {
+                if session.artifact.transition_id.high == transition.transition_id.high
+                    && session.artifact.transition_id.low == transition.transition_id.low
+                {
+                    next.insert(parent_key, session.dispatcher.clone());
+                }
+            }
+            let child_key = Id128 {
+                high: transition.child.partition_id.high,
+                low: transition.child.partition_id.low,
+            };
+            if next
+                .get(&child_key)
+                .is_some_and(|child| child.snapshot().ownership_epoch == transition.child.owner_epoch)
+            {
+                next.remove(&child_key);
+            }
+            Arc::new(next)
+        });
+        Ok(())
+    }
+
     /// Handles a point request directly; it never proxies to another owner.
     ///
     /// The wall-clock deadline is checked before sequencer admission. Once a

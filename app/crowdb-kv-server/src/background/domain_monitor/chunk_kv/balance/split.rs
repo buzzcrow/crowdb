@@ -14,7 +14,7 @@ pub(super) fn split_transition(
     now_ms: u64,
 ) -> Result<SplitTransition, String> {
     let transition_id = derived_id(parent, &split_key, b"transition");
-    let child_epoch = parent
+    let parent_next_epoch = parent
         .owner_epoch
         .checked_add(1)
         .ok_or_else(|| "chunk-KV split owner epoch overflowed".to_string())?;
@@ -23,7 +23,7 @@ pub(super) fn split_transition(
         &split_key,
         b"right",
         parent.owner.clone(),
-        child_epoch,
+        1,
         KeyRange {
             start: split_key.clone(),
             end: parent.range.end.clone(),
@@ -37,7 +37,7 @@ pub(super) fn split_transition(
         parent_epoch: parent.owner_epoch,
         parent_artifact: parent.artifact.clone(),
         retained_parent_artifact: split_artifact(parent, &split_key, b"left"),
-        parent_next_epoch: child_epoch,
+        parent_next_epoch,
         split_key,
         child,
         planned_at_ms: now_ms,
