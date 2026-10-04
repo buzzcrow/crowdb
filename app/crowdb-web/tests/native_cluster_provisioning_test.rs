@@ -270,6 +270,28 @@ async fn assert_native_locations(app: &axum::Router) {
     assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
 }
 
+async fn assert_native_browser_diagnostics(app: axum::Router) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let status = tokio::process::Command::new("pixi")
+        .args([
+            "run",
+            "npx",
+            "playwright",
+            "test",
+            "--config=e2e/nativeDiagnostics.config.ts",
+        ])
+        .env("CROWDB_WEB_E2E_BASE_URL", base)
+        .current_dir(ui)
+        .status()
+        .await
+        .unwrap();
+    server.abort();
+    assert!(status.success(), "native browser diagnostics failed");
+}
+
 #[tokio::test]
 #[ignore = "Cold normal three-node chain; requires all six installed native server binaries"]
 async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() {
@@ -368,4 +390,7 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         .unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("ListAllMyBucketsResult"));
     assert_native_locations(&app).await;
+    if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
+        assert_native_browser_diagnostics(app.clone()).await;
+    }
 }

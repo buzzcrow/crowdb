@@ -1,8 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { useEffect, useRef } from 'react';
 import type { GraphQuery } from './query';
-import ReactFlow, { Background, Controls, Handle, Position, type Node, type Edge, type NodeProps } from 'reactflow';
+import ReactFlow, { Background, Controls, Handle, Position, type Node, type Edge, type NodeProps, useNodesInitialized, useReactFlow } from 'reactflow';
 import 'reactflow/dist/style.css';
 import type { ServerSummary } from '../api';
 import { buttonClass } from '../access/Workbench';
@@ -42,6 +43,22 @@ function GraphNode({ data }: NodeProps<Card>) {
   </div>;
 }
 const nodeTypes = { chunkKv: GraphNode };
+
+function FitVisibleGraph({ layoutKey }: { layoutKey: string }) {
+  const initialized = useNodesInitialized();
+  const { fitView } = useReactFlow();
+  const marker = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const container = marker.current?.closest<HTMLElement>('[data-testid="chunk-kv-graph"]');
+    if (!initialized || !container) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width > 0 && entry.contentRect.height > 0) void fitView({ padding: 0.15 });
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [initialized, fitView, layoutKey]);
+  return <span ref={marker} hidden />;
+}
 
 export function PartitionGraph({ entries, servers, selectedId, disabled, onSelect, onTree, query, onQuery }: {
   query: GraphQuery; onQuery: (query: GraphQuery) => void;
@@ -109,8 +126,9 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
       </>}
     </div>
     <div className="tw-rounded-lg tw-border tw-border-border tw-overflow-hidden" style={{ height: 640 }} data-testid="chunk-kv-graph">
-      <ReactFlow key={layoutKey} nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.15 }}
+      <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.15 }}
         minZoom={0.1} maxZoom={2} nodesFocusable={false} edgesFocusable={false} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} preventScrolling={false}>
+        <FitVisibleGraph layoutKey={layoutKey} />
         <Background gap={24} color="#2e3440" />
         <Controls showInteractive={false} />
       </ReactFlow>

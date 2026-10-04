@@ -12,6 +12,96 @@ Execution history: [UI implementation plan](plan-console-complete-ui.md).
 
 Goal: make the normal one-rack, three-node flow work without manual repairs.
 
+
+## Open issues: current UI requirements (2026-10-04)
+
+These entries describe requirements, not implementation plans. Node ownership presentation remains deferred. The user subsequently authorized
+fixing the Chunk-KV graph regression and checking Zone allocation correctness.
+The user explicitly retained KV display, Cluster collapse and test work.
+Previous mocked results do not satisfy real end-to-end acceptance.
+
+### UI behavior
+
+- [ ] **S3 object storage locations**: show the object's actual Chunk mapping,
+  including Chunk ID, object byte interval, chunk offset and length. Displayed
+  locations must agree with authoritative stored metadata, including shared
+  chunks and multipart objects. Clicking a location opens the correct Chunk;
+  returning restores the object and selected location. Unavailable locations
+  must be explicit. Backend native multipart/location verification is now passing;
+  complete the remaining browser navigation acceptance before closing this item.
+- [x] **Chunk-KV graph regression**: a populated cluster must display its
+  Chunk-KV servers, owned splits and associated trees in the center graph.
+  The graph must remain visible and readable after entry, tab switching,
+  refresh and panel resizing. Distinguish empty, loading and unavailable states.
+- [ ] **Node ownership information missing — UI design deferred**: selecting a
+  Node must make its current service ownership and KV Group storage ownership
+  independently understandable across all 1024 hash slots. Noncontiguous
+  assignments, complete slot identities, owners and generations must remain
+  accurate. The left tree must reflect current ownership records rather than
+  obsolete range data. Record this requirement only; no new layout, bitmap
+  arrangement or UI implementation is approved here.
+- [x] **Capacity zone bitmap correctness**: each displayed block reflects its
+  actual allocation bit: blue used, green free. A partially occupied zone must
+  not appear entirely used because of incorrect decoding or misleading display.
+  Make the scope of any displayed block window clear. Usage figures and bitmap
+  must be consistent; unavailable bits must not be presented as used or free.
+- [x] **KV mixed text/hex display**: preserve readable characters in Key and
+  Value. Only undisplayable characters/bytes appear as uppercase hex, without
+  `0x`, visually distinguished clearly from ordinary text. Apply this to list previews and full
+  details. Presentation must not change the original bytes used for paging,
+  selection, copying or mutations.
+- [x] **Cluster graph default collapse**: initially show Datacenter → Rack →
+  Node, with Node children collapsed. Clicking expands them; users can collapse
+  them again. Preserve expansion state on return; Fit All and right-click must
+  not unexpectedly expand the graph.
+
+KV and Cluster changes were retained by explicit user clarification. Their
+affected ten real-backend browser cases pass in 20.7 seconds; the three byte
+presentation unit cases and TypeScript checks pass. Other issues below remain
+unaccepted; this is not a full-suite result.
+
+### Real E2E acceptance gaps
+
+- [ ] **No mocked E2E acceptance**: all browser acceptance uses real services,
+  APIs, persisted metadata and file data. Existing mocked cases must receive
+  real equivalents. Keep unit tests separate from E2E counts. Report collected,
+  passed, failed, skipped and uncovered requirements honestly; mocked success
+  cannot close a feature task.
+- [ ] **Native coverage inventory**: map each agreed UI feature to real E2E
+  cases and identify missing scenarios. Existing mocked coverage includes
+  shell/embedding, auxiliary service plans, Capacity, Chunk, Chunk-KV, Iceberg
+  and S3. Cover their current contracts rather than relying on the case count.
+- [ ] **Fresh three-node provisioning**: one Rack, three Nodes, Groups 0/1 and
+  one of each of the six services per Node must become usable without manual
+  binding, owner, range or catalog repairs. Resolve the outstanding first
+  Chunk-KV readiness failure and verify real data writes afterward.
+- [ ] **Interrupted operations and recovery**: verify partial deployment,
+  retry, reload, restart, concurrent operators, prerequisite arrival and reset
+  cancellation. No duplicate service, orphan process or inconsistent resource
+  state may remain.
+- [ ] **Creation defaults and mode boundaries**: every create dialog supplies
+  valid conflict-free IDs, ports and dependencies on repeated use. Container
+  mode rejects topology/disk management in both UI and API while permitting
+  supported data operations. Verify readonly embedding and outage recovery.
+- [ ] **Navigation and changing resources**: verify every cross-view link and
+  Back/Forward route, restoring selection, page, query, expansion and detail.
+  Resource deletion, owner changes, stale pages and late responses must not
+  display the wrong resource. Include S3 location → Chunk return.
+- [ ] **Real data-browser completeness**: verify paged Chunk lists and multi-
+  Strip layouts, Chunk-KV splits/journals, Iceberg schemas/snapshots/manifests/
+  files/Parquet metadata, and S3 buckets/objects/previews/multipart/locations.
+  Large collections stay bounded; independent pages replace rather than
+  accumulate data. Metadata inspection does not unnecessarily read payloads.
+- [ ] **Real Capacity and failure states**: verify disk/owner management,
+  large inventories, zone paging and actual allocation bitmaps. Unavailable,
+  partial, recovering and Unknown observations remain accurate and usable.
+- [ ] **Final native acceptance and speed**: complete the ordered real E2E
+  suite and required native scenarios. Preserve measurements for slow setup,
+  mutations, readiness, UI refresh and teardown. Avoid unnecessary repeated
+  provisioning/loading; do not hide failures with retries or longer timeouts.
+  R203 remains open until the required acceptance succeeds.
+
+
 ## Inspector simplification
 
 - [ ] **Redesign metrics separately**: Cluster and KV no longer render or poll
@@ -75,10 +165,30 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
   with optional text rendering; do not represent journal extents as KV Pages.
 
 
-- [ ] **Chunk-KV Partition bug reported**: user flagged Partition behavior in
-  the Chunk-KV tab on 2026-10-04. Capture the exact selection/display symptom
-  and reproduce it before assigning a cause; do not conflate this report with
-  the separately recorded balancing issue.
+- [ ] **Chunk-KV split/balance backend correctness**: this is a backend issue,
+  not a Partition UI redesign. After splits, healthy Nodes should receive
+  owned subranges according to the balancing policy. Split eligibility must
+  not stall other eligible ranges; estimated weight must describe retained data
+  consistently across recovery and reclamation. Large partitions must not
+  interrupt heartbeats or serving-lease refresh while measuring load. Verify
+  count convergence and byte-load placement separately. Current live catalog
+  has 12 splits distributed 4/4/4; that alone does not prove weighted balance.
+
+- [ ] **Balance split eligibility**: an ineligible or unsplittable largest
+  partition must not prevent other eligible partitions from being sampled and
+  split when the cluster needs more owned subranges.
+- [ ] **Balance byte-weight correctness**: reported owner/partition load must
+  approximately represent retained data and remain meaningful after process restart,
+  recovery and reclamation. Verify count balance separately from byte balance.
+- [ ] **Low-cost approximate split and weights**: prioritize efficiency,
+  simplicity and low system overhead. Split boundaries need not divide keys or
+  bytes exactly in half; estimated weights need not be exact. Obtain a valid
+  boundary with nonempty children using bounded work instead of iterating the
+  entire partition for a median. Load observation must likewise avoid full
+  scans and unnecessary background work.
+- [ ] **Balance observation liveness**: inspecting a large partition must not
+  delay heartbeat publication or serving-grant renewal past their deadlines.
+  Bound observation work and verify the behavior with real large data.
 
 ## Verification layers
 
@@ -224,13 +334,41 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
 - Current live catalog generation 172 has 12 splits, distributed 4/4/4 across
   CKV-1/2/3 (`next=null`); the old 4/2/0 report no longer reproduces. No claim
   of load equality is inferred from these counts.
-- Three-node native provisioning remains blocked after five root-cause-driven
-  attempts. DDB cadence override serialization was fixed and tested; the
-  first Chunk-KV deployment still exceeds the 20-second response contract.
-  See the implementation plan's Blocked section. No timeout was increased.
+- Three-node native provisioning now passes: one Rack, Group 0/1 and all 18
+  normal services. The readiness delay was descriptor discovery at 30 seconds;
+  the normal KV default is now 1 second. Driver tick/lease policy and the
+  20-second response deadline are unchanged. Initial chain: 13.09 seconds.
+- Native S3 multipart/location acceptance passes in the same fixture (14.24 s
+  initial extended run): exact logical coverage, shared Chunk resolution,
+  payload readback and stale cursor rejection. The live Access instances were
+  outdated and have been rebuilt/restarted; Parquet and Avro inspections return
+  200. Browser location navigation remains an unchecked acceptance task.
 
 - Latest affected selection after reset/cadence fixes: 13 browser cases pass
   in 1.5 minutes (specs 13/20/21/50). The owner/usage case is 1.7 seconds versus
   10.6 seconds before cadence serialization. Twenty DDB config tests and seven
   lifecycle tests pass. Full ordered-suite stability and client cancellation
   during reset remain unaccepted; no second full-suite pass is claimed.
+
+## Latest targeted bug verification (2026-10-04)
+
+- Chunk-KV empty graph reproduced on native catalog refresh. Rebuilding the
+  ReactFlow graph on catalog/layout keys could clear its node store. Retain
+  the graph across catalog updates, initialize it while visible, and refit on
+  measured container resize. Existing root/server/split/tree hierarchy is unchanged.
+- Zone 0 on the live first disk is 7292/32768 blocks occupied (22.25%). Its
+  4096-block windows contain 4096, 3196, 0, 0, 0, 0, 0, 0 occupied blocks.
+  Thus the all-blue first window is accurate, not an endian mismatch. Added
+  explicit window used/free/unknown counts without changing the allocation bits.
+- Two native browser regressions pass (latest Zone 0.948 s, graph 1.7 s). They run
+  against the owned ephemeral one-Rack/three-Node fixture, alongside multipart
+  data writes; every bitmap pixel is compared to real API allocation bits.
+  Provisioning + S3 + browser + teardown: 19.14 s including saved screenshots.
+  The preceding passing run took 17.72 s. No mocked response or retry.
+- Native diagnostics use their dedicated config; they are excluded from the
+  routine page suite, which lacks this six-service fixture. Existing mocked
+  cases remain unconverted and do not establish acceptance.
+- Five existing Chunk-KV monitor integration cases pass (0.07 s). They cover
+  count/size split planning, transfer/grant publication and failover, but do not
+  establish the missing restart-weight, sampling-eligibility or large-data
+  heartbeat contracts recorded above. Node ownership UI design is deferred.

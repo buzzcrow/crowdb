@@ -931,3 +931,54 @@ UI todo acceptance items.
   multipart test passes in 16.05 s, with first Chunk-KV readiness 2.257 s,
   S3 location pages 10/9 ms, Chunk details 9/7 ms and teardown 5.086 s.
   CLI parsing 17 cases pass; affected all-target Clippy and Rust fmt pass.
+
+### Targeted graph/Zone correctness and backend balance review (2026-10-04)
+
+- Native graph regression: catalog refresh reconstructed ReactFlow using
+  generation/layout keys; the rendered store subsequently lost all nodes.
+  Remove the reconstruction keys, mount the graph only while active, and fit
+  initialized nodes on positive container size changes. Keep hierarchy and
+  five-split/eight-server windows unchanged. Files: ChunkKvView, PartitionGraph.
+- Zone decoding agrees with little-endian UsageBitmap snapshots and exact
+  busy/free totals. Live Zone 0's first 4096 cells are occupied while the whole
+  Zone is 22.25% occupied. Add explicit window counts; preserve every actual bit.
+- Native browser verification extends existing specs 52/55. Optional
+  `CROWDB_NATIVE_UI_E2E=1` serves the real fixture router on an OS-assigned
+  listener and runs Playwright through pixi with nativeDiagnostics.config.ts.
+  No reset or writes touch the user's persistent cluster. Routine browser
+  configuration excludes these fixture-dependent cases.
+- Verification command: `pixi run clean-env && pixi run timeout 60s env
+  CROWDB_NATIVE_UI_E2E=1 cargo test -p crowdb-web --test
+  native_cluster_provisioning_test -- --ignored --nocapture`.
+  Result: native test 17.72 s, two browser cases 3.5 s command / 0.828 s and
+  1.4 s per case; owned teardown 2.825 s. Initial failures retained: ambiguous
+  Zone expand locator, asynchronous DG arrival, catalog snapshot changed during
+  test setup, and the actual graph refresh regression. No timeout/retry increase.
+- Balance review, no backend balance modification in this task:
+  - `server.rs:397-415` samples only the largest Serving partition. A partition
+    that fails planner eligibility or has no valid median can prevent all other
+    local ranges receiving split samples; inspect eligibility/fairness together.
+  - `server.rs:343-347,397-399` labels process-lifetime `pack_bytes_written -
+    orphan_bytes` as durable load. ChunkPageStore counters initialize at zero
+    on reopen; orphan reclamation clears its counter while cumulative writes
+    remain. These values cannot represent current retained bytes consistently.
+  - `main.rs:394-415` awaits full `sample_live_bytes` scans before publishing
+    heartbeat and installing grants. The scan bounds memory/pages individually,
+    but has no total-work/deadline bound; lease refresh can be delayed.
+  - Placement policy intentionally prioritizes count imbalance, then absolute
+    byte-spread improvement of at least 25%. Request rate/headroom are filters,
+    not weights; ten-minute cooldown/parent overlay fences postpone transfer.
+  - Current live distribution 4/4/4 and five passing domain monitor tests do
+    not close these byte-weight/liveness findings. Requirements are in ui-todo.
+- Node ownership is recorded as requirements only, without a new UI design.
+- Latest native rerun with screenshots passes: Zone 0.948 s, graph 1.7 s;
+  complete owned fixture 19.14 s, including 3.238 s teardown.
+- User decision: approximate split boundaries and load estimates are sufficient.
+  Efficiency, simplicity and low overhead take priority over exact medians or
+  exact byte accounting. Full partition iteration on the observation path is
+  unsuitable. Tree inner pages already expose separator keys internally
+  (`InnerBase::separator_at`, `InnerView::separator`); the current C ABI has no
+  bounded split-boundary query. A future backend change should reuse those
+  structural boundaries with bounded reads, preserving valid nonempty child
+  ranges. Estimate load cheaply; do not replace the scan with another expensive
+  recurring job. Backend implementation remains pending in ui-todo.

@@ -37,6 +37,8 @@ const chromiumUse = process.env.PLAYWRIGHT_CHANNEL
 
 export default defineConfig({
   testDir: './flows',
+  // These cases require the isolated six-service native fixture.
+  grepInvert: /native diagnostics/,
   testIgnore: ['**/fixtures/**', '**/71-s3-native.spec.ts', '**/72-managed-native.spec.ts'],
   globalSetup: './globalSetup.ts',
   globalTeardown: './globalTeardown.ts',

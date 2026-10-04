@@ -22,6 +22,8 @@ export function ZoneBitmap({ usageBitmap, totalUnits, start, onStartChange: setS
   const total = Number.isSafeInteger(totalUnits) && totalUnits > 0 ? totalUnits : 0;
   const offset = Math.min(start, Math.max(0, Math.ceil(total / PAGE_SIZE) - 1) * PAGE_SIZE);
   const count = Math.min(PAGE_SIZE, total - offset);
+  const windowUsage = { used: 0, free: 0, unknown: 0 };
+  for (let i = 0; i < count; i++) windowUsage[blockState(usageBitmap, offset + i)]++;
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
@@ -38,6 +40,7 @@ export function ZoneBitmap({ usageBitmap, totalUnits, start, onStartChange: setS
       {Object.entries(colors).map(([name, color]) => <span key={name} className="tw-flex tw-items-center tw-gap-1"><span style={{ background: color }} className="tw-w-3 tw-h-3 tw-inline-block" />{name === 'used' ? 'Used (blue)' : name === 'free' ? 'Free (green)' : 'Unknown (gray)'}</span>)}
     </div>
     <p className="tw-text-xs tw-text-muted">{count ? `Blocks ${offset}–${offset + count - 1} of ${total}` : 'No blocks reported'} · one cell per allocation block</p>
+    <p aria-label="Displayed block window usage" className="tw-text-xs tw-text-muted">This window: {windowUsage.used} used · {windowUsage.free} free · {windowUsage.unknown} unknown. Zone totals above include all block windows.</p>
     <canvas ref={canvasRef} width={COLUMNS * CELL} height={Math.max(1, Math.ceil(count / COLUMNS)) * CELL}
       aria-label="Zone block usage" className="tw-border tw-border-border tw-max-w-full"
       onMouseLeave={() => setHover(null)} onMouseMove={event => {

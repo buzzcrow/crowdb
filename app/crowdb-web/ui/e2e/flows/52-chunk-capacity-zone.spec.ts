@@ -307,3 +307,49 @@ test.describe('chunk · capacity · zone', () => {
     }
   });
 });
+
+// Baseline: native bitmap 0.828s (2026-10-04).
+// Native cluster/payload allocation is owned by native_cluster_provisioning_test.
+test('native diagnostics: Zone canvas colors match every actual allocation bit', async ({ page, request }) => {
+  const { step } = await import('../fixtures/stepTimer');
+  const response = await request.get('/api/diskdb/usage?dg=1&disk=00000000000000000000000000000001&zone=0');
+  expect(response.status()).toBe(200);
+  const usage = await response.json();
+  const zone = usage.disk_groups[0].disks[0].zone_usages[0];
+  const total = zone.busy_block_count + zone.free_block_count;
+  const bytes = Buffer.from(zone.usage_bitmap, 'hex');
+  const states = Array.from({ length: total }, (_, index) => (bytes[index >> 3] >> (index % 8)) & 1);
+  expect(states.reduce((sum, bit) => sum + bit, 0)).toBe(zone.busy_block_count);
+  expect(zone.busy_block_count).toBeGreaterThan(0);
+  expect(zone.free_block_count).toBeGreaterThan(0);
+  await step('native zone DOM setup', async () => {
+    await page.goto('/?domain=Capacity');
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
+  });
+  // Expand the actual DDB/DG hierarchy rather than injecting a selection.
+  const tree = page.getByRole('tree');
+  const disk = tree.getByRole('button', { name: '000000000000…', exact: true });
+  for (const name of [/^R-1/, /^N-1$/, /^storage \(DG-1\)$/]) {
+    const row = tree.getByRole('treeitem').filter({ has: page.getByRole('button', { name }) });
+    await expect(row).toBeVisible();
+    const expand = row.getByRole('button', { name: 'Expand', exact: true });
+    if (await expand.count()) await expand.click();
+  }
+  await disk.click();
+  await page.getByRole('button', { name: 'Zone 0', exact: true }).click();
+  await step('native zone bitmap DOM and pixels', async () => {
+    const bitmap = page.getByTestId('zone-bitmap');
+    await expect(bitmap).toBeVisible();
+    await expect(bitmap.getByLabel('Displayed block window usage')).toContainText(`${zone.busy_block_count} used`);
+    const canvas = bitmap.getByLabel('Zone block usage');
+    const colors = await canvas.evaluate((element, count) => {
+      const canvas = element as HTMLCanvasElement;
+      const context = canvas.getContext('2d')!;
+      return Array.from({ length: count }, (_, index) => {
+        const rgba = context.getImageData((index % 64) * 6 + 2, Math.floor(index / 64) * 6 + 2, 1, 1).data;
+        return [...rgba].join(',');
+      });
+    }, total);
+    expect(colors).toEqual(states.map(bit => bit ? '85,127,165,255' : '82,125,104,255'));
+  });
+});
