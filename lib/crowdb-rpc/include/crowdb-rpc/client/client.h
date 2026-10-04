@@ -122,6 +122,10 @@ class RpcClient
     bool send(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
               uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data);
 
+    // Consumes buffers without reserving a response completion slot.
+    bool send_one_way(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
+                      uint16_t msg_type);
+
     // Scatter/gather variant. `data_views` contains between one and
     // MAX_DATA_VIEWS immutable owners and is consumed on every return path.
     bool send_chain(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control,

@@ -11,6 +11,8 @@ use std::ptr;
 use std::time::Instant;
 use tokio::sync::oneshot;
 
+mod one_way;
+
 /// Default slab completion pool size for `call()` (next power of two).
 /// Call `set_completion_pool_size` before the first `call()` to override.
 const DEFAULT_POOL_SIZE: u32 = 1024;

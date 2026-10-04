@@ -22,7 +22,7 @@ use crowdb_protocol::fb_wrappers::kv_client::FBWatchNotifyRef;
 use crowdb_protocol::kv_client_fb::{
     FBWatchNotifyError, FBWatchNotifyErrorArgs, FBWatchSubscribe, FBWatchSubscribeArgs,
 };
-use crowdb_rpc_ffi::{noop_completion, Buffer, RpcClient, RpcServer};
+use crowdb_rpc_ffi::{Buffer, RpcClient, RpcServer};
 
 /// Re-export of the `WatchNotify` frame for callers.
 pub use crowdb_kv::rpc::WatchNotify;
@@ -54,7 +54,7 @@ pub struct WatchNotifyClient {
 
 impl WatchNotifyClient {
     /// Create from a shared `CrowdbKvClient`. Reuses the client's
-    /// `ConnectionPool` + `TopologyCache`.
+    /// topology discovery. Each subscription owns its push-handler transport.
     #[must_use]
     pub fn from_shared(kv: Arc<CrowdbKvClient>) -> Self {
         Self { kv }
@@ -116,7 +116,13 @@ async fn crowdb_rpc_reader_loop(
     mut abort_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     let mut backoff = Duration::from_millis(50);
+    // Push handlers belong to an RPC client, not to a connection. A shared
+    // client's next subscription would replace this subscription's handlers.
+    let transport = crate::KvRpcTransport::with_pool_size(1, false, false, false, 4096, 1);
     loop {
+        if notify_tx.is_closed() {
+            return;
+        }
         if let Err(e) = kv.topology.refresh().await {
             tracing::warn!(error = %e, "watch_notify(crowdb-rpc): topology refresh failed");
             sleep_backoff(&mut backoff).await;
@@ -124,14 +130,6 @@ async fn crowdb_rpc_reader_loop(
         }
         let Some(endpoint) = kv.topology.leader(store_id, group_id) else {
             tracing::warn!("watch_notify(crowdb-rpc): leader still unknown after refresh");
-            sleep_backoff(&mut backoff).await;
-            continue;
-        };
-
-        let Some(transport) = kv.rpc_transport() else {
-            // Transport was unset between subscribe and the loop —
-            // log and backoff rather than proceeding.
-            tracing::warn!("watch_notify(crowdb-rpc): transport unset, backing off");
             sleep_backoff(&mut backoff).await;
             continue;
         };
@@ -177,16 +175,10 @@ async fn crowdb_rpc_reader_loop(
         builder.finish(fb, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EWatchSubscribe.0 as u16;
-        let send_result = transport.rpc().send(
-            transport.server(),
-            &conn,
-            sub_id,
-            control,
-            None,
-            msg_type,
-            noop_completion(),
-            std::ptr::null_mut(),
-        );
+        let send_result =
+            transport
+                .rpc()
+                .send_one_way(transport.server(), &conn, sub_id, control, None, msg_type);
         if let Err(e) = send_result {
             tracing::warn!(error = %e, "watch_notify(crowdb-rpc): subscribe send failed");
             sleep_backoff(&mut backoff).await;
@@ -225,15 +217,13 @@ async fn crowdb_rpc_reader_loop(
                     builder.finish(fb, None);
                     let control = Buffer::from_bytes(builder.finished_data());
                     let msg_type = FBMsgType::EWatchNotifyError.0 as u16;
-                    let result = transport.rpc().send(
+                    let result = transport.rpc().send_one_way(
                         transport.server(),
                         &conn,
                         ping_id,
                         control,
                         None,
                         msg_type,
-                        noop_completion(),
-                        std::ptr::null_mut(),
                     );
                     if let Err(e) = result {
                         tracing::warn!(error = %e, "watch_notify(crowdb-rpc): liveness check failed, reconnecting");

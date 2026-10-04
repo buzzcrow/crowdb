@@ -223,10 +223,25 @@ void RpcClient::attach(Connection *conn)
     // routing first (on_response); if the request_id is not in the
     // pending map, dispatch as a request via dispatch_request.
     conn->set_on_frame([this](Frame *frame, Connection *conn) {
-        if (!on_response(frame->request_id, frame)) {
+        if ((frame->header.flags & FLAG_ONE_WAY) != 0 || !on_response(frame->request_id, frame)) {
             dispatch_request(frame, conn);
         }
     });
+}
+
+bool RpcClient::send_one_way(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
+                             uint16_t msg_type)
+{
+    OutFrame *frame = build_frame(request_id, control, data, msg_type, FLAG_ONE_WAY);
+    if (transport->submit(conn, frame)) {
+        return true;
+    }
+    if (frame->control != nullptr) {
+        frame->control->release();
+    }
+    frame->release_data();
+    delete frame;
+    return false;
 }
 
 void RpcClient::register_handler(uint16_t msg_type, crowdb_rpc_handler_fn callback, void *user_data)
