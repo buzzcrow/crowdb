@@ -1108,7 +1108,7 @@ remains to be run and must not be inferred from the S3 API fixture.
 
 - [x] **Verify retained implementation after history reconciliation**: the current Stream observation fixture has its required purpose and its exact test passes. The fresh three-node API/service-restart fixture and all four native browser cases pass (32.48-second fixture; Zone 1.3 s, graph 2.0 s, Iceberg 7.1 s, S3 4.0 s). Full 9-MiB reads are 31 ms; DDB restart is 918 ms. This does not close unconverted browser coverage.
 - [ ] **Bound repeated Group 0 hints — candidate blocked**: cold initialization still follows 4,105 hints. Share per-operation repeated/cyclic redirect accounting across ordinary and conditional writes and scans, retain immediate progress to new endpoints, and use the existing election wait/budget for stalled hints. Extract oversized core operations into owning modules before edits. Files: `lib/crowdb-kv-client/src/client/core.rs`, `core/operations.rs`, `core/scans.rs`, `core/conditional.rs`, `client/retry.rs`, `config.rs`, `tests/conditional_retry_test.rs`, `tests/common/conditional_servers.rs`. Verify real pinned-role cycles, existing client tests, cold native initialization and affected clippy/fmt.
-- [ ] **Continue remaining native acceptance**: mixed allocation units, plan recovery, balance weight/liveness, bounded inspection API and unconverted real browser contracts remain open. Node ownership and separate metrics UI designs remain deferred.
+- [ ] **Continue remaining native acceptance**: mixed allocation units, balance weight/liveness, bounded inspection API and unconverted real browser contracts remain open. Node ownership and separate metrics UI designs remain deferred.
 
 - [x] **Verify retained native EC background acceptance**: `pixi run timeout 60s cargo test -p crowdb-chunkdb --test partial_ec_background_test -- --nocapture` passes in 2.88 seconds. Actual KV/DDB and six DiskIO processes cover 7 MiB + 17-byte mirror-to-EC conversion, four missing shard repairs, exact seal and nonzero unwritten tails. This confirms the existing regression; no production change was needed.
 
@@ -1233,7 +1233,22 @@ completed fix or remove R203. Preserve the user's original plan edits.
   suites pass after the change, preserving stale-PID refusal, exact command
   matching, replacement inode restart and retained data. Web all-target clippy
   and Rust fmt pass; no unsafe, lock or spawn retry is added.
-- [~] **Native interrupted plan reconciliation**: exercise persisted deployment
-  steps against registered native services after reload and verify Retry cannot
-  duplicate existing instances. Extend the ordered lifecycle browser spec and
-  owned native provisioning fixture, then cover prerequisite arrival separately.
+- [x] **Native interrupted plan reconciliation**: persisted partial/interrupted
+  progress is reconciled against registered native services after reload/Retry.
+  All 18 exact service identities/PIDs remain unchanged; no deployment request
+  is made. Browser case takes 1.3 s, owned fixture 19.01 s.
+- [x] **Native prerequisite arrival**: stop DiskIO on Nodes 2/3 with lifecycle
+  APIs in the partial native fixture, then reload the waiting plan. Initial
+  acceptance exposes premature Chunk-KV startup after only Node 2 returns:
+  the complete DiskIO connection generation still contains Node 3's endpoint.
+  Add the known-stopped-route prerequisite to `useNodeServicePlans.ts` and a
+  focused regression. Restoring both dependencies automatically deploys only
+  Chunk-KV/Access on Node 1; retain other PIDs, exact instance counts and verify
+  real signed S3 listing. Browser case 7.6 s, owned fixture 16.02 s. No response
+  interception, timeout increase, caller retry or single-node protection mode.
+  Files: lifecycle browser spec, native diagnostic selection, provisioning
+  fixture phase and node service plan hook/tests. Six hook tests, frontend
+  build/typecheck and affected Rust fmt/clippy pass.
+  Complete normal fixture after the fix passes five native browser cases in
+  34.65 s, including all six Node 1 restarts and exact retained S3 data; the
+  partial fixture case is selected separately and deliberately skipped here.

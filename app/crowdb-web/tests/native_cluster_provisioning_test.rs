@@ -453,6 +453,10 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         for node in 1..=3 {
             deploy(&app, node, kind).await;
         }
+        if kind == "diskio" && std::env::var_os("CROWDB_NATIVE_PLAN_PREREQUISITES").is_some() {
+            assert_native_browser_diagnostics(app.clone()).await;
+            return;
+        }
     }
     assert_services(&app).await;
     let namespaces = call(&app, "GET", "/api/access/iceberg/v1/namespaces", Value::Null).await;

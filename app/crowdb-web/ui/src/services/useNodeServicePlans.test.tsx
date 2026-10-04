@@ -19,6 +19,18 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('waits for stopped registered DiskIO routes even with two running mirror nodes', async () => {
+    vi.mocked(listServers).mockResolvedValue([
+      ...['kv', 'diskdb', 'chunkdb', 'diskio'].map(service_type => ({ node_id: 1, service_type, pid: 10 })),
+      { node_id: 2, service_type: 'diskio', pid: 20 },
+      { node_id: 3, service_type: 'diskio', pid: null },
+    ] as Awaited<ReturnType<typeof listServers>>);
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => { await result.current.start(1); });
+    expect(result.current.plans[1]['chunk-kv']).toEqual({ state: 'waiting', detail: 'Waiting: restart registered DiskIO services before connecting chunk storage' });
+    expect(result.current.plans[1]['access-server'].state).toBe('waiting');
+    expect(vi.mocked(serviceRequest).mock.calls.some(([path]) => path.endsWith('/services/deploy'))).toBe(false);
+  });
   it('keeps CDB queued until an ordinary data group exists', async () => {
     const systemOnly = [{ store_id: '0', groups: [{ group_id: '0' }] }] as unknown as EnrichedStoreView[];
     const { result } = renderHook(() => useNodeServicePlans(systemOnly, {}, async () => {}, true));

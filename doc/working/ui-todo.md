@@ -158,18 +158,21 @@ unaccepted; this is not a full-suite result.
   PID/argument checks and upgrade restart retained; no spawn retries. The
   original intermittent failure lacked a descriptor snapshot, so attribution
   to this reproduced mechanism remains an inference.
-- [ ] **Six-service plan recovery**: the one-dialog queue is implemented but
-  now persists on the server with revision fencing. Reload restoration and
-  competing-browser fencing pass. Verify native service restart,
-  partial deployment and prerequisite arrival, with no duplicate instances.
-  Do not mark the normal three-node bring-up accepted until all six service
-  types run on each Node.
+- [x] **Six-service plan recovery**: durable revision-fenced progress survives
+  reload. Native interrupted-step reconciliation retains all 18 service PIDs
+  and sends no duplicate deployment requests. A partial native plan waits while
+  registered DiskIO services are stopped, retains that wait across reload, and
+  automatically deploys only missing Chunk-KV/Access after dependency recovery.
+  Two live mirrors alone cannot establish the complete DiskIO route generation;
+  the queue now waits for stopped registered routes. S3 signing/listing succeeds
+  after automatic deployment. Browser cases take 1.3 s and 7.6 s. Ordinary
+  three-node six-service restart/data acceptance remains separately verified.
 - [x] **Native six-service restart and retained data**: the ordinary three-node
   fixture restarts KV, DDB, CDB, DiskIO, Chunk-KV and Access on Node 1. Each old
   PID exits, each new PID is alive, all 18 exact service identities remain
   unique, and pre-restart S3 content reads back. The latest post-restart native
   browser run passes all four domain cases in a 34.49-second owned fixture.
-  This does not close the queue's partial-plan/prerequisite-arrival acceptance.
+  Queue partial-plan/prerequisite-arrival acceptance is recorded separately above.
 - [ ] **Mixed allocation-unit provisioning failure**: accepting a 128-KiB
   unit on DG 1 beside 1-MiB units on DG 2/3 makes Chunk-KV bootstrap fail with
   `maintenance is degraded: Internal`. Native DDB logs report a 2048-unit
