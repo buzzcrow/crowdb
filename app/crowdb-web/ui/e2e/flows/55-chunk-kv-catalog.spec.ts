@@ -77,7 +77,9 @@ test('native diagnostics: Chunk-KV actual Page observation', async ({ page, requ
   expect(response.ok(), await response.text()).toBeTruthy();
   const observation = await response.json();
   expect(observation.page.rows.length).toBeLessThanOrEqual(20);
-  await page.getByTestId('chunk-kv-graph').getByRole('button', { name: `KV Tree for ${partition.id}`, exact: true }).click();
+  const tree = page.getByTestId('chunk-kv-graph').getByRole('button', { name: `KV Tree for ${partition.id}`, exact: true });
+  await expect(tree).toHaveAttribute('title', 'Inspect base pages, checkpoint and counters.');
+  await tree.click();
   const explorer = page.getByRole('region', { name: 'KV Page explorer', exact: true });
   await expect(explorer.getByRole('button', { name: `Root ${observation.page.root}`, exact: true })).toBeVisible();
   await expect(explorer).toContainText(`${observation.page.kind === 'inner' ? 'Inner' : 'Leaf'} Page ${observation.page.id}`);

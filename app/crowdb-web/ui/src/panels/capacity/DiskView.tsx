@@ -59,28 +59,21 @@ export function DiskView({
   const disk = useMemo<DiskInfoDto | null>(() => {
     const usageDg = usage?.disk_groups.find((g) => g.disk_group_id === dgId);
     const usageDisk = usageDg?.disks.find((d) => diskKey(d.disk_id) === diskKey(diskId));
-    if (usageDisk) return usageDisk;
     const hwDg = hardwareCapacity?.disk_groups.find((g) => g.disk_group_id === dgId);
     const hwDisk = hwDg?.disks.find((d) => diskKey(d.disk_id) === diskKey(diskId));
-    if (!hwDg || !hwDisk) return null;
+    if (!hwDg || !hwDisk) return hardwareCapacity ? null : (usageDisk ?? null);
     return {
+      ...(usageDisk ?? { capacity_units: 0, zone_size_units: 0, busy_units: 0, free_units: 0,
+        busy_bytes: 0, free_bytes: 0, active_zone_count: 0, zone_usages: [] }),
       rack_id: hwDg.rack_id,
       node_id: hwDg.node_id,
       disk_group_id: dgId,
       disk_id: hwDisk.disk_id,
       disk_type: hwDisk.disk_type,
-      capacity_units: 0,
-      zone_size_units: 0,
       unit_size_bytes: hwDisk.unit_size_bytes,
       zone_count: hwDisk.zone_count,
       status: hwDisk.status,
-      busy_units: 0,
-      free_units: 0,
       capacity_bytes: hwDisk.capacity_bytes,
-      busy_bytes: 0,
-      free_bytes: 0,
-      active_zone_count: 0,
-      zone_usages: [],
     };
   }, [dgId, diskId, usage, hardwareCapacity]);
 

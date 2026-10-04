@@ -64,7 +64,7 @@ unaccepted; this is not a full-suite result.
 
 ### Real E2E acceptance gaps
 
-- [ ] **No mocked E2E acceptance**: all browser acceptance uses real services,
+- [x] **No mocked E2E acceptance**: all browser acceptance uses real services,
   APIs, persisted metadata and file data. Existing mocked cases must receive
   real equivalents. Keep unit tests separate from E2E counts. Report collected,
   passed, failed, skipped and uncovered requirements honestly; mocked success
@@ -78,7 +78,7 @@ unaccepted; this is not a full-suite result.
   one of each of the six services per Node must become usable without manual
   binding, owner, range or catalog repairs. Resolve the outstanding first
   Chunk-KV readiness failure and verify real data writes afterward.
-- [ ] **Interrupted operations and recovery**: verify partial deployment,
+- [x] **Interrupted operations and recovery**: verify partial deployment,
   retry, reload, restart, concurrent operators, prerequisite arrival and reset
   cancellation. No duplicate service, orphan process or inconsistent resource
   state may remain.
@@ -102,7 +102,7 @@ unaccepted; this is not a full-suite result.
   files/Parquet metadata, and S3 buckets/objects/previews/multipart/locations.
   Large collections stay bounded; independent pages replace rather than
   accumulate data. Metadata inspection does not unnecessarily read payloads.
-- [ ] **Real Capacity and failure states**: verify disk/owner management,
+- [x] **Real Capacity and failure states**: verify disk/owner management,
   large inventories, zone paging and actual allocation bitmaps. Unavailable,
   partial, recovering and Unknown observations remain accurate and usable.
 - [ ] **Final native acceptance and speed**: complete the ordered real E2E
@@ -360,7 +360,7 @@ loss beyond recovery capacity.
 
 - [ ] Verify shell embedding and capability failures against actual standalone
   and container services, without intercepted responses.
-- [ ] Verify all auxiliary service menus, deployment progress, failures and
+- [x] Verify all auxiliary service menus, deployment progress, failures and
   resume/restart behavior with real service processes.
 - [x] Bring advanced KV acceptance into agreement with replacement pagination
   and current scoped Actions; retain raw-byte identity and mutation coverage.
@@ -371,15 +371,15 @@ loss beyond recovery capacity.
   pages, exclusion of earlier rows, final Next disabling and selected Zone 0
   restoration. Both displayed 4096-bit windows match actual allocation pixels;
   the case takes 1.3 seconds without changing timeouts or injecting responses.
-- [ ] Cover large real Capacity windows and unavailable allocation/owner data,
+- [x] Cover large real Capacity windows and unavailable allocation/owner data,
   including restoration after navigation and late responses.
-- [ ] Cover actual Chunk type/list pages, multi-Strip Mirror/EC and physical
+- [x] Cover actual Chunk type/list pages, multi-Strip Mirror/EC and physical
   placement return; independent windows must replace previous results.
 - [ ] Cover real Chunk-KV journal paging, transition/stale fences, empty catalog
   and service outages while keeping the graph and selection accurate.
 - [x] Cover actual Iceberg nested schemas, multiple snapshots/manifests, file
   pagination and Parquet/Avro metadata inspection without payload scans.
-- [ ] Cover real bounded S3 bucket/object windows, continuation revisions and
+- [x] Cover real bounded S3 bucket/object windows, continuation revisions and
   unavailable locations; retain exact multipart interval and return assertions.
 - [x] Verify the managed container cross-domain case against the current UI
   contracts and actual placement; remove stale control/placement assumptions.
@@ -704,3 +704,50 @@ raw Chunk layout editing, storage reclamation promises, or unrelated features.
 - This is targeted completion, not full-suite or restart acceptance. The plan
   records prior restart/process-loss and transition-latency failures for tasks
   4–5/8. Tasks 3–8 remain for the user's next model; stop after this handoff.
+
+
+## Resumed tasks 3–8: current acceptance (2026-10-04)
+
+- Browser flow files now use actual routes/services; all response/HAR
+  interception has been removed. Component inputs remain unit coverage.
+- Real Capacity covers native 32/32/16 zones, exact bitmap pixels, lazy branches,
+  scan/recalc completion, seven persisted hardware statuses and all five scope
+  levels during DiskDB outage/recovery. Current hardware membership/status and
+  physical geometry take precedence over older usage reports; missing usage is
+  Unknown. Chunk covers 10/10/1 windows and actual Mirror/EC multiple Strips.
+- Real S3 covers 20/1 buckets, bounded object windows, 100/1 multipart parts,
+  actual revision conflicts, abort/deletion and Access interruption, and
+  S3 → Chunk → Disk history. Page/Iceberg completion above remains accepted.
+- Lifecycle/default acceptance covers repeated real auxiliary dialog reopen,
+  native menu/PID stop/restart, partial plan progress/resume without duplicates,
+  actual prerequisite arrival and reset cancellation. Backend lifecycle,
+  startup and capability checks supplement browser evidence. Task 4 is complete.
+- Task 6 remains complete: incompatible 128-KiB/1-MiB deployment returns causal
+  409 before any incompatible service is spawned. No mixed-unit support added.
+- Full uninstrumented native browser chain: 19 collected, 18 passed, 0 failed,
+  1 prerequisite-phase skip, browser 1.2 minutes; owned chain 91.60 s and teardown
+  7660 ms. Separate prerequisite phase passes in 7.8 s (chain 17.11 s).
+- Latest frontend gate: 138 passed in 26 files. Web server and console-shared
+  tasks pass, plus 24 focused lifecycle/cancellation/managed/startup cases.
+- Task 3 retains one explicit scale gap: large Journal directory replacement
+  (100 page fences followed by the remainder) is component/handler coverage.
+  Native Journal identity, actual active Chunk, owner interruption and stale
+  observations are accepted; a real production split browser case additionally
+  passes inherited/current journals, cutover and dependencies in 32.3 s.
+  Do not relabel small native directories as large-page acceptance.
+- Task 5: reclamation/reopen estimates pass native FFI regression. Actual unequal
+  load redistribution is running with unchanged production policy and normal
+  heartbeats/leases. The initial slow fixture exhausted the usable portion of
+  an 8-GiB disk during split; the corrected fixture provisions 256-GiB sparse
+  virtual disks and retains the ordinary cooldown. Do not mark byte balance done
+  from count convergence alone or change deadlines to make acceptance pass.
+- Task 7: standalone embedding and host-native managed shell/capability/data
+  operations pass. Actual Docker image build/acceptance remains unverified:
+  the pinned Ubuntu base image cannot be fetched through the configured registry
+  proxy. Do not change the host proxy/authentication or substitute host-native
+  acceptance for image evidence.
+- Task 8: ordered routine acceptance remains under verification. A 57-case run
+  had 56 passes and a 3-s Group-status timeout during leader reelection; temporary
+  diagnostics then passed all 57 in 2.4 minutes. An uninstrumented ordered run
+  follows. Preserve the earlier failure and do not claim its root cause was fixed.
+  R203 stays open while required boundaries remain unverified.

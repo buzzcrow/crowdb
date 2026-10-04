@@ -22,26 +22,22 @@ export function DiskGroupView({ dgId, usage, hardwareCapacity, onSelectDisk }: D
   const disks = useMemo<DiskInfoDto[]>(() => {
     const usageDg = usage?.disk_groups.find((g) => g.disk_group_id === dgId);
     const hwDg = hardwareCapacity?.disk_groups.find((g) => g.disk_group_id === dgId);
-    if (!hwDg) return usageDg?.disks ?? [];
+    if (!hwDg) return hardwareCapacity ? [] : (usageDg?.disks ?? []);
     // No usage data — synthesize brief disk entries from hardware sysdata.
-    return hwDg.disks.map((d) => usageDg?.disks.find(report => diskKey(report.disk_id) === diskKey(d.disk_id)) ?? ({
+    return hwDg.disks.map((d) => ({
+      ...(usageDg?.disks.find(report => diskKey(report.disk_id) === diskKey(d.disk_id)) ?? {
+        capacity_units: 0, zone_size_units: 0, busy_units: 0, free_units: 0,
+        busy_bytes: 0, free_bytes: 0, active_zone_count: 0, zone_usages: [],
+      }),
       rack_id: hwDg.rack_id,
       node_id: hwDg.node_id,
       disk_group_id: dgId,
       disk_id: d.disk_id,
       disk_type: d.disk_type,
-      capacity_units: 0,
-      zone_size_units: 0,
       unit_size_bytes: d.unit_size_bytes,
       zone_count: d.zone_count,
       status: d.status,
-      busy_units: 0,
-      free_units: 0,
       capacity_bytes: d.capacity_bytes,
-      busy_bytes: 0,
-      free_bytes: 0,
-      active_zone_count: 0,
-      zone_usages: [],
     }));
   }, [dgId, usage, hardwareCapacity]);
 

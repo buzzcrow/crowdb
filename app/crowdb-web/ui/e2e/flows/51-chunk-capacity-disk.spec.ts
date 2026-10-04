@@ -499,7 +499,7 @@ test.describe('chunk · capacity · disk', () => {
 
       // --- DiskView: disk header + action buttons + RecalcPanel + zone grid ---
       // Disk header shows the full disk ID, type, status, zone count, capacity.
-      await expect(panel.getByText(disk580, { exact: false })).toBeVisible({ timeout: 3_000 });
+      await expect(panel.getByText(actualDisk.disk_id, { exact: true })).toBeVisible({ timeout: 3_000 });
       await expect(page.getByTestId('disk-geometry')).toContainText(`${['BlockHdd', 'BlockSsd', 'ZoneSsd', 'SmrHdd'][actualDisk.disk_type]} · Up · ${actualDisk.zone_count} zones`);
       // Action buttons: Scan, Recalc, Compact, Rebuild, Down, Up.
       await expect(panel.getByRole('button', { name: /^Scan$/ })).toBeVisible({ timeout: 3_000 });

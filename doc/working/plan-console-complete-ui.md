@@ -1447,16 +1447,16 @@ override that scope. The prior stopping point below records the previous pass.
 The user switched models and authorized tasks 3–8. The previous stopping points
 are historical. The behavior and non-goals in `ui-todo.md` remain binding.
 
-- [~] **Native windows and failure baseline**: map current intercepted cases to
+- [x] **Native windows and failure baseline**: map current intercepted cases to
   actual service/data fixtures; reproduce the full restart diagnostic and
   identify the earliest failure before extending Capacity/Chunk/CKV/S3 coverage.
 - [ ] **Complete bounded data acceptance**: actual replacement windows,
   multi-Strip placement, stale generations and unavailable owner/allocation.
   Files: existing domain E2E specs, native fixture and scoped domain hooks/APIs.
-- [ ] **Lifecycle and defaults**: repeat create/reopen, typed auxiliary lifecycle,
+- [x] **Lifecycle and defaults**: repeat create/reopen, typed auxiliary lifecycle,
   interrupted progress/reconciliation and reset cancellation with actual PIDs.
   Files: shell/Cluster specs and existing lifecycle/server integration tests.
-- [ ] **Retained-byte balancing**: reclamation estimates and unequal native load
+- [~] **Retained-byte balancing**: reclamation estimates and unequal native load
   redistribution, preserving ordinary heartbeats and serving deadlines.
   Files: native load helper and relevant monitor/Chunk-KV tests/implementation.
 - [x] **Geometry closure**: verify the existing early incompatible-unit rejection
@@ -1625,3 +1625,51 @@ are historical. The behavior and non-goals in `ui-todo.md` remain binding.
   26 files pass; E2E TypeScript passes. Partition graph's stale unavailable-API
   message is corrected to bounded Page inspection; its native verification is
   pending with the full diagnostics run.
+
+
+### Current ordered acceptance and hardware observation
+
+- The uninstrumented full native browser chain passes: 19 collected, 18 passed,
+  0 failed, 1 prerequisite-phase skip; browser 1.2 minutes, owned chain 91.60 s,
+  owned process teardown 7660 ms. Separate actual prerequisite arrival/resume
+  passes: one browser case 7.8 s, chain 17.11 s, teardown 1639 ms. Prior unexplained
+  KV exits did not recur; these passes do not establish their root cause.
+- Web server and console-shared test tasks pass. Focused lifecycle/cancellation/
+  plan/managed/startup checks pass 24 cases. Frontend now passes 138 tests in 26
+  files; TypeScript and Web all-target clippy pass before temporary diagnosis.
+- Hardware inventory now supplies current Disk/DiskGroup membership, status,
+  identity and physical capacity, while DiskDB supplies observed usage counters.
+  Old usage cannot resurrect removed groups/disks or overwrite a current hardware
+  health state. A component regression checks status, reserved-space geometry and
+  deleted disks. Real Disk header asserts the hardware API's canonical Disk ID.
+- Latest affected routine disk spec: 4 passed, 0 failed/skipped, 17.0 s;
+  per-case 4.4/1.1/0.593/0.060 s, teardown 9 ms. Actual native Zone windows pass
+  in 1.4 s (chain 15.42 s); lazy Capacity/scoped recalc pass 0.687/0.892 s
+  (chain 16.15 s); DDB outage/Unknown/recovery passes 1.8 s (chain 16.05 s).
+- Partition graph now accurately advertises bounded base-page inspection.
+  Its actual native Page and graph cases passed in the ordered native chain.
+- Routine ordered run after the Disk ID correction: 57 collected, 56 passed,
+  1 failed, 0 skipped, 2.6 minutes. The remaining failure is the unchanged 3-s
+  Group status request during leader stop/reelection. Temporary phase diagnostics
+  in the isolated reconfiguration spec show 3–6 ms status requests; all four
+  cases pass in 38.9 s. An instrumented full ordered reproduction is running.
+  No assertion, request budget, retry policy or production behavior was relaxed.
+- Independent owned browser fixtures can select separate output directories
+  with CROWDB_WEB_E2E_OUTPUT; the default remains test-results.
+- The first slow balance fixture stalled at five ranges: actual DDB 2 allocation
+  failed for a 256-MiB Chunk because its 8-GiB disk had exhausted usable space.
+  This is upstream of the generic split/tree error. That run was deliberately
+  stopped, failure logs preserved, and all owned processes stopped in 4589 ms.
+  The new slow fixture uses 256-GiB sparse disks on every Node; ordinary browser
+  geometry and all production balance/lease/cooldown policies remain unchanged.
+- A browser observer is now part of that same owned fixture. Its real production
+  split case passes in 32.3 s: inherited/current Journal identities, actual replay/
+  cutover/base generations, dependency identity and old runtime observation 409.
+  Subsequent count convergence and unequal retained-byte transfer remain pending.
+- Native Journal currently verifies published extent identity and real active
+  chunks, split overlays and stale generations. The large 100-fence replacement
+  scenario remains component/handler coverage, not a demonstrated large native
+  directory. Keep this gap explicit rather than claiming native coverage.
+- Actual Docker image acceptance remains unverified after the pinned base image
+  registry proxy connection failed. Host-native managed acceptance is separate.
+  Keep R203 and its final cleanup open.

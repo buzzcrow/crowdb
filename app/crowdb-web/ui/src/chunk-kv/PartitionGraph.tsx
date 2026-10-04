@@ -125,7 +125,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
       } });
       nodes.push({ id: `tree-${entry.id}`, type: 'chunkKv', position: { x: x + index * 195, y: 530 }, data: {
         kind: 'tree', label: 'KV Tree', subtitle: entry.artifact.tree_id, accessible: `KV Tree for ${entry.id}`,
-        title: 'Inspect checkpoint and counters; subtree/page inspection API unavailable', disabled, click: () => onTree(entry),
+        title: 'Inspect base pages, checkpoint and counters.', disabled, click: () => onTree(entry),
       } });
       connect(group.id, id); connect(id, `tree-${entry.id}`);
     });
@@ -146,6 +146,6 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
     <div className="tw-rounded-lg tw-border tw-border-border tw-overflow-hidden" style={{ height: 640 }} data-testid="chunk-kv-graph">
       <ReactFlowProvider><GraphCanvas layout={nodes} edges={edges} layoutKey={layoutKey} /></ReactFlowProvider>
     </div>
-    <p className="tw-text-xs tw-text-muted">At most 8 servers × 5 splits per canvas window. Subtree/Page links require a server inspection API.</p>
+    <p className="tw-text-xs tw-text-muted">At most 8 servers × 5 splits per canvas window. Select KV Tree for bounded base-page inspection.</p>
   </section>;
 }
