@@ -393,6 +393,11 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
     await zones.getByRole('button', { name: 'Next zones', exact: true }).click();
     await expect(zoneButtons).toHaveCount(16);
     await expect(zones.getByRole('button', { name: 'Zone 79', exact: true })).toBeVisible();
+    await page.getByTestId('domain-chunk').click();
+    await page.goBack();
+    await expect(zoneButtons).toHaveCount(16);
+    await expect(zones.getByRole('button', { name: 'Zone 79', exact: true })).toBeVisible();
+
     await expect(zones.getByRole('button', { name: 'Next zones', exact: true })).toBeDisabled();
     await zones.getByRole('button', { name: 'Previous zones', exact: true }).click();
     await zones.getByRole('button', { name: 'Previous zones', exact: true }).click();

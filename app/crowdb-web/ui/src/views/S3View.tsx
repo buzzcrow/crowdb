@@ -57,23 +57,36 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
   const [error, setError] = useState('');
   const [outcome, setOutcome] = useState('');
   const [progress, setProgress] = useState<{ bytes: number; id: string | null }>({ bytes: 0, id: null });
+  const operationVersion = useRef(0);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => {
+    ++operationVersion.current;
     setBuckets([]); setBucketStart(0); setBucket(''); setRows([]); setNext(null); setSelected(null); setDetail(null); setUploads([]); setUploadsNext(null); setPartsNext(null); setDemoBucket(null); setError(''); setOutcome('');
   }, [origin]);
   const connected = !!origin;
-  const request = (method: string, path: string, query: Record<string, string> = {}, body?: Blob | string) => {
+  useEffect(() => { if (!active) { ++operationVersion.current; setBusy(false); } }, [active]);
+  const request = async (method: string, path: string, query: Record<string, string> = {}, body?: Blob | string) => {
     if (!origin) throw new Error('This cluster has no available S3 endpoint');
-    return s3( method, path, query, body);
+    const version = operationVersion.current;
+    const response = await s3(method, path, query, body);
+    if (version !== operationVersion.current) throw new DOMException('Superseded observation', 'AbortError');
+    return response;
   };
   const run = async (operation: () => Promise<void>, label: string) => {
+    const version = ++operationVersion.current;
     setBusy(true); setError(''); setOutcome('');
-    try { await operation(); setOutcome(label); log({ action: label, target: `S3 / ${bucket || 'buckets'}`, status: 'Success' }); }
-    catch (error) { setError(`${String(error)}. Refresh the resource before retrying a mutation.`); log({ action: label, target: `S3 / ${bucket || 'buckets'}`, status: 'Failed', message: 'Native request failed. Refresh resource state before retrying.' }); }
-    finally { setBusy(false); controller.current = null; }
+    try { await operation(); if (version !== operationVersion.current) return; setOutcome(label); log({ action: label, target: `S3 / ${bucket || 'buckets'}`, status: 'Success' }); }
+    catch (error) { if (version !== operationVersion.current) return; setError(`${String(error)}. Refresh the resource before retrying a mutation.`); log({ action: label, target: `S3 / ${bucket || 'buckets'}`, status: 'Failed', message: 'Native request failed. Refresh resource state before retrying.' }); }
+    finally { if (version === operationVersion.current) { setBusy(false); controller.current = null; } }
+  };
+  const readXml = async (response: Promise<Response>) => {
+    const version = operationVersion.current;
+    const document = await xml(await response);
+    if (version !== operationVersion.current) throw new DOMException('Superseded observation', 'AbortError');
+    return document;
   };
   const loadObjects = async (scope: string, token?: string, listingPrefix = token ? listedPrefix : prefix) => {
-    const document = await xml(await request('GET', objectPath(scope), { 'list-type': '2', 'max-keys': '20', prefix: listingPrefix, ...(token ? { 'continuation-token': token } : {}) }));
+    const document = await readXml(request('GET', objectPath(scope), { 'list-type': '2', 'max-keys': '20', prefix: listingPrefix, ...(token ? { 'continuation-token': token } : {}) }));
     const objects = Array.from(document.querySelectorAll('Contents')).map(element => ({ key: xmlText(element, 'Key'), size: xmlText(element, 'Size'), etag: xmlText(element, 'ETag'), modified: xmlText(element, 'LastModified') }));
     if (objects.length > 20) throw new Error('S3 returned more than the requested 20 objects');
     setRows(objects);
@@ -84,12 +97,12 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
   };
   const chooseBucket = (value: string) => { checkpoint(); setBucket(value); setPrevious([]); setCursor(undefined); setPreview(''); setSelected(null); setDetail(null); setRows([]); setUploads([]); setUploadsNext(null); setPartsNext(null); setNext(null); void run(() => loadObjects(value), `Loaded ${value}`); };
   const listBuckets = async () => {
-    const document = await xml(await request('GET', '/'));
+    const document = await readXml(request('GET', '/'));
     setBuckets(Array.from(document.querySelectorAll('Bucket')).map(element => xmlText(element, 'Name')));
     setBucketStart(0);
   };
   const listUploads = async (after?: { key: string; id: string }) => {
-    const document = await xml(await request('GET', objectPath(bucket), { uploads: '', 'max-uploads': '100', ...(after ? { 'key-marker': after.key, 'upload-id-marker': after.id } : {}) }));
+    const document = await readXml(request('GET', objectPath(bucket), { uploads: '', 'max-uploads': '100', ...(after ? { 'key-marker': after.key, 'upload-id-marker': after.id } : {}) }));
     const rows = Array.from(document.querySelectorAll('Upload')).map(element => ({ key: xmlText(element, 'Key'), id: xmlText(element, 'UploadId') }));
     if (rows.length > 100) throw new Error('S3 returned more than the requested 100 uploads');
     setUploads(previous => (after ? Array.from(new Map([...previous, ...rows].map(row => [row.id, row])).values()) : rows).slice(0, MAX_ROWS));
@@ -98,7 +111,7 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
   const inspectParts = async (upload: Upload, marker?: string, scope = bucket, record = true) => {
     if (record) checkpoint();
     setSelectedUpload({ ...upload, marker });
-    const document = await xml(await request('GET', objectPath(scope, upload.key), { uploadId: upload.id, 'max-parts': '100', ...(marker ? { 'part-number-marker': marker } : {}) }));
+    const document = await readXml(request('GET', objectPath(scope, upload.key), { uploadId: upload.id, 'max-parts': '100', ...(marker ? { 'part-number-marker': marker } : {}) }));
     setDetail({ parts: Array.from(document.querySelectorAll('Part')).map(part => ({ number: xmlText(part, 'PartNumber'), etag: xmlText(part, 'ETag'), size: xmlText(part, 'Size') })), is_truncated: xmlText(document, 'IsTruncated') === 'true' });
     setPartsNext(xmlText(document, 'IsTruncated') === 'true' ? { ...upload, marker: xmlText(document, 'NextPartNumberMarker') } : null);
     setSelected({ key: upload.key, size: 'pending', etag: '', modified: '' });
@@ -133,7 +146,7 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
     }, `Restored ${state.bucket}`);
   };
   const visibleBuckets = buckets.filter(name => name.includes(bucketFilter));
-  const root = () => { if (busy) return; checkpoint(); setBucket(''); setSelected(null); setDetail(null); setPreview(''); setOutcome(''); };
+  const root = () => { if (busy) return; ++operationVersion.current; checkpoint(); setBucket(''); setSelected(null); setDetail(null); setPreview(''); setOutcome(''); };
   const tree: TreeNode[] = [{ id: 's3-root', type: 'S3', label: 'S3', selected: !bucket, icon: <Database className="tw-h-4 tw-w-4 tw-text-muted" />, children: visibleBuckets.slice(bucketStart, bucketStart + BUCKET_PAGE).map(name => ({ id: name, type: 'S3', label: name, selected: name === bucket, icon: <Folder className="tw-h-4 tw-w-4 tw-text-muted" /> })) }];
   const scope = selected ? 'Object' : bucket ? 'Bucket' : 'S3';
   const paging = <nav aria-label="Bucket pages" className="tw-flex tw-gap-2"><button className={buttonClass} disabled={!bucketStart} onClick={() => { checkpoint(); setBucketStart(value => Math.max(0, value - BUCKET_PAGE)); }}>Previous buckets</button><button className={buttonClass} disabled={bucketStart + BUCKET_PAGE >= visibleBuckets.length} onClick={() => { checkpoint(); setBucketStart(value => value + BUCKET_PAGE); }}>Next buckets</button></nav>;

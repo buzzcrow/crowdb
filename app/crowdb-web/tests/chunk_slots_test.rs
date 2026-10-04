@@ -39,10 +39,16 @@ async fn owner_windows_keep_disjoint_slots_generations_and_exact_ids() {
     *state.kv_client.write().await = Some(kv.clone());
     let bootstrap = ChunkSlotBootstrap {
         service_instances: vec![1, u64::MAX],
-        storage_groups: vec![ChunkStorageGroup {
-            store_id: u64::MAX,
-            group_id: 1,
-        }],
+        storage_groups: vec![
+            ChunkStorageGroup {
+                store_id: u64::MAX,
+                group_id: 1,
+            },
+            ChunkStorageGroup {
+                store_id: 0,
+                group_id: 2,
+            },
+        ],
     };
     let maps = ChunkSlotMapClient::new(kv);
     maps.initialize_service(&bootstrap.service_map().unwrap())
@@ -90,9 +96,56 @@ async fn owner_windows_keep_disjoint_slots_generations_and_exact_ids() {
     );
     let (status, storage) = get(&state, &format!("layer=storage&store_id={}&group_id=1", u64::MAX)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(storage["owned_count"], 1024);
+    assert_eq!(storage["owned_count"], 512);
+    assert_bitmaps(&state, &bootstrap).await;
     let (_, missing) = get(&state, "layer=service&instance_id=7").await;
     assert_eq!(missing["assigned"], false);
     assert_eq!(missing["owned_count"], 0);
     assert!(missing["next"].is_null());
+}
+
+async fn assert_bitmaps(state: &AppState, bootstrap: &ChunkSlotBootstrap) {
+    for (layer, expected) in [
+        (
+            "service",
+            bootstrap
+                .service_map()
+                .unwrap()
+                .bindings()
+                .iter()
+                .map(|binding| (binding.owner.to_string(), binding.slots.clone()))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "storage",
+            bootstrap
+                .storage_map()
+                .unwrap()
+                .bindings()
+                .iter()
+                .map(|binding| {
+                    (
+                        format!("{}/{}", binding.owner.store_id, binding.owner.group_id),
+                        binding.slots.clone(),
+                    )
+                })
+                .collect(),
+        ),
+    ] {
+        let (status, bitmap) = get(state, &format!("layer={layer}&view=bitmap")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bitmap["generation"], "1");
+        assert_eq!(bitmap["owners"].as_array().unwrap().len(), 1024);
+        for (owner, slots) in expected {
+            for slot in slots.slots() {
+                assert_eq!(bitmap["owners"][slot.value() as usize], owner);
+            }
+        }
+        assert_eq!(
+            get(state, &format!("layer={layer}&view=bitmap&generation=2"))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+    }
 }

@@ -91,10 +91,20 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
       for (const [label, value] of [['Disk', diskId], ['Node', placement.node_id], ['Diskgroup', placement.disk_group_id], ['Zone', segment.zone_index], ['Zone offset (units)', segment.unit_offset]]) {
         await expect(chunkProperties.locator('dt').filter({ hasText: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).locator('..').locator('dd')).toHaveText(String(value));
       }
-      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await page.getByRole('button', { name: 'Show disk capacity', exact: true }).click();
+      await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
+      await page.goBack();
+      await expect(page.getByRole('region', { name: 'Chunk layout', exact: true })).toBeVisible();
+      await expect(page.getByLabel('Chunk properties', { exact: true })).toContainText(diskId);
+      await page.goBack();
       await expect(page.getByRole('heading', { level: 1 })).toHaveText(key);
       await expect(locations.getByRole('button', { name: `Select extent ${extent.index}`, exact: true })).toHaveAttribute('aria-pressed', 'true');
       await expect(page.getByLabel('Storage extent properties')).toContainText(extent.chunk_id);
+      await page.goForward();
+      await expect(page.getByRole('region', { name: 'Chunk layout', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText(key);
+      await expect(locations.getByRole('button', { name: `Select extent ${extent.index}`, exact: true })).toHaveAttribute('aria-pressed', 'true');
     });
     await step('native full object byte verification', async () => {
       const response = await request.get(objectPath);

@@ -15,7 +15,7 @@ Goal: make the normal one-rack, three-node flow work without manual repairs.
 
 ## Open issues: current UI requirements (2026-10-04)
 
-These entries describe requirements, not implementation plans. Node ownership presentation remains deferred. The user subsequently authorized
+These entries describe requirements, not implementation plans. Node ownership bitmap design is approved for implementation. The user subsequently authorized
 fixing the Chunk-KV graph regression and checking Zone allocation correctness.
 The user explicitly retained KV display, Cluster collapse and test work.
 Previous mocked results do not satisfy real end-to-end acceptance.
@@ -34,13 +34,11 @@ Previous mocked results do not satisfy real end-to-end acceptance.
   Chunk-KV servers, owned splits and associated trees in the center graph.
   The graph must remain visible and readable after entry, tab switching,
   refresh and panel resizing. Distinguish empty, loading and unavailable states.
-- [ ] **Node ownership information missing — UI design deferred**: selecting a
-  Node must make its current service ownership and KV Group storage ownership
-  independently understandable across all 1024 hash slots. Noncontiguous
-  assignments, complete slot identities, owners and generations must remain
-  accurate. The left tree must reflect current ownership records rather than
-  obsolete range data. Record this requirement only; no new layout, bitmap
-  arrangement or UI implementation is approved here.
+- [x] **Chunk ownership bitmap**: approved owner-colored 1024-slot maps for
+  independent Serving and Storage ownership. Group/CDB selections show their
+  slots; Node/Rack scopes combine owners, gray outside scope and pattern unknown
+  membership. Replicated storage groups are deduplicated. Native browser cells
+  match both durable maps; integration checks all 2048 exact owner entries.
 - [x] **Capacity zone bitmap correctness**: each displayed block reflects its
   actual allocation bit: blue used, green free. A partially occupied zone must
   not appear entirely used because of incorrect decoding or misleading display.
@@ -85,10 +83,17 @@ unaccepted; this is not a full-suite result.
   valid conflict-free IDs, ports and dependencies on repeated use. Container
   mode rejects topology/disk management in both UI and API while permitting
   supported data operations. Verify readonly embedding and outage recovery.
-- [ ] **Navigation and changing resources**: verify every cross-view link and
-  Back/Forward route, restoring selection, page, query, expansion and detail.
-  Resource deletion, owner changes, stale pages and late responses must not
-  display the wrong resource. Include S3 location → Chunk return.
+- [x] **Navigation and changing resources — shared flow**: browser and header
+  Back/Forward restore bounded selection/query windows, tree expansion and scroll.
+  Native acceptance covers KV replacement pages, Capacity zone pages, Iceberg
+  schema, owner bitmap selection and S3 → Chunk → Disk return. S3 real overwrite,
+  deletion and all-Access outage/restart preserve scope and reject stale location
+  links. Unit tests cover reordered responses and changed owner projections;
+  slot API integration rejects mismatched generations. A real Group-0 catalog
+  owner-change test rejects old catalog/runtime cursors; the runtime hook ignores
+  late responses from the previous owner. Fixed Chunk maps have no
+  online reassignment operation. Advanced Chunk-KV transfer/journal and Iceberg
+  reference parser scenarios remain in their domain acceptance inventory below.
 - [ ] **Real data-browser completeness**: verify paged Chunk lists and multi-
   Strip layouts, Chunk-KV splits/journals, Iceberg schemas/snapshots/manifests/
   files/Parquet metadata, and S3 buckets/objects/previews/multipart/locations.
@@ -106,10 +111,11 @@ unaccepted; this is not a full-suite result.
 
 ## Inspector simplification
 
-- [ ] **Redesign metrics separately**: Cluster and KV no longer render or poll
-  raw internal metrics in the right inspector. Their identity, topology,
-  election and read-state properties remain. A future metrics experience needs
-  a separate design; do not reinstate the old generic counter list.
+- [x] **Clean up Metrics UI**: remove Metrics entries, panels, polling and unused
+  UI metric types. No Metrics page redesign is planned. Future metrics publish
+  may feed customer-managed time-series databases; publishing is outside this
+  implementation scope. Unused frontend metric types were removed; native
+  ownership browsing asserts no metric requests or Metrics entry.
 
 ## Cluster and provisioning
 
@@ -518,7 +524,7 @@ loss beyond recovery capacity.
   native runs fail live KV registration, metadata readiness or multipart upload.
   The candidate is unaccepted and uncommitted; five-run diagnosis and exact
   failures are recorded under the execution plan's `Blocked` section.
-- Node ownership and separate metrics UI designs remain deferred. R203 and the
+- Chunk ownership bitmap implementation is approved; Metrics is a UI cleanup task. R203 and the
   real-browser coverage, geometry, recovery and balance tasks remain open.
 
 ## Current verification (2026-10-04)
@@ -573,7 +579,7 @@ loss beyond recovery capacity.
 - Five existing Chunk-KV monitor integration cases pass (0.07 s). They cover
   count/size split planning, transfer/grant publication and failover, but do not
   establish the missing restart-weight, sampling-eligibility or large-data
-  heartbeat contracts recorded above. Node ownership UI design is deferred.
+  heartbeat contracts recorded above. Chunk ownership bitmap design is now approved.
 
 ## Low-cost backend verification (2026-10-04)
 
@@ -601,3 +607,17 @@ loss beyond recovery capacity.
   Zone 0.927 s, graph 3.2 s and multipart/location 3.8 s. The owned one-Rack,
   three-Node provisioning/data/browser/teardown chain takes 23.89 s. This is
   targeted acceptance, not a passing full ordered browser suite.
+
+## Approved ownership and navigation completion (2026-10-04)
+
+- Chunk Serving/Storage bitmaps and Metrics UI cleanup are complete; Metrics
+  redesign is cancelled. Metrics publish is only a future external integration
+  direction and was not implemented here.
+- Native diagnostics: 7 passed, 0 failed, 1 deliberate fixture-phase skip. Separate
+  real KV return and Inspector cleanup also pass. Frontend unit checks: 27 passed;
+  slot/catalog API integration: 3 passed. Rust fmt, scoped clippy, production UI
+  build and TypeScript checks pass.
+- Browser history, query/selection/scroll restoration, stale locations, deletion,
+  service outage/recovery and old-owner response isolation are verified at their
+  stated layers. This is not completion of the entire native feature inventory.
+- User-requested stopping point reached; remaining requirement work stays open.

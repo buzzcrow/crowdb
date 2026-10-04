@@ -49,3 +49,21 @@ describe('bounded object location inspection', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
+
+it('ignores an old object response after switching selection and marks return generations stale', async () => {
+  let resolveOld!: (response: Response) => void;
+  const fetcher = vi.fn()
+    .mockImplementationOnce(() => new Promise<Response>(resolve => { resolveOld = resolve; }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...page, key: 'new' })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...page, key: 'new', generation: 'b'.repeat(64) })));
+  vi.stubGlobal('fetch', fetcher);
+  const { result, rerender } = renderHook(({ active, key }) => useObjectLocations(active, 'bucket', key), { initialProps: { active: true, key: 'old' } });
+  rerender({ active: true, key: 'new' });
+  await waitFor(() => expect(result.current.page?.key).toBe('new'));
+  await act(async () => resolveOld(new Response(JSON.stringify({ ...page, key: 'old' }))));
+  expect(result.current.page?.key).toBe('new');
+  rerender({ active: false, key: 'new' });
+  rerender({ active: true, key: 'new' });
+  await waitFor(() => expect(result.current.stale).toBe(true));
+  expect(result.current.page?.generation).toBe('a'.repeat(64));
+});

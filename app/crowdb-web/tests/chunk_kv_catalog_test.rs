@@ -107,6 +107,70 @@ async fn catalog_windows_pin_generation_validate_checksums_and_keep_exact_ids() 
     assert_eq!(get(app, "").await.0, StatusCode::BAD_GATEWAY);
 }
 
+#[tokio::test]
+async fn published_owner_change_invalidates_saved_catalog_and_runtime_cursors() {
+    let cluster = crowdb_test_harness::cluster::KvCluster::start().await;
+    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        cluster.mgmt_endpoints.clone(),
+    )));
+    kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
+    let state = AppState::new(cluster.mgmt_endpoints.clone());
+    *state.kv_client.write().await = Some(Arc::clone(&kv));
+    let app = router(state);
+    let (mut head, mut page) = catalog_fixture();
+    for generation in [9, 10] {
+        page.generation = generation;
+        if generation == 10 {
+            page.entries[0].owner.instance_id = 42;
+            page.entries[0].owner.rpc_endpoint = "127.0.0.1:42000".into();
+        }
+        page.seal().unwrap();
+        head.generation = generation;
+        head.previous_generation = Some(generation - 1);
+        head.pages[0].page_generation = generation;
+        head.pages[0].page_checksum = page.checksum;
+        head.seal().unwrap();
+        kv.put(
+            0,
+            0,
+            ChunkKvRangeCatalogPageKey {
+                generation,
+                page_index: 0,
+            }
+            .to_path()
+            .as_bytes(),
+            &serde_json::to_vec(&page).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        kv.put(
+            0,
+            0,
+            ChunkKvRangeCatalogHeadKey.to_path().as_bytes(),
+            &serde_json::to_vec(&head).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        let (status, observed) = get(app.clone(), "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(observed["generation"], generation.to_string());
+        assert_eq!(
+            observed["entries"][0]["owner_id"],
+            page.entries[0].owner.instance_id.to_string()
+        );
+    }
+    assert_eq!(
+        get(app.clone(), "?generation=9&offset=100").await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        runtime_get(app, "epoch=18446744073709551615").await,
+        StatusCode::CONFLICT
+    );
+}
+
 async fn runtime_get(app: axum::Router, query: &str) -> StatusCode {
     app.oneshot(
         Request::get(format!(

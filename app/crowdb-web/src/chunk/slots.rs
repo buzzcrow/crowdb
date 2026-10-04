@@ -24,6 +24,7 @@ pub(crate) struct SlotQuery {
     after: Option<u16>,
     generation: Option<u64>,
     limit: Option<usize>,
+    view: Option<String>,
 }
 
 pub(crate) async fn list(State(state): State<AppState>, Query(query): Query<SlotQuery>) -> Response {
@@ -41,6 +42,12 @@ pub(crate) async fn list(State(state): State<AppState>, Query(query): Query<Slot
         .await
         .map_err(|error| err_502(error.to_string()))?;
     let client = ChunkSlotMapClient::new(state.kv_client().await);
+    if let Some(view) = &query.view {
+        if view != "bitmap" {
+            return Err(err_400("Unknown slot view"));
+        }
+        return bitmap(&client, &query).await;
+    }
     let (generation, slots) = if query.layer == "service" {
         let owner = query
             .instance_id
@@ -97,5 +104,38 @@ pub(crate) async fn list(State(state): State<AppState>, Query(query): Query<Slot
         "layer": query.layer, "generation": generation.to_string(), "slot_count": CHUNK_SLOT_COUNT,
         "assigned": assigned, "owned_count": count, "slots": window,
         "next": if more { window.last().copied() } else { None },
+    })))
+}
+
+/// One validated generation per layer; exactly 1024 entries, with lossless IDs.
+async fn bitmap(client: &ChunkSlotMapClient, query: &SlotQuery) -> Response {
+    use crowdb_protocol::chunk_slot::ChunkSlot;
+    let (generation, owners) = if query.layer == "service" {
+        let map = client.read_service().await.map_err(|e| err_502(e.to_string()))?;
+        (
+            map.head().generation,
+            ChunkSlot::all()
+                .map(|slot| map.owner(slot).to_string())
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        let map = client.read_storage().await.map_err(|e| err_502(e.to_string()))?;
+        (
+            map.head().generation,
+            ChunkSlot::all()
+                .map(|slot| {
+                    let owner = map.owner(slot);
+                    format!("{}/{}", owner.store_id, owner.group_id)
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    if query.generation.is_some_and(|expected| expected != generation) {
+        return Err(err_409("Slot map generation changed; refresh ownership"));
+    }
+    Ok(axum::Json(json!({
+        "layer": query.layer, "generation": generation.to_string(),
+        "slot_count": CHUNK_SLOT_COUNT, "owners": owners,
+        "source": "Group 0 validated slot map",
     })))
 }

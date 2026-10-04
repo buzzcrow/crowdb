@@ -90,7 +90,7 @@ export function useObjectLocations(active: boolean, bucket: string, key?: string
     } else if (query.bucket !== bucket || query.key !== key) {
       setPage(null); setSelected(null); updateQuery({ bucket, key, previous: [] });
       void load({ bucket, key, previous: [] });
-    } else if (!page) {
+    } else {
       void load(queryRef.current);
     }
     return () => { controller.current?.abort(); ++revision.current; setBusy(false); };

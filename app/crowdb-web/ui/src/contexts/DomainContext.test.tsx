@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>.
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, renderHook, act } from '@testing-library/react';
+import { render, renderHook, act, waitFor } from '@testing-library/react';
 import { DomainProvider, useDomain } from './DomainContext';
 import { Domain } from '../types';
 
@@ -61,18 +61,20 @@ it('keeps a bounded return route, restores snapshots and drops forward on new na
   await act(async () => { result.current.setDomain(Domain.KV); await Promise.resolve(); });
   position = 'group-B';
   act(() => result.current.back());
+  await waitFor(() => expect(result.current.domain).toBe(Domain.Cluster));
   expect(position).toBe('group-A');
   expect(result.current.domain).toBe(Domain.Cluster);
   expect(result.current.canForward).toBe(true);
   act(() => result.current.forward());
-  expect(result.current.domain).toBe(Domain.KV);
+  await waitFor(() => expect(result.current.domain).toBe(Domain.KV));
   act(() => result.current.back());
+  await waitFor(() => expect(result.current.domain).toBe(Domain.Cluster));
   await act(async () => { result.current.setDomain(Domain.S3); await Promise.resolve(); });
   expect(result.current.canForward).toBe(false);
   for (let index = 0; index < 40; index++) {
     await act(async () => { result.current.setDomain(index % 2 ? Domain.KV : Domain.Cluster); await Promise.resolve(); });
   }
   let count = 0;
-  while (result.current.canBack) { act(() => result.current.back()); count++; }
+  while (result.current.canBack) { const old = result.current.domain; act(() => result.current.back()); await waitFor(() => expect(result.current.domain).not.toBe(old)); count++; }
   expect(count).toBe(32);
 });

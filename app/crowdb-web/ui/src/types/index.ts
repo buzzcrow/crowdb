@@ -260,24 +260,6 @@ export interface ReadState {
   safe_slot: number;
 }
 
-// Metrics snapshot types (mirrors crowdb-console-shared's MetricsResponse)
-export interface MetricField {
-  key: string;
-  value: number;
-}
-
-export interface MetricPoint {
-  name: string;
-  kind: string;
-  fields: MetricField[];
-}
-
-export interface MetricsResponse {
-  window_secs: number;
-  timestamp: string;
-  metrics: MetricPoint[];
-}
-
 // ── Capacity view types (R77) ─────────────────────────────────────
 // Mirror the DTOs from crowdb-web/src/diskdb.rs.
 

@@ -61,6 +61,10 @@ test('native diagnostics: Iceberg actual catalog tables and nested schema preser
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('lineitem');
       await expect(page.getByRole('button', { name: 'Schema', exact: true })).toHaveAttribute('aria-pressed', 'true');
       await expect(page.getByRole('table', { name: 'Table schema', exact: true }).getByRole('row')).toHaveCount(5);
+      await page.goForward();
+      await expect(page.getByTestId('domain-chunk')).toHaveAttribute('aria-pressed', 'true');
+      await page.goBack();
+      await expect(page.getByRole('table', { name: 'Table schema', exact: true }).getByRole('row')).toHaveCount(5);
     });
   } finally {
     await step('native Iceberg owned metadata teardown', async () => {

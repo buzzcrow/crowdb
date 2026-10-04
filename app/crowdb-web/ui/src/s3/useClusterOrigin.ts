@@ -16,10 +16,10 @@ export function useClusterOrigin(active: boolean) {
     setError('');
     void connections(controller.signal).then(result => {
       if (controller.signal.aborted) return;
-      setOrigin(result.s3);
+      if (result.s3) setOrigin(result.s3);
       if (!result.s3) setError('This cluster has no S3 endpoint. Deploy Access Server in Cluster, then retry.');
     }).catch(error => {
-      if (!controller.signal.aborted) { setOrigin(null); setError(String(error)); }
+      if (!controller.signal.aborted) { setError(String(error)); }
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [active, attempt]);

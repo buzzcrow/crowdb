@@ -106,7 +106,7 @@ export function ChunkKvView({ active, racks, nodes, servers, onChunk }: { onChun
         query={graph} onQuery={setGraph} selectedId={selected?.partition.id} disabled={busy || !!error} onSelect={select}
         onTree={entry => { select(entry); changeQuery({ ...queryRef.current, tab: 'Tree' }); }} /></Suspense>
       {!entries.length && <p>No splits in this catalog window.</p>}
-      {page.next && <button className={buttonClass} disabled={busy || !!error} onClick={() => { setCursor({ ...page.next!, generation: page.generation }); }}>Next partitions</button>}
+      {page.next && <button className={buttonClass} disabled={busy || !!error} onClick={() => { checkpoint(); setCursor({ ...page.next!, generation: page.generation }); }}>Next partitions</button>}
     </>}
     {selected && <PartitionDetail query={query} onQuery={changeQuery} propertyHost={propertyHost} key={`${selected.partition.id}/${selected.generation}`} {...selected} active={active && !error && selected.generation === page?.generation} currentGeneration={page?.generation} onChunk={onChunk} onBack={() => { checkpoint(); setSelected(null); }} />}
   </Workbench>;

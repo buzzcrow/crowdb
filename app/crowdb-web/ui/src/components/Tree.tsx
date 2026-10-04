@@ -59,12 +59,16 @@ function TreeNodeComponent({
   onNodeClick,
   onNodeContextMenu,
 }: TreeNodeProps) {
-  const { isSelected, selectEntity } = useSelection();
+  const { selectedEntity, selectEntity } = useSelection();
   const { domain } = useDomain();
   const hasChildren = node.expandable || (!!node.children && node.children.length > 0);
   const isExpanded = expandedIds.has(node.id);
   const entityId = node.rawId ?? node.id;
-  const isNodeSelected = node.selected ?? isSelected(String(entityId));
+  const sameOwner = node.type !== 'Group' && node.type !== 'Replica' ||
+    String(node.parentIds?.store_id) === String(selectedEntity?.parentIds?.store_id)
+      && (node.type !== 'Replica' || String(node.parentIds?.group_id) === String(selectedEntity?.parentIds?.group_id));
+  const isNodeSelected = node.selected ?? (selectedEntity?.type === node.type && selectedEntity.id === String(entityId)
+    && sameOwner && (!node.serviceType || node.serviceType === selectedEntity.serviceType));
 
   const select = useCallback(() => {
     selectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, serviceType: node.serviceType });

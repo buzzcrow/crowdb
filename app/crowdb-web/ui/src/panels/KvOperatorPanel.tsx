@@ -7,6 +7,7 @@ import { useNavigationSnapshot } from '../contexts/DomainContext';
 import { Domain } from '../types';
 import { displayBytes, printableBytes } from '../kv/displayBytes';
 import { ByteDisplay } from '../kv/ByteDisplay';
+import { OwnershipPanel } from '../chunk/ownership/OwnershipPanel';
 import { ResourceActions } from '../access/ResourceActions';
 import { buttonClass } from '../access/Workbench';
 import { useToast } from '../contexts/ToastContext';
@@ -552,6 +553,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     <div className="tw-h-full tw-overflow-y-auto tw-bg-bg tw-text-text">
       <div className="tw-p-5 tw-space-y-4">
         <h1 className="tw-text-lg tw-font-semibold">KV data</h1>
+        {selectedEntity?.type === 'Group' && selectedEntity.id !== '0' && <OwnershipPanel active={active} selection={selectedEntity} nodes={[]} servers={[]} stores={stores} />}
         <ResourceActions label={`KV actions · Store ${storeId} / Group ${groupId === ALL_GROUPS ? 'All' : groupId}`}>
         {/* Action bar */}
         <div className="tw-border tw-border-border tw-rounded tw-p-3 tw-space-y-2 tw-bg-panel/50">

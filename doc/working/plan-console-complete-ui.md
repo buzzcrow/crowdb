@@ -20,7 +20,7 @@ standalone bootstrap, and the same UI in Container with topology writes disabled
 - Preserve the user's running localhost cluster and its default directory.
   Browser inspection is read-only; tests must use isolated runtime roots/ports.
 - Iceberg reference/file inspection and bounded S3 ObjectRecord-to-Chunk
-  diagnostics are implemented. Row DML and future metrics/authentication design
+  diagnostics are implemented. Row DML and authentication design
   are outside the agreed UI scope.
 
 ## Phase 1 — startup and shell
@@ -704,7 +704,7 @@ The previously deferred ChunkDB slot model is now available. Preserve the live
   `stepTimer` and `slowReporter`; measure setup/mutation/readiness/DOM/teardown.
 - [ ] **Gates and cleanup**: run relevant unit/integration and full requested UI
   suite, lint/fmt, coherent commits; remove R203 and plan only when acceptance
-  succeeds. Future authentication/metrics redesign remains out of scope.
+  succeeds. Authentication design remains out of scope; Metrics UI is to be removed.
 
 - Verified first completion checkpoint: `test-console-ui` passed 101 unit tests
   (2.29 s) and 83 browser tests (3.4 min). The full-chain case is now 3.5 s;
@@ -1108,7 +1108,7 @@ remains to be run and must not be inferred from the S3 API fixture.
 
 - [x] **Verify retained implementation after history reconciliation**: the current Stream observation fixture has its required purpose and its exact test passes. The fresh three-node API/service-restart fixture and all four native browser cases pass (32.48-second fixture; Zone 1.3 s, graph 2.0 s, Iceberg 7.1 s, S3 4.0 s). Full 9-MiB reads are 31 ms; DDB restart is 918 ms. This does not close unconverted browser coverage.
 - [ ] **Bound repeated Group 0 hints — candidate blocked**: cold initialization still follows 4,105 hints. Share per-operation repeated/cyclic redirect accounting across ordinary and conditional writes and scans, retain immediate progress to new endpoints, and use the existing election wait/budget for stalled hints. Extract oversized core operations into owning modules before edits. Files: `lib/crowdb-kv-client/src/client/core.rs`, `core/operations.rs`, `core/scans.rs`, `core/conditional.rs`, `client/retry.rs`, `config.rs`, `tests/conditional_retry_test.rs`, `tests/common/conditional_servers.rs`. Verify real pinned-role cycles, existing client tests, cold native initialization and affected clippy/fmt.
-- [ ] **Continue remaining native acceptance**: mixed allocation units, balance weight/liveness, bounded inspection API and unconverted real browser contracts remain open. Node ownership and separate metrics UI designs remain deferred.
+- [ ] **Continue remaining native acceptance**: mixed allocation units, balance weight/liveness, bounded inspection API and unconverted real browser contracts remain open. Chunk ownership bitmap is approved; Metrics UI cleanup replaces redesign.
 
 - [x] **Verify retained native EC background acceptance**: `pixi run timeout 60s cargo test -p crowdb-chunkdb --test partial_ec_background_test -- --nocapture` passes in 2.88 seconds. Actual KV/DDB and six DiskIO processes cover 7 MiB + 17-byte mirror-to-EC conversion, four missing shard repairs, exact seal and nonzero unwritten tails. This confirms the existing regression; no production change was needed.
 
@@ -1296,3 +1296,72 @@ completed fix or remove R203. Preserve the user's original plan edits.
   Iceberg 7.3 s, S3 5.5 s). Partial prerequisite acceptance remains selected
   separately. All 55 affected component cases, Rust fmt and all-target clippy
   pass. No sampling/lease interval, request deadline or retry budget changed.
+
+## Approved ownership bitmap and Metrics cleanup
+
+- [x] **Ownership bitmap**: expose a validated fixed-size slot observation per
+  layer; render owner-colored 1024-slot maps for Group/CDB and parent scopes.
+  Deduplicate storage groups across replicas; distinguish unknown membership
+  from outside-scope slots. Verify exact IDs, generations, and native data.
+  Files: Web `chunk/slots.rs`, UI `chunk/ownership/`, `ChunkHierarchy`, views.
+- [x] **Metrics UI cleanup**: remove unused UI metric types and any remaining
+  entry points/polling; replace the redesign task with cleanup. Future metrics
+  publishing to customer-managed time-series databases is outside this task.
+- [x] **Verification**: slot API integration, projection unit tests, native
+  ownership browser assertions, TypeScript build, Rust fmt and scoped clippy.
+
+## Navigation and state consistency — approved follow-up
+
+- [x] **Shared navigation**: browser and header history use the same bounded
+  session visits. Chunk snapshots retain type/filter/window, full Chunk ID,
+  Strip identity and physical segment identity; return refetches and refuses to
+  silently select a replacement block. Chunk tree expansion and bitmap selection
+  are restored. Scroll restoration observes asynchronously rendered content.
+- [x] **Observation isolation**: stale S3 reads and Iceberg scope completions
+  cannot publish into a newer operation. Returning to an object rechecks its
+  location generation; errors disable stale placement links and pagination.
+  Unavailable Access discovery retains known resource context. Fixed Chunk slot
+  maps remain immutable; no UI remapping operation was introduced.
+- [x] **Selection identity**: Tree compares type and relevant Store/Group ancestry
+  as well as ID. Native checks ensure only the actual selected row is highlighted.
+- [x] **Focused final verification**: native bitmap/API equality, node and Group
+  scopes, browser Back/Forward; S3 replacement pages, scroll, overwrite, deletion,
+  all-Access outage/restart; S3 → Chunk → Disk return; Capacity zone page and
+  Iceberg schema return. Also rerun existing real KV and Inspector cases.
+
+Evidence so far: 7 native browser cases passed with 1 explicit partial-deployment
+phase skip in 22.0 s (owned fixture 38.22 s). Slot integration checks all 2048
+owner entries and rejects generation mismatch. Frontend projection/location/
+selection/history/sidebar tests pass. A new tree test initially assumed KV's
+registry ID included a `kv-` prefix; API/DOM inspection showed its actual ID is
+unprefixed. The test now reads the exact registry ID and the isolated case passes
+in 2.5 s. No retries or longer assertion deadlines were added.
+
+Remaining large-data/advanced parser acceptance, Docker packaging, KV Page API,
+and byte-weight balance work remains outside this user-requested stopping point.
+
+- Additional focused checks: existing real KV page/selected-value return passes
+  in 1.5 s; real Inspector scope/reset cleanup passes in 0.867 s. The first KV
+  attempt could not start because the prior clean had removed `crowdb-cli`;
+  rebuilding that fixture dependency resolved setup, without test changes.
+- Frontend scope: 26 unit tests across ownership projection, stale locations,
+  domain/selection history and shared sidebar pass. Latest slot API integration
+  passes in 0.96 s; production UI build and E2E TypeScript lint pass.
+
+### Final verification and stopping point
+
+- Final ordered native diagnostic run: 8 collected, 7 passed, 0 failed, 1
+  deliberate partial-deployment phase skip; browser time 22.4 s, complete owned
+  fixture 39.21 s. The separate KV return and Inspector cleanup cases also pass.
+- Owner-change correctness: a real Group-0 test publishes a newly sealed catalog
+  generation with a changed owner, confirms the new exact owner identity, and
+  rejects saved catalog/runtime generation cursors with 409. Both catalog
+  integration cases pass in 1.09 s. The old-owner late-response hook regression
+  passes, bringing focused frontend unit coverage to 27 cases.
+- Slot API integration, Rust fmt, Web all-target clippy, frontend production build
+  and E2E TypeScript checks pass. No C++ files changed. UI screenshots were
+  inspected for bitmap alignment, legend readability and compact two-map layout.
+- Metrics UI cleanup and approved Chunk ownership are complete. Shared navigation
+  and state-consistency fixes are complete for the tested contracts above; broader
+  domain data/transfer/parser coverage remains separately recorded. Stop after
+  this coherent commit, as requested; do not continue other requirement tasks.

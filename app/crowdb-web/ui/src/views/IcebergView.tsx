@@ -32,6 +32,8 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
   const [catalogCursor, setCatalogCursor] = useState<string>();
   const [namespaceCursor, setNamespaceCursor] = useState<{ table?: string; namespace?: string }>({});
   const navigation = useRef(0);
+  const operation = useRef(0);
+  useEffect(() => { if (!active) { ++navigation.current; ++operation.current; } }, [active]);
   const catalogLoadedRetry = useRef(-1);
   const [demoNamespace, setDemoNamespace] = useState<string | null>(null);
   const [removals, setRemovals] = useState('[]');
@@ -83,13 +85,14 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
   }, [active, token, retry]);
   const path = namespace ? namespacePath(namespace) : '';
   const tablePath = `${path}/tables/${encodeURIComponent(table)}`;
-  const run = async (operation: () => Promise<void>, label: string) => {
+  const run = async (work: () => Promise<void>, label: string) => {
+    const version = ++operation.current;
     setBusy(true); setError(''); setOutcome('');
-    try { await operation(); setOutcome(label.endsWith('loaded') ? '' : label); log({ action: label, target: `Iceberg / ${namespace?.join('.') ?? 'catalog'} / ${table}`, status: 'Success' }); }
-    catch (error) { setError(`${String(error)}. Refresh metadata before retrying a mutation.`); log({ action: label, target: `Iceberg / ${namespace?.join('.') ?? 'catalog'} / ${table}`, status: 'Failed', message: 'Native request failed. Refresh resource state before retrying.' }); }
-    finally { setBusy(false); }
+    try { await work(); if (version !== operation.current) return; setOutcome(label.endsWith('loaded') ? '' : label); log({ action: label, target: `Iceberg / ${namespace?.join('.') ?? 'catalog'} / ${table}`, status: 'Success' }); }
+    catch (error) { if (version !== operation.current) return; setError(`${String(error)}. Refresh metadata before retrying a mutation.`); log({ action: label, target: `Iceberg / ${namespace?.join('.') ?? 'catalog'} / ${table}`, status: 'Failed', message: 'Native request failed. Refresh resource state before retrying.' }); }
+    finally { if (version === operation.current) setBusy(false); }
   };
-  const loadNamespaces = async (cursor?: string) => { setCatalogCursor(cursor); setPagedNamespaces(!!cursor); const response = await iceberg(`/v1/namespaces?pageSize=30${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ''}`, token); setNamespaces(response.namespaces ?? []); setNextNamespaces(response['next-page-token'] ?? null); };
+  const loadNamespaces = async (cursor?: string) => { const request = ++navigation.current; setCatalogCursor(cursor); setPagedNamespaces(!!cursor); const response = await iceberg(`/v1/namespaces?pageSize=30${cursor ? `&pageToken=${encodeURIComponent(cursor)}` : ''}`, token); if (request !== navigation.current) throw new DOMException('Superseded navigation', 'AbortError'); setNamespaces(response.namespaces ?? []); setNextNamespaces(response['next-page-token'] ?? null); };
   const loadNamespace = async (value: string[], tableToken?: string, namespaceToken?: string) => {
     setNamespaceCursor({ table: tableToken, namespace: namespaceToken });
     const request = ++navigation.current;
@@ -99,13 +102,13 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
       iceberg(`${namespacePath(value)}/tables?${pageQuery(tableToken)}`, token),
       iceberg(`/v1/namespaces?parent=${encodeURIComponent(value.join('\x1f'))}&${pageQuery(namespaceToken)}`, token),
     ]);
-    if (request !== navigation.current) return;
+    if (request !== navigation.current) throw new DOMException('Superseded navigation', 'AbortError');
     setProperties(properties); setTables(listed.identifiers ?? []);
     const page: NamespacePage = { paged: !!tableToken || !!namespaceToken, tables: listed.identifiers ?? [], children: (children.namespaces ?? []).filter((child: string[]) => child.length > value.length && value.every((part, i) => part === child[i])), nextTables: listed['next-page-token'], nextNamespaces: children['next-page-token'] };
     setNamespacePages(previous => Object.fromEntries([...Object.entries(previous).filter(([key]) => key !== JSON.stringify(value)).slice(-7), [JSON.stringify(value), page]]));
   };
   const loadTable = async (name: string, ns = namespace) => { if (!ns) return; const request = ++navigation.current; const value = await iceberg(`${namespacePath(ns)}/tables/${encodeURIComponent(name)}`, token); if (request === navigation.current) setLoaded(value); };
-  const selectCatalog = () => { checkpoint(); navigation.current++; setOutcome(''); setNamespace(null); setTable(''); setLoaded(null); };
+  const selectCatalog = () => { checkpoint(); navigation.current++; operation.current++; setBusy(false); setOutcome(''); setNamespace(null); setTable(''); setLoaded(null); };
   const selectNamespace = (value: string[]) => { checkpoint(); setNamespace(value); setTable(''); setLoaded(null); setTables([]); void run(() => loadNamespace(value), `Namespace ${value.join('.')} loaded`); };
   const selectTable = (name: string, ns = namespace) => { if (!ns) return; checkpoint(); setNamespace(ns); setTable(name); setLoaded(null); setSection('Overview'); void run(() => loadTable(name, ns), `Table ${name} loaded`); };
   const inspector = useInspection(loaded, tablePath, token, origin);

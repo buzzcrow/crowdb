@@ -90,9 +90,13 @@ provide observable capacity and bitmap fixtures.
 - **NAV-04:** Cross-links identify the exact destination resource. Returning
   restores the originating selection and page. A stale/deleted destination has
   an explicit state rather than silently selecting a different item. The header
-  exposes Back/Forward with at most 32 visits. History stores identities, bounded
+  and browser Back/Forward share one session history with at most 32 retained
+  visits. History stores identities, bounded
   query cursors and scroll coordinates, never object bodies or metadata payloads.
-  New navigation clears Forward. Returning to an Iceberg reference verifies the
+  New navigation clears Forward. Returning refetches the saved bounded window;
+  scroll restoration waits for that window to render. Resource types and parent
+  identities participate in selection equality, so equal numeric IDs in
+  different resource kinds cannot share a selected highlight. Returning to an Iceberg reference verifies the
   saved metadata generation before inspecting it again.
 - Shared physical/logical trees retain expansion and local search per domain.
   Return restores both expanded and collapsed branches. KV captures bounded
@@ -453,12 +457,24 @@ Unsupported features are explicit rather than represented as working controls.
 ## 19. Chunk
 
 - **CHK-01:** Left tree is Datacenter → Rack → Node → CDB and KV Server;
-  KV branches expand Store → Group without Replicas. CDB service-slot ownership
-  and KV storage-slot ownership are distinct. Disjoint slot sets are not drawn
-  as one continuous hash range. Unresolved ownership is labelled unavailable.
-  Owner branches load only when expanded, with 32-slot Previous/Next windows
-  and an exact generation token. A changed generation preserves the previous
-  observation with an error and requires Refresh from the first window.
+  KV branches expand Store → Group without Replicas. Chunk ownership has two
+  independent maps over slots 0–1023: Serving assigns a ChunkDB instance;
+  Storage assigns the metadata Store/Group. Chunk-KV ordered splits and payload
+  disk placement are separate concepts.
+- Selecting a CDB or Group displays its full 32×32 bitmap; parent selections
+  display one combined bitmap per layer. Each cell is exactly one slot, ordered
+  left-to-right then top-to-bottom. Owner colors remain stable across scopes;
+  outside-scope slots are gray, unknown membership uses a pattern. Each map
+  carries its own generation. Invalid or unavailable maps never become empty
+  or gray observations; retained failed-refresh data is marked stale.
+- Storage groups are deduplicated across replicas. Node/Rack scopes include a
+  group when it has a replica in that scope. Unknown replica/service membership
+  remains unknown. Legend hover highlights an owner's slots; clicking an owner
+  navigates to its bitmap. Legend windows contain at most 12 owners. Selecting
+  a cell shows exact slot, owner, generation, source and node associations;
+  arrow keys navigate the grid. Service and storage boundaries need not match.
+- Bitmap observations read a validated complete map and return exactly 1024
+  lossless owner identities per layer. No owner-page stitching is needed.
 - **CHK-02:** Entering Chunk requests an All-type page automatically. The center
   lists at most 10 chunks without an inner vertical scrollbar. Previous/Next
   replace the page. Type is a protocol-defined selector; exact Chunk ID lookup
@@ -592,8 +608,9 @@ Unsupported features are explicit rather than represented as working controls.
   mutation forms. Readonly/container capabilities apply to every action.
 - **ACT-03:** Right properties show complete information for the clicked item,
   including graph blocks/columns/extents. Optional diagnostics never replace
-  primary details. Cluster/KV generic internal metrics are excluded until a
-  separate metrics design exists.
+  primary details. Metrics panels, entries and polling are excluded from the UI. Future metrics
+  publishing targets customer-managed time-series systems; it is outside this
+  UI contract.
 
 ## 24. E2E organization and timing
 
