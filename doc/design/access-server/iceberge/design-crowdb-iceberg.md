@@ -567,6 +567,12 @@ these operations. Recovery reloads an existing operation before resolving the na
 or current head and never rebases an uncertain request. Response headroom is checked
 before publication so credential configuration fits the durable replay budget.
 
+New-table requests may carry unique provisional field IDs starting at zero,
+as produced by Spark. Creation assigns positive durable IDs before validating
+the canonical schema and remaps identifier, partition, sort and nested-default
+references consistently. Negative or duplicate provisional IDs remain invalid.
+Existing-table commits and stored metadata still require their durable IDs.
+
 Staged creation retains an invisible durable draft and metadata-only response.
 Its native table location resolves the draft without a client-specific token.
 The final assert-create request initializes an empty metadata builder using the

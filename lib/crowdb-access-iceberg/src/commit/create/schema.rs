@@ -24,13 +24,11 @@ pub(super) fn prepare(input: &Value, version: u8, limits: TableMetadataLimits) -
     let mut value = input.clone();
     let object = value.as_object_mut().ok_or(Error::Field("schema"))?;
     object.entry("schema-id").or_insert(json!(0));
-    let schema_id = value["schema-id"]
+    value["schema-id"]
         .as_i64()
         .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value >= 0)
         .ok_or(Error::Field("schema-id"))?;
-    let encoded = super::super::evaluator::encode_bounded(&value, limits.bytes)?;
-    let context = ManifestContext::parse(version, schema_id, 0, encoded.get().as_bytes(), b"[]")
-        .map_err(|_| Error::Field("schema"))?;
     validate_schema_definition(&value, version, limits.values)?;
     let original = value.clone();
     let mut ids = BTreeMap::new();
@@ -46,6 +44,9 @@ pub(super) fn prepare(input: &Value, version: u8, limits: TableMetadataLimits) -
             *identifier = json!(mapped(identifier, &ids)?);
         }
     }
+    let encoded = super::super::evaluator::encode_bounded(&value, limits.bytes)?;
+    let context = ManifestContext::parse(version, 0, 0, encoded.get().as_bytes(), b"[]")
+        .map_err(|_| Error::Field("schema"))?;
     Ok(FreshSchema {
         value,
         ids,
@@ -66,6 +67,7 @@ fn next(value: &mut Value, ids: &mut BTreeMap<i32, i32>, last: &mut i32) -> Resu
     let old = value
         .as_i64()
         .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value >= 0)
         .ok_or(Error::Field("id"))?;
     *last = last.checked_add(1).ok_or(Error::Bounds)?;
     if ids.insert(old, *last).is_some() {

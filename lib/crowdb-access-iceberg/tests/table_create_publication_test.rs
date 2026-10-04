@@ -207,7 +207,7 @@ async fn invalid_creation_has_no_durable_side_effects() {
     let test = TestCreation::new().await;
     let before = test.fixture.store.writes.load(Ordering::SeqCst);
     for body in [
-        serde_json::json!({"name":"events","schema":{"type":"struct","fields":[{"id":0,"name":"bad","required":true,"type":"long"}]}}),
+        serde_json::json!({"name":"events","schema":{"type":"struct","fields":[{"id":-1,"name":"bad","required":true,"type":"long"}]}}),
         serde_json::json!({"name":"events","schema":{"type":"struct","fields":[]},"location":"s3://external/table"}),
         serde_json::json!({"name":"events","schema":{"type":"struct","fields":[]},"stage-create":true}),
     ] {

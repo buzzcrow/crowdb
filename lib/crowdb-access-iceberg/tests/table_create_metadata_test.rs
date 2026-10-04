@@ -210,3 +210,26 @@ fn creation_bounds_decode_revalidation_and_output_independently() {
     small.string_bytes = small.bytes;
     assert!(evaluate_table_creation(&request, target(), 1000, small).is_err());
 }
+
+#[test]
+fn spark_create_request_assigns_durable_ids_to_zero_based_fields() {
+    let input = json!({"name":"events","location":null,
+        "schema":{"type":"struct","schema-id":0,"fields":[
+            {"id":0,"name":"id","required":false,"type":"long"},
+            {"id":1,"name":"amount","required":false,"type":"long"}]},
+        "partition-spec":{"spec-id":0,"fields":[]},"write-order":null,
+        "properties":{"format-version":"2","owner":"spark"},"stage-create":false});
+    let result = evaluate(&input).unwrap();
+    let schema = &result.document.fields()["schemas"][0];
+    assert_eq!(schema["fields"][0]["id"], 1);
+    assert_eq!(schema["fields"][1]["id"], 2);
+    assert_eq!(result.document.fields()["last-column-id"], 2);
+    for id in [-1, 1] {
+        let mut invalid = input.clone();
+        invalid["schema"]["fields"][0]["id"] = json!(id);
+        assert!(
+            evaluate(&invalid).is_err(),
+            "negative and duplicate IDs stay invalid"
+        );
+    }
+}
