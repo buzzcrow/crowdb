@@ -296,7 +296,7 @@ impl ChunkKvClient {
                             ));
                         }
                         Err(failure) if topology_failure(failure.code) => {
-                            if replans >= self.config.max_route_refreshes {
+                            if attempts >= self.config.max_attempts {
                                 return Ok(scan_page(
                                     &request,
                                     items,
@@ -305,10 +305,16 @@ impl ChunkKvClient {
                                     Some(failure),
                                 ));
                             }
-                            replans += 1;
-                            self.refresh_with_deadline(deadline).await?;
+                            if replans < self.config.max_route_refreshes {
+                                replans += 1;
+                                self.refresh_with_deadline(deadline).await?;
+                                scan_backoff(self, deadline).await?;
+                                continue 'replan;
+                            }
+                            // Catalog publication can precede owner activation.
+                            // Exhausting discovery refreshes does not exhaust
+                            // the existing bounded serving retry budget.
                             scan_backoff(self, deadline).await?;
-                            continue 'replan;
                         }
                         Err(failure)
                             if transient_failure(failure.code) && attempts < self.config.max_attempts =>

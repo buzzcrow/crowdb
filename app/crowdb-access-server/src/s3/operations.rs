@@ -230,7 +230,10 @@ impl ProductionS3Operations {
     async fn list_buckets(&self) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let buckets = bucket::list_buckets(&self.storage.metadata, &self.config.tenant, DEFAULT_LIST_LIMIT)
             .await
-            .map_err(|error| map_bucket_error(&error))?;
+            .map_err(|error| {
+                tracing::error!(%error, "S3 bucket listing failed; returning a service error");
+                map_bucket_error(&error)
+            })?;
         xml_response(wire::list_buckets(self.config.tenant.as_bytes(), &buckets))
     }
 

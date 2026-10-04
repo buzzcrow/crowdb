@@ -1001,8 +1001,18 @@ UI todo acceptance items.
   real bucket-list HTTP 503 after successful creation during split activity;
   navigation and 9-MiB payload acceptance now pass in 3.6/4.3 s. The bucket-list
   503 remains a separate unclosed transition-time backend issue in ui-todo.
-- [~] **Graph lifecycle follow-up**: native refresh still reproduced empty
+- [x] **Graph lifecycle follow-up**: native refresh still reproduced empty
   nodes once. Give the Chunk-KV canvas an explicit independent ReactFlowProvider
   and identity; exercise three consecutive refresh actions, without retries.
-  One targeted execution passes, but native tab return still fails. Retaining
-  the mounted graph alone did not resolve it; trace graph-store clearing next.
+  Retaining the mounted graph alone did not resolve it. Native tracing showed
+  six nodes remained in the store, but controlled updates lost their dimensions.
+  Use measured node state and reconcile dimensions across layout changes.
+  Three tab returns, three refresh actions and resize now pass in 2.9 seconds.
+- [x] **S3 transition-time scan convergence**: native listing returned 503 with
+  `NotMyRange` after catalog refresh exhaustion. Retain existing serving attempt
+  and deadline bounds while allowing the activated owner to converge. Verify
+  persistent rejection remains bounded, then rerun the three native diagnostics.
+  All 18 client tests and affected clippy pass; native diagnostics all pass
+  (Zone 0.927 s, graph 3.2 s, multipart/location 3.8 s; 23.89 s owned fixture).
+- [ ] **S3 native full-read latency**: one 9-MiB GET exceeded the unchanged
+  3-second browser deadline. Retain this failure and investigate its slow phase.

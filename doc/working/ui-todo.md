@@ -22,13 +22,14 @@ Previous mocked results do not satisfy real end-to-end acceptance.
 
 ### UI behavior
 
-- [ ] **S3 object storage locations**: show the object's actual Chunk mapping,
+- [x] **S3 object storage locations**: show the object's actual Chunk mapping,
   including Chunk ID, object byte interval, chunk offset and length. Displayed
   locations must agree with authoritative stored metadata, including shared
   chunks and multipart objects. Clicking a location opens the correct Chunk;
   returning restores the object and selected location. Unavailable locations
   must be explicit. Backend native multipart/location verification is now passing;
-  complete the remaining browser navigation acceptance before closing this item.
+  real 9-MiB multipart browser navigation, selected-extent restoration and full
+  byte verification now pass in the normal three-node fixture.
 - [x] **Chunk-KV graph regression**: a populated cluster must display its
   Chunk-KV servers, owned splits and associated trees in the center graph.
   The graph must remain visible and readable after entry, tab switching,
@@ -67,11 +68,12 @@ unaccepted; this is not a full-suite result.
   real equivalents. Keep unit tests separate from E2E counts. Report collected,
   passed, failed, skipped and uncovered requirements honestly; mocked success
   cannot close a feature task.
-- [ ] **Native coverage inventory**: map each agreed UI feature to real E2E
+- [x] **Native coverage inventory**: map each agreed UI feature to real E2E
   cases and identify missing scenarios. Existing mocked coverage includes
   shell/embedding, auxiliary service plans, Capacity, Chunk, Chunk-KV, Iceberg
   and S3. Cover their current contracts rather than relying on the case count.
-- [ ] **Fresh three-node provisioning**: one Rack, three Nodes, Groups 0/1 and
+  The concrete feature inventory and uncovered acceptance tasks follow below.
+- [x] **Fresh three-node provisioning**: one Rack, three Nodes, Groups 0/1 and
   one of each of the six services per Node must become usable without manual
   binding, owner, range or catalog repairs. Resolve the outstanding first
   Chunk-KV readiness failure and verify real data writes afterward.
@@ -190,12 +192,89 @@ unaccepted; this is not a full-suite result.
   delay heartbeat publication or serving-grant renewal past their deadlines.
   Bound observation work and verify the behavior with real large data.
 
-- [ ] **S3 bucket discovery during range transitions**: a successfully created
+- [x] **S3 bucket discovery during range transitions**: a successfully created
   bucket must remain discoverable while Chunk-KV splits or changes owners. A
   native browser run received HTTP 503 from bucket listing immediately after
   a successful bucket creation. Preserve the underlying metadata/routing error
   in service diagnostics and verify transition-time listing without browser
   retries before closing this issue.
+  Confirmed `NotMyRange` after discovery budget exhaustion. Bounded serving
+  attempts now continue within the unchanged deadline; two regression cases
+  verify convergence and persistent-rejection bounds. Native discovery and
+  multipart browser acceptance pass without browser retries.
+
+- [ ] **S3 native full-read latency**: the real multipart browser flow once
+  exceeded its existing 3-second request deadline reading a 9-MiB object after
+  Chunk navigation and return. Other executions completed the same read. Locate
+  the first slow backend boundary and retain phase timings; do not increase
+  the browser timeout or conceal the failure with retries.
+
+## Native feature inventory (2026-10-04)
+
+- Collection: the routine configuration collects 85 cases in 22 files; the
+  managed deployment configuration collects one separate case, and native
+  diagnostics collect three separate cases. The multipart-only configuration
+  selects the same multipart case, so it adds no distinct case. Collection is
+  not a passing result. The routine set still includes interception-dependent
+  cases, which the shared fixture now rejects.
+- Shell, modes and shared controls (`00`, `01`): embedding, readonly, module
+  opt-out, container capabilities, outage recovery, dialog defaults and shared
+  trees. **Unaccepted** where responses are intercepted.
+- Cluster (`10`–`13`): physical CRUD, service lifecycle, six-service deployment,
+  partial failure and cross-links. Real KV/DDB lifecycle has existing native
+  evidence; auxiliary deployment scenarios still have interception gaps. The
+  separate normal three-node API fixture proves all 18 service deployments.
+- KV management/data (`20`–`22`, `30`, `31`): real Store/Group membership, quorum,
+  CRUD and byte-preserving pagination. The retained KV presentation/return
+  selection has real passing evidence. Older advanced cases still target
+  append/load-more controls and need alignment with replacement pagination.
+- Shared graphs/activity (`40`, `41`): real physical graph expand/collapse,
+  pan/fit and selection restoration; existing focused passing evidence. Verify
+  activity failures and resource deletion in the final ordered acceptance.
+- Capacity (`50`–`53`): real disk/owner lifecycle plus native bit-by-bit canvas
+  verification. Large inventory, unavailable usage and several window/return
+  cases still use interception and lack real equivalents.
+- Chunk (`54`): paged lists, types, exact IDs, multi-Strip Mirror/EC layout and
+  placement return. S3 location navigation resolves an actual Chunk layout;
+  bounded multi-page, mixed placement and independent list navigation remain
+  uncovered by native browser acceptance.
+- Chunk-KV (`55`): native catalog graph survives three returns, three refreshes
+  and resize. Paged split counts, journal extent fences/continuations, ownership
+  changes and failed/empty catalog cases still need real equivalents. KV Page
+  inspection remains a separate missing API contract.
+- Iceberg (`60`): catalog/namespace/table CRUD, eight-table hierarchy, nested
+  schema, snapshots/manifests/files and footer layout. Current page scenarios
+  still intercept responses; the normal fixture's namespace API success does
+  not establish browser/parser acceptance.
+- S3 (`70`, `71`): actual multipart upload, HEAD, bounded preview, full read,
+  authoritative locations and Chunk-return navigation have passing native
+  executions. Bucket-list transition rejection and one full-read deadline
+  remain unresolved. Large listing/cursors, stale revisions and error feedback
+  still need real browser equivalents.
+- Cross-domain (`72`, `90`): real management smoke exists. The managed native
+  case has stale selectors and fixed single-node placement assumptions; its
+  current collection does not establish container acceptance.
+
+### Remaining acceptance tasks from the inventory
+
+- [ ] Verify shell embedding and capability failures against actual standalone
+  and container services, without intercepted responses.
+- [ ] Verify all auxiliary service menus, deployment progress, failures and
+  resume/restart behavior with real service processes.
+- [ ] Bring advanced KV acceptance into agreement with replacement pagination
+  and current scoped Actions; retain raw-byte identity and mutation coverage.
+- [ ] Cover large real Capacity windows and unavailable allocation/owner data,
+  including restoration after navigation and late responses.
+- [ ] Cover actual Chunk type/list pages, multi-Strip Mirror/EC and physical
+  placement return; independent windows must replace previous results.
+- [ ] Cover real Chunk-KV journal paging, transition/stale fences, empty catalog
+  and service outages while keeping the graph and selection accurate.
+- [ ] Cover actual Iceberg nested schemas, multiple snapshots/manifests, file
+  pagination and Parquet/Avro metadata inspection without payload scans.
+- [ ] Cover real bounded S3 bucket/object windows, continuation revisions and
+  unavailable locations; retain exact multipart interval and return assertions.
+- [ ] Verify the managed container cross-domain case against the current UI
+  contracts and actual placement; remove stale control/placement assumptions.
 
 ## Verification layers
 
@@ -397,3 +476,12 @@ unaccepted; this is not a full-suite result.
 - All 59 Chunk-KV Server tests pass; Tree FFI has 51 passing tests, including
   the two new split-hint cases. C++ Tree has 611 passing cases. Rust fmt and
   affected clippy gates pass. Native browser verification continues separately.
+- Graph follow-up: the remaining blank canvas retained its six graph nodes but
+  discarded their measured dimensions on controlled-node updates. Preserving
+  dimensions and accepting ReactFlow dimension changes restores visibility.
+  Three tab-return cycles, three refresh actions and resize pass in 2.9 seconds
+  on the normal three-node cluster; Zone bit verification passes in 0.872 s.
+- Final targeted native run: all three browser cases pass in 9.2 seconds:
+  Zone 0.927 s, graph 3.2 s and multipart/location 3.8 s. The owned one-Rack,
+  three-Node provisioning/data/browser/teardown chain takes 23.89 s. This is
+  targeted acceptance, not a passing full ordered browser suite.

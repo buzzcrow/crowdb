@@ -2,7 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use crowdb_chunk_kv_client::{
@@ -342,4 +344,80 @@ async fn topology_replan_resumes_strictly_after_last_emitted_key() {
         [b"a".as_slice(), b"b".as_slice(), b"m".as_slice(), b"z".as_slice()]
     );
     assert!(page.terminal_failure.is_none());
+}
+
+struct ActivatingTransport {
+    failures: u32,
+    calls: AtomicU32,
+    ordered: OrderedTransport,
+}
+
+#[async_trait]
+impl ChunkKvTransport for ActivatingTransport {
+    async fn point(&self, _endpoint: &str, _request: &PointRequest) -> Result<ChunkKvResponse> {
+        unreachable!("scan activation test")
+    }
+
+    async fn seek(&self, _endpoint: &str, _request: &SeekRequest) -> Result<ChunkKvResponse> {
+        unreachable!("scan activation test")
+    }
+
+    async fn scan(&self, endpoint: &str, request: &ScanRequest) -> Result<ChunkKvResponse> {
+        if self.calls.fetch_add(1, Ordering::Relaxed) < self.failures {
+            return Ok(ChunkKvResponse {
+                map_revision: request.routing.map_revision,
+                journal_position: None,
+                result: Err(RpcFailure {
+                    code: ChunkKvRpcErrorCode::NotMyRange,
+                    message: "catalog owner has not activated yet".into(),
+                    retry_after_ms: None,
+                    latest_map_revision: Some(request.routing.map_revision),
+                    owner_hint: None,
+                }),
+            });
+        }
+        self.ordered.scan(endpoint, request).await
+    }
+}
+
+async fn scan_during_activation(failures: u32) -> (crowdb_chunk_kv_client::MultiScanPage, u32) {
+    let transport = Arc::new(ActivatingTransport {
+        failures,
+        calls: AtomicU32::new(0),
+        ordered: OrderedTransport::stable(),
+    });
+    let client = ChunkKvClient::new(
+        ClientConfig {
+            max_route_refreshes: 1,
+            max_attempts: 4,
+            retry_backoff: Duration::from_millis(1),
+            ..ClientConfig::default()
+        },
+        Arc::new(ScriptedCatalog {
+            versions: Mutex::new(vec![catalog(1, &[(b"".as_slice(), None, 1)])]),
+        }),
+        transport.clone(),
+    )
+    .unwrap();
+    let page = client.scan(scan(ScanDirection::Forward, 10)).await.unwrap();
+    (page, transport.calls.load(Ordering::Relaxed))
+}
+
+#[tokio::test]
+async fn owner_activation_can_settle_after_catalog_refresh_budget_is_exhausted() {
+    let (page, calls) = scan_during_activation(3).await;
+    assert!(page.terminal_failure.is_none());
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(calls, 4);
+}
+
+#[tokio::test]
+async fn persistent_owner_rejection_still_exhausts_bounded_scan_attempts() {
+    let (page, calls) = scan_during_activation(u32::MAX).await;
+    assert_eq!(
+        page.terminal_failure.unwrap().code,
+        ChunkKvRpcErrorCode::NotMyRange
+    );
+    assert!(page.items.is_empty());
+    assert_eq!(calls, 5);
 }

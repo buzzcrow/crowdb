@@ -4,7 +4,7 @@ import { test, expect } from '../fixtures/realBackend';
 import { step } from '../fixtures/stepTimer';
 
 // Large transfer acceptance is separate from routine page behavior tests.
-// Baseline: 3.0s (2026-10-04); actual CROWDB multipart acceptance.
+// Baseline: 5.3s (2026-10-04); normal three-node fixture, actual multipart acceptance.
 test('S3 native multipart upload, HEAD, bounded preview and full round trip', async ({ page, request }) => {
   const bucket = `console-multipart-${process.pid}-${Date.now()}`;
   const key = 'multipart a/中文.txt';
@@ -16,6 +16,11 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
     expect(response.status(), await response.text()).toBe(200);
   });
   try {
+    await step('native post-create bucket discovery', async () => {
+      const response = await request.get('/api/access/s3/');
+      expect(response.status(), await response.text()).toBe(200);
+      expect(await response.text()).toContain(`<Name>${bucket}</Name>`);
+    });
     await step('native S3 DOM setup', async () => {
       await page.goto('/?domain=S3');
       await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
@@ -34,6 +39,37 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
       await page.getByText('Object actions', { exact: true }).click();
       await page.getByRole('button', { name: 'Preview first 4 KiB' }).click();
       await expect(page.getByLabel('Object preview', { exact: true })).toHaveText('x'.repeat(4096));
+    });
+    await step('native storage mapping and Chunk return', async () => {
+      const response = await request.get(`/api/access/s3-inspect/locations?bucket=${bucket}&key=${encodeURIComponent(key)}&limit=20`);
+      expect(response.status(), await response.text()).toBe(200);
+      const metadata = await response.json();
+      expect(metadata.logical_length).toBe(String(bytes.length));
+      expect(metadata.locations.length).toBeGreaterThan(1);
+      expect(metadata.next_cursor).toBeNull();
+      const locations = page.getByRole('region', { name: 'Storage locations', exact: true });
+      await expect(locations.getByRole('table').getByRole('row')).toHaveCount(metadata.locations.length + 1);
+      let logicalEnd = 0n;
+      for (const extent of metadata.locations) {
+        expect(BigInt(extent.logical_offset)).toBe(logicalEnd);
+        logicalEnd += BigInt(extent.logical_length);
+        await locations.getByRole('button', { name: `Select extent ${extent.index}`, exact: true }).click();
+        const properties = page.getByLabel('Storage extent properties');
+        for (const value of [extent.chunk_id, extent.logical_offset, extent.logical_length, extent.offset, extent.length, metadata.generation]) {
+          await expect(properties).toContainText(value);
+        }
+      }
+      expect(logicalEnd).toBe(BigInt(bytes.length));
+      const extent = metadata.locations[metadata.locations.length - 1];
+      const row = locations.getByRole('row').filter({ has: page.getByRole('button', { name: `Select extent ${extent.index}`, exact: true }) });
+      await row.getByRole('button', { name: `Open Chunk ${extent.chunk_id}`, exact: true }).click();
+      await expect(page.getByTestId('domain-chunk')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(extent.chunk_id);
+      await expect(page.getByRole('region', { name: 'Chunk layout', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText(key);
+      await expect(locations.getByRole('button', { name: `Select extent ${extent.index}`, exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByLabel('Storage extent properties')).toContainText(extent.chunk_id);
     });
     await step('native full object byte verification', async () => {
       const response = await request.get(objectPath);
