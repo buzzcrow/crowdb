@@ -100,7 +100,7 @@ impl EcStripWriter {
 
     /// Bytes this strip can still accept before it must be finalized.
     pub fn remaining_capacity(&self) -> u64 {
-        let capacity = self.unit_bytes().saturating_mul(self.ec_scheme.data_num as u64);
+        let capacity = self.shard_bytes().saturating_mul(self.ec_scheme.data_num as u64);
         capacity.saturating_sub(self.bytes_written)
     }
 
@@ -131,6 +131,11 @@ impl EcStripWriter {
     /// Unit size in bytes = unit_kb * 1024.
     fn unit_bytes(&self) -> u64 {
         u64::from(self.strip().map_or(0, |s| s.unit_kb)) * 1024
+    }
+
+    fn shard_bytes(&self) -> u64 {
+        self.unit_bytes()
+            .saturating_mul(u64::from(self.segment(0).map_or(0, |segment| segment.unit_count)))
     }
 
     /// Get segment `i` (bounds-checked) of the current strip.
@@ -175,12 +180,16 @@ impl EcStripWriter {
             ));
         }
 
+        let shard_bytes = usize::try_from(self.shard_bytes())
+            .map_err(|_| IoError::WriteFailed("EC shard capacity exceeds address space".into()))?;
+        if shard_bytes == 0 || buffer.len() as u64 > self.remaining_capacity() {
+            return Err(IoError::WriteFailed("EC strip capacity exceeded".into()));
+        }
         self.bytes_written = self.bytes_written.saturating_add(buffer.len() as u64);
         self.pending_bytes = self.pending_bytes.saturating_add(buffer.len());
         self.pending.push_back(buffer);
-        let unit_bytes = usize::try_from(self.unit_bytes()).unwrap_or(usize::MAX);
-        while self.pending_bytes >= unit_bytes && !self.is_full() {
-            let block = self.take_pending(unit_bytes)?;
+        while self.pending_bytes >= shard_bytes && !self.is_full() {
+            let block = self.take_pending(shard_bytes)?;
             self.flush_block(block)?;
         }
 

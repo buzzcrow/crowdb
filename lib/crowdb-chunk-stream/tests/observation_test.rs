@@ -14,6 +14,7 @@ async fn published_extent_index_is_bounded_fenced_and_reads_no_data() {
     let stream = ChunkStream::create(
         StreamBinding {
             stream_name: StreamName { high: 1, low: 2 },
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
             metadata_group_id: 7,
             binding_generation: 1,
             state: StreamBindingState::Active,

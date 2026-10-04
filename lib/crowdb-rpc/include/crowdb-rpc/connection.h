@@ -119,6 +119,12 @@ class Connection
         on_close_callback_ = std::move(cb);
     }
 
+    // RPC completion is separate from the transport's connection cleanup.
+    void set_on_rpc_close(OnCloseCallback cb)
+    {
+        on_rpc_close_callback_ = std::move(cb);
+    }
+
     // Send queue capacity (backpressure bound, fixed at construction).
     [[nodiscard]] uint32_t send_queue_capacity() const
     {
@@ -199,6 +205,7 @@ class Connection
 
     OnFrameCallback on_frame_callback_;
     OnCloseCallback on_close_callback_;
+    OnCloseCallback on_rpc_close_callback_;
 };
 
 } // namespace crowdb::rpc

@@ -408,6 +408,7 @@ impl MirrorChunkWriter {
             .seal_chunk(SealChunkRequest {
                 chunk_id: Some(self.chunk_id),
                 seal_length,
+                seal_bytes: self.cursor(),
             })
             .await?;
         let sealed = response

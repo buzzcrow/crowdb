@@ -218,6 +218,7 @@ bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t reque
 
 void RpcClient::attach(Connection *conn)
 {
+    conn->set_on_rpc_close([this](Connection *closed) { fail_all(closed, RpcError::ConnectionClosed); });
     // Set the on_frame callback to combined routing: try response
     // routing first (on_response); if the request_id is not in the
     // pending map, dispatch as a request via dispatch_request.

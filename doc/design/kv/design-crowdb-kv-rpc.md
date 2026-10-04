@@ -126,6 +126,12 @@ port with a dedicated schema. The client library
 `NotLeaderHint` handling. The crowdb-rpc server also serves
 bounded snapshot-session handlers for unpublished new-member install.
 
+Follower-forwarded Get, Scan and JournalScan responses restore the caller's
+control-table RPC `id` before returning across the original connection.
+The forwarding connection uses its own counter; the business `request_id`
+remains unchanged. Error responses with a leader hint preserve this same
+distinction, including when the business ID is zero.
+
 **Connection model:** Each `PxKvStore` runs one `RpcServer` on the
 crowdb-rpc port (derived from the base port via a fixed offset, see
 §12). The shared `PxRpcTransport` holds one `RpcClient` and a lock-free RCU

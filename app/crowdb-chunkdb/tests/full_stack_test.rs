@@ -1699,11 +1699,12 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
     // 7. Seal the chunk.
     let sealed = harness
         .handler
-        .seal_chunk(chunk_id, 100)
+        .seal_chunk_bytes(chunk_id, 100 * 1024 - 17)
         .await
         .expect("seal_chunk");
     assert_eq!(sealed.state, ChunkState::Sealed as i32);
     assert_eq!(sealed.sealed_length, 100);
+    assert_eq!(sealed.acknowledged_cursor, 100 * 1024 - 17);
     assert_eq!(sealed.strips.len(), 1);
     assert_eq!(sealed.capacity, 1024);
     assert!(sealed.cleanup_intents.is_empty());

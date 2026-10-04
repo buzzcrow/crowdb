@@ -27,6 +27,14 @@ writer derives its shard scheme from that strip's metadata and retains its
 separate parity and repair flow. `ChunkReader` likewise dispatches each strip
 to mirror or EC recovery based on stored geometry.
 
+EC shard capacity is the persisted segment's `unit_count × unit_kb × 1024`,
+independent of the allocation-unit size. ISA-L consumes only each data shard's
+actual byte prefix. A partial first shard produces equally short code shards;
+once a full data shard exists, each code shard spans the full shard width.
+No logical padding is written. Device alignment belongs to DiskIO.
+Writers seal with an exact byte cursor; KiB length fields remain coarse
+compatibility fields and must not define the valid data boundary.
+
 ## Table of Contents
 
 - [1. Non-Goals](#1-non-goals)

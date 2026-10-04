@@ -263,7 +263,17 @@ impl RepairStripTaskHandler {
 
         let recovered = match strip.strip.as_ref() {
             Some(Strip::MirrorStrip(_)) => self.recover_mirror(strip, &segments).await?,
-            Some(Strip::EcStrip(ec)) => self.recover_ec(strip, ec, &segments).await?,
+            Some(Strip::EcStrip(ec)) => {
+                let sealed_bytes = if chunk.acknowledged_cursor == 0 {
+                    u64::from(strip.sealed_length) * 1024
+                } else {
+                    chunk
+                        .acknowledged_cursor
+                        .saturating_sub(u64::from(strip.chunk_offset) * 1024)
+                        .min(u64::from(strip.capacity) * 1024)
+                };
+                self.recover_ec(strip, ec, &segments, sealed_bytes).await?
+            }
             None => return Err(RepairRunError::Permanent("strip has no body".into())),
         };
         if !recovered.new_failures.is_empty() {
@@ -316,10 +326,29 @@ impl RepairStripTaskHandler {
             };
             let destination = payload.targets[target_index].destination;
             if payload.targets[target_index].phase == RepairTargetPhase::Allocated {
-                self.io
-                    .write_segment(&destination, unit_bytes, recovered.shards[index].clone())
-                    .await
-                    .map_err(|error| RepairRunError::Retry(error.to_string()))?;
+                let mut data = recovered.shards[index].clone();
+                if let Some(Strip::EcStrip(ec)) = &strip.strip {
+                    let sealed = if chunk.acknowledged_cursor == 0 {
+                        u64::from(strip.sealed_length) * 1024
+                    } else {
+                        chunk
+                            .acknowledged_cursor
+                            .saturating_sub(u64::from(strip.chunk_offset) * 1024)
+                            .min(u64::from(strip.capacity) * 1024)
+                    };
+                    let valid = if index < ec.data_num as usize {
+                        sealed.saturating_sub(index as u64 * shard_bytes).min(shard_bytes)
+                    } else {
+                        sealed.min(shard_bytes)
+                    };
+                    data = data.slice(..usize::try_from(valid).unwrap_or(data.len()));
+                }
+                if !data.is_empty() {
+                    self.io
+                        .write_segment(&destination, unit_bytes, data)
+                        .await
+                        .map_err(|error| RepairRunError::Retry(error.to_string()))?;
+                }
                 self.io
                     .fsync_segment(&destination)
                     .await
@@ -468,6 +497,7 @@ impl RepairStripTaskHandler {
         strip: &ChunkStrip,
         ec: &crowdb_protocol::chunkdb::rpc::EcStrip,
         segments: &[Segment],
+        sealed_bytes: u64,
     ) -> Result<RecoveredShards, RepairRunError> {
         if ec.ec_state != EcState::Parity as i32 {
             return Err(RepairRunError::Retry("EC parity is incomplete".into()));
@@ -480,14 +510,32 @@ impl RepairStripTaskHandler {
             return Err(RepairRunError::Permanent("invalid EC geometry".into()));
         }
         let unit_bytes = u64::from(strip.unit_kb) * 1024;
+        let shard_bytes = segment_size(&segments[0], unit_bytes)?;
         let mut shards = vec![None; segments.len()];
         let mut new_failures = Vec::new();
         for (index, segment) in segments.iter().enumerate() {
+            let valid = if index < scheme.data_num {
+                sealed_bytes
+                    .saturating_sub(index as u64 * shard_bytes)
+                    .min(shard_bytes)
+            } else {
+                sealed_bytes.min(shard_bytes)
+            };
+            if valid == 0 {
+                shards[index] = Some(vec![0; usize::try_from(shard_bytes).unwrap_or(0)]);
+                continue;
+            }
             if strip.unavailable_segments.contains(segment) {
                 continue;
             }
-            match self.io.read_segment(segment, unit_bytes).await {
-                Ok(data) => shards[index] = Some(data.to_vec()),
+            let length = u32::try_from(valid)
+                .map_err(|_| RepairRunError::Permanent("EC read exceeds RPC length".into()))?;
+            match self.io.read_segment_range(segment, unit_bytes, 0, length).await {
+                Ok(data) => {
+                    let mut data = data.to_vec();
+                    data.resize(usize::try_from(shard_bytes).unwrap_or(data.len()), 0);
+                    shards[index] = Some(data);
+                }
                 Err(_) => push_unique(&mut new_failures, *segment),
             }
         }

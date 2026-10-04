@@ -319,7 +319,7 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
   const zone = usage.disk_groups[0].disks[0].zone_usages[0];
   const total = zone.busy_block_count + zone.free_block_count;
   const bytes = Buffer.from(zone.usage_bitmap, 'hex');
-  const states = Array.from({ length: total }, (_, index) => (bytes[index >> 3] >> (index % 8)) & 1);
+  let states = Array.from({ length: total }, (_, index) => (bytes[index >> 3] >> (index % 8)) & 1);
   expect(states.reduce((sum, bit) => sum + bit, 0)).toBe(zone.busy_block_count);
   expect(zone.busy_block_count).toBeGreaterThan(0);
   expect(zone.free_block_count).toBeGreaterThan(0);
@@ -337,7 +337,23 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
     if (await expand.count()) await expand.click();
   }
   await disk.click();
+  // Compare pixels with the actual response consumed by the UI. Background
+  // allocation can legitimately change the bitmap after the initial probe.
+  const bitmapResponse = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/diskdb/usage' && url.searchParams.get('dg') === '1'
+      && url.searchParams.get('disk')?.replaceAll('-', '') === '00000000000000000000000000000001'
+      && url.searchParams.get('zone') === '0';
+  });
   await page.getByRole('button', { name: 'Zone 0', exact: true }).click();
+  const displayedResponse = await bitmapResponse;
+  expect(displayedResponse.status()).toBe(200);
+  const displayedUsage = await displayedResponse.json();
+  const displayedZone = displayedUsage.disk_groups[0].disks[0].zone_usages[0];
+  expect(displayedZone.busy_block_count + displayedZone.free_block_count).toBe(total);
+  const displayedBytes = Buffer.from(displayedZone.usage_bitmap, 'hex');
+  states = Array.from({ length: total }, (_, index) => (displayedBytes[index >> 3] >> (index % 8)) & 1);
+  expect(states.reduce((sum, bit) => sum + bit, 0)).toBe(displayedZone.busy_block_count);
   await step('native zone bitmap DOM and pixels', async () => {
     const bitmap = page.getByTestId('zone-bitmap');
     await expect(bitmap).toBeVisible();

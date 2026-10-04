@@ -175,16 +175,14 @@ unaccepted; this is not a full-suite result.
   geometry contract and either make allocation byte-correct across different
   units or reject incompatible topology before service bootstrap. Do not
   present this as an unexplained generic internal error.
-- [ ] **Post-restart inspection latency**: one native browser run after the
-  same six restarts timed out at 3 seconds on DG 1 Zone usage and Chunk-KV
-  catalog; DDB restart took 6.532 seconds and teardown took 18.198 seconds.
-  Subsequent same-boundary diagnostics pass, so this is still unresolved.
-  Preserve failure logs and client route counters, identify the first slow
-  boundary, and keep existing browser deadlines; no warming requests or
-  mutation retries may hide the failure.
 - [ ] **Create defaults acceptance**: conflict-free defaults are implemented;
   complete repeated-create and reopen acceptance across IDs, host listener
   ports, DiskDB port ranges and dependency references.
+- [ ] **Group 0 convergence retry volume**: one successful native initialization
+  recorded 4,878 leader hints and seven unknown-leader waits in 3.75 seconds.
+  Review repeated redirects during election and bound their request rate;
+  keep the ordinary cold-start path and existing deadlines. Successful
+  browser acceptance does not establish an acceptable background work budget.
 ## Capacity and shared behavior
 
 - [ ] **Navigation return history across all views**: every button/link that
@@ -250,11 +248,12 @@ unaccepted; this is not a full-suite result.
   verify convergence and persistent-rejection bounds. Native discovery and
   multipart browser acceptance pass without browser retries.
 
-- [ ] **S3 native full-read latency**: the real multipart browser flow once
-  exceeded its existing 3-second request deadline reading a 9-MiB object after
-  Chunk navigation and return. Other executions completed the same read. Locate
-  the first slow backend boundary and retain phase timings; do not increase
-  the browser timeout or conceal the failure with retries.
+Allocation and payload validity are distinct: a confirmed allocated DiskDB
+block is used even before payload writes. EC validity uses exact seal bytes;
+unused data/code tails can contain old bytes. SSD O_DIRECT alignment must not
+pad logical data or increase the actual seal boundary. The 8+4 EC UT matrix
+covers 24 size/unit combinations, stale tails, one to four missing shards and
+loss beyond recovery capacity.
 
 - [x] **Iceberg native metadata latency**: deleting tables in an owned
   eight-table namespace twice exceeded the unchanged 3-second API deadline.

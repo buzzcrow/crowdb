@@ -94,8 +94,7 @@ impl TaskHandler for FinalizeChunkTaskHandler {
                     },
                 };
             }
-            let seal_length = u32::try_from(boundary.div_ceil(1024)).unwrap_or(u32::MAX);
-            match self.lifecycle.seal_chunk(&chunk_id, seal_length).await {
+            match self.lifecycle.seal_chunk_bytes(&chunk_id, boundary).await {
                 Ok(_) => TaskOutcome::Complete,
                 Err(error) => TaskOutcome::Retry {
                     delay_ms: 1_000,

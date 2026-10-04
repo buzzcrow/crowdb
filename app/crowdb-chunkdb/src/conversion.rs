@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
-use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
+use crowdb_common::ec::{EcScheme, IncrementalParity};
 use crowdb_protocol::chunk_task::{
     ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC,
 };
@@ -203,7 +203,7 @@ impl MirrorToEcTaskHandler {
             current = self.checkpoint(&current, &payload).await?;
         }
 
-        let replacement = match self.encode_and_write(&payload).await {
+        let replacement = match self.encode_and_write(&payload, &chunk).await {
             Ok(replacement) => replacement,
             Err(error) => {
                 self.abandon_replacement(&current, &mut payload).await?;
@@ -226,24 +226,40 @@ impl MirrorToEcTaskHandler {
         Ok(())
     }
 
-    async fn encode_and_write(&self, payload: &MirrorToEcTaskV1) -> Result<ChunkStrip, ConversionRunError> {
+    async fn encode_and_write(
+        &self,
+        payload: &MirrorToEcTaskV1,
+        chunk: &Chunk,
+    ) -> Result<ChunkStrip, ConversionRunError> {
         let (planned_read_bytes, planned_write_bytes, _) = io_accounting(payload);
         self.bandwidth
             .acquire(planned_read_bytes.saturating_add(planned_write_bytes))
             .await;
         let mut data = Vec::with_capacity(payload.old_strips.len());
         for strip in &payload.old_strips {
-            data.push(self.read_mirror(strip).await?);
+            let length = if chunk.acknowledged_cursor == 0 {
+                u64::from(strip.sealed_length) * 1024
+            } else {
+                chunk
+                    .acknowledged_cursor
+                    .saturating_sub(u64::from(strip.chunk_offset) * 1024)
+                    .min(u64::from(strip.capacity) * 1024)
+            };
+            data.push(self.read_mirror(strip, length).await?);
         }
-        let refs: Vec<&[u8]> = data.iter().map(Bytes::as_ref).collect();
-        let parity = encode_parity_from_shards(
-            EcScheme::new(
-                usize::try_from(payload.data_num).unwrap_or(usize::MAX),
-                usize::try_from(payload.code_num).unwrap_or(usize::MAX),
-            ),
-            &refs,
-        )
+        let mut encoder = IncrementalParity::new(EcScheme::new(
+            usize::try_from(payload.data_num).unwrap_or(usize::MAX),
+            usize::try_from(payload.code_num).unwrap_or(usize::MAX),
+        ))
         .map_err(|error| ConversionRunError::Retry(error.to_string()))?;
+        for shard in &data {
+            encoder
+                .push_partial(shard)
+                .map_err(|error| ConversionRunError::Retry(error.to_string()))?;
+        }
+        let parity = encoder
+            .finish_partial()
+            .map_err(|error| ConversionRunError::Retry(error.to_string()))?;
         let mut replacement = payload
             .replacement_strip
             .clone()
@@ -326,17 +342,18 @@ impl MirrorToEcTaskHandler {
         Ok(next)
     }
 
-    async fn read_mirror(&self, strip: &ChunkStrip) -> Result<Bytes, ConversionRunError> {
+    async fn read_mirror(&self, strip: &ChunkStrip, length: u64) -> Result<Bytes, ConversionRunError> {
         let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
             return Err(ConversionRunError::Conflict);
         };
         let unit_bytes = u64::from(strip.unit_kb) * 1024;
+        let length = u32::try_from(length).map_err(|_| ConversionRunError::Conflict)?;
         let mut last_error = "mirror has no readable replica".to_string();
         for segment in &mirror.segments {
             if strip.unavailable_segments.contains(segment) {
                 continue;
             }
-            match self.io.read_segment(segment, unit_bytes).await {
+            match self.io.read_segment_range(segment, unit_bytes, 0, length).await {
                 Ok(data) => return Ok(data),
                 Err(error) => last_error = error.to_string(),
             }

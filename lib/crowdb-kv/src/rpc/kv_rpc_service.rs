@@ -31,6 +31,8 @@
 //! (`KvClientRpcForwarder`) lives in `crowdb-kv` itself (not
 //! `crowdb-kv-client`) to avoid a crate cycle.
 
+mod response_correlation;
+
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -173,7 +175,7 @@ impl KvClientRpcForwarder {
         let msg_type = FBMsgType::EKvGetRequest.0 as u16;
         let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
-        Ok(ctrl.bytes().to_vec())
+        response_correlation::forwarded_control(ctrl.bytes(), req.id())
     }
 
     /// Forward a `Scan` request to the leader.
@@ -215,7 +217,7 @@ impl KvClientRpcForwarder {
         let msg_type = FBMsgType::EKvScanRequest.0 as u16;
         let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
-        Ok(ctrl.bytes().to_vec())
+        response_correlation::forwarded_control(ctrl.bytes(), req.id())
     }
 
     /// Forward a `JournalScan` request to the leader.
@@ -248,7 +250,7 @@ impl KvClientRpcForwarder {
         let msg_type = FBMsgType::EKvJournalScanRequest.0 as u16;
         let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
-        Ok(ctrl.bytes().to_vec())
+        response_correlation::forwarded_control(ctrl.bytes(), req.id())
     }
 
     /// Send a fire-and-forget `WatchNotifyError` push frame on the
@@ -602,7 +604,7 @@ impl KvRpcService {
                     )
                     .await;
                 let mut ctrl = build_kv_response(req_id, create_nano, &resp);
-                patch_not_leader_hint(&mut ctrl, &endpoint);
+                patch_not_leader_hint(&mut ctrl, &endpoint, req_id, create_nano);
                 submit_fb_response(
                     &server_clone,
                     conn_handle_usize as *mut std::ffi::c_void,
@@ -922,7 +924,7 @@ impl KvRpcService {
                     )
                     .await;
                 let mut ctrl = build_scan_response(req_id, create_nano, &resp);
-                patch_scan_not_leader_hint(&mut ctrl, &endpoint);
+                patch_scan_not_leader_hint(&mut ctrl, &endpoint, req_id, create_nano);
                 submit_fb_response(
                     &server_clone,
                     conn_handle_usize as *mut std::ffi::c_void,
@@ -1072,7 +1074,7 @@ impl KvRpcService {
                     )
                     .await;
                 let mut ctrl = build_journal_scan_response(req_id, create_nano, &resp);
-                patch_journal_scan_not_leader_hint(&mut ctrl, &endpoint);
+                patch_journal_scan_not_leader_hint(&mut ctrl, &endpoint, req_id, create_nano);
                 submit_fb_response(
                     &server_clone,
                     conn_handle_usize as *mut std::ffi::c_void,
@@ -1681,7 +1683,7 @@ fn build_release_snapshot_response(
 /// Rebuild a `FBKvResponse` with `not_leader_hint` set to `endpoint`.
 /// Used when a leader-forward fails and the handler serves a stale
 /// local read with the known leader endpoint as the hint.
-fn patch_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str) {
+fn patch_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str, req_id: u64, create_nano: u64) {
     let view = FBKvResponseRef::new(&ctrl.0[ctrl.1..]);
     if !view.valid() {
         return;
@@ -1694,8 +1696,8 @@ fn patch_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str) {
     let hint = builder.create_string(endpoint);
     let value = view.value().map(|v| builder.create_vector(v));
     let args = FBKvResponseArgs {
-        id: view.request_id().unwrap_or(0),
-        rpc_create_nano: 0,
+        id: req_id,
+        rpc_create_nano: create_nano,
         ret_code: view.ret_code(),
         error_msg,
         version: 1,
@@ -1717,7 +1719,7 @@ fn patch_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str) {
     }
 }
 
-fn patch_scan_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str) {
+fn patch_scan_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str, req_id: u64, create_nano: u64) {
     let view = FBKvScanResponseRef::new(&ctrl.0[ctrl.1..]);
     if !view.valid() {
         return;
@@ -1760,8 +1762,8 @@ fn patch_scan_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str) {
         Some(builder.create_vector(&items_vec))
     };
     let args = FBKvScanResponseArgs {
-        id: view.request_id().unwrap_or(0),
-        rpc_create_nano: 0,
+        id: req_id,
+        rpc_create_nano: create_nano,
         ret_code: view.ret_code(),
         error_msg,
         version: 1,
@@ -1784,7 +1786,12 @@ fn patch_scan_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str) {
     }
 }
 
-fn patch_journal_scan_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &str) {
+fn patch_journal_scan_not_leader_hint(
+    ctrl: &mut (Vec<u8>, usize),
+    endpoint: &str,
+    req_id: u64,
+    create_nano: u64,
+) {
     let view = FBKvJournalScanResponseRef::new(&ctrl.0[ctrl.1..]);
     if !view.valid() {
         return;
@@ -1826,8 +1833,8 @@ fn patch_journal_scan_not_leader_hint(ctrl: &mut (Vec<u8>, usize), endpoint: &st
         Some(builder.create_vector(&ops_vec))
     };
     let args = FBKvJournalScanResponseArgs {
-        id: view.request_id().unwrap_or(0),
-        rpc_create_nano: 0,
+        id: req_id,
+        rpc_create_nano: create_nano,
         ret_code: view.ret_code(),
         error_msg,
         version: 1,

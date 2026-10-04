@@ -1014,8 +1014,10 @@ UI todo acceptance items.
   persistent rejection remains bounded, then rerun the three native diagnostics.
   All 18 client tests and affected clippy pass; native diagnostics all pass
   (Zone 0.927 s, graph 3.2 s, multipart/location 3.8 s; 23.89 s owned fixture).
-- [ ] **S3 native full-read latency**: one 9-MiB GET exceeded the unchanged
-  3-second browser deadline. Retain this failure and investigate its slow phase.
+- [x] **S3 native full-read latency**: the 9-MiB failure exposed incorrect EC
+  shard geometry and rounded logical seals. Exact geometry/seals, physical
+  partition scan bounds and forwarded RPC correlation are corrected below;
+  full real browser acceptance passes with the unchanged 3-second deadlines.
 - [x] **Advanced KV real acceptance**: run existing spec 31 before changes
   (0.847/4.9/2.8 s). Keep its mutation/demo coverage and assert first-page keys
   000–019, replacement keys 020–039, exclusion of previous keys and Previous
@@ -1078,3 +1080,58 @@ UI todo acceptance items.
   The same run fails the already-open S3 full-read deadline: a 9-MiB GET returns
   200 headers, but response-body completion exceeds 3 seconds. Keep that failure;
   do not claim the entire native selection passed.
+
+- [x] **EC geometry and exact seal diagnosis**: the 8-MiB multipart part used EC, exposing a writer that treated one allocation unit as a full shard while the reader used all allocated units. Correct the writer geometry and propagate exact byte seal boundaries through writers, ChunkDB, readers, repair and conversion. O_DIRECT alignment remains a DiskIO concern; logical data and seal sizes are never padded. Remove temporary request timing instrumentation.
+  EC writer/reader tests cover 24 size/unit combinations, nonzero stale tails,
+  one through four missing shards and excessive-loss failure. The 31 focused
+  ChunkClient tests, 24 lifecycle tests, four conversion policy tests and nine
+  production stream tests pass. Exact non-KiB seal allocation/deletion passes
+  against actual KV/DDB. The three-node API fixture passes in 18.21 seconds,
+  including exact seal inspection, 9-MiB full reads and six service restarts.
+  Affected Rust fmt/clippy pass. This is API acceptance, not a passing complete
+  browser selection. Existing browser deadlines remain unchanged.
+- [x] **Partition scan bounds**: the retained parent dispatcher can still serve
+  both children during a split. Clip each physical request to its catalog
+  partition's intersection with the caller range. Forward/reverse regressions
+  pass (seven ordered-client tests); actual native S3 bucket listing passes.
+- [x] **Exact backend conversion and repair acceptance**: six actual DiskIO
+  processes and real KV/DDB exercise mirror-to-EC conversion of 7 MiB + 17
+  bytes, followed by four missing data/parity shard repairs. Source and target
+  storage starts with nonzero stale bytes; valid prefixes match, tails remain
+  unwritten, and the exact seal survives. Latest case: 2.92 seconds.
+- [x] **Stream observation fixture**: supply its required Stream purpose.
+  Observation acceptance and all-target affected Rust clippy now pass.
+- [x] **RPC disconnect completion and lifetime**: fail both slab/map requests
+  immediately when their outbound connection closes, preserving unrelated
+  requests and transport cleanup. FFI connections retain callback ownership
+  after the client handle is dropped. Actual peer-close and handle-drop
+  regressions pass; full C++/FFI gate passes.
+- [x] **Forwarded KV response correlation**: Scan RPCs to the restarted former
+  leader timed out after 5.4 seconds even though the service responded. Get,
+  Scan and JournalScan now restore the original control-table RPC ID; failed
+  forwarding keeps the RPC ID distinct from the business request ID when
+  adding leader hints. Direct real follower requests cover successful and
+  failed forwarding without client retries or the timeout reaper.
+- [x] **Capacity observation snapshot**: compare rendered bitmap pixels with
+  the actual response consumed by the UI. Concurrent background allocation
+  can change bits between an earlier API probe and the selected Zone request.
+  No display behavior or allocation-bit semantics changed.
+- [x] **Complete post-restart native browser acceptance**: all four cases pass
+  against the ordinary three-node, eighteen-service fixture: Capacity 1.3 s,
+  Chunk-KV 1.9 s, Iceberg 7.1 s and S3 4.9 s. Individual existing 3-second
+  deadlines remain unchanged. Owned fixture: 33.37 s; DDB restart 0.923 s,
+  post-restart Chunk queries 7–9 ms and full 9-MiB reads 33–34 ms. Keep phase
+  timing instrumentation and preserve earlier failure artifacts.
+
+- Final gates: affected Rust fmt and all-target clippy pass; focused forwarded
+  reads pass in 0.18 s, existing forwarding tests 3/3 in 0.57 s, and complete
+  C++/FFI tests pass. Changed C++ tree-lint exits zero; existing empty-catch,
+  enum and sign-comparison warnings remain outside the changed behavior.
+- Record a separate cold Group 0 convergence work-budget issue: one successful
+  initialization followed 4,878 leader hints in 3.75 s. This is not a renewed
+  transport timeout or a failure of EC validity; do not infer its efficiency
+  from the successful browser selection.
+
+Stop at this completed EC/alignment and discovered API regression boundary for
+account handoff. UI design changes remain outside this task. Other deferred
+requirements remain in ui-todo.md; no requirement-wide completion is claimed.

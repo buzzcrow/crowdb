@@ -229,8 +229,15 @@ impl ChunkKvClient {
                             min_journal_position: None,
                             deadline_ms: Some(deadline_ms),
                         },
-                        start: request.start.clone(),
-                        end: request.end.clone(),
+                        start: Some(request.start.as_ref().map_or_else(
+                            || entry.range.start.clone(),
+                            |start| start.max(&entry.range.start).clone(),
+                        )),
+                        end: match (request.end.as_ref(), entry.range.end.as_ref()) {
+                            (Some(end), Some(partition_end)) => Some(end.min(partition_end).clone()),
+                            (Some(end), None) => Some(end.clone()),
+                            (None, end) => end.cloned(),
+                        },
                         direction: request.direction,
                         limit: u32::try_from(remaining_items).unwrap_or(u32::MAX),
                         continuation: partition_token.clone(),
@@ -438,9 +445,10 @@ fn validate_scan_page(
             && items.last().is_some_and(|item| item.key == token.last_key)
     });
     if !ordered || !after_last || !in_bounds || !valid_continuation {
-        return Err(ClientError::InvalidRequest(
-            "partition scan response violates order, bounds, or continuation".into(),
-        ));
+        return Err(ClientError::InvalidRequest(format!(
+            "partition scan response violates order, bounds, or continuation: ordered={ordered} after_last={after_last} in_bounds={in_bounds} continuation={valid_continuation} partition={:?} epoch={} revision={}",
+            request.routing.partition_id, request.routing.owner_epoch, request.routing.map_revision
+        )));
     }
     Ok(())
 }

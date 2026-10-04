@@ -23,7 +23,7 @@ struct crowdb_rpc_conn_s
 
 struct crowdb_rpc_client_s
 {
-    crowdb::rpc::RpcClient *client;
+    std::shared_ptr<crowdb::rpc::RpcClient> client;
     // Aggregated stats from crowdb_rpc_co_spawn (coroutine client).
     crowdb_rpc_co_stats_t co_stats{};
 };

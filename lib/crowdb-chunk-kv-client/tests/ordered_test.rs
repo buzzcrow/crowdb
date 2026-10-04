@@ -222,6 +222,50 @@ fn scan(direction: ScanDirection, max_items: usize) -> MultiScanRequest {
 }
 
 #[tokio::test]
+async fn scan_clips_split_lineage_to_each_catalog_partition() {
+    // A retained parent can still dispatch into both local split writers.
+    // The physical request must constrain that dispatcher to its catalog range.
+    let keys = vec![b"a".to_vec(), b"b".to_vec(), b"m".to_vec(), b"z".to_vec()];
+    let transport = OrderedTransport {
+        keys: HashMap::from([("owner-1".into(), keys.clone()), ("owner-2".into(), keys)]),
+        fail_owner_two_once: Mutex::new(false),
+        seeks: Mutex::new(Vec::new()),
+    };
+    let client = ChunkKvClient::new(
+        ClientConfig::default(),
+        Arc::new(ScriptedCatalog {
+            versions: Mutex::new(vec![catalog(
+                1,
+                &[
+                    (b"".as_slice(), Some(b"m".as_slice()), 1),
+                    (b"m".as_slice(), None, 2),
+                ],
+            )]),
+        }),
+        Arc::new(transport),
+    )
+    .unwrap();
+    for direction in [ScanDirection::Forward, ScanDirection::Reverse] {
+        let mut request = scan(direction, 2);
+        request.start = Some(b"b".to_vec());
+        request.end = Some(b"z".to_vec());
+        let page = client.scan(request).await.unwrap();
+        let expected = match direction {
+            ScanDirection::Forward => vec![b"b".as_slice(), b"m".as_slice()],
+            ScanDirection::Reverse => vec![b"m".as_slice(), b"b".as_slice()],
+        };
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|item| item.key.as_slice())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(page.terminal_failure.is_none());
+    }
+}
+
+#[tokio::test]
 async fn seek_routes_directly_and_preserves_typed_fields() {
     let transport = Arc::new(OrderedTransport::stable());
     let client = ChunkKvClient::new(

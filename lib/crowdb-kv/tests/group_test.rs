@@ -125,3 +125,6 @@ mod coalesce;
 
 #[path = "group_test/r65_replication_test.rs"]
 mod r65_replication;
+
+#[path = "group_test/forward_correlation_test.rs"]
+mod forward_correlation_test;

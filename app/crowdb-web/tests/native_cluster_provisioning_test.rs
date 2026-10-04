@@ -13,7 +13,7 @@ struct TestServices(AppState);
 impl Drop for TestServices {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            preserve_failure_logs(&self.0.runtime_root);
+            preserve_failure_logs(&self.0);
         }
         let pids: Vec<_> = self
             .0
@@ -167,7 +167,7 @@ async fn upload_native_multipart(app: &axum::Router, object: &str) -> Vec<u8> {
         .split_once("</UploadId>")
         .unwrap()
         .0;
-    let mut payload = vec![0x51; 5 * 1024 * 1024];
+    let mut payload = vec![0x51; 8 * 1024 * 1024];
     let tail = vec![0xa3; 1024 * 1024];
     s3_request(
         app,
@@ -204,7 +204,7 @@ async fn upload_native_multipart(app: &axum::Router, object: &str) -> Vec<u8> {
     payload
 }
 
-async fn assert_native_locations(app: &axum::Router) {
+async fn assert_native_locations(app: &axum::Router, state: &AppState) {
     let bucket = "/api/access/s3/native-locations";
     s3_request(app, "PUT", bucket, vec![]).await;
     let object = format!("{bucket}/multipart.bin");
@@ -217,7 +217,7 @@ async fn assert_native_locations(app: &axum::Router) {
     assert_eq!(first["locations"][0]["logical_offset"], "0");
     assert_eq!(
         first["locations"][0]["logical_length"],
-        (5 * 1024 * 1024).to_string()
+        (8 * 1024 * 1024).to_string()
     );
     let cursor = first["next_cursor"]
         .as_str()
@@ -230,40 +230,46 @@ async fn assert_native_locations(app: &axum::Router) {
     assert!(second["next_cursor"].is_null());
     assert_eq!(
         second["locations"][0]["logical_offset"],
-        (5 * 1024 * 1024).to_string()
+        (8 * 1024 * 1024).to_string()
     );
     assert_eq!(
         second["locations"][0]["logical_length"],
         (1024 * 1024).to_string()
     );
-    assert_eq!(
+    assert_ne!(
         first["locations"][0]["chunk_id"],
         second["locations"][0]["chunk_id"]
     );
-    let end = first["locations"][0]["offset"]
-        .as_str()
-        .unwrap()
-        .parse::<u64>()
-        .unwrap()
-        + first["locations"][0]["length"]
-            .as_str()
-            .unwrap()
-            .parse::<u64>()
-            .unwrap();
-    assert!(
-        second["locations"][0]["offset"]
-            .as_str()
-            .unwrap()
-            .parse::<u64>()
-            .unwrap()
-            >= end
-    );
+    assert_eq!(first["locations"][0]["offset"], "0");
     for page in [&first, &second] {
         let id = page["locations"][0]["chunk_id"].as_str().unwrap();
         let detail = call(app, "GET", &format!("/api/chunks/{id}"), Value::Null).await;
         assert_eq!(detail["chunk"]["id_hex"], id);
         assert!(!detail["chunk"]["strips"].as_array().unwrap().is_empty());
     }
+    let id = first["locations"][0]["chunk_id"].as_str().unwrap();
+    let chunkdb = crowdb_chunkdb_client::ChunkdbClient::new(
+        crowdb_kv_client::ServiceRegistryClient::from_shared(state.kv_client().await),
+        std::sync::Arc::new(crowdb_chunkdb_client::ChunkdbRpcTransport::new()),
+    );
+    let chunk = chunkdb
+        .query_chunk(crowdb_protocol::chunkdb::rpc::QueryChunkRequest {
+            chunk_id: Some(crowdb_protocol::common::ChunkId {
+                high: u64::from_str_radix(&id[..16], 16).unwrap(),
+                low: u64::from_str_radix(&id[16..], 16).unwrap(),
+            }),
+        })
+        .await
+        .unwrap()
+        .chunk
+        .unwrap();
+    let physical = first["locations"][0]["length"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert_ne!(physical % 1024, 0);
+    assert_eq!(chunk.acknowledged_cursor, physical);
     s3_request(app, "PUT", &object, b"replacement".to_vec()).await;
     let response = app
         .clone()
@@ -278,14 +284,27 @@ async fn assert_native_browser_diagnostics(app: axum::Router) {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
-    let status = tokio::process::Command::new("pixi")
-        .args([
+    let mut command = tokio::process::Command::new("pixi");
+    if let Ok(grep) = std::env::var("CROWDB_NATIVE_UI_E2E_GREP") {
+        command.args([
             "run",
             "npx",
             "playwright",
             "test",
             "--config=e2e/nativeDiagnostics.config.ts",
-        ])
+            "--grep",
+            &grep,
+        ]);
+    } else {
+        command.args([
+            "run",
+            "npx",
+            "playwright",
+            "test",
+            "--config=e2e/nativeDiagnostics.config.ts",
+        ]);
+    }
+    let status = command
         .env("CROWDB_WEB_E2E_BASE_URL", base)
         .current_dir(ui)
         .status()
@@ -399,8 +418,9 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         .await
         .unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("ListAllMyBucketsResult"));
-    assert_native_locations(&app).await;
+    assert_native_locations(&app, &state).await;
     assert_native_restarts(&app, &state).await;
+    assert_native_locations(&app, &state).await;
     if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
         assert_native_browser_diagnostics(app.clone()).await;
     }
@@ -493,12 +513,26 @@ async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
     );
 }
 
-fn preserve_failure_logs(root: &std::path::Path) {
+fn preserve_failure_logs(state: &AppState) {
+    let root = &state.runtime_root;
     let target = crowdb_test_harness::test_dirs::artifacts_root()
         .join(format!("native-restart-failure-{}", std::process::id()));
     for node in 1..=3 {
         let source = root.join(format!("N-{node}/log"));
         let destination = target.join(format!("N-{node}"));
+        std::fs::create_dir_all(&destination).unwrap();
+        if let Ok(entries) = std::fs::read_dir(source) {
+            for entry in entries {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_file() {
+                    std::fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+                }
+            }
+        }
+    }
+    for (id, launch) in &state.config.read().unwrap().local_launches {
+        let source = std::path::Path::new(&launch.workdir).join("log");
+        let destination = target.join(id);
         std::fs::create_dir_all(&destination).unwrap();
         if let Ok(entries) = std::fs::read_dir(source) {
             for entry in entries {

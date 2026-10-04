@@ -28,6 +28,21 @@ pub struct StripResult {
     pub(crate) completion_handles: Vec<crate::chunk::segment_writer::SegmentWriteHandle>,
 }
 
+#[cfg(feature = "test-util")]
+impl StripResult {
+    pub async fn wait_for_completion_for_tests(&mut self) -> Result<()> {
+        for handle in self.completion_handles.drain(..) {
+            let failed = handle
+                .await
+                .map_err(|error| crate::IoError::WriteFailed(error.to_string()))?;
+            if let Some(failed) = failed {
+                return Err(crate::IoError::WriteFailed(failed.error));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Strip writer enum — Rust enum (not trait object) for monomorphic
 /// dispatch for the persisted strip layout.
 #[allow(clippy::large_enum_variant)] // avoid one allocation and indirection per hot-path EC strip

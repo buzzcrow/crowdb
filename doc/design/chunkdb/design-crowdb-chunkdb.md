@@ -690,7 +690,12 @@ Init ──> Active ──> Sealed ──> Deleted
 | Deleted | Durable cleanup intent; retained segments still need freeing. |
 
 **State transitions**:
-- `Active → Sealed`: Via `SealChunk` RPC. Validates state, updates sealed_length.
+- `Active → Sealed`: Via `SealChunk` RPC. Validates state and records the exact
+  `seal_bytes` boundary in `acknowledged_cursor`. KiB `sealed_length` fields are
+  compatibility summaries; they do not enlarge the valid byte range. Legacy
+  KiB-only requests retain their original contract. Finalization preserves the
+  exact acknowledged cursor. Data alignment and physical block allocation never
+  add logical bytes to the seal boundary.
 - `Active → Deleted`: Persist cleanup intent, free segments, persist tombstone.
 - `Sealed → Deleted`: Persist cleanup intent, free segments, persist tombstone.
 - Invalid transitions (e.g., `Sealed → Active`) return errors.
