@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 3.0s (2026-08-16)
+// Baseline: advanced flow 4.9s, demos 0.847/2.8s (2026-10-04).
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { addGroup, createStore, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/consoleSetup';
@@ -10,7 +10,7 @@ import { step } from '../fixtures/stepTimer';
 // the former 26-kv-demo spec so they stay unique):
 //   store 261 · groups 2610 + 2611 — advanced ops, all-groups mode,
 //     auto-scan toggle and the demo inject/delete-all flows.
-//   store 262 · group 2620 — the 120-key load-more corpus, kept in its own
+//   store 262 · group 2620 — the 120-key paging corpus, kept in its own
 //     store so it never pollutes store 261's unfiltered/all-groups scans.
 const apiBase = consoleBaseURL();
 
@@ -68,7 +68,7 @@ async function scanAllDemoKeys(baseURL: string, storeId: number, groupId: number
   });
 }
 
-test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
+test.describe('kv ops · advanced deletes, pages, all-groups, demo', () => {
   test('demo cleanup preserves another session demo keys', async ({ page, request }) => {
     const foreign = 'demo_key_other_session_preserved';
     const seeded = await request.post('/api/stores/261/groups/2610/kv/put', { data: { key: foreign, value: 'preserve' } });
@@ -116,7 +116,7 @@ test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
     await step('kv: stop server', () => stopNodeServer(apiBase, 262));
   });
 
-  test('prefix/selected/inline delete + copy, load more, all-groups mode, auto-scan toggle', async ({ page }) => {
+  test('prefix/selected/inline delete + copy, replacement pages, all-groups mode, auto-scan toggle', async ({ page }) => {
     // --- delete prefix, delete selected, inline delete, copy (former 28-kv-advanced-ops) ---
     await openKvPanel(page, '261', '2610');
 
@@ -198,7 +198,7 @@ test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
       await expect(page.getByTestId('kv-copy-value')).toBeVisible();
     });
 
-    // --- >100 keys: truncated indicator + Load More (former 29-kv-load-more) ---
+    // Real data spans six independent 20-row windows.
     // Bulk-insert 120 keys via API (much faster than UI one-by-one)
     await step('kv: bulk insert 120 keys', async () => {
       for (let i = 0; i < 120; i++) {
@@ -218,7 +218,7 @@ test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
     await openKvPanel(page, '262', '2620');
 
     // Scan
-    await step('kv: scan load-more', async () => {
+    await step('kv: scan first page', async () => {
       const scanResponse = page.waitForResponse((r: any) => r.url().includes('/kv/scan'));
       await page.getByRole('button', { name: /scan/i }).click();
       await scanResponse;
@@ -228,22 +228,33 @@ test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
     // Verify truncated indicator
     await expect(page.getByText(/truncated/i)).toBeVisible({ timeout: 3_000 });
 
-    // Verify Load More button is visible
     await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeVisible();
 
-    // Count rows in table (should be 100)
+    // Verify exact first-page boundaries before navigating.
     const initialRowCount = await page.getByTestId('kv-scan-table').locator('tbody tr').count();
     expect(initialRowCount).toBe(20);
+    const table = page.getByTestId('kv-scan-table');
+    await expect(table.getByText('load-key-000', { exact: true })).toBeVisible();
+    await expect(table.getByText('load-key-019', { exact: true })).toBeVisible();
+    await expect(table.getByText('load-key-020', { exact: true })).toHaveCount(0);
 
-    // Click Load More
-    await step('kv: load more', async () => {
+    await step('kv: next replacement page', async () => {
       const loadMoreResponse = page.waitForResponse((r: any) => r.url().includes('/kv/scan'));
       await page.getByRole('button', { name: 'Next', exact: true }).click();
       await loadMoreResponse;
     });
 
-    // Verify additional rows appear
     await expect(page.getByTestId('kv-scan-table').locator('tbody tr')).toHaveCount(20, { timeout: 3_000 });
+    await expect(table.getByText('load-key-020', { exact: true })).toBeVisible();
+    await expect(table.getByText('load-key-039', { exact: true })).toBeVisible();
+    await expect(table.getByText('load-key-000', { exact: true })).toHaveCount(0);
+    await step('kv: previous replacement page', async () => {
+      await page.getByRole('button', { name: 'Previous', exact: true }).click();
+      await expect(table.locator('tbody tr')).toHaveCount(20);
+      await expect(table.getByText('load-key-000', { exact: true })).toBeVisible();
+      await expect(table.getByText('load-key-019', { exact: true })).toBeVisible();
+      await expect(table.getByText('load-key-020', { exact: true })).toHaveCount(0);
+    });
 
     // --- All Groups mode aggregates scan and disables get (former 30-kv-all-groups-mode) ---
     await openKvPanel(page, '261');
