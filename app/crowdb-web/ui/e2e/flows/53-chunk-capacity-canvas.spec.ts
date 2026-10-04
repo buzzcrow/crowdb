@@ -84,50 +84,16 @@ test.describe('capacity · canvas + scanner/recalc', () => {
     await waitForLeader(baseURL, 0, 0, 15_000);
   });
 
-  test('ScannerPanel renders with Run Scan button and empty state', async ({ page, baseURL }) => {
-    test.setTimeout(30_000);
-    const nodeId = CANVAS_NODE;
-    const rpcPort = freePortRange(3);
-    let scanKnown = false;
-    await page.route('**/api/diskdb/scan-status', route => scanKnown
-      ? route.fulfill({ json: { has_run: false, scan_in_progress: false } })
-      : route.fulfill({ status: 503, json: { error: 'Scan observation unavailable' } }));
-
+  test.afterAll(async () => {
+    const api = await apiContext(consoleBaseURL());
     try {
-      await deployDiskdb(baseURL!, nodeId, rpcPort);
-
-      await page.goto('/');
-      await page.getByTestId('domain-capacity').click();
-
-      const panel = page.locator('.tw-h-full.tw-overflow-auto');
-      await expect(panel.getByText(/Capacity —/)).toBeVisible({ timeout: 10_000 });
-
-      // ScannerPanel header + Run Scan button.
-      await expect(panel.getByText('Scanner', { exact: true })).toBeVisible({ timeout: 10_000 });
-      const scanBtn = panel.getByRole('button', { name: /run scan/i });
-      await expect(scanBtn).toBeVisible({ timeout: 10_000 });
-
-      // Missing observation cannot establish that no scan has run.
-      await expect(panel.getByText('Scan status unavailable.')).toBeVisible({ timeout: 3000 });
-      await expect(page.getByRole('alert').filter({ hasText: 'Capacity observation unavailable' })).toContainText('scan status');
-      await expect(page.getByText('Backend unreachable — retrying', { exact: true })).toHaveCount(0);
-      await expect(page.getByRole('banner').getByTitle('Cluster health: Degraded', { exact: true })).toBeVisible({ timeout: 3000 });
-      await expect(panel.getByText('No scan has been run yet.')).toHaveCount(0);
-      scanKnown = true;
-      await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
-      await expect(panel.getByText('No scan has been run yet.')).toBeVisible({ timeout: 3000 });
-
-      // Click Run Scan — button should handle the response (success or error).
-      await scanBtn.click();
-
-      // The button should re-enable after the action completes.
-      await expect.poll(async () => {
-        const btn = panel.getByRole('button', { name: /run scan|scanning/i });
-        return btn.isEnabled();
-      }, { timeout: 10_000, intervals: [100] }).toBe(true);
-    } finally {
-      await removeDiskdb(baseURL!, nodeId);
+      for (const service of ['diskdb', 'server']) {
+        const response = await api.post(`/api/nodes/${CANVAS_NODE}/${service}/stop`, { data: {} });
+        expect(response.ok(), await response.text()).toBe(true);
+      }
+      const response = await api.post('/internal/reset'); expect(response.ok(), await response.text()).toBe(true);
     }
+    finally { await api.dispose(); }
   });
 
   test('CapacityPanel shows cluster totals and instance count', async ({ page, baseURL }) => {
@@ -330,3 +296,34 @@ function formatBytesAssert(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
+
+// Baseline: new actual native scanner and scoped recalc (2026-10-04).
+test('native diagnostics: scanner and scoped recalc show actual completed observations', async ({ page }) => {
+  await page.goto('/?domain=Capacity');
+  const panel = page.getByTestId('capacity-summary').locator('..');
+  await expect(panel.getByText('No scan has been run yet.', { exact: true })).toBeVisible();
+  const scanResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/diskdb/scan' && response.request().method() === 'POST');
+  await panel.getByRole('button', { name: 'Run Scan', exact: true }).click();
+  const scan = await scanResponse;
+  expect(scan.ok(), await scan.text()).toBe(true);
+  await expect(panel.getByText('Zones scanned', { exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Run Scan', exact: true })).toBeEnabled();
+  await panel.getByRole('button', { name: /R-1 / }).click();
+  await expect(panel.getByText('Scanner', { exact: true })).toHaveCount(0);
+  await panel.getByRole('button', { name: /N-1 / }).click();
+  await panel.getByRole('button', { name: /DG-1 / }).click();
+  await panel.getByRole('button', { name: /00000000…/ }).click();
+  await expect(page.getByTestId('disk-geometry')).toContainText('80 zones');
+  const recalcResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/diskdb/recalc' && response.request().method() === 'POST');
+  await panel.getByRole('button', { name: 'Run Recalc', exact: true }).click();
+  const recalc = await recalcResponse;
+  expect(recalc.ok(), await recalc.text()).toBe(true);
+  const observation = await recalc.json();
+  expect(observation.results.map((row: { disk_group_id: number }) => row.disk_group_id)).toEqual([1]);
+  expect(observation.results.flatMap((row: { zones: { drift_detected: boolean }[] }) => row.zones).every((zone: { drift_detected: boolean }) => !zone.drift_detected)).toBe(true);
+  await expect(panel.getByText('No drift detected. All zones match.', { exact: true })).toBeVisible();
+  const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
+  await expect(inspector.getByText('Name', { exact: true })).toHaveCount(0);
+  await expect(inspector.getByText('Parent: disk_id', { exact: true })).toHaveCount(0);
+  for (const parent of ['rack_id', 'node_id', 'disk_group_id']) await expect(inspector.getByText(`Parent: ${parent}`, { exact: true })).toBeVisible();
+});

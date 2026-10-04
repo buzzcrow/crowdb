@@ -1563,3 +1563,36 @@ are historical. The behavior and non-goals in `ui-todo.md` remain binding.
 - Whole-process strace cannot launch the installed snap browser under ptrace;
   that diagnostic run failed before browser cases and is not product evidence.
   Restricting signal observation to KV services is the next diagnostic step.
+
+
+### Capacity and hardware identity acceptance
+
+- The earlier status case tolerated 404 for a sidebar dashed Disk ID. Actual
+  execution exposed a backend raw-string lookup against a bare configured ID.
+  The status route now matches parsed Disk IDs, preserving unknown-disk 404 and
+  invalid-status 400. Eight DiskDB route tests and Web all-target clippy pass.
+- Actual Capacity disk selection displays its native bare ID/type/128-zone
+  geometry and real 8-TiB totals. Recalc/scan use actual owned DiskDB routes;
+  seven health states are persisted through real hardware APIs and displayed.
+  All four affected routine disk cases pass (4.4/1.1/0.579/0.049 s), total 20.9 s;
+  owned teardown completes in 6 ms. No 404 allowance or response mock remains.
+- Native scanner/scoped recalc passes in 0.914 s (owned chain 14.23 s), checking
+  completed scan summary, only DG 1 in the actual recalc, no drift, and exact
+  Disk inspector parent fields. Lazy native branch/scoped usage passes in
+  0.700 s (owned chain 14.32 s). Hook tests retain large branch/concurrency and
+  aborted/late/failing inventory coverage.
+- Retired the intercepted Zone setup in favor of actual 80-zone replacement
+  windows and every allocation bitmap pixel. All flow files are now free of
+  `page.route`/HAR interception; the shared fixture prohibition remains active.
+- Final routine `pixi run test-console-ui` is running. Native ordered diagnostics
+  with KV-only signal observation previously passed 16 cases plus one separate
+  prerequisite-phase skip in 94.96 s. Intermittent prior process loss remains
+  unexplained; a diagnostic success does not prove its cause was fixed.
+- A new slow native weight acceptance runs with a separate runtime root. It
+  writes actual keys, waits for the unchanged production count policy (four
+  ranges per owner, ten-minute cooldown), introduces unequal payload sizes,
+  observes a transfer starting from equal counts, and checks every value.
+  Heartbeats keep their ordinary suspect/lease budgets. Result is pending;
+  its 90-minute observation horizon is distinct from request/lease deadlines.
+- The standalone container release-policy shell check passes. Docker image
+  build/acceptance is still unverified because the base-image proxy is unavailable.

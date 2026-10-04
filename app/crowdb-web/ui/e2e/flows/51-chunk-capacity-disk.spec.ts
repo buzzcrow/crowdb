@@ -8,6 +8,7 @@ import {
   createRack,
   createNode,
   freePort,
+  freePortRange,
   addDiskGroup as apiAddDiskGroup,
   removeDiskGroup as apiRemoveDiskGroup,
   addDisksBatch,
@@ -72,13 +73,20 @@ test.describe('chunk · capacity · disk', () => {
     await waitForLeader(baseURL, 0, 0, 15_000);
     // Deploy a diskdb instance so addDiskGroup auto-assigns ownership
     // (required since diskdb ownership enforcement — a3d39f0e).
-    await apiDeployDiskdb(baseURL, DISKDB_NODE, freePort());
+    await apiDeployDiskdb(baseURL, DISKDB_NODE, freePortRange(3));
   });
 
-  // No afterAll — the beforeAll reset of the next test file (or the
-  // next run's beforeAll) cleans up all state. An afterAll here would
-  // stop the kv-server between tests, breaking group-0 ops for later
-  // tests in this file.
+  test.afterAll(async () => {
+    const api = await apiContext(consoleBaseURL());
+    try {
+      for (const service of ['diskdb', 'server']) {
+        const response = await api.post(`/api/nodes/${DISKDB_NODE}/${service}/stop`, { data: {} });
+        expect(response.ok(), await response.text()).toBe(true);
+      }
+      const response = await api.post('/internal/reset'); expect(response.ok(), await response.text()).toBe(true);
+    }
+    finally { await api.dispose(); }
+  });
 
   test('disk maintenance operations, set-status, and health badges', async ({ page, baseURL }) => {
     test.setTimeout(60_000);
@@ -115,8 +123,7 @@ test.describe('chunk · capacity · disk', () => {
 
     // The kv-server deployed in beforeAll + clusterInit makes group-0
     // available for set-status operations (real backend). Recalc/scan/
-    // usage remain mocked because disk-group-to-instance ownership
-    // assignment is R72 (not yet implemented).
+    // usage use the actual registered DiskDB owner.
 
     await apiAddDiskGroup(baseURL!, nodeId, dg545, 'test-dg-545');
     await addDisksBatch(baseURL!, nodeId, dg545, [{ disk_id: disk545 }]);
@@ -278,28 +285,15 @@ test.describe('chunk · capacity · disk', () => {
       await clickMenuItem(page, disk549Label.first(), /change status/i);
       await page.getByRole('menuitem', { name: /^Offline$/ }).click();
       const diskResp = await diskStatusResponse;
-      // Accept 204 (success) or 404 (pre-existing backend issue:
-      // disk lookup by dashed ID may fail in some cases).
-      expect([204, 404]).toContain(diskResp.status());
+      expect(diskResp.status()).toBe(204);
 
-      // --- Recalc Usage via disk context menu (mocked: requires
-      // diskdb disk-group ownership assignment, which is R72) ---
-
-      // Recalc/scan/usage proxy to a running diskdb that owns the
-      // disk-group. Disk-group-to-instance assignment is R72 (not yet
-      // implemented), so the diskdb never takes ownership and the
-      // real endpoints return "no diskdb instance owns dg <id>".
-      // These mocks verify the UI handles the response shapes correctly.
-
+      // Recalc through the actual registered DiskDB owner.
       const expandDg551 = aside.getByRole('treeitem').filter({ hasText: /DG-551/ }).locator('button[aria-label="Expand"]');
       if (await expandDg551.count() > 0) await expandDg551.click();
 
       // Right-click disk → Recalc Usage.
       const disk551Label = aside.getByText(disk551.slice(0, 12), { exact: false });
       await expect(disk551Label).toBeVisible({ timeout: 5_000 });
-      await page.route('**/api/diskdb/recalc', (route) => {
-        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ results: [] }) });
-      });
       const recalcResponse = page.waitForResponse(
         (r: any) => r.request().method() === 'POST' && r.url().includes('/api/diskdb/recalc'),
         { timeout: 10_000 },
@@ -308,7 +302,7 @@ test.describe('chunk · capacity · disk', () => {
       const recalcResp = await recalcResponse;
       expect(recalcResp.ok(), await recalcResp.text()).toBeTruthy();
 
-      // --- Trigger Consistency Scan via disk context menu (mocked) ---
+      // Trigger the real consistency scanner through the disk menu.
 
       const expandDg552 = aside.getByRole('treeitem').filter({ hasText: /DG-552/ }).locator('button[aria-label="Expand"]');
       if (await expandDg552.count() > 0) await expandDg552.click();
@@ -316,13 +310,6 @@ test.describe('chunk · capacity · disk', () => {
       // Right-click disk → Trigger Consistency Scan.
       const disk552Label = aside.getByText(disk552.slice(0, 12), { exact: false });
       await expect(disk552Label).toBeVisible({ timeout: 5_000 });
-      await page.route('**/api/diskdb/scan', (route) => {
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ summary: null, has_run: false, scan_in_progress: true }),
-        });
-      });
       const scanResponse = page.waitForResponse(
         (r: any) => r.request().method() === 'POST' && r.url().includes('/api/diskdb/scan'),
         { timeout: 10_000 },
@@ -331,13 +318,7 @@ test.describe('chunk · capacity · disk', () => {
       const scanResp = await scanResponse;
       expect(scanResp.ok(), await scanResp.text()).toBeTruthy();
 
-      // --- sidebar shows HwStatus badges for disk-group and disk when
-      // usage data is available (mocked: requires R72 ownership) ---
-      // Verify all 7 HwStatus values render with the correct title.
-
-      // Mock the usage API to return one DG per HwStatus value.
-      // HwStatus enum: 0=Init, 1=Up, 2=Maintenance, 3=Suspect,
-      // 4=Missing, 5=Bad, 6=Offline.
+      // Persist all hardware states and inspect their actual sidebar badges.
       const statusCases: Array<[number, number, string, string]> = [
         [dg553, 1, 'Up', disk553],
         [dg554, 0, 'Init', disk554],
@@ -347,89 +328,15 @@ test.describe('chunk · capacity · disk', () => {
         [dg558, 5, 'Bad', disk558],
         [dg559, 6, 'Offline', disk559],
       ];
-      // The sidebar tree stores disk IDs in dashed format (from the
-      // disk-groups API). The hardware capacity mock must use the
-      // same dashed format for the diskStatusById lookup to match.
-      const toDashed = (s: string) => s.length === 32 ? `${s.slice(0, 16)}-${s.slice(16)}` : s;
-      await page.route('**/api/diskdb/usage', (route) => {
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            disk_groups: statusCases.map(([dgId, status, , diskId]) => ({
-              rack_id: rackId,
-              node_id: nodeId,
-              disk_group_id: dgId,
-              status,
-              disk_ids: [toDashed(diskId)],
-              disks: [{
-                rack_id: rackId,
-                node_id: nodeId,
-                disk_group_id: dgId,
-                disk_id: toDashed(diskId),
-                disk_type: 1,
-                capacity_units: 1000,
-                zone_size_units: 100,
-                unit_size_bytes: 4096,
-                zone_count: 10,
-                status,
-                busy_units: 100,
-                free_units: 900,
-                capacity_bytes: 4096000,
-                busy_bytes: 409600,
-                free_bytes: 3686400,
-                active_zone_count: 5,
-                zone_usages: [],
-              }],
-              capacity_bytes: 4096000,
-              busy_bytes: 409600,
-              free_bytes: 3686400,
-              allocatable_disk_count: 1,
-            })),
-          }),
-        });
-      });
-
-      // Also mock hardware capacity (group-0 sysdata) with the same
-      // statuses — the sidebar tree uses hardwareCapacity as the
-      // PRIMARY source for HwStatus badges, falling back to
-      // capacityUsage only when hardwareCapacity has no entry.
-      await page.route('**/api/hardware/capacity', (route) => {
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            datacenter_capacity_bytes: statusCases.length * 4096000,
-            racks: [{
-              rack_id: rackId,
-              node_count: 1,
-              capacity_bytes: statusCases.length * 4096000,
-            }],
-            nodes: [{
-              rack_id: rackId,
-              node_id: nodeId,
-              disk_group_count: statusCases.length,
-              capacity_bytes: statusCases.length * 4096000,
-            }],
-            disk_groups: statusCases.map(([dgId, status, , diskId]) => ({
-              rack_id: rackId,
-              node_id: nodeId,
-              disk_group_id: dgId,
-              status,
-              disk_count: 1,
-              capacity_bytes: 4096000,
-              disks: [{
-                disk_id: toDashed(diskId),
-                disk_type: 1,
-                capacity_bytes: 4096000,
-                unit_size_bytes: 4096,
-                zone_count: 10,
-                status,
-              }],
-            })),
-          }),
-        });
-      });
+      const api = await apiContext(baseURL!);
+      try {
+        for (const [dgId, , label, diskId] of statusCases) {
+          const group = await api.put(`/api/disk-groups/${rackId}/${nodeId}/${dgId}/status`, { data: { status: label } });
+          expect(group.status(), await group.text()).toBe(204);
+          const disk = await api.put(`/api/disks/${diskId}/status`, { data: { status: label } });
+          expect(disk.status(), await disk.text()).toBe(204);
+        }
+      } finally { await api.dispose(); }
 
       await page.goto('/');
       await page.getByTestId('domain-capacity').click();
@@ -503,127 +410,15 @@ test.describe('chunk · capacity · disk', () => {
     await addDisksBatch(baseURL!, nodeId, dg581, [{ disk_id: disk581 }]);
 
     try {
-      // The config API returns disk IDs in dashed format
-      // (`{high:016x}-{low:016x}`), but randomDiskId() returns a
-      // bare 32-char hex string. The usage mock must use the dashed
-      // format to match what the sidebar selection passes.
-      const dashed = (s: string) => s.length === 32 ? `${s.slice(0, 16)}-${s.slice(16)}` : s;
-      const disk580Dashed = dashed(disk580);
-      const disk581Dashed = dashed(disk581);
-
-      // Mock the usage API so the CapacityPanel has data to show
-      // (requires a running diskdb, which is not deployed here).
-      await page.route('**/api/diskdb/usage', (route) => {
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            disk_groups: [
-              {
-                rack_id: rackId,
-                node_id: nodeId,
-                disk_group_id: dg580,
-                status: 1,
-                disk_ids: [disk580Dashed],
-                disks: [{
-                  rack_id: rackId,
-                  node_id: nodeId,
-                  disk_group_id: dg580,
-                  disk_id: disk580Dashed,
-                  disk_type: 2,
-                  capacity_units: 1000,
-                  zone_size_units: 100,
-                  unit_size_bytes: 4096,
-                  zone_count: 10,
-                  status: 1,
-                  busy_units: 100,
-                  free_units: 900,
-                  capacity_bytes: 4096000,
-                  busy_bytes: 409600,
-                  free_bytes: 3686400,
-                  active_zone_count: 5,
-                  zone_usages: Array.from({ length: 10 }, (_, i) => ({
-                    zone_index: i,
-                    busy_block_count: 10,
-                    free_block_count: 90,
-                    usage_bitmap: 'A'.repeat(20),
-                  })),
-                }],
-                capacity_bytes: 4096000,
-                busy_bytes: 409600,
-                free_bytes: 3686400,
-                allocatable_disk_count: 1,
-              },
-              {
-                rack_id: rackId,
-                node_id: nodeId,
-                disk_group_id: dg581,
-                status: 1,
-                disk_ids: [disk581Dashed],
-                disks: [{
-                  rack_id: rackId,
-                  node_id: nodeId,
-                  disk_group_id: dg581,
-                  disk_id: disk581Dashed,
-                  disk_type: 1,
-                  capacity_units: 2000,
-                  zone_size_units: 200,
-                  unit_size_bytes: 4096,
-                  zone_count: 10,
-                  status: 1,
-                  busy_units: 200,
-                  free_units: 1800,
-                  capacity_bytes: 8192000,
-                  busy_bytes: 819200,
-                  free_bytes: 7372800,
-                  active_zone_count: 5,
-                  zone_usages: [],
-                }],
-                capacity_bytes: 8192000,
-                busy_bytes: 819200,
-                free_bytes: 7372800,
-                allocatable_disk_count: 1,
-              },
-            ],
-          }),
-        });
-      });
-
-      // Match the hardware inventory to the observed usage. An empty or
-      // different inventory cannot establish complete usage coverage.
-      await page.route('**/api/hardware/capacity', (route) => {
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            datacenter_capacity_bytes: 12288000,
-            racks: [{ rack_id: rackId, node_count: 1, capacity_bytes: 12288000 }],
-            nodes: [{ rack_id: rackId, node_id: nodeId, disk_group_count: 2, capacity_bytes: 12288000 }],
-            disk_groups: [
-              { rack_id: rackId, node_id: nodeId, disk_group_id: dg580, capacity_bytes: 4096000, disks: [{ disk_id: disk580Dashed, capacity_bytes: 4096000 }] },
-              { rack_id: rackId, node_id: nodeId, disk_group_id: dg581, capacity_bytes: 8192000, disks: [{ disk_id: disk581Dashed, capacity_bytes: 8192000 }] },
-            ],
-          }),
-        });
-      });
-
-      // Mock diskdb instances so the CapacityPanel renders (it shows
-      // "No diskdb instances registered" when the list is empty).
-      await page.route('**/api/diskdb/instances', (route) => {
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify([
-            {
-              instance_id: `diskdb-${nodeId}`,
-              node_id: nodeId,
-              rpc_endpoint: `http://127.0.0.1:30099`,
-              owned_dg_ids: [dg580, dg581],
-              status: 'up',
-            },
-          ]),
-        });
-      });
+      const disk580Dashed = `${disk580.slice(0, 16)}-${disk580.slice(16)}`;
+      const api = await apiContext(baseURL!);
+      let hardware;
+      try {
+        const response = await api.get('/api/hardware/capacity');
+        expect(response.ok(), await response.text()).toBe(true);
+        hardware = await response.json();
+      } finally { await api.dispose(); }
+      const actualDisk = hardware.disk_groups.find((group: { disk_group_id: number }) => group.disk_group_id === dg580).disks[0];
 
       await page.goto('/');
       await page.getByTestId('domain-capacity').click();
@@ -640,8 +435,8 @@ test.describe('chunk · capacity · disk', () => {
       await expect(panel.getByText(/Capacity —/)).toBeVisible({ timeout: 3_000 });
       await expect(panel.getByText('Capacity — Cluster')).toBeVisible();
 
-      // Total capacity = 4096000 + 8192000 = 12288000 bytes
-      await expect(page.getByTestId('capacity-summary').getByText('11.7 MB', { exact: true })).toBeVisible({ timeout: 3_000 });
+      // Both real fixture disks use the default 4-TiB geometry.
+      await expect(page.getByTestId('capacity-summary').getByText('8.0 TB', { exact: true })).toBeVisible({ timeout: 3_000 });
 
       // --- ClusterView: per-rack breakdown ---
       // Should show "Racks (1)" section with R-501 button.
@@ -687,8 +482,8 @@ test.describe('chunk · capacity · disk', () => {
       await expect(panel.getByText(/Disks in DG-580 \(1\)/)).toBeVisible({ timeout: 3_000 });
       // The disk box shows the disk ID prefix (first 8 chars + …).
       await expect(panel.getByText(disk580Dashed.slice(0, 8) + '…')).toBeVisible({ timeout: 3_000 });
-      // The disk box shows the busy percentage (409600/4096000 = 10%).
-      await expect(panel.getByText('10', { exact: true })).toBeVisible({ timeout: 3_000 });
+      // The actual owned DiskDB supplies this disk usage.
+      await expect(panel.getByRole('button').filter({ hasText: disk580Dashed.slice(0, 8) + '…' })).not.toHaveAttribute('title', /Usage unknown/);
 
       // --- Click Disk in sidebar → header shows "Disk …", zone grid appears ---
       // Expand DG-580 to see the disk.
@@ -704,9 +499,8 @@ test.describe('chunk · capacity · disk', () => {
 
       // --- DiskView: disk header + action buttons + RecalcPanel + zone grid ---
       // Disk header shows the full disk ID, type, status, zone count, capacity.
-      await expect(panel.getByText(disk580Dashed, { exact: false })).toBeVisible({ timeout: 3_000 });
-      await expect(panel.getByText(/ZoneSsd/)).toBeVisible(); // disk_type=2 → ZoneSsd
-      await expect(panel.getByText(/ZoneSsd.*10 zones/)).toBeVisible();
+      await expect(panel.getByText(disk580, { exact: false })).toBeVisible({ timeout: 3_000 });
+      await expect(page.getByTestId('disk-geometry')).toContainText(`${['BlockHdd', 'BlockSsd', 'ZoneSsd', 'SmrHdd'][actualDisk.disk_type]} · Up · ${actualDisk.zone_count} zones`);
       // Action buttons: Scan, Recalc, Compact, Rebuild, Down, Up.
       await expect(panel.getByRole('button', { name: /^Scan$/ })).toBeVisible({ timeout: 3_000 });
       await expect(panel.getByRole('button', { name: /^Recalc$/ })).toBeVisible({ timeout: 3_000 });
@@ -896,41 +690,29 @@ test.describe('chunk · capacity · disk', () => {
 });
 
 // Rendering/request-budget fixture; production storage semantics are covered above.
-test('large Capacity navigation fetches only opened storage branches and scopes usage', async ({ page }) => {
-  const nodes = Array.from({ length: 200 }, (_, index) => ({ id: index + 1, rack_id: 1, host: '127.0.0.1', ssh: { type: 'KeyDefault', user: 'test' } }));
+// Baseline: new native lazy inventory/scoped usage acceptance (2026-10-04).
+test('native diagnostics: Capacity navigation fetches only opened storage branches', async ({ page }) => {
   const groups: number[] = []; const disks: string[] = []; const usage: string[] = [];
-  await page.route('**/api/racks?**', route => route.fulfill({ json: [{ id: 1, name: 'large', nodes }] }));
-  await page.route('**/api/nodes?**', route => route.fulfill({ json: nodes }));
-  await page.route('**/api/servers', route => route.fulfill({ json: [] }));
-  await page.route('**/api/stores?**', route => route.fulfill({ json: [] }));
-  await page.route('**/api/diskdb/instances', route => route.fulfill({ json: [] }));
-  await page.route('**/api/hardware/capacity', route => route.fulfill({ json: { datacenter_capacity_bytes: 0, racks: [], nodes: [], disk_groups: [] } }));
-  await page.route('**/api/diskdb/scan-status**', route => route.fulfill({ json: { has_run: false, scan_in_progress: false } }));
-  await page.route('**/api/diskdb/usage**', route => {
-    usage.push(new URL(route.request().url()).search);
-    return route.fulfill({ json: { disk_groups: [] } });
-  });
-  await page.route('**/api/nodes/*/disk-groups', route => {
-    const node = Number(new URL(route.request().url()).pathname.split('/')[3]); groups.push(node);
-    return route.fulfill({ json: [{ id: 7, rack_id: 1, node_id: node }] });
-  });
-  await page.route('**/api/nodes/*/disk-groups/*/disks', route => {
-    disks.push(new URL(route.request().url()).pathname);
-    return route.fulfill({ json: [] });
+  page.on('request', request => {
+    const url = new URL(request.url());
+    const node = url.pathname.match(/^\/api\/nodes\/(\d+)\/disk-groups$/);
+    if (node) groups.push(Number(node[1]));
+    if (/^\/api\/nodes\/\d+\/disk-groups\/\d+\/disks$/.test(url.pathname)) disks.push(url.pathname);
+    if (url.pathname === '/api/diskdb/usage') usage.push(url.search);
   });
   await page.goto('/?domain=Cluster');
-  await expect(page.getByRole('button', { name: 'N-1', exact: true })).toBeVisible();
-  expect(groups).toEqual([]); expect(disks).toEqual([]); expect(usage).toEqual([]);
-  await page.getByTestId('domain-capacity').click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await expect(sidebar.getByRole('button', { name: 'N-1', exact: true })).toBeVisible();
+  expect(groups).toEqual([]); expect(disks).toEqual([]); expect(usage).toEqual([]);
+  await page.getByTestId('domain-capacity').click();
+  await expect(page.getByTestId('capacity-summary')).toBeVisible();
   expect(groups).toEqual([]); expect(disks).toEqual([]);
   await sidebar.getByTestId('tree-node-N-1').getByRole('button', { name: 'Expand', exact: true }).click();
-  await expect(sidebar.getByRole('button', { name: 'DG-7', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: 'storage (DG-1)', exact: true })).toBeVisible();
   expect(groups).toEqual([1]); expect(disks).toEqual([]);
-  await sidebar.getByRole('button', { name: 'DG-7', exact: true }).click();
-  await expect.poll(() => usage.some(query => query.includes('dg=7')), { intervals: [100] }).toBe(true);
+  await sidebar.getByRole('button', { name: 'storage (DG-1)', exact: true }).click();
+  await expect.poll(() => usage.some(query => query.includes('dg=1')), { intervals: [100] }).toBe(true);
   await expect.poll(() => disks.length, { intervals: [100] }).toBe(1);
-  expect(disks[0]).toBe('/api/nodes/1/disk-groups/7/disks');
+  expect(disks[0]).toBe('/api/nodes/1/disk-groups/1/disks');
   expect(groups.every(node => node === 1)).toBe(true);
 });

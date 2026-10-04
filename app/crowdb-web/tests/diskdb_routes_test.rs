@@ -158,13 +158,22 @@ async fn set_disk_status_returns_400_for_invalid_status() {
     .await;
     assert_eq!(s.as_u16(), 201, "create disk: {s} {v}");
 
-    let s = put_status(
-        &client,
-        &format!("{base}/api/disks/00000000000000000000000000000001/status"),
-        json!({ "status": "Bogus" }),
-    )
-    .await;
-    assert_eq!(s.as_u16(), 400, "invalid status: {s}");
+    for disk_id in [
+        "00000000000000000000000000000001",
+        "0000000000000000-0000000000000001",
+    ] {
+        let s = put_status(
+            &client,
+            &format!("{base}/api/disks/{disk_id}/status"),
+            json!({ "status": "Bogus" }),
+        )
+        .await;
+        assert_eq!(
+            s.as_u16(),
+            400,
+            "same disk identity must reach status validation: {s}"
+        );
+    }
 }
 
 #[tokio::test]
