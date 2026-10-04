@@ -111,10 +111,11 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
   const inspectParts = async (upload: Upload, marker?: string, scope = bucket, record = true) => {
     if (record) checkpoint();
     setSelectedUpload({ ...upload, marker });
+    setSelected({ key: upload.key, size: 'pending', etag: '', modified: '' });
+    setDetail(null); setPartsNext(null);
     const document = await readXml(request('GET', objectPath(scope, upload.key), { uploadId: upload.id, 'max-parts': '100', ...(marker ? { 'part-number-marker': marker } : {}) }));
     setDetail({ parts: Array.from(document.querySelectorAll('Part')).map(part => ({ number: xmlText(part, 'PartNumber'), etag: xmlText(part, 'ETag'), size: xmlText(part, 'Size') })), is_truncated: xmlText(document, 'IsTruncated') === 'true' });
     setPartsNext(xmlText(document, 'IsTruncated') === 'true' ? { ...upload, marker: xmlText(document, 'NextPartNumberMarker') } : null);
-    setSelected({ key: upload.key, size: 'pending', etag: '', modified: '' });
   };
   const inspect = (row: ObjectRow) => { checkpoint(); setSelectedUpload(null); setSelected(row); setDetail(null); setPreview(''); setPartsNext(null); void run(async () => {
     const response = await request('HEAD', objectPath(bucket, row.key));
@@ -213,6 +214,7 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
       <nav aria-label="Object pages" className="tw-flex tw-gap-2"><button className={buttonClass} disabled={busy || !previous.length} onClick={() => { checkpoint(); void run(async () => { const trail = previous.slice(0, -1); await loadObjects(bucket, previous.at(-1), listedPrefix); setPrevious(trail); }, 'Previous page loaded'); }}>Previous</button><button className={buttonClass} disabled={busy || !next} onClick={() => { checkpoint(); void run(async () => { const trail = [...previous, cursor].slice(-32); await loadObjects(bucket, next!); setPrevious(trail); }, 'Next page loaded'); }}>Next</button></nav>
     </>}
     {selected && <section aria-label="Object metadata" className="tw-space-y-3"><h2 className="tw-font-semibold">{selected.size === 'pending' ? 'Multipart parts' : 'HEAD metadata'}</h2>{busy && !detail ? <p>Loading metadata…</p> : selected.size === 'pending' ? <Records label="Multipart parts" headings={['Part', 'ETag', 'Size']} rows={((detail as { parts?: Array<{ number: string; etag: string; size: string }> } | null)?.parts ?? []).map(part => [part.number, part.etag, part.size])} /> : <Fields values={(detail ?? {}) as Record<string, unknown>} />}
+      {selected.size === 'pending' && selectedUpload && <button className={buttonClass} disabled={busy} onClick={() => void run(() => inspectParts(selectedUpload, undefined, bucket, false), 'Parts refreshed')}>Refresh parts</button>}
       {partsNext && <button className={buttonClass} disabled={busy} onClick={() => void run(() => inspectParts(partsNext, partsNext.marker), 'Next parts page loaded')}>Next parts page</button>}
       {selected.size !== 'pending' && <StorageLocations inspection={locationInspection} onChunk={onChunk} />}
       {!!preview && <><h2>Preview · first 4 KiB</h2><pre aria-label="Object preview" className="tw-whitespace-pre-wrap tw-break-all tw-text-xs">{preview}</pre></>}
