@@ -25,6 +25,7 @@ use crate::{Result, StreamError};
 
 mod liveness;
 mod observation;
+mod recovery;
 pub use observation::StreamMetadataObservation;
 
 #[derive(Clone, Debug)]
@@ -346,6 +347,8 @@ impl ChunkStream {
         let expected = (manifest.writer_epoch, manifest.generation);
         let mut needs_publish = manifest.writer_epoch < writer_epoch;
         let mut rotate_active = false;
+        let mut extents = collect_extents(&pages);
+        let mut tail = manifest.sealed_tail;
         if let Some(active) = &mut manifest.active {
             let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
             if durable.offset < active.physical_start || durable.offset > active.capacity {
@@ -353,15 +356,20 @@ impl ChunkStream {
                     "recovered active cursor is outside chunk bounds".into(),
                 ));
             }
+            if durable.offset < active.acknowledged_cursor {
+                return Err(StreamError::Corruption(
+                    "recovered active cursor precedes its published cursor".into(),
+                ));
+            }
+            tail = recovery::recover_active_frames(chunks.as_ref(), active, durable.offset, &mut extents)
+                .await?;
             if !durable.sealed {
                 chunks.seal(active.chunk_id, writer_epoch, durable.offset).await?;
             }
             active.acknowledged_cursor = durable.offset;
             rotate_active = true;
         }
-        let tail = validate_manifest(&manifest, &pages)?;
         manifest.writer_epoch = writer_epoch;
-        let extents = collect_extents(&pages);
         if rotate_active {
             manifest.active.take();
             manifest.sealed_tail = tail;
@@ -386,6 +394,7 @@ impl ChunkStream {
                 config.extent_page_entries,
             );
             manifest.extent_pages = fences_for(&adopted_pages);
+            validate_manifest(&manifest, &adopted_pages)?;
             metadata
                 .publish(Some(expected), manifest.clone(), adopted_pages)
                 .await?;
@@ -1804,7 +1813,10 @@ fn find_extent_fence(manifest: &StreamManifest, offset: u64) -> Result<usize> {
     let fence = manifest
         .extent_pages
         .get(index)
-        .ok_or_else(|| StreamError::Corruption("sealed offset is not covered by extent directory".into()))?;
+        .ok_or_else(|| StreamError::Corruption(format!(
+            "sealed offset is not covered by extent directory: offset={offset}, sealed_tail={}, trim={}, generation={}, epoch={}, fences={}",
+            manifest.sealed_tail, manifest.trim_offset, manifest.generation, manifest.writer_epoch, manifest.extent_pages.len()
+        )))?;
     if offset < fence.first_logical {
         return Err(StreamError::Corruption(
             "extent directory has a logical gap".into(),

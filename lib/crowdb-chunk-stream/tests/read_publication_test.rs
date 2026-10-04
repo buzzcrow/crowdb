@@ -114,3 +114,90 @@ async fn concurrent_readers_keep_the_published_extent_boundary_until_append_publ
     assert_eq!(writer.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
     assert_eq!(reader.tail(), 3);
 }
+
+#[tokio::test]
+async fn writer_reopen_recovers_verified_frames_after_cursor_advance_before_publication() {
+    verify_crash_recovery(false).await;
+}
+
+#[tokio::test]
+async fn writer_reopen_rejects_corrupt_unpublished_durable_frames() {
+    verify_crash_recovery(true).await;
+}
+
+async fn verify_crash_recovery(corrupt: bool) {
+    let store = Arc::new(MemoryStreamStore::new(1024));
+    let metadata = Arc::new(TestPublicationGate {
+        store: store.clone(),
+        pause: AtomicBool::new(false),
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let name = StreamName { high: 1, low: 1 };
+    let writer = ChunkStream::create(
+        StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
+            stream_name: name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("test".into()),
+        },
+        9,
+        StreamConfig::default(),
+        store.clone(),
+        metadata.clone(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    writer.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    metadata.pause.store(true, Ordering::Release);
+    let append_writer = writer.clone();
+    let append = tokio::spawn(async move { append_writer.append(&[Bytes::from_static(b"new")]).await });
+    tokio::time::timeout(std::time::Duration::from_secs(1), metadata.entered.notified())
+        .await
+        .unwrap();
+    if corrupt {
+        let active = writer.observe_metadata(None, 0).unwrap().active.unwrap();
+        store
+            .flip_durable_byte(
+                active.chunk_id,
+                usize::try_from(active.acknowledged_cursor).unwrap()
+                    + crowdb_protocol::frame::FRAME_HEADER_PREFIX_BYTES,
+            )
+            .await;
+    }
+    // Simulate process loss after the durable cursor, before directory publication.
+    let recovered = ChunkStream::open(
+        name,
+        10,
+        StreamConfig::default(),
+        store.clone(),
+        metadata.clone(),
+        store.clone(),
+    )
+    .await;
+    if corrupt {
+        assert!(matches!(
+            recovered,
+            Err(crowdb_chunk_stream::StreamError::Corruption(_))
+        ));
+        metadata.release.notify_one();
+        append.await.unwrap().unwrap();
+        return;
+    }
+    let recovered = recovered.unwrap();
+    assert_eq!(recovered.tail(), 6);
+    assert_eq!(
+        recovered.read_at(0, 6).await.unwrap(),
+        Bytes::from_static(b"oldnew")
+    );
+    metadata.release.notify_one();
+    assert!(append.await.unwrap().is_err());
+    recovered.append(&[Bytes::from_static(b"end")]).await.unwrap();
+    assert_eq!(
+        recovered.read_at(0, 9).await.unwrap(),
+        Bytes::from_static(b"oldnewend")
+    );
+}
