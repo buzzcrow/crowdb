@@ -71,7 +71,9 @@ The native catalog correctness milestone is complete: catalog/service foundation
 namespace, immutable FileIO, atomic table commits, reclamation and REST/official-SDK
 conformance. Its contract and executable profile are retained in
 [Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
-Caches, selected ORC and container engine workflows remain separate.
+The [container client matrix](../../container/single-node-container/tests/ecosystem/README.md)
+has separate passing engine/restart acceptance. Caches and selected ORC remain
+independent deferred work.
 
 - **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded cache and
   invalidation — Area: access server / Iceberg / Group 0 / Chunk-KV — **Deferred
@@ -80,15 +82,9 @@ Caches, selected ORC and container engine workflows remain separate.
 
 - **[R186](R186-access-iceberg-orc-validation.md)** — selected ORC validation —
   Area: access server / Iceberg — **Independent follow-up retained by user
-  decision; not absorbed by R189.** Add bounded canonical ORC schema, row-count
-  and delete validation with official-client fixtures. The Parquet catalog is
+  decision; outside the verified client ecosystem.** Add bounded canonical ORC
+  schema, row-count and delete validation with official-client fixtures. The Parquet catalog is
   complete; ORC does not block container or client-ecosystem acceptance.
-- **[R189](R189-access-iceberg-container-ecosystem.md)** — container client and
-  engine workflows — Area: Iceberg / clients / deployment — **Partially
-  implemented; Parquet-only scope.** PyIceberg/Arrow/pandas container reads and
-  writes are covered. Retain historical/batched/Polars reads, direct DuckDB REST
-  verification, Spark/Flink/Trino interoperability and the executable client
-  matrix. ORC is deferred independently under R186.
 
 ### High Priority
 

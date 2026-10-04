@@ -53,6 +53,16 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/dev/hyper_fork.md`      | Hyper fork branches, submodule, build, sync, validation, and recovery. |
 | `tools/README.md`            | Tool directories, Pixi task entry points, CI checks, and suite timing. |
 
+## Component Acceptance
+
+| Doc                                                         | When to read                                          |
+| ----------------------------------------------------------- | ----------------------------------------------------- |
+| `app/crowdb-access-server/tests/README.md`                  | Access gates, SDK commands and latency observations.  |
+| `app/crowdb-web/ui/e2e/README.md`                           | Owned console/browser acceptance and timing.          |
+| `container/single-node-container/README.md`                 | Container build, publication and tested client setup. |
+| `container/single-node-container/tests/ecosystem/README.md` | Manual pinned client/engine matrix and exclusions.    |
+
+
 ## Project Files (repo root)
 
 | File                 | When to read                                |

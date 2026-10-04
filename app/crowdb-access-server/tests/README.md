@@ -1,51 +1,26 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# Iceberg Functional Catalog Plan
+# Access server acceptance
 
-Upstream: [Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
+Protocol authority: [native Iceberg design](../../../doc/design/access-server/iceberge/design-crowdb-iceberg.md).
+Client recipes: [container development](../../../container/single-node-container/README.md).
 
-Goal: preserve follow-up ownership and performance observations after completion
-of native catalog correctness and REST/official-SDK conformance.
-
-Persistent-plan exception: this coordinates the remaining cache, ORC and engine
-work. Remove completed execution tasks; delete this plan after the program ends.
-
-## Completed summary
-
-The core milestone is complete. Native fault/restart acceptance, official Java
-1.11.0 and Rust 0.10.0 clients, the six supported Apache RCK cases, route/version
-admission, actual Parquet rows/deletes, upgrade/expiry/restart, and bounded logical
-TiB traversal have executable evidence. The permanent design records the matrix
-and exclusions. Full RCK, ORC and compute-engine certification are not claimed.
-
-Closure gates on 2026-09-27 passed: complete Iceberg library suite, default and
-Iceberg-E2E server all-targets (with the pinned Python environment), workspace
-fmt/lint and Iceberg-E2E clippy. The expanded native Java catalog case passed
-with v1/v2/v3 actual row reads and restart. A discovered post-drop FileIO pin
-regression is fixed, with GC proof/fence/worker coverage. No timeout or retry
-assertion was relaxed.
-
-## Next — R189 container client/engine project
-
-- [ ] **Client and engine interoperability — R189**: after R187 is
-  publish-ready, test Python dataframe, local SQL, Spark, Flink and Trino
-  workflows in the separate container project. Pin versions and profiles there;
-  do not infer engine certification from the completed SDK acceptance.
-- Preserve the acceptance scope: create/evolve/write/commit/load, time travel,
-  row-level deletes, rename/expire/drop, cross-engine results and server restarts.
-  Reuse existing SDK/native evidence, but do not treat it as engine certification.
-- Keep R189 client/engine acceptance pending until that project supplies
-  executable results. Its environment and commands are specified when built.
-
-## Decisions and remaining ownership
-
-The completed catalog contract and confirmed compatibility decisions live in
-[Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
-No human decision remains for REST/official-SDK correctness. R189 owns the
-separate engine project; R186 owns selected ORC, and R185 owns optional caches.
-Provisioned disk capacity remains the allocation boundary. Functional acceptance
-is separate from latency targets; preserve the observations below.
+- REST/official-SDK conformance, native durability and ecosystem compatibility
+  are distinct evidence. Passing SDK tests cannot certify compute engines.
+- The [manual ecosystem fixture](../../../container/single-node-container/tests/ecosystem/README.md)
+  uses a separate locked environment and workflow dispatch. Its matrix records
+  only actual pinned client operations against the container and a volume restart.
+- [S3 language SDKs](common/s3_sdks/README.md) and the Rust Iceberg SDK retain
+  independent manual workflows. They are not default test dependencies.
+- Selected ORC and optional caches remain independent backlog ownership under
+  [ORC validation](../../../doc/backlog/R186-access-iceberg-orc-validation.md)
+  and [cache optimization](../../../doc/backlog/R185-access-iceberg-cache-invalidation.md).
+  The functional fixtures select Parquet and establish no cache speed guarantee.
+- Physical GC remains an independent opt-in runtime contract. Logical drop,
+  clear, expiry and CAS loss do not authorize physical deletion by TTL alone.
+  Provisioned allocation capacity bounds storage; cumulative orphan storage
+  is not bounded by active request limits.
 
 ## Performance work to consolidate later
 
@@ -89,24 +64,6 @@ is separate from latency targets; preserve the observations below.
   storage I/O, CPU and memory alongside failure-injection regression results.
 - Create one consolidated optimization backlog later. No new performance backlog
   or latency guarantee is introduced by the functional-test split itself.
-
-## Deferred work and safety boundaries
-
-- R183 physical GC is separate and remains runtime opt-in. Clear, drop, expiry,
-  abort and CAS loss may remove logical visibility but never authorize physical
-  deletion by TTL alone. Retain ownership, generations, purge intent and recovery
-  evidence.
-- R186 owns selected ORC validation. Container probing/upload is not selection
-  support; the initial selected data/delete profile remains plaintext Parquet.
-- R185 decoded-cache optimization is outside this milestone.
-- Active request/session limits do not bound cumulative retained orphan storage.
-  Existing disk allocation fails when eligible capacity cannot create new chunks.
-  Keep failure bounded and retain committed authority/recovery evidence. R183
-  provides full-capacity acceptance; do not claim automatic space reclamation.
-- New runtime catalogs persist five-minute requests and fifteen-minute delegation.
-  Restart cannot widen legacy bounds. Explicit clear can expand them under the
-  full maintenance grace; legacy zero-delegation catalogs require a subsequent
-  listener restart to enable table routes. Never clear user state to run a test.
 
 ## Verification and execution notes
 
