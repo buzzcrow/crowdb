@@ -88,15 +88,6 @@ independent deferred work.
 
 ### High Priority
 
-- **[R209](R209-chunk-kv-split-recovery-fencing.md)** — durable split abort and
-  recovery fencing — Area: chunk-kv / tree / group 0 — Make pre-publication
-  abort cleanup restart-safe, reject abort after catalog commit, and reconcile
-  child overlays and generation pins from durable catalog evidence.
-- **[R208](R208-kv-membership-epoch-persistence.md)** — crash-safe membership
-  epoch persistence — Area: KV / configuration — Persist the voting set and
-  membership epoch as one durable update before publishing a rebuilt group;
-  restore or fail closed without regressing the fencing token.
-
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
   **Deferred beyond the completed direct-KV stage.** When selected, migrate
