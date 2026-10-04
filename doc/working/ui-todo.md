@@ -178,11 +178,14 @@ unaccepted; this is not a full-suite result.
 - [ ] **Create defaults acceptance**: conflict-free defaults are implemented;
   complete repeated-create and reopen acceptance across IDs, host listener
   ports, DiskDB port ranges and dependency references.
-- [ ] **Group 0 convergence retry volume**: one successful native initialization
+- [x] **Group 0 convergence retry volume**: one successful native initialization
   recorded 4,878 leader hints and seven unknown-leader waits in 3.75 seconds.
   Review repeated redirects during election and bound their request rate;
   keep the ordinary cold-start path and existing deadlines. Successful
   browser acceptance does not establish an acceptable background work budget.
+  Repeated/cyclic hints now use the existing election wait and retry budget.
+  All 68 client cases and real four-case browser acceptance pass; the clean
+  cold fixture records nine hints and completes in 33.15 seconds.
 ## Capacity and shared behavior
 
 - [ ] **Navigation return history across all views**: every button/link that

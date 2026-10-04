@@ -12,23 +12,46 @@ use tracing::warn;
 use crate::client::CrowdbKvClient;
 use crate::error::{Error, Result};
 
+#[derive(Default)]
+pub(crate) struct Redirects {
+    endpoints: Vec<String>,
+    repeats: u32,
+}
+
 impl CrowdbKvClient {
-    /// If `resp` carries a `NotLeaderHint`, follow it immediately (uncounted
-    /// retry — forward progress toward the real leader) and update the
-    /// topology cache. Returns `None` if `resp` did not indicate not-leader
-    /// (caller should treat it as a normal application error).
-    pub(crate) fn follow_not_leader(
+    /// Follow new hints immediately; repeated or cyclic hints consume a
+    /// bounded election-wait budget rather than spinning on stale authority.
+    pub(crate) async fn follow_not_leader(
         &self,
         store_id: u64,
         group_id: u64,
         resp: &KvResponse,
-    ) -> Option<String> {
-        if resp.not_leader_hint.is_empty() {
-            return None;
+        redirects: &mut Redirects,
+    ) -> Result<Option<String>> {
+        self.follow_hint(store_id, group_id, &resp.not_leader_hint, redirects)
+            .await
+    }
+
+    pub(crate) async fn follow_hint(
+        &self,
+        store_id: u64,
+        group_id: u64,
+        hint: &str,
+        redirects: &mut Redirects,
+    ) -> Result<Option<String>> {
+        if hint.is_empty() {
+            return Ok(None);
         }
-        self.topology
-            .set_leader(store_id, group_id, &resp.not_leader_hint);
-        Some(resp.not_leader_hint.clone())
+        if redirects.endpoints.iter().any(|endpoint| endpoint == hint)
+            || redirects.endpoints.len() > self.retry.max_retries as usize
+        {
+            redirects.repeats = self.count_other(redirects.repeats, "repeated leader hint")?;
+            let endpoint = self.wait_and_refresh_leader(store_id, group_id, hint).await;
+            return Ok(Some(endpoint));
+        }
+        redirects.endpoints.push(hint.to_owned());
+        self.topology.set_leader(store_id, group_id, hint);
+        Ok(Some(hint.to_owned()))
     }
 
     /// A `not leader` failure with an empty hint (the responding replica

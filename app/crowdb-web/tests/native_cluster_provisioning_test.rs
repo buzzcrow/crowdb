@@ -10,6 +10,15 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 struct TestServices(AppState);
+
+async fn assert_initialization_budget(state: &AppState) {
+    let initialization = state.kv_client().await.metrics();
+    assert!(
+        initialization.not_leader_hint_followed < 100,
+        "cold initialization must not spin on leader hints: {initialization:?}"
+    );
+}
+
 impl Drop for TestServices {
     fn drop(&mut self) {
         if std::thread::panicking() {
@@ -342,6 +351,7 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         deploy(&app, node, "kv").await;
     }
     call(&app, "POST", "/api/cluster/init", json!({"nodes":[1,2,3]})).await;
+    assert_initialization_budget(&state).await;
     // An ordinary data destination may live outside the system Store.
     call(&app, "POST", "/api/stores", json!({"store_id":1,"nodes":[1,2,3]})).await;
     call(

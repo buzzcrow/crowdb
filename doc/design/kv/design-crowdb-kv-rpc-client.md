@@ -257,6 +257,12 @@ convention.
 
 ## 13. Topology cache eviction
 
+Within one operation, distinct leader hints are followed immediately. Repeated
+or cyclic hints consume the configured retry budget and use the existing
+election wait and topology refresh rather than issuing an unbounded RPC loop.
+Scan and journal continuations reset this redirect history after a successful
+page. Conditional writes retain their original mutation identity on retries.
+
 `TopologyCache` publishes one immutable `TopologySnapshot`. Every group route
 contains its leader, replica endpoints, read cursor, endpoint statistics, and
 write-slot high-watermark. A refresh builds a complete replacement snapshot;

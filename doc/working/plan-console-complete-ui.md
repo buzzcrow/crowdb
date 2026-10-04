@@ -1112,7 +1112,7 @@ remains to be run and must not be inferred from the S3 API fixture.
 
 - [x] **Verify retained native EC background acceptance**: `pixi run timeout 60s cargo test -p crowdb-chunkdb --test partial_ec_background_test -- --nocapture` passes in 2.88 seconds. Actual KV/DDB and six DiskIO processes cover 7 MiB + 17-byte mirror-to-EC conversion, four missing shard repairs, exact seal and nonzero unwritten tails. This confirms the existing regression; no production change was needed.
 
-## Blocked
+## Previous acceptance blocker — resolved after environment diagnosis
 
 Cold native provisioning remains unaccepted after five diagnostic runs of the
 leader-hint candidate. Do not commit the candidate production changes as a
@@ -1142,3 +1142,42 @@ completed fix or remove R203. Preserve the user's original plan edits.
   across seeds before replacing the hinted route. Keep retry budgets, browser
   deadlines and mutation identity unchanged. Continue only after the required
   user checkpoint; do not infer readiness from unit tests or a passing repeat.
+
+### Route lifecycle diagnosis (2026-10-04)
+
+- Correct the preceding cleanup claim: `clean-env` removed disposable files,
+  but ten native processes from fixture `930735` survived. Their ownership
+  manifests were gone; the cleaner only terminates processes listed in retained
+  manifests. Node 3 still listened on management 19915/RPC 20015, retained the
+  old member endpoints 20013/20014, and held deleted WAL files. Later fixtures
+  reused these endpoints. Earlier failed repeats are environmentally contaminated.
+- Read-only capture during fixture `946351` confirms each new node persisted
+  all three Group 0 members in `conf/node-config.json`. Runtime leader IDs
+  became zero before initialization failed with exhausted not-leader retries;
+  the member files remained present through shutdown. Evidence:
+  `.crowdb-runtime/artifacts/route-observation.jsonl` and
+  `.crowdb-runtime/artifacts/native-restart-failure-946351`.
+- Terminated only the ten processes whose command lines identified the owned
+  old fixture. With no production/test change, the same native API fixture
+  passes in 15.12 seconds, including initialization, exact data reads and six
+  service restarts. Browser cases were not enabled in this diagnostic run.
+- Distinguish durable member endpoints from the elected runtime leader and
+  the client's memory-only leader cache. A successful leaderless topology
+  refresh can replace a cached leader; this behavior alone does not establish
+  the prior failure's root cause. Normal shutdown unregisters the service
+  instance, not the durable group membership. TTL filtering hides stale service
+  observations without deleting their records. DiskDB endpoint caches derive
+  from live registrations separately from persistent DiskGroup ownership.
+- Do not select a new routing design from the contaminated repeats. Remaining
+  diagnosis: why interrupted teardown escaped manifest cleanup, and why Node 2
+  first became unreachable. The candidate still needs uncontaminated browser
+  acceptance before being marked complete.
+
+### Uncontaminated retry acceptance (2026-10-04)
+
+- [x] **Bound repeated Group 0 hints**: the real three-node fixture and all
+  four browser cases pass in 33.15 seconds; hints are 9 rather than thousands.
+  Six service restarts and retained S3 data pass. Zone 1.3 s, graph 1.9 s,
+  Iceberg 6.9 s, S3 4.4 s. All 68 client tests and affected Web/client all-target
+  clippy and Rust fmt pass. Earlier blocked evidence remains above for context;
+  its contaminated repeats do not establish a routing-cache defect.
