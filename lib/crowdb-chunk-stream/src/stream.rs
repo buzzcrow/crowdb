@@ -23,6 +23,7 @@ use crate::mirror_shadow::MirrorShadow;
 use crate::storage::{CursorAdvance, StreamChunkStore, StreamMetadataStore, StreamRegistry};
 use crate::{Result, StreamError};
 
+mod liveness;
 mod observation;
 pub use observation::StreamMetadataObservation;
 
@@ -1086,7 +1087,7 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command
                 },
                 _ = liveness.tick() => {
                     if let Some(chunk_id) = state.manifest.active.as_ref().map(|active| active.chunk_id) {
-                        maintain_liveness(&mut state, chunk_id).await;
+                        liveness::maintain(&mut state, chunk_id).await;
                     }
                     continue;
                 }
@@ -1107,44 +1108,6 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command
         }
     }
     state.closed_view.store(true, Ordering::Release);
-}
-
-async fn maintain_liveness(state: &mut WorkerState, chunk_id: ChunkId) {
-    let mut attempts = 0_u32;
-    loop {
-        match state.chunks.renew_liveness(chunk_id, state.writer_epoch).await {
-            Ok(()) => return,
-            Err(error) => {
-                attempts += 1;
-                tracing::warn!(
-                    stream_high = state.stream_name.high,
-                    stream_low = state.stream_name.low,
-                    writer_epoch = state.writer_epoch,
-                    attempts,
-                    %error,
-                    "chunk-stream idle liveness renewal failed"
-                );
-                if matches!(error, StreamError::StaleWriter) || attempts >= 3 {
-                    match rollover(state).await {
-                        Ok(()) => return,
-                        Err(
-                            error @ (StreamError::StaleWriter
-                            | StreamError::Corruption(_)
-                            | StreamError::InvalidRequest(_)),
-                        ) => {
-                            tracing::warn!(%error, "chunk-stream idle rollover cannot continue safely");
-                            state.stalled = true;
-                            return;
-                        }
-                        Err(rollover_error) => {
-                            tracing::warn!(%rollover_error, "chunk-stream idle rollover remains unavailable");
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
 }
 
 async fn process_append_batch(

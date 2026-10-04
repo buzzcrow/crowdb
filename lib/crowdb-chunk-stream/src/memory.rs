@@ -65,6 +65,7 @@ pub struct MemoryStreamStore {
     chunk_writes: AtomicU64,
     cursor_advances: AtomicU64,
     liveness_renews: AtomicU64,
+    liveness_attempts: AtomicU64,
     pause_writes: AtomicBool,
     pause_reads: AtomicBool,
     active_reads: AtomicUsize,
@@ -100,6 +101,7 @@ impl MemoryStreamStore {
             chunk_writes: AtomicU64::new(0),
             cursor_advances: AtomicU64::new(0),
             liveness_renews: AtomicU64::new(0),
+            liveness_attempts: AtomicU64::new(0),
             pause_writes: AtomicBool::new(false),
             pause_reads: AtomicBool::new(false),
             active_reads: AtomicUsize::new(0),
@@ -202,6 +204,11 @@ impl MemoryStreamStore {
     #[must_use]
     pub fn liveness_renew_count(&self) -> u64 {
         self.liveness_renews.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn liveness_attempt_count_for_tests(&self) -> u64 {
+        self.liveness_attempts.load(Ordering::Acquire)
     }
 
     pub async fn is_released(&self, chunk_id: ChunkId) -> bool {
@@ -471,6 +478,7 @@ impl StreamChunkStore for MemoryStreamStore {
     }
 
     async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
+        self.liveness_attempts.fetch_add(1, Ordering::AcqRel);
         if self
             .fail_next_renewals
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1))

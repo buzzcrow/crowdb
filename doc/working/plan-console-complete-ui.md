@@ -1202,3 +1202,19 @@ completed fix or remove R203. Preserve the user's original plan edits.
   passes in 32.49 s (Zone 1.3 s, graph 2.0 s, Iceberg 6.7 s, S3 4.3 s).
   Fourteen affected ChunkDB cases and protocol geometry case pass; affected
   all-target clippy and formatting pass.
+
+### Idle stream ownership fencing (2026-10-04)
+
+- [x] **Stop superseded idle workers**: confirm a higher stream ownership epoch
+  prevents old idle renewal and successor publication. Existing worker ticks
+  do not honor `stalled`; isolate liveness maintenance in `stream/liveness.rs`,
+  check authoritative manifest before renewal and rollover, and retain recovery
+  for sealed chunks still owned by the current writer. Files: ChunkStream
+  `stream.rs`, `stream/liveness.rs`, test-only memory observations and
+  `tests/idle_authority_test.rs`. Verify current writer remains usable and
+  bounded retries do not monopolize worker admission during outages.
+  Before the fix, the idle takeover regression records three renewal attempts
+  from the retired writer; afterward it records none. Three idle regressions,
+  29 stream cases and nine production-adapter cases pass. Four native-process
+  cases pass in 6.47 s, including higher-epoch idle takeover, restart readback
+  and killed/live-error DiskIO paths. Affected clippy and Rust fmt pass.
