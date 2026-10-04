@@ -382,6 +382,17 @@ extern "C" {
     pub fn ct_clear(t: *mut ct_tree) -> c_int;
     pub fn ct_get_stats(t: *const ct_tree, out: *mut ct_stats);
     pub fn ct_approximate_split_key(t: *const ct_tree, found: *mut i32, key: *mut ct_buf) -> c_int;
+    pub fn ct_inspect_page(
+        t: *const ct_tree,
+        path: *const u32,
+        depth: usize,
+        expected_version: u64,
+        version: *mut u64,
+        root: *mut u64,
+        page: *mut u64,
+        deltas: *mut u32,
+        frame: *mut ct_buf,
+    ) -> c_int;
     pub fn ct_apply_put(
         t: *mut ct_tree,
         slot: u64,

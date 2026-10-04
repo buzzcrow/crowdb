@@ -15,6 +15,18 @@ pub struct TreeObservation {
 }
 
 impl Partition {
+    /// Reads a bounded structural page from this partition's actual tree.
+    ///
+    /// # Errors
+    /// Returns a storage error or a changed-tree observation.
+    pub fn inspect_page(
+        &self,
+        path: &[u32],
+        version: Option<u64>,
+    ) -> Result<crowdb_tree_ffi::page::PageInspection> {
+        self.tree.inspect_page(path, version)
+    }
+
     /// Samples existing metadata and counters without flushing or reading pages.
     ///
     /// # Errors

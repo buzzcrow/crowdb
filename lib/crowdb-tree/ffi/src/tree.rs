@@ -39,6 +39,33 @@ impl std::fmt::Debug for Crowdbtree {
 }
 
 impl Crowdbtree {
+    /// Copies one actual base page, without flushing memory or reading overflow values.
+    pub fn inspect_page(
+        &self,
+        path: &[u32],
+        version: Option<u64>,
+    ) -> Result<crate::page::PageInspection, CtError> {
+        let (mut revision, mut root, mut page, mut deltas) = (0, 0, 0, 0);
+        let mut frame = sys::ct_buf {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        check(unsafe {
+            sys::ct_inspect_page(
+                self.ptr.as_ptr(),
+                path.as_ptr(),
+                path.len(),
+                version.unwrap_or(u64::MAX),
+                &mut revision,
+                &mut root,
+                &mut page,
+                &mut deltas,
+                &mut frame,
+            )
+        })?;
+        crate::page::PageInspection::decode(revision, root, page, deltas, take_buf(frame))
+    }
+
     /// Open (recovering durable state when `path` is set, else fresh in-memory).
     pub fn open(opt: &Config) -> Result<Self, CtError> {
         #[cfg(feature = "test-util")]

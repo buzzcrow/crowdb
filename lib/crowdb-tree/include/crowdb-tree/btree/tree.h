@@ -426,6 +426,12 @@ class Crowdbtree
         return version_.load();
     }
 
+    // Read one immutable base frame through a bounded root/child path. Does not
+    // flush memtables, fold deltas, or follow overflow values. UINT64_MAX starts
+    // a new observation; subsequent requests must retain the returned version.
+    Status inspect_page(const std::vector<uint32_t> &path, uint64_t expected_version, NativeFrame *out,
+                        uint64_t *out_version, uint64_t *out_root, uint32_t *out_deltas) const;
+
     [[nodiscard]] uint64_t durable_snapshot_seq() const
     {
         return durable_snapshot_seq_.load(std::memory_order_acquire);

@@ -241,3 +241,120 @@ async fn native_tree_observation_does_not_flush_pending_mutations() {
     assert_eq!(second.maintenance, first.maintenance);
     assert_eq!(second.maintenance.checkpoints, 0);
 }
+
+#[tokio::test]
+async fn native_page_windows_preserve_bytes_and_reject_changed_cursors() {
+    use crowdb_chunk_kv::{MutationOperation, PartitionTree, RequestId};
+    let (tree, partition) = native_page_partition().await;
+    for sequence in 1..=25 {
+        partition
+            .mutate(
+                u64::MAX,
+                RequestId {
+                    client_high: 1,
+                    client_low: 1,
+                    client_sequence: sequence,
+                },
+                MutationOperation::Put {
+                    key: vec![0xff, u8::try_from(sequence).unwrap()],
+                    value: vec![0; 300],
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tree.checkpoint(0).await.unwrap();
+    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
+    let (head, catalog) = catalog();
+    service.install_catalog(&head, &[catalog]).unwrap();
+    service.install_partition(&partition).unwrap();
+    let app = management_router(ManagementState::new(service));
+    let prefix = format!(
+        "/partitions/{:016x}{:016x}/observation?generation=9&epoch={}&page_path=",
+        ID.high,
+        ID.low,
+        u64::MAX
+    );
+    let get_page = |suffix: String| {
+        let app = app.clone();
+        let uri = format!("{prefix}{suffix}");
+        async move {
+            let response = app
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        }
+    };
+    let (status, first) = get_page(String::new()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let page = &first["page"];
+    assert_eq!(page["rows"].as_array().unwrap().len(), 20);
+    assert_eq!(page["rows"][0]["key"]["hex"], "ff01");
+    assert!(page["rows"][0]["key"]["text"].is_null());
+    assert_eq!(page["rows"][0]["cell"]["value"]["bytes"], 300);
+    assert_eq!(page["rows"][0]["cell"]["value"]["truncated"], true);
+    let cursor = format!(
+        "&tree_version={}&page_fingerprint={}&entry_offset=20",
+        page["version"].as_str().unwrap(),
+        page["fingerprint"]
+    );
+    let (status, second) = get_page(cursor.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["page"]["rows"].as_array().unwrap().len(), 5);
+    assert_eq!(second["page"]["rows"][0]["key"]["hex"], "ff15");
+    assert!(second["page"]["next"].is_null());
+    assert_eq!(
+        get_page("&entry_offset=20".into()).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    partition
+        .mutate(
+            u64::MAX,
+            RequestId {
+                client_high: 1,
+                client_low: 1,
+                client_sequence: 26,
+            },
+            MutationOperation::Put {
+                key: b"new".to_vec(),
+                value: b"value".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    tree.checkpoint(0).await.unwrap();
+    assert_eq!(get_page(cursor).await.0, StatusCode::CONFLICT);
+}
+
+async fn native_page_partition() -> (Arc<crowdb_chunk_kv::CrowdbPartitionTree>, Partition) {
+    use crowdb_chunk_kv::CrowdbPartitionTree;
+    let tree = Arc::new(
+        CrowdbPartitionTree::open(
+            1,
+            &crowdb_tree_ffi::Config {
+                page_store: Some(crowdb_tree_ffi::PageStore::open_mem(4096).unwrap().into()),
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let partition = Partition::open(
+        PartitionId {
+            high: ID.high,
+            low: ID.low,
+        },
+        PartitionRange {
+            start: None,
+            end: None,
+        },
+        u64::MAX,
+        PartitionConfig::default(),
+        tree.clone(),
+        Arc::new(journal().await),
+    )
+    .unwrap();
+    (tree, partition)
+}

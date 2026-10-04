@@ -8,6 +8,7 @@ import { identity, range, type Partition } from './catalog';
 import { RuntimeObservation } from './RuntimeObservation';
 import { useRuntimeObservation } from './useRuntimeObservation';
 import { TreeStorage, JournalStorage } from './StorageObservation';
+import { PageExplorer, initialPageCursor } from './PageExplorer';
 
 function Properties({ values, stacked = false }: { stacked?: boolean; values: Record<string, string | null> }) {
   return <dl className={stacked ? "tw-space-y-3 tw-text-sm" : "tw-grid tw-grid-cols-[auto_minmax(0,1fr)] tw-gap-x-6 tw-gap-y-2 tw-text-sm"}>
@@ -35,7 +36,7 @@ export function PartitionDetail({ partition: p, generation, currentGeneration, a
       {tab === 'Overview' && <><Properties values={{ Range: range(p), 'Assigned server': p.owner_id, Endpoint: p.endpoint, 'Owner epoch': p.epoch, 'Catalog state': p.state, Transition: p.transition_id }} />
         <p className="tw-text-sm tw-text-muted">Catalog assignment and owner runtime are separate observations, checked against the same generation and owner epoch.</p></>}
       {tab === 'Tree' && <><Properties values={{ 'Tree ID': p.artifact.tree_id, 'Overlay base tree manifest': overlay?.base_tree_manifest ?? null, 'Overlay root generation': overlay?.base_root_manifest_generation ?? null, 'Overlay base applied sequence': overlay?.base_applied_seq ?? null }} />
-        <p role="status" className="tw-rounded tw-border tw-border-border tw-p-3 tw-text-sm">KV Page tree and key/value inspection are not yet available from the server. Keys and bounds will use hexadecimal bytes; journal extent pages below are not KV data pages.</p><TreeStorage value={runtime.value?.tree} /></>}
+        <PageExplorer active={active} partition={p} generation={generation} catalogPage={catalogPage} catalogOffset={catalogOffset} cursor={query.page ?? initialPageCursor()} onCursor={page => onQuery({ ...query, page })} propertyHost={propertyHost} /><TreeStorage value={runtime.value?.tree} /></>}
       {tab === 'Journal' && <>
         {overlay && <div className="tw-rounded tw-border tw-border-degraded tw-p-4 tw-space-y-3"><h3 className="tw-font-semibold">Inherited parent stream</h3><Properties values={{ Stream: identity(overlay.source_stream_name), 'Source partition': identity(overlay.source_partition_id), 'Manifest generation': overlay.source_stream_manifest_generation, 'Replay offset (bytes)': overlay.replay_offset, 'Cutover offset (bytes)': overlay.cutover_offset, 'Cutover sequence': overlay.cutover_seq }} /></div>}
         <div className="tw-rounded tw-border tw-border-accent tw-p-4 tw-space-y-3"><h3 className="tw-font-semibold">Partition journal stream</h3><Properties values={{ Stream: identity(p.artifact.stream_name), 'Start sequence from overlay': overlay?.target_stream_start_seq ?? null }} /></div>

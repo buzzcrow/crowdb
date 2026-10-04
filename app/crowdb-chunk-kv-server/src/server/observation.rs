@@ -10,7 +10,9 @@ use serde_json::{json, Value};
 
 use super::ChunkKvService;
 
+mod pages;
 mod storage;
+pub(crate) use pages::PageQuery;
 
 impl ChunkKvService {
     /// Samples one writer under the requested catalog and ownership fences.

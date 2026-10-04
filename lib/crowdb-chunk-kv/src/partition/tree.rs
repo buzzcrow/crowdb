@@ -105,6 +105,19 @@ pub trait PartitionTree: Send + Sync {
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
         None
     }
+    /// Copies one structural page without flushing or folding pending writes.
+    ///
+    /// # Errors
+    /// Returns a changed observation, invalid path, or storage read failure.
+    fn inspect_page(
+        &self,
+        _path: &[u32],
+        _version: Option<u64>,
+    ) -> Result<crowdb_tree_ffi::page::PageInspection> {
+        Err(ChunkKvError::InvalidRequest(
+            "page inspection is unavailable for this tree backend".into(),
+        ))
+    }
     /// Estimates retained pack bytes without reading keys, pages or remote metadata.
     ///
     /// # Errors
@@ -490,6 +503,23 @@ impl PartitionTree for CrowdbPartitionTree {
 
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
         Some(self.tree.stats())
+    }
+
+    fn inspect_page(
+        &self,
+        path: &[u32],
+        version: Option<u64>,
+    ) -> Result<crowdb_tree_ffi::page::PageInspection> {
+        self.tree
+            .inspect_page(path, version)
+            .map_err(|error| match error {
+                crowdb_tree_ffi::CtError::Unavailable => ChunkKvError::RequestConflict,
+                crowdb_tree_ffi::CtError::InvalidArgument => {
+                    ChunkKvError::InvalidRequest("invalid tree page path".into())
+                }
+                crowdb_tree_ffi::CtError::ResourceExhausted => ChunkKvError::Overloaded,
+                other => map_tree_read_error(other),
+            })
     }
 
     fn checkpoint_state(&self) -> Result<(u64, u64)> {

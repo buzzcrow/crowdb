@@ -383,6 +383,16 @@ async fn assert_native_browser_diagnostics(app: axum::Router) {
 #[tokio::test]
 #[ignore = "Cold normal three-node chain; requires all six installed native server binaries"]
 async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() {
+    native_cluster(false).await;
+}
+
+#[tokio::test]
+#[ignore = "Native Page and Iceberg inspection; requires all six installed server binaries"]
+async fn native_page_and_iceberg_inspection() {
+    native_cluster(true).await;
+}
+
+async fn native_cluster(inspection_only: bool) {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("native-console-provisioning");
     let mut state = AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned());
     // Speed up only DDB observation cadence; all service deployment policies
@@ -462,11 +472,25 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         }
     }
     assert_services(&app).await;
+    if inspection_only {
+        assert_native_browser_diagnostics(app.clone()).await;
+        return;
+    }
     if std::env::var_os("CROWDB_NATIVE_LOAD_ACCEPTANCE").is_some() {
         native_load::TestNativeLoad::verify(&app, &state).await;
         return;
     }
-    let namespaces = call(&app, "GET", "/api/access/iceberg/v1/namespaces", Value::Null).await;
+    assert_native_access(&app).await;
+    assert_native_locations(&app, &state).await;
+    assert_native_restarts(&app, &state).await;
+    assert_native_locations(&app, &state).await;
+    if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
+        assert_native_browser_diagnostics(app.clone()).await;
+    }
+}
+
+async fn assert_native_access(app: &axum::Router) {
+    let namespaces = call(app, "GET", "/api/access/iceberg/v1/namespaces", Value::Null).await;
     assert!(namespaces["namespaces"].is_array());
     // Listing validates native signing and automatic catalog provisioning.
     let response = app
@@ -484,12 +508,6 @@ async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() 
         .await
         .unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("ListAllMyBucketsResult"));
-    assert_native_locations(&app, &state).await;
-    assert_native_restarts(&app, &state).await;
-    assert_native_locations(&app, &state).await;
-    if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
-        assert_native_browser_diagnostics(app.clone()).await;
-    }
 }
 
 async fn assert_bound_groups(app: &axum::Router, hardware: &crowdb_kv_client::HardwareClient) {

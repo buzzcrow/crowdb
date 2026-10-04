@@ -30,6 +30,7 @@ use crate::{
 mod activation;
 mod load_sampling;
 mod observation;
+pub(crate) use observation::PageQuery;
 
 const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
 const DEFAULT_INITIALIZATION_WAITERS: usize = 1_024;

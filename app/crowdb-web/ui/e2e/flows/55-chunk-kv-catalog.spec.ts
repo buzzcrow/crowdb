@@ -3,6 +3,32 @@
 // Baseline: partition/overlay 1.4s, unavailable 0.208s, journal 0.534s, placement 0.321s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
 
+// Baseline: new actual native Page flow (2026-10-04).
+test('native diagnostics: Chunk-KV actual Page observation', async ({ page, request }) => {
+  await page.goto('/?domain=Chunk-KV');
+  const catalogResponse = await request.get('/api/chunk-kv/catalog?page=0&offset=0');
+  expect(catalogResponse.ok(), await catalogResponse.text()).toBeTruthy();
+  const catalog = await catalogResponse.json();
+  const partition = catalog.entries[0];
+  const query = new URLSearchParams({ id: partition.id, epoch: partition.epoch, generation: catalog.generation, page: '0', offset: '0', page_path: '' });
+  const response = await request.get(`/api/chunk-kv/runtime?${query}`);
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const observation = await response.json();
+  expect(observation.page.rows.length).toBeLessThanOrEqual(20);
+  await page.getByTestId('chunk-kv-graph').getByRole('button', { name: `KV Tree for ${partition.id}`, exact: true }).click();
+  const explorer = page.getByRole('region', { name: 'KV Page explorer', exact: true });
+  await expect(explorer.getByRole('button', { name: `Root ${observation.page.root}`, exact: true })).toBeVisible();
+  await expect(explorer).toContainText(`${observation.page.kind === 'inner' ? 'Inner' : 'Leaf'} Page ${observation.page.id}`);
+  await expect(explorer.getByRole('table', { name: 'KV Page entries' }).getByRole('row')).toHaveCount(observation.page.rows.length + 1);
+  await explorer.getByLabel('UTF-8 text').check();
+  await expect(explorer.getByRole('columnheader', { name: /UTF-8/ })).toBeVisible();
+  await page.screenshot({ path: '/tmp/crowdb-kv-page-inspector.png', fullPage: true });
+  query.set('tree_version', '18446744073709551614');
+  expect((await request.get(`/api/chunk-kv/runtime?${query}`)).status()).toBe(409);
+  query.delete('tree_version'); query.set('entry_offset', '20');
+  expect((await request.get(`/api/chunk-kv/runtime?${query}`)).status()).toBe(400);
+});
+
 test('Chunk-KV graph bounds expanded split windows', async ({ page }) => {
   const entries = Array.from({ length: 12 }, (_, i) => ({
     id: i.toString(16).padStart(32, '0'), start: '', end: null, owner_id: '1',

@@ -19,7 +19,7 @@ export function TreeStorage({ value }: { value?: TreeObservation }) {
     {value.runtime ? <Fields values={Object.fromEntries(Object.entries(value.runtime).map(([name, value]) => [name.replaceAll('_', ' '), value]))} /> : <p>Native page and memory counters unavailable for this tree backend.</p>}
     <h3 className="tw-font-semibold">Maintenance and materialization</h3>
     <Fields values={Object.fromEntries(Object.entries(value.maintenance).map(([name, value]) => [name.replaceAll('_', ' '), value]))} />
-    <p className="tw-text-xs tw-text-muted">Counters describe this open handle. Current root-catalog layout, retention pins and page child links require a separate bounded metadata inspection API.</p>
+    <p className="tw-text-xs tw-text-muted">Counters describe this open handle. The Page explorer above reads structural base pages separately; these counters do not establish retention pins or serving authority.</p>
   </section>;
 }
 

@@ -327,6 +327,8 @@ ct_status ct_clear(ct_tree *t);
 void ct_get_stats(const ct_tree *t, ct_stats *out);
 // Advisory resident-page separator; owned key buffer, no page or catalog I/O.
 ct_status ct_approximate_split_key(const ct_tree *t, int32_t *found, ct_buf *key);
+ct_status ct_inspect_page(const ct_tree *t, const uint32_t *path, size_t depth, uint64_t expected_version,
+                          uint64_t *version, uint64_t *root, uint64_t *page, uint32_t *deltas, ct_buf *frame);
 
 // Flush C++ metrics into a formatted string (for FFI return to Rust).
 // Returns a malloc'd null-terminated string; caller must ct_free_string it.

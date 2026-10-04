@@ -34,6 +34,11 @@ pub(crate) struct RuntimeQuery {
     stream_generation: Option<u64>,
     #[serde(default)]
     stream_offset: usize,
+    page_path: Option<String>,
+    tree_version: Option<u64>,
+    page_fingerprint: Option<u32>,
+    #[serde(default)]
+    entry_offset: usize,
 }
 
 pub(crate) async fn runtime(
@@ -45,6 +50,15 @@ pub(crate) async fn runtime(
     }
     if query.stream_offset > 0 && query.stream_generation.is_none() {
         return Err(err_400("Extent continuation requires a stream generation"));
+    }
+    if query
+        .page_path
+        .as_ref()
+        .is_some_and(|path| path.len() > 352 || path.split('.').count() > 32)
+        || query.entry_offset > 131_072
+        || query.entry_offset > 0 && (query.tree_version.is_none() || query.page_fingerprint.is_none())
+    {
+        return Err(err_400("Invalid tree page cursor"));
     }
     tokio::time::timeout(Duration::from_secs(5), inspect(&state, &query))
         .await
@@ -89,6 +103,19 @@ async fn inspect(state: &AppState, query: &RuntimeQuery) -> Result<Json<Value>, 
     }
     url.query_pairs_mut()
         .append_pair("stream_offset", &query.stream_offset.to_string());
+    if let Some(path) = &query.page_path {
+        url.query_pairs_mut()
+            .append_pair("page_path", path)
+            .append_pair("entry_offset", &query.entry_offset.to_string());
+        if let Some(version) = query.tree_version {
+            url.query_pairs_mut()
+                .append_pair("tree_version", &version.to_string());
+        }
+        if let Some(fingerprint) = query.page_fingerprint {
+            url.query_pairs_mut()
+                .append_pair("page_fingerprint", &fingerprint.to_string());
+        }
+    }
     let observation = request(url).await?;
     validate_identity(&observation, entry, query)?;
     if query
@@ -121,7 +148,7 @@ async fn request(url: reqwest::Url) -> Result<Value, Failure> {
         .map_err(|error| err_502(error.to_string()))?;
     if response.status() == reqwest::StatusCode::CONFLICT {
         return Err(err_409(
-            "Owner has a different catalog or writer; refresh the catalog",
+            "Owner, catalog or tree page observation changed; refresh the catalog or page root",
         ));
     }
     if !response.status().is_success() {
