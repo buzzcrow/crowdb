@@ -97,3 +97,29 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
     await expect(page.getByRole('navigation', { name: 'S3 buckets' })).not.toContainText(demoBucket);
   });
 });
+
+test('Managed native authority outage hides stale topology and retains monitor observation', async ({ page }) => {
+  const pid = Number(process.env.CROWDB_NATIVE_KV_PID);
+  expect(pid, 'Run the owned host-native managed runner').toBeGreaterThan(0);
+  await page.goto('/');
+  await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0');
+  await page.clock.install();
+  process.kill(pid, 'SIGSTOP');
+  try {
+    // One 3-second UI poll plus the backend's 3-second authority budget.
+    const failed = page.waitForResponse(response => response.url().endsWith('/api/preview') && response.status() === 503, { timeout: 10000 });
+    await page.clock.runFor(3001);
+    const response = await failed;
+    const body = await response.json();
+    expect(body.reason).toBe('group0_unavailable');
+    expect(body.monitor.services.kv.pid).toBe(pid);
+    await expect(page.getByTestId('managed-unavailable')).toContainText('Group 0 is unavailable');
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'N-1', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Monitor status' })).toBeVisible();
+  } finally {
+    process.kill(pid, 'SIGCONT');
+  }
+  await page.clock.runFor(3001);
+  await expect(page.getByTestId('managed-unavailable')).toHaveCount(0);
+  await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
+});

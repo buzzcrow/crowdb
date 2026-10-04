@@ -19,7 +19,7 @@ async function main() {
     await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0', { timeout: 3000 });
     await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only', { timeout: 3000 });
     await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible({ timeout: 3000 });
-    for (const domain of ['cluster', 'kv', 'chunk', 'iceberg', 's3']) {
+    for (const domain of ['cluster', 'kv', 'capacity', 'chunk', 'chunk-kv', 'iceberg', 's3']) {
       await expect(page.getByTestId(`domain-${domain}`)).toBeVisible({ timeout: 3000 });
     }
     await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);

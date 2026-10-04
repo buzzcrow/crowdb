@@ -23,3 +23,25 @@ it('rejects a late old-owner observation and exposes stale runtime cursors', asy
   await waitFor(() => expect(result.current.error).toContain('409'));
   expect(result.current.value).toBeNull();
 });
+
+it('rejects inconsistent stream generations and oversized windows before publishing runtime data', async () => {
+  const journal = (generation: string, count: number) => ({ generation, offset: 100, extent_pages: Array.from({ length: count }, (_, index) => ({ page_index: String(index) })) });
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: journal('18', 5) })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: journal('17', 101) })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ journal: { ...journal('17', 1), offset: 0 } })));
+  vi.stubGlobal('fetch', fetcher);
+  const props = { active: true, partition: { id: 'partition', epoch: '9007199254740993' } as Partition,
+    generation: '9007199254740997', catalogPage: 0, catalogOffset: 0,
+    cursor: { generation: '17', offset: 100 }, onCursor: vi.fn() };
+  const { result, rerender } = renderHook(useRuntimeObservation, { initialProps: props });
+  await waitFor(() => expect(result.current.error).toContain('Stream manifest changed'));
+  expect(result.current.value).toBeNull();
+  rerender({ ...props, cursor: { generation: '17', offset: 0 } });
+  await waitFor(() => expect(result.current.error).toContain('Extent index exceeds 100'));
+  expect(result.current.value).toBeNull();
+  act(() => result.current.refresh());
+  expect(props.onCursor).toHaveBeenCalledWith({ offset: 0 });
+  await waitFor(() => expect(result.current.value?.journal?.extent_pages).toHaveLength(1));
+  expect(new URL(fetcher.mock.calls[0][0], 'http://localhost').searchParams.get('epoch')).toBe('9007199254740993');
+});

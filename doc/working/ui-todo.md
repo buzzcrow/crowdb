@@ -182,13 +182,10 @@ unaccepted; this is not a full-suite result.
   unique, and pre-restart S3 content reads back. The latest post-restart native
   browser run passes all four domain cases in a 34.49-second owned fixture.
   Queue partial-plan/prerequisite-arrival acceptance is recorded separately above.
-- [ ] **Mixed allocation-unit provisioning failure**: accepting a 128-KiB
-  unit on DG 1 beside 1-MiB units on DG 2/3 makes Chunk-KV bootstrap fail with
-  `maintenance is degraded: Internal`. Native DDB logs report a 2048-unit
-  block request against a 1024-unit Zone on DG 2. Determine the supported
-  geometry contract and either make allocation byte-correct across different
-  units or reject incompatible topology before service bootstrap. Do not
-  present this as an unexplained generic internal error.
+- [x] **Allocation geometry closure**: actual 128-KiB/1-MiB topology returns
+  early 409 for ChunkDB and Chunk-KV, with both unit sizes and the uniform-unit
+  invariant. No rejected service is spawned. Native fixture passes in 5.64 s;
+  mixed-unit support remains outside scope.
 - [ ] **Create defaults acceptance**: conflict-free defaults are implemented;
   complete repeated-create and reopen acceptance across IDs, host listener
   ports, DiskDB port ranges and dependency references.
@@ -618,8 +615,8 @@ loss beyond recovery capacity.
 
 This section is the current handoff scope. Older unchecked inventories are
 historical evidence, not permission to repeat completed work or redesign it.
-The current model implements only items 1–2; items 3–8 are reserved for the
-user's next model. Fix defects necessary for each item, without expanding into
+Items 1–2 are complete; the user has authorized the current model to finish
+items 3–8. Fix defects necessary for each item, without expanding into
 unrelated product features. Record exact verification and remaining gaps.
 
 1. **Chunk-KV Page explorer**: add bounded real root/child/leaf inspection,

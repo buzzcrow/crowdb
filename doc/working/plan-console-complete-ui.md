@@ -1441,3 +1441,125 @@ override that scope. The prior stopping point below records the previous pass.
   retry policy or relaxed assertions were introduced.
 - Tasks 1–2 are complete. Stop here. Tasks 3–8 retain the explicit behavior and
   non-goals in `ui-todo.md`; R203, its backlog entry and this plan remain open.
+
+## Resumed execution scope: remaining acceptance (2026-10-04)
+
+The user switched models and authorized tasks 3–8. The previous stopping points
+are historical. The behavior and non-goals in `ui-todo.md` remain binding.
+
+- [~] **Native windows and failure baseline**: map current intercepted cases to
+  actual service/data fixtures; reproduce the full restart diagnostic and
+  identify the earliest failure before extending Capacity/Chunk/CKV/S3 coverage.
+- [ ] **Complete bounded data acceptance**: actual replacement windows,
+  multi-Strip placement, stale generations and unavailable owner/allocation.
+  Files: existing domain E2E specs, native fixture and scoped domain hooks/APIs.
+- [ ] **Lifecycle and defaults**: repeat create/reopen, typed auxiliary lifecycle,
+  interrupted progress/reconciliation and reset cancellation with actual PIDs.
+  Files: shell/Cluster specs and existing lifecycle/server integration tests.
+- [ ] **Retained-byte balancing**: reclamation estimates and unequal native load
+  redistribution, preserving ordinary heartbeats and serving deadlines.
+  Files: native load helper and relevant monitor/Chunk-KV tests/implementation.
+- [x] **Geometry closure**: verify the existing early incompatible-unit rejection
+  and no partial bootstrap, then remove the obsolete open checkbox.
+- [ ] **Modes and packaging**: actual managed shell/embedding/capability cases;
+  separately attempt image build and image acceptance, recording prerequisites.
+- [ ] **Final acceptance and cleanup**: remove obsolete intercepted acceptance,
+  run ordered native scenarios and relevant gates, reconcile the issue list and
+  close the requirement only when all accepted boundaries are established.
+
+### Resumed baseline evidence
+
+- Fresh builds of all Rust services and CLI complete. The original full
+  three-node six-service restart/data fixture passes in 16.70 s, without browser
+  selection or altered deadlines. Previous process-loss evidence remains
+  historical; this passing reproduction does not identify its original cause.
+- Actual incompatible-unit fixture passes in 5.64 s: both ChunkDB and Chunk-KV
+  deployments return 409 naming 131072/1048576 and uniform-unit requirements;
+  server count stays six, so no rejected service is spawned.
+- Routine browser baseline collects 85 tests and stops at the first forbidden
+  intercepted response (1 failed, 84 not run); owned cleanup completes in 8 ms.
+- New actual Chunk fixture allocates 21 S3 chunks, including Mirror ×3 with 17
+  strips and EC 8+4 with three strips. Native replacement/placement/owner outage
+  browser checks pass in 9.1 s; owned fixture takes 28.46 s. Every visible block
+  is compared with the actual API's disk/node/group/zone/unit offset.
+- Shell failure now uses a genuinely closed listener; embedding uses an actual
+  reverse proxy. All three affected shell cases pass (0.199/1.9/0.471 s), with
+  no intercepted response. Managed mode cases are retained by the separate
+  actual monitor/browser fixture and actual-image authority-outage script.
+- Actual image build compiles release binaries, DiskIO and UI, and assembles the
+  runtime. Docker then fails resolving the pinned Ubuntu base: its configured
+  proxy at 192.168.31.238:7897 times out. Image acceptance remains unverified;
+  no Docker daemon, deployment profile, authentication or base image is changed.
+
+### Stream publication and multipart regression
+
+- The native 101-part producer exposed an intermittent backend split failure:
+  `sealed offset is not covered by extent directory`. The append worker exposes
+  its atomic tail before publishing corresponding extent pages; read-only open
+  could also widen a captured manifest to a concurrent unpublished cursor.
+- Reads now derive their end from the same immutable manifest as their extent
+  directory. Read-only open validates the physical cursor without widening its
+  captured published boundary. No locks, caller retries, or timing policy changes.
+- A deterministic paused-publication regression and all 29 stream tests pass.
+  All 41 Chunk-KV library tests, Rust fmt and stream all-target clippy pass.
+- The native S3 case passes in 10.8 s: 21 bucket replacement windows, 101 pending
+  parts in 100/1 windows, history, actual abort/404 and explicit refresh. The UI
+  now clears old parts and continuation before inspection while preserving scope.
+  Production UI build and E2E TypeScript checks pass. Fixture cleanup aborts
+  uploads and removes created buckets; no persistent user deployment is touched.
+
+- Actual DDB interruption/restart passes in 1.8 s (owned chain 15.17 s): hardware
+  remains at all five scopes, Busy/Free become Unknown and explicit refresh
+  restores data without losing the selected disk. Replaces the intercepted
+  unknown-usage case; scanner/recalc acceptance still needs consolidation.
+- Actual auxiliary menus pass in 6.5 s (owned chain 19.94 s): CDB, DiskIO,
+  Chunk-KV and Access stop/start preserve their typed IDs, replace their PIDs,
+  and keep exactly 18 deployment records. OS checks treat Linux zombies as
+  exited, matching the production lifecycle contract; absent PID is omitted
+  from `/api/servers`, not serialized as null.
+- Shell defaults/filter/health cases pass: 2 passed, 0 failed/skipped, 4.9/2.0 s;
+  owned routine cleanup takes 6 ms.
+- Normal 32-MiB native load/heartbeat/restart chain passes in 65.87 s. Retained
+  bytes remain 52,139,592 across restart. This establishes recovery and heartbeat
+  continuity, not unequal-weight redistribution. That acceptance remains open.
+- New native tree-pack regression verifies current retained-pack estimates are
+  below cumulative pack writes and survive old-generation reclamation/reopen
+  with the current payload intact. All 48 FFI tests and all-target clippy pass.
+
+
+### Managed services and native catalog consolidation
+
+- Added `tools/pixi-tasks/test-console-managed-native.py`: starts the actual
+  managed monitor/profile/native services in an owned temporary root with
+  namespace-allocated ports, verifies readiness, and stops its process group
+  and removes its root even on failure. It preserves persistent deployments.
+- Actual managed selection: 2 passed, 0 failed/skipped (14.7 s); readiness
+  6.81 s, teardown 0.46 s. KV/Iceberg/S3/Chunk operations and forbidden hardware
+  writes are verified. The final case pauses actual Group 0, checks causal
+  503/unavailable shell, and resumes it. This is not Docker image acceptance.
+- Native Journal owner interruption/Chunk return and Access catalog interruption
+  pass in their dedicated selections (1.5 s and 0.826 s). Real auxiliary
+  dialogs also pass repeated reopen/default IDs/ports/dependencies (3.3 s).
+- Removed the five intercepted Iceberg cases in favor of its three real native
+  cases plus managed catalog writes. Removed intercepted Chunk-KV presentation
+  cases: real graph/Page/Journal tests retain browser behavior; component/hook
+  tests retain 12-split replacement/collapse, inherited/current stream identity,
+  exact integers, extent replacement and stale/oversized/late-owner rejection.
+  Synthetic component inputs remain unit tests, not native transition evidence.
+- Frontend gate: 135 tests pass across 25 files; E2E TypeScript and Docker browser
+  script syntax check pass. Full native integration is still not green.
+- Ordered native attempt 1: 16 collected, 14 passed, 1 failed, 1 phase skip
+  (90.29 s owned chain). Journal incorrectly assumed the first range contained
+  its write after earlier cases caused a real split; select an actual active
+  journal range instead. The corrected case passes in subsequent ordered runs.
+- Ordered native attempt 2: 17 collected, 15 passed, 1 failed, 1 phase skip
+  (98.41 s owned chain). Multipart first-part PUT returned 503; Access reported
+  no cached endpoint for DiskDB group 2. KV Node 2 disappeared without a logged
+  panic. Logs: `.crowdb-runtime/artifacts/native-restart-failure-1300942`.
+- A subsequent normal ordered reproduction: 13 passed, 3 failed, 1 phase skip;
+  S3 setup/mutations timed out after actual KV Node 1 disappeared. Logs:
+  `.crowdb-runtime/artifacts/native-restart-failure-1308828`. No timeout, retry,
+  assertion, or service policy was relaxed. Signal/exit diagnosis continues.
+- Whole-process strace cannot launch the installed snap browser under ptrace;
+  that diagnostic run failed before browser cases and is not product evidence.
+  Restricting signal observation to KV services is the next diagnostic step.

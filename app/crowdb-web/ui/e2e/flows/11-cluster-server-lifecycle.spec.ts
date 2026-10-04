@@ -377,140 +377,39 @@ test.describe('cluster · server lifecycle', () => {
   });
 });
 
-// Baseline: auxiliary deployment 2.4s (2026-10-03)
-test('auxiliary deployments use typed parameters, identities and lifecycle menus', async ({ page, baseURL }) => {
-  page.setDefaultTimeout(3000);
-  await seedRackAndNode(baseURL!, 495, 495);
-  const services: object[] = [];
-  const requests: { kind: string; instance_id: string; [key: string]: unknown }[] = [];
-  const stopped: string[] = [];
-  await page.route('**/api/servers', route => route.fulfill({ json: services }));
-  await page.route('**/api/deployment-defaults', route => route.fulfill({ json: {
-    chunkdb: { instance_id: '1', http_port: 12010, rpc_port: 12110 },
-    diskio: { instance_id: '1', rpc_port: 13010 },
-    'chunk-kv': { instance_id: '1', http_port: 15010, rpc_port: 15110 },
-    'access-server': { instance_id: '1', http_port: 9092, s3_port: 9091 },
-  } }));
-  await page.route('**/api/stores?*', route => route.fulfill({ json: [{ store_id: '7', nodes: [], groups: [] }] }));
-  await page.route('**/api/nodes/495/disk-groups', route => route.fulfill({ json: [{ id: 8, node_id: 495, rack_id: 495, name: 'Capacity disks', status: 'active' }] }));
-  await page.route('**/api/nodes/495/services/deploy', route => {
-    const body = route.request().postDataJSON(); requests.push(body);
-    services.push({ id: `${body.kind}-${body.instance_id}`, node_id: 495, service_type: body.kind, pid: 12345, health: 'unknown' });
-    return route.fulfill({ status: 201, json: { id: `${body.kind}-${body.instance_id}` } });
-  });
-  await page.route('**/api/services/*/stop', route => {
-    stopped.push(new URL(route.request().url()).pathname);
-    return route.fulfill({ json: { pid: null } });
-  });
+// Baseline: new native defaults/reopen acceptance (2026-10-04).
+test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and valid dependencies', async ({ page, request }) => {
+  const response = await request.get('/api/deployment-defaults?node_id=1');
+  expect(response.ok(), await response.text()).toBe(true);
+  const defaults = await response.json();
+  const serversResponse = await request.get('/api/servers');
+  expect(serversResponse.ok()).toBe(true);
+  const servers = await serversResponse.json();
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await expect(sidebar.getByText('N-495', { exact: true })).toBeVisible({ timeout: 3000 });
-  for (const [kind, label, prefix] of [['chunkdb', 'CDB (ChunkDB)', 'CDB'], ['diskio', 'DiskIO', 'DIO'], ['chunk-kv', 'Chunk-KV', 'CKV'], ['access-server', 'Access Server', 'AS']]) {
-    await sidebar.getByText('N-495', { exact: true }).click({ button: 'right' });
-    await page.getByRole('menuitem', { name: `Deploy ${label}`, exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: `Deploy ${label}`, exact: true });
-    await expect(dialog.getByRole('button', { name: 'Deploy service', exact: true })).toBeEnabled();
-    await dialog.getByLabel('Instance ID', { exact: true }).fill('9007199254740993');
-    if (kind === 'diskio') await dialog.getByLabel('Disk group', { exact: true }).selectOption('8');
-    if (kind === 'chunk-kv') await dialog.getByLabel('Metadata store', { exact: true }).selectOption('7');
-    await dialog.getByRole('button', { name: 'Deploy service', exact: true }).click();
-    await expect(dialog).toHaveCount(0);
-    const item = sidebar.getByText(`${prefix}-9007199254740993`, { exact: true });
-    await expect(item).toBeVisible();
-    await item.click();
-    await expect(page.getByRole('complementary', { name: 'Entity inspector' }).getByText(label, { exact: true })).toBeVisible();
-    await expect(page.locator(`[data-id="SERVICE-${kind}-9007199254740993"]`)).toContainText(`${prefix}-9007199254740993`);
-    await sidebar.getByText('N-495', { exact: true }).click({ button: 'right' });
-    await page.getByRole('menuitem', { name: `${prefix}-9007199254740993 Running`, exact: true }).hover();
-    await expect(page.getByRole('menuitem', { name: 'Stop CrowDB Storage', exact: true })).toHaveCount(0);
-    await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
-    await expect.poll(() => stopped.includes(`/api/services/${kind}-9007199254740993/stop`), { timeout: 3000, intervals: [100] }).toBe(true);
+  for (const [kind, label] of [['chunkdb', 'CDB (ChunkDB)'], ['diskio', 'DiskIO'], ['chunk-kv', 'Chunk-KV'], ['access-server', 'Access Server']]) {
+    for (let reopen = 0; reopen < 2; reopen++) {
+      await sidebar.getByRole('button', { name: 'N-1', exact: true }).click({ button: 'right' });
+      await page.getByRole('menuitem', { name: `Deploy ${label}`, exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: `Deploy ${label}`, exact: true });
+      await expect(dialog.getByRole('button', { name: 'Deploy service', exact: true })).toBeEnabled();
+      await expect(dialog.getByLabel('Instance ID', { exact: true })).toHaveValue(defaults[kind].instance_id);
+      expect(servers.some((server: { id: string }) => server.id === `${kind}-${defaults[kind].instance_id}`)).toBe(false);
+      const fields = kind === 'diskio' ? [['RPC port', 'rpc_port']] : kind === 'access-server'
+        ? [['Iceberg HTTP port', 'http_port'], ['S3 HTTP port', 's3_port']]
+        : [['Management HTTP port', 'http_port'], ['RPC port', 'rpc_port']];
+      for (const [field, key] of fields) await expect(dialog.getByLabel(field, { exact: true })).toHaveValue(String(defaults[kind][key]));
+      if (kind === 'diskio') await expect(dialog.getByLabel('Disk group', { exact: true })).toHaveValue('1');
+      if (kind === 'chunk-kv') {
+        await expect(dialog.getByLabel('Metadata store', { exact: true })).toHaveValue('1');
+        await expect(dialog.getByLabel('Journal metadata group', { exact: true })).toHaveValue('1');
+      }
+      await expect(dialog.getByLabel('Single-node test deployment (reduced redundancy)')).not.toBeChecked();
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+    }
   }
-  expect(requests.map(request => request.kind)).toEqual(['chunkdb', 'diskio', 'chunk-kv', 'access-server']);
-  expect(requests.every(request => request.instance_id === '9007199254740993' && request.test_single_node === false)).toBe(true);
-  expect(requests[1]).toMatchObject({ disk_group_id: 8 });
-  expect(requests[1]).not.toHaveProperty('http_port');
-  expect(requests[2]).toMatchObject({ metadata_store_id: 7 });
-  expect(requests[3]).toMatchObject({ s3_port: 9091, http_port: 9092 });
-  expect(requests[3]).not.toHaveProperty('rpc_port');
-});
-
-// Baseline: 0.681s (2026-10-03), before session queue.
-test('default service plan waits for Group 0 without using single-node mode', async ({ page, baseURL }) => {
-  await seedRackAndNode(baseURL!, 496, 496);
-  const services = [{ id: '496', node_id: 496, service_type: 'kv', pid: 123, health: 'up' }, { id: 'diskdb-496', node_id: 496, service_type: 'diskdb', pid: 124, health: 'up' }];
-  let deployments = 0;
-  await page.route('**/api/servers', route => route.fulfill({ json: services }));
-  await page.route('**/api/stores?*', route => route.fulfill({ json: [] }));
-  await page.route('**/api/nodes/496/services/deploy', route => { deployments++; return route.fulfill({ status: 500, json: { error: 'must not deploy before Group 0' } }); });
-  await page.goto('/?domain=Cluster');
-  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByText('N-496', { exact: true }).click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Deploy default services', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Node 496 services', exact: true });
-  await dialog.getByRole('button', { name: 'Deploy missing services', exact: true }).click();
-  await expect(dialog.getByRole('listitem')).toHaveCount(6);
-  await expect(dialog.getByRole('status').filter({ hasText: 'initialize Group 0' })).toHaveCount(4);
-  await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeEnabled();
-  expect(deployments).toBe(0);
-  await expect.poll(async () => {
-    const response = await page.request.get(`${baseURL}/api/service-plans`);
-    expect(response.ok()).toBe(true);
-    const plans = await response.json();
-    return Object.values(plans['496'].steps).filter((step: any) => step.state === 'waiting').length;
-  }, { timeout: 3000, intervals: [100] }).toBe(4);
-  await page.reload();
-  await page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByText('N-496', { exact: true }).click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Deploy default services', exact: true }).click();
-  await expect(dialog.getByRole('status').filter({ hasText: 'initialize Group 0' })).toHaveCount(4);
-  await expect(dialog.getByRole('button', { name: 'Deploy missing services', exact: true })).toHaveCount(0);
-  expect(deployments).toBe(0);
-});
-
-test('Add Node creates and retries services in one dialog, then waits automatically', async ({ page, baseURL }) => {
-  await seedRackAndNode(baseURL!, 497, 497);
-  const services: object[] = [];
-  let nodeCreates = 0;
-  let kvDeploys = 0;
-  let diskdbDeploys = 0;
-  await page.route('**/api/nodes', async route => {
-    if (route.request().method() === 'POST') nodeCreates++;
-    await route.continue();
-  });
-  await page.route('**/api/servers', route => route.fulfill({ json: services }));
-  await page.route('**/api/stores?*', route => route.fulfill({ json: [] }));
-  await page.route('**/api/nodes/498/server/deploy', route => {
-    kvDeploys++;
-    services.push({ id: '498', node_id: 498, service_type: 'kv', pid: 123, health: 'up' });
-    return route.fulfill({ json: { node_id: 498 } });
-  });
-  await page.route('**/api/nodes/498/diskdb/deploy', route => {
-    diskdbDeploys++;
-    if (diskdbDeploys === 1) return route.fulfill({ status: 502, json: { error: 'DiskDB startup failed' } });
-    services.push({ id: 'diskdb-498', node_id: 498, service_type: 'diskdb', pid: 124, health: 'up' });
-    return route.fulfill({ json: { node_id: 498 } });
-  });
-  await page.goto('/?domain=Cluster');
-  const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await expect(aside.getByText('R-497 (rack-497)', { exact: true })).toBeVisible({ timeout: 3000 });
-  await aside.getByText('R-497 (rack-497)', { exact: true }).click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Add Node', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add Node', exact: true });
-  await expect(dialog.getByLabel('Node ID')).toHaveValue('498');
-  await dialog.getByRole('button', { name: 'Create Node', exact: true }).click();
-  await expect(dialog.getByRole('alert')).toContainText('DiskDB startup failed');
-  await expect(dialog.getByLabel('Node ID')).toBeDisabled();
-  await dialog.getByRole('button', { name: 'Retry failed services', exact: true }).click();
-  await expect(dialog.getByRole('listitem')).toHaveCount(6);
-  await expect(dialog.getByRole('status').filter({ hasText: 'initialize Group 0' })).toHaveCount(4);
-  expect(nodeCreates).toBe(1);
-  expect(kvDeploys).toBe(1);
-  expect(diskdbDeploys).toBe(2);
-  await dialog.getByRole('button', { name: 'Done', exact: true }).click();
-  await aside.getByText('N-498', { exact: true }).click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Deploy default services', exact: true }).click();
-  const progress = page.getByRole('dialog', { name: 'Node 498 services', exact: true });
-  await expect(progress.getByRole('listitem')).toHaveCount(6);
-  await expect(progress.getByRole('button', { name: 'Deploy missing services', exact: true })).toHaveCount(0);
+  expect(await (await request.get('/api/servers')).json()).toEqual(servers);
 });
 
 // Baseline: 1.3s (2026-10-04); existing instances come from the owned fixture.
