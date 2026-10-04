@@ -442,7 +442,14 @@ impl ChunkStream {
                     "observed active cursor is outside chunk bounds".into(),
                 ));
             }
-            active.acknowledged_cursor = durable.offset;
+            if durable.offset < active.acknowledged_cursor {
+                return Err(StreamError::Corruption(
+                    "observed active cursor precedes the published cursor".into(),
+                ));
+            }
+            // A concurrent append can advance the physical cursor before its
+            // extent pages are published. Keep this reader at the captured
+            // manifest's acknowledged boundary.
         }
         validate_manifest(&manifest, &pages)?;
         let stream = Self::start(
@@ -509,9 +516,15 @@ impl ChunkStream {
         })
     }
 
+    /// Returns the durable end of the published read snapshot.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an internally installed manifest violates the validated
+    /// active-cursor bounds.
     #[must_use]
     pub fn tail(&self) -> u64 {
-        self.tail.load(Ordering::Acquire)
+        durable_tail(&self.manifest.load()).expect("validated stream manifest has a durable tail")
     }
 
     /// Appends one logical request after its mirror data and cursor are durable.
@@ -744,7 +757,7 @@ impl ChunkStream {
             .checked_add(length as u64)
             .ok_or_else(|| StreamError::InvalidRequest("read range overflows".into()))?;
         let manifest = self.manifest.load_full();
-        if offset < manifest.trim_offset || end > self.tail() {
+        if offset < manifest.trim_offset || end > durable_tail(&manifest)? {
             return Err(StreamError::InvalidRequest(
                 "read is outside retained durable range".into(),
             ));
@@ -872,7 +885,7 @@ impl ChunkStream {
     /// Returns an error if `offset` or its hint is outside the retained range.
     pub fn reader(&self, offset: u64, hint: ReadHint) -> Result<StreamReader> {
         let manifest = self.manifest.load();
-        let tail = self.tail();
+        let tail = durable_tail(&manifest)?;
         if offset < manifest.trim_offset || offset > tail {
             return Err(StreamError::InvalidRequest(
                 "read cursor is outside retained range".into(),
