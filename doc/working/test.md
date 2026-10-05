@@ -27,7 +27,7 @@ tasks. See [tools/README.md](../../tools/README.md) for the tooling map.
 | Lint          | `check-ci-test-tasks`, fmt, clippy       | Package assignments and reachable CI tasks       |
 | CppTests      | `test-cpp`                              | C++ and Rust FFI                                 |
 | UnitTests     | `test-unit`                             | Rust libraries, including `test-access-iceberg`  |
-| ServerTests   | `test-server`                           | Native services, access server and monitor       |
+| ServerTests   | `test-server`                           | Native services, streams, access server, monitor  |
 | S3E2E         | `-e s3-e2e test-boto3-e2e`              | Access S3, access server and 17 boto3 cases      |
 | IcebergE2E    | `-e iceberg-e2e test-iceberg-e2e`       | PyIceberg, native storage, GC and crash recovery |
 | IcebergSDK    | `-e iceberg-e2e test-iceberg-sdk`       | Official Java SDK and pinned Apache RCK          |
@@ -39,6 +39,11 @@ state. Iceberg jobs use the pinned `iceberg-e2e` Pixi environment for Python,
 Maven and Java; Rust/native builds use the default environment. The RCK task
 fetches and verifies its exact Apache Iceberg source revision. Test-only child
 listener functions remain ignored and are invoked by their parent crash tests.
+
+`test-chunk-stream` runs in ServerTests because its acceptance tests spawn KV,
+DiskDB, ChunkDB and DiskIO. The component task builds those binaries before
+testing. `test-console-server` builds KV and DiskDB for deployment and restart
+coverage. These tasks must work without service binaries left by another job.
 
 `test-suite` runs the host groups, including both Iceberg groups and the Rust
 SDK task. The Rust SDK task is available through

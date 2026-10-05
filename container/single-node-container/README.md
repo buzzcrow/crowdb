@@ -41,7 +41,7 @@ pixi run test-single-node-container
 
 `pixi run stage-single-node-container` produces the runtime directory without
 building a Docker image. Work on a `release/<version>` branch whose `VERSION`
-matches the branch name, such as `release/0.2.1`. After pushing each candidate
+matches the branch name, such as `release/0.2.2`. After pushing each candidate
 commit, select that branch in the GitHub Actions manual run form, or dispatch
 it from a clean checkout that matches the remote branch:
 

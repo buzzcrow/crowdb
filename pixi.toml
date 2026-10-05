@@ -1,6 +1,6 @@
 [workspace]
 name = "crowdb-kv"
-version = "0.2.1"
+version = "0.2.2"
 description = "CROWDB — distributed key-value store with multi-paxos groups"
 channels = ["conda-forge"]
 # Keep glibc requirement low (2.17 = CentOS 7 / Ubuntu 16.04 era) so that
@@ -226,13 +226,13 @@ test-kv-core = { cmd = "cargo test -p crowdb-kv --tests" }
 test-kv-client = { cmd = "cargo test -p crowdb-kv-client --tests" }
 test-chunkdb-client = { cmd = "cargo test -p crowdb-chunkdb-client --tests" }
 test-chunk-kv = { cmd = "cargo test -p crowdb-chunk-kv --tests" }
-test-chunk-stream = { cmd = "cargo test -p crowdb-chunk-stream --tests" }
 test-chunk-kv-client = { cmd = "cargo test -p crowdb-chunk-kv-client --tests" }
 test-chunk-kv-server = { cmd = "cargo test -p crowdb-chunk-kv-server --tests" }
 test-access-multipart = { cmd = "cargo test -p crowdb-access-multipart --tests" }
 test-unit = { cmd = "bash tools/pixi-tasks/test-unit.sh" }
 
 # ── ServerTests job: spawns crowdb-kv-server / crowdb-diskdb / crowdb-diskio ──
+test-chunk-stream = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb && cargo test -p crowdb-chunk-stream --tests", depends-on = ["build-cpp"] }
 test-kv-server = { cmd = "cargo test -p crowdb-kv-server --tests" }
 test-diskdb = { cmd = "cargo test -p crowdb-diskdb --tests" }
 test-diskdb-client = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb && cargo test -p crowdb-diskdb-client --tests" }
@@ -249,7 +249,7 @@ test-server = { cmd = "bash tools/pixi-tasks/test-server.sh" }
 # Build the debug binary explicitly so tests find it at target/debug/.
 test-console-shared = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-console-shared --tests" }
 test-console-cli = { cmd = "cargo test -p crowdb-cli --tests" }
-test-console-server = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-web --tests" }
+test-console-server = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb && cargo test -p crowdb-web --tests" }
 test-console = { cmd = "bash tools/pixi-tasks/test-console.sh" }
 
 # ── UITests job: Playwright browser E2E + subprocess spawning ──

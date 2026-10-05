@@ -20,6 +20,43 @@ impl Drop for TestChildren {
     }
 }
 
+#[tokio::test]
+async fn reset_stops_a_persisted_kv_child_without_a_runtime_pid_or_launch_record() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("reset-persisted-child");
+    let state =
+        AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned()).with_test_mode(true);
+    let app = router(state.clone());
+    success(&app, "/api/racks", json!({"id": 1})).await;
+    success(
+        &app,
+        "/api/nodes",
+        json!({"id": 1, "rack_id": 1, "host": "127.0.0.1", "ssh_user": ""}),
+    )
+    .await;
+    let binary = lifecycle::crowdb_kv_server_bin().expect("build the actual KV server");
+    let deployed = success(
+        &app,
+        "/api/nodes/1/server/deploy",
+        json!({"rest_port": free_port(), "rpc_port": free_port(), "binary": binary, "election_profile": "test"}),
+    )
+    .await;
+    let pid = u32::try_from(deployed["pid"].as_u64().unwrap()).unwrap();
+    let mut children = TestChildren(BTreeSet::from([pid]));
+    // Stop clears the runtime PID before background shutdown finishes.
+    // Keep the real child alive to exercise this window deterministically.
+    state.clear_runtime_pid(1);
+    {
+        let config = state.config.read().unwrap();
+        assert!(config.local_launches.is_empty());
+        assert_eq!(config.server_for_node(1).unwrap().pid, Some(pid));
+    }
+    assert!(lifecycle::process_is_alive(pid));
+    success(&app, "/internal/reset", json!({})).await;
+    assert!(!lifecycle::process_is_alive(pid), "Reset left child {pid} alive");
+    assert!(!root.path().join("N-1").exists());
+    children.0.clear();
+}
+
 async fn request(app: axum::Router, path: &str, body: Value) -> axum::response::Response {
     app.oneshot(
         Request::builder()

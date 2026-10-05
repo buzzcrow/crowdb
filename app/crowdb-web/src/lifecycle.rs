@@ -1004,16 +1004,11 @@ async fn stop_all_services(state: &AppState) -> Result<Vec<String>, (StatusCode,
         // Stop children concurrently; workspace cleanup waits for all of them.
         let kv_pid = state.runtime_pid(nid).or_else(|| {
             let config = state.config.read().unwrap();
-            config.server_for_node(*nid).and_then(|server| {
-                config
-                    .local_launches
-                    .contains_key(&server.id)
-                    .then_some(server.pid)
-                    .flatten()
-            })
+            config.server_for_node(*nid).and_then(|server| server.pid)
         });
         // A stop response clears the runtime PID before its background reap
-        // finishes. The retained launch PID still owns open workspace files.
+        // finishes. Node-addressed deployments retain that PID in the server
+        // entry even when they have no launch-registry record.
         if let Some(pid) = kv_pid {
             let ssh = state
                 .config

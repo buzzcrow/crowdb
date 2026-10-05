@@ -3,7 +3,7 @@
 
 # Changelog
 
-CROWDB is preparing `0.2.1`. This is a development version, not a
+CROWDB is preparing `0.2.2`. This is a development version, not a
 production release or a compatibility promise.
 
 CROWDB does not yet maintain compatibility for persisted data, WAL, metadata,
@@ -20,6 +20,11 @@ compatibility until the project explicitly adopts and documents a compatibility
 policy.
 
 ## [Unreleased]
+
+### 0.2.2 preparation
+
+- Build service binaries before stream and console acceptance tests in CI.
+- Wait for stopped KV children before deleting console workspaces during reset.
 
 ### 0.2.1 preparation
 
