@@ -226,7 +226,7 @@ test.describe('cluster · rack + node CRUD', () => {
           // beneath their physical node in the Cluster domain.
           const clusterNode = aside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` });
           if (await clusterNode.getByRole('button', { name: 'Expand' }).count()) await clusterNode.getByRole('button', { name: 'Expand' }).first().click();
-          await aside.getByText(`KV-${nodeId}`, { exact: true }).click();
+          await aside.getByText(`PKV-${nodeId}`, { exact: true }).click();
           const kvTypeDd = inspector.locator('dl > div').filter({ has: page.locator('dt', { hasText: 'Type' }) }).locator('dd');
           await expect(kvTypeDd).toHaveText('KV', { timeout: 3_000 });
         });

@@ -145,10 +145,10 @@ test.describe('cluster · server lifecycle', () => {
 
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
         // Wait for the server node to appear.
-        await expect(aside.getByText('KV-492')).toBeVisible({ timeout: 10_000 });
+        await expect(aside.getByText('PKV-492')).toBeVisible({ timeout: 10_000 });
 
         // Right-click the server (KV) node.
-        await aside.getByText('KV-492', { exact: true }).click({ button: 'right' });
+        await aside.getByText('PKV-492', { exact: true }).click({ button: 'right' });
 
         await expect(page.getByRole('menuitem', { name: /restart crowdb storage/i })).toBeVisible();
         await expect(page.getByRole('menuitem', { name: /stop crowdb storage/i })).toBeVisible();
@@ -232,7 +232,7 @@ test.describe('cluster · server lifecycle', () => {
       // Restart and Stop are on the server (KV) context menu, not the
       // node. KV-xxx tree items are in the Cluster domain under the node.
       await page.getByTestId('domain-cluster').click();
-      const serverItem = page.getByRole('treeitem').filter({ hasText: 'KV-27' });
+      const serverItem = page.getByRole('treeitem').filter({ hasText: 'PKV-27' });
       await expect(serverItem).toBeVisible({ timeout: 5_000 });
 
       // Restart
@@ -339,10 +339,10 @@ test.describe('cluster · server lifecycle', () => {
         await page.getByTestId('domain-cluster').click();
 
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-        await expect(aside.getByText('KV-494')).toBeVisible({ timeout: 10_000 });
+        await expect(aside.getByText('PKV-494')).toBeVisible({ timeout: 10_000 });
 
         // Right-click server → Delete CrowDB Storage.
-        await aside.getByText('KV-494', { exact: true }).click({ button: 'right' });
+        await aside.getByText('PKV-494', { exact: true }).click({ button: 'right' });
         await page.getByRole('menuitem', { name: /delete crowdb storage/i }).click();
 
         // Confirm.
@@ -355,7 +355,7 @@ test.describe('cluster · server lifecycle', () => {
         await deleteResp;
 
         // Server disappears from tree, node remains.
-        await expect(aside.getByText('KV-494', { exact: true })).toHaveCount(0, { timeout: 10_000 });
+        await expect(aside.getByText('PKV-494', { exact: true })).toHaveCount(0, { timeout: 10_000 });
         // Switch to Cluster domain to verify node remains.
         await page.getByTestId('domain-cluster').click();
         await expect(aside.getByText('N-494', { exact: true })).toBeVisible();

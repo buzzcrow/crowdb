@@ -71,11 +71,17 @@ pub async fn http_deploy_diskdb(
     .map_err(|error| err_500(format!("DiskDB lifecycle task failed: {error}")))?
 }
 
+#[allow(clippy::too_many_lines)]
 async fn deploy_diskdb(
     state: AppState,
     node_id: u64,
     body: DeployDiskdbBody,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), (StatusCode, Json<ErrorBody>)> {
+    if !crate::mgmt::cluster_initialized(&state).await {
+        return Err(err_409(
+            "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting DiskDB",
+        ));
+    }
     let (listen_port, http_port, rpc_listen_port) = validate_diskdb_ports(&body)?;
     let _ports = crate::services::defaults::claim_ports(&state, &[listen_port, http_port, rpc_listen_port])?;
     let node = {
@@ -107,7 +113,7 @@ async fn deploy_diskdb(
         let cfg = state.config.read().unwrap();
         cfg.servers
             .iter()
-            .filter(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::Kv)
+            .filter(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::PaxosKv)
             .map(|s| s.url.clone())
             .collect()
     };
@@ -236,7 +242,7 @@ async fn restart_diskdb(
         let cfg = state.config.read().unwrap();
         cfg.servers
             .iter()
-            .filter(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::Kv)
+            .filter(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::PaxosKv)
             .map(|s| s.url.clone())
             .collect()
     };

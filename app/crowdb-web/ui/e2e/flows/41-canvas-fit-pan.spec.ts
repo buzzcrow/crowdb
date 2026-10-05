@@ -76,7 +76,7 @@ test.describe('canvas · fit + pan', () => {
     await step('canvas: goto collapse', () => page.goto('/'));
     const rack = page.locator('.react-flow__node[data-id="R-480"]');
     const node = page.locator('.react-flow__node[data-id="N-480"]');
-    const server = page.locator('.react-flow__node[data-id="KV-480"]');
+    const server = page.locator('.react-flow__node[data-id="PKV-480"]');
     await expect(rack).toBeVisible();
     await expect(node).toBeVisible();
     await expect(server).toHaveCount(0);

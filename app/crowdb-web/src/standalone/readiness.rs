@@ -22,7 +22,7 @@ impl AppState {
             config
                 .servers
                 .iter()
-                .filter(|server| server.service_type == ServiceType::Kv)
+                .filter(|server| server.service_type == ServiceType::PaxosKv)
                 .filter_map(|server| {
                     server
                         .node_id

@@ -251,7 +251,7 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
         crowdb_console_shared::config::ServiceType::Chunkdb,
         crowdb_console_shared::config::ServiceType::Diskdb,
         crowdb_console_shared::config::ServiceType::Diskio,
-        crowdb_console_shared::config::ServiceType::Kv,
+        crowdb_console_shared::config::ServiceType::PaxosKv,
     ] {
         let server = config
             .servers
@@ -264,14 +264,14 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
     let seeds = config
         .servers
         .iter()
-        .filter(|server| server.service_type == crowdb_console_shared::config::ServiceType::Kv)
+        .filter(|server| server.service_type == crowdb_console_shared::config::ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
     let surviving_rpc = config
         .servers
         .iter()
         .find(|server| {
-            server.service_type == crowdb_console_shared::config::ServiceType::Kv
+            server.service_type == crowdb_console_shared::config::ServiceType::PaxosKv
                 && server.node_id != Some(failed_node)
         })
         .and_then(|server| server.rpc_url.as_deref())
@@ -416,7 +416,7 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
         let seeds = restarted_config
             .servers
             .iter()
-            .filter(|server| server.service_type == crowdb_console_shared::config::ServiceType::Kv)
+            .filter(|server| server.service_type == crowdb_console_shared::config::ServiceType::PaxosKv)
             .map(|server| server.url.clone())
             .collect();
         let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds)));

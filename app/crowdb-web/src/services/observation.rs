@@ -50,22 +50,20 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                 Some(node_id) if s.service_type == ServiceType::Diskdb => {
                     state.diskdb_runtime_pid(node_id.to_string())
                 }
-                Some(node_id) if s.service_type == ServiceType::Kv => state.runtime_pid(node_id.to_string()),
+                Some(node_id) if s.service_type == ServiceType::PaxosKv => {
+                    state.runtime_pid(node_id.to_string())
+                }
                 _ => None,
             };
             let pid = runtime_pid.or_else(|| {
                 s.pid
                     .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
             });
-            // KV health comes from the monitor cache (probed via the KV
-            // server's /topology), overridden to Down when no PID is
-            // tracked. DDB has no topology probe, so its health is derived
-            // from PID presence alone — the shared node record reflects KV
-            // health and must not flip the DDB badge when KV is stopped or
-            // restarted while DDB keeps running.
-            let health = if !matches!(s.service_type, ServiceType::Kv | ServiceType::Diskdb) {
-                NodeHealth::Unknown
-            } else if s.node_id.is_none() || s.service_type == ServiceType::Diskdb {
+            // KV health comes from the monitor cache. The auxiliary services
+            // do not all expose the same HTTP health contract (DiskDB and
+            // DiskIO are RPC services), so a tracked live process is the
+            // readiness signal for every deployed service.
+            let health = if s.node_id.is_none() || !matches!(s.service_type, ServiceType::PaxosKv) {
                 if pid.is_some() {
                     NodeHealth::Up
                 } else {
@@ -83,13 +81,13 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                 node_id: s.node_id,
                 mgmt_url: (s.url.starts_with("http://") || s.url.starts_with("https://"))
                     .then(|| s.url.clone()),
-                endpoint: (s.service_type != ServiceType::Kv)
+                endpoint: (s.service_type != ServiceType::PaxosKv)
                     .then(|| s.rpc_url.clone().unwrap_or_else(|| s.url.clone())),
                 rpc_url: s.rpc_url.clone(),
                 pid,
                 health,
                 service_type: match s.service_type {
-                    crowdb_console_shared::config::ServiceType::Kv => "kv",
+                    crowdb_console_shared::config::ServiceType::PaxosKv => "paxos-kv",
                     crowdb_console_shared::config::ServiceType::Diskdb => "diskdb",
                     crowdb_console_shared::config::ServiceType::Chunkdb => "chunkdb",
                     crowdb_console_shared::config::ServiceType::Diskio => "diskio",

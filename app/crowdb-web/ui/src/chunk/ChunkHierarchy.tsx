@@ -21,10 +21,10 @@ export function ChunkHierarchy({ racks, nodes, servers, stores }: { active: bool
   const tree: TreeNode[] = [{ id: 'chunk-datacenter', rawId: 'datacenter', label: DEFAULT_DC_NAME, type: 'Datacenter', icon: <Building2 className={icon} />,
     children: racks.map(rack => ({ id: `chunk-rack-${rack.id}`, rawId: rack.id, label: `R-${rack.id}`, type: 'Rack', icon: <FolderTree className={icon} />,
       children: nodes.filter(node => node.rack_id === rack.id).map(node => ({ id: `chunk-node-${node.id}`, rawId: node.id, parentIds: { rack_id: rack.id }, label: `N-${node.id}`, type: 'Node', icon: <Monitor className={icon} />,
-        children: servers.filter(server => server.node_id === node.id && ['kv', 'chunkdb'].includes(server.service_type)).map(server => ({
-          id: `chunk-server-${server.id}`, rawId: server.id, serviceType: server.service_type as 'kv' | 'chunkdb', parentIds: { node_id: node.id, rack_id: rack.id },
+        children: servers.filter(server => server.node_id === node.id && ['paxos-kv', 'chunkdb'].includes(server.service_type)).map(server => ({
+          id: `chunk-server-${server.id}`, rawId: server.id, serviceType: server.service_type as 'paxos-kv' | 'chunkdb', parentIds: { node_id: node.id, rack_id: rack.id },
           label: serviceInstanceLabel(server.service_type, server.id ?? String(node.id)), type: 'Server', icon: <Cog className={icon} />,
-          children: server.service_type !== 'kv' ? undefined : stores.flatMap(store => {
+          children: server.service_type !== 'paxos-kv' ? undefined : stores.flatMap(store => {
             const groups = store.groups.filter(group => group.replicas.some(replica => String(replica.node_id) === String(node.id)));
             return groups.length ? [{ id: `chunk-store-${node.id}-${store.store_id}`, rawId: store.store_id, parentIds: { node_id: node.id }, label: `S-${store.store_id}`, type: 'Store' as const, icon: <Database className={icon} />,
               children: groups.map(group => ({ id: `chunk-group-${node.id}-${store.store_id}-${group.group_id}`, rawId: group.group_id,

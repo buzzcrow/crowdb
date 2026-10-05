@@ -12,7 +12,7 @@ import { nextIdFromSuffix } from './defaults';
 import { NodeServiceProgress } from '../../services/NodeServiceProgress';
 import { serviceRequest } from '../../services/client';
 import type { DeploymentDefaults } from '../../services/useDeploymentDefaults';
-import { serviceLabels, serviceOrder, type NodeServicePlan } from '../../services/useNodeServicePlans';
+import { serviceLabels, serviceOrder, type NodeServicePlan, type ServiceKind, type ServiceOverrides } from '../../services/useNodeServicePlans';
 
 export interface AddNodeDialogProps {
   isOpen: boolean;
@@ -24,7 +24,7 @@ export interface AddNodeDialogProps {
   defaultRestPort?: string;
   defaultRpcPort?: string;
   defaultDiskdbRpcPort?: string;
-  onDefaultServices?: (nodeId: number) => void;
+  onDefaultServices?: (nodeId: number, selected?: ServiceKind[], overrides?: ServiceOverrides) => void;
   servicePlans?: Record<number, NodeServicePlan>;
   onCreatedRackId?: (rackId: number) => void;
   onDiskdbPortReserved?: (port: number) => void;
@@ -54,6 +54,7 @@ export function AddNodeDialog({
   const initialNodeId = nextIdFromSuffix(existingNodeIds, 1);
   const [rackId, setRackId] = useState(initialRackId);
   const [nodeId, setNodeId] = useState(initialNodeId);
+  const [nodeIdTouched, setNodeIdTouched] = useState(false);
   const [host, setHost] = useState(defaultHost);
   const [sshUser, setSshUser] = useState('');
   const [sshKeyPath, setSshKeyPath] = useState('');
@@ -63,6 +64,8 @@ export function AddNodeDialog({
   const [enableDiskdb, setEnableDiskdb] = useState(true);
   const [diskdbRpcPort, setDiskdbRpcPort] = useState(defaultDiskdbRpcPort);
   const [completeSet, setCompleteSet] = useState(true);
+  const [selectedServices, setSelectedServices] = useState<ServiceKind[]>([...serviceOrder]);
+  const [servicePorts, setServicePorts] = useState<Record<string, { http?: string; rpc?: string; s3?: string }>>({});
   const [isLoading, setIsLoading] = useState(false);
   const { success, error } = useToast();
   const created = useRef<number | null>(null);
@@ -75,6 +78,7 @@ export function AddNodeDialog({
   useEffect(() => {
     if (!isOpen || created.current != null) return;
     setNodeId(nextIdFromSuffix(existingNodeIds, 1));
+    setNodeIdTouched(false);
     setRackId(initialRackId);
     setCompleteSet(true);
     setRestPort(defaultRestPort);
@@ -84,12 +88,28 @@ export function AddNodeDialog({
     setDiskdbRpcPort(defaultDiskdbRpcPort);
   }, [defaultRpcPort, defaultRestPort, defaultDiskdbRpcPort, isOpen]);
 
+  // The cluster tree may finish loading after the dialog opens. Keep the
+  // untouched default away from an existing node id, but never overwrite an
+  // id the operator has started editing.
+  useEffect(() => {
+    if (isOpen && created.current == null && !nodeIdTouched) {
+      setNodeId(nextIdFromSuffix(existingNodeIds, 1));
+    }
+  }, [existingNodeIds.join(','), isOpen, nodeIdTouched]);
+
   const defaults = useDeploymentDefaults(isOpen);
   useEffect(() => {
     if (!defaults.values || created.current != null) return;
-    setRestPort(String(defaults.values.kv.http_port));
-    setRpcPort(String(defaults.values.kv.rpc_port));
+    const paxosKv = defaults.values['paxos-kv'] ?? defaults.values.kv;
+    if (paxosKv?.http_port != null) setRestPort(String(paxosKv.http_port));
+    if (paxosKv?.rpc_port != null) setRpcPort(String(paxosKv.rpc_port));
     setDiskdbRpcPort(String(defaults.values.diskdb.rpc_port));
+  }, [defaults.values]);
+  useEffect(() => {
+    if (!defaults.values || created.current != null) return;
+    setServicePorts(Object.fromEntries(serviceOrder.map(kind => [kind, {
+      http: defaults.values?.[kind]?.http_port?.toString(), rpc: defaults.values?.[kind]?.rpc_port?.toString(), s3: defaults.values?.[kind]?.s3_port?.toString(),
+    }])));
   }, [defaults.values]);
 
   const isPort = (value: string) => /^\d+$/.test(value) && Number(value) > 0 && Number(value) < 65536;
@@ -115,21 +135,25 @@ export function AddNodeDialog({
         if (enableDiskdb) onDiskdbPortReserved?.(Number(diskdbRpcPort));
       }
       let kvRest = Number(restPort), kvRpc = Number(rpcPort), ddbRpc = Number(diskdbRpcPort);
+      if (servicePorts['paxos-kv']?.http) kvRest = Number(servicePorts['paxos-kv'].http);
+      if (servicePorts['paxos-kv']?.rpc) kvRpc = Number(servicePorts['paxos-kv'].rpc);
+      if (servicePorts.diskdb?.rpc) ddbRpc = Number(servicePorts.diskdb.rpc);
       if (serviceError) {
         const fresh = await serviceRequest('/deployment-defaults', 'GET') as Record<string, DeploymentDefaults>;
-        kvRest = fresh.kv.http_port!; kvRpc = fresh.kv.rpc_port!; ddbRpc = fresh.diskdb.rpc_port!;
+        const paxosKv = fresh['paxos-kv'] ?? fresh.kv;
+        kvRest = paxosKv.http_port!; kvRpc = paxosKv.rpc_port!; ddbRpc = fresh.diskdb.rpc_port!;
       }
       setServiceError('');
       const serviceErrors: string[] = [];
-      if (enableCrowdbKV && !completed.current.has('kv')) {
+      if (enableCrowdbKV && !completed.current.has('paxos-kv')) {
         try {
           await deployServer(numericNodeId, {
             rest_port: kvRest,
             rpc_port: kvRpc,
           });
-          completed.current.add('kv');
+          completed.current.add('paxos-kv');
         } catch (err) {
-          serviceErrors.push(`CrowDB Storage: ${err instanceof Error ? err.message : 'deployment failed'}`);
+          serviceErrors.push(`crowdb-paxos-kv: ${err instanceof Error ? err.message : 'deployment failed'}`);
         }
       }
 
@@ -140,7 +164,7 @@ export function AddNodeDialog({
           });
           completed.current.add('diskdb');
         } catch (err) {
-          serviceErrors.push(`DiskDB: ${err instanceof Error ? err.message : 'deployment failed'}`);
+          serviceErrors.push(`crowdb-disk-db: ${err instanceof Error ? err.message : 'deployment failed'}`);
         }
       }
 
@@ -148,19 +172,29 @@ export function AddNodeDialog({
       // prerequisite failed. The plan records the failure and keeps the
       // remaining default services visible/retriable instead of silently
       // stopping after KV or DiskDB.
-      if (completeSet) onDefaultServices?.(numericNodeId);
+      if (completeSet) {
+        const serviceOverrides: ServiceOverrides = {};
+        for (const kind of serviceOrder) {
+          const ports = servicePorts[kind];
+          if (ports) serviceOverrides[kind] = { ...(ports.http ? { http_port: Number(ports.http) } : {}), ...(ports.rpc ? { rpc_port: Number(ports.rpc) } : {}), ...(ports.s3 ? { s3_port: Number(ports.s3) } : {}) };
+        }
+        onDefaultServices?.(numericNodeId, selectedServices, serviceOverrides);
+      }
       if (serviceErrors.length > 0) {
         setServiceError(serviceErrors.join('; '));
       } else {
         const parts = [`Node "${trimmedNodeId}" created`];
-        if (enableCrowdbKV) parts.push('CrowDB Storage enabled');
-        if (enableDiskdb) parts.push('DiskDB enabled');
+        if (enableCrowdbKV) parts.push('crowdb-paxos-kv enabled');
+        if (enableDiskdb) parts.push('crowdb-disk-db enabled');
         success(parts.join(', '));
       }
       await onSuccess?.();
       if (serviceErrors.length === 0) {
         setInitialDone(true);
-        if (!enableCrowdbKV && !enableDiskdb) onClose();
+        // The submission is the only confirmation.  The service plan is
+        // persisted above, so progress remains visible in the Cluster tree
+        // after this dialog closes and does not require a second Done click.
+        onClose();
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create node';
@@ -175,6 +209,7 @@ export function AddNodeDialog({
     if (isLoading) return;
     setRackId(initialRackId);
     setNodeId(initialNodeId);
+    setNodeIdTouched(false);
     setHost(defaultHost);
     setSshUser('');
     setSshKeyPath('');
@@ -205,13 +240,6 @@ export function AddNodeDialog({
         {createdId != null && <div role="status" className="tw-text-sm">Node {createdId} created{isLoading ? ' · deploying services…' : ''}</div>}
         {plan && <NodeServiceProgress plan={plan} />}
         <fieldset disabled={createdId != null || isLoading} className={initialDone ? 'tw-hidden' : 'tw-space-y-4'}>
-        <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={completeSet} onChange={event => { setCompleteSet(event.target.checked); if (event.target.checked) { setEnableCrowdbKV(true); setEnableDiskdb(true); } }} />Deploy complete service set</label>
-        {completeSet && <>
-          <p className="tw-text-xs tw-text-muted">The complete default service set will be created for this node. Services with cluster prerequisites wait and start automatically when ready.</p>
-          <ul aria-label="Default services" className="tw-grid tw-grid-cols-2 tw-gap-2 tw-text-xs">
-            {serviceOrder.map(kind => <li key={kind} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1.5 tw-text-muted">{serviceLabels[kind]}</li>)}
-          </ul>
-        </>}
         {racks.length > 0 ? (
           <Select
             label="Rack"
@@ -234,7 +262,7 @@ export function AddNodeDialog({
           label="Node ID"
           placeholder="N-01"
           value={nodeId}
-          onChange={(e) => setNodeId(e.target.value)}
+          onChange={(e) => { setNodeIdTouched(true); setNodeId(e.target.value); }}
           autoFocus
         />
         <Input
@@ -255,50 +283,17 @@ export function AddNodeDialog({
           value={sshKeyPath}
           onChange={(e) => setSshKeyPath(e.target.value)}
         />
-        <label className="tw-flex tw-items-center tw-gap-2 tw-text-sm tw-text-text">
-          <input
-            type="checkbox"
-            checked={enableCrowdbKV}
-            onChange={(e) => { setEnableCrowdbKV(e.target.checked); if (!e.target.checked) setCompleteSet(false); }}
-            className="tw-h-4 tw-w-4 tw-rounded tw-border tw-border-border tw-bg-bg tw-text-accent focus:tw-ring-accent"
-          />
-          <span>Enable CrowDB Storage on this node</span>
-        </label>
-        {enableCrowdbKV && (
-          <>
-            <Input
-              label="REST Port"
-              inputMode="numeric"
-              value={restPort}
-              onChange={(e) => setRestPort(e.target.value)}
-            />
-            <Input
-              label="RPC Port"
-              inputMode="numeric"
-              data-testid="kv-rpc-port"
-              value={rpcPort}
-              onChange={(e) => setRpcPort(e.target.value)}
-            />
-          </>
-        )}
-        <label className="tw-flex tw-items-center tw-gap-2 tw-text-sm tw-text-text">
-          <input
-            type="checkbox"
-            checked={enableDiskdb}
-            onChange={(e) => { setEnableDiskdb(e.target.checked); if (!e.target.checked) setCompleteSet(false); }}
-            className="tw-h-4 tw-w-4 tw-rounded tw-border tw-border-border tw-bg-bg tw-text-accent focus:tw-ring-accent"
-          />
-          <span>Enable DiskDB on this node</span>
-        </label>
-        {enableDiskdb && (
-          <Input
-            label="RPC Port"
-            inputMode="numeric"
-            data-testid="diskdb-rpc-port"
-            value={diskdbRpcPort}
-            onChange={(e) => setDiskdbRpcPort(e.target.value)}
-          />
-        )}
+        <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={completeSet} onChange={event => { const enabled = event.target.checked; setCompleteSet(enabled); if (enabled) { setEnableCrowdbKV(true); setEnableDiskdb(true); setSelectedServices([...serviceOrder]); } else { setEnableCrowdbKV(false); setEnableDiskdb(false); setSelectedServices([]); } }} />Configure services on this node</label>
+        {completeSet && <>
+          <p className="tw-text-xs tw-text-muted">Select services and configure their listeners below. Services with cluster prerequisites wait and start automatically when ready.</p>
+          <ul aria-label="Default services" className="tw-grid tw-grid-cols-2 tw-gap-2 tw-text-xs">
+            {serviceOrder.map(kind => {
+              const value = defaults.values?.[kind];
+              const listeners = [value?.http_port && `HTTP ${value.http_port}`, value?.rpc_port && `RPC ${value.rpc_port}`, value?.s3_port && `S3 ${value.s3_port}`].filter(Boolean).join(' · ');
+              return <li key={kind} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1.5"><label className="tw-flex tw-items-center tw-gap-2"><input type="checkbox" aria-label={serviceLabels[kind]} checked={selectedServices.includes(kind)} onChange={() => setSelectedServices(current => { const enabled = !current.includes(kind); if (kind === 'paxos-kv') setEnableCrowdbKV(enabled); if (kind === 'diskdb') setEnableDiskdb(enabled); return enabled ? [...current, kind] : current.filter(value => value !== kind); })} /><span>{serviceLabels[kind]}</span></label>{selectedServices.includes(kind) && <div className="tw-mt-1 tw-grid tw-grid-cols-2 tw-gap-1">{(['http','rpc','s3'] as const).filter(port => servicePorts[kind]?.[port]).map(port => <Input key={port} label={port.toUpperCase()} value={servicePorts[kind]?.[port] ?? ''} onChange={event => setServicePorts(current => ({ ...current, [kind]: { ...current[kind], [port]: event.target.value } }))} />)}</div>}<span className="tw-text-muted">{listeners || 'waits for prerequisites'}</span></li>;
+            })}
+          </ul>
+        </>}
         </fieldset>
       </div>
     </Dialog>

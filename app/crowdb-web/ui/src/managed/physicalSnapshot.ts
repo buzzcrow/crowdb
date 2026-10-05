@@ -42,7 +42,7 @@ export async function physicalSnapshot() {
   }
   const servers: ServerSummary[] = snapshot.services.map(service => ({
     id: `${service.kind}-${service.instance_id ?? service.endpoint}`, node_id: service.node_id,
-    service_type: service.kind === 'kv-server' ? 'kv' : service.kind,
+    service_type: service.kind === 'kv-server' ? 'paxos-kv' : service.kind,
     endpoint: service.endpoint, rpc_url: service.kind === 'kv-server' ? undefined : service.endpoint,
     mgmt_url: service.http_endpoint ?? (service.kind === 'kv-server' ? service.endpoint : undefined),
     pid: service.monitor?.pid ?? undefined,

@@ -72,7 +72,9 @@ pub(super) async fn launch(
                 rpc_port: body.rpc_port.unwrap(),
                 rack_id: node.rack_id,
                 node_id: node.id,
-                disk_group_id: body.disk_group_id.unwrap(),
+                // DiskIO is a node-local RPC service. A disk group is an
+                // optional group-0 integration, not a startup dependency.
+                disk_group_id: body.disk_group_id.unwrap_or(0),
                 kv_server_mgmt_seeds: seeds.to_vec(),
                 dummy_disk_type: "mem".into(),
                 rpc_workers: None,

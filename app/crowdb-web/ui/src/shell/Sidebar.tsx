@@ -9,10 +9,11 @@ import { Button } from '../components/ui/Button';
 import { Domain, Rack, EnrichedStoreView, NodeStore, CrowdbKVServerView, NodeHealth, DiskdbInstanceInfo, CapacityUsageResponse, HardwareCapacitySummary } from '../types';
 import { crowdbKvServerByNodeId } from '../data/crowdbKvServers';
 import { DEFAULT_DC_ID, DEFAULT_DC_NAME } from '../data/defaultDatacenter';
-import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, serverLabel, storeLabel, toUiHealth, toUiReplicaRole, toUiRole } from '../utils/entityDisplay';
+import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, storeLabel, toUiHealth, toUiReplicaRole, toUiRole } from '../utils/entityDisplay';
 import type { NodeDiskGroups } from '../data/useCapacityTree';
 import type { ServerSummary } from '../api';
 import { isAuxiliaryKind, serviceInstanceLabel } from '../services/client';
+import { serviceOrder, type NodeServicePlan, type ServiceKind } from '../services/useNodeServicePlans';
 
 /** Fixed UI-only datacenter root wrapping the rack/store children. */
 function datacenterRoot(children: TreeNode[]): TreeNode {
@@ -50,6 +51,8 @@ interface SidebarProps {
   diskdbNodeIds?: Set<number>;
   diskdbHealthById?: Map<number, string>;
   diskdbInstanceIdByNodeId?: Map<number, string>;
+  /** Durable deployment plans make queued and failed services visible before a process registers. */
+  servicePlans?: Record<number, NodeServicePlan>;
 }
 
 export function Sidebar({
@@ -75,6 +78,7 @@ export function Sidebar({
   diskdbNodeIds,
   diskdbHealthById,
   diskdbInstanceIdByNodeId = new Map(),
+  servicePlans = {},
 }: SidebarProps) {
   const { domain } = useDomain();
   const [expansions, setExpansions] = useState<Partial<Record<Domain, string[]>>>({});
@@ -122,48 +126,50 @@ export function Sidebar({
           const diskdbInstance = diskdbInstances.find((instance) => instance.instance_id === diskdbInstanceId);
           const ownedDgIds = new Set(diskdbInstance?.owned_dg_ids || []);
           const children: TreeNode[] = [];
-
-          for (const service of allServers.filter(service => service.node_id === nodeId)) {
-            if (!service.id || !isAuxiliaryKind(service.service_type)) continue;
-            children.push({ id: `SERVICE-${service.id}`, rawId: service.id, label: serviceInstanceLabel(service.service_type, service.id),
-              type: 'Server', serviceType: service.service_type, icon: <Cog className="tw-h-4 tw-w-4 tw-text-muted" />,
-              health: toUiHealth(service.health), parentIds: { rack_id: rack.id, node_id: nodeId },
-            });
+          const nodeServices = allServers.filter(service => service.node_id === nodeId && service.id);
+          const actualByKind = new Map(nodeServices.map(service => [service.service_type, service]));
+          const plan = servicePlans[nodeId];
+          const kinds: ServiceKind[] = plan ? [...serviceOrder] : [];
+          if (!plan) {
+            for (const service of nodeServices) if (isAuxiliaryKind(service.service_type)) kinds.push(service.service_type);
+            if (serverByNodeId.has(nodeId)) kinds.push('paxos-kv');
+            if (diskdbNodeIds?.has(nodeId)) kinds.push('diskdb');
+          }
+          for (const kind of [...new Set(kinds)]) {
+            const service = actualByKind.get(kind);
+            const step = plan?.[kind];
+            const rawId = service?.id ?? `${kind}-${nodeId}`;
+            const health = service ? toUiHealth(service.health)
+              : step?.state === 'failed' ? 'Failed' : step?.state === 'warning' ? 'Healthy' : 'Unknown';
+            const childrenEntry: TreeNode = {
+              id: kind === 'diskdb' ? `DDB-${nodeId}` : `SERVICE-${rawId}`,
+              rawId,
+              label: serviceInstanceLabel(kind, rawId),
+              type: 'Server',
+              serviceType: kind,
+              icon: <Cog className="tw-h-4 tw-w-4 tw-text-muted" />,
+              health,
+              title: step?.detail ? `${serviceInstanceLabel(kind, rawId)} · ${step.detail}` : undefined,
+              parentIds: { rack_id: rack.id, node_id: nodeId },
+            };
+            if (kind === 'diskdb') {
+              childrenEntry.expandable = !!onLoadNodeDisks;
+              childrenEntry.onExpand = () => { void onLoadNodeDisks?.(nodeId); };
+              childrenEntry.children = [];
+            }
+            children.push(childrenEntry);
           }
 
           // Cluster projects services and DiskDB-owned disk groups.
-          const server = serverByNodeId.get(nodeId);
-          if (server) {
-            children.push({
-              id: `KV-${nodeId}`,
-              rawId: server.id,
-              label: serverLabel(String(nodeId)),
-              type: 'Server',
-              icon: <Cog className="tw-h-4 tw-w-4 tw-text-muted" />,
-              health: toUiHealth(server.process.health),
-              serviceType: 'kv',
-              parentIds: { rack_id: rack.id, node_id: nodeId },
-            });
-          }
-
-          if (diskdbNodeIds?.has(nodeId)) {
+          const diskdbEntry = children.find(child => child.serviceType === 'diskdb');
+          if (diskdbEntry && diskdbNodeIds?.has(nodeId)) {
             const diskGroups = Object.values(nodeDiskGroups).flatMap((entry) =>
               entry.diskGroups
                 .filter((dg) => ownedDgIds.has(dg.id))
                 .map((dg) => ({ dg, disks: entry.disksByDg[dg.id] || [] })),
             );
-            children.push({
-              expandable: !!onLoadNodeDisks,
-              onExpand: () => { void onLoadNodeDisks?.(nodeId); },
-              id: `DDB-${nodeId}`,
-              rawId: `${nodeId}-ddb`,
-              label: `DDB-${nodeId}`,
-              type: 'Server',
-              icon: <Cog className="tw-h-4 tw-w-4 tw-text-muted" />,
-              health: toUiHealth(diskdbHealthById?.get(nodeId)),
-              serviceType: 'diskdb',
-              parentIds: { rack_id: rack.id, node_id: nodeId },
-              children: diskGroups.map(({ dg, disks }) => {
+            diskdbEntry.health = toUiHealth(diskdbHealthById?.get(nodeId));
+            diskdbEntry.children = diskGroups.map(({ dg, disks }) => {
                 const dgStatus = dgStatusByKey.get(`${dg.rack_id}:${dg.node_id}:${dg.id}`);
                 return {
                   expandable: !!onLoadGroupDisks,
@@ -185,8 +191,7 @@ export function Sidebar({
                     parentIds: { rack_id: dg.rack_id, node_id: dg.node_id, disk_group_id: dg.id, disk_id: d.disk_id },
                   })),
                 };
-              }),
-            });
+              });
           }
 
           return {
@@ -349,7 +354,7 @@ export function Sidebar({
         }),
       };
     }))];
-  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks]);
+  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans]);
 
   const filtered = useMemo(() => {
     if (!filterQuery.trim()) return treeNodes;

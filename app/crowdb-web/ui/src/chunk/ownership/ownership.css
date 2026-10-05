@@ -1,8 +1,8 @@
 /* Copyright 2026-present Gian <crow.db@outlook.com> */
 /* Licensed under the Apache License, Version 2.0. */
-.ownership-layers { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+.ownership-layers { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .ownership-card { border: 1px solid var(--color-border, #64748b); border-radius: 6px; padding: 12px; font-size: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.ownership-grid { display: grid; grid-template-columns: repeat(32, minmax(0, 1fr)); gap: 1px; width: 100%; max-width: 320px; }
+.ownership-grid { display: grid; grid-template-columns: repeat(128, minmax(0, 1fr)); grid-template-rows: repeat(8, minmax(0, auto)); gap: 1px; width: 100%; max-width: none; }
 .ownership-cell { padding: 0; border: 0; aspect-ratio: 1; min-width: 0; background: #64748b; }
 .ownership-cell.unknown { background: repeating-linear-gradient(45deg, #64748b 0 2px, #cbd5e1 2px 4px); }
 .ownership-cell[aria-pressed=true], .ownership-cell:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; z-index: 1; }

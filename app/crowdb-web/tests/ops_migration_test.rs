@@ -103,7 +103,7 @@ async fn spawn_web(upstream: &Upstream) -> SocketAddr {
         binary: None,
         election_profile: None,
         pid: None,
-        service_type: ServiceType::Kv,
+        service_type: ServiceType::PaxosKv,
         rpc_workers: None,
         no_fsync: false,
     })

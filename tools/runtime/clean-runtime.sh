@@ -9,9 +9,9 @@ runtime_root="${CROWDB_RUNTIME_ROOT:-$repo_root/.crowdb-runtime}"
 mode="${1:-env}"
 
 case "$mode" in
-    env | all-disposable) ;;
+    env | all-disposable | all) ;;
     *)
-        echo "usage: $0 [env|all-disposable]" >&2
+        echo "usage: $0 [env|all-disposable|all]" >&2
         exit 2
         ;;
 esac
@@ -94,4 +94,9 @@ if [ "$mode" = "all-disposable" ]; then
     rm -rf "$runtime_root/artifacts"
 fi
 
-echo "[clean-runtime] removed disposable runtime state; preserved $runtime_root/persistent"
+if [ "$mode" = "all" ]; then
+    rm -rf "$runtime_root"
+    echo "[clean-runtime] removed runtime root: $runtime_root"
+else
+    echo "[clean-runtime] removed disposable runtime state; preserved $runtime_root/persistent"
+fi

@@ -435,7 +435,8 @@ impl AppState {
             cfg.servers
                 .iter()
                 .filter(|s| {
-                    s.node_id.is_some() && s.service_type == crowdb_console_shared::config::ServiceType::Kv
+                    s.node_id.is_some()
+                        && s.service_type == crowdb_console_shared::config::ServiceType::PaxosKv
                 })
                 .map(|s| s.url.clone())
                 .collect::<Vec<_>>()

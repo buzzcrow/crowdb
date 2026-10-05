@@ -11,6 +11,11 @@ description: Write a CROWDB requirement document as a testable high-level design
 Write `doc/backlog/R**-<component>-<topic>.md` as one requirement's high-level
 design and testable contract. It is removed by `/implement-requirement`.
 
+Keep the contract concrete: describe CrowDB data, state transitions, APIs, and
+verification. Do not invent concepts for completeness. Cite primary sources
+when borrowing terminology or behavior from another system, and distinguish
+that reference from CrowDB's own semantics.
+
 Use this exact order:
 
 1. `### R**: <component> — <Title>` after the license.

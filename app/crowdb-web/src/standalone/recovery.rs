@@ -37,13 +37,13 @@ impl AppState {
         let seeds: Vec<String> = config
             .servers
             .iter()
-            .filter(|server| server.service_type == ServiceType::Kv)
+            .filter(|server| server.service_type == ServiceType::PaxosKv)
             .map(|server| server.url.clone())
             .collect();
         for server in config
             .servers
             .iter()
-            .filter(|server| server.service_type == ServiceType::Kv)
+            .filter(|server| server.service_type == ServiceType::PaxosKv)
         {
             let Some(node_id) = server.node_id else { continue };
             let node = config
@@ -65,7 +65,7 @@ impl AppState {
         for server in config
             .servers
             .iter()
-            .filter(|server| server.service_type == ServiceType::Kv)
+            .filter(|server| server.service_type == ServiceType::PaxosKv)
         {
             if ServerClient::new(server.url.clone())?
                 .list_stores()
@@ -82,7 +82,7 @@ impl AppState {
         for server in config
             .servers
             .iter()
-            .filter(|server| server.service_type != ServiceType::Kv)
+            .filter(|server| server.service_type != ServiceType::PaxosKv)
         {
             self.recover_auxiliary(server).await?;
         }

@@ -83,7 +83,8 @@ pub(crate) async fn list(State(state): State<AppState>, Query(query): Query<List
     }
     let start_token = query.after.as_deref().map(parse_id).transpose()?;
     let kv = state.kv_client().await;
-    let instances = ServiceRegistryClient::from_shared(kv)
+    let registry = ServiceRegistryClient::from_shared(kv);
+    let instances = registry
         .read_all_instances("chunkdb")
         .await
         .map_err(|error| err_502(error.to_string()))?;
@@ -145,6 +146,73 @@ pub(crate) async fn list(State(state): State<AppState>, Query(query): Query<List
         json!({"chunks":chunks,"scanned":scanned.len(),"next":if more && failures.is_empty() {after} else {None},
         "failures":failures,"observed_at_ms":observed_at(),"source":"chunkdb","owners":instances.len()}),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PxgroupListQuery {
+    #[serde(default)]
+    start_after: Option<String>,
+    #[serde(default = "default_pxgroup_limit")]
+    limit: u32,
+}
+
+fn default_pxgroup_limit() -> u32 {
+    100
+}
+
+/// Scan only ChunkDB chunk records owned by one Paxos group directly through
+/// the KV client. Other KV records in the group are intentionally excluded.
+pub(crate) async fn pxgroup_list(
+    State(state): State<AppState>,
+    Path((store_id, group_id)): Path<(u64, u64)>,
+    Query(query): Query<PxgroupListQuery>,
+) -> Response {
+    if query.limit == 0 || query.limit > 256 {
+        return Err(err_400("limit must be between 1 and 256"));
+    }
+    let prefix = b"/chunk/";
+    let start_after = query
+        .start_after
+        .map(|token| hex::decode(token).map_err(|_| err_400("start_after must be a hex key token")))
+        .transpose()?
+        .unwrap_or_default();
+    let ctx = state
+        .op_context()
+        .await
+        .map_err(|error| err_502(error.to_string()))?;
+    let outcome = crowdb_console_shared::ops::kv_data::scan(
+        &ctx,
+        store_id,
+        group_id,
+        prefix,
+        &start_after,
+        query.limit,
+    )
+    .await
+    .map_err(|error| err_502(error.to_string()))?;
+    let next_start_after = outcome
+        .truncated
+        .then(|| outcome.items.last().map(|(key, _)| hex::encode(key)))
+        .flatten();
+    let items = outcome
+        .items
+        .into_iter()
+        .filter_map(|(key, _value)| {
+            let chunk_id = key
+                .strip_prefix(prefix)
+                .filter(|id| id.len() == 16)
+                .map(hex::encode)?;
+            json!({
+                "chunk_id": chunk_id,
+                "key_hex": hex::encode(&key),
+            })
+            .into()
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "store_id": store_id, "group_id": group_id, "items": items,
+        "truncated": outcome.truncated, "next_start_after": next_start_after, "source": "pxgroup",
+    })))
 }
 
 pub(crate) async fn detail(State(state): State<AppState>, Path(id): Path<String>) -> Response {

@@ -263,7 +263,9 @@ void Group0Sync::heartbeat()
         return;
     }
 
-    std::string dg_ids_json = "[" + std::to_string(cfg_.dg_id) + "]";
+    // A node-local DiskIO instance may run before any Capacity disk group
+    // exists. In that mode it remains healthy and advertises no ownership.
+    const std::string dg_ids_json = cfg_.dg_id == 0 ? "[]" : "[" + std::to_string(cfg_.dg_id) + "]";
 
     SyncCallbackCtx ctx;
     crowdb_svc_heartbeat_diskio_at(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), cfg_.rack_id, cfg_.node_id,

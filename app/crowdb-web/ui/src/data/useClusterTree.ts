@@ -82,16 +82,22 @@ export function useClusterTree({
       }
       const racksData = await listRacks(recursive, options);
       if (controller.signal.aborted) return;
-      setRacks(Array.isArray(racksData) ? racksData : []);
+      const rackList = Array.isArray(racksData) ? racksData : [];
+      setRacks(rackList);
 
       const nodesData = await listNodes(undefined, recursive, options);
       if (controller.signal.aborted) return;
       const nodeList = Array.isArray(nodesData) ? nodesData : [];
-      setNodes(nodeList);
+      // The flat node endpoint intentionally omits live service projections.
+      // Recursive rack responses already contain the authoritative KV/DiskDB
+      // health, so merge those fields before building the sidebar state.
+      const recursiveNodes = new Map(rackList.flatMap((rack) => rack.nodes || []).map((node) => [node.id, node] as const));
+      const enrichedNodes = nodeList.map((node) => ({ ...node, ...(recursiveNodes.get(node.id) ?? {}) }));
+      setNodes(enrichedNodes);
 
       // Node status comes from the authoritative service projection. The physical
       // view has no use for a second per-node KV catalog or reachability fanout.
-      setNodeHealthById(Object.fromEntries(nodeList.map(node => [node.id, node.kv_server?.health ?? NodeHealth.Unknown])));
+      setNodeHealthById(Object.fromEntries(enrichedNodes.map(node => [node.id, node.kv_server?.health ?? NodeHealth.Unknown])));
       setNodeStores({});
 
       setError(null);

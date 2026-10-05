@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { describe, expect, it } from 'vitest';
-import { parseSnapshot, projectOwners, type Snapshot } from './model';
+import { ownershipLayers, parseSnapshot, projectOwners, type Snapshot } from './model';
 import { Domain, type EnrichedStoreView, type Node } from '../../types';
 
 const observation: Snapshot = { layer: 'storage', generation: '18446744073709551615', slot_count: 1024, owners: Array.from({ length: 1024 }, (_, slot) => `0/${slot % 2 + 1}`), source: 'test' };
@@ -11,6 +11,11 @@ const stores = [{ store_id: '0', groups: [
   { group_id: '2', replicas: [{ node_id: 3 }] },
 ] }] as EnrichedStoreView[];
 describe('Chunk ownership projection', () => {
+  it('selects the ownership map that each server provides', () => {
+    expect(ownershipLayers({ domain: Domain.Chunk, type: 'Server', id: 'p', serviceType: 'paxos-kv' })).toEqual(['storage']);
+    expect(ownershipLayers({ domain: Domain.Chunk, type: 'Server', id: 'c', serviceType: 'chunkdb' })).toEqual(['service']);
+    expect(ownershipLayers({ domain: Domain.Chunk, type: 'Node', id: '1' })).toEqual(['service', 'storage']);
+  });
   it('deduplicates replica groups and keeps disjoint assignments exact', () => {
     const owners = projectOwners(parseSnapshot(observation), { domain: Domain.Chunk, type: 'Rack', id: '1' }, nodes, [], stores);
     expect(owners).toEqual([

@@ -8,7 +8,7 @@ import { buttonClass } from '../../access/Workbench';
 import type { SelectedEntity } from '../../contexts/SelectionContext';
 import { useNavigationSnapshot } from '../../contexts/DomainContext';
 import type { EnrichedStoreView, Node } from '../../types';
-import { ownerColor, parseSnapshot, projectOwners, type Layer, type Snapshot } from './model';
+import { ownershipLayers, ownerColor, parseSnapshot, projectOwners, type Layer, type Snapshot } from './model';
 import './ownership.css';
 
 interface Props {
@@ -22,7 +22,7 @@ export function OwnershipPanel(props: Props) {
     const saved = { ...queries };
     return () => setQueries(saved);
   });
-  const layers: Layer[] = selection.type === 'Server' ? ['service'] : ['Group', 'Store'].includes(selection.type) ? ['storage'] : ['service', 'storage'];
+  const layers = ownershipLayers(selection);
   const missing = selection.type === 'Node' && !props.nodes.some(node => String(node.id) === selection.id);
   return <section aria-label="Chunk ownership" className="tw-space-y-3">
     <h2 className="tw-text-sm tw-font-semibold">Chunk ownership · {selection.name ?? `${selection.type} ${selection.id}`}</h2>
@@ -61,7 +61,7 @@ function OwnershipLayer({ active, selection, nodes, servers, stores, onSelect, l
   const owners = snapshot ? projectOwners(snapshot, selection, nodes, servers, stores) : [];
   const byId = new Map(owners.map(owner => [owner.id, owner]));
   const legend = owners.filter(owner => owner.scope !== 'outside');
-  const title = layer === 'service' ? 'Serving ownership' : 'Storage ownership';
+  const title = layer === 'service' ? 'Chunk Serving Ownership' : 'Chunk Storage Ownership';
   const selectedOwner = snapshot && slot !== null ? byId.get(snapshot.owners[slot]) : undefined;
   const owned = snapshot?.owners.filter(id => byId.get(id)?.scope === 'inside').length ?? 0;
   const unknown = snapshot?.owners.filter(id => byId.get(id)?.scope === 'unknown').length ?? 0;

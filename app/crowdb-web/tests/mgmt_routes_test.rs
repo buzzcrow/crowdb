@@ -136,7 +136,7 @@ fn config_for_upstream(upstream: &Upstream) -> ConsoleConfig {
         binary: None,
         election_profile: None,
         pid: None,
-        service_type: ServiceType::Kv,
+        service_type: ServiceType::PaxosKv,
         rpc_workers: None,
         no_fsync: false,
     })

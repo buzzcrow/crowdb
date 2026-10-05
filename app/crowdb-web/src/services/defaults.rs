@@ -63,7 +63,7 @@ pub(super) async fn get(State(state): State<AppState>) -> Result<Json<Value>, Fa
     let mut used = occupied(&config);
     let mut result = BTreeMap::new();
     for (kind, base) in [
-        ("kv", 19910),
+        ("paxos-kv", 19910),
         ("diskdb", 29920),
         ("chunkdb", 12010),
         ("diskio", 13010),

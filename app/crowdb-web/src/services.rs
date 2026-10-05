@@ -36,7 +36,7 @@ pub(crate) fn node_removal(
         service.node_id == Some(node)
             && !matches!(
                 service.service_type,
-                crowdb_console_shared::config::ServiceType::Kv
+                crowdb_console_shared::config::ServiceType::PaxosKv
                     | crowdb_console_shared::config::ServiceType::Diskdb
             )
     }) {

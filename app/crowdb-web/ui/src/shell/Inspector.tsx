@@ -13,7 +13,7 @@ import { ActivityLog } from '../panels/ActivityLog';
 import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, serverLabel, storeLabel } from '../utils/entityDisplay';
 import { ElectionStateRegion, ReadStateRegion } from '../components/ConsensusState';
 import type { ServerSummary } from '../api';
-import { isAuxiliaryKind, serviceNames } from '../services/client';
+import { isAuxiliaryKind, serviceDisplayNames } from '../services/client';
 import { ServiceProperties } from '../services/ServiceProperties';
 
 
@@ -74,7 +74,7 @@ export function Inspector({ allServers = [], readonly, modules: _modules, nodes 
   if (!selectedEntity) return null;
 
   const displayType = selectedEntity.type === 'Server'
-    ? (isAuxiliaryKind(selectedEntity.serviceType) ? serviceNames[selectedEntity.serviceType] : selectedEntity.serviceType === 'diskdb' ? 'DiskDB' : 'KV')
+    ? (serviceDisplayNames[selectedEntity.serviceType as keyof typeof serviceDisplayNames] ?? selectedEntity.serviceType ?? 'Server')
     : selectedEntity.type;
   const displayName = selectedEntity.name || displayEntityId(selectedEntity);
 

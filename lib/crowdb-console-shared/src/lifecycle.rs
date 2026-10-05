@@ -691,6 +691,22 @@ pub fn crowdb_kv_server_bin() -> Option<PathBuf> {
                     break;
                 }
             }
+
+            // `cargo test` runs from `target/debug/deps`, while the release
+            // build task places the server in `target/release`. Accept that
+            // artifact so integration tests do not depend on a debug build.
+            let mut target = dir.to_path_buf();
+            while target.file_name().is_some_and(|name| name != "target") {
+                if !target.pop() {
+                    break;
+                }
+            }
+            if target.file_name().is_some_and(|name| name == "target") {
+                let candidate = target.join("release").join("crowdb-kv-server");
+                if is_executable(&candidate) {
+                    return Some(candidate);
+                }
+            }
         }
     }
     // Fall back to PATH.

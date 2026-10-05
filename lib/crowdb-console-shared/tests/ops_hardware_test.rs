@@ -151,7 +151,7 @@ async fn remove_node_with_server_conflict() {
             binary: None,
             election_profile: None,
             pid: None,
-            service_type: crowdb_console_shared::config::ServiceType::Kv,
+            service_type: crowdb_console_shared::config::ServiceType::PaxosKv,
             rpc_workers: None,
             no_fsync: false,
         });

@@ -18,7 +18,14 @@ use crate::{
     state::AppState,
 };
 
-const KINDS: [&str; 6] = ["kv", "diskdb", "chunkdb", "diskio", "chunk-kv", "access-server"];
+const KINDS: [&str; 6] = [
+    "paxos-kv",
+    "diskdb",
+    "chunkdb",
+    "diskio",
+    "chunk-kv",
+    "access-server",
+];
 const MAX_BYTES: u64 = 32 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -36,7 +43,9 @@ enum StepState {
     Waiting,
     Deploying,
     Deployed,
+    Warning,
     Failed,
+    Disabled,
 }
 
 #[derive(Deserialize, Serialize)]

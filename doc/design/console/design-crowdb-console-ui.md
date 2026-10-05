@@ -127,7 +127,7 @@ provide observable capacity and bitmap fixtures.
   Buttons, including Run Recalc, must have adequate text/background contrast.
   Color alone cannot encode state, role, or selection.
 - **VIS-02:** Service instances use one compact `TYPE-ID` convention everywhere:
-  `KV-1`, `DDB-1`, `CDB-1`, `DIO-1`, `CKV-1`, and `AS-1`. Trees, topology cards,
+  `PKV-1`, `DDB-1`, `CDB-1`, `DIO-1`, `CKV-1`, and `AS-1`. Trees, topology cards,
   selected titles, and instance menus use the same label.
 - The suffix identifies the service instance in its own type. It must not be
   fabricated from a Node ID when those identities differ. Exact backend IDs

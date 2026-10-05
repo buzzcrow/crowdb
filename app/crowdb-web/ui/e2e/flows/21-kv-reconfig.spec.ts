@@ -109,7 +109,7 @@ async function openKvPanel(page: import('@playwright/test').Page, storeId: numbe
 function serverHealthBadge(page: import('@playwright/test').Page, nodeId: number) {
   return page
     .getByRole('treeitem')
-    .filter({ hasText: `KV-${nodeId}` })
+    .filter({ hasText: `PKV-${nodeId}` })
     .locator('[title]')
     .filter({ hasText: /^(Healthy|Failed|Unknown|Degraded)$/ });
 }
@@ -118,8 +118,8 @@ async function stopServerViaMenu(page: import('@playwright/test').Page, nodeId: 
   // KV-xxx tree items are in the Cluster domain under their physical node.
   await page.getByTestId('domain-cluster').click();
   const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
-  await aside.getByText(`KV-${nodeId}`, { exact: true }).click({ button: 'right' });
+  await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
+  await aside.getByText(`PKV-${nodeId}`, { exact: true }).click({ button: 'right' });
   const stop = page.waitForResponse((r: any) => r.url().includes('/server/stop'));
   await page.getByRole('menuitem', { name: /stop CrowDB Storage/i }).click();
   await stop;
@@ -129,8 +129,8 @@ async function restartServerViaMenu(page: import('@playwright/test').Page, nodeI
   // KV-xxx tree items are in the Cluster domain under their physical node.
   await page.getByTestId('domain-cluster').click();
   const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
-  await aside.getByText(`KV-${nodeId}`, { exact: true }).click({ button: 'right' });
+  await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
+  await aside.getByText(`PKV-${nodeId}`, { exact: true }).click({ button: 'right' });
   const restart = page.waitForResponse((r: any) => r.url().includes('/server/restart'));
   await page.getByRole('menuitem', { name: /restart CrowDB Storage/i }).click();
   await restart;

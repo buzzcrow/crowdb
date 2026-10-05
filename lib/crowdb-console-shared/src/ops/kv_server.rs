@@ -141,7 +141,7 @@ pub async fn deploy(
         binary,
         election_profile: req.election_profile.clone(),
         pid: Some(deployed.pid),
-        service_type: ServiceType::Kv,
+        service_type: ServiceType::PaxosKv,
         rpc_workers: req.rpc_workers,
         no_fsync: req.no_fsync,
     };

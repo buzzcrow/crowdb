@@ -86,14 +86,14 @@ function renderSidebar(domain: Domain, props: Record<string, unknown> = {}) {
 }
 
 describe('Sidebar · Cluster tree projection', () => {
-  it('renders rack → node → KV server under the node', () => {
+  it('renders rack → node → PKV server under the node', () => {
     const { getByText, queryByText } = renderSidebar(Domain.Cluster);
     expect(getByText(/R-1/)).toBeTruthy();
     expect(getByText('N-10', { exact: true })).toBeTruthy();
-    // KV server appears as a child of node 10, not as a top-level item.
-    expect(getByText('KV-10', { exact: true })).toBeTruthy();
-    // Node 11 has no KV server — no KV-11 item.
-    expect(queryByText('KV-11')).toBeNull();
+    // PKV server appears as a child of node 10, not as a top-level item.
+    expect(getByText('PKV-10', { exact: true })).toBeTruthy();
+    // Node 11 has no PKV server — no PKV-11 item.
+    expect(queryByText('PKV-11')).toBeNull();
   });
 
   it('renders assigned disk groups and disks under the owning DiskDB service', () => {
@@ -114,15 +114,15 @@ describe('Sidebar · Cluster tree projection', () => {
 });
 
 describe('Sidebar · KV logical projection', () => {
-  it('renders datacenter → store → group → replica without KV-server parents', () => {
+  it('renders datacenter → store → group → replica without PKV-server parents', () => {
     const { getByText, queryByText } = renderSidebar(Domain.KV);
     // Logical tree: datacenter → store → group → replica.
     expect(getByText('S-7', { exact: true })).toBeTruthy();
     expect(getByText('G-70', { exact: true })).toBeTruthy();
     expect(getByText('LR-700', { exact: true })).toBeTruthy();
     expect(getByText('LR-701', { exact: true })).toBeTruthy();
-    // No physical KV-server or node items in the KV tree.
-    expect(queryByText('KV-10')).toBeNull();
+    // No physical PKV-server or node items in the KV tree.
+    expect(queryByText('PKV-10')).toBeNull();
     expect(queryByText('N-10')).toBeNull();
   });
 });
@@ -138,7 +138,7 @@ describe('Sidebar · Chunk hierarchy', () => {
     expect(getByText('0123456789ab…')).toBeTruthy();
     // DiskDB is a service item that belongs in the Cluster domain only.
     expect(queryByText('DDB-10')).toBeNull();
-    // No KV server item in the Chunk tree.
-    expect(queryByText('KV-10')).toBeNull();
+    // No PKV server item in the Chunk tree.
+    expect(queryByText('PKV-10')).toBeNull();
   });
 });

@@ -2,12 +2,12 @@
 // Licensed under the Apache License, Version 2.0.
 import { RotateCw, Square, Trash2, Play } from 'lucide-react';
 import { restartServer, stopServer, removeServer, restartDiskdb, stopDiskdb, removeDiskdb, type ServerSummary } from '../api';
-import { isAuxiliaryKind, serviceNames, serviceRequest } from '../services/client';
+import { serviceDisplayNames, serviceRequest } from '../services/client';
 import type { MenuContext } from './context';
 import type { MenuItemOrSeparator } from '../components/ContextMenu';
 export function serviceLifecycle(server: ServerSummary, run: MenuContext['runMutation'], remove: MenuContext['requestDelete']): MenuItemOrSeparator[] {
   const kind = server.service_type;
-  const label = isAuxiliaryKind(kind) ? serviceNames[kind] : kind === 'diskdb' ? 'DiskDB' : 'CrowDB Storage';
+  const label = serviceDisplayNames[kind as keyof typeof serviceDisplayNames] ?? kind;
   const id = server.id ?? '';
   const node = server.node_id!;
   const restart = () => kind === 'kv' ? restartServer(node) : kind === 'diskdb' ? restartDiskdb(node) : serviceRequest(`/services/${encodeURIComponent(id)}/restart`, 'POST');

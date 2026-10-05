@@ -232,16 +232,6 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     [stores],
   );
 
-  const clusterHealth: ClusterHealth = useMemo(() => {
-    if (dataError) return domain === Domain.Capacity ? 'Degraded' : 'Failed';
-    if (groups.length === 0) return 'Unknown';
-    const statuses = groups.map((g) => toUiHealth(String((g as any).state || (g as any).health || '')));
-    if (statuses.some((status) => status === 'Failed')) return 'Failed';
-    if (statuses.some((status) => status === 'Degraded')) return 'Degraded';
-    if (statuses.every((status) => status === 'Healthy')) return 'Healthy';
-    return 'Unknown';
-  }, [groups, dataError, domain]);
-
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -255,6 +245,22 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   }, [managed, refreshPhysical, refreshLogical, refreshCapacity, refreshAllServers]);
 
   const servicePlans = useNodeServicePlans(stores, nodeDiskGroups, handleRefresh, !topologyReadonly);
+  const clusterHealth: ClusterHealth = useMemo(() => {
+    if (dataError) return domain === Domain.Capacity ? 'Degraded' : 'Failed';
+    const statuses = [
+      ...groups.map((g) => toUiHealth(String((g as any).state || (g as any).health || ''))),
+      ...nodes.map((node) => toUiHealth(String(node.kv_server?.health || ''))),
+      ...allServers.map((server) => toUiHealth(server.health)),
+    ];
+    if (statuses.length === 0) return 'Unknown';
+    if (statuses.some((status) => status === 'Failed')) return 'Failed';
+    if (statuses.some((status) => status === 'Degraded')) return 'Degraded';
+    const planStates = Object.values(servicePlans.plans).flatMap((plan) => Object.values(plan).map((step) => step.state));
+    if (planStates.some((state) => state === 'failed')) return 'Failed';
+    if (planStates.some((state) => state === 'waiting' || state === 'deploying' || state === 'pending')) return 'Degraded';
+    if (statuses.every((status) => status === 'Healthy')) return 'Healthy';
+    return 'Unknown';
+  }, [groups, nodes, allServers, servicePlans.plans, dataError, domain]);
   useEffect(() => {
     if (managed) return;
     for (const [id, plan] of Object.entries(servicePlans.plans)) {
@@ -527,6 +533,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         diskdbNodeIds={diskdbNodeIds}
         diskdbHealthById={diskdbHealthById}
         diskdbInstanceIdByNodeId={diskdbInstanceIdByNodeId}
+        servicePlans={servicePlans.plans}
       /></div>
 
       {!ownsSidebar && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth} />}
@@ -551,6 +558,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             nodes={nodes}
             servers={servers}
             stores={stores}
+            viewportWidthKey={selectedEntity && !ownsSidebar ? inspectorWidth : 0}
             nodeStores={nodeStores}
             nodeHealthById={nodeHealthById}
             diskdbNodeIds={diskdbNodeIds}

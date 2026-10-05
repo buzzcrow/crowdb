@@ -31,7 +31,7 @@ pub(crate) async fn http_list_stores(
             config
                 .servers
                 .iter()
-                .any(|server| server.service_type == crowdb_console_shared::config::ServiceType::Kv),
+                .any(|server| server.service_type == crowdb_console_shared::config::ServiceType::PaxosKv),
             config.group(0, 0).is_some(),
         )
     };

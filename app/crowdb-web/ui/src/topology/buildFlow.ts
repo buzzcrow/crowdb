@@ -111,7 +111,7 @@ export function buildPhysicalFlow(
     flowEdges.push({ id: `e-R-${node.rack_id}-N-${node.id}`, source: `R-${node.rack_id}`, target: `N-${node.id}`, type: 'smoothstep' });
 
     if (server) {
-      const serverNodeId = `KV-${node.id}`;
+      const serverNodeId = `PKV-${node.id}`;
       flowNodes.push(
         mkNode(serverNodeId, {
           kind: 'Server',
@@ -119,10 +119,10 @@ export function buildPhysicalFlow(
           sublabel: toDisplayState(server.process.state),
           health: server.process.health,
           layer: 3,
-          entity: { type: 'Server', id: server.id, parentIds: { rack_id: node.rack_id, node_id: node.id }, serviceType: 'kv' },
+          entity: { type: 'Server', id: server.id, parentIds: { rack_id: node.rack_id, node_id: node.id }, serviceType: 'paxos-kv' },
         }),
       );
-      flowEdges.push({ id: `e-N-${node.id}-KV`, source: `N-${node.id}`, target: serverNodeId, type: 'smoothstep' });
+      flowEdges.push({ id: `e-N-${node.id}-PKV`, source: `N-${node.id}`, target: serverNodeId, type: 'smoothstep' });
 
     }
 

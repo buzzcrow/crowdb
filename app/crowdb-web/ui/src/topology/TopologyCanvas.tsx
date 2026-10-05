@@ -50,6 +50,8 @@ interface TopologyCanvasProps {
   diskdbInstanceIdByNodeId?: Map<number, string>;
   nodeDiskGroups?: Record<number, import('./buildFlow').NodeDiskGroups>;
   refreshToken?: number;
+  /** Changes when the main canvas width changes because the inspector opens or resizes. */
+  viewportWidthKey?: number;
   focusRequest?: { targetId: string; subtree: boolean; nonce: number } | null;
   /** Right-click on a canvas node. */
   onEntityContextMenu?: (target: MenuTarget, event: React.MouseEvent) => void;
@@ -95,9 +97,9 @@ function selectedNodeId(entity: SelectedEntity): string | null {
       case 'Node': return `N-${entity.id}`;
       case 'Server': {
         if (isAuxiliaryKind(entity.serviceType)) return `SERVICE-${entity.id}`;
-        // DDB server nodes use `DDB-` prefix; KV servers use `KV-`.
+        // DDB server nodes use `DDB-` prefix; Paxos-KV servers use `PKV-`.
         if (entity.id?.startsWith?.('DDB-')) return p.node_id ? `DDB-${p.node_id}` : null;
-        return p.node_id ? `KV-${p.node_id}` : null;
+        return p.node_id ? `PKV-${p.node_id}` : null;
       }
       case 'DiskGroup':
         if (!p.node_id) return null;
@@ -125,12 +127,14 @@ function selectedNodeId(entity: SelectedEntity): string | null {
   }
 }
 
-function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
+function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, viewportWidthKey, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
   const { domain: activeDomain, returning } = useDomain();
   const domain = scope ?? activeDomain;
   const { selectionForDomain, selectEntity } = useSelection();
   const selectedEntity = selectionForDomain(domain);
   const { fitView, setViewport, setCenter, getZoom, getNodes, getViewport } = useReactFlow();
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [canvasSizeKey, setCanvasSizeKey] = useState('');
   const nodesInitialized = useNodesInitialized();
   const viewportsRef = useRef<Partial<Record<Domain, Viewport>>>({});
   const fittedOnceRef = useRef<Partial<Record<Domain, boolean>>>({});
@@ -147,7 +151,25 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   // poll updates (which re-run the effect with a new positioned.nodes
   // reference but the same action key) don't cancel an in-flight fit.
   const fitRafIdRef = useRef<number | undefined>(undefined);
+  const lastCanvasSizeRef = useRef('');
   const [collapsedByDomain, setCollapsedByDomain] = useState<Partial<Record<Domain, Set<string>>>>({});
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      if (width <= 0 || height <= 0) return;
+      const key = `${width}x${height}`;
+      if (key === lastCanvasSizeRef.current) return;
+      lastCanvasSizeRef.current = key;
+      viewportsRef.current[domain] = undefined;
+      fittedOnceRef.current[domain] = false;
+      setCanvasSizeKey(key);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [domain]);
   const defaultCollapsed = useMemo(() => domain === Domain.Cluster
     ? new Set(nodes.map(node => `N-${node.id}`)) : EMPTY_COLLAPSED, [domain, nodes]);
   const collapsed = collapsedByDomain[domain] ?? defaultCollapsed;
@@ -232,7 +254,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
     // manual refresh. Polls return new array references for the same data;
     // without this guard the effect re-runs every cycle and the
     // setViewport(savedViewport) call below fights an in-progress pan drag.
-    const actionKey = `${domain}:${nodeIdsKey}:${refreshToken ?? ''}`;
+    const actionKey = `${domain}:${nodeIdsKey}:${refreshToken ?? ''}:${viewportWidthKey ?? ''}:${canvasSizeKey}`;
     if (actionKey === lastActionKeyRef.current) return;
     // Action key changed — cancel any pending rAF from the previous action.
     if (fitRafIdRef.current != null) {
@@ -261,13 +283,29 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
           fitRafIdRef.current = requestAnimationFrame(tryFit);
           return;
         }
-        void fitView({ padding: 0.1, duration: 250, includeHiddenNodes: true });
+        // Fit the visible topology only. Hidden service descendants belong to
+        // collapsed branches and must not expand the bounds during tab return.
+        void fitView({ padding: 0.1, duration: 250 });
         fittedOnceRef.current[domain] = true;
       }
       fitRafIdRef.current = undefined;
     };
     fitRafIdRef.current = requestAnimationFrame(tryFit);
-  }, [active, returning, fitView, getNodes, nodesInitialized, positioned.nodes, setViewport, domain, refreshToken]);
+  }, [active, returning, fitView, getNodes, nodesInitialized, positioned.nodes, setViewport, domain, refreshToken, viewportWidthKey, canvasSizeKey]);
+
+  // ReactFlow can finish measuring its viewport one tick after a domain tab
+  // becomes visible. A delayed fit closes that gap and prevents the viewport
+  // calculated while the panel was hidden from surviving a tab return.
+  useEffect(() => {
+    if (!active || !nodesInitialized || positioned.nodes.length === 0) return;
+    const timer = window.setTimeout(() => {
+      viewportsRef.current[domain] = undefined;
+      fittedOnceRef.current[domain] = false;
+      void fitView({ padding: 0.1, duration: 250 });
+      fittedOnceRef.current[domain] = true;
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [active, canvasSizeKey, domain, fitView, nodesInitialized, positioned.nodes.length]);
 
   const selId = selectedEntity ? selectedNodeId(selectedEntity) : null;
   const decoratedNodes: Node[] = useMemo(
@@ -314,7 +352,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
 
   const handleFitAll = useCallback(() => {
     viewportsRef.current[domain] = undefined;
-    void fitView({ padding: 0.1, duration: 250, includeHiddenNodes: true });
+    void fitView({ padding: 0.1, duration: 250 });
     fittedOnceRef.current[domain] = true;
   }, [fitView, domain]);
 
@@ -346,7 +384,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   );
 
   return (
-    <div className="tw-relative tw-w-full tw-h-full tw-bg-bg tw-overflow-hidden">
+    <div ref={canvasRef} className="tw-relative tw-w-full tw-h-full tw-bg-bg tw-overflow-hidden">
       <div className="tw-absolute tw-top-3 tw-right-3 tw-z-20">
         <Button
           variant="secondary"

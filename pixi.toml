@@ -265,8 +265,7 @@ coverage = { cmd = "cargo tarpaulin --workspace --out Html --output-dir target/c
 loc = "tokei . .github --exclude swagger-ui --exclude third-party --exclude 'lib/crowdb-tree/build-*' --exclude target --exclude dist --exclude node_modules --exclude package-lock.json"
 
 # ── Clean ────────────────────────────────────────────────────────
-# Removes build products and disposable namespaced runtime artifacts. Durable
-# local clusters below `.crowdb-runtime/persistent/` are always preserved.
+# Removes build products and the complete workspace runtime tree.
 clean = { cmd = "bash tools/pixi-tasks/clean-build.sh" }
 
 # ── lib/crowdb-tree sanitizers ──────────────────────────────────────────

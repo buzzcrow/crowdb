@@ -741,7 +741,7 @@ pub async fn http_internal_reset(
         config
             .servers
             .iter()
-            .filter(|entry| entry.service_type == ServiceType::Kv)
+            .filter(|entry| entry.service_type == ServiceType::PaxosKv)
             .all(|entry| {
                 config.local_launches.contains_key(&entry.id)
                     && entry

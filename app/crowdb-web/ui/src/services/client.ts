@@ -4,12 +4,13 @@
 import { getApiBase, getManagementToken } from '../api';
 import { readJson } from '../access/native';
 
-export const serviceNames = { chunkdb: 'CDB (ChunkDB)', diskio: 'DiskIO', 'chunk-kv': 'Chunk-KV', 'access-server': 'Access Server' } as const;
+export const serviceNames = { chunkdb: 'crowdb-chunk-db', diskio: 'crowdb-disk-io', 'chunk-kv': 'crowdb-chunk-kv', 'access-server': 'crowdb-access-server' } as const;
+export const serviceDisplayNames = { ...serviceNames, 'paxos-kv': 'crowdb-paxos-kv', diskdb: 'crowdb-disk-db' } as const;
 export type AuxiliaryKind = keyof typeof serviceNames;
 export function isAuxiliaryKind(value?: string): value is AuxiliaryKind { return value != null && Object.hasOwn(serviceNames, value); }
-/** Compact instance labels share the KV/DDB naming convention without rounding IDs. */
+/** Compact instance labels keep Paxos-KV distinct from Chunk-KV. */
 export function serviceInstanceLabel(kind: string | undefined, id: string): string {
-  const prefix = { kv: 'KV', diskdb: 'DDB', chunkdb: 'CDB', diskio: 'DIO', 'chunk-kv': 'CKV', 'access-server': 'AS' }[kind ?? ''];
+  const prefix = { 'paxos-kv': 'PKV', diskdb: 'DDB', chunkdb: 'CDB', diskio: 'DIO', 'chunk-kv': 'CKV', 'access-server': 'AS' }[kind ?? ''];
   if (!prefix) return id;
   const suffix = id.startsWith(`${kind}-`) ? id.slice(kind!.length + 1) : id;
   return `${prefix}-${suffix}`;

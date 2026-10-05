@@ -142,7 +142,7 @@ pub async fn spawn_group0() -> Option<Group0> {
         binary: None,
         election_profile: None,
         pid: Some(deployed.pid),
-        service_type: ServiceType::Kv,
+        service_type: ServiceType::PaxosKv,
         rpc_workers: None,
         no_fsync: false,
     })

@@ -448,7 +448,7 @@ async fn resume_incomplete(
     let group0 = config
         .servers
         .iter()
-        .find(|server| server.service_type == ServiceType::Kv)
+        .find(|server| server.service_type == ServiceType::PaxosKv)
         .and_then(|server| server.rpc_url.as_deref())
         .ok_or_else(|| Error::Config("S3 bootstrap has no KV RPC seed".into()))?
         .trim_start_matches("http://")
@@ -493,7 +493,7 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
     let group0 = config
         .servers
         .iter()
-        .find(|server| server.service_type == ServiceType::Kv)
+        .find(|server| server.service_type == ServiceType::PaxosKv)
         .and_then(|server| server.rpc_url.as_deref())
         .unwrap_or("http://127.0.0.1:10000")
         .trim_start_matches("http://")
@@ -640,7 +640,7 @@ fn management_seeds(config: &ConsoleConfig) -> Vec<String> {
     config
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect()
 }
@@ -649,7 +649,7 @@ fn restore_launch_nodes(config: &mut ConsoleConfig, protected_test: bool) -> Res
     let node_ids: Vec<_> = config
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| {
             server
                 .node_id

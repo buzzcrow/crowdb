@@ -32,7 +32,7 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
             onSelect: () => setDialog((d) => ({ ...d, addRack: true })),
           });
         } else if (t.type === 'Rack' && modules?.nodes !== false) {
-          const rackId = Number(t.rawId);
+          const rackId = Number(t.rawId ?? t.id);
           items.push({
             id: 'add-node',
             label: 'Add Node',
@@ -48,7 +48,7 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
             onSelect: () => requestDelete('Rack', rackId, async () => { await runMutation('Delete Rack', `Rack ${rackId}`, () => removeRack(rackId)); }),
           });
         } else if (t.type === 'Node') {
-          const nodeId = Number(t.rawId);
+          const nodeId = Number(t.rawId ?? t.id);
           const hasServer = serverNodeIds.has(nodeId);
           const hasDiskdb = diskdbNodeIds.has(nodeId);
           // Add Services — deploy CrowDB Storage and/or DiskDB.
@@ -153,7 +153,7 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
                 await runMutation('Delete DiskDB', t.label || t.id, () => removeDiskdb(nodeId));
               }),
             });
-          } else if (t.serviceType === 'kv') {
+          } else if (t.serviceType === 'paxos-kv') {
             // CrowdbKV service context menu: restart, stop, delete.
             items.push({
               id: 'restart',
@@ -206,7 +206,7 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
                 await runMutation('Delete DiskDB', t.label || t.id, () => removeDiskdb(nodeId));
               }),
             });
-          } else if (t.serviceType === 'kv') {
+          } else if (t.serviceType === 'paxos-kv') {
             items.push({
               id: 'restart',
               label: 'Restart CrowDB Storage',

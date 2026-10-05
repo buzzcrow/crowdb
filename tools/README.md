@@ -20,8 +20,8 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
 - **`benchmark/`** — repeatable performance regressions, shared result handling,
   leak inspection and KV write sentinel checks.
 - **`profiling/`** — perf setup and write-path flamegraphs.
-- **`runtime/`** — clean recorded disposable processes and runtime state;
-  preserve persistent clusters.
+- **`runtime/`** — clean recorded runtime processes and state; `clean-env`
+  preserves persistent clusters while `clean` removes the complete runtime tree.
 - **`media/`** — convert recordings for documentation.
 
 Common entry points:

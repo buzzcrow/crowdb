@@ -90,6 +90,11 @@ pub(super) async fn deploy(
     Json(body): Json<Deploy>,
 ) -> Result<(StatusCode, Json<Value>), Failure> {
     validate(&body)?;
+    if !crate::mgmt::cluster_initialized(&state).await {
+        return Err(err_409(
+            "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting this service",
+        ));
+    }
     let id = format!("{}-{}", body.kind.name(), body.instance_id);
     let mut claims = vec![format!("node/{node_id}"), format!("service/{id}")];
     if matches!(body.kind, Kind::AccessServer) {
@@ -128,9 +133,6 @@ fn validate(body: &Deploy) -> Result<(), Failure> {
         || ports.len() != ports.iter().collect::<std::collections::HashSet<_>>().len()
     {
         return Err(err_400("Every listener needs a distinct port in 1..=65535"));
-    }
-    if matches!(body.kind, Kind::Diskio) && body.disk_group_id.is_none() {
-        return Err(err_400("DiskIO requires a disk group on the selected node"));
     }
     if matches!(body.kind, Kind::ChunkKv) && body.metadata_store_id.is_none() {
         return Err(err_400("Chunk-KV requires a metadata store"));
@@ -222,13 +224,13 @@ fn inputs(
     let seeds: Vec<_> = config
         .servers
         .iter()
-        .filter(|entry| entry.service_type == ServiceType::Kv)
+        .filter(|entry| entry.service_type == ServiceType::PaxosKv)
         .map(|entry| entry.url.clone())
         .collect();
     if seeds.is_empty() {
         return Err(err_409("Deploy and initialize this cluster's KV services first"));
     }
-    if let Some(group) = body.disk_group_id {
+    if let Some(group) = body.disk_group_id.filter(|group| *group != 0) {
         if !config
             .disk_groups
             .iter()

@@ -109,7 +109,7 @@ async fn deploy_local_and_observe_topology() {
         binary: None,
         election_profile: Some("e2e".into()),
         pid: None,
-        service_type: crowdb_console_shared::config::ServiceType::Kv,
+        service_type: crowdb_console_shared::config::ServiceType::PaxosKv,
         rpc_workers: None,
         no_fsync: false,
     })

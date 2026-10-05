@@ -750,8 +750,8 @@ test.describe('chunk · capacity · disk-group', () => {
       // node record, so the KV badge flipped to Down even though the KV
       // process was still running.
       await page.getByTestId('domain-cluster').click();
-      await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
-      const kvItemAfterDdbStop = aside.getByRole('treeitem').filter({ hasText: `KV-${nodeId}` });
+      await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
+      const kvItemAfterDdbStop = aside.getByRole('treeitem').filter({ hasText: `PKV-${nodeId}` });
       await expect(kvItemAfterDdbStop.getByTitle('Healthy')).toBeVisible({ timeout: 10_000 });
 
       // --- restart DDB after stop (verifies entry was preserved) ---
@@ -790,11 +790,11 @@ test.describe('chunk · capacity · disk-group', () => {
       await expect(aside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
       const expandNode = aside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` }).locator('button[aria-label="Expand"]');
       if (await expandNode.count() > 0) await expandNode.first().click();
-      await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
+      await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
 
       // Right-click KV → Stop CrowDB Storage.
       const kvStopResponse = page.waitForResponse((r: { url(): string }) => r.url().includes('/server/stop'));
-      await clickMenuItem(page, aside.getByText(`KV-${nodeId}`, { exact: true }), /stop crowdb storage/i);
+      await clickMenuItem(page, aside.getByText(`PKV-${nodeId}`, { exact: true }), /stop crowdb storage/i);
       await kvStopResponse;
 
       // KV PID should be gone; DDB entry + PID must be unaffected.
@@ -820,7 +820,7 @@ test.describe('chunk · capacity · disk-group', () => {
       // stayed green even after the process was killed.
       // Note: HealthBadge renders in compact mode (icon only, no text),
       // so we assert on the title attribute, not text content.
-      const kvItem = aside.getByRole('treeitem').filter({ hasText: `KV-${nodeId}` });
+      const kvItem = aside.getByRole('treeitem').filter({ hasText: `PKV-${nodeId}` });
       await expect(kvItem.getByTitle('Healthy')).toHaveCount(0, { timeout: 10_000 });
 
       // DDB health badge must stay Healthy after KV stop.
@@ -840,9 +840,9 @@ test.describe('chunk · capacity · disk-group', () => {
       // --- restart KV, verify DDB unaffected ---
       // KV server lifecycle actions remain in the Cluster domain.
       await page.getByTestId('domain-cluster').click();
-      await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
+      await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
       const kvRestartResponse = page.waitForResponse((r: { url(): string }) => r.url().includes('/server/restart'));
-      await clickMenuItem(page, aside.getByText(`KV-${nodeId}`, { exact: true }), /restart crowdb storage/i);
+      await clickMenuItem(page, aside.getByText(`PKV-${nodeId}`, { exact: true }), /restart crowdb storage/i);
       await kvRestartResponse;
 
       {
@@ -887,7 +887,7 @@ test.describe('chunk · capacity · disk-group', () => {
       // restart bug had already removed the KV entry.
       await expect(aside.getByText(`DDB-${nodeId}`, { exact: true })).toHaveCount(0, { timeout: 10_000 });
       // Already in Cluster domain — verify the KV server still exists.
-      await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible();
+      await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible();
 
       {
         const api = await apiContext(baseURL!);

@@ -30,8 +30,10 @@ pub mod refresh;
 pub const G0_STORE: u64 = 0;
 pub const G0_GROUP: u64 = 0;
 
-/// Watch prefixes for chunkdb topology updates.
-pub const CHUNKDB_WATCH_PREFIXES: &[&[u8]] = &[b"/hw/node/", b"/hw/dg/"];
+/// Watch prefixes for chunkdb topology updates. Disk records carry the
+/// allocation geometry; without their notifications a ChunkDB started before
+/// DiskIO publishes hardware can retain a zero unit size indefinitely.
+pub const CHUNKDB_WATCH_PREFIXES: &[&[u8]] = &[b"/hw/node/", b"/hw/dg/", b"/hw/disk/"];
 
 /// `HwStatus::Up` as `i32` (prost represents enums as i32 in messages).
 const HW_UP: i32 = HwStatus::Up as i32;
