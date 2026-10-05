@@ -197,14 +197,20 @@ pub(crate) async fn pxgroup_list(
     let items = outcome
         .items
         .into_iter()
-        .filter_map(|(key, _value)| {
+        .filter_map(|(key, value)| {
             let chunk_id = key
                 .strip_prefix(prefix)
                 .filter(|id| id.len() == 16)
                 .map(hex::encode)?;
+            let metadata = bincode::deserialize::<Chunk>(&value).ok();
             json!({
                 "chunk_id": chunk_id,
                 "key_hex": hex::encode(&key),
+                "chunk_type": metadata.as_ref().map(|chunk| chunk.chunk_type),
+                "state": metadata.as_ref().map(|chunk| chunk.state),
+                "capacity": metadata.as_ref().map(|chunk| chunk.capacity),
+                "sealed_length": metadata.as_ref().map(|chunk| chunk.sealed_length),
+                "strip_count": metadata.as_ref().map(|chunk| chunk.strips.len()),
             })
             .into()
         })

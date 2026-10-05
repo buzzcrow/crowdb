@@ -30,6 +30,9 @@ it('replaces bounded split windows and collapses only the selected server', asyn
   };
   await waitFor(() => expect(cards('Partition ')).toHaveLength(5));
   expect(cards('KV Tree for ')).toHaveLength(5);
+  expect(screen.getAllByTestId('chunk-kv-icon-server')).toHaveLength(1);
+  expect(screen.getAllByTestId('chunk-kv-icon-split')).toHaveLength(5);
+  expect(screen.getAllByTestId('chunk-kv-icon-tree')).toHaveLength(5);
   fireEvent.click(card('Next splits for CKV-1'));
   await waitFor(() => expect(card(`Partition ${entries[5].id}`)).toBeInTheDocument());
   expect([...cards('Partition ')].map(button => button.getAttribute('aria-label'))).not.toContain(`Partition ${entries[0].id}`);

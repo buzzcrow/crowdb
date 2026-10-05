@@ -21,7 +21,11 @@ interface Chunk { id_hex: string; chunk_type: number; state: number; modify_ts: 
 interface Placement { disk_id: string; rack_id: string; node_id: string; disk_group_id: string; unit_size: number }
 interface ChunkDetail { chunk: Chunk; layout_validity_ms: number; observed_at_ms: number; placement_observed_at_ms: number; placements: Placement[]; placement_error: string | null }
 interface ChunkPage { chunks: Chunk[]; scanned: number; next: string | null; owners: number; failures: Array<{ owner: string; error: string }>; observed_at_ms: number; scope?: string; node_id?: number; rack_id?: number; group_ids?: number[] }
-interface PxgroupItem { store_id: number; group_id: number; chunk_id: string; key_hex: string }
+interface PxgroupItem {
+  store_id: number; group_id: number; chunk_id: string; key_hex: string;
+  chunk_type?: number | null; state?: number | null; capacity?: number | null;
+  sealed_length?: number | null; strip_count?: number | null;
+}
 const kinds = [
   { value: '1', label: 'WAL' },
   { value: '2', label: 'Btree page' },
@@ -32,6 +36,7 @@ const kinds = [
 ];
 const kindName = (value: number) => kinds.find(kind => Number(kind.value) === value)?.label ?? `Unknown (${value})`;
 const states = ['Init', 'Active', 'Sealed', 'Deleted'];
+const formatKiB = (value?: number | null) => value == null ? '—' : value >= 1024 ? `${(value / 1024).toFixed(value % 1024 ? 1 : 0)} MiB` : `${value} KiB`;
 const diskId = (segment: Segment): string | null => segment.disk_id ? BigInt(segment.disk_id.high).toString(16).padStart(16, '0') + BigInt(segment.disk_id.low).toString(16).padStart(16, '0') : null;
 const identity = (segment: Segment): string => `${diskId(segment)}/${segment.zone_index}/${segment.unit_offset}/${segment.allocation_ts}`;
 
@@ -48,19 +53,21 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
       const groupId = Number(ownership.id);
       return Number.isFinite(storeId) && Number.isFinite(groupId) ? [{ storeId, groupId }] : [];
     }
+    if (ownership.type === 'Store') {
+      const store = stores.find(candidate => String(candidate.store_id) === String(ownership.id));
+      return store?.groups.map(group => ({ storeId: Number(store.store_id), groupId: Number(group.group_id) }))
+        .filter(target => Number.isFinite(target.storeId) && Number.isFinite(target.groupId)) ?? [];
+    }
     const nodeIds = ownership.type === 'Node'
       ? [Number(ownership.id)]
       : ownership.type === 'Rack'
         ? nodes.filter(node => String(node.rack_id) === String(ownership.id)).map(node => Number(node.id))
         : ownership.type === 'Datacenter'
           ? nodes.map(node => Number(node.id))
-          : ownership.type === 'Store'
-            ? stores.filter(store => String(store.store_id) === String(ownership.id)).flatMap(store => store.nodes.map(Number))
             : [];
-    if (!nodeIds.length && ownership.type !== 'Datacenter' && ownership.type !== 'Store') return [];
+    if (!nodeIds.length && ownership.type !== 'Datacenter') return [];
     return stores.flatMap(store => store.groups
-      .filter(group => (ownership.type === 'Store' && String(store.store_id) === String(ownership.id)) ||
-        ownership.type === 'Datacenter' || group.replicas.some(replica => nodeIds.includes(Number(replica.node_id))))
+      .filter(group => ownership.type === 'Datacenter' || group.replicas.some(replica => nodeIds.includes(Number(replica.node_id))))
       .map(group => ({ storeId: store.store_id, groupId: group.group_id })));
   }, [nodes, ownership, stores]);
   const isScopedSelection = ['Datacenter', 'Rack', 'Node', 'Store', 'Group'].includes(ownership?.type ?? '');
@@ -86,6 +93,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
   const [stripStart, setStripStart] = useState(0);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [detailBusy, setDetailBusy] = useState(false);
   const revision = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const loadedKind = useRef<string | null>(null);
@@ -120,6 +128,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
     controller.current = request;
     const version = ++revision.current;
     setBusy(true); setError(''); setRows([]); setPage(null); setDetail(null);
+    setPxgroupRows([]);
     try {
       const responses = await Promise.all(pxgroupTargets.map(async ({ storeId, groupId }) => {
         const scope = `${storeId}/${groupId}`;
@@ -149,13 +158,16 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
     const request = new AbortController();
     controller.current = request;
     const version = ++revision.current;
-    setDetail(null); setStripSequence(null); setBlockIndex(null); setStripStart(0); setBusy(true); setError('');
+    // Keep the current list and detail mounted while the next chunk is read.
+    // Clearing detail first caused the center panel to flash and changed the
+    // scroll anchor on every chunk click.
+    setStripSequence(null); setBlockIndex(null); setStripStart(0); setDetailBusy(true); setError('');
     try {
       const result = await readJson<ChunkDetail>(await fetch(`${getApiBase()}/chunks/${encodeURIComponent(id)}`, { signal: request.signal }));
       if (result.chunk.id_hex !== id) throw new Error('Chunk response identity does not match the selected resource');
       if (version === revision.current) { setDetail(result); return result; }
     } catch (error) { if (version === revision.current) setError(String(error)); }
-    finally { if (version === revision.current) setBusy(false); }
+    finally { if (version === revision.current) setDetailBusy(false); }
   }, [checkpoint]);
   useNavigationSnapshot(Domain.Chunk, 'chunk-query', () => {
     const selectedStrip = detail?.chunk.strips.find(strip => strip.strip_sequence === stripSequence);
@@ -193,6 +205,10 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
         void inspect(openRequest.id, false);
       } else if (isPxgroupMode) {
         if (loadedPxgroupScope.current !== JSON.stringify({ targets: pxgroupTargets, page: pxgroupPage })) void queryPxgroups(0, true);
+      } else if (isPkvSelection || isEmptyPxgroupScope) {
+        setDetail(null);
+        setPxgroupRows([]);
+        loadedPxgroupScope.current = '';
       } else if (loadedKind.current !== kind) void query();
     }
     return () => { controller.current?.abort(); ++revision.current; setBusy(false); };
@@ -204,7 +220,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
   const layout = (strip: Strip) => strip.strip?.MirrorStrip ? `Mirror ×${strip.strip.MirrorStrip.segments.length}` : strip.strip?.EcStrip ? `EC ${strip.strip.EcStrip.data_num}+${strip.strip.EcStrip.code_num} · ${strip.strip.EcStrip.ec_state === 1 ? 'Parity' : 'No parity'}` : `Unknown layout (${strip.strip_type})`;
   const visibleRows = rows.filter(value => `${value.id_hex} ${kindName(value.chunk_type)} ${states[value.state]}`.toLowerCase().includes(filter.toLowerCase()));
   const fields = (values: Record<string, unknown>) => <dl className="chunk-properties">{Object.entries(values).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value == null ? 'Unknown' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>;
-  return <Workbench showActivity={false} sidebar={<ChunkHierarchy stores={stores} active={active} racks={racks} nodes={nodes} servers={servers} />} detail={chunk && detail ? <section aria-label="Chunk properties" className="tw-space-y-3">
+  return <Workbench showActivity={false} sidebar={<ChunkHierarchy stores={stores} active={active} racks={racks} nodes={nodes} servers={servers} />} detail={chunk && detail ? <section aria-label="Chunk properties" aria-busy={detailBusy} className="tw-space-y-3">
     <h3 className="tw-font-semibold">{strip ? blockIndex === null ? `Strip sequence ${strip.strip_sequence}` : `${layout(strip)} · Block ${blockIndex + 1}` : 'Chunk properties'}</h3>
     {strip ? <>
       {fields({ Sequence: strip.strip_sequence, Layout: layout(strip), 'Logical offset (KiB)': strip.chunk_offset, 'Capacity (KiB)': strip.capacity, 'Sealed (KiB)': strip.sealed_length, 'Unit (KiB)': strip.unit_kb, 'Repair required': strip.placement_repair_required })}
@@ -226,7 +242,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
     {isPxgroupMode && <section aria-label="Pxgroup chunks" className="tw-space-y-3">
       <div className="chunk-toolbar"><h1 className="tw-text-lg tw-font-semibold">Chunk keys</h1><span className="tw-text-xs tw-text-muted">{pxgroupTargets.length} groups</span><button className={buttonClass} disabled={busy} onClick={() => { pxgroupStarts.current = {}; void queryPxgroups(0, true); }}>Refresh chunks</button></div>
       {busy && <p role="status" className="tw-text-xs tw-text-muted">Scanning Paxos groups…</p>}
-      <div className="chunk-list"><table className="tw-w-full tw-text-sm" aria-label="Pxgroup chunks"><thead><tr><th>Store</th><th>Group</th><th>Chunk key</th></tr></thead><tbody>{pxgroupRows.map(item => <tr key={`${item.store_id}-${item.group_id}-${item.key_hex}`}><td>{item.store_id}</td><td>{item.group_id}</td><td className="tw-font-mono tw-text-xs" title={item.key_hex}>{item.chunk_id}</td></tr>)}</tbody></table></div>
+      <div className="chunk-list"><table className="tw-w-full tw-text-sm" aria-label="Pxgroup chunks"><thead><tr><th>Store</th><th>Group</th><th>Chunk key</th><th>Type</th><th>Status</th><th>Strips</th><th>Size</th><th>Sealed</th></tr></thead><tbody>{pxgroupRows.map(item => <tr key={`${item.store_id}-${item.group_id}-${item.key_hex}`}><td>{item.store_id}</td><td>{item.group_id}</td><td className="tw-font-mono tw-text-xs" title={item.key_hex}><button className="tw-font-mono tw-text-accent tw-text-left" disabled={busy} onClick={() => void inspect(item.chunk_id)}>{item.chunk_id}</button></td><td>{item.chunk_type == null ? '—' : kindName(item.chunk_type)}</td><td>{item.state == null ? '—' : states[item.state] ?? `Unknown (${item.state})`}</td><td>{item.strip_count ?? '—'}</td><td>{formatKiB(item.capacity)}</td><td>{formatKiB(item.sealed_length)}</td></tr>)}</tbody></table></div>
       {!busy && !pxgroupRows.length && <p className="tw-text-sm tw-text-muted">No records in the selected Paxos groups.</p>}
       <nav aria-label="Pxgroup chunk pages" className="tw-flex tw-items-center tw-gap-3"><button className={buttonClass} disabled={busy || pxgroupPage === 0} onClick={() => void queryPxgroups(pxgroupPage - 1)}>Previous</button><span className="tw-text-xs tw-text-muted">Page {pxgroupPage + 1} · {pxgroupRows.length} chunk keys</span><button className={buttonClass} disabled={busy || !pxgroupNext} onClick={() => void queryPxgroups(pxgroupPage + 1)}>Next</button></nav>
     </section>}
@@ -254,7 +270,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
       <button className={buttonClass} disabled={busy || !page.next} onClick={() => { checkpoint(); void query(page.next!, windowIndex + 1); }}>Next</button>
     </nav>}
     {chunk && detail && <section aria-label="Chunk layout" className="tw-space-y-3 tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4">
-      <div className="chunk-toolbar"><button className="tw-text-left" onClick={() => { setStripSequence(null); setBlockIndex(null); }}><h2 aria-label={chunk.id_hex} className="tw-font-mono tw-text-sm tw-break-all">{chunk.id_hex}</h2><span className="tw-text-xs tw-text-muted">{kindName(chunk.chunk_type)} · {states[chunk.state]} · {chunk.capacity / 1024} MiB · {chunk.strips.length} strips</span></button><button className={`${buttonClass} tw-ml-auto`} disabled={busy} onClick={() => void inspect(chunk.id_hex, false)}>Refresh layout</button></div>
+      <div className="chunk-toolbar"><button className="tw-text-left" onClick={() => { setStripSequence(null); setBlockIndex(null); }}><h2 aria-label={chunk.id_hex} className="tw-font-mono tw-text-sm tw-break-all">{chunk.id_hex}</h2><span className="tw-text-xs tw-text-muted">{kindName(chunk.chunk_type)} · {states[chunk.state]} · {chunk.capacity / 1024} MiB · {chunk.strips.length} strips</span></button><button className={`${buttonClass} tw-ml-auto`} disabled={detailBusy} onClick={() => void inspect(chunk.id_hex, false)}>{detailBusy ? 'Refreshing…' : 'Refresh layout'}</button></div>
       {detail.placement_error && <p className="tw-text-xs tw-text-degraded">Placement unavailable: {detail.placement_error}</p>}
       <div className="chunk-strip-list" aria-label="Chunk strips">{ordered.slice(stripStart, stripStart + 16).map(strip => <section key={strip.strip_sequence} data-testid="chunk-strip" className={`chunk-strip ${stripSequence === strip.strip_sequence ? 'is-selected' : ''}`}>
         <button className="chunk-strip-heading" aria-label={`Sequence ${strip.strip_sequence} · ${layout(strip)}`} onClick={() => { setStripSequence(strip.strip_sequence); setBlockIndex(null); }}>

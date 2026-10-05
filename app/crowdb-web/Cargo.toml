@@ -22,6 +22,7 @@ crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-monitor = { path = "../../container/crowdb-monitor" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
+bincode = "1"
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
