@@ -20,6 +20,7 @@ async function openKvPanel(page: any, storeId: string, groupId: string) {
   await page.getByTestId('domain-kv').click();
   await page.getByTestId('kv-store-select').selectOption(storeId);
   await page.getByTestId('kv-group-select').selectOption(groupId);
+  await page.getByText(/^KV actions · Store/).click();
 }
 
 async function putKey(page: any, key: string, value: string) {
@@ -99,7 +100,7 @@ test.describe('inspector · activity log', () => {
       // Restart and Stop are on the KV server context menu. KV-xxx
       // tree items are in the Cluster domain under their physical node.
       await page.getByTestId('domain-cluster').click();
-      const serverItem = page.getByRole('treeitem').filter({ hasText: 'KV-32' });
+      const serverItem = page.getByRole('treeitem').filter({ hasText: 'PKV-32' });
       await expect(serverItem).toBeVisible({ timeout: 5_000 });
 
       // Restart — verify the deployed process returned by the real backend.

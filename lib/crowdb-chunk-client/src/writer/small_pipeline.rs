@@ -1411,6 +1411,7 @@ impl OwnedChunk {
                 .seal_chunk(SealChunkRequest {
                     chunk_id: Some(chunk_id),
                     seal_length,
+                    seal_bytes: self.cursor,
                 })
                 .await
             {

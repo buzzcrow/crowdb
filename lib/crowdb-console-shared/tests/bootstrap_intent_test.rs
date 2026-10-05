@@ -40,7 +40,7 @@ fn config() -> ConsoleConfig {
         binary: Some("/private/bin/crowdb-kv-server".into()),
         election_profile: None,
         pid: Some(42),
-        service_type: ServiceType::Kv,
+        service_type: ServiceType::PaxosKv,
         rpc_workers: None,
         no_fsync: false,
     });

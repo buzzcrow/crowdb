@@ -9,6 +9,7 @@ use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::kv_server::KvServer;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
+use crowdb_kv::cluster::remote_replica::PxRemoteReplica;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 use crowdb_protocol::mgmt::{GroupStatus, ReplicaStatus, StoreStatus, TopologyResponse};
 
@@ -76,13 +77,33 @@ impl TestServers {
         }
     }
 
-    pub fn client(&self) -> CrowdbKvClient {
+    pub fn client_config(&self) -> ClientConfig {
         let mut config = ClientConfig::new(vec![self.seed.clone()]);
         config.retry.max_retries = 2;
         config.retry.unknown_leader_wait = Duration::from_millis(1);
-        let client = CrowdbKvClient::new(config);
+        config
+    }
+
+    pub fn client(&self) -> CrowdbKvClient {
+        let client = CrowdbKvClient::new(self.client_config());
         client.seed_leader(1, 1, self.follower.listen_addr().unwrap().to_string());
         client
+    }
+
+    pub fn install_hint_cycle(&self) {
+        for (node, peer, id, peer_id) in [
+            (&self.leader, &self.follower, 1, 2),
+            (&self.follower, &self.leader, 2, 1),
+        ] {
+            let replica = PxLocalReplica::new(id, PxLocalReplicaRole::Follower);
+            replica.set_believed_leader(peer_id);
+            let mut group = PxGroup::new(1, replica);
+            group.set_remote_replicas(vec![PxRemoteReplica::new(
+                peer_id,
+                peer.listen_addr().unwrap().to_string(),
+            )]);
+            node.add_group(group);
+        }
     }
 }
 

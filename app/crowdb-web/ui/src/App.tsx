@@ -1,8 +1,8 @@
+import { PanelDivider } from './components/PanelDivider';
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { Suspense, useState, useCallback, useMemo, lazy, useEffect, useRef, type ReactNode } from 'react';
-import { Server, Database, Plus, Trash2, Activity, RotateCw, Square, HardDrive, Boxes, CheckCircle2, XCircle, PowerOff, Wrench, AlertTriangle, EyeOff, HelpCircle } from 'lucide-react';
+import { Suspense, useState, useCallback, useMemo, lazy, useEffect, useRef } from 'react';
 import type { CenterPanelMode } from './shell/Header';
 import { DomainProvider, useDomain } from './contexts/DomainContext';
 import { SelectionProvider, useSelection, type SelectedEntity } from './contexts/SelectionContext';
@@ -13,9 +13,12 @@ import { useLogicalTree } from './data/useLogicalTree';
 import { useCapacityTree } from './data/useCapacityTree';
 import { Header, ClusterHealth } from './shell/Header';
 import { Sidebar } from './shell/Sidebar';
+import { useNodeServicePlans } from './services/useNodeServicePlans';
+import { NodeServicesDialog } from './services/NodeServicesDialog';
+import { DeployServiceDialog } from './services/DeployServiceDialog';
 import { ToastContainer } from './components/ToastContainer';
 import { TreeNode } from './components/Tree';
-import { ContextMenu, useContextMenu, MenuItemOrSeparator } from './components/ContextMenu';
+import { ContextMenu, useContextMenu } from './components/ContextMenu';
 import type { MenuTarget } from './topology/TopologyCanvas';
 import {
   AddRackDialog,
@@ -33,39 +36,23 @@ import {
   ZoneSelectDialog,
 } from './components/dialogs';
 import { Domain } from './types';
-import {
-  removeRack,
-  removeNode,
-  removeStore,
-  removeGroup,
-  removeReplica,
-  stopServer,
-  restartServer,
-  pingNode,
-  setApiBase,
-  resetCluster,
-  triggerDiskdbScan,
-  recalcDiskdbUsage,
-  compactDiskdbZones,
-  rebuildDiskdbZoneBitmap,
-  setDiskStatus,
-  setDiskGroupStatus,
-  restartDiskdb,
-  stopDiskdb,
-  removeServer,
-  removeDiskdb,
-  removeDiskGroup,
-  removeDisk,
-  listServers,
-} from './api';
+import type { ConsoleDialogState } from './menus/context';
+import { useClusterMenus } from './menus/useClusterMenus';
+import { useCapacityMenus } from './menus/useCapacityMenus';
+import { setApiBase, resetCluster, compactDiskdbZones, rebuildDiskdbZoneBitmap, listServers } from './api';
 import { deployPortDefaultsForNode, diskdbPortDefaultsForNode, nextIdFromSuffix, nextNumericId } from './components/dialogs/defaults';
 import { buildCrowdbKVServers, crowdbKvServerNodeIds, extractPort } from './data/crowdbKvServers';
 import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
-import { toUiHealth, HW_STATUS_NAMES } from './utils/entityDisplay';
+import { toUiHealth } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
 import { KvView } from './views/KvView';
-import { ChunkView } from './views/ChunkView';
-import { ManagedPreview } from './managed/ManagedPreview';
+import { CapacityView } from './views/CapacityView';
+import { ChunkBrowser } from './chunk/ChunkBrowser';
+import { ChunkKvView } from './chunk-kv/ChunkKvView';
+import { IcebergView } from './views/IcebergView';
+import { S3View } from './views/S3View';
+import { ManagementSession } from './managed/ManagementSession';
+import { MonitorSummary } from './managed/MonitorSummary';
 
 const Inspector = lazy(() => import('./shell/Inspector').then((m) => ({ default: m.Inspector })));
 
@@ -80,13 +67,15 @@ export interface CrowdbConsoleProps {
   modules?: Partial<Record<'racks' | 'nodes' | 'stores' | 'groups' | 'replicas' | 'kv' | 'activity', boolean>>;
   /** Initial domain (default Cluster). */
   initialDomain?: Domain;
+  /** Container topology is immutable; native data credentials remain independent. */
+  managed?: boolean;
   /** Structured event callback for host integration. */
   onEvent?: (event: { type: string; payload?: unknown }) => void;
 }
 
-function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: CrowdbConsoleProps) {
-  const { domain } = useDomain();
-  const { selectedEntity, selectEntity, clearSelection } = useSelection();
+function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false }: CrowdbConsoleProps) {
+  const { domain, setDomain } = useDomain();
+  const { selectedEntity, selectionForDomain, selectEntity, clearSelection } = useSelection();
   const { success, error } = useToast();
   const { log } = useActivity();
 
@@ -104,76 +93,72 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
   const [centerPanel, setCenterPanel] = useState<CenterPanelMode>('topology');
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [inspectorWidth, setInspectorWidth] = useState(320);
-  const [resizing, setResizing] = useState<'left' | 'right' | null>(null);
   const [canvasFocusRequest, setCanvasFocusRequest] = useState<{ targetId: string; subtree: boolean; nonce: number } | null>(null);
-  // When a cross-jump drives the domain change, it sets a pending
-  // selection that must survive the domain-change effect (which
-  // otherwise clears the selection). The ref is checked once, then
-  // reset, so subsequent manual domain switches still clear.
+  // Cross-jumps replace the destination scope once. Manual switches retain
+  // each domain's selection.
   const pendingSelectionRef = useRef<SelectedEntity | null>(null);
+  const [chunkRequest, setChunkRequest] = useState<{ id: string; nonce: number } | undefined>();
 
   useEffect(() => {
     if (pendingSelectionRef.current) {
       const pending = pendingSelectionRef.current;
       pendingSelectionRef.current = null;
-      selectEntity(pending);
-    } else {
-      clearSelection();
+      selectEntity(pending, false);
     }
     setCanvasFocusRequest(null);
   }, [domain, clearSelection, selectEntity]);
 
-  const [dialog, setDialog] = useState<{
-    addRack?: boolean;
-    addNode?: { rackId: number };
-    addStore?: boolean;
-    addGroup?: { storeId: string };
-    addReplica?: { storeId: string; groupId: string };
-    addDiskGroup?: { nodeId: number };
-    addDisk?: { nodeId: number; dgId: number };
-    assignDiskGroup?: { rackId: number; nodeId: number; dgId: number; dgName?: string };
-    deployServer?: { nodeId: number };
-    deployDiskdb?: { nodeId: number } | null;
-    delete?: { type: string; id: string | number; onDelete: () => Promise<void>; cascadeWarning?: string };
-    initCluster?: boolean;
-    compactZones?: { diskId: string; zoneCount?: number };
-    rebuildBitmap?: { diskId: string; zoneCount?: number };
-  }>({});
+  const [dialog, setDialog] = useState<ConsoleDialogState>({});
 
   const { menuState, openMenu, closeMenu } = useContextMenu();
 
+  const managementAuthorized = true;
+  const topologyReadonly = readonly || managed;
+  const logicalReadonly = readonly;
+  const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
-  const capacityActive = domain === Domain.Chunk;
-  const { racks, nodes, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
+  const capacityActive = domain === Domain.Capacity;
+  const { racks, nodes, services: managedServers, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loadNodeDisks, loadGroupDisks, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
     enabled: true,
+    managed,
     recursive: 2,
     pollIntervalActive: 1000,
     pollIntervalInactive: 30000,
   });
   const { stores, groups, loading: logLoading, error: logError, refresh: refreshLogical } = useLogicalTree({
     enabled: true,
+    managed,
     recursive: 2,
     pollIntervalActive: 1000,
     pollIntervalInactive: 30000,
   });
-  const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity, nodeDiskGroups: capNodeDiskGroups, fetchNodeDiskGroups } = useCapacityTree({
-    enabled: domain === Domain.Chunk || domain === Domain.Cluster,
+  const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity,  } = useCapacityTree({
+    enabled: domain === Domain.Capacity || domain === Domain.Cluster,
+    observeRuntime: capacityActive,
+    diskGroupId: selectionForDomain(Domain.Capacity)?.parentIds?.disk_group_id !== undefined
+      ? Number(selectionForDomain(Domain.Capacity)!.parentIds!.disk_group_id)
+      : selectionForDomain(Domain.Capacity)?.type === 'DiskGroup' ? Number(selectionForDomain(Domain.Capacity)!.id) : undefined,
+    diskId: selectionForDomain(Domain.Capacity)?.type === 'Disk' ? selectionForDomain(Domain.Capacity)!.id : undefined,
     pollIntervalActive: 5000,
     pollIntervalInactive: 30000,
   });
 
-  // Merge disk-group maps: prefer cluster tree (fresh, all nodes), fall
-  // back to capacity tree (on-demand fetch for the Capacity panel).
-  const nodeDiskGroups = useMemo(() => {
-    const merged: Record<number, import('./data/useClusterTree').NodeDiskGroups> = {};
-    for (const [id, ndg] of Object.entries(capNodeDiskGroups)) {
-      merged[Number(id)] = ndg;
-    }
-    for (const [id, ndg] of Object.entries(clusterDiskGroups)) {
-      merged[Number(id)] = ndg;
-    }
-    return merged;
-  }, [capNodeDiskGroups, clusterDiskGroups]);
+  const nodeDiskGroups = clusterDiskGroups;
+  const diskSelection = selectionForDomain(Domain.Capacity);
+  const clusterSelection = selectionForDomain(Domain.Cluster);
+  useEffect(() => {
+    if (managed) return;
+    const selected = capacityActive ? diskSelection : physicalActive ? clusterSelection : null;
+    const nodeId = selected?.type === 'Node' ? Number(selected.id) : Number(selected?.parentIds?.node_id);
+    if (!Number.isFinite(nodeId)) return;
+    void loadNodeDisks(nodeId);
+    const groupId = selected?.type === 'DiskGroup' ? Number(selected.id) : Number(selected?.parentIds?.disk_group_id);
+    if (Number.isFinite(groupId)) void loadGroupDisks(nodeId, groupId);
+  }, [managed, capacityActive, physicalActive, diskSelection, clusterSelection, loadNodeDisks, loadGroupDisks]);
+  useEffect(() => {
+    if (managed || !dialog.deployAuxiliary) return;
+    void loadNodeDisks(dialog.deployAuxiliary.nodeId);
+  }, [managed, dialog.deployAuxiliary, loadNodeDisks]);
   const existingDiskGroupIds = useMemo(
     () => Array.from(new Set([
       ...Object.values(nodeDiskGroups).flatMap((entry) => entry.diskGroups.map((dg) => dg.id)),
@@ -183,10 +168,11 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
   );
 
   const loading = physLoading || logLoading || capLoading;
-  const dataError = physError || logError || capError;
+  const dataError = (domain === Domain.Cluster ? physError : domain === Domain.KV ? logError : domain === Domain.Capacity ? capError ?? physError : null);
   const servers = useMemo(() => buildCrowdbKVServers(nodes, racks), [nodes, racks]);
   const serverNodeIds = useMemo(() => crowdbKvServerNodeIds(servers), [servers]);
-  const [allServers, setAllServers] = useState<import('./api').ServerSummary[]>([]);
+  const [standaloneServers, setAllServers] = useState<import('./api').ServerSummary[]>([]);
+  const allServers = managed ? managedServers : standaloneServers;
   const serverErrorShownRef = useRef(false);
   const refreshAllServers = useCallback(async () => {
     try {
@@ -204,21 +190,22 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
     }
   }, [error]);
   useEffect(() => {
-    if (physicalActive || capacityActive) {
+    if (!managed && (physicalActive || capacityActive || domain === Domain.Chunk || domain === Domain.ChunkKV)) {
       refreshAllServers();
     }
-  }, [physicalActive, capacityActive, diskdbInstances, refreshAllServers]);
+  }, [managed, physicalActive, capacityActive, domain, diskdbInstances, refreshAllServers]);
   const diskdbNodeIds = useMemo(
-    () => new Set(allServers.filter((s) => s.service_type === 'diskdb' && s.node_id != null).map((s) => s.node_id!)),
-    [allServers],
+    () => new Set([...allServers.filter((s) => s.service_type === 'diskdb' && s.node_id != null).map((s) => s.node_id!), ...nodes.filter(node => node.diskdb_server).map(node => node.id)]),
+    [allServers, nodes],
   );
   const diskdbHealthById = useMemo(() => {
     const m = new Map<number, string>();
     for (const s of allServers) {
       if (s.service_type === 'diskdb' && s.node_id != null) m.set(s.node_id, s.health);
     }
+    for (const node of nodes) if (node.diskdb_server) m.set(node.id, node.diskdb_server.health);
     return m;
-  }, [allServers]);
+  }, [allServers, nodes]);
   const diskdbInstanceIdByNodeId = useMemo(() => {
     const instanceByPort = new Map(
       diskdbInstances
@@ -226,6 +213,11 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
         .filter((entry): entry is readonly [number, string] => entry[0] != null),
     );
     const result = new Map<number, string>();
+    for (const node of nodes) {
+      const port = extractPort(node.diskdb_server?.endpoint);
+      const instanceId = port == null ? undefined : instanceByPort.get(port);
+      if (instanceId) result.set(node.id, instanceId);
+    }
     for (const server of allServers) {
       if (server.service_type !== 'diskdb' || server.node_id == null) continue;
       const port = extractPort(server.endpoint || server.rpc_url);
@@ -233,44 +225,53 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
       if (instanceId != null) result.set(server.node_id, instanceId);
     }
     return result;
-  }, [allServers, diskdbInstances]);
+  }, [allServers, diskdbInstances, nodes]);
   // Cluster is initialized once the system store (store 0) exists.
   const clusterInitialized = useMemo(
     () => stores.some((s) => String(s.store_id) === '0'),
     [stores],
   );
 
-  const clusterHealth: ClusterHealth = useMemo(() => {
-    if (dataError) return 'Failed';
-    if (groups.length === 0) return 'Unknown';
-    const statuses = groups.map((g) => toUiHealth(String((g as any).state || (g as any).health || '')));
-    if (statuses.some((status) => status === 'Failed')) return 'Failed';
-    if (statuses.some((status) => status === 'Degraded')) return 'Degraded';
-    if (statuses.every((status) => status === 'Healthy')) return 'Healthy';
-    return 'Unknown';
-  }, [groups, dataError]);
-
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
       const tasks: Promise<unknown>[] = [refreshPhysical(), refreshLogical(), refreshCapacity()];
-      if (capacityActive || physicalActive) {
-        tasks.push(fetchNodeDiskGroups(nodes.map((n) => n.id)));
-      }
-      tasks.push(refreshAllServers());
+      if (!managed) tasks.push(refreshAllServers());
       await Promise.all(tasks);
       setLastRefreshTime(new Date());
     } finally {
       setRefreshing(false);
     }
-  }, [refreshPhysical, refreshLogical, refreshCapacity, capacityActive, physicalActive, fetchNodeDiskGroups, nodes, refreshAllServers]);
+  }, [managed, refreshPhysical, refreshLogical, refreshCapacity, refreshAllServers]);
 
-  // Fetch node disk-groups when the Capacity or Physical view is active.
+  const servicePlans = useNodeServicePlans(stores, nodeDiskGroups, handleRefresh, !topologyReadonly);
+  const clusterHealth: ClusterHealth = useMemo(() => {
+    if (dataError) return domain === Domain.Capacity ? 'Degraded' : 'Failed';
+    const statuses = [
+      ...groups.map((g) => toUiHealth(String((g as any).state || (g as any).health || ''))),
+      ...nodes.map((node) => toUiHealth(String(node.kv_server?.health || ''))),
+      ...allServers.map((server) => toUiHealth(server.health)),
+    ];
+    if (statuses.length === 0) return 'Unknown';
+    if (statuses.some((status) => status === 'Failed')) return 'Failed';
+    if (statuses.some((status) => status === 'Degraded')) return 'Degraded';
+    const planStates = Object.values(servicePlans.plans).flatMap((plan) => Object.values(plan).map((step) => step.state));
+    if (planStates.some((state) => state === 'failed')) return 'Failed';
+    if (planStates.some((state) => state === 'waiting' || state === 'deploying' || state === 'pending')) return 'Degraded';
+    if (statuses.every((status) => status === 'Healthy')) return 'Healthy';
+    return 'Unknown';
+  }, [groups, nodes, allServers, servicePlans.plans, dataError, domain]);
   useEffect(() => {
-    if ((capacityActive || physicalActive) && nodes.length > 0) {
-      fetchNodeDiskGroups(nodes.map((n) => n.id));
+    if (managed) return;
+    for (const [id, plan] of Object.entries(servicePlans.plans)) {
+      if (plan.diskio.state !== 'waiting') continue;
+      const nodeId = Number(id);
+      if (!nodeDiskGroups[nodeId]) { void loadNodeDisks(nodeId); continue; }
+      for (const group of nodeDiskGroups[nodeId].diskGroups) {
+        if (!nodeDiskGroups[nodeId].disksByDg[group.id]) void loadGroupDisks(nodeId, group.id);
+      }
     }
-  }, [capacityActive, physicalActive, nodes, fetchNodeDiskGroups]);
+  }, [managed, servicePlans.plans, nodeDiskGroups, loadNodeDisks, loadGroupDisks]);
 
   // After cluster init succeeds, refresh the tree so the system group
   // appears. Init only bootstraps store 0 / group 0; store creation is
@@ -279,27 +280,6 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
     await handleRefresh();
     setDialog((d) => ({ ...d, initCluster: false }));
   }, [handleRefresh]);
-
-  useEffect(() => {
-    if (!resizing) return;
-
-    const onMouseMove = (event: MouseEvent) => {
-      if (resizing === 'left') {
-        setSidebarWidth(Math.min(420, Math.max(200, event.clientX)));
-        return;
-      }
-      setInspectorWidth(Math.min(560, Math.max(280, window.innerWidth - event.clientX)));
-    };
-
-    const onMouseUp = () => setResizing(null);
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-  }, [resizing]);
 
   /** Run a mutation, surface toast + activity, then refresh. */
   const runMutation = useCallback(
@@ -334,6 +314,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
         id: 'all',
         onDelete: async () => {
           await runMutation('Reset Cluster', 'all', async () => {
+            await servicePlans.stop();
             await resetCluster();
             clearSelection();
           });
@@ -342,451 +323,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
     }));
   }, [runMutation, clearSelection]);
 
-  // Status icons for the "Change Status" submenu.
-  const statusIcons: Record<string, ReactNode> = {
-    Init: <HelpCircle className="tw-h-4 tw-w-4" />,
-    Up: <CheckCircle2 className="tw-h-4 tw-w-4" />,
-    Maintenance: <Wrench className="tw-h-4 tw-w-4" />,
-    Suspect: <AlertTriangle className="tw-h-4 tw-w-4" />,
-    Missing: <EyeOff className="tw-h-4 tw-w-4" />,
-    Bad: <XCircle className="tw-h-4 tw-w-4" />,
-    Offline: <PowerOff className="tw-h-4 tw-w-4" />,
-  };
-
-  /** Build the "Change Status" submenu items for a DG or Disk. */
-  const buildStatusSubmenu = useCallback(
-    (onSet: (status: string) => Promise<void>): MenuItemOrSeparator[] => {
-      return HW_STATUS_NAMES.map((name) => ({
-        id: `status-${name.toLowerCase()}`,
-        label: name,
-        icon: statusIcons[name],
-        onSelect: () => onSet(name),
-      }));
-    },
-    [statusIcons],
-  );
-
-  /** Build per-layer context menu items for a normalized target. */
-  const buildMenuItems = useCallback(
-    (t: MenuTarget): MenuItemOrSeparator[] => {
-      if (readonly) return [];
-      const items: MenuItemOrSeparator[] = [];
-      const p = t.parentIds || {};
-
-      if (physicalActive) {
-        if (t.type === 'Datacenter') {
-          // The default DC is immutable — only Add Rack is offered.
-          items.push({
-            id: 'add-rack',
-            label: 'Add Rack',
-            icon: <Plus className="tw-h-4 tw-w-4" />,
-            onSelect: () => setDialog((d) => ({ ...d, addRack: true })),
-          });
-        } else if (t.type === 'Rack' && modules?.nodes !== false) {
-          const rackId = Number(t.rawId);
-          items.push({
-            id: 'add-node',
-            label: 'Add Node',
-            icon: <Server className="tw-h-4 tw-w-4" />,
-            onSelect: () => setDialog((d) => ({ ...d, addNode: { rackId } })),
-          });
-          items.push({ id: 's1', separator: true });
-          items.push({
-            id: 'del-rack',
-            label: 'Delete Rack',
-            icon: <Trash2 className="tw-h-4 tw-w-4" />,
-            destructive: true,
-            onSelect: () => requestDelete('Rack', rackId, async () => { await runMutation('Delete Rack', `Rack ${rackId}`, () => removeRack(rackId)); }),
-          });
-        } else if (t.type === 'Node') {
-          const nodeId = Number(t.rawId);
-          const hasServer = serverNodeIds.has(nodeId);
-          const hasDiskdb = diskdbNodeIds.has(nodeId);
-          // Add Services — deploy CrowDB Storage and/or DiskDB.
-          if (!hasServer) {
-            items.push({
-              id: 'deploy',
-              label: 'Deploy CrowDB Storage',
-              icon: <Server className="tw-h-4 tw-w-4" />,
-              onSelect: () => setDialog((d) => ({ ...d, deployServer: { nodeId } })),
-            });
-          }
-          if (!hasDiskdb) {
-            items.push({
-              id: 'deploy-diskdb',
-              label: 'Deploy DiskDB',
-              icon: <HardDrive className="tw-h-4 tw-w-4" />,
-              onSelect: () => setDialog((d) => ({ ...d, deployDiskdb: { nodeId } })),
-            });
-          }
-          items.push({
-            id: 'ping',
-            label: 'Ping',
-            icon: <Activity className="tw-h-4 tw-w-4" />,
-            onSelect: () =>
-              runMutation('Ping Node', t.label || t.id, async () => {
-                const r = await pingNode(nodeId);
-                if (!r.ok) throw new Error(r.error || 'unreachable');
-              }),
-          });
-          items.push({ id: 's1', separator: true });
-          items.push({
-            id: 'del-node',
-            label: 'Delete Node',
-            icon: <Trash2 className="tw-h-4 tw-w-4" />,
-            destructive: true,
-            // Cascade: the backend's DELETE /api/nodes/:id handler
-            // (http_remove_node) calls stop_and_remove_server_for_node
-            // which stops the KV process, removes the server entry, and
-            // purges topology — all before removing the node. Calling
-            // removeServer separately here would hit check_require_empty
-            // (which refuses if the node hosts group-0 replicas), blocking
-            // the cascade. So we only remove diskdb explicitly (no
-            // check_require_empty gate) and let removeNode handle the KV
-            // cascade.
-            onSelect: () => requestDelete('Node', nodeId, async () => {
-              await runMutation('Delete Node', t.label || t.id, async () => {
-                if (hasDiskdb) await removeDiskdb(nodeId);
-                await removeNode(nodeId);
-              });
-            }),
-          });
-        } else if (t.type === 'DiskGroup') {
-          const dgId = Number(t.rawId);
-          const nodeId = Number(p.node_id);
-          const rackId = Number(p.rack_id);
-          items.push({ id: 'add-disk', label: 'Add Disk', icon: <HardDrive className="tw-h-4 tw-w-4" />, onSelect: () => setDialog((d) => ({ ...d, addDisk: { nodeId, dgId } })) });
-          items.push({ id: 'dg-status', label: 'Change Status', icon: <Activity className="tw-h-4 tw-w-4" />, submenu: buildStatusSubmenu((status) => runMutation(`Set DG ${status}`, t.label || t.id, () => setDiskGroupStatus(rackId, nodeId, dgId, status))) });
-          items.push({ id: 'assign-dg', label: 'Assign to DiskDB', icon: <Server className="tw-h-4 tw-w-4" />, onSelect: () => setDialog((d) => ({ ...d, assignDiskGroup: { rackId, nodeId, dgId, dgName: t.label } })) });
-          items.push({ id: 'del-dg', label: 'Delete Disk Group', icon: <Trash2 className="tw-h-4 tw-w-4" />, destructive: true, onSelect: () => requestDelete('Disk Group', dgId, async () => { await runMutation('Delete Disk Group', t.label || t.id, () => removeDiskGroup(nodeId, dgId)); }, 'All disks in this disk group will also be removed.') });
-        } else if (t.type === 'Disk') {
-          const diskId = String(p.disk_id || t.rawId || t.id);
-          const nodeId = Number(p.node_id);
-          const dgId = Number(p.disk_group_id);
-          items.push({ id: 'disk-status', label: 'Change Status', icon: <Activity className="tw-h-4 tw-w-4" />, submenu: buildStatusSubmenu((status) => runMutation(`Set Disk ${status}`, t.label || t.id, () => setDiskStatus(diskId, status))) });
-          items.push({ id: 'del-disk', label: 'Delete Disk', icon: <Trash2 className="tw-h-4 tw-w-4" />, destructive: true, onSelect: () => requestDelete('Disk', diskId, async () => { await runMutation('Delete Disk', diskId, () => removeDisk(nodeId, dgId, diskId)); }) });
-        } else if (t.type === 'Server') {
-          // Server context menu: dispatch on serviceType (KV vs DiskDB).
-          const nodeId = Number(p.node_id);
-          if (t.serviceType === 'diskdb') {
-            items.push({
-              id: 'ddb-restart',
-              label: 'Restart DiskDB',
-              icon: <RotateCw className="tw-h-4 tw-w-4" />,
-              onSelect: () => runMutation('Restart DiskDB', t.label || t.id, () => restartDiskdb(nodeId)),
-            });
-            items.push({
-              id: 'ddb-stop',
-              label: 'Stop DiskDB',
-              icon: <Square className="tw-h-4 tw-w-4" />,
-              onSelect: () => runMutation('Stop DiskDB', t.label || t.id, () => stopDiskdb(nodeId)),
-            });
-            items.push({ id: 's1', separator: true });
-            items.push({
-              id: 'del-ddb',
-              label: 'Delete DiskDB',
-              icon: <Trash2 className="tw-h-4 tw-w-4" />,
-              destructive: true,
-              onSelect: () => requestDelete('DiskDB', t.label || t.id, async () => {
-                await runMutation('Delete DiskDB', t.label || t.id, () => removeDiskdb(nodeId));
-              }),
-            });
-          } else {
-            // CrowdbKV service context menu: restart, stop, delete.
-            items.push({
-              id: 'restart',
-              label: 'Restart CrowDB Storage',
-              icon: <RotateCw className="tw-h-4 tw-w-4" />,
-              onSelect: () => runMutation('Restart CrowDB Storage', t.label || t.id, () => restartServer(nodeId)),
-            });
-            items.push({
-              id: 'stop',
-              label: 'Stop CrowDB Storage',
-              icon: <Square className="tw-h-4 tw-w-4" />,
-              onSelect: () => runMutation('Stop CrowDB Storage', t.label || t.id, () => stopServer(nodeId)),
-            });
-            items.push({ id: 's1', separator: true });
-            items.push({
-              id: 'del-service',
-              label: 'Delete CrowDB Storage',
-              icon: <Trash2 className="tw-h-4 tw-w-4" />,
-              destructive: true,
-              onSelect: () => requestDelete('CrowDB Storage', t.label || t.id, async () => {
-                await runMutation('Delete CrowDB Storage', t.label || t.id, () => removeServer(nodeId));
-              }),
-            });
-          }
-        }
-      } else {
-        if (t.type === 'Server') {
-          // KV-domain server context menu: restart, stop, delete.
-          const nodeId = Number(p.node_id);
-          if (t.serviceType === 'diskdb') {
-            items.push({
-              id: 'ddb-restart',
-              label: 'Restart DiskDB',
-              icon: <RotateCw className="tw-h-4 tw-w-4" />,
-              onSelect: () => runMutation('Restart DiskDB', t.label || t.id, () => restartDiskdb(nodeId)),
-            });
-            items.push({
-              id: 'ddb-stop',
-              label: 'Stop DiskDB',
-              icon: <Square className="tw-h-4 tw-w-4" />,
-              onSelect: () => runMutation('Stop DiskDB', t.label || t.id, () => stopDiskdb(nodeId)),
-            });
-            items.push({ id: 's1', separator: true });
-            items.push({
-              id: 'del-ddb',
-              label: 'Delete DiskDB',
-              icon: <Trash2 className="tw-h-4 tw-w-4" />,
-              destructive: true,
-              onSelect: () => requestDelete('DiskDB', t.label || t.id, async () => {
-                await runMutation('Delete DiskDB', t.label || t.id, () => removeDiskdb(nodeId));
-              }),
-            });
-          } else {
-            items.push({
-              id: 'restart',
-              label: 'Restart CrowDB Storage',
-              icon: <RotateCw className="tw-h-4 tw-w-4" />,
-              onSelect: () => runMutation('Restart CrowDB Storage', t.label || t.id, () => restartServer(nodeId)),
-            });
-            items.push({
-              id: 'stop',
-              label: 'Stop CrowDB Storage',
-              icon: <Square className="tw-h-4 tw-w-4" />,
-              onSelect: () => runMutation('Stop CrowDB Storage', t.label || t.id, () => stopServer(nodeId)),
-            });
-            items.push({ id: 's1', separator: true });
-            items.push({
-              id: 'del-service',
-              label: 'Delete CrowDB Storage',
-              icon: <Trash2 className="tw-h-4 tw-w-4" />,
-              destructive: true,
-              onSelect: () => requestDelete('CrowDB Storage', t.label || t.id, async () => {
-                await runMutation('Delete CrowDB Storage', t.label || t.id, () => removeServer(nodeId));
-              }),
-            });
-          }
-        } else if (t.type === 'Store' && modules?.groups !== false) {
-          items.push({
-            id: 'add-group',
-            label: 'Add Group',
-            icon: <Database className="tw-h-4 tw-w-4" />,
-            onSelect: () => setDialog((d) => ({ ...d, addGroup: { storeId: t.id } })),
-          });
-          // System store (store 0) cannot be deleted individually.
-          if (t.id !== '0') {
-            items.push({ id: 's1', separator: true });
-            items.push({
-              id: 'del-store',
-              label: 'Delete Store',
-              icon: <Trash2 className="tw-h-4 tw-w-4" />,
-              destructive: true,
-              onSelect: () => requestDelete('Store', t.id, async () => { await runMutation('Delete Store', t.id, () => removeStore(t.id)); }),
-            });
-          }
-        } else if (t.type === 'Group') {
-          const storeId = p.store_id;
-          const isSystemGroup = storeId === '0' && t.id === '0';
-          if (modules?.replicas !== false) {
-            items.push({
-              id: 'add-replica',
-              label: 'Add Replica',
-              icon: <Plus className="tw-h-4 tw-w-4" />,
-              onSelect: () => {
-                if (storeId) setDialog((d) => ({ ...d, addReplica: { storeId: String(storeId), groupId: t.id } }));
-              },
-            });
-          }
-          // System group (store 0, group 0) cannot be deleted individually.
-          if (!isSystemGroup) {
-            items.push({ id: 's1', separator: true });
-            items.push({
-              id: 'del-group',
-              label: 'Delete Group',
-              icon: <Trash2 className="tw-h-4 tw-w-4" />,
-              destructive: true,
-              onSelect: () => {
-                if (storeId)
-                  requestDelete('Group', t.id, async () => {
-                    await runMutation('Delete Group', `${storeId}/${t.id}`, () => removeGroup(String(storeId), t.id));
-                  });
-              },
-            });
-          }
-        } else if (t.type === 'Replica') {
-          const storeId = p.store_id;
-          const groupId = p.group_id;
-          items.push({
-            id: 'del-replica',
-            label: 'Delete Replica',
-            icon: <Trash2 className="tw-h-4 tw-w-4" />,
-            destructive: true,
-            onSelect: () => {
-              if (storeId && groupId)
-                requestDelete('Replica', t.id, async () => {
-                  await runMutation('Delete Replica', `${storeId}/${groupId}/${t.id}`, () => removeReplica(String(storeId), String(groupId), t.id));
-                });
-            },
-          });
-        }
-      }
-      return items;
-    },
-    [readonly, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, buildStatusSubmenu],
-  );
-
-  /** Capacity view has its own menu code path — rack/node management
-   * belongs to the Physical view; here only disk-group/disk operations
-   * and DiskDB deploy are exposed. */
-  const buildCapacityMenuItems = useCallback(
-    (t: MenuTarget): MenuItemOrSeparator[] => {
-      if (readonly) return [];
-      const items: MenuItemOrSeparator[] = [];
-      const p = t.parentIds || {};
-
-      if (t.type === 'Datacenter') {
-        // The default DC is immutable — only Add Rack is offered.
-        items.push({
-          id: 'add-rack',
-          label: 'Add Rack',
-          icon: <Plus className="tw-h-4 tw-w-4" />,
-          onSelect: () => setDialog((d) => ({ ...d, addRack: true })),
-        });
-      } else if (t.type === 'Node') {
-        const nodeId = Number(t.rawId ?? t.id);
-        const hasDiskdb = diskdbNodeIds.has(nodeId);
-        items.push({
-          id: 'add-dg',
-          label: 'Add Disk Group',
-          icon: <Boxes className="tw-h-4 tw-w-4" />,
-          onSelect: () => setDialog((d) => ({ ...d, addDiskGroup: { nodeId } })),
-        });
-        if (!hasDiskdb) {
-          items.push({ id: 's1', separator: true });
-          items.push({
-            id: 'ddb-deploy',
-            label: 'Deploy DiskDB',
-            icon: <HardDrive className="tw-h-4 tw-w-4" />,
-            onSelect: () => setDialog((d) => ({ ...d, deployDiskdb: { nodeId } })),
-          });
-        }
-      } else if (t.type === 'Server') {
-        // Chunk-domain DDB server context menu: restart, stop, delete.
-        const nodeId = Number(p.node_id);
-        items.push({
-          id: 'ddb-restart',
-          label: 'Restart DiskDB',
-          icon: <RotateCw className="tw-h-4 tw-w-4" />,
-          onSelect: () => runMutation('Restart DiskDB', t.label || t.id, () => restartDiskdb(nodeId)),
-        });
-        items.push({
-          id: 'ddb-stop',
-          label: 'Stop DiskDB',
-          icon: <Square className="tw-h-4 tw-w-4" />,
-          onSelect: () => runMutation('Stop DiskDB', t.label || t.id, () => stopDiskdb(nodeId)),
-        });
-        items.push({ id: 's1', separator: true });
-        items.push({
-          id: 'del-ddb',
-          label: 'Delete DiskDB',
-          icon: <Trash2 className="tw-h-4 tw-w-4" />,
-          destructive: true,
-          onSelect: () => requestDelete('DiskDB', t.label || t.id, async () => {
-            await runMutation('Delete DiskDB', t.label || t.id, () => removeDiskdb(nodeId));
-          }),
-        });
-      } else if (t.type === 'DiskGroup') {
-        const dgId = Number(t.rawId);
-        const dgNodeId = Number(p.node_id);
-        const dgRackId = Number(p.rack_id);
-        items.push({
-          id: 'add-disk',
-          label: 'Add Disk',
-          icon: <HardDrive className="tw-h-4 tw-w-4" />,
-          onSelect: () => setDialog((d) => ({ ...d, addDisk: { nodeId: dgNodeId, dgId } })),
-        });
-        items.push({ id: 's1', separator: true });
-        items.push({
-          id: 'dg-change-status',
-          label: 'Change Status',
-          icon: <Activity className="tw-h-4 tw-w-4" />,
-          submenu: buildStatusSubmenu((status) => runMutation(`Set DG ${status}`, t.label || t.id, () => setDiskGroupStatus(dgRackId, dgNodeId, dgId, status))),
-        });
-        items.push({ id: 's2', separator: true });
-        items.push({
-          id: 'assign-dg',
-          label: 'Assign to DiskDB',
-          icon: <Server className="tw-h-4 tw-w-4" />,
-          onSelect: () => setDialog((d) => ({ ...d, assignDiskGroup: { rackId: dgRackId, nodeId: dgNodeId, dgId, dgName: t.label } })),
-        });
-        items.push({ id: 's3', separator: true });
-        items.push({
-          id: 'del-dg',
-          label: 'Delete Disk Group',
-          icon: <Trash2 className="tw-h-4 tw-w-4" />,
-          destructive: true,
-          onSelect: () => requestDelete('Disk Group', dgId, async () => {
-            await runMutation('Delete Disk Group', t.label || t.id, () => removeDiskGroup(dgNodeId, dgId));
-          }, 'All disks in this disk group will also be removed.'),
-        });
-      } else if (t.type === 'Disk') {
-        const diskId = String(p.disk_id || t.rawId || t.id);
-        const diskNodeId = Number(p.node_id);
-        const diskDgId = Number(p.disk_group_id);
-        let diskZoneCount: number | undefined;
-        for (const dg of capacityUsage?.disk_groups || []) {
-          const found = (dg.disks || []).find((d) => d.disk_id === diskId);
-          if (found) { diskZoneCount = found.zone_count; break; }
-        }
-        items.push({
-          id: 'ddb-compact',
-          label: 'Compact Zones',
-          icon: <Database className="tw-h-4 tw-w-4" />,
-          onSelect: () => setDialog((d) => ({ ...d, compactZones: { diskId, zoneCount: diskZoneCount } })),
-        });
-        items.push({
-          id: 'ddb-rebuild',
-          label: 'Rebuild Bitmap',
-          icon: <RotateCw className="tw-h-4 tw-w-4" />,
-          onSelect: () => setDialog((d) => ({ ...d, rebuildBitmap: { diskId, zoneCount: diskZoneCount } })),
-        });
-        items.push({ id: 's1', separator: true });
-        items.push({
-          id: 'ddb-scan',
-          label: 'Trigger Consistency Scan',
-          icon: <Activity className="tw-h-4 tw-w-4" />,
-          onSelect: () => runMutation('Trigger Consistency Scan', t.label || t.id, () => triggerDiskdbScan(diskDgId)),
-        });
-        items.push({
-          id: 'ddb-recalc',
-          label: 'Recalc Usage',
-          icon: <RotateCw className="tw-h-4 tw-w-4" />,
-          onSelect: () => runMutation('Recalc Usage', t.label || t.id, () => recalcDiskdbUsage(diskDgId)),
-        });
-        items.push({ id: 's2', separator: true });
-        items.push({
-          id: 'disk-change-status',
-          label: 'Change Status',
-          icon: <Activity className="tw-h-4 tw-w-4" />,
-          submenu: buildStatusSubmenu((status) => runMutation(`Set Disk ${status}`, t.label || t.id, () => setDiskStatus(diskId, status))),
-        });
-        items.push({ id: 's3', separator: true });
-        items.push({
-          id: 'del-disk',
-          label: 'Delete Disk',
-          icon: <Trash2 className="tw-h-4 tw-w-4" />,
-          destructive: true,
-          onSelect: () => requestDelete('Disk', diskId, async () => {
-            await runMutation('Delete Disk', t.label || t.id, () => removeDisk(diskNodeId, diskDgId, diskId));
-          }, 'All zones on this disk will be lost.'),
-        });
-      }
-      return items;
-    },
-    [readonly, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog, buildStatusSubmenu],
-  );
+  const menuContext = { readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
+  const buildMenuItems = useClusterMenus(menuContext);
+  const buildCapacityMenuItems = useCapacityMenus(menuContext);
 
   const onTreeContextMenu = useCallback(
     (node: TreeNode, event: React.MouseEvent) => {
@@ -957,9 +496,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
         clusterHealth={clusterHealth}
         onRefresh={handleRefresh}
         refreshing={refreshing}
-        onShowTopology={() => setCenterPanel('topology')}
-        onShowCapacity={() => setCenterPanel('capacity')}
-        onResetCluster={readonly ? undefined : handleResetCluster}
+        onShowTopology={() => {}}
+        onShowCapacity={() => { if (centerPanel !== 'chunk') setCenterPanel('capacity'); }}
+        onResetCluster={topologyReadonly ? undefined : handleResetCluster}
       />
 
       {dataError && (
@@ -967,18 +506,19 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
           role="alert"
           className="tw-fixed tw-top-16 tw-left-1/2 -tw-translate-x-1/2 tw-z-50 tw-bg-failed/10 tw-border tw-border-failed/30 tw-text-failed tw-px-4 tw-py-2 tw-rounded-md tw-text-sm tw-shadow-lg"
         >
-          Backend unreachable — retrying
+          {domain === Domain.Capacity ? `${dataError.message} — retrying` : 'Backend unreachable — retrying'}
         </div>
       )}
 
-      <Sidebar
+      <div hidden={ownsSidebar}><Sidebar
+        allServers={allServers}
         racks={racks}
         servers={servers}
         stores={stores}
         nodeStores={nodeStores}
         nodeHealthById={nodeHealthById}
         loading={loading}
-        readonly={readonly}
+        readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly}
         width={sidebarWidth}
         clusterInitialized={clusterInitialized}
         onNodeClick={onTreeNodeClick}
@@ -988,31 +528,37 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
         capacityUsage={capacityUsage}
         hardwareCapacity={hardwareCapacity}
         nodeDiskGroups={nodeDiskGroups}
+        onLoadNodeDisks={managed ? undefined : loadNodeDisks}
+        onLoadGroupDisks={managed ? undefined : loadGroupDisks}
         diskdbNodeIds={diskdbNodeIds}
         diskdbHealthById={diskdbHealthById}
         diskdbInstanceIdByNodeId={diskdbInstanceIdByNodeId}
-      />
+        servicePlans={servicePlans.plans}
+      /></div>
 
-      <div
-        className="tw-fixed tw-top-14 tw-bottom-0 tw-z-30 tw-w-2 tw-cursor-col-resize hover:tw-bg-accent/20"
-        style={{ left: sidebarWidth - 1 }}
-        onMouseDown={() => setResizing('left')}
-        aria-hidden="true"
-      />
+      {!ownsSidebar && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth} />}
 
       <main
-        className="tw-mt-14 tw-h-[calc(100vh-3.5rem)] tw-transition-[margin]"
+        className="tw-mt-14 tw-h-[calc(100vh-3.5rem)] tw-flex tw-flex-col tw-min-h-0"
         style={{
-          marginLeft: sidebarWidth,
-          marginRight: selectedEntity ? inspectorWidth : 0,
+          marginLeft: ownsSidebar ? 0 : sidebarWidth,
+          marginRight: selectedEntity && !ownsSidebar ? inspectorWidth : 0,
         }}
       >
-        {domain === Domain.Cluster && (
-          <ClusterView
+        {managed && <ManagementSession />}
+        {(
+          <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col"><div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · {managed ? 'Container: topology is read-only' : 'Deploy and manage services here'}</div>
+          {managed && <MonitorSummary apiPrefix={apiPrefix} />}
+          {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.</p>}
+          <div className="tw-flex-1 tw-min-h-0"><ClusterView
+            active={domain === Domain.Cluster}
+            scope={Domain.Cluster}
+            allServers={allServers}
             racks={racks}
             nodes={nodes}
             servers={servers}
             stores={stores}
+            viewportWidthKey={selectedEntity && !ownsSidebar ? inspectorWidth : 0}
             nodeStores={nodeStores}
             nodeHealthById={nodeHealthById}
             diskdbNodeIds={diskdbNodeIds}
@@ -1022,50 +568,34 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
             refreshToken={lastRefreshTime.getTime()}
             focusRequest={canvasFocusRequest}
             onEntityContextMenu={onCanvasContextMenu}
-          />
+          /></div></div>
         )}
-        {domain === Domain.KV && kvEnabled && (
-          <KvView stores={stores} selectedEntity={selectedEntity} readonly={readonly} backendError={!!dataError} loading={loading} />
+        {kvEnabled && (
+          <div hidden={domain !== Domain.KV} className="tw-flex-1 tw-min-h-0"><KvView active={domain === Domain.KV} stores={stores} selectedEntity={selectionForDomain(Domain.KV)} readonly={logicalReadonly} backendError={!!logError} loading={logLoading} /></div>
         )}
-        {domain === Domain.Chunk && (
-          <ChunkView
-            centerPanel={centerPanel}
-            onCenterPanelChange={setCenterPanel}
-            instances={diskdbInstances}
-            usage={capacityUsage}
-            hardwareCapacity={hardwareCapacity}
-            scanStatus={capacityScanStatus}
-            loading={capLoading}
-            readonly={readonly}
-            onRefresh={refreshCapacity}
-            selectedEntity={selectedEntity}
-            racks={racks}
-            nodes={nodes}
-            servers={servers}
-            stores={stores}
-            nodeStores={nodeStores}
-            nodeHealthById={nodeHealthById}
-            diskdbNodeIds={diskdbNodeIds}
-            nodeDiskGroups={nodeDiskGroups}
-            refreshToken={lastRefreshTime.getTime()}
-            focusRequest={canvasFocusRequest}
-            onEntityContextMenu={onCanvasContextMenu}
-          />
-        )}
+        <div hidden={domain !== Domain.Capacity} className="tw-flex-1 tw-min-h-0"><CapacityView
+            active={domain === Domain.Capacity}
+            instances={diskdbInstances} usage={capacityUsage} hardwareCapacity={hardwareCapacity}
+            scanStatus={capacityScanStatus} loading={capLoading} readonly={topologyReadonly}
+            onRefresh={refreshCapacity} selectedEntity={selectionForDomain(Domain.Capacity)}
+          /></div>
+        <div data-testid="chunk-page" hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser stores={stores} racks={racks} nodes={nodes} servers={allServers} active={domain === Domain.Chunk} openRequest={chunkRequest}
+          onPlacement={entity => { pendingSelectionRef.current = entity; setDomain(entity.domain); }}
+        /></div>
+        <div hidden={domain !== Domain.ChunkKV} className="tw-flex-1 tw-min-h-0"><ChunkKvView
+          active={domain === Domain.ChunkKV} racks={racks} nodes={nodes} servers={allServers}
+          onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }}
+        /></div>
+        <div hidden={domain !== Domain.Iceberg} className="tw-flex-1 tw-min-h-0"><IcebergView active={domain === Domain.Iceberg} readonly={readonly} /></div>
+        <div hidden={domain !== Domain.S3} className="tw-flex-1 tw-min-h-0"><S3View active={domain === Domain.S3} readonly={readonly}
+          onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }} /></div>
       </main>
 
-      <Suspense fallback={null}>
-        <Inspector readonly={readonly} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
-      </Suspense>
+      {!ownsSidebar && <Suspense fallback={null}>
+        <Inspector readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
+      </Suspense>}
 
-      {selectedEntity && (
-        <div
-          className="tw-fixed tw-top-14 tw-bottom-0 tw-z-30 tw-w-2 tw-cursor-col-resize hover:tw-bg-accent/20"
-          style={{ right: inspectorWidth - 1 }}
-          onMouseDown={() => setResizing('right')}
-          aria-hidden="true"
-        />
-      )}
+      {selectedEntity && !ownsSidebar && <PanelDivider fixed side="right" width={inspectorWidth} onResize={setInspectorWidth} />}
 
       {menuState && <ContextMenu items={menuState.items} position={menuState.position} onClose={closeMenu} />}
 
@@ -1078,6 +608,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
       />
       {dialog.addNode && (
         <AddNodeDialog
+        onDefaultServices={servicePlans.start}
+          servicePlans={servicePlans.plans}
           isOpen
           onClose={closeDialogs}
           racks={racks}
@@ -1213,6 +745,10 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
           await handleRefresh();
         }}
       />
+      {dialog.defaultServices && <NodeServicesDialog nodeId={dialog.defaultServices.nodeId} plan={servicePlans.plans[dialog.defaultServices.nodeId]} onClose={closeDialogs} onStart={servicePlans.start} />}
+      {dialog.deployAuxiliary && <DeployServiceDialog key={`${dialog.deployAuxiliary.kind}/${dialog.deployAuxiliary.nodeId}`} {...dialog.deployAuxiliary}
+        servers={allServers} stores={stores} diskGroups={nodeDiskGroups[dialog.deployAuxiliary.nodeId]?.diskGroups ?? []}
+        onClose={closeDialogs} onSuccess={handleRefresh} />}
 
       {dialog.compactZones && (
         <ZoneSelectDialog
@@ -1271,13 +807,13 @@ export default function App(props: CrowdbConsoleProps = {}) {
   if (mode === 'loading') return <div className="tw-p-6 tw-text-muted">Loading console…</div>;
   if (mode === 'unavailable') return <div role="alert" className="tw-p-6 tw-text-muted">Console mode unavailable.</div>;
   if (mode === 'bare-metal-pending') return <div role="alert" className="tw-p-6 tw-text-muted">Bare-metal deployment management is not available yet.</div>;
-  if (mode === 'docker') return <ManagedPreview apiPrefix={apiPrefix} />;
+
   return (
     <DomainProvider initialDomain={props.initialDomain}>
       <SelectionProvider>
         <ToastProvider>
           <ActivityProvider>
-            <AppContent {...props} />
+            <AppContent {...props} managed={mode === 'docker'} />
           </ActivityProvider>
         </ToastProvider>
       </SelectionProvider>

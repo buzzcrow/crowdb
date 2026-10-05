@@ -10,6 +10,22 @@ import { useLogicalTree } from './useLogicalTree';
 vi.mock('../api', () => ({ listStores: vi.fn(), getGroup: vi.fn(), listGroups: vi.fn() }));
 afterEach(() => { vi.resetAllMocks(); });
 
+it('publishes catalog groups before a slow optional replica observation', async () => {
+  vi.mocked(listStores).mockResolvedValue([{
+    store_id: '7', nodes: [1], groups: [{ group_id: '70', replica_count: 3 }],
+  }]);
+  let resolve!: (value: Awaited<ReturnType<typeof getGroup>>) => void;
+  vi.mocked(getGroup).mockReturnValue(new Promise(done => { resolve = done; }));
+  const { result, unmount } = renderHook(() => useLogicalTree());
+  await waitFor(() => expect(result.current.stores[0]?.groups[0]?.group_id).toBe('70'));
+  expect(result.current.loading).toBe(false);
+  expect(result.current.stores[0].groups[0].state).toBe(GroupHealth.Unknown);
+  await act(async () => resolve({ store_id: '7', group_id: '70',
+    state: GroupHealth.Degraded, replicas: [] }));
+  expect(result.current.stores[0].groups[0].state).toBe(GroupHealth.Degraded);
+  unmount();
+});
+
 it('removes previously confirmed topology during an outage and restores confirmed reads', async () => {
   vi.mocked(listStores).mockResolvedValue([{
     store_id: '7', nodes: [1], groups: [{ group_id: '70', replica_count: 1 }],

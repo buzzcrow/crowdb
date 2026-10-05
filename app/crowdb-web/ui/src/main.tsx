@@ -34,7 +34,11 @@ function propsFromQuery(search: string): CrowdbConsoleProps {
   const d = q.get("domain");
   if (d === "Cluster") props.initialDomain = Domain.Cluster;
   else if (d === "KV") props.initialDomain = Domain.KV;
+  else if (d === "Capacity") props.initialDomain = Domain.Capacity;
   else if (d === "Chunk") props.initialDomain = Domain.Chunk;
+  else if (d === "Chunk-KV") props.initialDomain = Domain.ChunkKV;
+  else if (d === "Iceberg") props.initialDomain = Domain.Iceberg;
+  else if (d === "S3") props.initialDomain = Domain.S3;
 
   return props;
 }

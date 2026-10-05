@@ -30,8 +30,10 @@ pub mod refresh;
 pub const G0_STORE: u64 = 0;
 pub const G0_GROUP: u64 = 0;
 
-/// Watch prefixes for chunkdb topology updates.
-pub const CHUNKDB_WATCH_PREFIXES: &[&[u8]] = &[b"/hw/node/", b"/hw/dg/"];
+/// Watch prefixes for chunkdb topology updates. Disk records carry the
+/// allocation geometry; without their notifications a ChunkDB started before
+/// DiskIO publishes hardware can retain a zero unit size indefinitely.
+pub const CHUNKDB_WATCH_PREFIXES: &[&[u8]] = &[b"/hw/node/", b"/hw/dg/", b"/hw/disk/"];
 
 /// `HwStatus::Up` as `i32` (prost represents enums as i32 in messages).
 const HW_UP: i32 = HwStatus::Up as i32;
@@ -58,6 +60,7 @@ pub struct TopologySnapshot {
     /// `write_granularity` (KB) to `unit_count` for diskdb allocation.
     /// 0 if not yet populated.
     unit_size_bytes: u32,
+    allocation_geometry_error: Option<crowdb_protocol::chunk_allocation_geometry::MixedAllocationUnits>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,6 +307,25 @@ impl TopologySnapshot {
     pub fn unit_size_bytes(&self) -> u32 {
         self.unit_size_bytes
     }
+
+    pub(crate) fn validate_allocation_geometry(&self) -> Result<(), crate::selector::PlacementError> {
+        match self.allocation_geometry_error {
+            Some(error) => Err(crate::selector::PlacementError::InvalidShape(error.to_string())),
+            None => Ok(()),
+        }
+    }
+
+    fn set_allocation_geometry(&mut self, disks: &[crowdb_kv_client::DiskRecord]) {
+        match crowdb_protocol::chunk_allocation_geometry::uniform_allocation_unit(
+            disks
+                .iter()
+                .filter(|disk| disk.value.status == HW_UP)
+                .map(|disk| disk.value.unit_size_bytes),
+        ) {
+            Ok(unit) => self.unit_size_bytes = unit.unwrap_or(0),
+            Err(error) => self.allocation_geometry_error = Some(error),
+        }
+    }
 }
 
 /// Thread-safe topology cache with point-in-time snapshots.
@@ -533,7 +555,7 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
         }
     }
 
-    snap.unit_size_bytes = disks.first().map_or(0, |disk| disk.value.unit_size_bytes);
+    snap.set_allocation_geometry(&disks);
 
     Some(snap)
 }

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useMemo, useCallback, useEffect, useRef } from 'react';
+import { useMemo, useCallback, useEffect, useRef, useState } from 'react';
 import ReactFlow, {
   Background,
   ReactFlowProvider,
@@ -14,12 +14,14 @@ import ReactFlow, {
 } from 'reactflow';
 import { ScanSearch } from 'lucide-react';
 import 'reactflow/dist/style.css';
-import { useDomain } from '../contexts/DomainContext';
+import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { useSelection, SelectedEntity } from '../contexts/SelectionContext';
 import { Rack, Node as NodeEntity, EnrichedStoreView, NodeStore, Domain, CrowdbKVServerView, NodeHealth } from '../types';
 import { DEFAULT_DC_ID } from '../data/defaultDatacenter';
 import { buildFlowForDomain, FlowNodeData } from './buildFlow';
 import { layoutTree } from './layout';
+import { addServiceNodes } from '../services/topology';
+import { isAuxiliaryKind } from '../services/client';
 import { CrowdbKVNode } from './CrowdbKVNode';
 import { Button } from '../components/ui/Button';
 
@@ -30,10 +32,13 @@ export interface MenuTarget {
   parentIds?: Record<string, string | number>;
   label?: string;
   /** Service flavor for `Server` targets: KV vs DiskDB. */
-  serviceType?: 'kv' | 'diskdb';
+  serviceType?: SelectedEntity['serviceType'];
 }
 
 interface TopologyCanvasProps {
+  active?: boolean;
+  scope?: Domain;
+  allServers?: import('../api').ServerSummary[];
   racks: Rack[];
   nodes: NodeEntity[];
   servers: CrowdbKVServerView[];
@@ -45,11 +50,14 @@ interface TopologyCanvasProps {
   diskdbInstanceIdByNodeId?: Map<number, string>;
   nodeDiskGroups?: Record<number, import('./buildFlow').NodeDiskGroups>;
   refreshToken?: number;
+  /** Changes when the main canvas width changes because the inspector opens or resizes. */
+  viewportWidthKey?: number;
   focusRequest?: { targetId: string; subtree: boolean; nonce: number } | null;
   /** Right-click on a canvas node. */
   onEntityContextMenu?: (target: MenuTarget, event: React.MouseEvent) => void;
 }
 
+const EMPTY_COLLAPSED = new Set<string>();
 const NODE_TYPES = { crowdbKv: CrowdbKVNode };
 
 function descendantIds(rootId: string, edges: Edge[]): Set<string> {
@@ -82,21 +90,22 @@ export function TopologyCanvas(props: TopologyCanvasProps) {
  * be highlighted on the canvas. */
 function selectedNodeId(entity: SelectedEntity): string | null {
   const p = entity.parentIds || {};
-  if (entity.domain === Domain.Cluster || entity.domain === Domain.Chunk) {
+  if (entity.domain === Domain.Cluster || entity.domain === Domain.Capacity) {
     switch (entity.type) {
       case 'Datacenter': return `DC-${DEFAULT_DC_ID}`;
       case 'Rack': return `R-${entity.id}`;
       case 'Node': return `N-${entity.id}`;
       case 'Server': {
-        // DDB server nodes use `DDB-` prefix; KV servers use `KV-`.
+        if (isAuxiliaryKind(entity.serviceType)) return `SERVICE-${entity.id}`;
+        // DDB server nodes use `DDB-` prefix; Paxos-KV servers use `PKV-`.
         if (entity.id?.startsWith?.('DDB-')) return p.node_id ? `DDB-${p.node_id}` : null;
-        return p.node_id ? `KV-${p.node_id}` : null;
+        return p.node_id ? `PKV-${p.node_id}` : null;
       }
       case 'DiskGroup':
         if (!p.node_id) return null;
         return entity.domain === Domain.Cluster ? `CL-DG-${p.node_id}-${entity.id}` : `CDG-${p.node_id}-${entity.id}`;
       case 'Disk':
-        return entity.domain === Domain.Chunk && p.node_id && p.disk_group_id
+        return entity.domain === Domain.Capacity && p.node_id && p.disk_group_id
           ? `CD-${p.node_id}-${p.disk_group_id}-${entity.id}`
           : null;
       case 'Store': return p.node_id ? `S-${p.node_id}-${entity.id}` : null;
@@ -118,16 +127,21 @@ function selectedNodeId(entity: SelectedEntity): string | null {
   }
 }
 
-function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
-  const { domain } = useDomain();
-  const { selectedEntity, selectEntity } = useSelection();
-  const { fitView, setViewport, setCenter, getZoom, getNodes } = useReactFlow();
+function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, viewportWidthKey, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
+  const { domain: activeDomain, returning } = useDomain();
+  const domain = scope ?? activeDomain;
+  const { selectionForDomain, selectEntity } = useSelection();
+  const selectedEntity = selectionForDomain(domain);
+  const { fitView, setViewport, setCenter, getZoom, getNodes, getViewport } = useReactFlow();
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [canvasSizeKey, setCanvasSizeKey] = useState('');
   const nodesInitialized = useNodesInitialized();
   const viewportsRef = useRef<Partial<Record<Domain, Viewport>>>({});
   const fittedOnceRef = useRef<Partial<Record<Domain, boolean>>>({});
   const lastRefreshTokenRef = useRef<number | undefined>(refreshToken);
   const lastFocusNonceRef = useRef<number | undefined>(undefined);
   const lastDomainRef = useRef<Domain | undefined>(undefined);
+  const wasActive = useRef(active);
   const nodeIdsKeyRef = useRef<Partial<Record<Domain, string>>>({});
   // Tracks the last (domain, nodeIds, refreshToken) triple that triggered
   // a fit/restore. Polls return new array references for the same data, which
@@ -137,13 +151,70 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
   // poll updates (which re-run the effect with a new positioned.nodes
   // reference but the same action key) don't cancel an in-flight fit.
   const fitRafIdRef = useRef<number | undefined>(undefined);
+  const lastCanvasSizeRef = useRef('');
+  const [collapsedByDomain, setCollapsedByDomain] = useState<Partial<Record<Domain, Set<string>>>>({});
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      if (width <= 0 || height <= 0) return;
+      const key = `${width}x${height}`;
+      if (key === lastCanvasSizeRef.current) return;
+      lastCanvasSizeRef.current = key;
+      viewportsRef.current[domain] = undefined;
+      fittedOnceRef.current[domain] = false;
+      setCanvasSizeKey(key);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [domain]);
+  const defaultCollapsed = useMemo(() => domain === Domain.Cluster
+    ? new Set(nodes.map(node => `N-${node.id}`)) : EMPTY_COLLAPSED, [domain, nodes]);
+  const collapsed = collapsedByDomain[domain] ?? defaultCollapsed;
+  useNavigationSnapshot(domain, 'topology', () => {
+    const viewport = getViewport();
+    const hidden = [...collapsed];
+    return () => {
+      setCollapsedByDomain(previous => ({ ...previous, [domain]: new Set(hidden) }));
+      viewportsRef.current[domain] = viewport;
+      fittedOnceRef.current[domain] = true;
+      void setViewport(viewport, { duration: 0 });
+    };
+  });
 
   const { nodes: rawNodes, edges } = useMemo(
-    () => buildFlowForDomain(domain, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups),
-    [domain, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups],
+    () => addServiceNodes(domain, buildFlowForDomain(domain, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups), allServers ?? [], nodes),
+    [domain, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups],
   );
 
-  const positioned = useMemo(() => layoutTree(rawNodes, edges), [rawNodes, edges]);
+  const childCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    edges.forEach(edge => counts.set(edge.source, (counts.get(edge.source) ?? 0) + 1));
+    return counts;
+  }, [edges]);
+  const positioned = useMemo(() => {
+    const hidden = new Set<string>();
+    collapsed.forEach(id => descendantIds(id, edges).forEach(child => {
+      if (child !== id) hidden.add(child);
+    }));
+    return layoutTree(rawNodes.filter(node => !hidden.has(node.id)),
+      edges.filter(edge => !hidden.has(edge.source) && !hidden.has(edge.target)));
+  }, [rawNodes, edges, collapsed]);
+
+  // Sidebar focus reveals every ancestor before centering a hidden target.
+  useEffect(() => {
+    if (!focusRequest) return;
+    setCollapsedByDomain(previous => {
+      const next = new Set(previous[domain] ?? defaultCollapsed);
+      next.forEach(id => {
+        if (id !== focusRequest.targetId && descendantIds(id, edges).has(focusRequest.targetId)) next.delete(id);
+      });
+      if (next.size === (previous[domain] ?? defaultCollapsed).size) return previous;
+      return { ...previous, [domain]: next };
+    });
+  }, [domain, edges, focusRequest, defaultCollapsed]);
 
   useEffect(() => {
     if (refreshToken !== lastRefreshTokenRef.current) {
@@ -154,6 +225,13 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
   }, [refreshToken]);
 
   useEffect(() => {
+    if (!active) { wasActive.current = false; return; }
+    if (!wasActive.current && !returning) {
+      viewportsRef.current[domain] = undefined;
+      fittedOnceRef.current[domain] = false;
+      lastActionKeyRef.current = undefined;
+    }
+    wasActive.current = true;
     // On view-mode switch, always fit to window — don't restore a stale
     // saved viewport from a previous visit to this mode.
     const domainChanged = lastDomainRef.current !== domain;
@@ -176,7 +254,7 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
     // manual refresh. Polls return new array references for the same data;
     // without this guard the effect re-runs every cycle and the
     // setViewport(savedViewport) call below fights an in-progress pan drag.
-    const actionKey = `${domain}:${nodeIdsKey}:${refreshToken ?? ''}`;
+    const actionKey = `${domain}:${nodeIdsKey}:${refreshToken ?? ''}:${viewportWidthKey ?? ''}:${canvasSizeKey}`;
     if (actionKey === lastActionKeyRef.current) return;
     // Action key changed — cancel any pending rAF from the previous action.
     if (fitRafIdRef.current != null) {
@@ -205,22 +283,39 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
           fitRafIdRef.current = requestAnimationFrame(tryFit);
           return;
         }
-        void fitView({ padding: 0.1, duration: 250, includeHiddenNodes: true });
+        // Fit the visible topology only. Hidden service descendants belong to
+        // collapsed branches and must not expand the bounds during tab return.
+        void fitView({ padding: 0.1, duration: 250 });
         fittedOnceRef.current[domain] = true;
       }
       fitRafIdRef.current = undefined;
     };
     fitRafIdRef.current = requestAnimationFrame(tryFit);
-  }, [fitView, getNodes, nodesInitialized, positioned.nodes, setViewport, domain, refreshToken]);
+  }, [active, returning, fitView, getNodes, nodesInitialized, positioned.nodes, setViewport, domain, refreshToken, viewportWidthKey, canvasSizeKey]);
+
+  // ReactFlow can finish measuring its viewport one tick after a domain tab
+  // becomes visible. A delayed fit closes that gap and prevents the viewport
+  // calculated while the panel was hidden from surviving a tab return.
+  useEffect(() => {
+    if (!active || !nodesInitialized || positioned.nodes.length === 0) return;
+    const timer = window.setTimeout(() => {
+      viewportsRef.current[domain] = undefined;
+      fittedOnceRef.current[domain] = false;
+      void fitView({ padding: 0.1, duration: 250 });
+      fittedOnceRef.current[domain] = true;
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [active, canvasSizeKey, domain, fitView, nodesInitialized, positioned.nodes.length]);
 
   const selId = selectedEntity ? selectedNodeId(selectedEntity) : null;
   const decoratedNodes: Node[] = useMemo(
     () =>
       positioned.nodes.map((n) => ({
         ...n,
-        data: { ...(n.data as FlowNodeData), isSelected: n.id === selId },
+        data: { ...(n.data as FlowNodeData), isSelected: n.id === selId,
+          childCount: childCounts.get(n.id) ?? 0, collapsed: collapsed.has(n.id) },
       })),
-    [positioned.nodes, selId],
+    [positioned.nodes, selId, childCounts, collapsed],
   );
 
   useEffect(() => {
@@ -257,7 +352,7 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
 
   const handleFitAll = useCallback(() => {
     viewportsRef.current[domain] = undefined;
-    void fitView({ padding: 0.1, duration: 250, includeHiddenNodes: true });
+    void fitView({ padding: 0.1, duration: 250 });
     fittedOnceRef.current[domain] = true;
   }, [fitView, domain]);
 
@@ -265,8 +360,13 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
     (_e, node) => {
       const entity = (node.data as FlowNodeData).entity;
       if (entity) selectEntity({ ...entity, domain });
+      if (childCounts.has(node.id)) setCollapsedByDomain(previous => {
+        const next = new Set(previous[domain] ?? defaultCollapsed);
+        if (next.has(node.id)) next.delete(node.id); else next.add(node.id);
+        return { ...previous, [domain]: next };
+      });
     },
-    [selectEntity, domain],
+    [selectEntity, domain, childCounts, defaultCollapsed],
   );
 
   const onNodeContextMenu = useCallback(
@@ -284,7 +384,7 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
   );
 
   return (
-    <div className="tw-relative tw-w-full tw-h-full tw-bg-bg tw-overflow-hidden">
+    <div ref={canvasRef} className="tw-relative tw-w-full tw-h-full tw-bg-bg tw-overflow-hidden">
       <div className="tw-absolute tw-top-3 tw-right-3 tw-z-20">
         <Button
           variant="secondary"
@@ -300,7 +400,7 @@ function TopologyCanvasInner({ racks, nodes, servers, stores, nodeStores, nodeHe
         <div className="tw-w-full tw-h-full tw-flex tw-items-center tw-justify-center tw-text-muted tw-text-sm">
           {domain === Domain.Cluster
             ? 'No racks registered. Add a rack to get started.'
-            : domain === Domain.Chunk
+            : domain === Domain.Capacity
               ? 'No racks registered. Add a rack to get started.'
               : 'No stores yet. Switch to a deployed node and add a store.'}
         </div>

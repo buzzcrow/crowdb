@@ -132,6 +132,7 @@ impl Default for StorageDefaults {
 
 /// Heartbeat / liveness configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HeartbeatConfig {
     /// dynamic: heartbeat interval in seconds (default: 10).
     pub interval_secs: u32,

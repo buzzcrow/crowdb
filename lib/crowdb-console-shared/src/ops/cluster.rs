@@ -550,7 +550,7 @@ async fn local_deploy_diskio(
         .config()
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
     let leader_seed = wait_for_leader(&seeds, 0, 0, std::time::Duration::from_secs(10))
@@ -683,7 +683,7 @@ pub async fn local_deploy_chunkdb(
         .config()
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
     if seeds.is_empty() {
@@ -1035,7 +1035,7 @@ async fn deploy_diskdb_instances(
         .config()
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
     for (index, node) in nodes.iter().enumerate() {
@@ -1411,7 +1411,7 @@ async fn deploy_servers(
             binary: None,
             election_profile: None,
             pid: Some(deployed.pid),
-            service_type: ServiceType::Kv,
+            service_type: ServiceType::PaxosKv,
             rpc_workers: None,
             no_fsync: false,
         })?;

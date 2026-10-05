@@ -45,6 +45,9 @@ pub struct ConsoleConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalLaunchSpec {
     pub program: String,
+    /// Private credentials remain in a bounded file, never in the launch registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     pub workdir: String,
@@ -134,7 +137,8 @@ pub struct DiskEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ServiceType {
     #[default]
-    Kv,
+    #[serde(rename = "paxos-kv")]
+    PaxosKv,
     Diskdb,
     Chunkdb,
     Diskio,
@@ -187,7 +191,7 @@ pub struct ServerEntry {
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_service_type(st: &ServiceType) -> bool {
-    *st == ServiceType::Kv
+    *st == ServiceType::PaxosKv
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,7 +230,7 @@ impl ServerEntry {
             binary: None,
             election_profile: None,
             pid: None,
-            service_type: ServiceType::Kv,
+            service_type: ServiceType::PaxosKv,
             rpc_workers: None,
             no_fsync: false,
         }
@@ -490,14 +494,14 @@ impl ConsoleConfig {
     pub fn server_for_node(&self, node_id: NodeId) -> Option<&ServerEntry> {
         self.servers
             .iter()
-            .find(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::Kv)
+            .find(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::PaxosKv)
     }
 
     /// Look up the server deployed on a given node (mutable).
     pub fn server_for_node_mut(&mut self, node_id: NodeId) -> Option<&mut ServerEntry> {
         self.servers
             .iter_mut()
-            .find(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::Kv)
+            .find(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::PaxosKv)
     }
 
     /// Remove the KV server entry deployed on a given node.
@@ -508,7 +512,7 @@ impl ConsoleConfig {
         let pos = self
             .servers
             .iter()
-            .position(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::Kv)
+            .position(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::PaxosKv)
             .ok_or_else(|| Error::NotFound {
                 kind: "server".into(),
                 id: format!("no server on node {node_id}"),

@@ -83,9 +83,15 @@ DiskIO does not finish before that deadline, it discards every byte from the
 attempt, re-queries, and retries within policy. ChunkDB retains replaced
 segments through the same window.
 
-Sealed strips expose `sealed_length`. An active shared mirror strip may also
-expose bytes below the chunk's durable `acknowledged_cursor`; later bytes are
-`NotYetAvailable`.
+The chunk's durable `acknowledged_cursor` provides the exact written byte
+boundary for both sealed chunks and active shared mirror chunks. Derive each
+strip's valid prefix from that cursor and its chunk offset; later bytes are
+`NotYetAvailable`. Legacy chunks without a byte cursor retain their coarse
+`sealed_length` contract. EC data shard `i` has
+`min(shard_bytes, max(0, valid_strip_bytes - i × shard_bytes))` valid bytes;
+every code shard has `min(shard_bytes, valid_strip_bytes)` valid bytes. Recovery
+reads only those prefixes and treats absent tails as mathematical zeros,
+independently of stale bytes on disk. Repair writes only the valid prefix.
 
 Only an unparseable returned frame or a write-frame checksum mismatch proves
 physical corruption. The reader reports its exact serving segment to ChunkDB;

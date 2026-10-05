@@ -147,18 +147,13 @@ verify_listener_failure_propagation() {
 }
 
 verify_web_logical() {
-    local web_port manage_token status
+    local web_port status create_response create_status
     web_port=$(port 9090)
-    manage_token=$(docker exec "$name" sed -n 's/^CROWDB_ICEBERG_MANAGE_TOKEN=//p' /opt/crowdb/data/secrets/server.env)
-    [[ -n "$manage_token" ]]
-    status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-        --header 'Content-Type: application/json' --data '{"store_id":7,"nodes":[1]}' \
-        "http://127.0.0.1:$web_port/api/stores")
-    [[ "$status" == 401 ]]
-    local create_response create_status
-    create_response=$(printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\nurl = "http://127.0.0.1:%s/api/stores"\n' "$manage_token" "$web_port" |
-        curl --config - --silent --show-error --max-time 10 \
-            --write-out '\n%{http_code}' --data '{"store_id":7,"nodes":[1]}')
+    # The console assumes an administrator session. The Access management
+    # token authenticates Iceberg management, not logical console routes.
+    create_response=$(curl --silent --show-error --max-time 10 \
+        --header 'Content-Type: application/json' --write-out '\n%{http_code}' \
+        --data '{"store_id":7,"nodes":[1]}' "http://127.0.0.1:$web_port/api/stores")
     create_status=${create_response##*$'\n'}
     if [[ "$create_status" != 201 ]]; then
         echo "Web store create returned $create_status: ${create_response%$'\n'*}" >&2
@@ -167,11 +162,14 @@ verify_web_logical() {
     jq -e '.store_id == 7 and .nodes == [1]' <<<"${create_response%$'\n'*}" >/dev/null
     curl --fail --silent --show-error --max-time 10 \
         "http://127.0.0.1:$web_port/api/stores" | jq -e 'any(.[]; .store_id == 7)' >/dev/null
-    status=$(printf 'header = "Authorization: Bearer %s"\nurl = "http://127.0.0.1:%s/api/racks"\n' "$manage_token" "$web_port" |
-        curl --config - --silent --show-error --output /dev/null --write-out '%{http_code}' --request POST)
-    [[ "$status" == 503 ]]
-    printf 'header = "Authorization: Bearer %s"\nurl = "http://127.0.0.1:%s/api/stores/7"\n' "$manage_token" "$web_port" |
-        curl --config - --fail --silent --show-error --max-time 10 --request DELETE >/dev/null
+    status=$(curl --silent --show-error --max-time 10 --output /dev/null \
+        --write-out '%{http_code}' --request POST "http://127.0.0.1:$web_port/api/racks")
+    if [[ "$status" != 503 ]]; then
+        echo "Forbidden container hardware mutation returned $status instead of 503" >&2
+        return 1
+    fi
+    curl --fail --silent --show-error --max-time 10 --request DELETE \
+        "http://127.0.0.1:$web_port/api/stores/7" >/dev/null
     curl --fail --silent --show-error --max-time 10 \
         "http://127.0.0.1:$web_port/api/stores" | jq -e 'all(.[]; .store_id != 7)' >/dev/null
 }

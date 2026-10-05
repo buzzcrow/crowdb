@@ -7,7 +7,7 @@
 
 use crowdb_chunkdb::selector::{
     ChunkPlacementStrategy, EcPlacement, FailureDomainPriority, MirrorPlacement, PlacementConstraints,
-    PlacementError, UnsafeColocatedPlacementStrategy,
+    UnsafeColocatedPlacementStrategy,
 };
 use crowdb_chunkdb::topology::TopologyCache;
 use crowdb_protocol::common::{DiskGroupUsageSummary, HwStatus};
@@ -355,21 +355,9 @@ fn ec_select_with_excluded_node() {
 }
 
 #[test]
-fn ec_10_2_two_racks_requires_explicit_degraded_placement() {
+fn ec_10_2_two_racks_preserves_node_protection_without_rack_requirement() {
     let cache = build_topology(&[(1, &[10, 11, 12, 13]), (2, &[20, 21])]);
-    let result = EcPlacement::select(&cache.snapshot(), 10, 2, &PlacementConstraints::new());
-    assert!(matches!(
-        result,
-        Err(PlacementError::RackProtectionUnavailable { .. })
-    ));
-
-    let plan = EcPlacement::select(
-        &cache.snapshot(),
-        10,
-        2,
-        &PlacementConstraints::new().allow_degraded_failure_domains(),
-    )
-    .unwrap();
+    let plan = EcPlacement::select(&cache.snapshot(), 10, 2, &PlacementConstraints::new()).unwrap();
     assert!(!plan.safe_mode);
     assert!(!plan.protection.rack_protected);
     assert!(plan.protection.node_protected);
@@ -441,20 +429,33 @@ fn two_rack_ec_matrix_runs_every_scheme_under_both_priorities() {
 }
 
 #[test]
-fn mirror_one_rack_requires_degraded_permission() {
+fn protected_mirror_and_ec_use_distinct_nodes_in_one_rack() {
     let cache = build_topology(&[(1, &[10, 11, 12])]);
-    let result = MirrorPlacement::select(&cache.snapshot(), 3, &PlacementConstraints::new());
-    assert!(matches!(
-        result,
-        Err(PlacementError::RackProtectionUnavailable { .. })
-    ));
-
-    let plan = MirrorPlacement::select(
-        &cache.snapshot(),
-        3,
-        &PlacementConstraints::new().allow_degraded_failure_domains(),
-    )
-    .unwrap();
-    assert!(!plan.protection.rack_protected);
-    assert!(plan.protection.node_protected);
+    let strategy = crowdb_chunkdb::selector::ProtectedPlacementStrategy;
+    let constraints = PlacementConstraints::new();
+    let mirror = strategy
+        .select_mirror(&cache.snapshot(), 3, &constraints)
+        .unwrap();
+    let ec = strategy.select_ec(&cache.snapshot(), 2, 1, &constraints).unwrap();
+    for plan in [mirror, ec] {
+        assert_eq!(plan.entries.len(), 3);
+        assert_eq!(
+            plan.entries
+                .iter()
+                .map(|entry| entry.node_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+        assert!(!plan.protection.rack_protected);
+        assert!(plan.protection.node_protected);
+        assert_eq!(plan.protection.max_fragments_per_node, 1);
+    }
+    let insufficient = build_topology(&[(1, &[10, 11])]);
+    assert!(strategy
+        .select_mirror(&insufficient.snapshot(), 3, &constraints)
+        .is_err());
+    assert!(strategy
+        .select_ec(&insufficient.snapshot(), 2, 1, &constraints)
+        .is_err());
 }

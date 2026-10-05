@@ -3,6 +3,38 @@
 // Baseline: 15s (2026-08-17)
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
+
+// Native fixture owns all three DDB processes and hardware resources.
+test('native diagnostics: Capacity retains hardware and marks interrupted DDB usage unknown', async ({ page, request }) => {
+  await page.goto('/?domain=Capacity');
+  const totals = page.getByTestId('capacity-summary');
+  const panel = totals.locator('..');
+  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(0);
+  expect((await request.post('/api/nodes/1/diskdb/stop', { data: {} })).ok()).toBe(true);
+  try {
+    await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    await expect(page.getByRole('alert').filter({ hasText: 'Capacity observation unavailable' })).toBeVisible();
+    await panel.getByRole('button', { name: /R-1 / }).click();
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    await panel.getByRole('button', { name: /N-1 / }).click();
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    await panel.getByRole('button', { name: /DG-1 / }).click();
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    const disk = panel.getByRole('button', { name: /00000000…/ });
+    await expect(disk).toHaveAttribute('title', /Usage unknown/);
+    await disk.click();
+    await expect(page.getByTestId('disk-geometry')).toContainText(/80 zones.*Usage unknown/);
+    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+    await expect(totals).not.toContainText('100% free');
+  } finally {
+    expect((await request.post('/api/nodes/1/diskdb/restart', { data: {} })).ok()).toBe(true);
+  }
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('disk-geometry')).not.toContainText('Usage unknown');
+  await expect(page.getByRole('heading', { name: /^Capacity — Disk/ })).toBeVisible();
+});
 import {
   apiContext,
   createRack,
@@ -18,6 +50,7 @@ import {
   deployDiskdb,
   deployNodeServer,
   clusterInit,
+  addGroup,
   waitForLeader,
   stepTime,
 } from '../fixtures/consoleSetup';
@@ -47,42 +80,20 @@ test.describe('capacity · canvas + scanner/recalc', () => {
     await createNode(baseURL, { id: CANVAS_NODE, rack_id: CANVAS_RACK });
     await deployNodeServer(baseURL, CANVAS_NODE, freePort(), freePort());
     await clusterInit(baseURL, [CANVAS_NODE]);
+    await addGroup(baseURL, 0, 1, 1, [CANVAS_NODE]);
     await waitForLeader(baseURL, 0, 0, 15_000);
   });
 
-  test('ScannerPanel renders with Run Scan button and empty state', async ({ page, baseURL }) => {
-    test.setTimeout(30_000);
-    const nodeId = CANVAS_NODE;
-    const rpcPort = freePortRange(3);
-
+  test.afterAll(async () => {
+    const api = await apiContext(consoleBaseURL());
     try {
-      await deployDiskdb(baseURL!, nodeId, rpcPort);
-
-      await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
-
-      const panel = page.locator('.tw-h-full.tw-overflow-auto');
-      await expect(panel.getByText(/Capacity —/)).toBeVisible({ timeout: 10_000 });
-
-      // ScannerPanel header + Run Scan button.
-      await expect(panel.getByText('Scanner', { exact: true })).toBeVisible({ timeout: 10_000 });
-      const scanBtn = panel.getByRole('button', { name: /run scan/i });
-      await expect(scanBtn).toBeVisible({ timeout: 10_000 });
-
-      // Before any scan, should show "No scan has been run yet."
-      await expect(panel.getByText('No scan has been run yet.')).toBeVisible({ timeout: 10_000 });
-
-      // Click Run Scan — button should handle the response (success or error).
-      await scanBtn.click();
-
-      // The button should re-enable after the action completes.
-      await expect.poll(async () => {
-        const btn = panel.getByRole('button', { name: /run scan|scanning/i });
-        return btn.isEnabled();
-      }, { timeout: 10_000, intervals: [100] }).toBe(true);
-    } finally {
-      await removeDiskdb(baseURL!, nodeId);
+      for (const service of ['server']) {
+        const response = await api.post(`/api/nodes/${CANVAS_NODE}/${service}/stop`, { data: {} });
+        expect(response.ok(), await response.text()).toBe(true);
+      }
+      const response = await api.post('/internal/reset'); expect(response.ok(), await response.text()).toBe(true);
     }
+    finally { await api.dispose(); }
   });
 
   test('CapacityPanel shows cluster totals and instance count', async ({ page, baseURL }) => {
@@ -108,7 +119,7 @@ test.describe('capacity · canvas + scanner/recalc', () => {
       }
 
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const panel = page.locator('.tw-h-full.tw-overflow-auto');
       await expect(panel.getByText(/Capacity —/)).toBeVisible({ timeout: 10_000 });
@@ -141,7 +152,7 @@ test.describe('capacity · canvas + scanner/recalc', () => {
       await addDisksBatch(baseURL!, nodeId, dgId, [{ disk_id: diskId }]);
 
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const panel = page.locator('.tw-h-full.tw-overflow-auto');
       await expect(panel.getByText(/Capacity —/)).toBeVisible({ timeout: 10_000 });
@@ -225,7 +236,7 @@ test.describe('capacity · canvas + scanner/recalc', () => {
 
       await stepTime('dc: page.goto+Capacity click', async () => {
         await page.goto('/');
-        await page.getByTestId('domain-chunk').click();
+        await page.getByTestId('domain-capacity').click();
       });
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
@@ -247,62 +258,25 @@ test.describe('capacity · canvas + scanner/recalc', () => {
 
         // Capacity totals (Total Capacity / Used / Free) are shown in the
         // Capacity view. Wait for the DG to report usage so the totals are
-        // non-zero; if the diskdb crowdb-rpc is unreachable, still verify the
-        // labels render (totals would be 0 B).
+        // non-zero. Hardware totals remain visible before usage is ready.
         await expect(inspector.getByText('Total Capacity')).toBeVisible({ timeout: 10_000 });
         await expect(inspector.getByText('Used', { exact: true })).toBeVisible({ timeout: 10_000 });
         await expect(inspector.getByText('Free', { exact: true })).toBeVisible({ timeout: 10_000 });
       });
 
-      // If the DG appears in usage, verify the inspector totals match the
-      // cluster-wide sum from the API.
-      await stepTime('dc: usage poll + totals match', async () => {
+      // Hardware defines total capacity even before usage sampling. Usage
+      // routing is verified by the dedicated assign test in spec 50.
+      await stepTime('dc: hardware totals match', async () => {
         const api = await apiContext(baseURL!);
         try {
-          // Quick precondition: check if any diskdb instance has
-          // reported group_usages via the local service registry
-          // (fast — no crowdb-rpc fan-out). If none after 3s, diskdb
-          // is deployed but not reachable via crowdb-rpc; skip the
-          // expensive 12s usage poll.
-          let hasUsage = false;
-          try {
-            await expect.poll(async () => {
-              const r = await api.get('/api/diskdb/instances');
-              if (!r.ok()) return false;
-              const instances = await r.json();
-              return Array.isArray(instances) && instances.some((i: any) => Array.isArray(i.group_usages) && i.group_usages.length > 0);
-            }, { timeout: 3_000, intervals: [200] }).toBe(true);
-            hasUsage = true;
-          } catch {
-            console.warn(`DG-${dgId} never reported usage — diskdb crowdb-rpc not reachable, skipping totals match`);
-          }
-
-          if (hasUsage) {
-            // Diskdb is reporting usage — now poll the usage endpoint
-            // for the specific DG.
-            await expect.poll(async () => {
-              const r = await api.get('/api/diskdb/usage');
-              if (!r.ok()) return false;
-              const body = await r.json();
-              return Array.isArray(body.disk_groups) && body.disk_groups.some((g: any) => g.disk_group_id === dgId);
-            }, { timeout: 10_000, intervals: [200] }).toBe(true);
-
-            const r = await api.get('/api/diskdb/usage');
-            const body = await r.json();
-            const sum = (body.disk_groups || []).reduce(
-              (acc: { capacity: number; busy: number; free: number }, g: any) => ({
-                capacity: acc.capacity + g.capacity_bytes,
-                busy: acc.busy + g.busy_bytes,
-                free: acc.free + g.free_bytes,
-              }),
-              { capacity: 0, busy: 0, free: 0 },
-            );
-            const capDd = page.locator('aside[aria-label="Entity inspector"]').locator('dl > div').filter({ has: page.locator('dt', { hasText: 'Total Capacity' }) }).locator('dd');
-            await expect(capDd).toHaveText(formatBytesAssert(sum.capacity), { timeout: 10_000 });
-          }
-        } finally {
-          await api.dispose();
-        }
+          const response = await api.get('/api/hardware/capacity');
+          expect(response.ok(), await response.text()).toBe(true);
+          const summary = await response.json();
+          expect(summary.disk_groups.some((group: any) => group.disk_group_id === dgId)).toBe(true);
+          const inspector = page.locator('aside[aria-label="Entity inspector"]');
+          const capacity = inspector.locator('dl > div').filter({ has: page.locator('dt', { hasText: 'Total Capacity' }) }).locator('dd');
+          await expect(capacity).toHaveText(formatBytesAssert(summary.datacenter_capacity_bytes));
+        } finally { await api.dispose(); }
       });
     } finally {
       await stepTime('dc: cleanup', async () => {
@@ -321,3 +295,35 @@ function formatBytesAssert(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
+
+
+// Baseline: new actual native scanner and scoped recalc (2026-10-04).
+test('native diagnostics: scanner and scoped recalc show actual completed observations', async ({ page }) => {
+  await page.goto('/?domain=Capacity');
+  const panel = page.getByTestId('capacity-summary').locator('..');
+  await expect(panel.getByText('No scan has been run yet.', { exact: true })).toBeVisible();
+  const scanResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/diskdb/scan' && response.request().method() === 'POST');
+  await panel.getByRole('button', { name: 'Run Scan', exact: true }).click();
+  const scan = await scanResponse;
+  expect(scan.ok(), await scan.text()).toBe(true);
+  await expect(panel.getByText('Zones scanned', { exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Run Scan', exact: true })).toBeEnabled();
+  await panel.getByRole('button', { name: /R-1 / }).click();
+  await expect(panel.getByText('Scanner', { exact: true })).toHaveCount(0);
+  await panel.getByRole('button', { name: /N-1 / }).click();
+  await panel.getByRole('button', { name: /DG-1 / }).click();
+  await panel.getByRole('button', { name: /00000000…/ }).click();
+  await expect(page.getByTestId('disk-geometry')).toContainText('80 zones');
+  const recalcResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/diskdb/recalc' && response.request().method() === 'POST');
+  await panel.getByRole('button', { name: 'Run Recalc', exact: true }).click();
+  const recalc = await recalcResponse;
+  expect(recalc.ok(), await recalc.text()).toBe(true);
+  const observation = await recalc.json();
+  expect(observation.results.map((row: { disk_group_id: number }) => row.disk_group_id)).toEqual([1]);
+  expect(observation.results.flatMap((row: { zones: { drift_detected: boolean }[] }) => row.zones).every((zone: { drift_detected: boolean }) => !zone.drift_detected)).toBe(true);
+  await expect(panel.getByText('No drift detected. All zones match.', { exact: true })).toBeVisible();
+  const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
+  await expect(inspector.getByText('Name', { exact: true })).toHaveCount(0);
+  await expect(inspector.getByText('Parent: disk_id', { exact: true })).toHaveCount(0);
+  for (const parent of ['rack_id', 'node_id', 'disk_group_id']) await expect(inspector.getByText(`Parent: ${parent}`, { exact: true })).toBeVisible();
+});

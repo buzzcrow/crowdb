@@ -332,8 +332,10 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     }
 
     [[nodiscard]] ChunkPageStoreStats stats() const;
-    uint64_t                          reclaim_orphans();
-    Status                            materialize_ownership(uint64_t *bytes_written, bool *complete) override;
+    // Approximate retained pack bytes from the already opened layout, with no I/O.
+    [[nodiscard]] uint64_t estimated_bytes() const;
+    uint64_t               reclaim_orphans();
+    Status                 materialize_ownership(uint64_t *bytes_written, bool *complete) override;
     void   set_materialization_live_extents(std::vector<std::pair<uint64_t, uint64_t>> extents) override;
     Status set_wal_replay_offset(uint64_t offset);
     Status wal_replay_offset(uint64_t *offset) const;

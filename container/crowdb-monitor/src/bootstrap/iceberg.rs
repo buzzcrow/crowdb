@@ -11,6 +11,8 @@ use crate::{
     MonitorLogError, ServerCredentials,
 };
 
+mod console;
+
 const INITIALIZE: &str = "iceberg-initialize";
 const ACTIVATE: &str = "iceberg-activate";
 const CAPABILITIES: &str = "0x3fff";
@@ -52,6 +54,28 @@ pub fn iceberg_step_names() -> [&'static str; 2] {
 pub struct IcebergBootstrap;
 
 impl IcebergBootstrap {
+    /// Provision the first native Console catalog and reconcile interrupted
+    /// activation. Catalogs created elsewhere retain their identity and policy.
+    ///
+    /// # Errors
+    /// Rejects corrupt journals, changed catalog identities and uncertain commands.
+    pub async fn ensure_console_catalog(
+        root: &std::path::Path,
+        program: &std::path::Path,
+        seeds: &str,
+        credentials: &ServerCredentials,
+    ) -> Result<(), IcebergBootstrapError> {
+        console::ensure(
+            root,
+            &ManagementCommand {
+                program,
+                seeds,
+                credentials,
+            },
+        )
+        .await
+    }
+
     /// # Errors
     /// Refuses a foreign catalog, uncertain identity, or incomplete prior step.
     pub async fn reconcile(

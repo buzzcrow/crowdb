@@ -23,6 +23,11 @@ use crate::mirror_shadow::MirrorShadow;
 use crate::storage::{CursorAdvance, StreamChunkStore, StreamMetadataStore, StreamRegistry};
 use crate::{Result, StreamError};
 
+mod liveness;
+mod observation;
+mod recovery;
+pub use observation::StreamMetadataObservation;
+
 #[derive(Clone, Debug)]
 pub struct StreamConfig {
     pub chunk_capacity_bytes: u64,
@@ -342,6 +347,8 @@ impl ChunkStream {
         let expected = (manifest.writer_epoch, manifest.generation);
         let mut needs_publish = manifest.writer_epoch < writer_epoch;
         let mut rotate_active = false;
+        let mut extents = collect_extents(&pages);
+        let mut tail = manifest.sealed_tail;
         if let Some(active) = &mut manifest.active {
             let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
             if durable.offset < active.physical_start || durable.offset > active.capacity {
@@ -349,15 +356,20 @@ impl ChunkStream {
                     "recovered active cursor is outside chunk bounds".into(),
                 ));
             }
+            if durable.offset < active.acknowledged_cursor {
+                return Err(StreamError::Corruption(
+                    "recovered active cursor precedes its published cursor".into(),
+                ));
+            }
+            tail = recovery::recover_active_frames(chunks.as_ref(), active, durable.offset, &mut extents)
+                .await?;
             if !durable.sealed {
                 chunks.seal(active.chunk_id, writer_epoch, durable.offset).await?;
             }
             active.acknowledged_cursor = durable.offset;
             rotate_active = true;
         }
-        let tail = validate_manifest(&manifest, &pages)?;
         manifest.writer_epoch = writer_epoch;
-        let extents = collect_extents(&pages);
         if rotate_active {
             manifest.active.take();
             manifest.sealed_tail = tail;
@@ -382,6 +394,7 @@ impl ChunkStream {
                 config.extent_page_entries,
             );
             manifest.extent_pages = fences_for(&adopted_pages);
+            validate_manifest(&manifest, &adopted_pages)?;
             metadata
                 .publish(Some(expected), manifest.clone(), adopted_pages)
                 .await?;
@@ -438,7 +451,14 @@ impl ChunkStream {
                     "observed active cursor is outside chunk bounds".into(),
                 ));
             }
-            active.acknowledged_cursor = durable.offset;
+            if durable.offset < active.acknowledged_cursor {
+                return Err(StreamError::Corruption(
+                    "observed active cursor precedes the published cursor".into(),
+                ));
+            }
+            // A concurrent append can advance the physical cursor before its
+            // extent pages are published. Keep this reader at the captured
+            // manifest's acknowledged boundary.
         }
         validate_manifest(&manifest, &pages)?;
         let stream = Self::start(
@@ -505,9 +525,15 @@ impl ChunkStream {
         })
     }
 
+    /// Returns the durable end of the published read snapshot.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an internally installed manifest violates the validated
+    /// active-cursor bounds.
     #[must_use]
     pub fn tail(&self) -> u64 {
-        self.tail.load(Ordering::Acquire)
+        durable_tail(&self.manifest.load()).expect("validated stream manifest has a durable tail")
     }
 
     /// Appends one logical request after its mirror data and cursor are durable.
@@ -740,7 +766,7 @@ impl ChunkStream {
             .checked_add(length as u64)
             .ok_or_else(|| StreamError::InvalidRequest("read range overflows".into()))?;
         let manifest = self.manifest.load_full();
-        if offset < manifest.trim_offset || end > self.tail() {
+        if offset < manifest.trim_offset || end > durable_tail(&manifest)? {
             return Err(StreamError::InvalidRequest(
                 "read is outside retained durable range".into(),
             ));
@@ -868,7 +894,7 @@ impl ChunkStream {
     /// Returns an error if `offset` or its hint is outside the retained range.
     pub fn reader(&self, offset: u64, hint: ReadHint) -> Result<StreamReader> {
         let manifest = self.manifest.load();
-        let tail = self.tail();
+        let tail = durable_tail(&manifest)?;
         if offset < manifest.trim_offset || offset > tail {
             return Err(StreamError::InvalidRequest(
                 "read cursor is outside retained range".into(),
@@ -1083,7 +1109,7 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command
                 },
                 _ = liveness.tick() => {
                     if let Some(chunk_id) = state.manifest.active.as_ref().map(|active| active.chunk_id) {
-                        maintain_liveness(&mut state, chunk_id).await;
+                        liveness::maintain(&mut state, chunk_id).await;
                     }
                     continue;
                 }
@@ -1104,44 +1130,6 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command
         }
     }
     state.closed_view.store(true, Ordering::Release);
-}
-
-async fn maintain_liveness(state: &mut WorkerState, chunk_id: ChunkId) {
-    let mut attempts = 0_u32;
-    loop {
-        match state.chunks.renew_liveness(chunk_id, state.writer_epoch).await {
-            Ok(()) => return,
-            Err(error) => {
-                attempts += 1;
-                tracing::warn!(
-                    stream_high = state.stream_name.high,
-                    stream_low = state.stream_name.low,
-                    writer_epoch = state.writer_epoch,
-                    attempts,
-                    %error,
-                    "chunk-stream idle liveness renewal failed"
-                );
-                if matches!(error, StreamError::StaleWriter) || attempts >= 3 {
-                    match rollover(state).await {
-                        Ok(()) => return,
-                        Err(
-                            error @ (StreamError::StaleWriter
-                            | StreamError::Corruption(_)
-                            | StreamError::InvalidRequest(_)),
-                        ) => {
-                            tracing::warn!(%error, "chunk-stream idle rollover cannot continue safely");
-                            state.stalled = true;
-                            return;
-                        }
-                        Err(rollover_error) => {
-                            tracing::warn!(%rollover_error, "chunk-stream idle rollover remains unavailable");
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
 }
 
 async fn process_append_batch(
@@ -1825,7 +1813,10 @@ fn find_extent_fence(manifest: &StreamManifest, offset: u64) -> Result<usize> {
     let fence = manifest
         .extent_pages
         .get(index)
-        .ok_or_else(|| StreamError::Corruption("sealed offset is not covered by extent directory".into()))?;
+        .ok_or_else(|| StreamError::Corruption(format!(
+            "sealed offset is not covered by extent directory: offset={offset}, sealed_tail={}, trim={}, generation={}, epoch={}, fences={}",
+            manifest.sealed_tail, manifest.trim_offset, manifest.generation, manifest.writer_epoch, manifest.extent_pages.len()
+        )))?;
     if offset < fence.first_logical {
         return Err(StreamError::Corruption(
             "extent directory has a logical gap".into(),

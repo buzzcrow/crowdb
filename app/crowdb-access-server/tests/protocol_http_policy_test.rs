@@ -199,7 +199,7 @@ async fn combined_http_listeners_keep_protocol_chunk_policies_separate() {
     let seeds = cluster
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
     initialize_iceberg(seeds.clone()).await;
@@ -227,7 +227,7 @@ async fn terminal_s3_storage_failure_stops_both_access_listeners() {
     let seeds = cluster
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
     initialize_iceberg(seeds.clone()).await;
@@ -440,7 +440,7 @@ async fn protected_two_copy_write_stops_after_repair_and_chunk_rotation_fail() {
     let seeds = cluster
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect();
     let client = ChunkIoClient::connect(ChunkIoClientConfig {

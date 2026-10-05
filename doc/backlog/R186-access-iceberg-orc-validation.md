@@ -7,10 +7,8 @@
 
 Deferred by user decision as an independent, unimplemented ORC follow-up.
 Resume when ORC support is selected for implementation; it is not a completion
-gate for the Parquet container/client workflows. The
-Parquet catalog path is complete. R189 owns container client and engine workflows
-and does not absorb this requirement; ORC does not block the container or client
-ecosystem acceptance. Selected-file validation continues to reject ORC explicitly
+gate for the completed Parquet container/client workflows. Those workflows do
+not absorb selected ORC validation. Selected-file validation continues to reject ORC explicitly
 rather than representing an unchecked file as validated.
 
 ## Problem

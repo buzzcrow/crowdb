@@ -3,14 +3,17 @@
 
 import { useState, useMemo } from 'react';
 import { Search, FolderTree, Monitor, Database, Boxes, HardDrive, Cog, Plus, Rocket, Building2 } from 'lucide-react';
-import { useDomain } from '../contexts/DomainContext';
+import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { Tree, TreeNode } from '../components/Tree';
 import { Button } from '../components/ui/Button';
 import { Domain, Rack, EnrichedStoreView, NodeStore, CrowdbKVServerView, NodeHealth, DiskdbInstanceInfo, CapacityUsageResponse, HardwareCapacitySummary } from '../types';
 import { crowdbKvServerByNodeId } from '../data/crowdbKvServers';
 import { DEFAULT_DC_ID, DEFAULT_DC_NAME } from '../data/defaultDatacenter';
-import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, serverLabel, storeLabel, toUiHealth, toUiReplicaRole, toUiRole } from '../utils/entityDisplay';
+import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, storeLabel, toUiHealth, toUiReplicaRole, toUiRole } from '../utils/entityDisplay';
 import type { NodeDiskGroups } from '../data/useCapacityTree';
+import type { ServerSummary } from '../api';
+import { isAuxiliaryKind, serviceInstanceLabel } from '../services/client';
+import { serviceOrder, type NodeServicePlan, type ServiceKind } from '../services/useNodeServicePlans';
 
 /** Fixed UI-only datacenter root wrapping the rack/store children. */
 function datacenterRoot(children: TreeNode[]): TreeNode {
@@ -25,6 +28,7 @@ function datacenterRoot(children: TreeNode[]): TreeNode {
 }
 
 interface SidebarProps {
+  allServers?: ServerSummary[];
   racks?: Rack[];
   servers?: CrowdbKVServerView[];
   stores?: EnrichedStoreView[];
@@ -37,6 +41,8 @@ interface SidebarProps {
   onNodeClick?: (node: TreeNode) => void;
   onNodeContextMenu?: (node: TreeNode, event: React.MouseEvent) => void;
   onAdd?: () => void;
+  onLoadNodeDisks?: (nodeId: number) => Promise<void>;
+  onLoadGroupDisks?: (nodeId: number, groupId: number) => Promise<void>;
   // Capacity view props (R77)
   diskdbInstances?: DiskdbInstanceInfo[];
   capacityUsage?: CapacityUsageResponse | null;
@@ -45,9 +51,12 @@ interface SidebarProps {
   diskdbNodeIds?: Set<number>;
   diskdbHealthById?: Map<number, string>;
   diskdbInstanceIdByNodeId?: Map<number, string>;
+  /** Durable deployment plans make queued and failed services visible before a process registers. */
+  servicePlans?: Record<number, NodeServicePlan>;
 }
 
 export function Sidebar({
+  allServers = [],
   racks = [],
   servers = [],
   stores = [],
@@ -60,6 +69,8 @@ export function Sidebar({
   onNodeClick,
   onNodeContextMenu,
   onAdd,
+  onLoadNodeDisks,
+  onLoadGroupDisks,
   diskdbInstances = [],
   capacityUsage = null,
   hardwareCapacity = null,
@@ -67,9 +78,13 @@ export function Sidebar({
   diskdbNodeIds,
   diskdbHealthById,
   diskdbInstanceIdByNodeId = new Map(),
+  servicePlans = {},
 }: SidebarProps) {
   const { domain } = useDomain();
-  const [filterQuery, setFilterQuery] = useState('');
+  const [expansions, setExpansions] = useState<Partial<Record<Domain, string[]>>>({});
+  const [filters, setFilters] = useState<Partial<Record<Domain, string>>>({});
+  const filterQuery = filters[domain] ?? '';
+  const setFilterQuery = (value: string) => setFilters(previous => ({ ...previous, [domain]: value }));
   const serverByNodeId = useMemo(() => crowdbKvServerByNodeId(servers), [servers]);
 
   const treeNodes = useMemo<TreeNode[]>(() => {
@@ -111,84 +126,54 @@ export function Sidebar({
           const diskdbInstance = diskdbInstances.find((instance) => instance.instance_id === diskdbInstanceId);
           const ownedDgIds = new Set(diskdbInstance?.owned_dg_ids || []);
           const children: TreeNode[] = [];
-
-          // Cluster projects services and DiskDB-owned disk groups.
-          const server = serverByNodeId.get(nodeId);
-          if (server) {
-            // Build Store > Group > Replica children for replicas hosted
-            // on this node, so users can see which logical entities each
-            // KV server owns.
-            const storeChildren: TreeNode[] = [];
-            for (const store of stores) {
-              const sid = String(store.store_id);
-              const groupChildren: TreeNode[] = [];
-              for (const group of store.groups || []) {
-                const gid = String(group.group_id);
-                const replicasOnNode = (group.replicas || []).filter((r) => String(r.node_id) === String(nodeId));
-                if (replicasOnNode.length === 0) continue;
-                groupChildren.push({
-                  id: `G-${nodeId}-${sid}-${gid}`,
-                  rawId: gid,
-                  label: groupLabel(gid),
-                  type: 'Group' as const,
-                  icon: <Boxes className="tw-h-4 tw-w-4 tw-text-muted" />,
-                  health: toUiHealth(group.state),
-                  parentIds: { node_id: nodeId, store_id: sid },
-                  children: replicasOnNode.map((r) => ({
-                    id: `LR-${nodeId}-${sid}-${gid}-${r.replica_id}`,
-                    rawId: String(r.replica_id),
-                    label: localReplicaLabel(String(r.replica_id)),
-                    type: 'Replica' as const,
-                    icon: <HardDrive className="tw-h-4 tw-w-4 tw-text-muted" />,
-                    role: toUiReplicaRole(String(r.role), String(r.state)),
-                    health: toUiHealth(String(r.state)),
-                    parentIds: { node_id: nodeId, store_id: sid, group_id: gid },
-                  })),
-                });
-              }
-              if (groupChildren.length > 0) {
-                storeChildren.push({
-                  id: `S-${nodeId}-${sid}`,
-                  rawId: sid,
-                  label: store.name ? `${storeLabel(sid)} (${store.name})` : storeLabel(sid),
-                  type: 'Store' as const,
-                  icon: <Database className="tw-h-4 tw-w-4 tw-text-muted" />,
-                  parentIds: { node_id: nodeId },
-                  children: groupChildren,
-                });
-              }
-            }
-            children.push({
-              id: `KV-${nodeId}`,
-              rawId: server.id,
-              label: serverLabel(String(nodeId)),
+          const nodeServices = allServers.filter(service => service.node_id === nodeId && service.id);
+          const actualByKind = new Map(nodeServices.map(service => [service.service_type, service]));
+          const plan = servicePlans[nodeId];
+          const kinds: ServiceKind[] = plan ? [...serviceOrder] : [];
+          if (!plan) {
+            for (const service of nodeServices) if (isAuxiliaryKind(service.service_type)) kinds.push(service.service_type);
+            if (serverByNodeId.has(nodeId)) kinds.push('paxos-kv');
+            if (diskdbNodeIds?.has(nodeId)) kinds.push('diskdb');
+          }
+          for (const kind of [...new Set(kinds)]) {
+            const service = actualByKind.get(kind);
+            const step = plan?.[kind];
+            const rawId = service?.id ?? `${kind}-${nodeId}`;
+            const health = service ? toUiHealth(service.health)
+              : step?.state === 'failed' ? 'Failed' : step?.state === 'warning' ? 'Healthy' : 'Unknown';
+            const childrenEntry: TreeNode = {
+              id: kind === 'diskdb' ? `DDB-${nodeId}` : `SERVICE-${rawId}`,
+              rawId,
+              label: serviceInstanceLabel(kind, rawId),
               type: 'Server',
+              serviceType: kind,
               icon: <Cog className="tw-h-4 tw-w-4 tw-text-muted" />,
-              health: toUiHealth(server.process.health),
-              serviceType: 'kv',
+              health,
+              title: step?.detail ? `${serviceInstanceLabel(kind, rawId)} · ${step.detail}` : undefined,
               parentIds: { rack_id: rack.id, node_id: nodeId },
-              children: storeChildren.length > 0 ? storeChildren : undefined,
-            });
+            };
+            if (kind === 'diskdb') {
+              childrenEntry.expandable = !!onLoadNodeDisks;
+              childrenEntry.onExpand = () => { void onLoadNodeDisks?.(nodeId); };
+              childrenEntry.children = [];
+            }
+            children.push(childrenEntry);
           }
 
-          if (diskdbNodeIds?.has(nodeId)) {
+          // Cluster projects services and DiskDB-owned disk groups.
+          const diskdbEntry = children.find(child => child.serviceType === 'diskdb');
+          if (diskdbEntry && diskdbNodeIds?.has(nodeId)) {
             const diskGroups = Object.values(nodeDiskGroups).flatMap((entry) =>
               entry.diskGroups
                 .filter((dg) => ownedDgIds.has(dg.id))
                 .map((dg) => ({ dg, disks: entry.disksByDg[dg.id] || [] })),
             );
-            children.push({
-              id: `DDB-${nodeId}`,
-              rawId: `${nodeId}-ddb`,
-              label: `DDB-${nodeId}`,
-              type: 'Server',
-              icon: <Cog className="tw-h-4 tw-w-4 tw-text-muted" />,
-              health: toUiHealth(diskdbHealthById?.get(nodeId)),
-              serviceType: 'diskdb',
-              parentIds: { rack_id: rack.id, node_id: nodeId },
-              children: diskGroups.map(({ dg, disks }) => {
+            diskdbEntry.health = toUiHealth(diskdbHealthById?.get(nodeId));
+            diskdbEntry.children = diskGroups.map(({ dg, disks }) => {
                 const dgStatus = dgStatusByKey.get(`${dg.rack_id}:${dg.node_id}:${dg.id}`);
                 return {
+                  expandable: !!onLoadGroupDisks,
+                  onExpand: () => { void onLoadGroupDisks?.(dg.node_id, dg.id); },
                   id: `CL-DG-${dg.node_id}-${dg.id}`,
                   rawId: dg.id,
                   label: dg.name ? `${dg.name} (DG-${dg.id})` : `DG-${dg.id}`,
@@ -206,8 +191,7 @@ export function Sidebar({
                     parentIds: { rack_id: dg.rack_id, node_id: dg.node_id, disk_group_id: dg.id, disk_id: d.disk_id },
                   })),
                 };
-              }),
-            });
+              });
           }
 
           return {
@@ -255,7 +239,7 @@ export function Sidebar({
       })))]
     }
 
-    if (domain === Domain.Chunk) {
+    if (domain === Domain.Capacity) {
       // Chunk domain: datacenter → rack → node → physical disk groups/disks
       // plus a separate DiskDB service item.
       if (racks.length === 0) return [];
@@ -298,6 +282,8 @@ export function Sidebar({
             const disks = ndg?.disksByDg[dg.id] || [];
             const dgStatus = dgStatusByKey.get(`${rack.id}:${nodeId}:${dg.id}`);
             children.push({
+              expandable: !!onLoadGroupDisks,
+              onExpand: () => { void onLoadGroupDisks?.(nodeId, dg.id); },
               id: `CH-DG-${nodeId}-${dg.id}`,
               rawId: dg.id,
               label: dg.name ? `${dg.name} (DG-${dg.id})` : `DG-${dg.id}`,
@@ -318,6 +304,8 @@ export function Sidebar({
           }
 
           return {
+            expandable: !!onLoadNodeDisks,
+            onExpand: () => { void onLoadNodeDisks?.(nodeId); },
             id: `N-${nodeId}`,
             rawId: nodeId,
             label: nodeLabel(String(nodeId)),
@@ -366,7 +354,7 @@ export function Sidebar({
         }),
       };
     }))];
-  }, [nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId]);
+  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans]);
 
   const filtered = useMemo(() => {
     if (!filterQuery.trim()) return treeNodes;
@@ -384,13 +372,21 @@ export function Sidebar({
     const ids: string[] = [];
     const collect = (ns: TreeNode[]) => {
       for (const n of ns) {
-        ids.push(n.id);
+        if (n.type === 'Datacenter' || n.type === 'Rack' || (domain !== Domain.Capacity && n.type === 'Node') || domain === Domain.KV) ids.push(n.id);
         if (n.children) collect(n.children);
       }
     };
     collect(filtered);
     return ids;
-  }, [filtered]);
+  }, [filtered, domain]);
+
+  useNavigationSnapshot(domain, 'shared-sidebar', () => {
+    const source = domain; const expanded = [...(expansions[source] ?? expandedIds)]; const filter = filterQuery;
+    return () => {
+      setExpansions(previous => ({ ...previous, [source]: expanded }));
+      setFilters(previous => ({ ...previous, [source]: filter }));
+    };
+  });
 
   return (
     <aside aria-label="Cluster tree sidebar" className="tw-h-[calc(100vh-3.5rem)] tw-mt-14 tw-border-r tw-border-border tw-bg-bg tw-flex tw-flex-col tw-overflow-hidden tw-fixed tw-left-0 tw-top-0" style={{ width }}>
@@ -411,7 +407,7 @@ export function Sidebar({
         <h3 className="tw-text-xs tw-font-semibold tw-text-muted tw-uppercase tw-tracking-wider">
           {domain === Domain.Cluster ? 'Cluster' : domain === Domain.KV ? 'KV' : 'Capacity'}
         </h3>
-        {!readonly && onAdd && domain !== Domain.Chunk && (
+        {!readonly && onAdd && domain !== Domain.Capacity && (
           domain === Domain.KV && !clusterInitialized ? (
             <Button
               variant="secondary"
@@ -447,7 +443,8 @@ export function Sidebar({
         <Tree
           key={domain}
           nodes={filtered}
-          defaultExpandedIds={expandedIds}
+          expandedIds={expansions[domain] ?? expandedIds}
+          onExpansionChange={ids => setExpansions(previous => ({ ...previous, [domain]: ids }))}
           onNodeClick={onNodeClick}
           onNodeContextMenu={onNodeContextMenu}
         />
@@ -457,7 +454,7 @@ export function Sidebar({
             ? 'No matching items'
             : domain === Domain.Cluster
               ? 'No racks registered'
-              : domain === Domain.Chunk
+              : domain === Domain.Capacity
                 ? 'No racks registered'
                 : clusterInitialized
                   ? 'No stores yet'

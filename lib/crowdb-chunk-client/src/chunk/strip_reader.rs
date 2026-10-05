@@ -101,7 +101,11 @@ impl StripReader {
             return Ok((Bytes::new(), Vec::new(), Vec::new()));
         }
         let sealed_bytes = kib_to_bytes(strip.sealed_length).map_err(|error| (error, Vec::new()))?;
-        let available = sealed_bytes.max(durable_bytes);
+        let available = if durable_bytes == 0 {
+            sealed_bytes
+        } else {
+            durable_bytes
+        };
         let end = offset.checked_add(length).ok_or_else(|| {
             (
                 ReadError::InvalidLocations("strip read range overflows".into()),
@@ -121,7 +125,7 @@ impl StripReader {
             Some(Strip::MirrorStrip(mirror)) => {
                 self.read_mirror(strip, &mirror.segments, offset, length).await
             }
-            Some(Strip::EcStrip(ec)) => self.read_ec(strip, revision, ec, offset, length).await,
+            Some(Strip::EcStrip(ec)) => self.read_ec(strip, revision, ec, available, offset, length).await,
             None => Err((
                 ReadError::InvalidLocations(format!("strip {} has no body", strip.strip_sequence)),
                 Vec::new(),
@@ -169,11 +173,13 @@ impl StripReader {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn read_ec(
         &self,
         strip: &ChunkStrip,
         revision: u64,
         ec: &crowdb_protocol::chunkdb::rpc::EcStrip,
+        sealed_bytes: u64,
         offset: u64,
         length: u64,
     ) -> Result<(Bytes, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
@@ -256,6 +262,7 @@ impl StripReader {
                         scheme,
                         unit_bytes,
                         shard_bytes,
+                        sealed_bytes,
                         shard_index,
                         local_start,
                         read_len,
@@ -284,6 +291,7 @@ impl StripReader {
         scheme: EcScheme,
         unit_bytes: u64,
         shard_bytes: u64,
+        sealed_bytes: u64,
         target: usize,
         offset: u64,
         length: u32,
@@ -311,6 +319,7 @@ impl StripReader {
                     scheme,
                     unit_bytes,
                     shard_bytes,
+                    sealed_bytes,
                     target,
                     offset + u64::from(consumed),
                     part_len,
@@ -335,6 +344,7 @@ impl StripReader {
         scheme: EcScheme,
         unit_bytes: u64,
         shard_bytes: u64,
+        sealed_bytes: u64,
         target: usize,
         offset: u64,
         length: u32,
@@ -366,7 +376,6 @@ impl StripReader {
                     Vec::new(),
                 )
             })?;
-        let sealed_bytes = kib_to_bytes(strip.sealed_length).map_err(|error| (error, Vec::new()))?;
         let mut shards = vec![None; scheme.total_blocks()];
         let mut reads = JoinSet::new();
         let mut candidates = Vec::with_capacity(segments.len());
@@ -391,7 +400,7 @@ impl StripReader {
                         .saturating_sub(index as u64 * shard_bytes)
                         .min(shard_bytes)
                 } else {
-                    shard_bytes
+                    sealed_bytes.min(shard_bytes)
                 };
                 if offset >= actual {
                     shards[index] = Some(vec![0; length as usize]);

@@ -110,6 +110,7 @@ pub struct ct_chunk_rpc_transport_options {
     pub completion_capacity: u32,
     pub mirror_copies: u32,
     pub chunkdb_resolver: ct_chunk_rpc_resolver,
+    pub disk_resolver: ct_chunk_rpc_resolver,
 }
 
 #[repr(C)]
@@ -319,6 +320,7 @@ extern "C" {
         store: *const ct_page_store,
         out: *mut ct_chunk_page_store_stats,
     ) -> c_int;
+    pub fn ct_chunk_page_store_estimated_bytes(store: *const ct_page_store, out: *mut u64) -> c_int;
     pub fn ct_chunk_page_store_set_wal_replay_offset(store: *mut ct_page_store, offset: u64) -> c_int;
     pub fn ct_chunk_page_store_get_wal_replay_offset(store: *const ct_page_store, offset: *mut u64) -> c_int;
     pub fn ct_chunk_page_store_get_manifest_generation(
@@ -380,6 +382,18 @@ extern "C" {
     pub fn ct_clear_io_error(t: *mut ct_tree);
     pub fn ct_clear(t: *mut ct_tree) -> c_int;
     pub fn ct_get_stats(t: *const ct_tree, out: *mut ct_stats);
+    pub fn ct_approximate_split_key(t: *const ct_tree, found: *mut i32, key: *mut ct_buf) -> c_int;
+    pub fn ct_inspect_page(
+        t: *const ct_tree,
+        path: *const u32,
+        depth: usize,
+        expected_version: u64,
+        version: *mut u64,
+        root: *mut u64,
+        page: *mut u64,
+        deltas: *mut u32,
+        frame: *mut ct_buf,
+    ) -> c_int;
     pub fn ct_apply_put(
         t: *mut ct_tree,
         slot: u64,

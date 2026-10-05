@@ -234,11 +234,8 @@ TEST_F(CallerLoopbackTest, CallAndReceiveResponse)
         delete frame;
     });
 
-    // Client connection — we'll send via raw write (bypassing the transport
-    // send path, since we're testing RpcClient's correlation logic, not
-    // the send path).
-    auto client_conn              = std::make_shared<Connection>(100, "client", nullptr);
-    client_conn->transport_handle = static_cast<uint64_t>(client_fd);
+    // Use a live transport connection; responses below drive correlation explicitly.
+    auto client_conn = transport.create_connection(client_fd, "client");
 
     CallState state;
     RpcClient caller;
@@ -255,9 +252,7 @@ TEST_F(CallerLoopbackTest, CallAndReceiveResponse)
     uint64_t req_id = id_gen_.next();
     bool     ok     = caller.send(&transport, client_conn.get(), req_id, ctrl, nullptr, 42, call_recv_cb, &state);
 
-    // The request didn't actually go through the transport (client_conn
-    // isn't registered with a worker), so we manually simulate the response
-    // by calling on_response.
+    // Drive the response explicitly while the server consumes the request.
     EXPECT_TRUE(ok);
 
     // Build a fake response frame.
@@ -280,7 +275,6 @@ TEST_F(CallerLoopbackTest, CallAndReceiveResponse)
     // No crash, no double-callback.
 
     transport.stop();
-    ::close(client_fd);
 }
 
 TEST_F(CallerLoopbackTest, FailAllOnClose)
@@ -344,8 +338,7 @@ TEST_F(CallerLoopbackTest, SlabFallbackToMapWhenSlotOccupied)
     // Server: discard requests (we manually drive responses via on_response).
     server_conn->set_on_frame([&](Frame *frame, Connection * /*conn*/) { delete frame; });
 
-    auto client_conn              = std::make_shared<Connection>(100, "client", nullptr);
-    client_conn->transport_handle = static_cast<uint64_t>(client_fd);
+    auto client_conn = transport.create_connection(client_fd, "client");
 
     RpcClient caller;
     caller.set_completion_pool_size(4); // pool_size=4, mask=3
@@ -398,7 +391,6 @@ TEST_F(CallerLoopbackTest, SlabFallbackToMapWhenSlotOccupied)
     EXPECT_EQ(state2.last_status.load(std::memory_order_relaxed), CROWDB_RPC_OK);
 
     transport.stop();
-    ::close(client_fd);
 }
 
 TEST_F(CallerLoopbackTest, SlabOnlyRejectsCollisionWithoutMapFallback)
@@ -422,8 +414,7 @@ TEST_F(CallerLoopbackTest, SlabOnlyRejectsCollisionWithoutMapFallback)
 
     auto server_conn = transport.create_connection(server_fd, "server");
     server_conn->set_on_frame([&](Frame *frame, Connection *) { delete frame; });
-    auto client_conn              = std::make_shared<Connection>(100, "client", nullptr);
-    client_conn->transport_handle = static_cast<uint64_t>(client_fd);
+    auto client_conn = transport.create_connection(client_fd, "client");
 
     RpcClient caller;
     caller.set_completion_pool_size(4);
@@ -452,7 +443,6 @@ TEST_F(CallerLoopbackTest, SlabOnlyRejectsCollisionWithoutMapFallback)
     EXPECT_EQ(caller.pending_count(), 0U);
 
     transport.stop();
-    ::close(client_fd);
 }
 
 // Test: reaper times out a slab slot that never gets a response.
@@ -481,8 +471,7 @@ TEST_F(CallerLoopbackTest, ReaperTimesOutSlabSlot)
     auto server_conn = transport.create_connection(server_fd, "server");
     server_conn->set_on_frame([&](Frame *frame, Connection * /*conn*/) { delete frame; });
 
-    auto client_conn              = std::make_shared<Connection>(100, "client", nullptr);
-    client_conn->transport_handle = static_cast<uint64_t>(client_fd);
+    auto client_conn = transport.create_connection(client_fd, "client");
 
     RpcClient caller;
     caller.set_completion_pool_size(4);
@@ -528,7 +517,6 @@ TEST_F(CallerLoopbackTest, ReaperTimesOutSlabSlot)
 
     caller.stop_reaper();
     transport.stop();
-    ::close(client_fd);
 }
 
 // Test: reaper times out a map-fallback entry (slab full → map).
@@ -556,8 +544,7 @@ TEST_F(CallerLoopbackTest, ReaperTimesOutMapFallback)
     auto server_conn = transport.create_connection(server_fd, "server");
     server_conn->set_on_frame([&](Frame *frame, Connection * /*conn*/) { delete frame; });
 
-    auto client_conn              = std::make_shared<Connection>(100, "client", nullptr);
-    client_conn->transport_handle = static_cast<uint64_t>(client_fd);
+    auto client_conn = transport.create_connection(client_fd, "client");
 
     RpcClient caller;
     caller.set_completion_pool_size(4);
@@ -601,5 +588,4 @@ TEST_F(CallerLoopbackTest, ReaperTimesOutMapFallback)
 
     caller.stop_reaper();
     transport.stop();
-    ::close(client_fd);
 }

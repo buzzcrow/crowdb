@@ -455,6 +455,13 @@ impl PageStore {
         })
     }
 
+    /// Estimates retained pack bytes from cached layout metadata without I/O.
+    pub fn chunk_estimated_bytes(&self) -> Result<u64, CtError> {
+        let mut bytes = 0;
+        check(unsafe { sys::ct_chunk_page_store_estimated_bytes(self.ptr.as_ptr(), &mut bytes) })?;
+        Ok(bytes)
+    }
+
     pub fn chunk_stats(&self) -> Result<ChunkPageStoreStats, CtError> {
         let mut raw = sys::ct_chunk_page_store_stats::default();
         check(unsafe { sys::ct_chunk_page_store_get_stats(self.ptr.as_ptr(), &mut raw) })?;

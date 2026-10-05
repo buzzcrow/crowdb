@@ -100,7 +100,7 @@ export function nodeLabel(id: string): string {
 }
 
 export function serverLabel(nodeId: string): string {
-  return prefixedId('KV', nodeId);
+  return prefixedId('PKV', nodeId);
 }
 
 export function storeLabel(id: string | number): string {

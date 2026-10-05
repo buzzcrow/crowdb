@@ -267,7 +267,7 @@ impl<'a> PhysicalBuilder<'a> {
             .cfg
             .servers
             .iter()
-            .find(|entry| entry.node_id == Some(node.id) && entry.service_type == ServiceType::Kv)
+            .find(|entry| entry.node_id == Some(node.id) && entry.service_type == ServiceType::PaxosKv)
             .map(|entry| {
                 let has_pid = self.pids.contains_key(&node.id);
                 Self::build_server_process(entry, rec, has_pid)

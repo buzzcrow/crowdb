@@ -53,6 +53,16 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/dev/hyper_fork.md`      | Hyper fork branches, submodule, build, sync, validation, and recovery. |
 | `tools/README.md`            | Tool directories, Pixi task entry points, CI checks, and suite timing. |
 
+## Component Acceptance
+
+| Doc                                                         | When to read                                          |
+| ----------------------------------------------------------- | ----------------------------------------------------- |
+| `app/crowdb-access-server/tests/README.md`                  | Access gates, SDK commands and latency observations.  |
+| `app/crowdb-web/ui/e2e/README.md`                           | Owned console/browser acceptance and timing.          |
+| `container/single-node-container/README.md`                 | Container build, publication and tested client setup. |
+| `container/single-node-container/tests/ecosystem/README.md` | Manual pinned client/engine matrix and exclusions.    |
+
+
 ## Project Files (repo root)
 
 | File                 | When to read                                |
@@ -89,7 +99,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/tree/design-crowdb-tree-engine-flush-flow.md`                     | L0→L1 flush path and bottlenecks.                       |
 | `lib/crowdb-tree/bench/README.md`                                            | MemTable handoff benchmark results and reproduction.    |
 | `doc/design/tree/design-crowdb-tree-engine-snapshot-flow.md`                  | Snapshot persist path and bottlenecks.                  |
-| `doc/design/console/design-crowdb-console-ui.md`                              | Web UI shell, canvas, inspector, KV operator.           |
+| `doc/design/console/design-crowdb-console-ui.md`                              | UI domains, operator flow, Chunk and Chunk-KV inspection. |
 | `doc/design/protocol/design-crowdb-protocol-key.md`                           | Binary/text key encoding and evolution.                 |
 | `doc/design/protocol/design-crowdb-protocol-types.md`                         | Wire types, ID aliases, schemas, re-exports.            |
 | `doc/design/chunkdb/design-crowdb-chunkdb-mirror-to-ec.md`                    | Mirror-to-EC tasks, leases, publication, recovery.      |

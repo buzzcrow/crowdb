@@ -15,6 +15,7 @@ interface UseLogicalTreeOptions {
   enabled?: boolean;
   /** Recursive depth to fetch */
   recursive?: number;
+  managed?: boolean;
 }
 
 interface UseLogicalTreeResult {
@@ -46,6 +47,7 @@ export function useLogicalTree({
   pollIntervalInactive = 30000,
   enabled = true,
   recursive = 3,
+  managed = false,
 }: UseLogicalTreeOptions = {}): UseLogicalTreeResult {
   const [stores, setStores] = useState<EnrichedStoreView[]>([]);
   const [groups, setGroups] = useState<GroupView[]>([]);
@@ -74,6 +76,20 @@ export function useLogicalTree({
       // Fetch stores with recursive depth
       const storesData = await listStores(recursive);
       const sourceStores = Array.isArray(storesData) ? storesData : [];
+
+      // Group identities come from the authoritative catalog. Show them before
+      // optional replica observations: one stopped member must not hide healthy
+      // groups or block the data operator until every health probe completes.
+      setStores(previous => sourceStores.map(store => ({
+        ...store,
+        groups: (store.groups ?? []).map(group => {
+          const known = previous.find(entry => entry.store_id === store.store_id)
+            ?.groups.find(entry => entry.group_id === group.group_id);
+          return known ?? { ...group, store_id: store.store_id,
+            replicas: [], state: GroupHealth.Unknown };
+        }),
+      })));
+      setLoading(false);
 
       // Build flat lists of groups and replicas
       const allGroups: GroupView[] = [];
@@ -143,7 +159,7 @@ export function useLogicalTree({
       hasLoadedRef.current = true;
       setLoading(false);
     }
-  }, [enabled, recursive]);
+  }, [enabled, recursive, managed]);
 
   // Initial fetch
   useEffect(() => {

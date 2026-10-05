@@ -325,7 +325,7 @@ impl IcebergHttpService {
                     .ok_or_else(super::table_read::unsupported)?;
                 Box::pin(writes.execute(root.context, &authority, principal, request)).await
             }
-            Route::TableList | Route::TableLoad | Route::TableExists => {
+            Route::TableInspect | Route::TableList | Route::TableLoad | Route::TableExists => {
                 self.tables
                     .as_ref()
                     .ok_or_else(super::table_read::unsupported)?

@@ -1,7 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useMemo, lazy, Suspense, type MutableRefObject } from 'react';
+import { observeCapacity } from '../panels/capacity/observation';
+import { useState, useMemo, type MutableRefObject } from 'react';
 import { X, Info, ListChecks, ExternalLink } from 'lucide-react';
 import { useSelection, SelectedEntity } from '../contexts/SelectionContext';
 import { useDomain } from '../contexts/DomainContext';
@@ -10,10 +11,11 @@ import { Domain, Node, Rack, EnrichedStoreView, CrowdbKVServerView, CapacityUsag
 import { DEFAULT_DC_NAME } from '../data/defaultDatacenter';
 import { ActivityLog } from '../panels/ActivityLog';
 import { groupLabel, localReplicaLabel, nodeLabel, rackLabel, serverLabel, storeLabel } from '../utils/entityDisplay';
-import { useMetricsPoll, buildMetricsFetcher } from '../utils/useMetricsPoll';
-import { MetricsRegion, ElectionStateRegion, ReadStateRegion } from '../components/MetricsRegion';
+import { ElectionStateRegion, ReadStateRegion } from '../components/ConsensusState';
+import type { ServerSummary } from '../api';
+import { isAuxiliaryKind, serviceDisplayNames } from '../services/client';
+import { ServiceProperties } from '../services/ServiceProperties';
 
-const KvPanel = lazy(() => import('../panels/KvPanel').then((m) => ({ default: m.KvPanel })));
 
 type TabId = 'details' | 'activity';
 
@@ -46,6 +48,7 @@ function displayEntityId(entity: SelectedEntity): string {
 }
 
 interface InspectorProps {
+  allServers?: ServerSummary[];
   readonly?: boolean;
   modules?: Record<string, boolean>;
   nodes?: Node[];
@@ -63,7 +66,7 @@ interface InspectorProps {
  * Right-side inspector. Reacts to SelectionContext: Details + Activity for any
  * selection.
  */
-export function Inspector({ readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, pendingSelectionRef }: InspectorProps) {
+export function Inspector({ allServers = [], readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, pendingSelectionRef }: InspectorProps) {
   const { selectedEntity, clearSelection, selectEntity } = useSelection();
   const { setDomain } = useDomain();
   const [activeTab, setActiveTab] = useState<TabId>('details');
@@ -71,7 +74,7 @@ export function Inspector({ readonly, modules: _modules, nodes = [], racks = [],
   if (!selectedEntity) return null;
 
   const displayType = selectedEntity.type === 'Server'
-    ? (selectedEntity.serviceType === 'diskdb' ? 'DiskDB' : 'KV')
+    ? (serviceDisplayNames[selectedEntity.serviceType as keyof typeof serviceDisplayNames] ?? selectedEntity.serviceType ?? 'Server')
     : selectedEntity.type;
   const displayName = selectedEntity.name || displayEntityId(selectedEntity);
 
@@ -100,7 +103,9 @@ export function Inspector({ readonly, modules: _modules, nodes = [], racks = [],
 
       <div className="tw-flex-1 tw-overflow-y-auto">
         {activeTab === 'details' && (
-          <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} />
+          selectedEntity.type === 'Server' && isAuxiliaryKind(selectedEntity.serviceType)
+            ? <ServiceProperties service={allServers.find(service => service.id === selectedEntity.id)} />
+            : <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} />
         )}
         {activeTab === 'activity' && <ActivityLog />}
       </div>
@@ -153,7 +158,7 @@ interface DetailsTabProps {
   pendingSelectionRef?: MutableRefObject<SelectedEntity | null>;
 }
 
-function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hardwareCapacity, diskdbInstances, selectEntity, setDomain, readonly, pendingSelectionRef }: DetailsTabProps) {
+function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hardwareCapacity, diskdbInstances, selectEntity, setDomain, pendingSelectionRef }: DetailsTabProps) {
   const displayType = entity.type === 'Server'
     ? (entity.serviceType === 'diskdb' ? 'DiskDB' : 'KV')
     : entity.type;
@@ -209,43 +214,13 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
     // (rack/node/datacenter capacity is a Capacity-view concept).
     if (entity.domain === Domain.Cluster && entity.type !== 'DiskGroup' && entity.type !== 'Disk') return null;
 
-    let dgs = hwDgs;
-    if (entity.type === 'Datacenter') {
-      dgs = hwDgs;
-    } else if (entity.type === 'Rack') {
-      const rackId = Number(entity.id);
-      dgs = hwDgs.filter((g) => g.rack_id === rackId);
-    } else if (entity.type === 'Node') {
-      const nodeId = Number(entity.id);
-      dgs = hwDgs.filter((g) => g.node_id === nodeId);
-    } else if (entity.type === 'DiskGroup') {
-      const dgId = Number(entity.parentIds?.disk_group_id ?? entity.id);
-      dgs = hwDgs.filter((g) => g.disk_group_id === dgId);
-    } else if (entity.type === 'Disk') {
-      const dgId = Number(entity.parentIds?.disk_group_id);
-      const diskId = String(entity.parentIds?.disk_id ?? entity.id);
-      const dg = hwDgs.find((g) => g.disk_group_id === dgId);
-      const disk = dg?.disks.find((d) => d.disk_id === diskId);
-      if (disk) {
-        const usageDg = capacityUsage?.disk_groups.find((g) => g.disk_group_id === dgId);
-        const usageDisk = usageDg?.disks.find((d) => d.disk_id === diskId);
-        return {
-          capacity: disk.capacity_bytes,
-          busy: usageDisk?.busy_bytes ?? 0,
-          free: usageDisk?.free_bytes ?? disk.capacity_bytes,
-        };
-      }
-      return null;
-    } else {
-      return null;
-    }
-    const capacity = dgs.reduce((sum, g) => sum + g.capacity_bytes, 0);
-    const usageDgs = capacityUsage?.disk_groups || [];
-    const busy = dgs.reduce((sum, g) => {
-      const u = usageDgs.find((ud) => ud.disk_group_id === g.disk_group_id);
-      return sum + (u?.busy_bytes ?? 0);
-    }, 0);
-    return { capacity, busy, free: capacity - busy };
+    if (!['Datacenter', 'Rack', 'Node', 'DiskGroup', 'Disk'].includes(entity.type)) return null;
+    return observeCapacity(hardwareCapacity, capacityUsage, {
+      rackId: entity.type === 'Rack' ? Number(entity.id) : undefined,
+      nodeId: entity.type === 'Node' ? Number(entity.id) : undefined,
+      dgId: entity.type === 'DiskGroup' || entity.type === 'Disk' ? Number(entity.parentIds?.disk_group_id ?? entity.id) : undefined,
+      diskId: entity.type === 'Disk' ? String(entity.parentIds?.disk_id ?? entity.id) : undefined,
+    });
   }, [entity.type, entity.domain, entity.id, entity.parentIds, hardwareCapacity, capacityUsage]);
 
   // Disk list for the selected DiskGroup (from hardwareCapacity sysdata).
@@ -265,20 +240,6 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
     return owner?.instance_id;
   }, [entity.type, entity.parentIds, entity.id, diskdbInstances]);
 
-  // Metrics poll: build a fetcher for the current entity type.
-  const parentStoreId = entity.parentIds?.store_id != null ? String(entity.parentIds.store_id) : undefined;
-  const parentGroupId = entity.parentIds?.group_id != null ? String(entity.parentIds.group_id) : undefined;
-  const metricsFetcherInfo = buildMetricsFetcher(
-    entity.type,
-    entity.id,
-    parentStoreId,
-    parentGroupId,
-  );
-  const metricsData = useMetricsPoll(
-    metricsFetcherInfo?.fetcher ?? null,
-    metricsFetcherInfo?.key ?? 'none',
-  );
-
   const fields: { label: string; value: string }[] = [
     { label: 'Type', value: displayType },
     { label: 'ID', value: displayId },
@@ -286,9 +247,9 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
     ...(entity.type === 'Datacenter' ? [{ label: 'Rack Count', value: String(racks.length) }] : []),
     ...(capacityTotals
       ? [
-          { label: 'Total Capacity', value: formatBytes(capacityTotals.capacity) },
-          { label: 'Used', value: formatBytes(capacityTotals.busy) },
-          { label: 'Free', value: formatBytes(capacityTotals.free) },
+          { label: 'Total Capacity', value: capacityTotals.capacity === null ? 'Unknown' : formatBytes(capacityTotals.capacity) },
+          { label: 'Used', value: capacityTotals.busy === null ? 'Unknown' : formatBytes(capacityTotals.busy) },
+          { label: 'Free', value: capacityTotals.free === null ? 'Unknown' : formatBytes(capacityTotals.free) },
         ]
       : []),
     ...(dgOwnerInstanceId !== undefined
@@ -377,16 +338,8 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
 
       {electionState && <ElectionStateRegion state={electionState} />}
       {readState && <ReadStateRegion state={readState} />}
-      <MetricsRegion data={metricsData} />
 
-      {entity.type === 'Group' && parentStoreId && (
-        <div className="tw-space-y-1">
-          <div className="tw-text-[10px] tw-uppercase tw-tracking-wider tw-text-muted">KV</div>
-          <Suspense fallback={null}>
-            <KvPanel storeId={parentStoreId} groupId={entity.id} readonly={readonly} />
-          </Suspense>
-        </div>
-      )}
+
     </div>
   );
 }

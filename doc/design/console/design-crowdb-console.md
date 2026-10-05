@@ -220,8 +220,16 @@ Identity is `(store_id[, group_id[, replica_id]])`.
 ### 4.1 Separated local configuration
 
 `WebProcessConfig` contains the listener, Group 0 management seeds, UI and log
-paths, deployment mode, and (for Docker) the monitor status path. Production
-Web requires this versioned input. Docker rejects a launch registry.
+paths, deployment mode, and (for Docker) the monitor status path. Configured
+managed Web requires this versioned input. Docker rejects a launch registry.
+
+Standalone Web starts without `--config` in the persistent console `default`
+namespace. Its private, atomically replaced `config.json` retains pre-bootstrap
+hardware, process launch inputs, and a post-bootstrap topology cache. Web restart
+recovers KV processes first, discovers Group 0, reloads its confirmed records,
+and then recovers auxiliary services from their recorded launch inputs. The
+cache never overrides initialized Group 0 topology. A malformed file or failed
+initialized authority recovery reports an error without resetting operator data.
 
 `LaunchRegistry` contains bare-metal process policy: service, node, host,
 binary, service config, workspace and auto-start setting. Runtime PID and
@@ -230,8 +238,9 @@ reference IDs are read from Group 0 and resolved against each console's local
 secret store. Group 0 never contains private keys, passwords, PIDs, images or
 container IDs.
 
-The `ConsoleConfig` struct is an ephemeral operation input for bootstrap and
-local development. It has no file parser or writer. A sealed `BootstrapIntent`
+The `ConsoleConfig` struct is an operation input for bootstrap and local
+development; standalone Web persists it locally until bootstrap and retains
+launch inputs for restart. A sealed `BootstrapIntent`
 retains pre-Group-0 identity across interruption and is deleted only after all
 committed records are verified.
 
@@ -315,7 +324,7 @@ child recovery and status to `crowdb-monitor`.
 
 ### 6.1 Design Rules
 
-Production Web uses the managed router and a versioned process configuration.
+Configured managed Web uses the managed router and a versioned process configuration.
 `/api/preview` combines confirmed Group 0 records, live registration, and the
 mode-specific process view. `/api/stores/...` provides authenticated logical
 mutations through shared operations in both modes. Bare-metal Web additionally
@@ -325,7 +334,9 @@ hardware or process mutation routes. Unknown managed API routes report
 unavailable rather than entering an in-memory topology path.
 
 A mutation is accepted only after the required node-side steps and Group 0
-publication are confirmed. Authenticated management routes use a bearer token.
+publication are confirmed. The Console assumes a root operator until UI login is introduced. Container
+mode still rejects topology, deployment, and disk-management writes at the
+backend; logical and Access operations use server-held protocol credentials.
 The SPA calls the Axum backend; it does not talk directly to KV management
 endpoints.
 
@@ -333,8 +344,9 @@ endpoints.
 
 The in-process Web router and `--test-mode` retain fixture orchestration for
 browser and integration tests. Their recursive physical views and monitor cache
-help exercise the UI, but are never selected by a production Web process.
-They do not persist a topology file or provide a fallback for managed requests.
+help exercise the UI. Standalone Web uses these resource APIs with persistent
+bootstrap/recovery inputs; `--test-mode` uses isolated ephemeral state. Neither
+provides fallback topology for configured managed requests.
 
 ### 6.3 Orchestration semantics
 

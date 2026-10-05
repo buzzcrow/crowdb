@@ -33,7 +33,7 @@ export function ScannerPanel({ scanStatus, readonly, actionLoading, onScan }: Sc
           <button
             onClick={onScan}
             disabled={actionLoading === 'scan-all' || inProgress}
-            className="tw-flex tw-items-center tw-gap-1 tw-px-3 tw-py-1 tw-text-xs tw-bg-accent tw-text-white tw-rounded-md disabled:tw-opacity-50"
+            className="tw-flex tw-items-center tw-gap-1 tw-px-3 tw-py-1 tw-text-xs tw-bg-[#365e78] tw-text-white hover:tw-bg-[#406d89] tw-rounded-md disabled:tw-opacity-50"
           >
             {actionLoading === 'scan-all' || inProgress ? (
               <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" />
@@ -44,7 +44,8 @@ export function ScannerPanel({ scanStatus, readonly, actionLoading, onScan }: Sc
           </button>
         )}
       </div>
-      {!hasRun && !inProgress && (
+      {!scanStatus && <p className="tw-text-xs tw-text-muted">Scan status unavailable.</p>}
+      {scanStatus && !hasRun && !inProgress && (
         <div className="tw-text-xs tw-text-muted">No scan has been run yet.</div>
       )}
       {inProgress && (

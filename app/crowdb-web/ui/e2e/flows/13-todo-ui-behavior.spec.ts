@@ -26,6 +26,30 @@ const DISK_GROUP_ID = 7710;
 const DISK_ID = '0123456789abcdef-0123456789abcdef';
 
 test.describe('todo-ui behavior · service deployment and view ownership', () => {
+  test('fixed-slot warning stays healthy and persists across reload', async ({ page, baseURL }) => {
+    await resetAll(baseURL!);
+    await createRack(baseURL!, { id: 705, name: 'Slot warning' });
+    const api = await apiContext(baseURL!);
+    try {
+      const node = await api.post('/api/nodes', { data: { id: 705, rack_id: 705, host: '127.0.0.1', ssh: { type: 'KeyDefault', user: '' } } });
+      expect(node.ok(), await node.text()).toBeTruthy();
+      const detail = 'CDB instance is outside the fixed slot plan; explicit slot migration is required';
+      const steps = Object.fromEntries(['access-server', 'chunk-kv', 'chunkdb', 'diskdb', 'diskio', 'paxos-kv'].map(kind => [kind, kind === 'chunkdb' ? { state: 'warning', detail } : { state: 'disabled' }]));
+      const saved = await api.put('/api/nodes/705/service-plan', { data: { revision: 0, steps } });
+      expect(saved.ok(), await saved.text()).toBeTruthy();
+      await page.goto('/?domain=Cluster');
+      const item = page.getByTestId('tree-node-SERVICE-chunkdb-705');
+      await expect(item.getByTitle('Healthy', { exact: true })).toBeVisible();
+      await expect(item.getByRole('button', { name: 'CDB-705', exact: true })).toHaveAttribute('title', `CDB-705 · ${detail}`);
+      await page.reload();
+      await expect(item.getByTitle('Healthy', { exact: true })).toBeVisible();
+      expect((await (await api.get('/api/service-plans')).json())['705'].steps.chunkdb.state).toBe('warning');
+    } finally {
+      await api.dispose();
+      await resetAll(baseURL!);
+    }
+  });
+
   test('creates three fully-enabled nodes and keeps derived DiskDB listeners disjoint', async ({ page, baseURL }) => {
     test.setTimeout(120_000);
     await step('todo-ui: reset', () => resetAll(baseURL!));
@@ -63,6 +87,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
           await dialog.getByLabel('Host').fill('127.0.0.1');
           await expect(dialog.getByLabel('Enable CrowDB Storage on this node')).toBeChecked();
           await expect(dialog.getByLabel('Enable DiskDB on this node')).toBeChecked();
+          await dialog.getByLabel('Deploy complete service set', { exact: true }).uncheck();
           await dialog.getByLabel('REST Port').fill(String(rest));
           await dialog.getByTestId('kv-rpc-port').fill(String(kvRpc));
           await dialog.getByTestId('diskdb-rpc-port').fill(String(diskdbRpc));
@@ -72,11 +97,11 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
           );
           await dialog.getByRole('button', { name: /create node/i }).click();
 
-          // A successful node creation must complete the dialog, not leave it
-          // open while the two service deployments finish or report results.
-          await expect(dialog).toHaveCount(0, { timeout: 20_000 });
           const diskdbResponse = await diskdbDeployResponse;
           expect(diskdbResponse.status(), await diskdbResponse.text()).toBe(201);
+          await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeEnabled();
+          await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+          await expect(dialog).toHaveCount(0);
           await expect(aside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
         });
       }
@@ -148,14 +173,6 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
             instanceId = String(instance?.instance_id ?? '');
             return instanceId.length > 0;
           }, { timeout: 10_000, intervals: [100] }).toBe(true);
-          const ownerResponse = await api.put(`/api/disk-groups/${RACK_ID}/${NODE_IDS[0]}/${DISK_GROUP_ID}/owner`, {
-            data: { instance_id: instanceId, lease_expiry_ms: Date.now() + 3_600_000 },
-          });
-          expect(ownerResponse.ok(), await ownerResponse.text()).toBeTruthy();
-          const bindResponse = await api.put(`/api/disk-groups/${RACK_ID}/${NODE_IDS[0]}/${DISK_GROUP_ID}/bind`, {
-            data: { store_id: STORE_ID, group_id: GROUP_ID },
-          });
-          expect(bindResponse.ok(), await bindResponse.text()).toBeTruthy();
           await expect.poll(async () => {
             const response = await api.get('/api/diskdb/instances');
             if (!response.ok()) return false;
@@ -178,9 +195,10 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
         const node = aside.getByRole('treeitem').filter({ hasText: `N-${NODE_IDS[0]}` });
         await expect(node).toBeVisible({ timeout: 10_000 });
         if (await node.getByRole('button', { name: 'Expand' }).count()) await node.getByRole('button', { name: 'Expand' }).click();
-        await expect(aside.getByText(`KV-${NODE_IDS[0]}`, { exact: true })).toBeVisible();
+        await expect(aside.getByText(`PKV-${NODE_IDS[0]}`, { exact: true })).toBeVisible();
         const diskdbSubtree = aside.getByTestId(`tree-node-DDB-${NODE_IDS[0]}`);
-        await expect(diskdbSubtree).toBeVisible({ timeout: 10_000 });
+        await expect(diskdbSubtree).toBeVisible();
+        await diskdbSubtree.getByRole('button', { name: 'Expand', exact: true }).click();
         await expect(diskdbSubtree.getByText(/Physical Group.*DG-7710/)).toBeVisible({ timeout: 10_000 });
         const diskGroup = diskdbSubtree.getByRole('treeitem').filter({ hasText: /DG-7710/ });
         if (await diskGroup.getByRole('button', { name: 'Expand' }).count()) await diskGroup.getByRole('button', { name: 'Expand' }).click();
@@ -191,35 +209,16 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
         await expect(page.getByRole('menuitem', { name: /add disk group/i })).toHaveCount(0);
         await page.keyboard.press('Escape');
 
+        await page.getByRole('button', { name: /^N-701 Expand children/ }).click();
         const canvasDiskGroup = page.locator('.react-flow__node').filter({ hasText: /Physical Group.*DG-7710/ });
         await expect(canvasDiskGroup).toBeVisible({ timeout: 10_000 });
         await expect(canvasDiskGroup.getByTestId('compact-disk-stack')).toContainText(DISK_ID.slice(0, 12));
       });
 
-      await step('todo-ui: cluster shows Store/Group/Replica under KV server', async () => {
-        // The KV server in the Cluster domain must show its hosted
-        // Store > Group > Replica hierarchy so users can see which
-        // logical entities each server owns.
+      await step('todo-ui: Cluster excludes logical children', async () => {
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-        const kvItem = aside.getByRole('treeitem').filter({ hasText: `KV-${NODE_IDS[0]}` });
-        const kvExpand = kvItem.locator('button[aria-label="Expand"]');
-        if (await kvExpand.count() > 0) await kvExpand.click();
-        // Store 770 should appear under the KV server.
-        const storeItem = aside.getByTestId(`tree-node-S-${NODE_IDS[0]}-${STORE_ID}`);
-        await expect(storeItem).toBeVisible({ timeout: 10_000 });
-        const storeExpand = storeItem.locator('button[aria-label="Expand"]');
-        if (await storeExpand.count() > 0) await storeExpand.click();
-        // Group 7700 should appear under the store.
-        const groupItem = aside.getByTestId(`tree-node-G-${NODE_IDS[0]}-${STORE_ID}-${GROUP_ID}`);
-        await expect(groupItem).toBeVisible({ timeout: 5_000 });
-        const groupExpand = groupItem.locator('button[aria-label="Expand"]');
-        if (await groupExpand.count() > 0) await groupExpand.click();
-        // Replica 77000 should appear under the group.
-        await expect(aside.getByText(`LR-${REPLICA_ID}`, { exact: true })).toBeVisible({ timeout: 5_000 });
-
-        // The canvas should also show the Store node under the KV server.
-        const canvasStore = page.locator('.react-flow__node').filter({ hasText: `S-${STORE_ID}` });
-        await expect(canvasStore).toBeVisible({ timeout: 10_000 });
+        await expect(aside.getByTestId(`tree-node-S-${NODE_IDS[0]}-${STORE_ID}`)).toHaveCount(0);
+        await expect(page.locator(`.react-flow__node[data-id="S-${NODE_IDS[0]}-${STORE_ID}"]`)).toHaveCount(0);
       });
 
       await step('todo-ui: KV logical tree, operations center, and inspector', async () => {
@@ -235,8 +234,9 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
         if (await group.getByRole('button', { name: 'Expand' }).count()) await group.getByRole('button', { name: 'Expand' }).click();
         await expect(aside.getByText(`LR-${REPLICA_ID}`, { exact: true })).toBeVisible();
         // KV has one logical tree: no KV server or physical node parent exists.
-        await expect(aside.getByText(`KV-${NODE_IDS[0]}`, { exact: true })).toHaveCount(0);
+        await expect(aside.getByText(`PKV-${NODE_IDS[0]}`, { exact: true })).toHaveCount(0);
 
+        await page.getByText(/^KV actions · Store/).click();
         await expect(page.getByLabel('Put key')).toBeVisible();
         await expect(page.getByLabel('Put value')).toBeVisible();
         await group.click();
@@ -250,7 +250,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
         // Capacity view must NOT show the DDB server — it's a service
         // item that belongs in the Cluster domain only. The physical
         // disk hierarchy (DG > Disk) remains.
-        await page.getByTestId('domain-chunk').click();
+        await page.getByTestId('domain-capacity').click();
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
         const rack = aside.getByRole('treeitem').filter({ hasText: `R-${RACK_ID}` });
         if (await rack.getByRole('button', { name: 'Expand' }).count()) await rack.getByRole('button', { name: 'Expand' }).click();
@@ -266,7 +266,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
     }
   });
 
-  test('closes the node dialog and preserves KV when DiskDB deployment fails', async ({ page, baseURL }) => {
+  test('retains failed progress and preserves KV when DiskDB deployment fails', async ({ page, baseURL }) => {
     test.setTimeout(120_000);
     await resetAll(baseURL!);
     await createRack(baseURL!, { id: 704, name: 'Failure Rack' });
@@ -304,8 +304,10 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
 
       const diskdbResponse = page.waitForResponse((response) => response.url().includes('/api/nodes/704/diskdb/deploy'));
       await dialog.getByRole('button', { name: /create node/i }).click();
-      await expect(dialog).toHaveCount(0, { timeout: 10_000 });
-      expect((await diskdbResponse).status()).toBe(502);
+      expect((await diskdbResponse).status()).toBe(409);
+      await expect(dialog.getByRole('button', { name: /Retry failed services/ })).toBeEnabled();
+      await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
       await expect(aside.getByText('N-704', { exact: true })).toBeVisible({ timeout: 10_000 });
       await expect.poll(async () => (await page.request.get(`${baseURL}/api/nodes/704/server`)).ok(), { timeout: 10_000 }).toBe(true);
 
@@ -344,7 +346,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
       // Force a UI refresh — the dialog's onSuccess callback may have
       // raced with the server registration. Clicking Refresh guarantees
       // allServers is updated so DDB-704 appears in the sidebar.
-      await page.getByRole('button', { name: /refresh/i }).click();
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
       await expect(aside.getByText('DDB-704', { exact: true })).toBeVisible({ timeout: 30_000 });
     } finally {
       await destroyAndClose(blocker);

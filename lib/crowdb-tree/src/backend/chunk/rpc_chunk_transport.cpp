@@ -239,7 +239,10 @@ struct RpcChunkTransport::Impl
 
     using RemoteChunks = std::vector<RemoteChunk>;
 
-    explicit Impl(const ct_chunk_rpc_transport_options &configured) : chunkdb_routes(configured), options(configured)
+    explicit Impl(const ct_chunk_rpc_transport_options &configured)
+        : chunkdb_routes(configured),
+          disk_resolver(configured.disk_resolver),
+          options(configured)
     {
         if (configured.disk_routes != nullptr) {
             disk_routes.assign(configured.disk_routes, configured.disk_routes + configured.disk_route_count);
@@ -276,7 +279,8 @@ struct RpcChunkTransport::Impl
 
     [[nodiscard]] bool valid() const
     {
-        return options.mirror_copies <= kMaxMirrorCopies && chunkdb_routes.valid() && !disk_routes.empty();
+        return options.mirror_copies <= kMaxMirrorCopies && chunkdb_routes.valid() &&
+               (disk_resolver.valid() || !disk_routes.empty());
     }
 
     template <typename Response>
@@ -325,8 +329,11 @@ struct RpcChunkTransport::Impl
         return request_ids.fetch_add(1, std::memory_order_relaxed);
     }
 
-    Status resolve_route(const Segment &segment, ct_chunk_rpc_route *route) const
+    Status resolve_route(const Segment &segment, RpcChunkRouteLease *lease) const
     {
+        if (disk_resolver.valid()) {
+            return disk_resolver.resolve(ChunkId(segment.disk_high, segment.disk_low), false, lease);
+        }
         auto found = std::find_if(disk_routes.begin(), disk_routes.end(), [&segment](const auto &item) {
             return item.disk_id_high == segment.disk_high && item.disk_id_low == segment.disk_low;
         });
@@ -334,7 +341,7 @@ struct RpcChunkTransport::Impl
             found->route.connection == nullptr) {
             return Status::unavailable("DiskIO route is unavailable");
         }
-        *route = found->route;
+        lease->route = found->route;
         return Status::Ok();
     }
 
@@ -516,6 +523,7 @@ struct RpcChunkTransport::Impl
     }
 
     RpcChunkRouteResolver                                    chunkdb_routes;
+    RpcChunkRouteResolver                                    disk_resolver;
     ct_chunk_rpc_transport_options                           options;
     std::vector<ct_chunk_rpc_disk_route>                     disk_routes;
     inline static std::atomic<uint64_t>                      request_ids{1};
@@ -525,14 +533,15 @@ struct RpcChunkTransport::Impl
 
 struct RpcChunkTransport::Impl::AsyncWrite
 {
-    Impl                    *owner = nullptr;
-    RemoteChunk              chunk;
-    uint32_t                 mirror_index = 0;
-    uint64_t                 offset       = 0;
-    const uint8_t           *data         = nullptr;
-    size_t                   length       = 0;
-    size_t                   consumed     = 0;
-    ChunkTransportCompletion completion;
+    Impl                               *owner = nullptr;
+    RemoteChunk                         chunk;
+    uint32_t                            mirror_index = 0;
+    uint64_t                            offset       = 0;
+    const uint8_t                      *data         = nullptr;
+    size_t                              length       = 0;
+    size_t                              consumed     = 0;
+    ChunkTransportCompletion            completion;
+    std::unique_ptr<RpcChunkRouteLease> disk_lease;
 
     static void rpc_complete(uint64_t /*unused*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data_buffer,
                              crowdb_rpc_status rpc_status, void *context)
@@ -584,10 +593,11 @@ struct RpcChunkTransport::Impl::AsyncWrite
             finish(this, Status::invalid_argument("tree chunk mirror index exceeds layout"));
             return;
         }
-        const size_t       part = std::min<uint64_t>(length - consumed, strip->chunk_offset + strip->capacity - cursor);
-        const auto        &segment = strip->mirrors[mirror_index];
-        ct_chunk_rpc_route route{};
-        Status             status = owner->resolve_route(segment, &route);
+        const size_t part    = std::min<uint64_t>(length - consumed, strip->chunk_offset + strip->capacity - cursor);
+        const auto  &segment = strip->mirrors[mirror_index];
+        disk_lease           = std::make_unique<RpcChunkRouteLease>();
+        Status      status   = owner->resolve_route(segment, disk_lease.get());
+        const auto &route    = disk_lease->route;
         if (!status.ok()) {
             finish(this, std::move(status));
             return;
@@ -638,6 +648,7 @@ void RpcChunkTransport::Impl::submit_write(RemoteChunk chunk, uint32_t mirror_in
         .length       = length,
         .consumed     = 0,
         .completion   = completion,
+        .disk_lease   = nullptr,
     };
     if (state == nullptr) {
         completion.complete(Status::resource_exhausted("chunk RPC write state allocation failed"));
@@ -731,8 +742,9 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
         }
         const size_t       part = std::min<uint64_t>(length - consumed, strip->chunk_offset + strip->capacity - cursor);
         const auto        &segment = strip->mirrors[mirror_index];
-        ct_chunk_rpc_route route{};
-        Status             status = impl_->resolve_route(segment, &route);
+        RpcChunkRouteLease lease;
+        Status             status = impl_->resolve_route(segment, &lease);
+        const auto        &route  = lease.route;
         if (!status.ok()) {
             return status;
         }
@@ -861,8 +873,9 @@ Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, u
         }
         const size_t       part = std::min<uint64_t>(length - consumed, strip->chunk_offset + strip->capacity - cursor);
         const auto        &segment = strip->mirrors[mirror_index];
-        ct_chunk_rpc_route route{};
-        status = impl_->resolve_route(segment, &route);
+        RpcChunkRouteLease lease;
+        status            = impl_->resolve_route(segment, &lease);
+        const auto &route = lease.route;
         if (!status.ok()) {
             return status;
         }

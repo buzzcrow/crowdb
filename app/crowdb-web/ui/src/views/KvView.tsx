@@ -8,6 +8,7 @@ import type { SelectedEntity } from '../contexts/SelectionContext';
 const KvOperatorPanel = lazy(() => import('../panels/KvOperatorPanel').then((m) => ({ default: m.KvOperatorPanel })));
 
 export interface KvViewProps {
+  active: boolean;
   stores: EnrichedStoreView[];
   selectedEntity: SelectedEntity | null;
   readonly: boolean;
@@ -16,11 +17,7 @@ export interface KvViewProps {
 }
 
 export function KvView(props: KvViewProps) {
-  return (
-    <Suspense fallback={<ViewFallback />}>
-      <KvOperatorPanel {...props} />
-    </Suspense>
-  );
+  return <Suspense fallback={<ViewFallback />}><KvOperatorPanel {...props} /></Suspense>;
 }
 
 function ViewFallback() {

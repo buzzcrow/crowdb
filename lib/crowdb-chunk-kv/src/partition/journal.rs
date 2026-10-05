@@ -17,6 +17,17 @@ pub trait PartitionJournal: Send + Sync {
     fn stream_name(&self) -> StreamName;
     fn manifest_generation(&self) -> u64;
     fn tail(&self) -> u64;
+    /// Returns published metadata only; implementations without inspection return `None`.
+    ///
+    /// # Errors
+    /// Rejects stale generations and invalid extent-index continuations.
+    fn observe_metadata(
+        &self,
+        _generation: Option<u64>,
+        _offset: usize,
+    ) -> Result<Option<crowdb_chunk_stream::StreamMetadataObservation>> {
+        Ok(None)
+    }
 }
 
 pub struct StreamPartitionJournal {
@@ -122,6 +133,17 @@ impl PartitionJournal for StreamPartitionJournal {
 
     fn tail(&self) -> u64 {
         self.stream.tail()
+    }
+
+    fn observe_metadata(
+        &self,
+        generation: Option<u64>,
+        offset: usize,
+    ) -> Result<Option<crowdb_chunk_stream::StreamMetadataObservation>> {
+        self.stream
+            .observe_metadata(generation, offset)
+            .map(Some)
+            .map_err(map_stream_error)
     }
 }
 

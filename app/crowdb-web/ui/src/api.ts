@@ -12,7 +12,6 @@ import type {
   StoreView,
   GroupView,
   ReplicaView,
-  MetricsResponse,
   DiskdbInstanceInfo,
   CapacityUsageResponse,
   ScanStatusResponse,
@@ -47,6 +46,9 @@ export interface AddNodeRequest {
  * different path (e.g. behind a reverse proxy). Default `/api` is a no-op.
  */
 let apiBase = '/api';
+let managementToken = '';
+export function setManagementToken(token: string): void { managementToken = token; }
+export function getManagementToken(): string { return managementToken; }
 
 export function setApiBase(prefix?: string): void {
   const trimmed = (prefix ?? '').trim().replace(/\/+$/, '');
@@ -208,6 +210,7 @@ async function fetchWithOptions(
     try {
       const response = await fetch(resolveUrl(url), {
         ...fetchInit,
+        headers: { ...Object.fromEntries(new Headers(fetchInit.headers).entries()), ...(managementToken ? { Authorization: `Bearer ${managementToken}` } : {}) },
         signal: controller.signal,
       });
 
@@ -776,7 +779,7 @@ export async function kvPut(
 export async function kvDelete(
   storeId: string,
   groupId: string,
-  req: { key: string; client_id?: number; seq?: number },
+  req: { key?: string; key_hex?: string; client_id?: number; seq?: number },
   options?: RequestOptions
 ): Promise<KvWriteResponse> {
   const body = JSON.stringify(req);
@@ -801,10 +804,12 @@ export async function kvScan(
   prefix: string = '',
   limit: number = 100,
   startAfter?: string,
-  options?: RequestOptions
+  options?: RequestOptions,
+  startAfterHex?: string
 ): Promise<KvScanResponse> {
   const params: Record<string, string | number> = { prefix, limit };
-  if (startAfter) params.start_after = startAfter;
+  if (startAfterHex) params.start_after_hex = startAfterHex;
+  else if (startAfter) params.start_after = startAfter;
   const url = `/api/stores/${encodeURIComponent(storeId)}/groups/${encodeURIComponent(groupId)}/kv/scan${qs(params)}`;
   return jsonOrThrow(await fetchWithOptions(url, { ...options, method: 'GET' }));
 }
@@ -821,55 +826,6 @@ export async function healthCheck(options?: RequestOptions): Promise<{ status: '
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Metrics Endpoints (R11)
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Fetch metrics for a specific node (proxied to the node's `/metrics`).
- * @param nodeId The node identifier
- * @param prefix Optional metric name prefix filter
- */
-export async function getNodeMetrics(
-  nodeId: number,
-  prefix?: string,
-  options?: RequestOptions
-): Promise<MetricsResponse> {
-  const url = `/api/nodes/${encodeURIComponent(nodeId)}/metrics${qs({ prefix })}`;
-  return jsonOrThrow(await fetchWithOptions(url, { ...options, method: 'GET' }));
-}
-
-/**
- * Fetch metrics for a specific group (proxied to the leader node's
- * `/metrics` with the group prefix `s.{sid}.g.{gid}.`).
- * @param storeId The store identifier
- * @param groupId The group identifier
- * @param prefix Optional metric name prefix filter (appended to group prefix)
- */
-export async function getGroupMetrics(
-  storeId: string,
-  groupId: string,
-  prefix?: string,
-  options?: RequestOptions
-): Promise<MetricsResponse> {
-  const url = `/api/stores/${encodeURIComponent(storeId)}/groups/${encodeURIComponent(groupId)}/metrics${qs({ prefix })}`;
-  return jsonOrThrow(await fetchWithOptions(url, { ...options, method: 'GET' }));
-}
-
-/**
- * Fetch aggregated metrics for a store (fetched from each group's leader
- * and merged).
- * @param storeId The store identifier
- * @param prefix Optional metric name prefix filter (appended to store prefix)
- */
-export async function getStoreMetrics(
-  storeId: string,
-  prefix?: string,
-  options?: RequestOptions
-): Promise<MetricsResponse> {
-  const url = `/api/stores/${encodeURIComponent(storeId)}/metrics${qs({ prefix })}`;
-  return jsonOrThrow(await fetchWithOptions(url, { ...options, method: 'GET' }));
-}
-
 // ── Disk / DiskDB API (R77) ───────────────────────────────────────
 
 export interface AddDiskRequest {
@@ -1182,6 +1138,7 @@ export async function removeDisk(nodeId: number, dgId: number, diskId: string, o
 
 /** `GET /api/servers` — list all deployed server entries. */
 export interface ServerSummary {
+  id?: string;
   node_id?: number;
   mgmt_url?: string;
   endpoint?: string;

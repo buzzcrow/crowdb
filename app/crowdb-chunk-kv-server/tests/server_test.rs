@@ -1043,6 +1043,7 @@ async fn catching_up_read_waits_are_time_and_count_bounded() {
         None,
     );
     page.entries[0].state = ChunkKvRangeCatalogPartitionState::TargetCatchingUp;
+    page.entries[0].artifact.tree_id = target.tree_id();
     page.entries[0].transition_id = Some(Id128 { high: 40, low: 42 });
     page.seal().unwrap();
     let mut head = head;

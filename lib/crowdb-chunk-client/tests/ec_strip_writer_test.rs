@@ -115,6 +115,22 @@ fn accessor_unit_bytes() {
 }
 
 #[test]
+fn multi_unit_segments_determine_strip_capacity() {
+    let mut chunk = make_chunk(128, 5);
+    let strip = &mut Arc::make_mut(&mut chunk).strips[0];
+    let Some(StripOneof::EcStrip(ec)) = &mut strip.strip else {
+        unreachable!();
+    };
+    for segment in &mut ec.segments {
+        segment.unit_count = 8;
+    }
+    strip.capacity = 4 * 1024;
+    let writer = EcStripWriter::new(chunk, 0, Arc::new(NoopDiskWriter), EcScheme::new(4, 1));
+    assert_eq!(writer.unit_bytes_for_tests(), 128 * 1024);
+    assert_eq!(writer.remaining_capacity(), 4 * 1024 * 1024);
+}
+
+#[test]
 fn accessor_segment_bounds() {
     let w = make_writer(4, 5);
     assert!(w.segment_for_tests(0).is_ok());

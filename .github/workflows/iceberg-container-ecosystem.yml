@@ -1,0 +1,57 @@
+name: Iceberg container ecosystem
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Pinned client profile (all includes distributed engines)
+        type: choice
+        required: true
+        default: all
+        options: [all, python]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  RUST_BACKTRACE: 1
+
+jobs:
+  ecosystem:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Free build space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+          sudo apt-get clean
+          df -h /
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: latest
+      - uses: Swatinem/rust-cache@v2
+      - name: Build isolated preview image
+        run: pixi run build-single-node-container
+      - name: Run pinned container clients
+        env:
+          CROWDB_ECOSYSTEM_PROFILE: ${{ inputs.profile }}
+          CROWDB_ECOSYSTEM_ARTIFACTS: ${{ runner.temp }}/ecosystem-results
+        run: pixi run -e iceberg-ecosystem test-iceberg-container-ecosystem
+      - name: Upload redacted operation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iceberg-ecosystem-${{ inputs.profile }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ecosystem-results
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Clean subprocesses
+        if: always()
+        run: pixi run clean-env

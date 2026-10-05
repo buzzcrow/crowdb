@@ -169,6 +169,23 @@ impl TransitionExecutor {
             .map_err(|error| plan_error(&error.to_string()))
     }
 
+    pub(crate) fn discard_prepared_transfer_target(
+        &self,
+        transition: &TransferTransition,
+    ) -> Result<(), MonitorError> {
+        if let Some(partition) = self.service.hosted_partition(transition.partition_id) {
+            let snapshot = partition.snapshot();
+            if snapshot.ownership_epoch == transition.target_epoch
+                && snapshot.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Prepared
+            {
+                self.release_transfer_generation_pin(transition)?;
+                self.service
+                    .discard_prepared_transfer_target(transition.partition_id, transition.target_epoch);
+            }
+        }
+        Ok(())
+    }
+
     /// Idempotently releases a split child's exact-root pin after completion
     /// or an authoritative unpublished abort.
     ///
@@ -187,6 +204,24 @@ impl TransitionExecutor {
             .map_err(|error| plan_error(&error.to_string()))
     }
 
+    /// Aborts local split ingress and removes the unpublished child using the
+    /// catalog's authoritative abort revision as the fencing proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the parent cannot validate the abort proof or a
+    /// matching child cannot be cleaned up.
+    pub async fn abort_split(
+        &self,
+        transition: &SplitTransition,
+        catalog_revision: u64,
+    ) -> Result<(), MonitorError> {
+        self.service
+            .abort_local_split(transition, catalog_revision)
+            .await
+            .map_err(|error| plan_error(&error.to_string()))
+    }
+
     /// Reopens and replays the exact transfer target without activating it.
     ///
     /// # Errors
@@ -202,7 +237,10 @@ impl TransitionExecutor {
         if transition.target.instance_id != self.instance_id
             || !matches!(
                 transition.phase,
-                TransferPhase::TargetPreparing | TransferPhase::CatchupPublished
+                TransferPhase::TargetPreparing
+                    | TransferPhase::TargetPrepared
+                    | TransferPhase::AwaitingFence
+                    | TransferPhase::CatchupPublished
             )
         {
             return Err(plan_error("transfer does not request local target preparation"));
@@ -216,16 +254,19 @@ impl TransitionExecutor {
             artifact: transition.target_artifact.clone(),
             transition_id: Some(transition.transition_id),
         };
-        let partition = if transition.phase == TransferPhase::CatchupPublished {
-            if let Some(partition) = self.service.hosted_partition(transition.partition_id) {
-                self.storage.catch_up_transfer_target(&partition, &entry).await?;
-                partition
-            } else {
-                self.storage
-                    .recover_partition(&entry)
-                    .await
-                    .map_err(|error| plan_error(&error.to_string()))?
+        let hosted = self
+            .service
+            .hosted_partition(transition.partition_id)
+            .filter(|partition| {
+                let snapshot = partition.snapshot();
+                snapshot.ownership_epoch == transition.target_epoch
+                    && snapshot.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Prepared
+            });
+        let partition = if let Some(partition) = hosted.as_ref() {
+            if transition.phase == TransferPhase::CatchupPublished {
+                self.storage.catch_up_transfer_target(partition, &entry).await?;
             }
+            partition.clone()
         } else {
             self.storage
                 .recover_partition(&entry)
@@ -233,9 +274,9 @@ impl TransitionExecutor {
                 .map_err(|error| plan_error(&error.to_string()))?
         };
         let snapshot = partition.snapshot();
-        if self.service.hosted_partition(transition.partition_id).is_none() {
+        if hosted.is_none() {
             self.service
-                .install_partition(&partition)
+                .install_prepared_transfer_target(&partition)
                 .map_err(|error| plan_error(&error.to_string()))?;
         }
         Ok(TargetReadinessProof {

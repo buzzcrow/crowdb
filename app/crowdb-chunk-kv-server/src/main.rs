@@ -20,7 +20,9 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, KeyRange,
     OwnerDescriptor, PartitionArtifact,
 };
-use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
+use crowdb_protocol::key::{
+    ChunkKvRangeCatalogHeadKey, ChunkKvSplitKey, ChunkKvTransferKey, ServingGrantKey, TextKey,
+};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
@@ -60,7 +62,7 @@ struct Cli {
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
-async fn main() {
+async fn main() -> std::process::ExitCode {
     let args = Cli::parse();
     let log_dir = args.log_dir.clone().unwrap_or_else(|| {
         crowdb_protocol::port::namespace::runtime_root()
@@ -106,7 +108,7 @@ async fn main() {
         Ok(config) => config,
         Err(error) => {
             error!(path = %args.config.display(), %error, "failed to load configuration");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     if let Some(http_addr) = args.http_addr {
@@ -117,7 +119,7 @@ async fn main() {
     }
     if let Err(error) = config.validate() {
         error!(%error, "configuration overrides are invalid");
-        return;
+        return std::process::ExitCode::FAILURE;
     }
 
     let http_addr: SocketAddr = config
@@ -144,14 +146,14 @@ async fn main() {
         Ok(storage) => Arc::new(storage),
         Err(error) => {
             error!(%error, "failed to connect production chunk storage");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     let service = match ChunkKvService::new(config.instance_id, config.max_hosted_partitions) {
         Ok(service) => Arc::new(service),
         Err(error) => {
             error!(%error, "failed to initialize chunk KV service");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     let control_store = Arc::new(Group0ControlStore::from_client(Arc::clone(storage.kv())));
@@ -170,11 +172,11 @@ async fn main() {
         Ok(EnsureDomainMonitorOutcome::Created | EnsureDomainMonitorOutcome::AlreadyExists) => {}
         Ok(outcome) => {
             error!(?outcome, "chunk KV monitor registration was rejected");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
         Err(error) => {
             error!(%error, "failed to persist chunk KV monitor registration");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     }
 
@@ -186,12 +188,12 @@ async fn main() {
                     Ok(recovered) => recovered,
                     Err(error) => {
                         error!(%error, "failed to recover an assigned chunk KV partition");
-                        return;
+                        return std::process::ExitCode::FAILURE;
                     }
                 };
             if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &recovered) {
                 error!(%error, "failed to install initial chunk KV catalog and partitions");
-                return;
+                return std::process::ExitCode::FAILURE;
             }
             info!(
                 generation = head.generation,
@@ -214,7 +216,7 @@ async fn main() {
                         if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &[partition])
                         {
                             error!(%error, "failed to install bootstrapped chunk KV catalog");
-                            return;
+                            return std::process::ExitCode::FAILURE;
                         }
                         info!(
                             generation = head.generation,
@@ -223,7 +225,7 @@ async fn main() {
                     }
                     Err(error) => {
                         error!(%error, "failed to bootstrap initial chunk KV partition");
-                        return;
+                        return std::process::ExitCode::FAILURE;
                     }
                 }
             } else {
@@ -232,19 +234,62 @@ async fn main() {
         }
         Err(error) => {
             error!(%error, "failed to load initial chunk KV catalog");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     }
     let refresh_service = Arc::clone(&service);
     let refresh_catalog = Arc::clone(&catalog);
     let refresh_storage = Arc::clone(&storage);
+    let refresh_store = Arc::clone(&control_store);
+    let refresh_config = config.clone();
     let refresh_instance_id = config.instance_id;
+    let watch = WatchNotifyClient::from_shared(Arc::clone(storage.kv()));
+    let mut catalog_watch = match watch.subscribe(0, 0, ChunkKvRangeCatalogHeadKey.to_path().as_bytes()) {
+        Ok(subscription) => Some(subscription),
+        Err(error) => {
+            warn!(%error, "catalog watch unavailable; periodic refresh remains active");
+            None
+        }
+    };
+    let mut grant_watch = match watch.subscribe(
+        0,
+        0,
+        ServingGrantKey {
+            instance_id: config.instance_id,
+        }
+        .to_path()
+        .as_bytes(),
+    ) {
+        Ok(subscription) => Some(subscription),
+        Err(error) => {
+            warn!(%error, "serving-grant watch unavailable; heartbeat refresh remains active");
+            None
+        }
+    };
     let refresh_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
     let refresh_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(refresh_interval);
         interval.tick().await;
         loop {
-            interval.tick().await;
+            let grant_only = tokio::select! {
+                _ = interval.tick() => false,
+                alive = receive_transition_notify(&mut catalog_watch) => {
+                    if !alive {
+                        catalog_watch = None;
+                    }
+                    false
+                }
+                alive = receive_transition_notify(&mut grant_watch) => {
+                    if !alive {
+                        grant_watch = None;
+                    }
+                    true
+                }
+            };
+            if grant_only {
+                install_latest_grant(&refresh_store, &refresh_service, &refresh_config).await;
+                continue;
+            }
             match refresh_catalog.load_current().await {
                 Ok(Some((head, pages))) => {
                     let recovered = match recover_assigned_partitions(
@@ -272,6 +317,7 @@ async fn main() {
                         )) => {}
                         Err(error) => warn!(%error, "rejected refreshed chunk KV catalog"),
                     }
+                    install_latest_grant(&refresh_store, &refresh_service, &refresh_config).await;
                 }
                 Ok(None) => warn!("chunk KV catalog head is absent; retaining installed catalog"),
                 Err(error) => warn!(%error, "catalog refresh failed; retaining installed catalog"),
@@ -288,7 +334,7 @@ async fn main() {
         Err(error) => {
             error!(%error, "failed to initialize transition worker");
             refresh_task.abort();
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     let transition_processor = TransitionProcessor::new(
@@ -296,7 +342,6 @@ async fn main() {
         Arc::clone(&control_store),
         transition_executor,
     );
-    let watch = WatchNotifyClient::from_shared(Arc::clone(storage.kv()));
     let mut transfer_watch =
         match watch.subscribe(0, 0, <ChunkKvTransferKey as TextKey>::prefix_all().as_bytes()) {
             Ok(subscription) => Some(subscription),
@@ -339,7 +384,12 @@ async fn main() {
     let capacity_bytes = u64::try_from(config.max_hosted_partitions)
         .unwrap_or(u64::MAX)
         .saturating_mul(config.balance.target_partition_bytes);
-    let initial_observation = service.registry_observation(capacity_bytes, 0);
+    let mut initial_observation = service.registry_observation(capacity_bytes, 0);
+    initial_observation.node_id = config.node_id;
+    initial_observation.http_endpoint = config
+        .http_advertise_addr
+        .as_ref()
+        .map(|address| format!("http://{address}"));
     if let Err(error) = service_registry
         .register_chunk_kv(
             config.instance_id,
@@ -351,7 +401,7 @@ async fn main() {
         error!(%error, "failed to register chunk KV instance");
         transition_task.abort();
         refresh_task.abort();
-        return;
+        return std::process::ExitCode::FAILURE;
     }
     install_latest_grant(&control_store, &service, &config).await;
     let materialization_service = Arc::clone(&service);
@@ -386,7 +436,7 @@ async fn main() {
             let request_rate = requests.saturating_sub(previous_requests).saturating_mul(1_000) / elapsed_ms;
             previous_requests = requests;
             previous_ms = now_ms;
-            let observation = match heartbeat_service
+            let mut observation = match heartbeat_service
                 .registry_observation_with_load_samples(capacity_bytes, request_rate, 256)
                 .await
             {
@@ -396,6 +446,11 @@ async fn main() {
                     heartbeat_service.registry_observation(capacity_bytes, request_rate)
                 }
             };
+            observation.node_id = heartbeat_config.node_id;
+            observation.http_endpoint = heartbeat_config
+                .http_advertise_addr
+                .as_ref()
+                .map(|address| format!("http://{address}"));
             if let Err(error) = heartbeat_registry
                 .heartbeat_chunk_kv(heartbeat_config.instance_id, &heartbeat_endpoint, &observation)
                 .await
@@ -413,7 +468,7 @@ async fn main() {
     ));
     if let Err(error) = rpc_server.listen(&rpc_addr.ip().to_string(), i32::from(rpc_addr.port())) {
         error!(%rpc_addr, %error, "data RPC bind failed");
-        return;
+        return std::process::ExitCode::FAILURE;
     }
     let rpc_service = Arc::new(ChunkKvRpcService::new(
         Arc::clone(&service),
@@ -427,7 +482,7 @@ async fn main() {
         Ok(listener) => listener,
         Err(error) => {
             error!(%http_addr, %error, "HTTP management bind failed");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
     info!(%http_addr, "HTTP management server listening");
@@ -435,15 +490,15 @@ async fn main() {
     let shutdown_service = Arc::clone(&service);
     let shutdown_rpc = Arc::clone(&rpc_server);
     let app = management_router(ManagementState::new(Arc::clone(&service)));
-    if let Err(error) = axum::serve(listener, app)
+    let serving = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             shutdown_service.begin_drain();
             shutdown_rpc.stop();
             info!("chunk KV service admission drained");
         })
-        .await
-    {
+        .await;
+    if let Err(error) = &serving {
         error!(%error, "HTTP management server failed");
     }
     heartbeat_task.abort();
@@ -452,6 +507,11 @@ async fn main() {
     refresh_task.abort();
     if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
         warn!(%error, "failed to unregister chunk KV instance");
+    }
+    if serving.is_ok() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
     }
 }
 
@@ -580,6 +640,15 @@ async fn activate_granted_assignment(
                 assignment.owner_epoch,
                 &transition,
             )
+            .map_err(|error| error.to_string());
+    }
+    if let Some((transition, _)) = store
+        .load_split_transition(transition_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return service
+            .activate_recovered_split_partition(assignment.partition_id, assignment.owner_epoch, &transition)
             .map_err(|error| error.to_string());
     }
     service

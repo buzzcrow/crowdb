@@ -193,6 +193,25 @@ extern "C" {
         user_data: *mut c_void,
     ) -> crowdb_rpc_status;
 
+    pub fn crowdb_rpc_client_send_one_way(
+        client: crowdb_rpc_client_t,
+        server: crowdb_rpc_server_t,
+        conn: crowdb_rpc_conn_t,
+        request_id: u64,
+        control: crowdb_rpc_buffer_t,
+        data: crowdb_rpc_buffer_t,
+        msg_type: u16,
+    ) -> crowdb_rpc_status;
+    pub fn crowdb_rpc_client_send_one_way_conn(
+        client: crowdb_rpc_client_t,
+        server: crowdb_rpc_server_t,
+        conn: *mut std::ffi::c_void,
+        request_id: u64,
+        control: crowdb_rpc_buffer_t,
+        data: crowdb_rpc_buffer_t,
+        msg_type: u16,
+    ) -> crowdb_rpc_status;
+
     pub fn crowdb_rpc_max_data_views() -> u8;
 
     pub fn crowdb_rpc_client_send_chain(

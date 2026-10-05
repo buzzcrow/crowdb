@@ -67,9 +67,6 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
-    if args.config.is_none() && !args.test_mode {
-        return Err("crowdb-web requires a versioned --config outside test mode".into());
-    }
     let process_config = args.config.as_deref().map(WebProcessConfig::load).transpose()?;
     if args.registry.is_some()
         && process_config
@@ -91,10 +88,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     info!(%addr, "crowdb-web starting");
 
-    let mut state = crowdb_web::AppState::default().with_test_mode(args.test_mode);
+    let mut test_namespace = if args.test_mode {
+        Some(crowdb_protocol::port::namespace::RuntimeNamespace::ephemeral(
+            "console-ui",
+        )?)
+    } else {
+        None
+    };
+    let mut state = if let Some(namespace) = &test_namespace {
+        crowdb_web::AppState::with_runtime_root(
+            crowdb_console_shared::ConsoleConfig::default(),
+            namespace.root().to_path_buf(),
+        )
+        .with_test_mode(true)
+    } else if process_config.is_some() {
+        crowdb_web::AppState::default()
+    } else {
+        let directory = crowdb_protocol::port::namespace::runtime_root()
+            .join("persistent")
+            .join("console")
+            .join("default");
+        crowdb_web::AppState::open_standalone(directory)?
+    };
     if let Some(config) = process_config {
         state = state.with_process_config(&config);
-        state = state.with_management_token(std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN")?)?;
+    }
+    if let Ok(token) = std::env::var("CROWDB_ICEBERG_READ_TOKEN") {
+        state = state.with_iceberg_reader(token)?;
     }
     if let Some(path) = &args.registry {
         state = state.with_launch_registry(path.clone())?;
@@ -102,18 +122,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(started, "reconciled configured service launches");
     }
     tracing::info!(
-        servers = 0,
+        servers = state
+            .config
+            .read()
+            .map_err(|error| error.to_string())?
+            .servers
+            .len(),
         launches = launch_registry
             .as_ref()
             .map_or(0, |registry| registry.launches.len()),
         "loaded web startup configuration"
     );
     if !args.skip_startup_restore && !state.managed_mode {
+        state.recover_standalone().await?;
         crowdb_web::mgmt::startup_topology_check(&state).await;
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, crowdb_web::router(state)).await?;
+    if args.test_mode {
+        let cleanup_state = state.clone();
+        axum::serve(listener, crowdb_web::router(state))
+            .with_graceful_shutdown(test_shutdown())
+            .await?;
+        if let Err((status, body)) =
+            crowdb_web::lifecycle::http_internal_reset(axum::extract::State(cleanup_state)).await
+        {
+            if let Some(namespace) = test_namespace.as_mut() {
+                namespace.preserve();
+            }
+            return Err(format!("test runtime cleanup failed: {status}: {}", body.error).into());
+        }
+    } else {
+        axum::serve(listener, crowdb_web::router(state)).await?;
+    }
+    drop(test_namespace);
     Ok(())
 }
 
@@ -178,4 +220,18 @@ fn init_logging(
         crowdb_rpc_ffi::add_log_stderr(stderr_level);
     }
     Ok(guards)
+}
+
+async fn test_shutdown() {
+    #[cfg(unix)]
+    {
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install test runtime termination handler");
+        tokio::select! {
+            _ = terminate.recv() => {},
+            _ = tokio::signal::ctrl_c() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }

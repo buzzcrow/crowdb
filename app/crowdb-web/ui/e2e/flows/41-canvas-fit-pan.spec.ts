@@ -35,15 +35,15 @@ test.describe('canvas · fit + pan', () => {
     await expect(fitBtn).toBeEnabled();
 
     // Wait for the canvas to render at least one react-flow node.
-    await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible();
     await expect(fitBtn).toBeVisible();
 
     // Group 0 is not initialized: the KV panel must report unavailable.
     await page.getByTestId('domain-kv').click();
-    await expect(page.getByRole('main').getByText('Backend unreachable — retrying', { exact: true })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByText('Cluster not initialized.', { exact: true })).toBeVisible({ timeout: 3_000 });
 
     // --- Capacity view shows the CapacityPanel (no canvas) ---
-    await page.getByTestId('domain-chunk').click();
+    await page.getByTestId('domain-capacity').click();
     // CapacityPanel renders either the overview header or the empty state.
     await expect(page.getByText(/Capacity Overview|No diskdb instances registered/)).toBeVisible({ timeout: 5_000 });
 
@@ -54,10 +54,10 @@ test.describe('canvas · fit + pan', () => {
     // Wait for nodes and the auto-fit to settle. The canvas should
     // center the nodes in the viewport — verify a node is within the
     // visible area (not scrolled off-screen).
-    await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible({ timeout: 5_000 });
 
     // Verify at least one node is within the viewport bounds.
-    const nodeBox = await page.locator('.react-flow__node').first().boundingBox();
+    const nodeBox = await page.locator('.react-flow__node[data-id="DC-datacenter"]').boundingBox();
     const canvasBox = await page.locator('.react-flow').boundingBox();
     expect(nodeBox).not.toBeNull();
     expect(canvasBox).not.toBeNull();
@@ -72,12 +72,44 @@ test.describe('canvas · fit + pan', () => {
     }
   });
 
+  test('parent cards collapse children, retain nested state and keep context menus', async ({ page }) => {
+    await step('canvas: goto collapse', () => page.goto('/'));
+    const rack = page.locator('.react-flow__node[data-id="R-480"]');
+    const node = page.locator('.react-flow__node[data-id="N-480"]');
+    const server = page.locator('.react-flow__node[data-id="PKV-480"]');
+    await expect(rack).toBeVisible();
+    await expect(node).toBeVisible();
+    await expect(server).toHaveCount(0);
+    await page.getByTestId('fit-all-btn').click();
+    await expect(server).toHaveCount(0);
+    await node.click();
+    await expect(server).toBeVisible();
+    await node.click();
+    await expect(server).toHaveCount(0);
+    await rack.click();
+    await expect(node).toHaveCount(0);
+    await rack.click();
+    await expect(node).toBeVisible();
+    await expect(server).toHaveCount(0);
+    await page.getByTestId('domain-kv').click();
+    await expect(rack).toBeHidden();
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
+    await expect(node).toBeVisible();
+    await expect(server).toHaveCount(0);
+    await node.click({ button: 'right' });
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(server).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await node.click();
+    await expect(server).toBeVisible();
+  });
+
   test('clicking Fit All resets the viewport after panning', async ({ page }) => {
     await step('canvas: goto', () => page.goto('/'));
     await page.getByTestId('domain-cluster').click();
 
     // Wait for nodes to render.
-    await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible({ timeout: 5_000 });
 
     // Pan the canvas by dragging the background.
     const viewport = page.locator('.react-flow__viewport');
@@ -108,13 +140,13 @@ test.describe('canvas · fit + pan', () => {
     // --- Cluster -> KV Cluster -> Cluster ---
     await step('canvas: goto', () => page.goto('/'));
     await page.getByTestId('domain-cluster').click();
-    await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible({ timeout: 5_000 });
 
     const viewport = page.locator('.react-flow__viewport');
     const canvas = page.locator('.react-flow');
 
     // Wait for the initial auto-fit to settle, capturing the fitted transform.
-    await page.waitForTimeout(500);
+    await expect(viewport).not.toHaveAttribute('style', /scale\(1\)$/);
     const fittedTransform = await viewport.evaluate((el) => (el as HTMLElement).style.transform);
     expect(fittedTransform).toBeTruthy();
 
@@ -132,17 +164,16 @@ test.describe('canvas · fit + pan', () => {
 
     // Switch to KV view, whose authority has not been initialized.
     await page.getByTestId('domain-kv').click();
-    await expect(page.getByRole('main').getByText('Backend unreachable — retrying', { exact: true })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByText('Cluster not initialized.', { exact: true })).toBeVisible({ timeout: 3_000 });
 
     // Switch back to Cluster — should fit to window, NOT restore the
     // panned viewport. The transform should match the fitted state
     // (translate ~0, scale ~1), not the panned offset.
     await page.getByTestId('domain-cluster').click();
-    await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible({ timeout: 5_000 });
 
     // After switching back, the viewport should be re-fitted, not the
     // stale panned position. Give the fit animation time to complete.
-    await page.waitForTimeout(300);
     await step('canvas: fit after KV switch', () => expect.poll(async () => {
       return viewport.evaluate((el) => (el as HTMLElement).style.transform);
     }, { timeout: 5_000, intervals: [100] }).not.toEqual(pannedTransform));
@@ -150,7 +181,7 @@ test.describe('canvas · fit + pan', () => {
     // --- Cluster -> Capacity -> Cluster ---
     await step('canvas: goto', () => page.goto('/'));
     await page.getByTestId('domain-cluster').click();
-    await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible({ timeout: 5_000 });
 
     // Pan in Cluster domain.
     await step('canvas: pan', async () => {
@@ -162,14 +193,13 @@ test.describe('canvas · fit + pan', () => {
     const physicalPanned = await viewport.evaluate((el) => (el as HTMLElement).style.transform);
 
     // Switch to Capacity — shows CapacityPanel (no canvas).
-    await page.getByTestId('domain-chunk').click();
+    await page.getByTestId('domain-capacity').click();
     await expect(page.getByText(/Capacity Overview|No diskdb instances registered/)).toBeVisible({ timeout: 5_000 });
 
     // Switch back to Cluster — should fit to window, NOT restore the
     // panned Cluster viewport from the first visit.
     await page.getByTestId('domain-cluster').click();
-    await expect(page.locator('.react-flow__node').first()).toBeVisible({ timeout: 5_000 });
-    await page.waitForTimeout(300);
+    await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible({ timeout: 5_000 });
 
     await step('canvas: fit after Capacity switch', () => expect.poll(async () => {
       return viewport.evaluate((el) => (el as HTMLElement).style.transform);

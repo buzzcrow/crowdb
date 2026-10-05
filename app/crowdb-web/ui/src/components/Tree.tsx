@@ -14,14 +14,20 @@ export interface TreeNode {
   /** Unprefixed backend id (e.g. `r1`, `7`). API calls must use this. */
   rawId?: string | number;
   label: string;
-  type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk';
+  title?: string;
+  selected?: boolean;
+  footer?: React.ReactNode;
+  type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
   icon?: React.ReactNode;
   children?: TreeNode[];
+  /** Load children when this branch is first opened. */
+  onExpand?: () => void;
+  expandable?: boolean;
   health?: 'Healthy' | 'Degraded' | 'Failed' | 'Unknown';
   role?: 'Leader' | 'Follower' | 'Remote' | 'Unknown';
   parentIds?: Record<string, string | number>;
   /** Service flavor for `Server` nodes: KV vs DiskDB. */
-  serviceType?: 'kv' | 'diskdb';
+  serviceType?: import('../types').ServiceKind;
   /** HwStatus enum (0-6) for DiskGroup/Disk in Capacity view. */
   hwStatus?: number;
 }
@@ -29,6 +35,8 @@ export interface TreeNode {
 interface TreeProps {
   nodes: TreeNode[];
   defaultExpandedIds?: string[];
+  expandedIds?: string[];
+  onExpansionChange?: (ids: string[]) => void;
   onNodeClick?: (node: TreeNode) => void;
   onNodeContextMenu?: (node: TreeNode, event: React.MouseEvent) => void;
   className?: string;
@@ -51,12 +59,16 @@ function TreeNodeComponent({
   onNodeClick,
   onNodeContextMenu,
 }: TreeNodeProps) {
-  const { isSelected, selectEntity } = useSelection();
+  const { selectedEntity, selectEntity } = useSelection();
   const { domain } = useDomain();
-  const hasChildren = !!node.children && node.children.length > 0;
+  const hasChildren = node.expandable || (!!node.children && node.children.length > 0);
   const isExpanded = expandedIds.has(node.id);
   const entityId = node.rawId ?? node.id;
-  const isNodeSelected = isSelected(String(entityId));
+  const sameOwner = node.type !== 'Group' && node.type !== 'Replica' ||
+    String(node.parentIds?.store_id) === String(selectedEntity?.parentIds?.store_id)
+      && (node.type !== 'Replica' || String(node.parentIds?.group_id) === String(selectedEntity?.parentIds?.group_id));
+  const isNodeSelected = node.selected ?? (selectedEntity?.type === node.type && selectedEntity.id === String(entityId)
+    && sameOwner && (!node.serviceType || node.serviceType === selectedEntity.serviceType));
 
   const select = useCallback(() => {
     selectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, serviceType: node.serviceType });
@@ -79,9 +91,10 @@ function TreeNodeComponent({
   const handleChevron = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
+      if (!isExpanded) node.onExpand?.();
       toggleExpanded(node.id);
     },
-    [node.id, toggleExpanded],
+    [node, isExpanded, toggleExpanded],
   );
 
   return (
@@ -118,6 +131,7 @@ function TreeNodeComponent({
         <button
           type="button"
           onClick={handleSelectClick}
+          title={node.title ?? node.label}
           className="tw-flex-1 tw-min-w-0 tw-truncate tw-text-left tw-cursor-pointer"
         >
           {node.label}
@@ -143,14 +157,19 @@ function TreeNodeComponent({
               onNodeContextMenu={onNodeContextMenu}
             />
           ))}
+          {node.footer && <div style={{ paddingLeft: `${(level + 1) * 16 + 12}px` }}>{node.footer}</div>}
         </div>
       )}
     </div>
   );
 }
 
-export function Tree({ nodes, defaultExpandedIds = [], onNodeClick, onNodeContextMenu, className }: TreeProps) {
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(defaultExpandedIds));
+const EMPTY_EXPANSION: string[] = [];
+
+export function Tree({ nodes, defaultExpandedIds = EMPTY_EXPANSION, onNodeClick, onNodeContextMenu, className, onExpansionChange, expandedIds: controlledExpansion }: TreeProps) {
+  const [expandedState, setExpandedIds] = useState<Set<string>>(() => new Set(defaultExpandedIds));
+  const expandedIds = controlledExpansion ? new Set(controlledExpansion) : expandedState;
+  const expandedRef = useRef(expandedIds); expandedRef.current = expandedIds;
   const prevDefaultRef = useRef<Set<string>>(new Set(defaultExpandedIds));
 
   useEffect(() => {
@@ -167,13 +186,11 @@ export function Tree({ nodes, defaultExpandedIds = [], onNodeClick, onNodeContex
   }, [defaultExpandedIds]);
 
   const toggleExpanded = useCallback((id: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+    const next = new Set(expandedRef.current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    expandedRef.current = next; setExpandedIds(next);
+    onExpansionChange?.([...next]);
+  }, [onExpansionChange]);
 
   return (
     <div className={cn('tw-overflow-y-auto tw-flex-1', className)} role="tree">

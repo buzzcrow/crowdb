@@ -94,6 +94,12 @@ A scan IO error is treated as empty (first-boot mode); a failed
 `create_group_with_wal` for one group is logged and skipped while the
 store still starts with its other groups.
 
+Creating a group persists its local replica identity and initial membership
+before opening the WAL directory. A crash during later WAL/tree initialization
+therefore restores the requested identity even when creation never returned or
+the deployment manifest still marks that step incomplete. A conflicting
+persisted local identity fails creation; it is never overwritten by a retry.
+
 ### 2.3 Concurrency model
 
 `KvStoreRegistry` and each `PxKvStore` publish immutable store/group maps

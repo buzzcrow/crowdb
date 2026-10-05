@@ -21,10 +21,16 @@ import { useZoneBitmap } from '../../data/useZoneBitmap';
 import { ZoneGrid } from '../ZoneGrid';
 import { ZoneBitmap } from '../ZoneBitmap';
 import { RecalcPanel } from '../RecalcPanel';
+import { observeCapacity, diskKey } from './observation';
 import { busyPct, formatBytes, diskTypeLabel } from '../../utils/capacity';
 import { hwStatusLabel as sharedHwStatusLabel } from '../../utils/entityDisplay';
 
+export interface DiskQuery { zone: number | null; page: number; blockStart: number }
+
 interface DiskViewProps {
+  active?: boolean;
+  query: DiskQuery;
+  onQueryChange: (value: DiskQuery) => void;
   dgId: number;
   diskId: string;
   usage: CapacityUsageResponse | null;
@@ -34,6 +40,9 @@ interface DiskViewProps {
 }
 
 export function DiskView({
+  active = true,
+  query,
+  onQueryChange,
   dgId,
   diskId,
   usage,
@@ -44,33 +53,27 @@ export function DiskView({
   const { success, error } = useToast();
   const { log } = useActivity();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [selectedZoneIndex, setSelectedZoneIndex] = useState<number | null>(null);
+  const selectedZoneIndex = query.zone;
+  const setSelectedZoneIndex = (zone: number | null, page = query.page) => onQueryChange({ zone, page, blockStart: zone === query.zone ? query.blockStart : 0 });
 
   const disk = useMemo<DiskInfoDto | null>(() => {
     const usageDg = usage?.disk_groups.find((g) => g.disk_group_id === dgId);
-    const usageDisk = usageDg?.disks.find((d) => d.disk_id === diskId);
-    if (usageDisk) return usageDisk;
+    const usageDisk = usageDg?.disks.find((d) => diskKey(d.disk_id) === diskKey(diskId));
     const hwDg = hardwareCapacity?.disk_groups.find((g) => g.disk_group_id === dgId);
-    const hwDisk = hwDg?.disks.find((d) => d.disk_id === diskId);
-    if (!hwDg || !hwDisk) return null;
+    const hwDisk = hwDg?.disks.find((d) => diskKey(d.disk_id) === diskKey(diskId));
+    if (!hwDg || !hwDisk) return hardwareCapacity ? null : (usageDisk ?? null);
     return {
+      ...(usageDisk ?? { capacity_units: 0, zone_size_units: 0, busy_units: 0, free_units: 0,
+        busy_bytes: 0, free_bytes: 0, active_zone_count: 0, zone_usages: [] }),
       rack_id: hwDg.rack_id,
       node_id: hwDg.node_id,
       disk_group_id: dgId,
       disk_id: hwDisk.disk_id,
       disk_type: hwDisk.disk_type,
-      capacity_units: 0,
-      zone_size_units: 0,
       unit_size_bytes: hwDisk.unit_size_bytes,
       zone_count: hwDisk.zone_count,
       status: hwDisk.status,
-      busy_units: 0,
-      free_units: 0,
       capacity_bytes: hwDisk.capacity_bytes,
-      busy_bytes: 0,
-      free_bytes: hwDisk.capacity_bytes,
-      active_zone_count: 0,
-      zone_usages: [],
     };
   }, [dgId, diskId, usage, hardwareCapacity]);
 
@@ -78,6 +81,7 @@ export function DiskView({
     dgId,
     diskId,
     selectedZoneIndex,
+    active,
   );
 
   const runAction = useCallback(async (
@@ -129,26 +133,27 @@ export function DiskView({
     return <div className="tw-text-sm tw-text-muted">Disk {diskId.slice(0, 12)}… not found in DG-{dgId}.</div>;
   }
 
-  const pct = busyPct(disk.capacity_bytes, disk.busy_bytes);
-  const zoneCount = disk.zone_usages.length;
+  const observation = observeCapacity(hardwareCapacity, usage, { dgId, diskId });
+  const pct = observation.busy === null ? null : busyPct(disk.capacity_bytes, observation.busy);
+  const zoneCount = disk.zone_count;
 
   return (
-    <div className="tw-space-y-4">
+    <div className="tw-space-y-4" data-testid="capacity-disk">
       {/* Disk header */}
       <div className="tw-bg-panel tw-rounded-lg tw-p-4">
         <div className="tw-flex tw-items-center tw-gap-2 tw-mb-2">
           <HardDrive className="tw-h-5 tw-w-5 tw-text-muted" />
           <div className="tw-text-sm tw-font-mono tw-text-text">{disk.disk_id}</div>
         </div>
-        <div className="tw-text-xs tw-text-muted tw-mb-3">
-          {diskTypeLabel(disk.disk_type)} · {sharedHwStatusLabel(disk.status)} · {disk.zone_count} zones · {formatBytes(disk.capacity_bytes)} · {pct}% busy
+        <div data-testid="disk-geometry" className="tw-text-xs tw-text-muted tw-mb-3">
+          {diskTypeLabel(disk.disk_type)} · {sharedHwStatusLabel(disk.status)} · {disk.zone_count} zones · {formatBytes(disk.capacity_bytes)} · {pct === null ? 'Usage unknown' : `${pct}% busy`}
         </div>
         {!readonly && (
           <div className="tw-flex tw-gap-2 tw-flex-wrap">
             <button
               onClick={handleScan}
               disabled={actionLoading === `scan-${dgId}`}
-              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-text-xs tw-bg-accent tw-text-white tw-rounded disabled:tw-opacity-50"
+              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-text-xs tw-bg-[#365e78] tw-text-white hover:tw-bg-[#406d89] tw-rounded disabled:tw-opacity-50"
             >
               {actionLoading === `scan-${dgId}` ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Activity className="tw-h-3 tw-w-3" />}
               Scan
@@ -156,7 +161,7 @@ export function DiskView({
             <button
               onClick={handleRecalc}
               disabled={actionLoading === `recalc-${dgId}`}
-              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-text-xs tw-bg-accent tw-text-white tw-rounded disabled:tw-opacity-50"
+              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-text-xs tw-bg-[#365e78] tw-text-white hover:tw-bg-[#406d89] tw-rounded disabled:tw-opacity-50"
             >
               {actionLoading === `recalc-${dgId}` ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <RotateCw className="tw-h-3 tw-w-3" />}
               Recalc
@@ -201,8 +206,12 @@ export function DiskView({
         <div className="tw-bg-panel tw-rounded-lg tw-p-4">
           <div className="tw-text-xs tw-text-muted tw-mb-2">Zone grid ({zoneCount} zones)</div>
           <ZoneGrid
+            page={query.page}
+            onPageChange={page => onQueryChange({ ...query, page })}
             zones={disk.zone_usages}
-            onZoneClick={(z) => setSelectedZoneIndex(z.zone_index)}
+            zoneCount={zoneCount}
+            selectedZone={selectedZoneIndex}
+            onZoneClick={setSelectedZoneIndex}
           />
         </div>
       ) : (
@@ -213,7 +222,12 @@ export function DiskView({
 
       {/* Zone bitmap (on-demand) */}
       {selectedZoneIndex !== null && (
-        <div className="tw-bg-panel tw-rounded-lg tw-p-4">
+        <section className="tw-bg-panel tw-rounded-lg tw-p-4" aria-label={`Zone ${selectedZoneIndex} detail`}>
+          <div className="tw-flex tw-items-center tw-gap-3 tw-text-xs tw-mb-3">
+            <button className="tw-text-accent" onClick={() => setSelectedZoneIndex(null)}>Close zone detail</button>
+            <span className="tw-font-mono">{diskId} / Zone {selectedZoneIndex}</span>
+            <button className="tw-text-accent" disabled={bitmapLoading} onClick={() => void refreshBitmap()}>Refresh bitmap</button>
+          </div>
           <div className="tw-text-xs tw-text-muted tw-mb-2">
             Zone {selectedZoneIndex} bitmap
             {bitmapLoading && ' · loading…'}
@@ -221,7 +235,9 @@ export function DiskView({
             {bitmapZone && ` · ${bitmapZone.busy_block_count} busy / ${bitmapZone.free_block_count} free blocks`}
           </div>
           {bitmapZone && (
-            <ZoneBitmap
+            <ZoneBitmap key={selectedZoneIndex}
+              start={query.blockStart}
+              onStartChange={blockStart => onQueryChange({ ...query, blockStart })}
               usageBitmap={bitmapZone.usage_bitmap}
               totalUnits={bitmapZone.busy_block_count + bitmapZone.free_block_count}
             />
@@ -229,7 +245,7 @@ export function DiskView({
           {!bitmapLoading && !bitmapZone && !bitmapError && (
             <div className="tw-text-xs tw-text-muted">No bitmap data.</div>
           )}
-        </div>
+        </section>
       )}
     </div>
   );

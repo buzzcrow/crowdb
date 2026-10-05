@@ -1,0 +1,12 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+export type Fields = Record<string, unknown>;
+export interface Snapshot extends Fields { 'snapshot-id': string | number; 'manifest-list'?: string; 'parent-snapshot-id'?: string | number; 'schema-id'?: number; }
+export interface TableLoad { 'metadata-location': string; metadata: Fields & { snapshots?: Snapshot[]; refs?: Record<string, { type: string; 'snapshot-id': string | number }> }; }
+export interface Manifest extends Fields { location: string; content: string; size: string; partition_spec_id: string; sequence: string; file_counts: Array<string | null>; }
+export interface FileEntry extends Fields { location: string; size: string; format: string; status: string; content: string; records: string; metrics?: Fields[]; }
+export interface Column { path: string[]; field_id: string | null; physical_type: string; logical_type: string | null; converted_type: string | null; precision: string | null; scale: string | null; offset: string; compressed: string; uncompressed: string; data_offset: string; values: string; codec: string; encodings: string[]; statistics: { nulls: string | null; distinct: string | null; lower: string | null; upper: string | null; lower_exact: boolean | null; upper_exact: boolean | null } | null; }
+export interface RowGroup { index: string; rows: string; columns: Column[]; }
+export interface ParquetQuery { view: 'layout' | 'schema' | 'footer'; columnPage: number; selected?: { group: string; path: string[] } }
+export interface Inspection { kind: 'manifest-list' | 'manifest' | 'parquet' | 'unsupported'; location: string; size: string; rows?: Array<Manifest | FileEntry>; next: string | null; previous?: string; offset?: string; schema?: Fields[] | Fields; descriptor?: Manifest; codec?: string; reason?: string; format?: string; snapshot_id: string; metadata_location: string; physical_rows?: string; row_group_count?: string; groups?: RowGroup[]; footer?: { offset: string; length: string; version: string; writer: string | null; properties: [string, string | null][] }; logical_metadata_bytes?: string; data_page_bytes?: string; content?: string; equality_ids?: string[]; }
+export interface Selection { snapshot: Snapshot; kind: 'snapshot' | 'list' | 'manifest' | 'file'; manifest?: Manifest; file?: FileEntry; }

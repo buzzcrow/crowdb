@@ -76,6 +76,7 @@ fn metadata(version: u8, omit: bool) -> ParquetMetadata {
         ));
     }
     ParquetMetadata {
+        footer: crowdb_access_iceberg::file::ParquetFooterInfo::default(),
         rows: 0,
         row_groups: 0,
         schema,

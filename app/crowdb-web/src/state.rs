@@ -21,7 +21,9 @@ use crowdb_console_shared::{config::ServerEntry, ConsoleConfig};
 /// request (the service registry may not be ready at console startup).
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) service_operations: Arc<arc_swap::ArcSwap<std::collections::HashSet<String>>>,
     pub config: Arc<RwLock<ConsoleConfig>>,
+    pub(crate) config_path: Option<PathBuf>,
     pub runtime_root: Arc<PathBuf>,
     pub monitor_cache: Arc<MonitorCache>,
     pub runtime_pids: Arc<std::sync::Mutex<HashMap<String, u32>>>,
@@ -29,6 +31,8 @@ pub struct AppState {
     /// Cached crowdb-rpc transport reused across KV requests to avoid
     /// spawning 6+ threads per request. Shared by the cached `kv_client`.
     pub kv_rpc_transport: Arc<tokio::sync::RwLock<Option<Arc<crowdb_kv_client::KvRpcTransport>>>>,
+    /// Immutable transport shared by bounded Chunk diagnostics requests.
+    pub(crate) chunk_rpc_transport: Arc<crowdb_chunkdb_client::ChunkdbRpcTransport>,
     /// Cached `CrowdbKvClient` reused across KV requests so the topology
     /// cache persists — avoids re-discovering the leader from seeds on
     /// every put/get/delete. Invalidated on `/internal/reset`.
@@ -51,7 +55,7 @@ pub struct AppState {
     pub authority_seeds: Arc<Vec<String>>,
     pub monitor_status_path: Option<Arc<PathBuf>>,
     pub authority_timeout_ms: u64,
-    pub(crate) management_token: Option<Arc<str>>,
+    pub(crate) iceberg_read_token: Option<Arc<str>>,
     pub(crate) launch_registry_path: Option<Arc<PathBuf>>,
 }
 
@@ -91,12 +95,15 @@ impl AppState {
     #[must_use]
     pub fn with_runtime_root(config: ConsoleConfig, runtime_root: PathBuf) -> Self {
         Self {
+            service_operations: Arc::new(arc_swap::ArcSwap::from_pointee(std::collections::HashSet::new())),
             config: Arc::new(RwLock::new(config)),
+            config_path: None,
             runtime_root: Arc::new(runtime_root),
             monitor_cache: Arc::new(MonitorCache::new()),
             runtime_pids: Arc::new(std::sync::Mutex::new(HashMap::new())),
             diskdb_client: Arc::new(tokio::sync::RwLock::new(None)),
             kv_rpc_transport: Arc::new(tokio::sync::RwLock::new(None)),
+            chunk_rpc_transport: Arc::new(crowdb_chunkdb_client::ChunkdbRpcTransport::new()),
             kv_client: Arc::new(tokio::sync::RwLock::new(None)),
             discovery_client: Arc::new(tokio::sync::RwLock::new(None)),
             warn_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -107,7 +114,7 @@ impl AppState {
             authority_seeds: Arc::new(Vec::new()),
             monitor_status_path: None,
             authority_timeout_ms: 3_000,
-            management_token: None,
+            iceberg_read_token: None,
             launch_registry_path: None,
         }
     }
@@ -122,6 +129,7 @@ impl AppState {
 
     #[must_use]
     pub fn with_process_config(mut self, config: &WebProcessConfig) -> Self {
+        self.config_path = None;
         self.managed_mode = true;
         self.web_mode = Some(config.mode);
         self.ui_root = Arc::new(config.ui_root.clone());
@@ -155,17 +163,18 @@ impl AppState {
         Ok(runtime.start_enabled(&registry).await?.len())
     }
 
+    /// Configures the deployment's read-only Catalog credential, retained only on the server.
     /// # Errors
-    /// Rejects a weak or malformed management credential.
-    pub fn with_management_token(mut self, token: String) -> std::result::Result<Self, &'static str> {
+    /// Rejects malformed credentials.
+    pub fn with_iceberg_reader(mut self, token: String) -> std::result::Result<Self, &'static str> {
         if !(32..=256).contains(&token.len())
             || !token
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/=".contains(&byte))
         {
-            return Err("management token is invalid");
+            return Err("Iceberg reader token is invalid");
         }
-        self.management_token = Some(Arc::from(token));
+        self.iceberg_read_token = Some(Arc::from(token));
         Ok(self)
     }
 
@@ -176,13 +185,12 @@ impl AppState {
         self
     }
 
-    /// The legacy in-memory handlers share state only within this Web process.
-    /// No topology is written to a local file.
+    /// Save standalone UI configuration; managed and in-memory test states do not write it.
     ///
     /// # Errors
-    /// Reserved for callers that propagate operation errors.
+    /// Reports configuration serialization or durable write failures.
     pub fn persist(&self) -> crowdb_console_shared::error::Result<()> {
-        Ok(())
+        self.persist_standalone()
     }
 
     /// Get the runtime PID for a node.
@@ -426,7 +434,10 @@ impl AppState {
             let cfg = self.config.read().unwrap();
             cfg.servers
                 .iter()
-                .filter(|s| s.node_id.is_some())
+                .filter(|s| {
+                    s.node_id.is_some()
+                        && s.service_type == crowdb_console_shared::config::ServiceType::PaxosKv
+                })
                 .map(|s| s.url.clone())
                 .collect::<Vec<_>>()
         };

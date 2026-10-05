@@ -184,3 +184,19 @@ async fn malformed_compact_integer_lengths_and_set_substitution_are_rejected() {
         assert!(read_parquet_metadata(store, &record, limits()).await.is_err());
     }
 }
+
+#[tokio::test]
+async fn inspection_retains_footer_and_column_fields_without_decoding_data_pages() {
+    let footer = official::bytes();
+    // Payload bytes are deliberately zero-filled: only canonical framing/footer may be read.
+    let (store, record) = stored(&footer, 1113).await;
+    let metadata = read_parquet_metadata(store, &record, limits()).await.unwrap();
+    assert_eq!(metadata.footer.offset, 1113);
+    assert_eq!(metadata.footer.length, footer.len());
+    assert!(metadata.footer.writer.is_some());
+    let column = &metadata.groups[0].columns[0];
+    assert!(!column.path.is_empty());
+    assert!(!column.encodings.is_empty());
+    assert!(column.uncompressed > 0);
+    assert!(column.offset + column.length <= metadata.footer.offset);
+}

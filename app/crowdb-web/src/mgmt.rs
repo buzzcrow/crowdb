@@ -221,6 +221,11 @@ pub(crate) fn remap_zero_host(addr: &str) -> String {
 /// Returns `None` when no group-0 endpoint is known (e.g. cluster not
 /// yet initialized).
 pub(crate) async fn build_hardware_client(state: &AppState) -> Option<crowdb_kv_client::HardwareClient> {
+    if state.managed_mode {
+        let kv = state.kv_client().await;
+        kv.refresh_topology().await.ok()?;
+        return Some(crowdb_kv_client::HardwareClient::from_shared(kv));
+    }
     let snap = state.monitor_cache.snapshot().await;
     if snap.is_empty() {
         return None;

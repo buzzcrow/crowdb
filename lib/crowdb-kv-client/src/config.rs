@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 /// Retry policy:
-/// - `NotLeaderHint` with a hint: retried immediately, uncounted (forward
-///   progress toward the real leader).
+/// - A new `NotLeaderHint` endpoint: retried immediately. Repeated/cyclic hints
+///   wait for election convergence and consume a separate `max_retries` budget.
 /// - Unknown leader / transport error: counted against `max_retries`, with
 ///   `unknown_leader_wait` (fixed) or exponential backoff (transport)
 ///   between attempts.
@@ -17,7 +17,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     /// Cap on retries for "unknown leader" and "other/transport" outcomes.
-    /// `NotLeaderHint`-with-hint retries do not count against this.
+    /// Also caps repeated hints and the number of distinct immediate redirects.
     pub max_retries: u32,
     /// Wait before retrying when the leader is completely unknown (no cached
     /// endpoint, no hint from the server). The client queries `/topology`

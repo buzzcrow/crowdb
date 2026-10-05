@@ -30,6 +30,53 @@ use crowdb_protocol::chunk_kv::{
 const STORE_ID: u64 = 1;
 const GROUP_ID: u64 = 1;
 
+#[tokio::test]
+async fn concurrent_watch_subscriptions_keep_independent_push_handlers() {
+    let store = Arc::new(PxKvStore::new(STORE_ID, "127.0.0.1:0".parse().unwrap()));
+    for group in [1, 2] {
+        store.add_group(PxGroup::new(
+            group,
+            PxLocalReplica::new(STORE_ID, PxLocalReplicaRole::Leader),
+        ));
+    }
+    store.start().await.unwrap();
+    let seed = spawn_topology_server(Arc::clone(&store)).await;
+    let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![seed])));
+    let watches = crowdb_kv_client::WatchNotifyClient::from_shared(Arc::clone(&client));
+    let mut first = watches.subscribe(STORE_ID, 1, b"catalog/").unwrap();
+    let mut second = watches.subscribe(STORE_ID, 2, b"grant/").unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(10));
+        while ![1, 2]
+            .into_iter()
+            .all(|id| store.get_group(id).unwrap().watch_registry.has_watchers())
+        {
+            tick.tick().await;
+        }
+        client
+            .put(STORE_ID, 1, b"catalog/head", b"one", None)
+            .await
+            .unwrap();
+        client
+            .put(STORE_ID, 2, b"grant/owner", b"two", None)
+            .await
+            .unwrap();
+        let observed = first.notify_rx.recv().await.unwrap();
+        assert_eq!(observed.group_id, 1);
+        assert_eq!(observed.prefix, b"catalog/");
+        assert_eq!(observed.keys, [b"catalog/head".to_vec()]);
+        let observed = second.notify_rx.recv().await.unwrap();
+        assert_eq!(observed.group_id, 2);
+        assert_eq!(observed.prefix, b"grant/");
+        assert_eq!(observed.keys, [b"grant/owner".to_vec()]);
+    })
+    .await
+    .expect("both subscriptions must receive their own pushed update");
+    drop((first, second));
+    store.stop();
+    store.join().await;
+}
+
 fn now_ms() -> u64 {
     u64::try_from(
         SystemTime::now()

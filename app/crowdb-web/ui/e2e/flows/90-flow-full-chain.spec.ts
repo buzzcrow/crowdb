@@ -127,6 +127,7 @@ test.describe('flow · full chain', () => {
       await expect(page.getByTestId('kv-group-select')).toBeVisible({ timeout: 5_000 });
       await page.getByTestId('kv-group-select').selectOption('70');
 
+      await page.getByRole('group', { name: /^KV actions/ }).locator('summary').click();
       // Put
       await page.getByLabel('Put key').fill('smoke-key');
       await page.getByLabel('Put value').fill('smoke-value');

@@ -180,9 +180,21 @@ allocates a monotonic `request_id` (via `RequestIdGen` in
 looks up the id, invokes the callback, removes the entry.
 `on_response` returns `bool` — `true` if the id was found (frame
 consumed), `false` if not (caller owns the frame and dispatches it as
-a request). `call_one_way` skips the pending map. `fail_all` (on
+a request). `send_one_way` sets the one-way wire flag and skips both
+the completion slab and pending map. One-way frames bypass response
+correlation on both sides, even when their ID equals a pending call's ID.
+`fail_all` (on
 connection close) invokes every pending callback with
 `ConnectionClosed`.
+
+`attach()` installs a separate RPC close callback without replacing transport
+cleanup. Closing an outbound connection immediately completes its pending
+requests in both the completion slab and fallback map; it does not wait for
+the timeout reaper or fail requests belonging to another connection.
+FFI connection callbacks retain the client implementation until the connection
+is destroyed, so closing a connection after dropping its client handle remains
+safe. Destroying the handle still clears registered handlers and stops its
+timeout reaper.
 
 `RequestIdGen` (in `crowdb-common`) is a per-client monotonic
 `request_id` generator — a single definition shared by C++
@@ -192,7 +204,8 @@ within one client's pending map.
 
 **Bidirectional request-response**: either side can send requests and
 receive responses. The client's `attach()` sets a combined `on_frame`
-callback: `on_response` first (route responses to pending callbacks);
+callback: one-way frames dispatch directly to their registered handler;
+other frames try `on_response` first (route responses to pending callbacks);
 if no match, `dispatch_request` (dispatch to a registered handler by
 `msg_type`). The server's `dispatch()` uses handler-first order: if a
 handler is registered for the `msg_type`, dispatch as a request; if
@@ -228,8 +241,9 @@ drop if one-way). Ping is registered automatically
 (`EConnectionPingRequest` → `ConnectionPingResponse`).
 
 `set_request_client(RpcClient*)` wires an `RpcClient` into the server
-for server-initiated request-response (e.g. WatchNotify: server sends
-a notify request, awaits ack). The server sends requests via
+for server-initiated request-response. Watch subscription and notification
+frames are one-way and do not wait for an acknowledgment. Push frames use
+the server that owns their accepted connection. The server sends requests via
 `request_client_->send()`; ack responses are routed by the server's
 `dispatch()` to the `request_client_`'s pending map. Connection close
 fires `request_client_->fail_all(ConnectionClosed)`.

@@ -37,6 +37,7 @@ let captured: CapturedRequest[] = [];
 function installFetchMock(response: any = {}, status = 200) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
+    if (url.endsWith('/deployment-defaults')) return new Response(JSON.stringify({ kv: { instance_id: '1', http_port: 19911, rpc_port: 19921 }, diskdb: { instance_id: '1', rpc_port: 29921 } }), { status: 200 });
     const method = (init?.method || 'GET').toUpperCase();
     const bodyText = typeof init?.body === 'string' ? init.body : '';
     captured.push({
@@ -124,7 +125,9 @@ describe('Add Node dialog', () => {
 
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
-    fireEvent.click(screen.getByLabelText('Enable CrowDB Storage on this node'));
+    fireEvent.click(screen.getByLabelText('crowdb-paxos-kv'));
+    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
@@ -154,7 +157,9 @@ describe('Add Node dialog', () => {
     fireEvent.change(screen.getByLabelText('SSH Key Path (optional)'), {
       target: { value: '/keys/id_rsa' },
     });
-    fireEvent.click(screen.getByLabelText('Enable CrowDB Storage on this node'));
+    fireEvent.click(screen.getByLabelText('crowdb-paxos-kv'));
+    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
@@ -181,7 +186,9 @@ describe('Add Node dialog', () => {
       { wrapper },
     );
 
-    fireEvent.click(screen.getByLabelText('Enable CrowDB Storage on this node'));
+    fireEvent.click(screen.getByLabelText('crowdb-paxos-kv'));
+    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
@@ -208,11 +215,12 @@ describe('Add Node dialog', () => {
       { wrapper },
     );
 
-    expect((screen.getByLabelText('Enable CrowDB Storage on this node') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('crowdb-paxos-kv') as HTMLInputElement).checked).toBe(true);
     // Disable DiskDB — this test focuses on the CrowDB Storage deploy flow.
-    fireEvent.click(screen.getByLabelText('Enable DiskDB on this node'));
+    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
     await waitFor(() => expect(captured.length).toBe(2));
@@ -234,12 +242,14 @@ describe('Add Node dialog', () => {
     });
   });
 
-  it('closes the dialog after node creation even when DiskDB deployment fails', async () => {
+  it('keeps one dialog and retries failed services without recreating the node', async () => {
     let onCloseCalled = false;
+    const onDefaultServices = vi.fn();
     // Custom mock: success for addNode and deployServer, 502 for deployDiskdb.
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
-      const method = (init?.method || 'GET').toUpperCase();
+      if (url.endsWith('/deployment-defaults')) return new Response(JSON.stringify({ kv: { instance_id: '1', http_port: 19911, rpc_port: 19921 }, diskdb: { instance_id: '1', rpc_port: 29921 } }), { status: 200 });
+    const method = (init?.method || 'GET').toUpperCase();
       const bodyText = typeof init?.body === 'string' ? init.body : '';
       captured.push({ url, method, body: bodyText ? JSON.parse(bodyText) : null });
       const isDiskdbDeploy = url.includes('/diskdb/deploy');
@@ -254,6 +264,7 @@ describe('Add Node dialog', () => {
       <AddNodeDialog
         isOpen
         onClose={() => { onCloseCalled = true; }}
+        onDefaultServices={onDefaultServices}
         racks={[mockRack]}
         defaultRackId="1"
         defaultRestPort="19911"
@@ -266,17 +277,24 @@ describe('Add Node dialog', () => {
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
     // Both KV and DiskDB are enabled by default.
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
 
-    // The dialog must close after node creation, before service results.
-    await waitFor(() => expect(onCloseCalled).toBe(true));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('AddrInUse'));
+    expect(onCloseCalled).toBe(false);
     // All three requests are sent: addNode, deployServer, deployDiskdb.
     await waitFor(() => expect(captured.length).toBe(3));
     expect(captured[0].url).toBe('/api/nodes');
     expect(captured[1].url).toBe('/api/nodes/1/server/deploy');
     expect(captured[2].url).toBe('/api/nodes/1/diskdb/deploy');
-    // The error toast surfaces the partial failure.
-    await waitFor(() => expect(screen.queryByText(/DiskDB/)).toBeTruthy());
+    // The complete service plan remains visible/retriable after a prerequisite
+    // failure; it records the failure instead of recreating the node.
+    expect(onDefaultServices).toHaveBeenCalledWith(1, expect.any(Array), expect.any(Object));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry failed services' }));
+    await waitFor(() => expect(captured.length).toBe(4));
+    expect(captured[3].url).toBe('/api/nodes/1/diskdb/deploy');
+    expect(captured.filter(request => request.url === '/api/nodes')).toHaveLength(1);
+    expect(captured.filter(request => request.url.endsWith('/server/deploy'))).toHaveLength(1);
   });
 });
 
@@ -287,6 +305,7 @@ describe('Deploy Server dialog', () => {
 
     fireEvent.change(screen.getByLabelText('REST Port'), { target: { value: '19911' } });
     fireEvent.change(screen.getByLabelText('RPC Port'), { target: { value: '19921' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /deploy/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /deploy/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
@@ -298,7 +317,7 @@ describe('Deploy Server dialog', () => {
     expect(captured[0].body.binary).toBeUndefined();
   });
 
-  it('submits immediately with provided default ports', async () => {
+  it('uses freshly checked defaults instead of stale supplied ports', async () => {
     installFetchMock({ node_id: 1, pid: 1234, mgmt_url: 'x', rpc_url: 'y' });
     render(
       <DeployServerDialog
@@ -311,10 +330,11 @@ describe('Deploy Server dialog', () => {
       { wrapper },
     );
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /deploy/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /deploy/i }));
 
     await waitFor(() => expect(captured.length).toBe(1));
-    expect(captured[0].body).toEqual({ rest_port: 19915, rpc_port: 19925 });
+    expect(captured[0].body).toEqual({ rest_port: 19911, rpc_port: 19921 });
   });
 
   it('increments ports only when the same node already uses them', () => {
@@ -527,7 +547,7 @@ describe('Add Group dialog', () => {
     const bothServers: CrowdbKVServerView[] = [
       ...mockServers,
       {
-        id: 'KV-n2',
+        id: 'PKV-n2',
         node_id: 2,
         rack_id: 1,
         host: '127.0.0.1',
@@ -590,7 +610,7 @@ describe('Add Group dialog', () => {
     const bothServers: CrowdbKVServerView[] = [
       ...mockServers,
       {
-        id: 'KV-n2',
+        id: 'PKV-n2',
         node_id: 2,
         rack_id: 1,
         host: '127.0.0.1',
@@ -624,7 +644,7 @@ describe('Add Group dialog', () => {
     ];
     const fourServers: CrowdbKVServerView[] = [
       {
-        id: 'KV-n1',
+        id: 'PKV-n1',
         node_id: 1,
         rack_id: 1,
         host: '127.0.0.1',
@@ -639,7 +659,7 @@ describe('Add Group dialog', () => {
         rpc_port: 19920,
       },
       {
-        id: 'KV-n2',
+        id: 'PKV-n2',
         node_id: 2,
         rack_id: 1,
         host: '127.0.0.1',
@@ -654,7 +674,7 @@ describe('Add Group dialog', () => {
         rpc_port: 29920,
       },
       {
-        id: 'KV-n3',
+        id: 'PKV-n3',
         node_id: 3,
         rack_id: 1,
         host: '127.0.0.1',
@@ -669,7 +689,7 @@ describe('Add Group dialog', () => {
         rpc_port: 39920,
       },
       {
-        id: 'KV-n4',
+        id: 'PKV-n4',
         node_id: 4,
         rack_id: 1,
         host: '127.0.0.1',
@@ -707,7 +727,7 @@ describe('Add Group dialog', () => {
     const bothServers: CrowdbKVServerView[] = [
       ...mockServers,
       {
-        id: 'KV-n2',
+        id: 'PKV-n2',
         node_id: 2,
         rack_id: 1,
         host: '127.0.0.1',
@@ -746,7 +766,7 @@ describe('Add Group dialog', () => {
     const unavailableN2: CrowdbKVServerView[] = [
       ...mockServers,
       {
-        id: 'KV-n2',
+        id: 'PKV-n2',
         node_id: 2,
         rack_id: 1,
         host: '127.0.0.1',
@@ -862,9 +882,10 @@ describe('end-to-end create flow', () => {
       { wrapper },
     );
     // Disable DiskDB — this flow tests CrowDB Storage, not DiskDB deploy.
-    fireEvent.click(screen.getByLabelText('Enable DiskDB on this node'));
+    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
     fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /create node/i }));
     await waitFor(() => expect(captured.length).toBe(3));
     node.unmount();

@@ -212,8 +212,8 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
                   // state has already committed.
                   setOpenSubmenu(item.id);
                 } else {
-                  await item.onSelect?.();
                   onClose();
+                  await item.onSelect?.();
                 }
               }}
               onMouseEnter={() => {
@@ -251,8 +251,8 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
                       role="menuitem"
                       onClick={async () => {
                         if (!subItem.disabled) {
-                          await subItem.onSelect?.();
                           onClose();
+                          await subItem.onSelect?.();
                         }
                       }}
                       disabled={subItem.disabled}

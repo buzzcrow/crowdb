@@ -392,6 +392,7 @@ table FBSealChunkRequest {
     rpc_create_nano:uint64;
     chunk_id:crowdb.rpc.proto.FBInt128;
     seal_length:uint32;
+    seal_bytes:uint64;
 }
 
 table FBSealChunkResponse {

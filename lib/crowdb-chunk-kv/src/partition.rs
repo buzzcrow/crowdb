@@ -7,12 +7,14 @@
 
 mod frame;
 mod journal;
+mod observation;
 mod split;
 mod transfer;
 mod tree;
 
 pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
 pub use journal::{PartitionJournal, StreamPartitionJournal};
+pub use observation::TreeObservation;
 pub use split::{PreparedSplit, PreparedSplitWriter, SplitSessionTargets, SplitWriterTarget};
 pub use tree::{CrowdbPartitionTree, PartitionTree};
 
@@ -1849,20 +1851,20 @@ impl Partition {
     }
 
     /// Activates a replayed overlay after its owner validates an exact
-    /// committed transfer and matching serving authority.
+    /// committed split or transfer and matching serving authority.
     ///
     /// # Errors
     ///
     /// Returns a stale-epoch or lifecycle error, or rejects an assignment
     /// that was not recovered from an overlay artifact.
-    pub fn activate_recovered_transfer(&self, ownership_epoch: u64) -> Result<()> {
+    pub fn activate_recovered_overlay(&self, ownership_epoch: u64) -> Result<()> {
         self.validate_epoch(ownership_epoch)?;
         if self.lifecycle() == PartitionLifecycle::Serving {
             return Ok(());
         }
         if self.prepared_artifact.load().is_none() {
             return Err(ChunkKvError::InvalidRequest(
-                "recovered transfer target has no overlay artifact".into(),
+                "recovered assignment has no overlay artifact".into(),
             ));
         }
         self.lifecycle
@@ -2042,6 +2044,24 @@ impl Partition {
     /// Returns a typed storage error if the native counters are unavailable.
     pub fn chunk_storage_stats(&self) -> Result<Option<crowdb_tree_ffi::ChunkPageStoreStats>> {
         self.tree.chunk_stats()
+    }
+
+    /// Estimates current retained pack bytes without scanning data or storage metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree error if the estimate is unavailable.
+    pub fn estimated_bytes(&self) -> Result<u64> {
+        self.tree.estimated_bytes()
+    }
+
+    /// Returns an advisory separator without scanning keys or loading pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree error if the structural hint is unavailable.
+    pub fn approximate_split_key(&self) -> Result<Option<Vec<u8>>> {
+        self.tree.approximate_split_key()
     }
 
     /// Runs one bounded R140 ownership-materialization pass after a split

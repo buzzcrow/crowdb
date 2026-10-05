@@ -19,7 +19,7 @@ pub use partition::{
     decode_frame, encode_frame, CheckpointReclaim, CrowdbPartitionTree, DecodedFrame, FrameDecode,
     MaterializationProgress, MutationResponse, Partition, PartitionConfig, PartitionJournal,
     PartitionSnapshot, PartitionTree, PreparedSplit, PreparedSplitWriter, ScanEntry, ScanPage, SplitIngress,
-    SplitSessionTargets, SplitWriterTarget, StreamPartitionJournal, MAX_FRAME_BYTES,
+    SplitSessionTargets, SplitWriterTarget, StreamPartitionJournal, TreeObservation, MAX_FRAME_BYTES,
 };
 pub use types::{
     canonical_operation_digest, Checkpoint, CompareCondition, JournalPosition, MutationOperation,

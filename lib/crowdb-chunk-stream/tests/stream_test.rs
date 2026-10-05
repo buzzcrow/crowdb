@@ -664,3 +664,33 @@ async fn rollover_retries_failed_manifest_publication_without_reopen() {
         Bytes::from_static(b"abcdef")
     );
 }
+
+#[tokio::test]
+async fn reopen_repartitions_directory_and_reads_before_another_append() {
+    let store = Arc::new(MemoryStreamStore::new(32));
+    let stream = create_stream(&store, 32, StreamConfig::default()).await;
+    for bytes in [b"one", b"two", b"end"] {
+        stream.append(&[Bytes::copy_from_slice(bytes)]).await.unwrap();
+    }
+    drop(stream);
+    tokio::task::yield_now().await;
+    let reopened = ChunkStream::open(
+        StreamName { high: 1, low: 32 },
+        9,
+        StreamConfig {
+            extent_page_entries: 1,
+            ..StreamConfig::default()
+        },
+        store.clone(),
+        store.clone(),
+        store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reopened.read_at(0, 9).await.unwrap(),
+        Bytes::from_static(b"onetwoend")
+    );
+    let observed = reopened.observe_metadata(None, 0).unwrap();
+    assert_eq!(observed.extent_pages.len(), 3);
+}

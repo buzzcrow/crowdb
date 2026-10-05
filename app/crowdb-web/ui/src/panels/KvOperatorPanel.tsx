@@ -3,12 +3,27 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Search, Info, Database, Trash2, Loader2, Copy, AlertTriangle, FlaskConical } from 'lucide-react';
+import { useNavigationSnapshot } from '../contexts/DomainContext';
+import { Domain } from '../types';
+import { displayBytes, printableBytes } from '../kv/displayBytes';
+import { ByteDisplay } from '../kv/ByteDisplay';
+import { OwnershipPanel } from '../chunk/ownership/OwnershipPanel';
+import { ResourceActions } from '../access/ResourceActions';
+import { buttonClass } from '../access/Workbench';
 import { useToast } from '../contexts/ToastContext';
 import { useActivity } from '../contexts/ActivityContext';
 import { Dialog } from '../components/Dialog';
 import { kvGet, kvPut, kvDelete, kvScan, type KvGetResponse, type KvScanItem } from '../api';
 import type { EnrichedStoreView, GroupView } from '../types';
 import type { SelectedEntity } from '../contexts/SelectionContext';
+
+type Cursor = Map<string, { lastKey: string; truncated: boolean }>;
+interface QueryState {
+  storeId: string; groupId: string; prefix: string;
+  start: Array<[string, { lastKey: string; truncated: boolean }]>;
+  previous: Array<Array<[string, { lastKey: string; truncated: boolean }]>>;
+  number: number; focused?: { group: string; key: string };
+}
 
 const ALL_GROUPS = '__all__';
 
@@ -19,6 +34,7 @@ interface ScanRow extends KvScanItem {
 }
 
 interface KvOperatorPanelProps {
+  active?: boolean;
   stores: EnrichedStoreView[];
   selectedEntity: SelectedEntity | null;
   readonly?: boolean;
@@ -28,7 +44,7 @@ interface KvOperatorPanelProps {
   loading?: boolean;
 }
 
-export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError, loading }: KvOperatorPanelProps) {
+export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError, loading, active = true }: KvOperatorPanelProps) {
   const { success, error } = useToast();
   const { log } = useActivity();
 
@@ -40,6 +56,10 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   const [scanLoading, setScanLoading] = useState(false);
   const [scanCursors, setScanCursors] = useState<Map<string, { lastKey: string; truncated: boolean }>>(new Map());
   const [loadingMore, setLoadingMore] = useState(false);
+  const [pageStarts, setPageStarts] = useState<Cursor[]>([]);
+  const [pageStart, setPageStart] = useState<Cursor>(new Map());
+  const [pageNumber, setPageNumber] = useState(1);
+  const [focusedRow, setFocusedRow] = useState<ScanRow | null>(null);
   const [autoScanned, setAutoScanned] = useState(false);
   const [scanDone, setScanDone] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -59,6 +79,23 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
 
   const [demoCount, setDemoCount] = useState(20);
   const [demoLoading, setDemoLoading] = useState(false);
+  const [demoSession] = useState(() => crypto.randomUUID().replace(/-/g, ''));
+  const scanReqIdRef = useRef(0);
+  const scanAbortRef = useRef<AbortController>();
+  const restoreQuery = useRef<QueryState | null>(null);
+  const [restoreVersion, setRestoreVersion] = useState(0);
+  useNavigationSnapshot(Domain.KV, 'operator-query', () => {
+    const state: QueryState = { storeId, groupId, prefix: scanPrefix, start: [...pageStart],
+      previous: pageStarts.slice(-32).map(cursor => [...cursor]), number: pageNumber,
+      focused: focusedRow ? { group: focusedRow.groupId, key: focusedRow.key_hex } : undefined };
+    return () => {
+      restoreQuery.current = state;
+      setStoreId(state.storeId); setGroupId(state.groupId); setScanPrefix(state.prefix);
+      setRestoreVersion(value => value + 1);
+    };
+  });
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   const groupsInStore = useMemo(() => {
     if (!storeId) return [] as GroupView[];
@@ -97,13 +134,12 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   }, [groupIdsInStore, groupId, storeId]);
 
   useEffect(() => {
-    if (selectedEntity?.type === 'Group' && selectedEntity.domain === 'KV') {
-      const sid = selectedEntity.parentIds?.store_id;
-      const gid = selectedEntity.id;
-      if (sid && stores.some((s) => String(s.store_id) === sid)) {
-        if (sid === storeId && gid === groupId) return;
+    if (selectedEntity?.domain === 'KV') {
+      const sid = selectedEntity.type === 'Store' ? selectedEntity.id : selectedEntity.parentIds?.store_id;
+      const gid = selectedEntity.type === 'Group' ? selectedEntity.id : selectedEntity.parentIds?.group_id;
+      if (sid != null) {
         setStoreId(String(sid));
-        setGroupId(gid);
+        setGroupId(gid == null ? ALL_GROUPS : String(gid));
         setScanRows([]);
         setAutoScanned(false);
         setScanDone(false);
@@ -111,7 +147,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         setErrorMsg(null);
       }
     }
-  }, [selectedEntity, stores, storeId, groupId]);
+  }, [selectedEntity]);
 
   const handleStoreChange = useCallback((sid: string) => {
     setStoreId(sid);
@@ -138,60 +174,68 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   // store/group changes, a new handleScan closure is created but the old
   // one's await kvScan may still be in flight; without this guard the old
   // response silently overwrites the table with wrong-store data.
-  const scanReqIdRef = useRef(0);
+  useEffect(() => {
+    ++scanReqIdRef.current;
+    scanAbortRef.current?.abort();
+    setScanLoading(false);
+    setLoadingMore(false);
+    setAutoScanned(false);
+    setGetResult(null);
+    setConfirmDelete(null);
+    setFocusedRow(null);
+    setScanRows([]); setScanDone(false); setScanCursors(new Map()); setScanTruncated(false);
+    setPutKey(''); setPutValue(''); setDeleteKey('');
+    setPageStarts([]); setPageStart(new Map()); setPageNumber(1);
+    return () => { ++scanReqIdRef.current; scanAbortRef.current?.abort(); };
+  }, [storeId, groupId, scanPrefix]);
 
-  const handleScan = useCallback(async () => {
-    if (!storeId || !groupId) return;
-    const reqId = ++scanReqIdRef.current;
-    setScanLoading(true);
-    setErrorMsg(null);
-    let scannedCount = 0;
+  const fetchPage = useCallback(async (start: Cursor, direction: 'first' | 'next' | 'previous' | 'restore', focus?: QueryState['focused']) => {
+    if (!storeId || !groupId || !activeRef.current) return;
+    if (groupId === ALL_GROUPS && groupIdsInStore.length > 10) { setErrorMsg('All Groups is limited to 10 groups. Select a specific group.'); return; }
+    scanAbortRef.current?.abort();
+    const controller = new AbortController(); scanAbortRef.current = controller;
+    const request = ++scanReqIdRef.current;
+    setScanLoading(true); setLoadingMore(true); setErrorMsg(null);
     try {
-      if (groupId === ALL_GROUPS) {
-        const allRows: ScanRow[] = [];
-        const cursors = new Map<string, { lastKey: string; truncated: boolean }>();
-        let anyTruncated = false;
-        for (const gid of groupIdsInStore) {
-          const result = await kvScan(storeId, gid, scanPrefix);
-          if (reqId !== scanReqIdRef.current) return;
-          allRows.push(...result.items.map((item) => ({ ...item, groupId: gid, selected: false })));
-          if (result.items.length > 0) {
-            cursors.set(gid, { lastKey: result.items[result.items.length - 1].key_utf8, truncated: result.truncated });
-          }
-          if (result.truncated) anyTruncated = true;
-        }
-        setScanRows(allRows);
-        setScanTruncated(anyTruncated);
-        setScanCursors(cursors);
-        setScanDone(true);
-        scannedCount = allRows.length;
-      } else {
-        const result = await kvScan(storeId, groupId, scanPrefix);
-        if (reqId !== scanReqIdRef.current) return;
-        setScanRows(result.items.map((item) => ({ ...item, groupId, selected: false })));
-        setScanTruncated(result.truncated);
-        setScanDone(true);
-        const cursors = new Map<string, { lastKey: string; truncated: boolean }>();
-        if (result.items.length > 0) {
-          cursors.set(groupId, { lastKey: result.items[result.items.length - 1].key_utf8, truncated: result.truncated });
-        }
-        setScanCursors(cursors);
-        scannedCount = result.items.length;
+      const gids = groupId === ALL_GROUPS ? groupIdsInStore : [groupId];
+      const cursors = new Map(start);
+      const rows: ScanRow[] = [];
+      for (const gid of gids) {
+        const cursor = cursors.get(gid);
+        if (cursor && !cursor.truncated) continue;
+        if (rows.length >= 20) break;
+        const result = await kvScan(storeId, gid, scanPrefix, 20 - rows.length, undefined, { signal: controller.signal }, cursor?.lastKey);
+        if (request !== scanReqIdRef.current) return;
+        rows.push(...result.items.map(item => ({ ...item, groupId: gid, selected: false })));
+        cursors.set(gid, { lastKey: result.items.at(-1)?.key_hex ?? cursor?.lastKey ?? '', truncated: result.truncated });
       }
-      log({ action: 'KV Scan', target: targetLabel, status: 'Success', message: `Found ${scannedCount} keys` });
-      success(`Scanned ${scannedCount} keys`);
+      setScanRows(rows); setScanCursors(cursors); setScanTruncated(gids.some(gid => !cursors.has(gid) || cursors.get(gid)!.truncated));
+      setScanDone(true); setFocusedRow(focus ? rows.find(row => row.groupId === focus.group && row.key_hex === focus.key) ?? null : null); setPageStart(start);
+      if (direction === 'first') { setPageStarts([]); setPageNumber(1); }
+      else if (direction === 'next') { setPageStarts(previous => [...previous, pageStart].slice(-32)); setPageNumber(value => value + 1); }
+      else if (direction === 'previous') { setPageStarts(previous => previous.slice(0, -1)); setPageNumber(value => value - 1); }
     } catch (err) {
-      if (reqId !== scanReqIdRef.current) return;
-      const msg = err instanceof Error ? err.message : 'Scan failed';
-      setErrorMsg(msg);
-      log({ action: 'KV Scan', target: targetLabel, status: 'Failed', message: msg });
-      error(msg);
+      if (request === scanReqIdRef.current) setErrorMsg(err instanceof Error ? err.message : 'Scan failed');
     } finally {
-      if (reqId === scanReqIdRef.current) {
-        setScanLoading(false);
-      }
+      if (request === scanReqIdRef.current) { setScanLoading(false); setLoadingMore(false); }
     }
-  }, [storeId, groupId, scanPrefix, groupIdsInStore, targetLabel, log, success, error]);
+  }, [storeId, groupId, groupIdsInStore, scanPrefix, pageStart]);
+  useEffect(() => {
+    if (!active) {
+      scanAbortRef.current?.abort(); ++scanReqIdRef.current;
+      setScanLoading(false); setLoadingMore(false);
+      if (!scanDone) setAutoScanned(false);
+      return;
+    }
+    const state = restoreQuery.current;
+    if (!state || state.storeId !== storeId || state.groupId !== groupId || state.prefix !== scanPrefix) return;
+    restoreQuery.current = null;
+    setPageStarts(state.previous.map(cursor => new Map(cursor))); setPageNumber(state.number);
+    setAutoScanned(true);
+    void fetchPage(new Map(state.start), 'restore', state.focused);
+  }, [active, storeId, groupId, scanPrefix, restoreVersion, fetchPage, scanDone]);
+
+  const handleScan = useCallback(() => fetchPage(new Map(), 'first'), [fetchPage]);
 
   const handleScanRef = useRef(handleScan);
   useEffect(() => { handleScanRef.current = handleScan; }, [handleScan]);
@@ -205,47 +249,13 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   useEffect(() => { autoScanRef.current = autoScan; }, [autoScan]);
 
   useEffect(() => {
-    if (storeId && groupId && autoScan && !autoScanned && !scanLoading && scanRows.length === 0) {
+    if (active && !restoreQuery.current && storeId && groupId && autoScan && !autoScanned && !scanLoading && scanRows.length === 0) {
       setAutoScanned(true);
       handleScan();
     }
-  }, [storeId, groupId, autoScan, autoScanned, scanLoading, scanRows.length, handleScan]);
+  }, [active, storeId, groupId, autoScan, autoScanned, scanLoading, scanRows.length, handleScan]);
 
-  const handleLoadMore = useCallback(async () => {
-    if (!storeId || !groupId || scanCursors.size === 0) return;
-    setLoadingMore(true);
-    setErrorMsg(null);
-    try {
-      const gids = groupId === ALL_GROUPS ? groupIdsInStore : [groupId];
-      const newRows: ScanRow[] = [];
-      const updatedCursors = new Map(scanCursors);
-      let anyTruncated = false;
-      for (const gid of gids) {
-        const cursor = updatedCursors.get(gid);
-        if (!cursor || !cursor.truncated) continue;
-        const result = await kvScan(storeId, gid, scanPrefix, 100, cursor.lastKey);
-        newRows.push(...result.items.map((item) => ({ ...item, groupId: gid, selected: false })));
-        if (result.items.length > 0) {
-          updatedCursors.set(gid, { lastKey: result.items[result.items.length - 1].key_utf8, truncated: result.truncated });
-        } else {
-          updatedCursors.set(gid, { lastKey: cursor.lastKey, truncated: false });
-        }
-        if (result.truncated) anyTruncated = true;
-      }
-      setScanRows((prev) => [...prev, ...newRows]);
-      setScanTruncated(anyTruncated);
-      setScanCursors(updatedCursors);
-      log({ action: 'KV Scan', target: targetLabel, status: 'Success', message: `Loaded ${newRows.length} more keys` });
-      success(`Loaded ${newRows.length} more keys`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Load more failed';
-      setErrorMsg(msg);
-      log({ action: 'KV Scan', target: targetLabel, status: 'Failed', message: msg });
-      error(msg);
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [storeId, groupId, scanCursors, groupIdsInStore, scanPrefix, targetLabel, log, success, error]);
+  const handleLoadMore = () => fetchPage(scanCursors, 'next');
 
   const handleGet = useCallback(async () => {
     if (!getKey || !storeId || !groupId || groupId === ALL_GROUPS) return;
@@ -267,11 +277,9 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   }, [getKey, storeId, groupId, log, success, error]);
 
   const handlePut = useCallback(async () => {
-    if (!putKey || !putValue || !storeId || !groupId) return;
+    if (!putKey || !putValue || !storeId || !groupId || groupId === ALL_GROUPS) return;
     if (isSystemGroup) return;
-    const targetGid = groupId === ALL_GROUPS
-      ? writableGroupIds[Math.floor(Math.random() * writableGroupIds.length)]
-      : groupId;
+    const targetGid = groupId;
     if (!targetGid) return;
     setPutLoading(true);
     setErrorMsg(null);
@@ -325,10 +333,10 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   const handleDeletePrefix = useCallback(async () => {
     if (!deleteKey || !storeId || !groupId || isSystemGroup) return;
     const gids = groupId === ALL_GROUPS ? writableGroupIds : [groupId];
-    const allKeys: { key: string; gid: string }[] = [];
+    const allKeys: { key: string; keyHex: string; gid: string }[] = [];
     for (const gid of gids) {
       const result = await kvScan(storeId, gid, deleteKey);
-      allKeys.push(...result.items.map((item) => ({ key: item.key_utf8, gid })));
+      allKeys.push(...result.items.map((item) => ({ key: displayBytes(item.key_utf8, item.key_hex), keyHex: item.key_hex, gid })));
     }
     if (allKeys.length === 0) {
       success('No keys match prefix');
@@ -337,9 +345,9 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     setConfirmDelete({ count: allKeys.length, keys: allKeys.map((k) => k.key), onConfirm: async () => {
       setDeleteLoading(true);
       let ok = 0, fail = 0;
-      for (const { key, gid } of allKeys) {
+      for (const { keyHex, gid } of allKeys) {
         try {
-          await kvDelete(storeId, gid, { key });
+          await kvDelete(storeId, gid, { key_hex: keyHex });
           ok++;
         } catch {
           fail++;
@@ -358,12 +366,12 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     // Exclude system group rows from deletion.
     const writableRows = selectedRows.filter((r) => !(storeId === '0' && r.groupId === '0'));
     if (writableRows.length === 0) return;
-    setConfirmDelete({ count: writableRows.length, keys: writableRows.map((r) => r.key_utf8), onConfirm: async () => {
+    setConfirmDelete({ count: writableRows.length, keys: writableRows.map((r) => displayBytes(r.key_utf8, r.key_hex)), onConfirm: async () => {
       setDeleteLoading(true);
       let ok = 0, fail = 0;
       for (const row of writableRows) {
         try {
-          await kvDelete(storeId, row.groupId, { key: row.key_utf8 });
+          await kvDelete(storeId, row.groupId, { key_hex: row.key_hex });
           ok++;
         } catch {
           fail++;
@@ -376,12 +384,14 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     }});
   }, [selectedRows, storeId, targetLabel, log, success, handleScan]);
 
-  const handleInlineDelete = useCallback((key: string, gid: string) => {
+  const handleInlineDelete = useCallback((row: ScanRow) => {
+    const gid = row.groupId;
+    const key = displayBytes(row.key_utf8, row.key_hex);
     if (storeId === '0' && gid === '0') return;
     setConfirmDelete({ count: 1, keys: [key], onConfirm: async () => {
       setDeleteLoading(true);
       try {
-        await kvDelete(storeId, gid, { key });
+        await kvDelete(storeId, gid, { key_hex: row.key_hex });
         log({ action: 'KV Delete', target: `${storeId}/${gid}`, status: 'Success', message: `key: "${key}"` });
         success(`Key deleted: "${key}"`);
         setTimeout(() => handleScan(), 100);
@@ -405,7 +415,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     let ok = 0, fail = 0;
     const batch = Math.random().toString(36).substring(2, 6);
     for (let i = 1; i <= demoCount; i++) {
-      const key = `demo_key_${batch}_${String(i).padStart(4, '0')}`;
+      const key = `demo_key_${demoSession}_${batch}_${String(i).padStart(4, '0')}`;
       const value = `demo_val_${batch}_${String(i).padStart(4, '0')}`;
       const gid = gids[Math.floor(Math.random() * gids.length)];
       try {
@@ -419,7 +429,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     success(`Injected ${ok} demo keys${fail > 0 ? `, ${fail} failed` : ''}`);
     setDemoLoading(false);
     setTimeout(() => handleScan(), 100);
-  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoCount, targetLabel, log, success, handleScan]);
+  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoCount, demoSession, targetLabel, log, success, handleScan]);
 
   const handleDemoDelete = useCallback(async () => {
     if (!storeId || !groupId) return;
@@ -436,7 +446,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       let anyTruncated = false;
       for (const gid of gids) {
         const sa = cursors.get(gid);
-        const result = await kvScan(storeId, gid, 'demo_', 500, sa);
+        const result = await kvScan(storeId, gid, `demo_key_${demoSession}_`, 500, sa);
         allKeys.push(...result.items.map((item) => ({ key: item.key_utf8, gid })));
         if (result.truncated && result.items.length > 0) {
           cursors.set(gid, result.items[result.items.length - 1].key_utf8);
@@ -486,7 +496,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
             if (done.has(gid)) continue;
             const sa = cursors.get(gid);
             if (sa === undefined) { done.add(gid); continue; }
-            const result = await kvScan(storeId, gid, 'demo_', 500, sa);
+            const result = await kvScan(storeId, gid, `demo_key_${demoSession}_`, 500, sa);
             batch.push(...result.items.map((item) => ({ key: item.key_utf8, gid })));
             if (result.truncated && result.items.length > 0) {
               cursors.set(gid, result.items[result.items.length - 1].key_utf8);
@@ -506,7 +516,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       setDemoLoading(false);
       setTimeout(() => handleScan(), 100);
     }});
-  }, [storeId, groupId, isSystemGroup, writableGroupIds, targetLabel, log, success, handleScan]);
+  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoSession, targetLabel, log, success, handleScan]);
 
   const toggleRow = useCallback((idx: number) => {
     setScanRows((prev) => prev.map((r, i) => (i === idx ? { ...r, selected: !r.selected } : r)));
@@ -541,7 +551,163 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
 
   return (
     <div className="tw-h-full tw-overflow-y-auto tw-bg-bg tw-text-text">
-      <div className="tw-p-4 tw-space-y-3">
+      <div className="tw-p-5 tw-space-y-4">
+        <h1 className="tw-text-lg tw-font-semibold">KV data</h1>
+        {selectedEntity?.type === 'Group' && selectedEntity.id !== '0' && <OwnershipPanel active={active} selection={selectedEntity} nodes={[]} servers={[]} stores={stores} />}
+        <ResourceActions label={`KV actions · Store ${storeId} / Group ${groupId === ALL_GROUPS ? 'All' : groupId}`}>
+        {/* Action bar */}
+        <div className="tw-border tw-border-border tw-rounded tw-p-3 tw-space-y-2 tw-bg-panel/50">
+          {/* Get row */}
+          <div className="tw-flex tw-items-center tw-gap-2 tw-flex-wrap">
+            <span className="tw-text-xs tw-text-muted tw-w-10">Get</span>
+            <input
+              type="text"
+              value={getKey}
+              onChange={(e) => setGetKey(e.target.value)}
+              placeholder="Key"
+              aria-label="Get key"
+              className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text placeholder:tw-text-muted tw-w-40"
+              onKeyDown={(e) => e.key === 'Enter' && handleGet()}
+            />
+            <button
+              onClick={handleGet}
+              disabled={getLoading || !getKey || groupId === ALL_GROUPS}
+              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-border hover:tw-bg-accent/10 tw-rounded tw-text-xs disabled:tw-opacity-50"
+            >
+              {getLoading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Info className="tw-h-3 tw-w-3" />}
+              Get
+            </button>
+            {getResult && (
+              <span className="tw-text-xs tw-text-text tw-flex tw-items-center tw-gap-1">
+                {getResult.found ? (
+                  <>
+                    <span className="tw-font-mono" data-testid="kv-get-result"><ByteDisplay text={getResult.value_utf8} hex={getResult.value_hex} /></span>
+                    <span className="tw-text-muted tw-text-[10px]">rev: {getResult.revision}</span>
+                    <button onClick={() => copy(displayBytes(getResult.value_utf8, getResult.value_hex))} className="tw-text-muted hover:tw-text-text" data-testid="kv-copy-value">
+                      <Copy className="tw-h-3 tw-w-3" />
+                    </button>
+                  </>
+                ) : (
+                  <span className="tw-text-muted" data-testid="kv-not-found">not found</span>
+                )}
+              </span>
+            )}
+            {groupId === ALL_GROUPS && (
+              <span className="tw-text-[10px] tw-text-muted">Select a specific group to use Get</span>
+            )}
+          </div>
+
+          {/* Put row */}
+          {!readonly && !isSystemGroup && (
+            <div className="tw-flex tw-items-center tw-gap-2 tw-flex-wrap">
+              <span className="tw-text-xs tw-text-muted tw-w-10">Put</span>
+              <input
+                type="text"
+                value={putKey}
+                onChange={(e) => setPutKey(e.target.value)}
+                placeholder="Key"
+                aria-label="Put key"
+                className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text placeholder:tw-text-muted tw-w-40"
+              />
+              <input
+                type="text"
+                value={putValue}
+                onChange={(e) => setPutValue(e.target.value)}
+                placeholder="Value"
+                aria-label="Put value"
+                className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text placeholder:tw-text-muted tw-w-48"
+              />
+              <button
+                onClick={handlePut}
+                disabled={putLoading || !putKey || !putValue || groupId === ALL_GROUPS}
+                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-border hover:tw-bg-accent/10 tw-rounded tw-text-xs disabled:tw-opacity-50"
+              >
+                {putLoading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Database className="tw-h-3 tw-w-3" />}
+                Put
+              </button>
+              {groupId === ALL_GROUPS && <span className="tw-text-xs tw-text-muted">Select a specific group to use Put</span>}
+              <label className="tw-flex tw-items-center tw-gap-1 tw-text-xs tw-text-muted">
+                <input type="checkbox" checked={autoScan} onChange={(e) => setAutoScan(e.target.checked)} />
+                auto-scan
+              </label>
+            </div>
+          )}
+
+          {/* Delete row */}
+          {!readonly && !isSystemGroup && (
+            <div className="tw-flex tw-items-center tw-gap-2 tw-flex-wrap">
+              <span className="tw-text-xs tw-text-muted tw-w-10">Del</span>
+              <input
+                type="text"
+                value={deleteKey}
+                onChange={(e) => setDeleteKey(e.target.value)}
+                placeholder="Key"
+                aria-label="Delete key"
+                className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text placeholder:tw-text-muted tw-w-40"
+              />
+              <button
+                onClick={handleDeleteKey}
+                disabled={deleteLoading || !deleteKey || groupId === ALL_GROUPS}
+                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-failed/30 tw-text-failed tw-rounded tw-text-xs disabled:tw-opacity-50"
+              >
+                <Trash2 className="tw-h-3 tw-w-3" />
+                Delete
+              </button>
+              <button
+                onClick={handleDeletePrefix}
+                disabled={deleteLoading || !deleteKey}
+                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-failed/30 tw-text-failed tw-rounded tw-text-xs hover:tw-bg-failed/10 disabled:tw-opacity-50"
+                title="Delete all keys matching the prefix in the Key field"
+              >
+                Delete Prefix
+              </button>
+              <button
+                onClick={handleDeleteSelected}
+                disabled={deleteLoading || selectedRows.length === 0}
+                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-failed/30 tw-text-failed tw-rounded tw-text-xs hover:tw-bg-failed/10 disabled:tw-opacity-50"
+              >
+                Delete Selected ({selectedRows.length})
+              </button>
+            </div>
+          )}
+
+          {/* Demo row */}
+          {!readonly && !isSystemGroup && (
+            <div className="tw-flex tw-items-center tw-gap-2 tw-flex-wrap tw-pt-1 tw-border-t tw-border-border">
+              <span className="tw-text-xs tw-text-muted tw-w-10 tw-flex tw-items-center tw-gap-0.5">
+                <FlaskConical className="tw-h-3 tw-w-3" /> Demo
+              </span>
+              <span className="tw-text-[10px] tw-text-muted">Inject</span>
+              <input
+                type="number"
+                value={demoCount}
+                onChange={(e) => setDemoCount(Math.max(1, parseInt(e.target.value) || 0))}
+                aria-label="Demo key count"
+                className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text tw-w-20"
+              />
+              <span className="tw-text-xs tw-text-muted">demo keys</span>
+              <button
+                onClick={handleDemoInject}
+                disabled={demoLoading || (groupId === ALL_GROUPS && writableGroupIds.length === 0)}
+                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-border hover:tw-bg-accent/10 tw-rounded tw-text-xs disabled:tw-opacity-50"
+              >
+                {demoLoading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Database className="tw-h-3 tw-w-3" />}
+                Inject
+              </button>
+              <button
+                onClick={handleDemoDelete}
+                disabled={demoLoading || (groupId === ALL_GROUPS && writableGroupIds.length === 0)}
+                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-failed/30 tw-text-failed tw-rounded tw-text-xs hover:tw-bg-failed/10 disabled:tw-opacity-50"
+              >
+                <Trash2 className="tw-h-3 tw-w-3" />
+                Delete all demo
+              </button>
+              <span className="tw-text-[10px] tw-text-muted">Cleanup affects this session's demo keys in the selected scope.</span>
+            </div>
+          )}
+        </div>
+
+        </ResourceActions>
         {/* Selector bar */}
         <div className="tw-flex tw-items-center tw-gap-3 tw-flex-wrap">
           <div className="tw-flex tw-items-center tw-gap-1.5">
@@ -588,7 +754,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
             <button
               onClick={handleScan}
               disabled={scanLoading || !storeId || !groupId}
-              className="tw-flex tw-items-center tw-gap-1 tw-px-3 tw-py-1 tw-bg-accent tw-text-bg tw-rounded tw-text-xs disabled:tw-opacity-50"
+              className="tw-flex tw-items-center tw-gap-1 tw-px-3 tw-py-1 tw-border tw-border-border hover:tw-bg-accent/10 tw-rounded tw-text-xs disabled:tw-opacity-50"
             >
               {scanLoading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Search className="tw-h-3 tw-w-3" />}
               Scan
@@ -602,156 +768,6 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
             <span>{errorMsg}</span>
           </div>
         )}
-
-        {/* Action bar */}
-        <div className="tw-border tw-border-border tw-rounded tw-p-3 tw-space-y-2 tw-bg-panel/50">
-          {/* Get row */}
-          <div className="tw-flex tw-items-center tw-gap-2 tw-flex-wrap">
-            <span className="tw-text-xs tw-text-muted tw-w-10">Get</span>
-            <input
-              type="text"
-              value={getKey}
-              onChange={(e) => setGetKey(e.target.value)}
-              placeholder="Key"
-              aria-label="Get key"
-              className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text placeholder:tw-text-muted tw-w-40"
-              onKeyDown={(e) => e.key === 'Enter' && handleGet()}
-            />
-            <button
-              onClick={handleGet}
-              disabled={getLoading || !getKey || groupId === ALL_GROUPS}
-              className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-bg-accent tw-text-bg tw-rounded tw-text-xs disabled:tw-opacity-50"
-            >
-              {getLoading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Info className="tw-h-3 tw-w-3" />}
-              Get
-            </button>
-            {getResult && (
-              <span className="tw-text-xs tw-text-text tw-flex tw-items-center tw-gap-1">
-                {getResult.found ? (
-                  <>
-                    <span className="tw-font-mono tw-text-muted" data-testid="kv-get-result">{getResult.value_utf8}</span>
-                    <span className="tw-text-muted tw-text-[10px]">rev: {getResult.revision}</span>
-                    <button onClick={() => copy(getResult.value_utf8 || '')} className="tw-text-muted hover:tw-text-text" data-testid="kv-copy-value">
-                      <Copy className="tw-h-3 tw-w-3" />
-                    </button>
-                  </>
-                ) : (
-                  <span className="tw-text-muted" data-testid="kv-not-found">not found</span>
-                )}
-              </span>
-            )}
-            {groupId === ALL_GROUPS && (
-              <span className="tw-text-[10px] tw-text-muted">Select a specific group to use Get</span>
-            )}
-          </div>
-
-          {/* Put row */}
-          {!readonly && !isSystemGroup && (
-            <div className="tw-flex tw-items-center tw-gap-2 tw-flex-wrap">
-              <span className="tw-text-xs tw-text-muted tw-w-10">Put</span>
-              <input
-                type="text"
-                value={putKey}
-                onChange={(e) => setPutKey(e.target.value)}
-                placeholder="Key"
-                aria-label="Put key"
-                className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text placeholder:tw-text-muted tw-w-40"
-              />
-              <input
-                type="text"
-                value={putValue}
-                onChange={(e) => setPutValue(e.target.value)}
-                placeholder="Value"
-                aria-label="Put value"
-                className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text placeholder:tw-text-muted tw-w-48"
-              />
-              <button
-                onClick={handlePut}
-                disabled={putLoading || !putKey || !putValue}
-                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-bg-accent tw-text-bg tw-rounded tw-text-xs disabled:tw-opacity-50"
-              >
-                {putLoading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Database className="tw-h-3 tw-w-3" />}
-                Put
-              </button>
-              <label className="tw-flex tw-items-center tw-gap-1 tw-text-xs tw-text-muted">
-                <input type="checkbox" checked={autoScan} onChange={(e) => setAutoScan(e.target.checked)} />
-                auto-scan
-              </label>
-            </div>
-          )}
-
-          {/* Delete row */}
-          {!readonly && !isSystemGroup && (
-            <div className="tw-flex tw-items-center tw-gap-2 tw-flex-wrap">
-              <span className="tw-text-xs tw-text-muted tw-w-10">Del</span>
-              <input
-                type="text"
-                value={deleteKey}
-                onChange={(e) => setDeleteKey(e.target.value)}
-                placeholder="Key"
-                aria-label="Delete key"
-                className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text placeholder:tw-text-muted tw-w-40"
-              />
-              <button
-                onClick={handleDeleteKey}
-                disabled={deleteLoading || !deleteKey || groupId === ALL_GROUPS}
-                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-bg-failed tw-text-bg tw-rounded tw-text-xs disabled:tw-opacity-50"
-              >
-                <Trash2 className="tw-h-3 tw-w-3" />
-                Delete
-              </button>
-              <button
-                onClick={handleDeletePrefix}
-                disabled={deleteLoading || !deleteKey}
-                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-failed/30 tw-text-failed tw-rounded tw-text-xs hover:tw-bg-failed/10 disabled:tw-opacity-50"
-                title="Delete all keys matching the prefix in the Key field"
-              >
-                Delete Prefix
-              </button>
-              <button
-                onClick={handleDeleteSelected}
-                disabled={deleteLoading || selectedRows.length === 0}
-                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-failed/30 tw-text-failed tw-rounded tw-text-xs hover:tw-bg-failed/10 disabled:tw-opacity-50"
-              >
-                Delete Selected ({selectedRows.length})
-              </button>
-            </div>
-          )}
-
-          {/* Demo row */}
-          {!readonly && !isSystemGroup && (
-            <div className="tw-flex tw-items-center tw-gap-2 tw-flex-wrap tw-pt-1 tw-border-t tw-border-border">
-              <span className="tw-text-xs tw-text-muted tw-w-10 tw-flex tw-items-center tw-gap-0.5">
-                <FlaskConical className="tw-h-3 tw-w-3" /> Demo
-              </span>
-              <span className="tw-text-[10px] tw-text-muted">Inject</span>
-              <input
-                type="number"
-                value={demoCount}
-                onChange={(e) => setDemoCount(Math.max(1, parseInt(e.target.value) || 0))}
-                aria-label="Demo key count"
-                className="tw-bg-bg tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text tw-w-20"
-              />
-              <span className="tw-text-xs tw-text-muted">demo keys</span>
-              <button
-                onClick={handleDemoInject}
-                disabled={demoLoading || (groupId === ALL_GROUPS && writableGroupIds.length === 0)}
-                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-bg-accent tw-text-bg tw-rounded tw-text-xs disabled:tw-opacity-50"
-              >
-                {demoLoading ? <Loader2 className="tw-h-3 tw-w-3 tw-animate-spin" /> : <Database className="tw-h-3 tw-w-3" />}
-                Inject
-              </button>
-              <button
-                onClick={handleDemoDelete}
-                disabled={demoLoading || (groupId === ALL_GROUPS && writableGroupIds.length === 0)}
-                className="tw-flex tw-items-center tw-gap-1 tw-px-2 tw-py-1 tw-border tw-border-failed/30 tw-text-failed tw-rounded tw-text-xs hover:tw-bg-failed/10 disabled:tw-opacity-50"
-              >
-                <Trash2 className="tw-h-3 tw-w-3" />
-                Delete all demo
-              </button>
-            </div>
-          )}
-        </div>
 
         {isSystemGroup && (
           <div className="tw-flex tw-items-start tw-gap-2 tw-p-2 tw-rounded tw-bg-panel/50 tw-border tw-border-border tw-text-muted tw-text-xs">
@@ -768,7 +784,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
             <span className="tw-text-xs tw-text-muted">
               {scanRows.length} result(s){scanTruncated && ' (truncated)'}
             </span>
-            <div className="tw-border tw-border-border tw-rounded tw-overflow-y-auto" style={{ maxHeight: 'calc(100vh - 360px)' }}>
+            <div className="tw-border tw-border-border tw-rounded tw-overflow-x-auto">
               <table className="tw-w-full tw-text-xs" data-testid="kv-scan-table">
                 <thead className="tw-bg-panel tw-sticky tw-top-0">
                   <tr>
@@ -795,16 +811,16 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
                       <tr
                         key={`${row.groupId}-${row.key_utf8}-${idx}`}
                         className="hover:tw-bg-panel/30 tw-cursor-pointer"
-                        onClick={() => { setGetKey(row.key_utf8); }}
+                        onClick={() => { setFocusedRow(row); const readable = printableBytes(row.key_utf8, row.key_hex) && printableBytes(row.value_utf8, row.value_hex); setGetKey(readable ? row.key_utf8 : ''); setPutKey(''); setPutValue(''); setDeleteKey(''); if (groupId !== ALL_GROUPS && readable) { setPutKey(row.key_utf8); setPutValue(row.value_utf8 ?? ''); setDeleteKey(row.key_utf8); } }}
                       >
                         <td className="tw-p-2 tw-text-center" onClick={(e) => { e.stopPropagation(); toggleRow(idx); }}>
                           <input type="checkbox" checked={row.selected} readOnly />
                         </td>
-                        <td className="tw-p-2 tw-font-mono tw-truncate tw-max-w-[200px]" title={row.key_utf8}>
-                          {row.key_utf8}
+                        <td className="tw-p-2 tw-font-mono tw-truncate tw-max-w-[200px]" title={displayBytes(row.key_utf8, row.key_hex)}>
+                          <ByteDisplay text={row.key_utf8} hex={row.key_hex} />
                         </td>
-                        <td className="tw-p-2 tw-font-mono tw-truncate tw-max-w-[200px]" title={row.value_utf8}>
-                          {row.value_utf8}
+                        <td className="tw-p-2 tw-font-mono tw-truncate tw-max-w-[200px]" title={displayBytes(row.value_utf8, row.value_hex)}>
+                          <ByteDisplay text={row.value_utf8} hex={row.value_hex} />
                         </td>
                         {showGroupColumn && (
                           <td className="tw-p-2 tw-text-muted">{row.groupId}</td>
@@ -812,7 +828,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
                         <td className="tw-p-2" onClick={(e) => e.stopPropagation()}>
                           {!readonly && !(storeId === '0' && row.groupId === '0') && (
                             <button
-                              onClick={() => handleInlineDelete(row.key_utf8, row.groupId)}
+                              onClick={() => handleInlineDelete(row)}
                               className="tw-text-muted hover:tw-text-failed"
                               title="Delete key"
                               data-testid={`inline-delete-${row.key_utf8}`}
@@ -827,15 +843,12 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
                 </tbody>
               </table>
             </div>
-            {scanTruncated && (
-              <button
-                onClick={handleLoadMore}
-                disabled={loadingMore}
-                className="tw-w-full tw-py-1.5 tw-text-xs tw-text-muted tw-border tw-border-border tw-rounded hover:tw-bg-panel tw-transition-colors disabled:tw-opacity-50"
-              >
-                {loadingMore ? 'Loading...' : 'Load more'}
-              </button>
-            )}
+            <nav aria-label="Key pages" className="tw-flex tw-items-center tw-gap-3 tw-py-2">
+              <button className={buttonClass} disabled={loadingMore || pageNumber === 1} onClick={handleScan}>First</button>
+              <button className={buttonClass} disabled={loadingMore || !pageStarts.length} onClick={() => void fetchPage(pageStarts[pageStarts.length - 1], 'previous')}>Previous</button>
+              <span className="tw-text-xs tw-text-muted">Page {pageNumber} · {scanRows.length} keys</span>
+              <button className={buttonClass} disabled={loadingMore || !scanTruncated} onClick={handleLoadMore}>Next</button>
+            </nav>
           </div>
         )}
 
@@ -850,6 +863,8 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
             No results. Click Scan to list keys.
           </div>
         )}
+        {focusedRow && <section aria-label="Selected key" className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4 tw-space-y-3"><h2 className="tw-font-semibold">Key / Value · Store {storeId} / Group {focusedRow.groupId}</h2><div className="tw-text-xs tw-text-muted">Key</div><pre className="tw-whitespace-pre-wrap tw-break-all tw-text-xs"><ByteDisplay text={focusedRow.key_utf8} hex={focusedRow.key_hex} /></pre><div className="tw-text-xs tw-text-muted">Value</div><pre className="tw-whitespace-pre-wrap tw-break-all tw-text-xs"><ByteDisplay text={focusedRow.value_utf8} hex={focusedRow.value_hex} /></pre></section>}
+
       </div>
 
       {/* Confirmation dialog */}

@@ -128,7 +128,7 @@ async fn propagate_discovery(ctx: &OpContext, members: &[u64], seeds: &[String])
         .config()
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .filter_map(|server| server.node_id)
         .filter(|node| !members.contains(node))
         .collect();

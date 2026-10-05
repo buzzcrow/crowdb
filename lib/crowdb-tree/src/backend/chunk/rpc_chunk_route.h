@@ -31,8 +31,13 @@ class RpcChunkRouteResolver
 {
   public:
     explicit RpcChunkRouteResolver(const ct_chunk_rpc_transport_options &options)
-        : callbacks_(options.chunkdb_resolver),
-          fixed_(options.chunkdb)
+        : RpcChunkRouteResolver(options.chunkdb_resolver, options.chunkdb)
+    {
+    }
+
+    explicit RpcChunkRouteResolver(ct_chunk_rpc_resolver callbacks, ct_chunk_rpc_route fixed = {})
+        : callbacks_(callbacks),
+          fixed_(fixed)
     {
         if (complete()) {
             callbacks_.retain_context(callbacks_.context);

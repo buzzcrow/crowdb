@@ -69,6 +69,15 @@ impl RoutedDiskWriter {
         self.client.native_routes().map_err(map_topology_error)
     }
 
+    pub fn storage_route_resolver(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<Arc<crowdb_diskio_client::NativeDiskRouteResolver>> {
+        self.client
+            .native_route_resolver(std::time::Duration::from_millis(timeout_ms))
+            .map_err(map_topology_error)
+    }
+
     fn target(seg: &Segment, unit_bytes: u64) -> Result<SegmentTarget> {
         let disk_id = seg
             .disk_id

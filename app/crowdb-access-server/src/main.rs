@@ -182,12 +182,8 @@ async fn run_s3(
         health.set_metadata(DependencyHealth::Ready);
         health.set_chunks(DependencyHealth::Ready);
         health.set_authentication(DependencyHealth::Ready);
-        let operations = Arc::new(
-            ProductionS3Operations::new(storage, service_config)
-                .map_err(|_| "invalid S3 service configuration")?
-                .with_metrics(Arc::clone(&metrics))
-                .with_health(Arc::clone(&health)),
-        );
+        let (operations, object_inspector) =
+            configured_s3_operations(storage, service_config, Arc::clone(&metrics), Arc::clone(&health))?;
         let expiry_task = start_multipart_expiry(Arc::clone(&operations));
         let native_budget = configured_usize(
             access_config.s3.native_budget_bytes,
@@ -203,6 +199,7 @@ async fn run_s3(
                 "crowdb-access-server".into(),
                 trusted_network,
             )
+            .with_object_inspector(object_inspector)
             .with_native_body_allocator(body_allocator)
             .with_chunk_metrics(Arc::clone(&chunks))
             .with_health(Arc::clone(&health)),
@@ -469,4 +466,30 @@ fn configured_u64(
 #[cfg(feature = "s3")]
 fn required_env(name: &str) -> Result<String, Box<dyn std::error::Error>> {
     std::env::var(name).map_err(|_| format!("{name} is required when S3 is enabled").into())
+}
+
+#[cfg(feature = "s3")]
+fn configured_s3_operations(
+    storage: S3StorageClients,
+    config: S3ServiceConfig,
+    metrics: Arc<S3Metrics>,
+    health: Arc<S3Health>,
+) -> Result<
+    (
+        Arc<ProductionS3Operations>,
+        Option<crowdb_access_server::s3::ObjectInspector>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let inspector = crowdb_access_server::s3::ObjectInspector::from_environment(
+        Arc::clone(&storage.metadata),
+        config.tenant.clone(),
+        config.continuation_key.clone(),
+    )
+    .map_err(|error| format!("S3 object inspection configuration failed: {error}"))?;
+    let operations = ProductionS3Operations::new(storage, config)
+        .map_err(|_| "invalid S3 service configuration")?
+        .with_metrics(metrics)
+        .with_health(health);
+    Ok((Arc::new(operations), inspector))
 }

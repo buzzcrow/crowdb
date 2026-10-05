@@ -125,7 +125,12 @@ test.describe('cluster · rack + node CRUD', () => {
         // Right-click the rack → Add Node. Both "Enable CrowDB Storage" and
         // "Enable DiskDB" checkboxes default to checked.
         await aside.getByText(`R-${rackId} (Rack Thirty-One)`).click({ button: 'right' });
+        const defaultsResponse = page.waitForResponse((response) =>
+          response.url().endsWith('/api/deployment-defaults') && response.request().method() === 'GET');
         await page.getByRole('menuitem', { name: /add node/i }).click();
+        const defaults = await defaultsResponse;
+        expect(defaults.ok(), await defaults.text()).toBeTruthy();
+        const suggestedPorts = await defaults.json();
 
         await expect(page.getByRole('dialog', { name: 'Add Node' })).toBeVisible();
         await page.getByLabel('Node ID').fill(String(nodeId));
@@ -135,15 +140,12 @@ test.describe('cluster · rack + node CRUD', () => {
         await expect(page.getByLabel('Enable CrowDB Storage on this node')).toBeChecked();
         await expect(page.getByLabel('Enable DiskDB on this node')).toBeChecked();
 
-        // Fill in unique ports for KV (REST + RPC) and DiskDB (RPC).
-        // The DiskDB RPC Port field should be pre-filled with an
-        // auto-incremented value (not the hardcoded 29920 base) —
-        // regression: previously always 29920, causing port collisions
-        // when creating multiple nodes with DiskDB.
+        // Defaults come from the backend's listener reservations. The base
+        // port is valid when unused; compare with the authoritative response.
         const diskdbPortInput = page.getByTestId('diskdb-rpc-port');
-        const preFilledDiskdbPort = await diskdbPortInput.inputValue();
-        expect(preFilledDiskdbPort).toMatch(/^\d+$/);
-        expect(preFilledDiskdbPort).not.toBe('29920');
+        await expect(diskdbPortInput).toHaveValue(String(suggestedPorts.diskdb.rpc_port));
+        expect(suggestedPorts.diskdb.rpc_port).toBeGreaterThan(0);
+        expect(suggestedPorts.diskdb.rpc_port).toBeLessThan(65534);
 
         await page.getByLabel('REST Port').fill(String(restPort));
         await page.getByTestId('kv-rpc-port').fill(String(rpcPort));
@@ -188,6 +190,9 @@ test.describe('cluster · rack + node CRUD', () => {
         });
 
         await step('rack-CRUD: DDB inspect UI', async () => {
+          const creation = page.getByRole('dialog', { name: 'Add Node', exact: true });
+          await expect(creation.getByRole('listitem')).toHaveCount(6);
+          await creation.getByRole('button', { name: 'Done', exact: true }).click();
           // DDB-xxx tree items live in the Cluster domain alongside KV
           // servers. The Capacity view only shows the physical disk
           // hierarchy (DG > Disk), not service items.
@@ -195,7 +200,7 @@ test.describe('cluster · rack + node CRUD', () => {
           // Node creation refreshes before DiskDB registration necessarily
           // completes. The API poll above establishes that registration has
           // finished; refresh once now so the tree observes that state.
-          await page.getByRole('button', { name: 'Refresh' }).click();
+          await page.getByRole('button', { name: 'Refresh', exact: true }).click();
           const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
           const expandNode = aside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` }).locator('button[aria-label="Expand"]');
           if (await expandNode.count() > 0) await expandNode.first().click();
@@ -221,7 +226,7 @@ test.describe('cluster · rack + node CRUD', () => {
           // beneath their physical node in the Cluster domain.
           const clusterNode = aside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` });
           if (await clusterNode.getByRole('button', { name: 'Expand' }).count()) await clusterNode.getByRole('button', { name: 'Expand' }).first().click();
-          await aside.getByText(`KV-${nodeId}`, { exact: true }).click();
+          await aside.getByText(`PKV-${nodeId}`, { exact: true }).click();
           const kvTypeDd = inspector.locator('dl > div').filter({ has: page.locator('dt', { hasText: 'Type' }) }).locator('dd');
           await expect(kvTypeDd).toHaveText('KV', { timeout: 3_000 });
         });

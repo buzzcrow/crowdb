@@ -514,6 +514,7 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
     if (workers_.empty()) {
         return false;
     }
+    std::shared_ptr<Connection> live_conn;
     // Worker-thread fast path: if we're on an I/O worker thread, the
     // connection is guaranteed alive (held by this worker's connections_
     // map). Skip lookup_conn and its global mutex entirely.
@@ -527,13 +528,16 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
         // Cross-thread submit (tokio mode): look up the connection in
         // the live-connection registry to protect against stale handles.
         auto lookup = lookup_conn(conn);
-        if (lookup.has_value()) {
-            auto &conn_ptr = lookup.value();
-            if (conn_ptr == nullptr) {
-                CRB_LOG_WARN("submit: stale connection handle");
-                return false;
-            }
-            conn = conn_ptr.get();
+        if (!lookup.has_value() || lookup.value() == nullptr) {
+            CRB_LOG_WARN("submit: stale connection handle");
+            return false;
+        }
+        // Retain ownership through enqueue, notification and direct write.
+        // Close can concurrently remove the weak registry entry.
+        live_conn = std::move(lookup.value());
+        conn      = live_conn.get();
+        if (!conn->is_open()) {
+            return false;
         }
     }
     frame->create_nano = now_nano();
@@ -684,7 +688,7 @@ std::optional<std::shared_ptr<Connection>> SocketTransport::lookup_conn(Connecti
     std::scoped_lock lock(live_conns_mu_);
     auto             it = live_conns_.find(conn);
     if (it == live_conns_.end()) {
-        return std::nullopt; // not registered (test/direct connection)
+        return std::nullopt; // absent or already unregistered
     }
     return it->second.lock(); // null if expired (stale), non-null if alive
 }

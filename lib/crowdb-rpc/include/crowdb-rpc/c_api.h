@@ -172,6 +172,16 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
 // full send batch below the platform writev descriptor ceiling.
 uint8_t crowdb_rpc_max_data_views(void);
 
+// One-way frames consume buffers and never create a pending response.
+crowdb_rpc_status crowdb_rpc_client_send_one_way(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
+                                                 crowdb_rpc_conn_t conn, uint64_t request_id,
+                                                 crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
+                                                 uint16_t msg_type);
+crowdb_rpc_status crowdb_rpc_client_send_one_way_conn(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
+                                                      void *conn_handle, uint64_t request_id,
+                                                      crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
+                                                      uint16_t msg_type);
+
 // Scatter/gather request variant. Each entry is an owning buffer handle. The
 // function consumes control and every data view exactly as client_send does.
 // Empty chains, null entries, oversized chains, and a total payload above

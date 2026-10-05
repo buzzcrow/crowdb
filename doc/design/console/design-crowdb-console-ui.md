@@ -1,755 +1,653 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# CROWDB - Design: Console Web UI
+# CROWDB - Design: Console UI Specification
 
-Depends on: [`design-crowdb-console.md`](design-crowdb-console.md), [`../kv/design-crowdb-kv.md`](../kv/design-crowdb-kv.md) §15.4.6
-Satisfies: [`../kv/design-crowdb-kv.md`](../kv/design-crowdb-kv.md) §15.4.6
+Depends on: [Console architecture](design-crowdb-console.md),
+[KV architecture](../kv/design-crowdb-kv.md).
+Satisfies: [Console architecture](design-crowdb-console.md).
 
-This document covers the **frontend SPA design decisions only**:
-what we chose and why. Requirements (the *what*) live in
-`../kv/design-crowdb-kv.md`; backend API contracts live in `design-crowdb-console.md`.
+This is the authoritative UI design and acceptance specification. Each numbered
+contract defines observable behavior, not a claim that its implementation has
+passed. Implementation status, runtime evidence, defects, and execution steps
+belong in the working plan. There is no separate UI spec to reconcile with this
+file. Backend architecture and wire formats remain in the linked component docs.
 
-## Table of Contents
+The scope covers all seven domains and their shared interaction rules. Backend
+prerequisites and inspection APIs are part of acceptance; a rendering fixture
+does not establish that a native service operation succeeds.
 
-- [1. Goals (recap)](#1-goals-recap)
-- [2. Stack decisions](#2-stack-decisions)
-- [3. Information Architecture](#3-information-architecture)
-  - [3.1 Selection & cross-jump](#31-selection--cross-jump)
-- [4. Visual Language](#4-visual-language)
-- [5. Topology Canvas (React Flow, slim)](#5-topology-canvas-react-flow-slim)
-  - [5.1 Physical layout](#51-physical-layout)
-  - [5.2 Logical layout](#52-logical-layout)
-  - [5.3 Interactions](#53-interactions)
-- [6. Inspector Panel](#6-inspector-panel)
-- [6.1 KV Operator Panel (center panel)](#61-kv-operator-panel-center-panel)
-- [7. Embedding Contract](#7-embedding-contract)
-- [8. Data & Polling Strategy](#8-data--polling-strategy)
-- [9. Module Layout](#9-module-layout)
+## Contents
+
+- [1. Product contract](#1-product-contract)
+- [2. Reference environment](#2-reference-environment)
+- [3. Navigation and layout](#3-navigation-and-layout)
+- [4. Visual language and service identity](#4-visual-language-and-service-identity)
+- [5. Cluster](#5-cluster)
+- [6. Properties and cross-links](#6-properties-and-cross-links)
+- [7. Modes and embedding](#7-modes-and-embedding)
+- [8. Bounded observation](#8-bounded-observation)
+- [9. Creation and mutation dialogs](#9-creation-and-mutation-dialogs)
 - [10. Accessibility](#10-accessibility)
-- [11. Testing](#11-testing)
-- [12. Domain Restructure: Cluster / KV / Chunk](#12-domain-restructure-cluster--kv--chunk)
-  - [12.1 Three domains](#121-three-domains)
-  - [12.2 Why three domains (not view-modes)](#122-why-three-domains-not-view-modes)
-  - [12.3 Swagger UI removal](#123-swagger-ui-removal)
-  - [12.4 Batch Add Disk](#124-batch-add-disk)
-- [13. DiskDB Server Deploy / Restart / Stop](#13-diskdb-server-deploy--restart--stop)
-- [14. REST Proxy for DiskDB Runtime](#14-rest-proxy-for-diskdb-runtime)
-- [15. Capacity Panel (Canvas Visualization)](#15-capacity-panel-canvas-visualization)
-  - [15.1 Rendering](#151-rendering)
-  - [15.2 Color encoding](#152-color-encoding)
-  - [15.3 Polling](#153-polling)
-  - [15.4 Scope dispatch and module structure](#154-scope-dispatch-and-module-structure)
-- [16. Console-Shared DiskDB Client + CLI](#16-console-shared-diskdb-client--cli)
-  - [16.1 Console-shared client](#161-console-shared-client)
-  - [16.2 CLI subcommands](#162-cli-subcommands)
+- [11. Verification contract](#11-verification-contract)
+- [12. KV](#12-kv)
+- [13. Service lifecycle](#13-service-lifecycle)
+- [14. DiskGroup and disk management](#14-diskgroup-and-disk-management)
+- [15. Capacity](#15-capacity)
+- [16. Loading, failures, and recovery](#16-loading-failures-and-recovery)
+- [17. Fixed-cluster operator flow](#17-fixed-cluster-operator-flow)
+- [18. Acceptance scenarios and scope](#18-acceptance-scenarios-and-scope)
+- [19. Chunk](#19-chunk)
+- [20. Chunk-KV](#20-chunk-kv)
+- [21. Iceberg](#21-iceberg)
+- [22. S3](#22-s3)
+- [23. Actions and properties](#23-actions-and-properties)
+- [24. E2E organization and timing](#24-e2e-organization-and-timing)
 
-## 1. Goals (recap)
+## 1. Product contract
 
-- Single page, no full-page navigation.
-- Three first-class **domains** (Cluster / KV / Chunk) that drive the
-  sidebar tree, the topology canvas, and the inspector together. The
-  domain split aligns the web UI with the CLI's four-domain structure
-  (Cluster / KV / Chunk / Bench — Bench is CLI-only).
-- Full operator surface: rack/node/server lifecycle, store/group/replica
-  CRUD, KV data plane, disk-group/disk lifecycle, capacity
-  visualization.
-- Offline-capable: no third-party CDN at runtime.
-- Lean: minimal dependencies, no feature the requirement does not mandate.
+- **UI-01:** One Console serves one configured cluster. Opening the UI enters
+  that cluster directly; no Connect dialog, endpoint input, or access-key form
+  precedes ordinary browsing.
+- **UI-02:** The seven top-level tabs are Cluster, KV, Capacity, Chunk, Chunk-KV,
+  Iceberg, and S3. Each has an independent selected resource and query window.
+- **UI-03:** Assume an administrator/root session until UI authentication is
+  introduced. Available backend operations remain authoritative; capability
+  restrictions are not inferred from a missing login screen.
+- **UI-04:** Display real resources and structured values. Example graphs,
+  inferred ownership, and placeholder counts must not look like observed data.
+- **UI-05:** Every remote list, expansion, preview, and layout has a work/size
+  bound. A large cluster must not require a complete scan before the UI responds.
 
-## 2. Stack decisions
+## 2. Reference environment
 
-- **React + TypeScript + Vite + TailwindCSS** — carried over from the
-  existing codebase; no framework migration.
-- **React Flow for topology** — slim usage only (custom nodes, pan, click
-  select). Deliberately no minimap, zoom toolbar, layout selector, or edge
-  labels. The canvas is a navigation aid, not an analytics surface.
-- **React Context for state** — domain, selection, toasts, activity.
-  No Redux; the state surface is small enough that Context + local hooks
-  suffice.
-- **No client-side routing** — the SPA mounts at the document root;
-  intra-SPA navigation is selection state, not URL navigation. This keeps
-  embedding trivial (no history API conflicts).
-- **Removed dependencies**: `recharts`, `jspdf`, `jspdf-autotable`,
-  `uuid`, `react-router-dom` — none are needed for the lean v1 surface.
+The main acceptance environment has one Rack and three Nodes. Each Node has one
+KV, DiskDB, ChunkDB, DiskIO, Chunk-KV, and Access Server instance. Group 0 has
+three replicas; an ordinary data Group 1 has three replicas. Storage has valid
+DiskGroup bindings, live owners, and writable disks. Allocated and free blocks
+provide observable capacity and bitmap fixtures.
 
-## 3. Information Architecture
+- This is normal multi-node deployment. Single-node/unsafe colocated settings
+  cannot be silently enabled to make acceptance pass.
+- Rack diversity is preferred when multiple racks exist. A single rack with
+  enough distinct nodes is valid; properties report actual node/rack protection.
+- Three local processes on one host verify logical placement and UI behavior;
+  they do not demonstrate physical-host fault tolerance.
+- API provisioning may prepare this environment. The setup method does not
+  replace the dedicated tests for creation and lifecycle dialogs.
+- Empty, partial, unavailable, and very large datasets are additional fixtures,
+  not reasons to replace the populated reference environment with mocks.
 
-A fixed three-pane shell. A single root-level **domain** (Cluster / KV
-/ Chunk) selects which hierarchy every pane renders. The domain
-replaces the former view-mode (Physical / Capacity / KV) and aligns
-the web UI with the CLI's domain structure. The per-domain sidebar +
-center panel layouts are detailed in §12.1.
+## 3. Navigation and layout
 
-```
-┌─ Header ───────────────────────────────────────────────────────────┐
-│ brand · health pill · domain toggle (Cluster/KV/Capacity) · refresh│
-├─ Sidebar ─────┬─ Center panel ─────────────┬─ Inspector ────────────┤
-│ (per-domain   │ (per-domain layout,        │ Details (key/value)    │
-│  tree, see    │  see §12.1)                │ Activity (recent ops)  │
-│  §12.1)       │                            │                        │
-│               │                            │ (unchanged — scoped    │
-│               │                            │  to current selection) │
-└───────────────┴────────────────────────────┴────────────────────────┘
-```
+- **NAV-01:** The header keeps the seven domains in a stable order. Domain
+  changes preserve that domain's bounded query state and selected identity.
+- **NAV-02:** The left panel selects hierarchy/scope; the center presents the
+  selected resource or overview; the right panel presents selected properties.
+- **NAV-03:** Resource selection updates the center without replacing the whole
+  application. Breadcrumbs identify scope; they are navigation, not duplicate
+  Back links for inline details.
+- **NAV-04:** Cross-links identify the exact destination resource. Returning
+  restores the originating selection and page. A stale/deleted destination has
+  an explicit state rather than silently selecting a different item. The header
+  and browser Back/Forward share one session history with at most 32 retained
+  visits. History stores identities, bounded
+  query cursors and scroll coordinates, never object bodies or metadata payloads.
+  New navigation clears Forward. Returning refetches the saved bounded window;
+  scroll restoration waits for that window to render. Resource types and parent
+  identities participate in selection equality, so equal numeric IDs in
+  different resource kinds cannot share a selected highlight. Returning to an Iceberg reference verifies the
+  saved metadata generation before inspecting it again.
+- Shared physical/logical trees retain expansion and local search per domain.
+  Return restores both expanded and collapsed branches. KV captures bounded
+  byte cursors and focused Key identity, then refetches the window; it does not
+  keep Value payloads in history. Capacity retains at most 32 Disk query states
+  containing zone window, selected Zone and bitmap block window. Parent
+  navigation can unmount a detail without losing its return query.
+- **NAV-05:** Trees expand lazily. Each large child collection has continuation
+  or Load more, a visible loaded count, and an explicit end/partial state.
+  Collapsed branches do not recursively load their descendants.
+- **NAV-06:** The center remains usable with the right panel open. Tables and
+  diagrams scroll within their work area; action bars and pagination remain
+  reachable. Resizing does not reset selection or trigger unbounded refetches.
+- **NAV-07:** Every domain uses the shared Tree appearance and two draggable
+  panel dividers. Left default width is 280 px; properties default is 320 px.
+  Each divider supports pointer and keyboard resizing between 220 and 600 px.
+  Switching domains introduces no panel replacement/slide animation.
+- **NAV-08:** Parent cards in center topology diagrams collapse or expand their
+  children on click while selecting the parent. Children retain their own
+  expansion state. Sidebar focus reveals hidden ancestors. Right-click opens
+  the entity menu without toggling expansion. Fit All fits visible cards.
+  Cluster initially expands Datacenter/Rack and stops at visible Node cards;
+  service descendants appear when a Node is explicitly expanded.
 
-- **Header** (~56px): brand label, cluster health pill, domain toggle
-  (Cluster / KV / Chunk), last-refresh time, manual refresh button.
-- **Sidebar** (~240px): a text filter plus the hierarchy tree for the
-  active domain. Click selects; right-click opens the per-layer context
-  menu. No favorites, no recent, no saved presets.
-- **Center panel**: content depends on the active domain — Cluster
-  renders a hardware topology canvas; KV renders a tabbed logical
-  canvas + KV operator panel; Chunk renders a capacity visualization
-  panel. See §12.1 for the per-domain layouts.
-- **Inspector** (~320px, collapsible): tabs scoped to the selection:
-  Details and Activity only. KV operations have moved to the center KV
-  Operator panel (§6.1).
+## 4. Visual language and service identity
 
-Selection is held in one `SelectionContext`. The shell is rendered
-once; switching domain swaps the tree data and the center panel only.
+- **VIS-01:** Use muted colors with readable text and visible boundaries.
+  Buttons, including Run Recalc, must have adequate text/background contrast.
+  Color alone cannot encode state, role, or selection.
+- **VIS-02:** Service instances use one compact `TYPE-ID` convention everywhere:
+  `PKV-1`, `DDB-1`, `CDB-1`, `DIO-1`, `CKV-1`, and `AS-1`. Trees, topology cards,
+  selected titles, and instance menus use the same label.
+- The suffix identifies the service instance in its own type. It must not be
+  fabricated from a Node ID when those identities differ. Exact backend IDs
+  remain available in properties and are used for API operations.
+- Full names such as ChunkDB and Access Server belong in type properties,
+  deployment choices, or help text. A tree label must not mix a verbose name,
+  a separator, and another backend identifier.
+- **VIS-03:** All integer IDs and offsets preserve their exact values; large
+  identifiers do not pass through lossy JavaScript number conversion.
+- **VIS-04:** Selected resources use a consistent outline/highlight. Health,
+  lifecycle, readiness, and data protection are separate labelled values.
+- Capacity bitmap: muted blue means used, muted green means free. Unknown,
+  unavailable, and reserved states have distinct labels/patterns; they are never
+  rendered as free.
 
-### 3.1 Selection & cross-jump
+## 5. Cluster
 
-Selection is `{ type, id, parentIds }` where `type ∈ { Rack, Node,
-Server, Store, Group, Replica, DiskGroup, Disk }`. Clicking any tree
-row or canvas node sets it.
+- **CLU-01:** The hierarchy is Datacenter → Rack → Node → service instances. The center
+  topology uses the same hierarchy, identities, and selection as the left tree.
+  Logical Paxos groups are managed in KV; physical storage is managed in Capacity.
+- **CLU-02:** Rack actions include Add Node. A Node context menu independently
+  manages each service type and each existing instance, using the same lifecycle
+  pattern as KV/DiskDB. It must not route other service types through KV APIs.
+- **CLU-03:** Add Node is one dialog and one submit. Defaults select the current
+  Rack, next available Node ID, valid host settings, and a complete six-service
+  set. Advanced overrides remain available before submission.
+- Creating a Node produces an immutable created identity in the same dialog.
+  Per-service rows show queued, waiting for dependency, deploying, deployed,
+  or failed, with a specific reason. Closing progress is not another deployment
+  confirmation and does not cancel already accepted work.
+- Waiting deployment steps resume when prerequisites become available while
+  the console session is active. The Node menu reopens/resumes the plan after
+  navigation or reload; deployed instances are reconciled before retry.
+- Six-service progress is saved in each Node workspace, with a revision checked
+  on every update. Saving progress must succeed before a deployment starts.
+  A competing browser receives a conflict and must reload. Reload turns an
+  interrupted Deploying step into an explicit failure; Retry first checks the
+  registered instance and never repeats a successful deployment. Stopped
+  registered services require their normal Restart action. Removing a Node or
+  resetting the cluster clears its deployment intent. This is durable progress,
+  not an unattended scheduler while the console is closed.
+- A partial failure retains the Node and successful services. Retry operates
+  only on missing/failed steps and revalidates defaults. It never creates a
+  second Node or a second copy of a successful service.
+- **CLU-04:** Cluster readiness is reported by capability: KV quorum, storage,
+  Chunk-KV, and Access protocols. A PID or registry entry alone is not Ready.
+  Missing prerequisites link to the domain where they can be resolved.
 
-Cross-jump (one click) is supported for the common case only:
-- KV `Replica` → "Show on node": switch to Cluster, expand the owning
-  `Node`, select the matching server entry.
-- Cluster `Server`/`Group` → "Show in KV": switch to KV, expand the
-  owning `Store → Group`, select the unified row.
+## 6. Properties and cross-links
 
-No navigation stack / back button in v1.
+- **PROP-01:** Right-side properties describe the exact selected Rack, Node, service,
+  Store, Group, Replica, DiskGroup, Disk, Zone, or allocation block.
+- Show exact ID, type, parent/owner, source, observation time, and relevant
+  lifecycle/health fields. Missing information is Unknown or Unavailable.
+- Properties provide copyable full identifiers and exact byte/unit values.
+  Abbreviating diagram labels must not destroy the original value.
+- **PROP-02:** Resource links navigate by exact identity: service → Node,
+  Replica → Node, Disk → DiskGroup, Zone → Disk, and DiskGroup → owner/binding. Failed optional
+  lookups do not erase a successfully loaded primary resource.
+- **PROP-03:** Raw JSON may be a diagnostic affordance. It is not the default
+  inspector for supported structured resources.
 
-## 4. Visual Language
+## 7. Modes and embedding
 
-Single dark theme via CSS variables under `.crowdb-console` (existing
-tokens in `src/index.css`). Status colors: `--healthy`, `--degraded`,
-`--failed`, `--unknown`, plus `--remote` for remote-replica accent.
+- **MODE-01:** Standalone mode exposes administrator topology, service, storage,
+  logical KV, and data operations supported by the backend.
+- **MODE-02:** Container mode uses the same seven-domain UI for observation and
+  supported logical/data operations. Cluster topology/deployment mutations and
+  Capacity disk-management mutations are unavailable. Backend enforcement is
+  required as well as disabled/hidden UI controls.
+- **MODE-03:** Readonly embedding disallows mutations. Every fetch uses the
+  configured API prefix. Styles remain scoped to the Console; embedding does
+  not change resource identities or connect to another cluster.
+- Embedding keeps `apiPrefix`, `basePath`, `readonly`, `modules`, `initialDomain`,
+  and `onEvent`. Domain selection has no Swagger or per-node connection mode.
 
-Status is never color-only. Every status row also carries a glyph
-(✓ / ! / ✕ / ?). Leader replicas carry a crown badge. Remote replicas use
-a dashed border + `--remote` accent so peer-list mis-wirings are visible.
+## 8. Bounded observation
 
-Animations are minimal (selection/hover transitions); honor
-`prefers-reduced-motion`.
+- **DATA-01:** API pagination is authoritative. Continuations are opaque and
+  scoped to the query/source/generation. The browser does not invent offsets
+  or fetch all pages to provide a count, badge, filter, or layout.
+- Defaults: Capacity zone pages contain 32 zones. Every other collection declares its page size at its boundary and
+  exposes bounded continuation instead of an unbounded initial expansion.
+- **DATA-02:** Prev/Next replace a window. Type/scope/query changes clear cursor
+  history. End-of-list is explicit; no exact total is shown unless supplied by
+  an authoritative bounded API. Selection remains stable across page changes.
+- **DATA-03:** Label local filtering as applying to the loaded window. It must
+  not launch a hidden cluster scan or imply that an empty local result means
+  no matching resource exists globally.
+- **DATA-04:** Cancel or ignore obsolete responses after scope/selection changes.
+  A late response cannot overwrite the current selection. Polling cannot stack
+  overlapping requests for the same resource or grow retry work indefinitely.
+- Active views refresh at a bounded cadence; hidden views suspend observation
+  polling. Accepted deployment work is independent of observation polling.
+- **DATA-05:** Preserve partial successes, identify failed sources, and show
+  observed/scanned/matched counts separately when they differ. Ownership or
+  generation changes invalidate incompatible continuations and layouts.
 
-## 5. Topology Canvas (React Flow, slim)
+## 9. Creation and mutation dialogs
 
-One layout at a time, chosen by domain. Layout is computed by a small
-deterministic tree-layout pass in `topology/layout.ts` (columns by depth,
-rows by sibling index). No dagre, no force simulation, no user-selectable
-layouts.
-
-### 5.1 Physical layout
-
-Renders `Rack → Node → Server → PxStore → PxGroup → {Local, Remote…}`
-read from the physical tree. Node types: `Rack`, `Node`, `Server`,
-`PxStore`, `PxGroup`, `LocalReplica`, `RemoteReplica`. Edges follow
-parent→child containment. Each `RemoteReplica` draws a solid edge to its
-peer `LocalReplica` (a missing edge is the bug this view surfaces). The
-leader radiates accent edges to followers.
-
-### 5.2 Logical layout
-
-Renders `Cluster → Store → Group → Replica…`. Node types: `Cluster`,
-`Store`, `Group`, `Replica` (with a `node_id` badge). The leader radiates
-accent edges to followers; no local/remote distinction.
-
-### 5.3 Interactions
-
-- Drag pans, wheel zooms (React Flow built-ins), click selects.
-- Selecting a node drives the inspector and highlights the sidebar row.
-- Right-click a node opens the same per-layer context menu as the tree.
-- Tooltips on hover surface one useful fact (host, leader id, reachable).
-- No minimap, zoom toolbar, search box, focus mode, export, or edge
-  labels.
-
-## 6. Inspector Panel
-
-Tabs re-render against the current selection:
-
-1. **Details** — labelled key/value table from the selected entity
-   (physical or logical shape). Long values support copy-to-clipboard. A
-   footer row shows the cross-jump link (§3.1).
-2. **Activity** — chronological client-side list of UI-issued operations
-   (timestamp, action, target, outcome). No filter/export in v1.
-
-The KV tab has been removed from the Inspector. All KV operations now
-live in the center KV Operator panel (§6.1), which provides a full-width
-surface with store/group selectors, scan results, and an action bar.
-
-## 6.1 KV Operator Panel (center panel)
-
-A full-width center panel for KV data-plane operations, toggled from the
-header via a "KV" button (mutually exclusive with the topology canvas).
-Replaces the former Inspector KV tab, which was too cramped at
-320px for comfortable key browsing.
-
-**Design choices:**
-
-- **Flat single-page layout (no tabs)** — action bar on top, scan
-  results below. The user can scan, see results, and act (put/get/delete)
-  without switching tabs.
-- **Store/group selector with "All Groups" option** — when selected,
-  scan iterates over every group and merges results (labeled by group).
-  Demo inject randomly distributes keys across groups. This avoids
-  forcing the user to pick a group when they want a store-wide view.
-- **Auto-scan on first load** — when store and group are both set, the
-  panel triggers a scan automatically so the user sees data immediately.
-- **Independent of domain** — KV operations are always logical
-  (store/group), regardless of which domain's canvas is active.
-
-**Scan pagination (`start_after` token):**
-
-The scan API returns at most `limit` items with a `truncated` flag but
-had no way to fetch the next page. Rather than adding a total count
-(expensive on large keyspaces), we adopted an S3 ListObjectsV2-style
-`start_after` cursor: the caller passes the last key from the previous
-batch; the engine returns keys strictly greater than `start_after` that
-still match the prefix. The UI shows a "Load more" button when
-`truncated` is true; clicking it appends the next batch.
-
-**Decision — `CrowdbTreeEngine` over-fetch + filter:** The C++ crowdb-tree
-scan API takes only prefix + limit (no `start_after`). Rather than
-modifying C++ immediately, `CrowdbTreeEngine` over-fetches with the
-original prefix, then filters out keys ≤ `start_after` in Rust before
-applying the limit. This is inefficient when `start_after` is deep into
-a large prefix range. A follow-up can push `start_after` into the C++
-engine. When `start_after` is empty, the fast path is identical to the
-old behavior.
-
-**Demo delete at scale:** "Delete all demo" scans for `demo_` prefix
-with pagination (up to 1000 keys for the confirmation count), then
-deletes with 16-way parallel `kvDelete`. If more than 1000 keys exist,
-scan+delete continues in batches after confirmation. The confirmation
-dialog shows "1000+" when the count may be higher.
-
-## 7. Embedding Contract
-
-The SPA is mountable as a sub-component with a minimal props interface
-(`apiPrefix`, `basePath`, `readonly`, `modules` opt-out, `initialDomain`,
-`onEvent` callback). Three isolation rules:
-
-- **Style isolation** — everything wraps in `.crowdb-console`; Tailwind
-  uses the `tw-` prefix and `important: '.crowdb-console'`.
-- **API isolation** — every fetch resolves against `apiPrefix`.
-- **Standalone** — `index.html` mounts at the document root with defaults;
-  `embed.ts` exports the component for hosts.
-
-The `initialDomain` prop (values: `Cluster | KV | Chunk`) replaces the
-former `initialViewMode`. The `modules` opt-out keys are
-`'racks' | 'nodes' | 'stores' | 'groups' | 'replicas' | 'kv' |
-'activity'` — the former `'swagger'` key is removed (Swagger UI is no
-longer embedded). The former `initialNodeId` prop is removed.
-
-## 8. Data & Polling Strategy
-
-- **Two-tree contract** — the SPA speaks physical (`/api/racks`,
-  `/api/nodes`) and logical (`/api/stores`) trees per `design-crowdb-console.md`.
-  No panel constructs raw `host:port` URLs; `api.ts` is the single URL
-  builder.
-- **Asymmetric polling** — only the active view polls fast (~5s); the
-  inactive view polls slow (~30s) so toggling renders immediately.
-  Polling pauses while the tab is hidden.
-- **Optimistic-free mutations** — mutations call the backend, await
-  success, then trigger a refresh of the affected view; they do not
-  hand-edit cached data. This trades a round-trip for correctness
-  simplicity.
-
-## 9. Module Layout
-
-The source tree follows the pane structure: `shell/` (Header, Sidebar,
-Inspector), `topology/` (canvas + layout), `panels/` (KvOperatorPanel,
-ActivityLog), `components/` (Dialog, ContextMenu, dialogs,
-UI primitives), and `contexts/` (Domain, Selection, Toast, Activity).
-`api.ts` and `types/index.ts` are the single URL-builder and data-model
-modules respectively.
-
-**Deleted from v1**: CommandPalette, favorites, fuzzy search, export
-utils, bulk action dialog, metrics history, theme context. None are
-needed for the lean surface.
+- **FORM-01:** Every Create/Deploy dialog opens with usable, nonconflicting
+  defaults for IDs, listener ports, and available parent/dependency references.
+  With prerequisites present, default OK succeeds without manual editing.
+- Defaults are fetched/revalidated at submission, across all service types on
+  the relevant host. Include internal listener ranges, such as DiskDB's ports.
+  A user edit is not overwritten by a late default response.
+- **FORM-02:** Missing prerequisites disable the unsupported operation and name
+  the prerequisite. Do not prefill a plausible value that inevitably fails.
+  Real device paths are explicit; never infer a physical device to overwrite.
+- **FORM-03:** Submission prevents duplicates. Field validation and backend
+  errors stay in the dialog with entered values intact. Toasts are supplementary,
+  not the only evidence of success or failure.
+- **FORM-04:** Show the current operation and elapsed/waiting state for a slow
+  request. A timeout means outcome unknown until reconciled, not automatically
+  failed. Do not retry a potentially completed creation blindly.
+- Successful creation selects or reveals the resource after authoritative
+  refresh. Partial creation shows exactly what exists and what remains.
+- Cluster reset fences new plan/deployment writes, waits at most 30 seconds
+  for accepted work, then stops registered children before deleting workspaces.
+  If accepted work remains pending, reset returns a conflict and removes nothing.
+  Cleanup operations use the reset's exclusive context; another browser cannot
+  start a deployment during cleanup.
+- **FORM-05:** Delete names the exact target and effects. Deleting a service,
+  removing configuration, and deleting stored data are distinct operations.
+  Reset lists its affected scope and stops queued deployment work before teardown.
 
 ## 10. Accessibility
 
-- Keyboard reachable: Tab/Enter/Escape on tree rows, dialogs, and menus;
-  context menus mirror to keyboard-activatable buttons where practical.
-- Color is never the sole status channel (glyph + color).
-- Strings go through a single `t(key)` helper (English only) so a future
-  locale pack needs no source changes. (Optional for v1; may inline.)
-
-## 11. Testing
-
-- Existing Vitest unit tests for dialog request bodies and `listRacks`
-  envelope handling are **retained** (they pin the backend contract).
-- The Playwright real-backend E2E suite (`app/crowdb-web/ui/e2e/`)
-  targets this lean SPA; selectors track the rewritten DOM. The full
-  chain rack→node→deploy→store→group→replica→KV is the acceptance bar.
-- The web server's test mode keeps spawned DiskDB heartbeat and group-0
-  sync intervals at one second. Normal deployments retain DiskDB's
-  production defaults.
-- Before group-0-backed tree reads, test mode validates the locally managed
-  group-0 process and refreshes its topology. Production uses monitor-cache
-  availability because group-0 may be hosted remotely and therefore has no
-  locally tracked process.
-
----
-
-## 12. Domain Restructure: Cluster / KV / Chunk
-
-The header toggle evolved from two view-modes (Physical | Logical) to
-three view-modes (Physical | Capacity | KV) and then to three
-**domains** (Cluster / KV / Chunk). The domain split aligns the web
-UI with the CLI's four-domain structure (Cluster / KV / Chunk / Bench
-— Bench is CLI-only). Each domain owns a single responsibility and a
-self-contained sidebar + center panel.
-
-### 12.1 Three domains
-
-The shell has one shared frame: a top bar, a left tree panel, a center panel, and a right properties panel. The header's domain toggle switches between Cluster, KV, and Capacity. `Capacity` is the user-facing name of the internal Chunk domain; `bench` is CLI-only. Each domain owns the content and behavior of its three panels; shared shell components provide layout, selection, context menus, loading states, and the inspector. Changing domains clears the selection so the right properties panel never shows an item from an inactive domain.
-
-```
-┌─ Header ───────────────────────────────────────────────────────────┐
-│ brand · health pill · domain toggle (Cluster/KV/Capacity) · refresh│
-├─ Sidebar ─────┬─ Center panel ─────────────┬─ Inspector ────────────┤
-│ (per-domain   │ (per-domain layout,        │ Details (key/value)    │
-│  tree, see    │  see below)                │ Activity (recent ops)  │
-│  below)       │                            │                        │
-│               │                            │ (unchanged — scoped    │
-│               │                            │  to current selection) │
-└───────────────┴────────────────────────────┴────────────────────────┘
-```
-
-**Domain 1 — Cluster (physical infrastructure)**
-
-```
-┌─ Sidebar ─────┐┌─ Center: hierarchy chart ─────────────────────────┐
-│ ▾ Rack 1      ││  Rack 1                                           │
-│   ▾ Node 1    ││   ├─ Node 1                                       │
-│     ▾ DG-0    ││   │   └─ ┌─────────────────────────────┐          │
-│       • disk0 ││   │       │ DG-0                       │          │
-│       • disk1 ││   │       │  ⬢ a3f1  ⬢ b7c2  ⬢ e9d4   │          │
-│   ▸ Node 2    ││   │       └─────────────────────────────┘          │
-│ ▾ Rack 2      ││   └─ Node 2 ...                                   │
-│   ▸ Node 3    ││  Rack 2 ...                                       │
-└───────────────┘└───────────────────────────────────────────────────┘
-```
-
-The Cluster tree is the physical source for node and service lifecycle.
-Disk groups assigned to a DiskDB instance appear beneath that owning DDB
-service rather than directly beneath the node; unassigned disk groups are
-not projected in Cluster. The center mirrors this ownership hierarchy and
-renders each disk group as one compact card with its disks stacked inside.
-The properties panel displays the selected physical item and recent
-activity.
-
-Context menus: Rack (Add Node, Delete Rack) · Node (Deploy KV Server,
-Deploy DiskDB, Ping, Delete Node) · KV Server and DiskDB (Restart, Stop,
-Delete) · DiskGroup (Add Disk batch, Remove, Set Status) · Disk (Remove,
-Set Status). Adding disk groups is available only in Capacity; shared
-disk-management actions do not duplicate their business logic.
-Cluster-level ops (init / reset / clean) are triggered from the header
-or a toolbar above the canvas.
-
-**Domain 2 — KV (logical data operations)**
-
-```
-┌─ Sidebar ─────┐┌─ Center: [Cluster] [KV] ──────────────────────────┐
-│ ▾ Rack 1      ││  Store 1                                          │
-│   ▾ Node 1    ││   ├─ Group 1                                      │
-│     ▸ kv-srv  ││   │   ├─ Replica 0 (node 1)                       │
-│   ▸ Node 2    ││   │   └─ Replica 1 (node 2)                       │
-│ ▾ Rack 2      ││   └─ Group 2 ...                                  │
-│   ▸ Node 3    ││  Store 2 ...                                      │
-│               ││  (Cluster tab shown — click [KV] for operator)    │
-└───────────────┘└───────────────────────────────────────────────────┘
-
-KV tab active:
-┌─ Sidebar ─────┐┌─ Center: [Cluster] [KV] ──────────────────────────┐
-│ ▾ Rack 1      ││  KV Operator: [store ▾] [group ▾]                 │
-│   ▾ Node 1    ││  key: [_______]  value: [_______]  [Put]          │
-│     ▸ kv-srv  ││  key: [_______]  [Get]  [Delete]                  │
-│   ▸ Node 2    ││  scan: [prefix___] [Scan]  results: ...           │
-│ ▾ Rack 2      ││                                                   │
-│   ▸ Node 3    ││                                                   │
-└───────────────┘└───────────────────────────────────────────────────┘
-```
-
-The KV left tree is the single logical source: datacenter → store →
-group → replica. Logical entities are not repeated under physical KV
-servers. The center always renders the KV operation panel. It supports
-store/group selection, get, put, delete, scan, pagination, and operation
-feedback. The properties panel displays details and activity for the
-selected tree item. Node placement is replica metadata and a cross-jump
-target, not a KV-tree parent.
-
-Context menus: Store (Add Group, Delete) · Group (Add Replica, Delete) ·
-Replica (Delete). KV server lifecycle actions are owned by Cluster and
-are not duplicated in the KV tree.
-
-**Domain 3 — Capacity (internal Chunk domain; chunkdb / diskdb / diskio management)**
-
-```
-┌─ Sidebar ─────┐┌─ Center: [Capacity] [Chunk] ──────────────────────┐
-│ ▾ Rack 1      ││  (Capacity sub-view shown by default)              │
-│   ▾ Node 1    ││                                                   │
-│     ▸ chunkdb ││  Rack 1 / Node 1 / DG-0                           │
-│     ▸ diskdb  ││   ┌─────────────────────────────────────┐         │
-│       ▸ DG-0  ││   │ ▓▓▓▓▓░░░░  ▓▓▓░░░░░░  ▓▓▓▓▓▓░░    │         │
-│         • d0  ││   │ disk a3f1   disk b7c2   disk e9d4   │         │
-│         • d1  ││   │ 78% used    42% used    88% used    │         │
-│     ▸ diskio  ││   └─────────────────────────────────────┘         │
-│   ▸ Node 2    ││                                                   │
-│ ▾ Rack 2      ││  Rack 1 / Node 2 / DG-1 ...                       │
-│   ▸ Node 3    ││                                                   │
-└───────────────┘└───────────────────────────────────────────────────┘
-```
-
-The Capacity tree keeps the physical node → disk-group → disk hierarchy
-and shows DiskDB as an additional node item. It is the only domain that
-allows adding disk groups. Disk-group and disk dialogs are shared with
-the Cluster ownership projection, while Capacity owns creation and full
-physical disk management.
-
-The center capacity panel shows usage, busy/free space, scanner and
-recalculation controls for the selected resource. The properties panel
-shows the selected node, DiskDB, disk-group, or disk details and recent
-activity. Future chunk-management operations may extend the center
-panel without changing the shared shell.
-
-`DomainContext` holds the active domain. Selection is shared across all
-three domains via `SelectionContext`, while each domain defines how the
-selected item is resolved and displayed. Switching domains changes the
-tree and center panel without creating duplicate logical entities. The
-inspector remains the right properties panel for the active selection.
-
-### 12.2 Why three domains (not view-modes)
-
-The former view-mode split (Physical / Capacity / KV) mixed
-infrastructure management (Physical) with disk lifecycle (Capacity)
-and KV operations (KV), but the CLI had already moved to a cleaner
-domain split (Cluster / KV / Chunk / Bench). The domain restructure
-unifies the two frontends:
-
-- **Cluster** merges the former Physical + Capacity views — hardware
-  topology and disk lifecycle are both infrastructure concerns and
-  belong together. The Capacity center panel moves under the Chunk
-  domain (capacity is a property of the chunk/disk storage layer).
-- **KV** keeps the logical KV layer and data-plane. The KV tree is
-  independent of physical server placement; KV server lifecycle belongs
-  to the Cluster domain.
-- **Chunk** is new — it hosts the chunk/disk storage layer (diskdb,
-  chunkdb, diskio) and the capacity visualization that belongs to
-  that layer. The Chunk center panel is the capacity panel today.
-  Future chunk-management features may extend this center panel
-  (`ops::chunk` is currently stubs).
-
-### 12.3 Swagger UI removal
-
-The former Swagger API panel (embedded OpenAPI browser + per-node
-openapi.json proxy) is removed. The OpenAPI document remains served
-by `crowdb-kv-server` at `/openapi.json` for direct access; the
-console no longer embeds or proxies it. The `'swagger'` module opt-out
-key and `initialNodeId` prop are removed from the embedding contract.
-
-### 12.4 Batch Add Disk
-
-A batch endpoint for atomic all-or-nothing disk creation (unchanged
-from the former Capacity view, now accessed from the Cluster domain):
-
-- Validates all `disk_id` formats upfront; rejects the whole batch if
-  any is malformed (atomic).
-- Writes all disks to config + group-0 sysdata in one transaction;
-  if any write fails, rolls back (no partial success).
-
-## 13. DiskDB Server Deploy / Restart / Stop
-
-The Cluster domain owns service lifecycle actions for both KV Server and
-DiskDB Server. The Chunk domain displays the DiskDB item but does not
-own a second lifecycle workflow. The deploy/restart/stop handlers enable
-`AddNodeDialog` to auto-deploy DiskDB alongside KV, and the service
-context menu works for both types.
-
-Deployment mechanism: SSH or local fork, same as KV. No Docker. The
-`crowdb-diskdb` binary is spawned via `ssh::deploy_via_ssh` or
-`lifecycle::deploy_local_in_dir`. A DiskDB deployment receives one
-user-facing service endpoint port; the internal HTTP health listener and
-any other required listener ports are reserved by the lifecycle layer and
-are not exposed as DiskDB management properties.
-
-New handlers mirroring the KV handlers:
-
-```rust
-pub struct DeployDiskdbBody {
-    endpoint_port: u16,
-}
-
-pub async fn http_deploy_node_diskdb(
-    State(state), Path(node_id), Json(body),
-) -> Result<(StatusCode, Json<DeployResult>), ...>
-
-pub async fn http_restart_node_diskdb(
-    State(state), Path(node_id),
-) -> Result<Json<DeployResult>, ...>
-
-pub async fn http_stop_node_diskdb(
-    State(state), Path(node_id),
-) -> Result<Json<StopResult>, ...>
-```
-
-- `http_deploy_node_diskdb` — checks no existing DiskDB on the node
-  (409 if present), resolves the node, derives the internal listener
-  ports from the single `endpoint_port`, spawns via SSH or local fork,
-  persists a DiskDB service entry, and records the pid. Route:
-  `POST /api/nodes/:id/diskdb/deploy`.
-- `http_restart_node_diskdb` — stops the tracked pid and re-deploys on
-  the persisted endpoint port. Route:
-  `POST /api/nodes/:id/diskdb/restart`.
-- `http_stop_node_diskdb` — stops the tracked pid, clears it, and keeps
-  the entry. Route: `POST /api/nodes/:id/diskdb/stop`.
-- KV and DiskDB use distinct service types and public endpoint models.
-  KV includes its HTTP management URL; DiskDB includes its service
-  endpoint, health, and process state but not its internal HTTP health
-  URL. Runtime PID tracking is keyed by `(node_id, service_type)`.
-- `AddNodeDialog` calls `deployServer` (KV) then `deployDiskdb` (new
-  API function) after `addNode` succeeds. Both are gated by the
-  existing `enableCrowDB`-style checkbox (add `enableDiskDB`, default
-  true).
-
-Edge cases:
-- Node with KV deployed but DiskDB deploy fails → KV stays deployed;
-  the dialog reports the DiskDB failure; the operator can retry via
-  the Server context menu's Deploy.
-- DiskDB binary not found on the remote host → SSH deploy returns an
-  error; surfaced as 502.
-- Port conflict (another process on 9941/9942) → spawn fails; surfaced
-  as 502. The handler does not pre-check ports (best-effort, matches
-  KV behavior).
-
-## 14. REST Proxy for DiskDB Runtime
-
-`crowdb-web` proxies diskdb runtime RPCs (`QueryCapacityStats` drill-down,
-scan, recalc, compact, rebuild) via REST endpoints under
-`/api/diskdb/`. The CLI and web UI route through `crowdb-web` (no direct
-crowdb-rpc from the browser or CLI). `AppState` owns a `DiskdbClient` built
-from the same `ServiceRegistryClient` the console already uses:
-
-```rust
-diskdb_client: tokio::sync::RwLock<Option<DiskdbClient>>,
-```
-
-The `DiskdbClient` is lazily initialized on first diskdb REST request
-(the service registry may not be ready at console startup).
-
-Handlers:
-
-- `GET /api/diskdb/instances` — reads live instances from the service
-  registry and merges `owned_dg_ids` from the authoritative group-0
-  ownership map (no crowdb-rpc fan-out). Returns instance id, endpoint,
-  `last_heartbeat_ms`, current ownership, and keepalive `group_usages`.
-- `GET /api/diskdb/usage?dg=<id>&disk=<disk_id>&zone=<zi>` —
-  `QueryCapacityStats` drill-down (all params optional). When `dg` is
-  omitted, iterate all registered instances and merge the responses
-  for cluster-wide totals. `DiskdbClient.query_capacity_stats(0)`
-  routes to one instance only, so the merge lives in this handler.
-- `GET /api/diskdb/scan-status?dg=<id>` — `get_scan_status`.
-- `POST /api/diskdb/scan` — `trigger_scan` (optional `dg` in body).
-- `POST /api/diskdb/recalc` — `recalc_disk_usage` (optional `dg`).
-- `POST /api/diskdb/compact` — `compact_zone` (disk_id + optional
-  zone_indices; empty = all zones).
-- `POST /api/diskdb/rebuild` — `rebuild_zone_bitmap` (disk_id +
-  optional zone_index; absent = all zones — handler loops over the
-  disk's zones if zone_index is absent).
-- `PUT /api/disks/:disk_id/status` — set a disk's `HwStatus` via
-  `HardwareClient.set_disk_status`. Needed by the Set-Status dialog;
-  no such endpoint existed before (only add/remove/move).
-
-`GET /api/diskdb/usage` with no `dg` iterates
-`read_all_diskdb_instances`, calls `query_capacity_stats` per
-instance, merges `DiskGroupInfo` entries by id (summing
-capacity/busy/free). A dead instance yields a degraded indicator,
-not a failed page. Its contribution is skipped with a warning.
-
-`PUT /api/disks/:disk_id/status` resolves the disk's rack/node/dg
-from config, then calls `hw.set_disk_status`. 404 if the disk is
-not in config.
-
-Edge cases:
-- Cluster overview with a dead instance → merged response excludes
-  it; the `/instances` endpoint still lists it (with stale heartbeat)
-  so the UI can show the degraded card.
-- Zone drill-down → bitmap is omitted at disk level (flatbuffer contract);
-  the UI issues the zone-level query separately.
-- Scan already running → `trigger_scan` returns `scan_in_progress:
-  true`; handler passes it through (no error).
-
-## 15. Capacity Panel (Canvas Visualization)
-
-The Chunk domain's Capacity sub-view renders capacity visualization
-that scales to thousands of zones per disk and tens of thousands of
-blocks per zone. Canvas with offscreen double-buffering handles 84×84
-zone grids and 181×181 bitmap grids without flicker. DOM/SVG
-rendering at that scale causes layout thrash and jank.
-
-`CapacityPanel.tsx` renders when `domain === Chunk` and the Capacity
-sub-view is active. The panel
-content depends on the selected entity (from `SelectionContext`):
-
-- **Cluster (Datacenter or no selection)** — per-rack breakdown. One
-  row per rack with DG count, node count, and a capacity/busy/free
-  bar. The cluster-wide scan status summary + trigger
-  (`ScannerPanel`) renders here only. Data from
-  `GET /api/diskdb/usage` (cluster merge).
-- **Rack selected** — per-node breakdown within the rack. One row per
-  node with DG count and a capacity/busy/free bar. Data from
-  `GET /api/diskdb/usage` (cluster merge, client-filtered).
-- **Node selected** — per-DG breakdown. One row per DG on the node
-  with disk count (array icon + count, not per-disk boxes) and a
-  capacity/busy/free bar. Data from `GET /api/diskdb/usage` (cluster
-  merge, client-filtered).
-- **DiskGroup selected** — per-disk boxes. Each disk is a box with a
-  busy% gradient fill (green → amber → red, red = busy) + inline `%`
-  label + tooltip (disk id + busy%). Data from
-  `GET /api/diskdb/usage?dg=<id>`.
-- **Disk selected** — zone grid + per-disk actions. Each zone is a
-  box in a square grid (side = ceil(sqrt(zone_count))) with a
-  green→amber→red gradient based on busy%. Hover shows a tooltip
-  with zone id + usage %. A "jump to zone #" input handles direct
-  navigation (7000 zones cannot be a dropdown). All disk-scoped
-  actions are inline in the disk header: Scan and Recalc target the
-  disk's parent DG (`triggerDiskdbScan` / `recalcDiskdbUsage` with
-  the DG id); Compact, Rebuild, Up, and Down target the disk itself
-  (`compactDiskdbZones` / `rebuildDiskdbZoneBitmap` /
-  `setDiskStatus`). The per-DG recalc result (`RecalcPanel`) renders
-  here, scoped to the parent DG. Data from
-  `GET /api/diskdb/usage?dg=<id>&disk=<disk_id>` (brief per-zone
-  entries, no bitmap).
-- **Zone selected (in-panel, within the Disk view)** — zone bitmap.
-  Canvas grid of the zone's `usage_bitmap`
-  (side = ceil(sqrt(unit_count))). Busy block = red filled cell, free
-  block = green filled cell. Zone is not a sidebar entity; it is an
-  in-panel click state inside the Disk view. Data from
-  `GET /api/diskdb/usage?dg=<id>&disk=<disk_id>&zone=<zi>` (full
-  bitmap, on-demand only).
-
-### 15.1 Rendering
-
-Canvas, not SVG/DOM, for all levels:
-- Offscreen canvas double-buffering: draw to an offscreen canvas,
-  then `drawImage` blit to the visible canvas in one call. The
-  visible canvas is never cleared-then-slowly-drawn (that flickers).
-- Single `requestAnimationFrame` sync redraw for grids up to 181×181
-  (32K cells) — fast enough to not flicker.
-- On data refresh (3 s poll), retain the previous frame until the
-  new one is fully drawn, then swap. No blank intermediate state.
-- No DOM reflow. The canvas is a single element; only its bitmap
-  content changes.
-
-### 15.2 Color encoding
-
-Green (free) → amber → red (busy):
-- Zone/disk boxes: gradient fill based on `busy_blocks /
-  unit_capacity` ratio. 0% = green, ~50% = amber, 100% = red.
-- Bitmap cells: binary — busy = red filled, free = green filled.
-- Redundant encoding: each zone/disk box shows a `%` text label on
-  hover (zone id + usage %) or inline so the information is not
-  color-only (color-blind friendly).
-
-### 15.3 Polling
-
-3 s refresh of the currently focused visualization:
-- The poll refetches only the data for the selected entity level
-  (rack/node → cluster merge; disk-group → dg query; disk → disk
-  query; zone → zone query).
-- On refetch, the canvas redraws via double-buffer (no flicker).
-- If the selection changes, the poll target switches immediately;
-  the old canvas is cleared on the next draw.
-
-Zone count math (for layout):
-- 200 TB disk / 32 GB zone = 6400 zones → 80×80 grid.
-- 32 GB zone / 1 MB unit = 32K units → 181×181 grid.
-
-Edge cases:
-- Disk with 0 zones (freshly added, zone load in progress) → empty
-  grid placeholder with "loading" text.
-- Zone with `used_count == unit_capacity` → all cells red; reported
-  as-is.
-- `usage_bitmap` shorter than `unit_capacity` (last zone rounded) →
-  pad with free (green) cells.
-- Poll response slower than 3 s → keep previous frame; next poll
-  catches up. No spinner overlay (would flicker).
-
-### 15.4 Scope dispatch and module structure
-
-`CapacityPanel` derives a `CapacityScope` (`Cluster | Rack | Node |
-DiskGroup | Disk`) from the selected entity and renders one branch per
-scope. The header (title + totals cards) is common to all scopes; only
-the body branches. Each scope has a dedicated subview:
-
-- `ClusterView` — per-rack breakdown + `ScannerPanel` (cluster-wide
-  scan status + trigger).
-- `RackView` — per-node breakdown.
-- `NodeView` — per-DG breakdown.
-- `DiskGroupView` — per-disk box grid.
-- `DiskView` — zone grid (`ZoneGrid`) + zone bitmap (`ZoneBitmap`) +
-  jump-to-zone input + per-disk action buttons + `RecalcPanel`
-  (scoped to the parent DG).
-
-Shared color/format utilities live in `utils/capacity.ts`:
-- `busyColor(pct)` — green → amber → red gradient (4-step thresholds
-  30/60/85/100), shared by `DiskGroupView` disk boxes, `ZoneGrid`,
-  and the per-rack/per-node bars.
-- `busyPct`, `formatBytes` — formatting helpers.
-
-`useZoneBitmap(dg, disk, zone)` fetches the zone bitmap on demand
-when a zone is clicked and caches the last result; the 3 s poll
-refetches the focused zone via its `refresh` callback.
-
-## 16. Console-Shared DiskDB Client + CLI
-
-### 16.1 Console-shared client
-
-`ConsoleClient` in `crowdb-console-shared` is the typed REST client used
-by both the web UI (via `api.ts` wrappers) and `crowdb-cli`. It has
-diskdb runtime methods + serde model types so the CLI and UI share one
-deserialization path.
-
-```rust
-impl ConsoleClient {
-    pub async fn list_diskdb_instances(&self) -> Result<Vec<DiskdbInstanceInfo>>
-    pub async fn query_diskdb_usage(&self, dg: Option<u64>, disk: Option<String>, zone: Option<u32>) -> Result<UsageResponse>
-    pub async fn get_scan_status(&self, dg: Option<u64>) -> Result<ScanSummary>
-    pub async fn trigger_scan(&self, dg: Option<u64>) -> Result<ScanSummary>
-    pub async fn recalc(&self, dg: Option<u64>) -> Result<RecalcResult>
-    pub async fn compact(&self, disk_id: &str, zones: Option<Vec<u32>>) -> Result<CompactionResult>
-    pub async fn rebuild(&self, disk_id: &str, zone: Option<u32>) -> Result<RebuildResult>
-    pub async fn set_disk_status(&self, disk_id: &str, status: HwStatus) -> Result<()>
-}
-```
-
-Serde model types (mirrors of the flatbuffer responses):
-`DiskdbInstanceInfo`, `DiskGroupUsageSummary`, `DiskGroupUsage`,
-`DiskUsage`, `ZoneUsage`, `ScanSummary`, `RecalcResult`,
-`CompactionResult`, `RebuildResult`, `UsageResponse`.
-
-### 16.2 CLI subcommands
-
-Runtime queries (usage/zones/scan/recalc/compact/rebuild) are
-reachable from the command line via `crowdb diskdb` subcommands.
-Lifecycle stays in `crowdb disk` / `crowdb disk-group`; `diskdb` is
-runtime queries only.
-
-```
-crowdb diskdb status                          — /api/diskdb/instances
-crowdb diskdb usage [--dg <id>] [--disk <id>] [--zone <zi>]
-crowdb diskdb scan [--dg <id>]                — trigger
-crowdb diskdb scan-status [--dg <id>]
-crowdb diskdb recalc [--dg <id>]
-crowdb diskdb compact <disk_id> [--zones <zi,...>]
-crowdb diskdb rebuild <disk_id> [--zone <zi>]
-```
-
-All route through `ConsoleClient` → `crowdb-web` → `DiskdbClient` →
-crowdb-rpc; no direct talk to `crowdb-diskdb`.
+- All controls have semantic roles and unambiguous labels. Keyboard operation,
+  focus trapping, Escape/Close behavior, and focus restoration work in dialogs.
+- Focus/selection/error indicators remain visible on the dark palette. Text
+  contrast targets WCAG AA; color-coded states include text or a legend.
+- Large diagrams retain accessible summaries and selected-object properties.
+  Errors and asynchronous progress are announced without stealing focus.
+
+## 11. Verification contract
+
+- **TEST-01:** Prepare and verify backend prerequisites through APIs before
+  visual acceptance. Browser E2E uses real services, persisted metadata and file
+  bytes. Response mocks, interception and HAR replay are forbidden. Pure unit
+  tests remain separate and cannot satisfy end-to-end acceptance.
+- Every acceptance result records: contract/scenario ID, fixture, actions,
+  visible result, relevant bounded API result, pass/fail, and concrete defect.
+- Use role/label/test-id selectors. Prefer a short scripted flow to repeated
+  full-page snapshots. Capture one useful screenshot per completed scenario or
+  failure; do not repeatedly inspect unchanged trees.
+- Test mutation results from durable API state and resulting UI, not a toast.
+  Poll readiness/leadership with a deadline; no arbitrary sleeps or hidden retry.
+- Reuse the populated cluster for read-only cases. Isolate destructive cases
+  and avoid resetting the whole environment for each tab.
+- Scope evidence honestly: rendering passed, API passed, and end-to-end passed
+  are distinct. Backend failures remain failures even if the UI handles them.
+
+## 12. KV
+
+- **KV-01:** Left tree is Store → Group → Replica. Center overview lists groups
+  with exact Store/Group IDs, observed health, leader, and replica count.
+- Before initialization, explain the dependency on deployed KV servers and offer
+  Initialize Group 0. The three-node fixture selects all three eligible nodes.
+- **KV-02:** Store/group/replica creation, membership operations, and deletion
+  use the selected scope and valid defaults. Group 0 is visibly identified as
+  the system group; ordinary groups are not confused with it.
+- **KV-03:** Selecting a Group directly opens its data window; there is no
+  Overview/Data toggle. Membership and node placement remain in properties.
+  Unknown leader is not rendered as zero. The right inspector does not poll or
+  render generic internal metrics.
+- **KV-04:** Data operations target an explicit Store/Group. Get/put/delete/scan
+  show encoding and exact key/value interpretation. Scan is bounded and paged;
+  empty values, missing keys, and request failures are distinguishable.
+- A selected replica or group may expose supported diagnostics; a generic
+  physical Cluster diagram does not replace the logical KV workbench.
+- **KV-05:** A data window contains at most 20 entries. Previous/Next replace
+  rows; each Group has an independent cursor when browsing a Store. Clicking
+  a row shows the full Key and Value. Printable UTF-8 runs remain text; only
+  undisplayable characters and malformed bytes become uppercase hexadecimal
+  runs without `0x`, distinguished by warm gold text, a dark background and border.
+  Display conversion cannot change bytes sent in a mutation or continuation.
+- **KV-06:** Get/Put/Delete occupy the shared collapsed Actions strip below
+  the heading/path. Its expanded content names Store and Group. System Store 0 /
+  Group 0 is read-only for ordinary KV mutations; management APIs own its state.
+
+## 13. Service lifecycle
+
+- **SVC-01:** Each instance has Start when stopped, Stop when running, Restart,
+  and the supported remove operation. Menus target exact type and instance ID.
+- **SVC-02:** Preserve desired configuration independently of PID. A restart
+  retains endpoints, workspace, and data; refreshed properties show the new PID
+  and separately observed readiness. Process identity is verified before signal.
+- **SVC-03:** Startup observes dependencies: Group 0 before dependent metadata
+  services; valid disks/ownership for storage; journal/data prerequisites before
+  Chunk-KV bootstrap; Chunk-KV catalog before Access startup.
+- Access provisioning durably records catalog initialization and activation
+  request identities before issuing either mutation. Interrupted deployment
+  reconciles committed state and resumes the same request. An existing catalog
+  retains its identity and policy; restart does not reset operator changes.
+  Missing or conflicting recorded identity fails explicitly.
+- Service failures name the failing step and permit a safe retry. Existing
+  instances are not silently duplicated or treated as healthy merely by presence.
+- Operational type descriptions remain available even though instance labels
+  use the compact convention in §4.
+
+## 14. DiskGroup and disk management
+
+- **DISK-01:** Capacity hierarchy is Rack → Node → DiskGroup → Disk → Zone.
+  DiskGroup creation establishes its authoritative registration, data binding,
+  and owner, or reports which prerequisite/step prevents completion.
+- The dialog does not spin indefinitely when Group 0, a data group, or DiskDB
+  is unavailable. It reports the actual failure/unknown outcome and reconciles
+  whether a resource exists before offering retry. DiskGroup creation returns
+  within eight seconds. An unknown outcome keeps the ID fenced until accepted
+  work finishes; reopening the same ID/name reconciles registration, binding
+  and owner instead of allocating another group. Binding can exist before a
+  DiskDB service is registered; this partial state names the missing owner
+  prerequisite explicitly.
+- **DISK-02:** Disk creation exposes identity, type, device path, capacity, zone
+  size, and allocation unit. Validate consistent geometry and ID uniqueness.
+  Batch rows report per-row outcomes and preserve failed entries for correction.
+- **DISK-03:** Distinguish physical location, DiskDB owner instance, and metadata
+  Store/Group binding. Neither Node ID nor service ID implies ownership.
+- Owner/status/binding operations are available only when supported and expose
+  the resulting authoritative state. Container restrictions apply to all entry
+  points, including context menus and direct API requests.
+
+## 15. Capacity
+
+- **CAP-01:** Cluster/Rack/Node/DiskGroup/Disk selections show relevant capacity,
+  used/free allocation, disks, and observation time. Missing statistics are not
+  zero and must not produce an all-free disk map.
+- **CAP-02:** Disk detail retains its summary and paged zones. Default 32 zones,
+  Prev/Next, current visible range, and optional cheap indexed zone lookup.
+  Avoid full-zone scans for filtering or drawing a large disk.
+- **CAP-03:** Selecting a Zone renders its details below the disk view. Keep the
+  parent disk and zone list in place; no redundant Back to parent Disk link.
+  If a dedicated zone view is used, provide an actual disk breadcrumb instead.
+- **CAP-04:** Zone bitmap uses muted blue for used and muted green for free,
+  with a legend, used/free counts, allocation unit, and zone geometry. Bit index
+  maps to the correct block offset according to the protocol's decode order.
+- Hover/selection provides exact block index and offset. Large bitmaps use
+  bounded drawing/tiling or labelled aggregation; an aggregate is not one block.
+- **CAP-05:** Refresh bitmap, scan/recalc, compact/rebuild, and status operations
+  identify their scope and show progress/results. RPC or owner lookup failure
+  remains visible at the affected zone and never becomes an empty/free bitmap.
+
+- **CAP-06:** Opening Cluster does not issue DiskDB runtime usage or scan
+  requests. Capacity usage is scoped to the selected DiskGroup/Disk when that
+  scope is known; cluster totals explicitly request aggregate observation.
+  Disk inventory belongs to one shared source. Expanding a Node loads its
+  DiskGroups; expanding/selecting a DiskGroup loads its disks. Selecting a
+  linked Disk loads the required ancestor inventory directly. Four workers
+  serve opened branches, merging duplicate requests for the same branch.
+  Refresh revisits requested branches and never traverses unopened disks.
+  Failed branch refresh retains its known inventory and reports failure.
+- **CAP-07:** The physical tree reads Node health from the service projection;
+  it does not ping every Node or fetch a second per-node KV catalog. Capacity
+  Nodes and DiskGroups begin collapsed; Datacenter/Racks remain visible.
+  Default-service prerequisite inspection is explicit for its selected Node.
+
+## 16. Loading, failures, and recovery
+
+- **ERR-01:** Distinguish initial loading, refreshing existing data, empty,
+  partial, unavailable, and failed. Keep usable previous data visibly stale
+  while refreshing; do not flash an empty page on every poll.
+- **ERR-02:** Display a concise cause, failed dependency/operation, and retry
+  action. Technical endpoint/HTTP details may be expanded for diagnosis.
+- **ERR-03:** A long-running or timed-out mutation preserves its target and
+  inputs. Reconcile its result before retrying. Closing a modal does not prove
+  server cancellation; UI text must not imply otherwise.
+- **ERR-04:** Failure of detail/placement/one child branch does not erase the
+  parent resource or other successful results. Unauthorized/unsupported actions
+  are explicit and do not fall back to another protocol or cluster.
+- Polling and automatic dependency checks have bounded cadence and fan-out.
+  Identical failures do not flood notifications; explicit retry remains usable.
+
+## 17. Fixed-cluster operator flow
+
+1. Open Cluster directly. Inspect/create Rack and Nodes; add each Node through
+   one dialog with six default services and explicit waiting dependencies.
+2. In KV, initialize three-replica Group 0 and create ordinary data groups.
+3. In Capacity, register DiskGroups/disks with owners and bindings; DiskIO becomes
+   ready. Observe capacity and inspect a zone bitmap.
+4. Return to Cluster to verify each service's deployment/readiness and resolve
+   dependencies. Inspect logical groups in KV and physical storage in Capacity.
+
+This is a dependency guide, not a blocking wizard. A working capability remains
+usable while another is unavailable. No domain asks the operator to reconnect.
+Data-browser flows for the four deferred domains are outside this specification.
+
+## 18. Acceptance scenarios and scope
+
+Each scenario uses the contracts above; failures are recorded in the working
+plan, never edited out of this specification to make a run pass.
+
+- **A01 / entry:** open the fixed cluster; all seven tabs appear; no connection
+  or access-key form; restoring a domain does not change cluster identity.
+- **A02 / create:** with one Rack, create three Nodes using valid defaults;
+  verify one instance of every requested type per Node, conflict-free ports,
+  same-dialog progress, and safe retry after one injected service failure.
+- **A03 / lifecycle:** independently stop/start/restart an auxiliary instance
+  from its Node menu; verify exact target, preserved data/configuration, updated
+  PID, and readiness. All instance labels follow §4.
+- **A04 / KV:** verify Group 0 and ordinary Group 1 with three replicas; select
+  a group, inspect membership, and perform bounded exact/scan data operations.
+- **A05 / Capacity:** create/register DiskGroup and disk, inspect owner/binding;
+  select a disk with more than 32 zones, page, select Zone, and verify inline
+  bitmap, decode offsets, muted colors, and error handling for unavailable owner.
+- **A10 / limits:** large topology, group/replica lists, disk/zone lists, and KV
+  scans remain bounded. Observe request counts/bytes and rendered item counts;
+  no hidden fetch-all, invented totals, or selection replacement on page changes.
+- **A11 / failures:** inject unavailable owner/group, malformed API response, stale cursor,
+  and slow/unknown mutation outcome; verify §16 and retry without duplication.
+- **A12 / modes:** Container rejects topology/disk mutations through UI and API;
+  supported admin data operations remain usable. Readonly embedding forbids
+  mutations and respects API/style isolation.
+
+- **A06 / Chunk:** default real list, 10-entry replacement windows, exact ID,
+  multiple Mirror/EC Strips, selected block properties and Disk/Node round trips.
+- **A07 / Chunk-KV:** registered servers including empty owners, bounded graph,
+  collapse, exact split identity, selected Tree/Journal and stale continuations.
+- **A08 / Iceberg:** Catalog to Parquet footer through a real committed table;
+  nested schema, snapshots, paged manifests/files and zero data-page reads.
+- **A09 / S3:** bucket/object replacement pages, HEAD, bounded preview,
+  upload/download/multipart, locations and return from Chunk to the source object.
+
+Out of scope: UI login/role design and new data-plane protocols.
+Unsupported features are explicit rather than represented as working controls.
+
+## 19. Chunk
+
+- **CHK-01:** Left tree is Datacenter → Rack → Node → CDB and KV Server;
+  KV branches expand Store → Group without Replicas. Chunk ownership has two
+  independent maps over slots 0–1023: Serving assigns a ChunkDB instance;
+  Storage assigns the metadata Store/Group. Chunk-KV ordered splits and payload
+  disk placement are separate concepts.
+- Selecting a CDB or Group displays its full 32×32 bitmap; parent selections
+  display one combined bitmap per layer. Each cell is exactly one slot, ordered
+  left-to-right then top-to-bottom. Owner colors remain stable across scopes;
+  outside-scope slots are gray, unknown membership uses a pattern. Each map
+  carries its own generation. Invalid or unavailable maps never become empty
+  or gray observations; retained failed-refresh data is marked stale.
+- Storage groups are deduplicated across replicas. Node/Rack scopes include a
+  group when it has a replica in that scope. Unknown replica/service membership
+  remains unknown. Legend hover highlights an owner's slots; clicking an owner
+  navigates to its bitmap. Legend windows contain at most 12 owners. Selecting
+  a cell shows exact slot, owner, generation, source and node associations;
+  arrow keys navigate the grid. Service and storage boundaries need not match.
+- Bitmap observations read a validated complete map and return exactly 1024
+  lossless owner identities per layer. No owner-page stitching is needed.
+- **CHK-02:** Entering Chunk requests an All-type page automatically. The center
+  lists at most 10 chunks without an inner vertical scrollbar. Previous/Next
+  replace the page. Type is a protocol-defined selector; exact Chunk ID lookup
+  sits above the list in the center. Arbitrary ID-prefix/global filtering is not
+  required. Source failures identify partial coverage rather than an empty list.
+- **CHK-03:** Selected Chunk summary and layout appear below the list. Each Strip
+  has a compact two-line identity: `Strip <id> Mirror` or `Strip <id> EC k+m`,
+  followed by logical interval such as `[8M, 16M)`. Stable protocol identities
+  remain distinct from presentation indexes. Capacity, written bytes and physical
+  usage are separate; missing values are unknown.
+- **CHK-04:** Muted selectable block cards form each Strip. Mirror cards use
+  `Mirror 1`, `Mirror 2`, etc.; EC cards distinguish data and parity. Small cards
+  show identity/role, while properties carry full Node, DiskGroup, Disk, Zone,
+  offset and length. No redundant horizontal Strip bar consumes a third row.
+- **CHK-05:** Selecting a block updates right properties. Disk and Node links
+  retain the originating chunk, page/cursor, Strip window, block and scroll.
+  Repair status reflects actual protection deficit, not lack of rack diversity
+  alone. Missing placement retains known Disk IDs rather than invented targets.
+
+## 20. Chunk-KV
+
+- **CKV-01:** Left shared Tree is Datacenter → Rack → Node → CKV Server → Split.
+  No extra sidebar title duplicates the root. Registered servers stay visible
+  even with no assigned splits. Compact split labels retain full ID and bounds
+  in hover/properties; five rendered splits are a window, not a global count.
+- **CKV-02:** The center is a node-link diagram, not a second indented sidebar:
+  Chunk-KV root → CKV Server → Split → actual Tree ID. Its visible window is
+  at most eight servers and five splits per server. Server cards collapse their
+  children. Graph paging is separate from authoritative catalog pagination.
+  Do not add a loaded-ID filter or an ambiguous All loaded servers control.
+- **CKV-03:** Selecting a Split opens its scoped Tree/Journal information below
+  the graph. Properties retain complete identities, bounds, epoch, owner/source,
+  checkpoint and selected journal extent. Root/child KV Pages must come from a
+  real bounded page-inspection API; journal fences are not KV Pages. Byte keys
+  default to hex with an optional validated text interpretation.
+- Returning from Chunk inspection restores the selected Split, Tree/Journal tab,
+  catalog generation/window, graph server/split windows, collapsed branches and
+  selected journal extent. History stores identities and cursors, not runtime
+  payloads. Return revalidates the catalog and stream generations; stale state
+  stays explicit until Refresh catalog/runtime starts a new observation.
+- **CKV-04:** Tree and journal observations have bounded replacement pages.
+  Continuation pins catalog/stream generation. Stale generation requires refresh
+  from the first page; parent/child recovery dependencies retain separate stream
+  offsets. Placement and split lineage are separate fields.
+- **CKV-05:** Page inspection follows actual inner-child indices from the root,
+  with at most 32 child steps, one 1 MiB base frame and 20 entries per window.
+  It may load cold structural pages, but never flushes, checkpoints, scans live
+  KV records or follows overflow values. Physical base records, inline deltas
+  and the count of external delta pages remain explicit; pending writes are not
+  presented as part of this base-page view. Keys and inline values have bounded
+  256-byte previews with exact lengths and truncation markers. Version fences
+  protect paths; page fingerprints additionally protect entry continuations.
+  Changed observations require an explicit root refresh. History retains path,
+  fences, offset, selected entry and byte format, then revalidates on return.
+
+## 21. Iceberg
+
+- **ICE-01:** The configured cluster Catalog loads automatically. Left shared
+  Tree is Catalog → Namespace → Table → Snapshot → Manifest → File. Namespace
+  and Table types are labelled explicitly. No Metadata leaf, Snapshots wrapper,
+  or Manifest List file layer duplicates content. Current Snapshot is marked
+  `Current`; immutable IDs remain exact.
+- **ICE-02:** Catalog/Namespace centers list their children. Table center shows
+  a compact overview followed directly by a Snapshot table: time, operation,
+  records and files. Overview/Schema/Files controls belong only to selected
+  Table, disappear for other resources, and have no independent Snapshots tab.
+- **ICE-03:** Schema is an expanded tree table with field ID/name/type/required
+  and hierarchy for structs, lists and maps. Element/key/value identities stay
+  visible. Large schemas use bounded row windows; collapse is optional, not a
+  prerequisite to seeing ordinary fields.
+- **ICE-04:** Snapshot center has one scoped summary and a Manifest table.
+  Expanding one Manifest row requests its File subtable. Manifest and File
+  pagination are independent and lazy; no full-snapshot fetch to calculate a
+  total. The right properties retain Manifest List path and known size even
+  though that file is omitted from navigation.
+- **ICE-05:** Manifest/file inspectors render decoded fields. Parquet shows
+  footer information and sized Row Group/column blocks. Selecting a column
+  shows complete metadata in properties. Inspection reads footer/metadata only,
+  not data pages. Unsupported file types show an explicit capability state.
+- **ICE-06:** Actions follow selected Catalog, Namespace or Table. Catalog
+  actions disappear when a Table is selected. Paths, titles and summaries name
+  the focused item once; properties must not merge unrelated parent identities.
+- **ICE-07:** Reference windows contain at most 100 entries; Parquet windows
+  contain 20 Row Groups and 12 columns. Paging replaces the visible window.
+  Column widths represent compressed sizes and file spans retain exact byte
+  identities. History restores the selected reference, footer/layout view and
+  column selection, then revalidates the table head, snapshot and file identity.
+  Cached branches do not bypass revalidation. A failed or stale inspection
+  preserves selection context but removes data and continuation actions.
+
+## 22. S3
+
+- **S3-01:** Left Tree is S3 → Bucket. A single namespace introduces no wrapper;
+  the logical S3 root is not named Datacenter. Root center lists buckets with
+  20-row windows; it does not repeat S3 as path, type and heading.
+- **S3-02:** Selecting a Bucket displays an API page of at most 20 objects.
+  Prefix changes reset cursor history; Previous/Next replace rows. Any bucket
+  filter over already loaded metadata explicitly names that local scope.
+- **S3-03:** Selecting an Object replaces the list with HEAD fields: key, size,
+  ETag, last modified, content type, supplied version and user metadata. Missing
+  fields show `—`. Breadcrumbs restore the Bucket list and its cursor/prefix.
+  Preview is a separate bounded operation, not an automatic payload GET.
+- **S3-04:** Root Actions create buckets/demo; Bucket Actions upload/delete and
+  multipart; Object Actions preview/download/delete. Exact bucket/key is visible.
+  Multipart state distinguishes uploaded parts, completion, abort, failure and
+  unknown outcome. Downloads stream; previews read at most the advertised cap.
+- **S3-05:** Object details include Storage locations below HEAD, 20 extents per
+  page: stable index, logical `[start, end)`, Chunk ID, chunk `[offset, end)`, and
+  physical length. Properties show exact decimal bytes and full identity.
+  Chunk links preserve object and extent cursors, selected extent and scroll.
+- Locations are an admin metadata query, never inferred from HEAD or obtained
+  by reading object payloads. Empty/missing/corrupt/oversized references have
+  distinct states. Continuation binds object and metadata generation; overwrite
+  reports stale and requires first-page refresh. Exact 64-bit offsets survive
+  JSON/JavaScript without rounding. Bounded decoding and response limits are
+  mandatory; no recursive placement fetch for every extent.
+- **S3-06:** `GET /api/access/s3-inspect/locations` accepts exact bucket/key,
+  a 1–100 limit (default 20), and an opaque cursor. The Console targets only
+  the configured Access origin and supplies its server-held management token;
+  browser credentials and arbitrary endpoint parameters are rejected or ignored.
+  Access authorizes management privilege before metadata reads and resolves the
+  configured tenant's bucket/object itself. There is no object-payload client in
+  the inspection path.
+- **S3-07:** Inspection decodes at most 4 MiB of stored references and returns
+  at most 1 MiB. Access has a five-second metadata deadline; the Console proxy
+  has a six-second request deadline. Reference-limit errors are 413, corrupt
+  references 422, missing objects 404, and changed cursor generations 409.
+  Invalid, expired or oversized cursors and limits are rejected. Cursor expiry
+  is 15 minutes and its authenticated scope includes bucket identity, exact key,
+  revision-sensitive generation and next extent index. Identical overwrites also
+  invalidate old cursors.
+- **S3-08:** Location failures preserve HEAD. Empty objects show `No storage
+  extents`; null Chunk identities show `Location unavailable` without a link.
+  Previous/Next retain at most 32 cursor positions and replace the page; at most
+  four bounded location pages are cached. A stale result keeps the previous
+  page labelled stale and disables continuation until first-page refresh.
+  Selection is captured before following a Chunk link; return refetches metadata
+  against the saved generation and restores the exact selected extent.
+
+## 23. Actions and properties
+
+- **ACT-01:** Resource title/path appear first, then one compact Actions strip,
+  collapsed by default, then primary content. Expanded Actions name their exact
+  operation target. Changing resource closes obsolete action forms.
+- **ACT-02:** KV, Iceberg and S3 use this shared structure and button style.
+  Ordinary buttons have a visible border; destructive buttons use muted red.
+  Refresh, Previous and Next belong with the query/list and do not hide inside
+  mutation forms. Readonly/container capabilities apply to every action.
+- **ACT-03:** Right properties show complete information for the clicked item,
+  including graph blocks/columns/extents. Optional diagnostics never replace
+  primary details. Metrics panels, entries and polling are excluded from the UI. Future metrics
+  publishing targets customer-managed time-series systems; it is outside this
+  UI contract.
+
+## 24. E2E organization and timing
+
+- **TEST-02:** Page-function specs retain each behavior once: shell `0x`,
+  physical lifecycle `1x`, logical KV `2x`, KV data `3x`, inspector/canvas `4x`,
+  Capacity/Chunk/Chunk-KV `5x`, Iceberg `6x`, S3 `7x`, cross-function `9x`.
+  Dedicated creation/reconfiguration specs retain their UI mutations; a smoke
+  chain does not repeat every dialog or failure permutation.
+- **TEST-03:** Use separate unit, backend integration and native browser E2E
+  layers. Browser fixtures provision actual services, metadata and files;
+  outages use actual service lifecycle. Deployment and container capability
+  enforcement require real API acceptance. Share setup per spec and keep
+  destructive cases last. Reset only for cases that require empty authority.
+- **TEST-04:** Keep the step timer and slow-test reporter. Measure setup, mutation
+  response, lifecycle readiness, DOM refresh and teardown separately. Slow steps
+  at 2 s and very slow steps at 5 s remain logged even when a step fails. Tests
+  at 10/30 s retain slow/very-slow reports. Compare per-test baselines; investigate
+  more than 2× rather than hiding time with retries or larger deadlines.
+- **TEST-05:** One worker owns the mutable runtime; installed system browser,
+  no automatic browser installation. Default assertion deadline is 3 s and
+  election 10 s, polling every 100 ms. No fixed sleeps. Native large multipart
+  and SF=1 loader acceptance run separately from ordinary UI iteration; normal
+  smoke data remain small while preserving multi-Strip and pagination cases.

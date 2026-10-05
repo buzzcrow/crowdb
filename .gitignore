@@ -47,3 +47,5 @@ app/crowdb-diskio/.cache/
 
 # Python tooling bytecode
 __pycache__/
+
+.ssw

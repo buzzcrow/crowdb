@@ -172,7 +172,7 @@ remain claimed across stop/restart and a conflicting port is reported rather
 than silently renumbered. Successful tests release their namespace; a panic
 preserves its tree for diagnosis. `pixi run clean-env` removes only recorded
 ephemeral processes and state. `pixi run clean` additionally removes
-rebuildable artifacts and build output, but preserves `persistent/`.
+rebuildable artifacts, build output, and the complete `.crowdb-runtime/` tree.
 
 ## 5. Layer Scope
 

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crowdb_kv::cluster::group::PxGroup;
-use crowdb_kv::cluster::group_config::GroupConfigStore;
+use crowdb_kv::cluster::group_config::{GroupConfigStore, PxGroupConfig, PxGroupMember};
 use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::node_config::NodeConfigStore;
@@ -24,7 +24,11 @@ use crowdb_kv::wal::{IoBackend, WalEngine};
 /// membership so it does not start as a `quorum=1` singleton in the
 /// restore window. The node config store is also set on the group so
 /// future `persist_config` calls write to the same file.
-async fn maybe_apply_persisted_config(group: &mut PxGroup, config_root: &Path, store_id: u64) {
+async fn maybe_apply_persisted_config(
+    group: &mut PxGroup,
+    config_root: &Path,
+    store_id: u64,
+) -> io::Result<()> {
     let node_store = NodeConfigStore::new(config_root);
     match node_store.load_group(store_id, group.group_id()).await {
         Ok(Some(config)) => {
@@ -43,23 +47,49 @@ async fn maybe_apply_persisted_config(group: &mut PxGroup, config_root: &Path, s
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    tracing::warn!(
-                        g = group.group_id(),
-                        error = %e,
-                        "failed to load persisted group config"
-                    );
+                    return Err(e);
                 }
             }
         }
         Err(e) => {
-            tracing::warn!(
-                g = group.group_id(),
-                error = %e,
-                "failed to load node-config.json"
-            );
+            return Err(e);
         }
     }
     group.set_node_config_store(node_store, store_id, group.group_id());
+    Ok(())
+}
+
+async fn persist_creation_identity(
+    config_root: &Path,
+    store_id: u64,
+    group_id: u64,
+    replica_id: u64,
+) -> io::Result<()> {
+    let store = NodeConfigStore::new(config_root);
+    if let Some(existing) = store.load().await?.group(store_id, group_id) {
+        if existing.replica_id != replica_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested replica identity conflicts with persisted group",
+            ));
+        }
+        return Ok(());
+    }
+    let seed = GroupConfigStore::new(config_root, store_id, group_id)
+        .load()
+        .await?
+        .unwrap_or_else(|| PxGroupConfig {
+            group_id,
+            members: vec![PxGroupMember {
+                replica_id,
+                endpoint: String::new(),
+                voting: true,
+            }],
+            ..PxGroupConfig::default()
+        });
+    // A WAL directory makes the group discoverable after a crash. Persist its
+    // local identity first, so restore cannot substitute the CLI default.
+    store.save_group(store_id, &seed, replica_id).await
 }
 
 #[must_use]
@@ -148,6 +178,7 @@ pub async fn create_group_with_wal(
     wal_backend: Arc<IoBackend>,
     crowtree_backend: CrowdbTreeBackend,
 ) -> io::Result<PxGroup> {
+    persist_creation_identity(&config.config_root, store_id, group_id, replica_id).await?;
     let mut wal_config = WalConfig::with_root(store_wal_root(&config.wal_root, store_id));
     if std::env::var("CROWDB_KV_WAL_TEXT").as_deref() == Ok("1") {
         wal_config.wal_record_format = crowdb_kv::wal::WalRecordFormat::TextLine;
@@ -171,7 +202,7 @@ pub async fn create_group_with_wal(
     local_replica.set_wal(wal);
 
     let mut group = PxGroup::new(group_id, local_replica);
-    maybe_apply_persisted_config(&mut group, &config.config_root, store_id).await;
+    maybe_apply_persisted_config(&mut group, &config.config_root, store_id).await?;
     // If the caller initialized the group as Leader, the proposal leadership
     // gate (current_term == proposing_term) will not open until the term is
     // stamped. The election driver handles this on a real win, but groups

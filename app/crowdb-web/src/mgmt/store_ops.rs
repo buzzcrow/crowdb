@@ -25,6 +25,28 @@ pub(crate) async fn http_list_stores(
     State(state): State<AppState>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<Vec<StoreView>>, (StatusCode, Json<ErrorBody>)> {
+    let (has_servers, initialized) = {
+        let config = state.config.read().unwrap();
+        (
+            config
+                .servers
+                .iter()
+                .any(|server| server.service_type == crowdb_console_shared::config::ServiceType::PaxosKv),
+            config.group(0, 0).is_some(),
+        )
+    };
+    if !state.managed_mode
+        && !initialized
+        && (!has_servers || !cluster_initialized(&state).await)
+        && state
+            .monitor_cache
+            .snapshot()
+            .await
+            .values()
+            .all(|node| node.stores.is_empty())
+    {
+        return Ok(Json(Vec::new()));
+    }
     let ctx = state
         .op_context()
         .await

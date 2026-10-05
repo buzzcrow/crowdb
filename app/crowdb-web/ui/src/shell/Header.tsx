@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 
-import { RefreshCw, Network, Database, RotateCcw, HardDrive } from 'lucide-react';
+import { RefreshCw, Network, Database, RotateCcw, HardDrive, Layers, Package } from 'lucide-react';
 import { useDomain } from '../contexts/DomainContext';
 import { Domain } from '../types';
 import { cn } from '../utils/cn';
@@ -40,10 +40,14 @@ export function Header({
   onShowCapacity,
   onResetCluster,
 }: HeaderProps) {
-  const { domain, setDomain } = useDomain();
+  const { domain, setDomain, back, forward, canBack, canForward } = useDomain();
 
   return (
     <header className="tw-fixed tw-top-0 tw-left-0 tw-right-0 tw-z-40 tw-h-14 tw-bg-panel tw-border-b tw-border-border tw-flex tw-items-center tw-gap-4 tw-px-4">
+      <nav aria-label="Navigation history" className="tw-flex tw-gap-1">
+        <button aria-label="Back" title="Back" disabled={!canBack} onClick={back} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">←</button>
+        <button aria-label="Forward" title="Forward" disabled={!canForward} onClick={forward} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">→</button>
+      </nav>
       {/* Brand */}
       <div className="tw-flex tw-items-center tw-gap-2 tw-font-semibold tw-text-text">
         <span className="tw-text-accent">◆</span> CrowDB Storage Console
@@ -86,21 +90,28 @@ export function Header({
           <Database className="tw-h-3.5 tw-w-3.5" /> KV
         </button>
         <button
-          data-testid="domain-chunk"
-          onClick={() => { setDomain(Domain.Chunk); onShowCapacity?.(); }}
+          data-testid="domain-capacity"
+          onClick={() => { setDomain(Domain.Capacity); onShowCapacity?.(); }}
           className={cn(
             'tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors',
-            domain === Domain.Chunk ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg',
+            domain === Domain.Capacity ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg',
           )}
-          aria-pressed={domain === Domain.Chunk}
+          aria-pressed={domain === Domain.Capacity}
         >
           <HardDrive className="tw-h-3.5 tw-w-3.5" /> Capacity
         </button>
+        {[{ domain: Domain.Chunk, id: 'chunk', Icon: Package }, { domain: Domain.ChunkKV, id: 'chunk-kv', Icon: Database }, { domain: Domain.Iceberg, id: 'iceberg', Icon: Layers }, { domain: Domain.S3, id: 's3', Icon: Package }].map(({ domain: target, id, Icon }) => (
+          <button key={id} data-testid={`domain-${id}`} onClick={() => setDomain(target)}
+            className={cn('tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors', domain === target ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg')}
+            aria-pressed={domain === target}>
+            <Icon className="tw-h-3.5 tw-w-3.5" /> {target}
+          </button>
+        ))}
       </div>
 
       <div className="tw-flex-1" />
 
-      {onResetCluster && (
+      {onResetCluster && domain === Domain.Cluster && (
         <button
           onClick={onResetCluster}
           className="tw-flex tw-items-center tw-gap-1.5 tw-px-2.5 tw-py-1.5 tw-rounded-md tw-text-xs tw-border tw-border-failed/30 tw-text-failed hover:tw-bg-failed/10 tw-transition-colors"

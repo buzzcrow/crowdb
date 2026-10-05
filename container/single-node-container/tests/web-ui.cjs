@@ -17,8 +17,12 @@ async function main() {
     const page = await browser.newPage();
     await page.goto(process.argv[2]);
     await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0', { timeout: 3000 });
-    await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology is read-only', { timeout: 3000 });
-    await expect(page.getByRole('region', { name: 'Preview summary' })).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology and disk management are read-only', { timeout: 3000 });
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible({ timeout: 3000 });
+    for (const domain of ['cluster', 'kv', 'capacity', 'chunk', 'chunk-kv', 'iceberg', 's3']) {
+      await expect(page.getByTestId(`domain-${domain}`)).toBeVisible({ timeout: 3000 });
+    }
+    await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
     await expect(page.getByTestId('managed-monitor-phase')).toContainText('Phase: ready', { timeout: 3000 });
     for (const service of ['kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access', 'web']) {
       await expect(page.getByTestId(`managed-process-${service}`)).toContainText(/PID \d+ · generation \d+/, { timeout: 3000 });
@@ -53,14 +57,14 @@ async function verifyAuthorityOutage(page, container) {
     expect(body.reason).toBe('group0_unavailable');
     expect(body.monitor.services.kv.pid).toBe(Number(pid));
     await expect(page.getByTestId('managed-unavailable')).toContainText('Group 0 is unavailable', { timeout: 3000 });
-    await expect(page.getByRole('region', { name: 'Preview summary' })).toHaveCount(0, { timeout: 3000 });
+    await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'N-1', exact: true })).toHaveCount(0, { timeout: 3000 });
     await expect(page.getByRole('region', { name: 'Monitor status' })).toBeVisible({ timeout: 3000 });
   } finally {
     docker('exec', container, 'kill', '-CONT', pid);
   }
   await page.clock.runFor(3001);
   await expect(page.getByTestId('managed-unavailable')).toHaveCount(0, { timeout: 3000 });
-  await expect(page.getByRole('region', { name: 'Preview summary' })).toBeVisible({ timeout: 3000 });
+  await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible({ timeout: 3000 });
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

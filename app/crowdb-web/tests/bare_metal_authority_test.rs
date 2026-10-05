@@ -95,12 +95,7 @@ fn application(cluster: &KvCluster) -> axum::Router {
         log_max_files: 5,
         request_timeout_ms: Some(500),
     };
-    router(
-        AppState::default()
-            .with_process_config(&config)
-            .with_management_token("bare-metal-test-token-123456789012345".into())
-            .unwrap(),
-    )
+    router(AppState::default().with_process_config(&config))
 }
 
 async fn hardware_request(
@@ -142,18 +137,6 @@ async fn bare_metal_hardware_routes_share_confirmed_group_zero_state() {
     let first = application(&cluster);
     let second = application(&cluster);
     let rack = serde_json::json!({"id": 8, "name": "rack-eight"});
-    assert_eq!(
-        hardware_request(
-            &first,
-            axum::http::Method::POST,
-            "/api/racks",
-            Some(rack.clone()),
-            false
-        )
-        .await
-        .0,
-        StatusCode::UNAUTHORIZED
-    );
     assert_eq!(
         hardware_request(&first, axum::http::Method::POST, "/api/racks", Some(rack), true)
             .await
@@ -241,18 +224,6 @@ async fn bare_metal_hardware_routes_share_confirmed_group_zero_state() {
 async fn verify_storage_hardware(first: &axum::Router, second: &axum::Router) {
     let groups = "/api/nodes/9/disk-groups";
     let group = serde_json::json!({"id": 4, "name": "hot"});
-    assert_eq!(
-        hardware_request(
-            first,
-            axum::http::Method::POST,
-            groups,
-            Some(group.clone()),
-            false
-        )
-        .await
-        .0,
-        StatusCode::UNAUTHORIZED
-    );
     assert_eq!(
         hardware_request(first, axum::http::Method::POST, groups, Some(group), true)
             .await
@@ -353,12 +324,6 @@ async fn verify_storage_removal(first: &axum::Router, second: &axum::Router) {
 }
 
 async fn verify_hardware_deletion(first: &axum::Router, second: &axum::Router) {
-    assert_eq!(
-        hardware_request(second, axum::http::Method::DELETE, "/api/nodes/9", None, false)
-            .await
-            .0,
-        StatusCode::UNAUTHORIZED
-    );
     assert_eq!(
         hardware_request(second, axum::http::Method::DELETE, "/api/nodes/9", None, true)
             .await

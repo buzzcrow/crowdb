@@ -136,6 +136,7 @@ fn owned_chunk_rpc_transport_retains_route_handles() {
     let lifetime = Arc::new(());
     let weak = Arc::downgrade(&lifetime);
     let transport = crowdb_tree_ffi::ChunkTransport::open_owned_rpc(OwnedChunkRpcTransportOptions {
+        disks: None,
         chunkdb: Arc::new({
             let route = route.clone();
             move |_, _| {
@@ -396,7 +397,7 @@ fn callback_root_catalog_reopens_published_manifest() {
         next_reference: AtomicU64::new(1),
         hide_current: AtomicBool::new(false),
     });
-    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend).unwrap());
+    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend.clone()).unwrap());
     let options = ChunkPageStoreOptions {
         tree_id: 42,
         owner_epoch: 9,
@@ -409,6 +410,7 @@ fn callback_root_catalog_reopens_published_manifest() {
         mirror_copies: 0,
     };
     let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    assert_eq!(store.chunk_estimated_bytes().unwrap(), 0);
     {
         store.set_wal_replay_offset(4_096).unwrap();
         assert_eq!(store.set_wal_replay_offset(4_095), Err(CtError::InvalidArgument));
@@ -422,17 +424,27 @@ fn callback_root_catalog_reopens_published_manifest() {
         assert_eq!(tree.snapshot_info().unwrap(), (1, 1));
     }
 
+    let estimated = store.chunk_estimated_bytes().unwrap();
+    assert!(estimated > 0);
     let reopened_store = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+    assert_eq!(reopened_store.chunk_stats().unwrap().pack_bytes_written, 0);
     assert_eq!(reopened_store.wal_replay_offset().unwrap(), 4_096);
     assert_eq!(
         reopened_store.set_wal_replay_offset(4_095),
         Err(CtError::InvalidArgument)
     );
     let reopened = Crowdbtree::open(&Config {
-        page_store: Some(reopened_store),
+        page_store: Some(Arc::clone(&reopened_store)),
         ..Config::default()
     })
     .unwrap();
+    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
+    // Observation must keep working when the remote catalog becomes unavailable.
+    backend.hide_current.store(true, Ordering::Release);
+    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
+    reopened_store.reclaim_chunk_orphans();
+    assert_eq!(reopened_store.chunk_estimated_bytes().unwrap(), estimated);
+    backend.hide_current.store(false, Ordering::Release);
     assert_eq!(
         reopened.get(b"durable-root").unwrap(),
         Some((1, b"chunk-value".to_vec()))
@@ -483,6 +495,59 @@ fn callback_root_catalog_persists_transition_generation_pin() {
     );
     reopened.unpin_generation(43, 7, 8).unwrap();
     reopened.unpin_generation(43, 7, 8).unwrap();
+}
+
+#[test]
+fn retained_pack_estimate_survives_old_generation_reclamation_and_reopen() {
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(9).unwrap());
+    let options = ChunkPageStoreOptions {
+        tree_id: 46,
+        owner_epoch: 9,
+        open_generation: 0,
+        pack_bytes: 4096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4096,
+        max_chunk_bytes: 0,
+        mirror_copies: 0,
+    };
+    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    let tree = Crowdbtree::open(&Config {
+        page_store: Some(Arc::clone(&store)),
+        ..Config::default()
+    })
+    .unwrap();
+    for sequence in 1..=4 {
+        tree.apply_put(sequence, b"retained-key", &vec![sequence as u8; 64 * 1024])
+            .unwrap();
+        tree.flush().unwrap();
+        tree.snapshot_info().unwrap();
+    }
+    let estimate = store.chunk_estimated_bytes().unwrap();
+    let written = store.chunk_stats().unwrap().pack_bytes_written;
+    assert!(estimate >= 64 * 1024);
+    assert!(
+        written > estimate,
+        "estimate must describe current retained packs rather than cumulative writes"
+    );
+    let generation = store.chunk_manifest_generation().unwrap();
+    assert!(catalog.reclaim_before(46, generation) > 0);
+    store.reclaim_chunk_orphans();
+    assert_eq!(store.chunk_estimated_bytes().unwrap(), estimate);
+    assert_eq!(tree.get(b"retained-key").unwrap(), Some((4, vec![4; 64 * 1024])));
+    drop(tree);
+    drop(store);
+    let reopened = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+    let recovered = Crowdbtree::open(&Config {
+        page_store: Some(Arc::clone(&reopened)),
+        ..Config::default()
+    })
+    .unwrap();
+    assert_eq!(reopened.chunk_estimated_bytes().unwrap(), estimate);
+    assert_eq!(
+        recovered.get(b"retained-key").unwrap(),
+        Some((4, vec![4; 64 * 1024]))
+    );
 }
 
 #[test]

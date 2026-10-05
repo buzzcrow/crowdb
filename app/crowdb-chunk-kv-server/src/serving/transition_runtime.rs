@@ -98,6 +98,22 @@ impl TransitionProcessor {
                 .await?;
         }
         if machine.transition().target.instance_id == self.instance_id
+            && matches!(
+                machine.transition().phase,
+                TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
+            )
+        {
+            let proof = self
+                .executor
+                .prepare_transfer_target(machine.transition())
+                .await?;
+            if machine.transition().readiness_proof.as_ref() != Some(&proof) {
+                return Err(MonitorError::PlanFailed(
+                    "recovered transfer target differs from durable readiness proof".into(),
+                ));
+            }
+        }
+        if machine.transition().target.instance_id == self.instance_id
             && machine.transition().phase == TransferPhase::CatchupPublished
         {
             let proof = self
@@ -116,6 +132,12 @@ impl TransitionProcessor {
         {
             self.executor
                 .release_transfer_generation_pin(machine.transition())?;
+        }
+        if machine.transition().target.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::Aborted
+        {
+            self.executor
+                .discard_prepared_transfer_target(machine.transition())?;
         }
         Ok(())
     }
@@ -143,11 +165,12 @@ impl TransitionProcessor {
                 .persist_split_transition(machine.transition(), revision)
                 .await?;
         }
-        if matches!(
-            machine.transition().phase,
-            SplitPhase::CatalogCommitted | SplitPhase::Aborted
-        ) {
+        if machine.transition().phase == SplitPhase::CatalogCommitted {
             self.executor.release_split_generation_pin(machine.transition())?;
+        }
+        if machine.transition().phase == SplitPhase::Aborted {
+            self.executor.release_split_generation_pin(machine.transition())?;
+            self.executor.abort_split(machine.transition(), revision).await?;
         }
         Ok(())
     }

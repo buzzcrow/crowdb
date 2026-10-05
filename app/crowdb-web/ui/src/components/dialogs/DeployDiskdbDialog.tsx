@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useEffect, useRef, useState } from 'react';
+import { useDeploymentDefaults } from '../../services/useDeploymentDefaults';
 import { Dialog } from '../Dialog';
 import { Input } from '../ui/Input';
 import { useToast } from '../../contexts/ToastContext';
@@ -41,6 +42,12 @@ export function DeployDiskdbDialog({
     wasOpenRef.current = isOpen;
   }, [isOpen, nodes, defaultNodeId, defaultRpcPort]);
 
+  const defaults = useDeploymentDefaults(isOpen);
+  useEffect(() => {
+    if (!defaults.values) return;
+    setRpcPort(String(defaults.values.diskdb.rpc_port));
+  }, [defaults.values]);
+
   const isPort = (v: string) => /^\d+$/.test(v) && Number(v) > 0 && Number(v) < 65536;
   const valid = nodeId !== '' && isPort(rpcPort);
 
@@ -70,10 +77,12 @@ export function DeployDiskdbDialog({
       description="Spawn a DiskDB instance on a node. The binary and config are pre-copied to the node's bin/ and conf/ folders."
       confirmLabel="Deploy"
       onConfirm={handleSubmit}
-      confirmDisabled={!valid || isLoading}
+      confirmDisabled={!defaults.values || !valid || isLoading}
       confirmLoading={isLoading}
     >
       <div className="tw-space-y-4">
+        {defaults.error && <p role="alert">{defaults.error}</p>}
+        {!defaults.values && !defaults.error && <p role="status">Finding available ports…</p>}
         <div className="tw-space-y-1">
           <label className="tw-text-sm tw-font-medium tw-text-text">Node</label>
           <select

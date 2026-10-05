@@ -108,3 +108,30 @@ fn compatibility_allocator_shares_the_namespace_registry() {
     assert_ne!(legacy, namespaced);
     alloc::reset_test_claims();
 }
+
+#[test]
+fn workspace_process_records_are_isolated_and_never_enroll_persistent_namespaces() {
+    use crowdb_protocol::port::namespace::record_workspace_process;
+    let namespace = RuntimeNamespace::ephemeral("workspace-owner").unwrap();
+    let workspace = namespace.root().join("N-1/services");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let pid = std::process::id();
+    record_workspace_process(&workspace, pid).unwrap();
+    let record = namespace
+        .root()
+        .join(format!("processes/{pid}/process-owner.json"));
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(record).unwrap()).unwrap();
+    assert_eq!(value["processes"][0]["pid"], pid);
+    assert!(value["processes"][0]["start"].as_str().is_some());
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(namespace.root().join("namespace.json")).unwrap()).unwrap();
+    manifest["mode"] = serde_json::json!("persistent");
+    std::fs::write(
+        namespace.root().join("namespace.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(namespace.root().join("processes")).unwrap();
+    record_workspace_process(&workspace, pid).unwrap();
+    assert!(!namespace.root().join("processes").exists());
+}

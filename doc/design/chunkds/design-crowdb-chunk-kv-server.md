@@ -74,6 +74,13 @@ the selected partition repeats the epoch check at its WAL and tree boundary.
 This separates stale-client tolerance from owner fencing without weakening
 either fence.
 
+Catalog reconciliation matches the tree identity as well as partition identity,
+epoch, range, and stream. When a Serving descriptor has materialized its tail
+overlay, an unactivated Prepared overlay handle must be replaced by recovery
+from the independent checkpoint. It cannot satisfy the materialized assignment
+or bypass the split commit proof. Ordinary grant activation applies only after
+that independent recovery has completed.
+
 ## 4. Request Contract
 
 Every request carries a random 128-bit client instance ID, nonzero monotonic
@@ -160,6 +167,14 @@ monitor advance them in this order:
    the actual writer or writers used by the operation.
 
 Before child materialization, heartbeat load reports the child as dependent.
+After process restart, either split half may reopen with its historical tail
+overlay in Prepared state. A matching serving grant alone cannot activate that
+overlay. Startup loads the persisted split transition and requires its committed
+phase, transition identity, range, owner, epoch and complete storage artifact to
+match the current Serving catalog entry. Transfer overlays retain their separate
+committed-transfer validation. Missing or conflicting evidence leaves the writer
+Prepared; repeated matching grant refresh is idempotent.
+
 The local maintenance loop performs bounded ownership materialization and a
 serving checkpoint. A heartbeat then proves independent recovery, group 0
 publishes a generation that clears both the overlay and the completed split
@@ -195,6 +210,12 @@ failure. The live-source phases and actions are:
    coroutine survive into final catch-up; reopening the same pinned generation
    is required only after target process or handle loss. Failure here may abort;
    source authority is unchanged.
+   Prepared transfer handles are staged separately from catalog-owned handles.
+   Refreshing unrelated catalog entries cannot evict their heartbeat readiness.
+   Publishing the matching target assignment promotes the same handle before
+   retiring staging; authoritative abort removes only the exact prepared epoch.
+   After restart, persisted `TargetPrepared` or `AwaitingFence` evidence restores
+   that readiness without rewinding the transition or granting serving authority.
 3. `TargetPrepared` or `AwaitingFence`: the monitor requests release only when
    record, byte, estimated catch-up, deadline, capacity, request-rate,
    cooldown, and one-transition-per-owner bounds pass. The source enters one
@@ -298,13 +319,30 @@ The balance invariants are:
 
 Balancing targets at least `live_owner_count * target_partitions_per_owner`,
 defaulting to four partitions per owner. Split chooses the largest eligible
-partition and a key near the cumulative live-byte median, never an empty child.
-The retained parent and new split child stay local. Placement later minimizes partition-count
+partition using approximate retained pack weights. A split boundary comes from
+a resident index separator or a bounded small key window; exact byte or key
+medians are unnecessary. Live-key witnesses establish nonempty children when
+the observation is made. Concurrent mutations can change that observation.
+The structural query never loads cold pages or flushes the tree. A service
+allows only one background sampling job, and heartbeats use epoch-fenced cached
+samples without waiting for that job. Every serving partition is considered;
+an unsplittable largest partition does not exclude the remaining candidates.
+Retained pack estimates use the opened manifest, including shared packs, rather
+than cumulative write counters. The estimate is deliberately coarse and can
+lag unsnapshotted mutations; observation does not scan remote metadata or data.
+The retained parent and new split child stay local. Once independently
+recoverable, count-correcting placement takes priority over further splitting;
+weighted placement follows eligible splits. Placement minimizes partition-count
 difference first, then durable-byte spread. A move must repair count imbalance
 or improve weighted spread by at least 25%. Request rate and target headroom are
 safety filters. A child with a parent-tail overlay is ineligible. The default
-per-partition cooldown is ten minutes and an owner participates in at most one
-transfer at a time.
+per-partition cooldown is one minute. Split pacing includes recent splits and
+transfers; repeat-placement pacing includes only recent transfers, so a split
+does not postpone a child's first placement. An owner participates in at most
+one transition at a time. Transfer preparation, estimated catch-up and forwarding
+retain independent ten-minute safety windows. Healthy, independently recoverable
+partitions with capacity on an idle target must make actual balance progress
+within forty seconds; splitting alone is not placement progress.
 
 ## 9. Lifecycle and Observability
 
@@ -318,6 +356,13 @@ operations retain handles and finish before bounded checkpoint/drain work.
 Catalog refresh recovers every new or changed local assignment first, then
 replaces the catalog and hosted-partition snapshots; unchanged exact-epoch
 handles remain live and departed assignments are dropped.
+Catalog-head watch notifications trigger reconciliation immediately and check
+the matching serving grant afterward. Instance-specific grant notifications
+install authority without reopening or rescanning catalog assignments.
+The configured periodic refresh remains
+the fallback when notifications are unavailable; grant renewal also continues
+on the heartbeat path. Publication therefore does not wait for a full polling
+interval before a healthy owner observes a new routing generation.
 
 Configuration exposes identity, group-0 seeds, separate RPC listen and routable
 advertise addresses, dedicated 15xxx HTTP/RPC ports, hosted-partition capacity,

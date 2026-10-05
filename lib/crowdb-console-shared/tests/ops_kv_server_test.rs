@@ -68,7 +68,7 @@ async fn stop_no_pid_not_found() {
             binary: None,
             election_profile: None,
             pid: None,
-            service_type: ServiceType::Kv,
+            service_type: ServiceType::PaxosKv,
             rpc_workers: None,
             no_fsync: false,
         })
@@ -94,7 +94,7 @@ async fn list_returns_all_servers() {
             binary: None,
             election_profile: None,
             pid: None,
-            service_type: ServiceType::Kv,
+            service_type: ServiceType::PaxosKv,
             rpc_workers: None,
             no_fsync: false,
         })
@@ -129,7 +129,7 @@ async fn delete_with_server_succeeds_when_no_replicas() {
             binary: None,
             election_profile: None,
             pid: None,
-            service_type: ServiceType::Kv,
+            service_type: ServiceType::PaxosKv,
             rpc_workers: None,
             no_fsync: false,
         })

@@ -34,7 +34,7 @@ use crate::state::AppState;
 /// is known.
 pub(crate) async fn build_diskdb_client(state: &AppState) -> Option<DiskdbClient> {
     let snap = state.monitor_cache.snapshot().await;
-    if snap.is_empty() {
+    if snap.is_empty() && !state.managed_mode {
         return None;
     }
     // Use the shared kv_client so topology discovery seeds are
@@ -541,12 +541,18 @@ pub async fn http_set_disk_status(
     Path(disk_id): Path<String>,
     Json(body): Json<SetStatusBody>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorBody>)> {
+    let requested_id = parse_disk_id(&disk_id);
     let (rack_id, node_id, dg_id, disk_id_proto) = {
         let cfg = state.config.read().unwrap();
         let disk = cfg
             .disks
             .iter()
-            .find(|d| d.disk_id == disk_id)
+            .find(|disk| {
+                disk.disk_id == disk_id
+                    || requested_id
+                        .as_ref()
+                        .is_some_and(|id| parse_disk_id(&disk.disk_id).as_ref() == Some(id))
+            })
             .cloned()
             .ok_or_else(|| err_404(format!("disk {disk_id} not found")))?;
         let did = parse_disk_id(&disk.disk_id)

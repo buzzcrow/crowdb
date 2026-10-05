@@ -22,8 +22,8 @@ use crowdb_protocol::chunk_kv::{
 };
 use crowdb_protocol::chunk_stream::{StreamBinding, StreamBindingState};
 use crowdb_tree_ffi::{
-    ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcDiskRoute,
-    OwnedChunkRpcTransportOptions, PageStore, RootCatalogObject, RootCatalogStore,
+    ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcTransportOptions, PageStore,
+    RootCatalogObject, RootCatalogStore,
 };
 use thiserror::Error;
 
@@ -81,7 +81,11 @@ impl ChunkKvStorage {
             config.storage.stream_writer_lease_ms,
             config.storage.stream_mirror_copies,
             config.storage.tree_chunk_capacity_bytes,
-            config.storage.stream_chunk_capacity_bytes,
+            StreamConfig {
+                chunk_capacity_bytes: config.storage.stream_chunk_capacity_bytes,
+                extent_page_entries: config.storage.stream_extent_page_entries,
+                ..StreamConfig::default()
+            },
         )
         .await
     }
@@ -93,12 +97,8 @@ impl ChunkKvStorage {
         writer_lease_ms: u64,
         stream_mirror_copies: u32,
         tree_chunk_capacity_bytes: u64,
-        stream_chunk_capacity_bytes: u64,
+        stream_config: StreamConfig,
     ) -> Result<Self, StorageRuntimeError> {
-        let stream_config = StreamConfig {
-            chunk_capacity_bytes: stream_chunk_capacity_bytes,
-            ..StreamConfig::default()
-        };
         let streams = Arc::new(
             ProductionStreamRuntime::new_with_mirror_copies(
                 Arc::clone(&kv),
@@ -141,7 +141,7 @@ impl ChunkKvStorage {
             writer_lease_ms,
             stream_mirror_copies,
             256 * 1024 * 1024,
-            256 * 1024 * 1024,
+            StreamConfig::default(),
         )
         .await
     }
@@ -156,17 +156,9 @@ impl ChunkKvStorage {
         tree_chunk_capacity_bytes: u64,
     ) -> Result<Self, StorageRuntimeError> {
         let (chunkdb, disks) = chunk_io
-            .native_storage_routes()
+            .native_storage_routes(writer_lease_ms)
             .await
             .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?;
-        let disk_routes = disks
-            .into_iter()
-            .map(|(disk_id, route)| OwnedChunkRpcDiskRoute {
-                disk_id_high: disk_id.high,
-                disk_id_low: disk_id.low,
-                route,
-            })
-            .collect();
         let tree_transport = Arc::new(
             ChunkTransport::open_owned_rpc(OwnedChunkRpcTransportOptions {
                 chunkdb: Arc::new(move |id, refresh| {
@@ -175,7 +167,10 @@ impl ChunkKvStorage {
                         refresh,
                     )
                 }),
-                disk_routes,
+                disks: Some(Arc::new(move |id, _| {
+                    id.and_then(|(high, low)| disks.resolve(high, low))
+                })),
+                disk_routes: Vec::new(),
                 writer_lease_ms,
                 rpc_timeout_ms: writer_lease_ms,
                 completion_capacity: 1_024,

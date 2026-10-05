@@ -306,7 +306,7 @@ extern "C" void crowdb_rpc_co_spawn(crowdb_rpc_client_t client, crowdb_rpc_serve
         return;
     }
 
-    auto *client_ptr = client->client;
+    auto *client_ptr = client->client.get();
     auto *transport  = server->server->transport();
 
     std::atomic<bool> running{true};

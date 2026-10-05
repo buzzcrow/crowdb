@@ -376,13 +376,9 @@ pub(super) fn finish_plan(
     // A single-copy mirror has no recoverable domain-loss budget. It still
     // reports unprotected domains, but must remain allocatable as an explicit
     // non-redundant shape.
-    if loss_budget > 0 && protection.degraded() && !constraints.allow_degraded_failure_domains {
-        if !protection.rack_protected {
-            return Err(PlacementError::RackProtectionUnavailable {
-                loss_budget,
-                actual: protection.max_fragments_per_rack,
-            });
-        }
+    // Rack diversity is a preference. Admission still enforces node recovery
+    // limits; the assessment independently reports whole-rack protection.
+    if loss_budget > 0 && !protection.node_protected && !constraints.allow_degraded_failure_domains {
         return Err(PlacementError::NodeProtectionUnavailable {
             loss_budget,
             actual: protection.max_fragments_per_node,

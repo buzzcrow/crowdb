@@ -28,9 +28,11 @@ pub enum ConfigError {
 #[serde(default)]
 pub struct ChunkKvServerConfig {
     pub instance_id: u64,
+    pub node_id: Option<u64>,
     pub rpc_listen_addr: String,
     pub rpc_advertise_addr: String,
     pub http_listen_addr: String,
+    pub http_advertise_addr: Option<String>,
     pub group0_mgmt_seeds: Vec<String>,
     pub max_hosted_partitions: usize,
     pub catalog_refresh_interval_ms: u64,
@@ -47,9 +49,11 @@ impl Default for ChunkKvServerConfig {
     fn default() -> Self {
         Self {
             instance_id: 0,
+            node_id: None,
             rpc_listen_addr: format!("0.0.0.0:{CHUNK_KV_RPC_BASE}"),
             rpc_advertise_addr: format!("127.0.0.1:{CHUNK_KV_RPC_BASE}"),
             http_listen_addr: format!("0.0.0.0:{CHUNK_KV_HTTP_BASE}"),
+            http_advertise_addr: None,
             group0_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
             max_hosted_partitions: 256,
             catalog_refresh_interval_ms: 5_000,
@@ -97,6 +101,19 @@ impl ChunkKvServerConfig {
             ));
         }
         parse_address("http_listen_addr", &self.http_listen_addr)?;
+        if self.node_id == Some(0) {
+            return Err(ConfigError::Invalid(
+                "node_id must be nonzero when present".into(),
+            ));
+        }
+        if let Some(address) = &self.http_advertise_addr {
+            let address = parse_address("http_advertise_addr", address)?;
+            if address.ip().is_unspecified() || address.port() == 0 {
+                return Err(ConfigError::Invalid(
+                    "http_advertise_addr must be a routable address and nonzero port".into(),
+                ));
+            }
+        }
         if self.group0_mgmt_seeds.is_empty()
             || self.group0_mgmt_seeds.iter().any(|seed| seed.trim().is_empty())
         {
@@ -169,6 +186,8 @@ pub struct StorageConfig {
     pub stream_mirror_copies: u32,
     pub tree_chunk_capacity_bytes: u64,
     pub stream_chunk_capacity_bytes: u64,
+    /// Maximum sealed extents per immutable stream directory page.
+    pub stream_extent_page_entries: usize,
     pub diskio_connections_per_endpoint: usize,
     pub diskio_rpc_workers: u32,
 }
@@ -181,6 +200,7 @@ impl Default for StorageConfig {
             stream_mirror_copies: 2,
             tree_chunk_capacity_bytes: 256 * 1024 * 1024,
             stream_chunk_capacity_bytes: 256 * 1024 * 1024,
+            stream_extent_page_entries: 1_024,
             diskio_connections_per_endpoint: 1,
             diskio_rpc_workers: 2,
         }
@@ -194,11 +214,12 @@ impl StorageConfig {
             || self.stream_mirror_copies > 5
             || !(1024 * 1024..=256 * 1024 * 1024).contains(&self.tree_chunk_capacity_bytes)
             || !(1024 * 1024..=256 * 1024 * 1024).contains(&self.stream_chunk_capacity_bytes)
+            || self.stream_extent_page_entries == 0
             || self.diskio_connections_per_endpoint == 0
             || self.diskio_rpc_workers == 0
         {
             return Err(ConfigError::Invalid(
-                "storage lease, mirror copies, connections, workers, and tree chunk capacity must be valid"
+                "storage lease, mirror copies, connections, workers, tree/stream chunk capacities, and extent page entries must be valid"
                     .into(),
             ));
         }

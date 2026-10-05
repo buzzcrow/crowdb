@@ -382,6 +382,9 @@ void Connection::close()
         }
         in_send_.store(false, std::memory_order_release);
     }
+    if (on_rpc_close_callback_) {
+        on_rpc_close_callback_(this);
+    }
     if (on_close_callback_) {
         on_close_callback_(this);
     }

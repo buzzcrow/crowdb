@@ -4,8 +4,8 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
-# Stop only processes recorded by ephemeral runtime manifests.
-bash tools/runtime/clean-runtime.sh all-disposable
+# Stop recorded processes and remove the complete workspace runtime tree.
+bash tools/runtime/clean-runtime.sh all
 
 # ── Rust build artifacts ──
 echo "[clean] cargo clean"

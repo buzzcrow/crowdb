@@ -345,7 +345,8 @@ class SocketTransport : public Transport
     // Returns:
     //   - shared_ptr (non-null) if the connection is alive
     //   - shared_ptr (null) if the connection was registered but freed (stale)
-    //   - nullopt if the connection was never registered (test/direct connection)
+    //   - nullopt if the connection is absent or already unregistered
+    // Cross-thread submit rejects both absent and expired handles.
     std::optional<std::shared_ptr<Connection>> lookup_conn(Connection *conn);
 
     // Current live connection count (for metrics reporting). Takes the

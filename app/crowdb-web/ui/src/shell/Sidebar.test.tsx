@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, fireEvent, within } from '@testing-library/react';
 import { DomainProvider } from '../contexts/DomainContext';
 import { SelectionProvider } from '../contexts/SelectionContext';
 import { Sidebar } from './Sidebar';
@@ -86,19 +86,21 @@ function renderSidebar(domain: Domain, props: Record<string, unknown> = {}) {
 }
 
 describe('Sidebar · Cluster tree projection', () => {
-  it('renders rack → node → KV server under the node', () => {
+  it('renders rack → node → PKV server under the node', () => {
     const { getByText, queryByText } = renderSidebar(Domain.Cluster);
     expect(getByText(/R-1/)).toBeTruthy();
     expect(getByText('N-10', { exact: true })).toBeTruthy();
-    // KV server appears as a child of node 10, not as a top-level item.
-    expect(getByText('KV-10', { exact: true })).toBeTruthy();
-    // Node 11 has no KV server — no KV-11 item.
-    expect(queryByText('KV-11')).toBeNull();
+    // PKV server appears as a child of node 10, not as a top-level item.
+    expect(getByText('PKV-10', { exact: true })).toBeTruthy();
+    // Node 11 has no PKV server — no PKV-11 item.
+    expect(queryByText('PKV-11')).toBeNull();
   });
 
   it('renders assigned disk groups and disks under the owning DiskDB service', () => {
     const { getByTestId, getByText } = renderSidebar(Domain.Cluster);
     const diskdbSubtree = getByTestId('tree-node-DDB-10');
+    fireEvent.click(within(diskdbSubtree).getByRole('button', { name: 'Expand' }));
+    fireEvent.click(within(getByTestId('tree-node-CL-DG-10-100')).getByRole('button', { name: 'Expand' }));
     expect(diskdbSubtree.contains(getByText(/Physical Group.*DG-100/))).toBe(true);
     expect(diskdbSubtree.contains(getByText('0123456789ab…'))).toBe(true);
   });
@@ -112,29 +114,31 @@ describe('Sidebar · Cluster tree projection', () => {
 });
 
 describe('Sidebar · KV logical projection', () => {
-  it('renders datacenter → store → group → replica without KV-server parents', () => {
+  it('renders datacenter → store → group → replica without PKV-server parents', () => {
     const { getByText, queryByText } = renderSidebar(Domain.KV);
     // Logical tree: datacenter → store → group → replica.
     expect(getByText('S-7', { exact: true })).toBeTruthy();
     expect(getByText('G-70', { exact: true })).toBeTruthy();
     expect(getByText('LR-700', { exact: true })).toBeTruthy();
     expect(getByText('LR-701', { exact: true })).toBeTruthy();
-    // No physical KV-server or node items in the KV tree.
-    expect(queryByText('KV-10')).toBeNull();
+    // No physical PKV-server or node items in the KV tree.
+    expect(queryByText('PKV-10')).toBeNull();
     expect(queryByText('N-10')).toBeNull();
   });
 });
 
 describe('Sidebar · Chunk hierarchy', () => {
   it('renders node → disk group → disk; DiskDB server is not shown in Capacity view', () => {
-    const { getByText, queryByText } = renderSidebar(Domain.Chunk);
+    const { getByText, queryByText, getByTestId } = renderSidebar(Domain.Capacity);
+    fireEvent.click(within(getByTestId('tree-node-N-10')).getByRole('button', { name: 'Expand' }));
+    fireEvent.click(within(getByTestId('tree-node-CH-DG-10-100')).getByRole('button', { name: 'Expand' }));
     expect(getByText('N-10', { exact: true })).toBeTruthy();
     // Physical disk group is under the node.
     expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();
     expect(getByText('0123456789ab…')).toBeTruthy();
     // DiskDB is a service item that belongs in the Cluster domain only.
     expect(queryByText('DDB-10')).toBeNull();
-    // No KV server item in the Chunk tree.
-    expect(queryByText('KV-10')).toBeNull();
+    // No PKV server item in the Chunk tree.
+    expect(queryByText('PKV-10')).toBeNull();
   });
 });

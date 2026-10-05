@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{ChunkKvService, ServerLifecycle, ServerMetricsSnapshot};
 
@@ -40,7 +40,90 @@ pub fn management_router(state: ManagementState) -> Router {
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
+        .route("/partitions/:id/observation", get(partition_observation))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct ObservationQuery {
+    generation: u64,
+    epoch: u64,
+    stream_generation: Option<u64>,
+    #[serde(default)]
+    stream_offset: usize,
+    page_path: Option<String>,
+    tree_version: Option<u64>,
+    page_fingerprint: Option<u32>,
+    #[serde(default)]
+    entry_offset: usize,
+}
+
+async fn partition_observation(
+    State(state): State<ManagementState>,
+    Path(id): Path<String>,
+    Query(query): Query<ObservationQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let failure = |status, error| (status, Json(serde_json::json!({ "error": error })));
+    if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(failure(StatusCode::BAD_REQUEST, "invalid_partition_id"));
+    }
+    let id = crowdb_protocol::chunk_kv::Id128 {
+        high: u64::from_str_radix(&id[..16], 16)
+            .map_err(|_| failure(StatusCode::BAD_REQUEST, "invalid_partition_id"))?,
+        low: u64::from_str_radix(&id[16..], 16)
+            .map_err(|_| failure(StatusCode::BAD_REQUEST, "invalid_partition_id"))?,
+    };
+    let service = state.service;
+    tokio::task::spawn_blocking(move || {
+        let mut observation = service.observe_partition(
+            id,
+            query.generation,
+            query.epoch,
+            query.stream_generation,
+            query.stream_offset,
+        )?;
+        if query.page_path.is_some() {
+            let page = crate::server::PageQuery {
+                page_path: query.page_path,
+                tree_version: query.tree_version,
+                page_fingerprint: query.page_fingerprint,
+                entry_offset: query.entry_offset,
+            };
+            observation["page"] = service.observe_page(id, &page)?;
+            observation["data_pages_read"] = serde_json::Value::Null;
+            let current = service.observe_partition(
+                id,
+                query.generation,
+                query.epoch,
+                query.stream_generation,
+                query.stream_offset,
+            )?;
+            if current["tree_id"] != observation["tree_id"] {
+                return Err("writer_changed");
+            }
+        }
+        Ok(observation)
+    })
+    .await
+    .map_err(|_| failure(StatusCode::INTERNAL_SERVER_ERROR, "observation_worker_failed"))?
+    .map(Json)
+    .map_err(|error| {
+        failure(
+            match error {
+                "partition_not_found" | "partition_not_hosted" => StatusCode::NOT_FOUND,
+                "invalid_page_request" | "invalid_page_path" | "invalid_page_cursor" => {
+                    StatusCode::BAD_REQUEST
+                }
+                "page_bounds" => StatusCode::PAYLOAD_TOO_LARGE,
+                "page_corrupt" | "invalid_page_frame" | "invalid_page_cell" => {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                }
+                "page_io_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::CONFLICT,
+            },
+            error,
+        )
+    })
 }
 
 async fn health(State(state): State<ManagementState>) -> Json<HealthResponse> {

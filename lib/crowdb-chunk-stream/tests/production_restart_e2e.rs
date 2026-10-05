@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_stream::{
-    ProductionStreamRuntime, StreamBinding, StreamBindingState, StreamConfig, StreamName, StreamRegistry,
+    ProductionStreamRuntime, StreamBinding, StreamBindingState, StreamConfig, StreamError, StreamName,
+    StreamRegistry,
 };
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
@@ -24,6 +25,79 @@ use crowdb_test_harness::test_dirs::TestDir;
 const TEST_UNIT_BYTES: u32 = 1024 * 1024;
 const TEST_ZONE_SIZE_UNITS: u64 = 16 * 1024;
 const TEST_CAPACITY_UNITS: u64 = TEST_ZONE_SIZE_UNITS;
+
+#[tokio::test]
+async fn production_idle_writer_stops_after_ownership_takeover() {
+    assert!(
+        all_binaries_available(),
+        "native stream acceptance requires all binaries"
+    );
+    let disk_root = TestDir::new("chunk-stream-idle-authority").unwrap();
+    let disks = create_disks(&disk_root);
+    let cluster = KvCluster::start().await;
+    seed_restart_hardware(&cluster.make_hardware_client()).await;
+    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
+    diskdb.wait_for_ready().await;
+    let diskio = start_diskio(&disks);
+    register_diskio(&cluster, &diskio).await;
+    let chunkdb = start_chunkdb(&cluster);
+    chunkdb.wait_for_ready().await;
+    let io = connect_chunk_io(&cluster).await;
+    let config = StreamConfig {
+        liveness_interval: Duration::from_millis(50),
+        ..StreamConfig::default()
+    };
+    let old_runtime = ProductionStreamRuntime::new(
+        kv_client(&cluster),
+        &io,
+        30_000,
+        ChunkReadPolicy::default(),
+        config,
+    )
+    .unwrap();
+    let name = StreamName {
+        high: u64::from(std::process::id()),
+        low: 142,
+    };
+    old_runtime
+        .registry()
+        .create(StreamBinding {
+            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
+            stream_name: name,
+            metadata_group_id: 1,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("idle-authority-e2e".into()),
+        })
+        .await
+        .unwrap();
+    let old = old_runtime.create_registered(name, 0, 1).await.unwrap();
+    let before = old.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    let new_runtime = ProductionStreamRuntime::new(
+        kv_client(&cluster),
+        &io,
+        30_000,
+        ChunkReadPolicy::default(),
+        StreamConfig::default(),
+    )
+    .unwrap();
+    let new = new_runtime.open(name, 0, 2).await.unwrap();
+    let head = new.observe_metadata(None, 0).unwrap();
+    // Observe three real idle periods without invoking an old-writer mutation.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(old.metrics().rollovers, 0);
+    assert_eq!(
+        old.append(&[Bytes::from_static(b"stale")]).await,
+        Err(StreamError::WriteStalled)
+    );
+    let reader = new_runtime.open_read_only(name, 0, 2).await.unwrap();
+    let observed = reader.observe_metadata(None, 0).unwrap();
+    assert_eq!(observed.generation, head.generation);
+    assert_eq!(observed.active, head.active);
+    let after = new.append(&[Bytes::from_static(b"new")]).await.unwrap();
+    assert_ne!(before.chunk_id, after.chunk_id);
+    assert_eq!(new.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
+}
 
 fn all_binaries_available() -> bool {
     let available = (std::env::var("CROWDB_KV_SERVER_BIN").is_ok()

@@ -452,6 +452,9 @@ pub struct RelocateSegmentHandoffResponse {
 pub struct SealChunkRequest {
     pub chunk_id: Option<ChunkId>,
     pub seal_length: u32,
+    /// Exact written bytes. Zero selects the legacy KiB-only request.
+    #[serde(default)]
+    pub seal_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

@@ -582,6 +582,45 @@ pub fn release_process_ports() -> Result<(), RuntimeNamespaceError> {
     write_claims(&mut registry, &claims)
 }
 
+/// Record a spawned child beneath its owning disposable workspace before readiness.
+/// Separate PID files avoid a shared manifest update race between concurrent Nodes.
+/// Persistent workspaces are never enrolled in disposable cleanup.
+///
+/// # Errors
+/// Returns an error when an owned manifest or child identity cannot be persisted.
+pub fn record_workspace_process(workspace: &Path, pid: u32) -> Result<(), RuntimeNamespaceError> {
+    for parent in workspace.ancestors() {
+        let path = parent.join("namespace.json");
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let manifest: NamespaceManifest = serde_json::from_slice(&bytes)?;
+        if manifest.mode != NamespaceMode::Ephemeral
+            || manifest.owner_pid != std::process::id()
+            || process_start(manifest.owner_pid).as_deref() != Some(&manifest.owner_start)
+        {
+            return Ok(());
+        }
+        let start = process_start(pid).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "Child process is not running")
+        })?;
+        let directory = parent.join("processes").join(pid.to_string());
+        fs::create_dir_all(&directory)?;
+        let target = directory.join("process-owner.json");
+        let temporary = directory.join("process-owner.tmp");
+        let bytes = serde_json::to_vec(&serde_json::json!({"processes": [ProcessOwner { pid, start }]}))?;
+        let mut file = File::create(&temporary)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::rename(temporary, target)?;
+        File::open(directory)?.sync_all()?;
+        return Ok(());
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn process_start(pid: u32) -> Option<String> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;

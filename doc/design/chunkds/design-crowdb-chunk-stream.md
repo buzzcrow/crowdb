@@ -174,6 +174,13 @@ publishing compares against the exact prior epoch and generation. A lower
 epoch is rejected, and a previously open lower-epoch writer can no longer
 write or advance the cursor.
 
+Idle maintenance compares the current manifest epoch, generation and active
+chunk with the worker's head before renewal and before rollover. A superseded
+worker stalls and performs no further idle renewals or publications. An
+unavailable authority observation defers maintenance to the next interval.
+Current owners may still rotate their own sealed chunk; renewal retries are
+bounded per idle tick, and manifest publication remains fenced by CAS.
+
 Read-only open is deliberately different from writer open. It validates the
 requested historical epoch against the durable manifest, captures its
 generation, trim point, extents, active descriptor, and acknowledged cursor,

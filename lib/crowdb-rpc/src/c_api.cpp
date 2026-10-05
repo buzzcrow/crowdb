@@ -442,7 +442,7 @@ int crowdb_rpc_server_port(crowdb_rpc_server_t server)
 crowdb_rpc_client_t crowdb_rpc_client_create(void)
 {
     try {
-        return new crowdb_rpc_client_s{.client = new crowdb::rpc::RpcClient()};
+        return new crowdb_rpc_client_s{.client = std::make_shared<crowdb::rpc::RpcClient>()};
     }
     catch (...) {
         return nullptr;
@@ -455,7 +455,8 @@ void crowdb_rpc_client_destroy(crowdb_rpc_client_t client)
         if (client == nullptr) {
             return;
         }
-        delete client->client;
+        client->client->clear_handlers();
+        client->client->stop_reaper();
         delete client;
     }
     catch (...) {
@@ -550,6 +551,11 @@ void crowdb_rpc_client_attach(crowdb_rpc_client_t client, crowdb_rpc_conn_t conn
             return;
         }
         client->client->attach(conn->conn.get());
+        // Connection callbacks must remain valid if the FFI client handle is
+        // destroyed before its transport or final connection lease.
+        conn->conn->set_on_rpc_close([owner = client->client](crowdb::rpc::Connection *closed) {
+            owner->fail_all(closed, crowdb::rpc::RpcError::ConnectionClosed);
+        });
     }
     catch (...) {
     }
@@ -1067,7 +1073,7 @@ void crowdb_rpc_server_set_request_client(crowdb_rpc_server_t server, crowdb_rpc
         if (server == nullptr || client == nullptr) {
             return;
         }
-        server->server->set_request_client(client->client);
+        server->server->set_request_client(client->client.get());
     }
     catch (...) {
     }

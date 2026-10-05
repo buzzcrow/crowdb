@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -141,6 +142,60 @@ fn config() -> ClientConfig {
         operation_timeout: Duration::from_secs(1),
         retry_backoff: Duration::from_millis(1),
         ..ClientConfig::default()
+    }
+}
+
+#[derive(Default)]
+struct GrantActivationTransport {
+    calls: AtomicU32,
+    owner_hint: bool,
+    older_revision: bool,
+}
+
+#[async_trait]
+impl ChunkKvTransport for GrantActivationTransport {
+    async fn point(&self, _endpoint: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        let pending = self.calls.fetch_add(1, Ordering::Relaxed) < 2;
+        Ok(ChunkKvResponse {
+            map_revision: request.routing.map_revision,
+            journal_position: None,
+            result: if pending {
+                Err(RpcFailure {
+                    code: ChunkKvRpcErrorCode::NotMyRange,
+                    message: "serving grant not active".into(),
+                    retry_after_ms: None,
+                    latest_map_revision: Some(request.routing.map_revision - u64::from(self.older_revision)),
+                    owner_hint: self.owner_hint.then(|| crowdb_protocol::chunk_kv::OwnerHint {
+                        instance_id: 1,
+                        rpc_endpoint: "owner-1".into(),
+                        owner_epoch: request.routing.owner_epoch,
+                    }),
+                })
+            } else {
+                Ok(OperationResult::Value(None))
+            },
+        })
+    }
+}
+
+#[tokio::test]
+async fn point_activation_wait_does_not_reread_an_unchanged_catalog() {
+    for (owner_hint, older_revision) in [(false, false), (true, false), (true, true)] {
+        let source = Arc::new(ScriptedCatalog {
+            generations: Mutex::new(vec![catalog(1, 1, 3), catalog(2, 2, 4)]),
+        });
+        let transport = Arc::new(GrantActivationTransport {
+            owner_hint,
+            older_revision,
+            ..GrantActivationTransport::default()
+        });
+        let client = ChunkKvClient::new(config(), source.clone(), transport.clone()).unwrap();
+        assert_eq!(
+            client.get(b"object".to_vec(), None).await.unwrap().result,
+            Ok(OperationResult::Value(None))
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 3);
+        assert_eq!(source.generations.lock().unwrap().len(), 1);
     }
 }
 

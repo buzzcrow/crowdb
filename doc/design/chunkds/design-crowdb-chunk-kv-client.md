@@ -36,6 +36,13 @@ bookkeeping. Overload, recovery, and write-stall responses retain the general
 retry policy. The route-refresh and total-attempt budgets are independent and
 explicit in `ClientConfig`.
 
+When `NotMyRange` reports an older catalog, or the same generation with no
+different owner/epoch hint, the client retries the cached endpoint
+within its serving-attempt and operation-deadline bounds. This lets a newly
+published owner activate without repeatedly loading an unchanged catalog.
+Newer generations and different owner hints retain bounded catalog discovery.
+Exhausting discovery refreshes does not itself exhaust serving attempts.
+
 ## Request Identity
 
 Every client handle generates a random nonzero 128-bit instance ID from the

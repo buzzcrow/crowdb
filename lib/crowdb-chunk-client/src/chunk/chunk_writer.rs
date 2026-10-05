@@ -797,6 +797,7 @@ impl ChunkWriter {
                     .seal_chunk(SealChunkRequest {
                         chunk_id: Some(cid),
                         seal_length: sealed_length_kb,
+                        seal_bytes: bytes_in_chunk,
                     })
                     .await?;
                 ProtoLocation {

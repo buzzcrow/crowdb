@@ -599,6 +599,7 @@ impl ChunkdbRpcTransport {
             rpc_create_nano: 0,
             chunk_id: chunk_id_off.as_ref(),
             seal_length: req.seal_length,
+            seal_bytes: req.seal_bytes,
         };
         let fb_req = FBSealChunkRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);

@@ -211,7 +211,8 @@ void RpcServer::dispatch(Frame *frame, Connection *conn)
     // No handler for this msg_type — try response routing (ack to
     // a server-sent request). on_response consumes the frame if the
     // request_id is in the request client's pending map.
-    if (request_client_ != nullptr && request_client_->on_response(frame->request_id, frame)) {
+    if ((frame->header.flags & FLAG_ONE_WAY) == 0 && request_client_ != nullptr &&
+        request_client_->on_response(frame->request_id, frame)) {
         return; // ack routed, frame consumed
     }
 

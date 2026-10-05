@@ -30,6 +30,7 @@ impl CrowdbKvClient {
             status: "rpc transport not set".into(),
         })?;
         let mut attempts = 0;
+        let mut redirects = crate::client::retry::Redirects::default();
         loop {
             let request_id = self.request_ids.next().as_u64();
             let response = transport
@@ -53,7 +54,10 @@ impl CrowdbKvClient {
                     request_id: response.request_id,
                 });
             }
-            if let Some(next) = self.follow_not_leader(store_id, group_id, &response) {
+            if let Some(next) = self
+                .follow_not_leader(store_id, group_id, &response, &mut redirects)
+                .await?
+            {
                 endpoint = next;
                 continue;
             }
@@ -115,6 +119,7 @@ impl CrowdbKvClient {
             status: "rpc transport not set".into(),
         })?;
         let mut attempts = 0;
+        let mut redirects = crate::client::retry::Redirects::default();
         loop {
             let request_id = self.request_ids.next().as_u64();
             let response = transport
@@ -138,7 +143,10 @@ impl CrowdbKvClient {
                     request_id: response.request_id,
                 });
             }
-            if let Some(next) = self.follow_not_leader(store_id, group_id, &response) {
+            if let Some(next) = self
+                .follow_not_leader(store_id, group_id, &response, &mut redirects)
+                .await?
+            {
                 endpoint = next;
                 continue;
             }

@@ -200,7 +200,7 @@ async fn s3_and_iceberg_keep_distinct_policies_on_protected_storage() {
     let seeds = config
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
 

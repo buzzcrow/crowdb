@@ -209,7 +209,7 @@ impl PlacementRepairTaskHandler {
                 .as_ref()
                 .is_some_and(|assessment| assessment.usage_fresh),
         );
-        if current.rack_protected && current.node_protected && current.disk_protected {
+        if current.node_protected && current.disk_protected {
             self.clear_marker(&chunk, index, strip, current, task.operation_id)
                 .await?;
             return Ok(true);
@@ -309,8 +309,7 @@ impl PlacementRepairTaskHandler {
             return Ok(false);
         }
         replacement.placement_assessment = Some(next.clone());
-        replacement.placement_repair_required =
-            !(next.rack_protected && next.node_protected && next.disk_protected);
+        replacement.placement_repair_required = !(next.node_protected && next.disk_protected);
         let replacement_segments = replacement_ec.segments.clone();
         self.lifecycle
             .publish_tentative_chunk_strip_range(

@@ -93,21 +93,23 @@ async function openKvCluster(page: import('@playwright/test').Page) {
 }
 
 async function openKvPanel(page: import('@playwright/test').Page, storeId: number, groupId: number) {
-  // Always goto('/') — the KV panel store/group dropdowns must be
-  // refreshed after topology changes (node deletions, restarts). Without
-  // a fresh page load, selectOption can hang for 30s+ waiting for stale
-  // options to reappear.
-  await page.goto('/');
-  await page.getByTestId('domain-kv').click();
-  await page.getByTestId('kv-store-select').selectOption(String(storeId));
-  await page.getByTestId('kv-group-select').selectOption(String(groupId));
+  await openKvCluster(page);
+  const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  const store = aside.getByRole('treeitem').filter({ has: page.getByText(`S-${storeId}`, { exact: true }) });
+  const expand = store.getByRole('button', { name: 'Expand', exact: true });
+  if (await expand.count()) await expand.click();
+  await aside.getByText(`G-${groupId}`, { exact: true }).click();
+  const actions = page.getByLabel(/^KV actions · Store/);
+  if (!(await actions.evaluate(element => element.hasAttribute("open")))) {
+    await page.getByText(/^KV actions · Store/).click();
+  }
 }
 
 /** The health badge inside a server tree item (Cluster domain). */
 function serverHealthBadge(page: import('@playwright/test').Page, nodeId: number) {
   return page
     .getByRole('treeitem')
-    .filter({ hasText: `KV-${nodeId}` })
+    .filter({ hasText: `PKV-${nodeId}` })
     .locator('[title]')
     .filter({ hasText: /^(Healthy|Failed|Unknown|Degraded)$/ });
 }
@@ -116,8 +118,8 @@ async function stopServerViaMenu(page: import('@playwright/test').Page, nodeId: 
   // KV-xxx tree items are in the Cluster domain under their physical node.
   await page.getByTestId('domain-cluster').click();
   const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
-  await aside.getByText(`KV-${nodeId}`, { exact: true }).click({ button: 'right' });
+  await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
+  await aside.getByText(`PKV-${nodeId}`, { exact: true }).click({ button: 'right' });
   const stop = page.waitForResponse((r: any) => r.url().includes('/server/stop'));
   await page.getByRole('menuitem', { name: /stop CrowDB Storage/i }).click();
   await stop;
@@ -127,8 +129,8 @@ async function restartServerViaMenu(page: import('@playwright/test').Page, nodeI
   // KV-xxx tree items are in the Cluster domain under their physical node.
   await page.getByTestId('domain-cluster').click();
   const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
-  await aside.getByText(`KV-${nodeId}`, { exact: true }).click({ button: 'right' });
+  await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
+  await aside.getByText(`PKV-${nodeId}`, { exact: true }).click({ button: 'right' });
   const restart = page.waitForResponse((r: any) => r.url().includes('/server/restart'));
   await page.getByRole('menuitem', { name: /restart CrowDB Storage/i }).click();
   await restart;
@@ -158,25 +160,10 @@ async function deleteNodeViaMenu(page: import('@playwright/test').Page, nodeId: 
 async function putKeyUi(page: import('@playwright/test').Page, key: string, value: string) {
   await page.getByLabel('Put key').fill(key);
   await page.getByLabel('Put value').fill(value);
-  // After reconfiguration, the backend KV client may exhaust its
-  // internal retries before the topology cache refreshes to the new
-  // leader. Retry the UI put — the backend's own retry loop provides
-  // the delay between attempts (~2s per round).
-  let lastError = '';
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const putStart = Date.now();
-    const put = page.waitForResponse((r: any) => r.url().includes('/kv/put'));
-    await page.getByRole('button', { name: /^Put$/ }).click();
-    const resp = await put;
-    const ms = Date.now() - putStart;
-    if (resp.ok()) {
-      if (attempt > 0) console.log(`[DEBUG] putKeyUi("${key}"): attempt ${attempt + 1} succeeded in ${ms}ms`);
-      return;
-    }
-    try { lastError = await resp.text(); } catch { lastError = `HTTP ${resp.status()}`; }
-    console.log(`[DEBUG] putKeyUi("${key}"): attempt ${attempt + 1} failed in ${ms}ms: ${lastError}`);
-  }
-  throw new Error(`putKeyUi failed after 5 attempts: ${lastError}`);
+  const put = page.waitForResponse(response => response.url().includes('/kv/put'));
+  await page.getByRole('button', { name: /^Put$/ }).click();
+  const response = await put;
+  expect(response.ok(), await response.text()).toBeTruthy();
 }
 
 /** UI get via the KV panel; returns the value or null when not found. */

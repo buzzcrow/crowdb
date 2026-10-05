@@ -46,6 +46,7 @@ pub struct OwnedChunkRpcDiskRoute {
 #[cfg(feature = "chunk-rpc")]
 pub struct OwnedChunkRpcTransportOptions {
     pub chunkdb: Arc<ChunkRpcRouteResolver>,
+    pub disks: Option<Arc<ChunkRpcRouteResolver>>,
     pub disk_routes: Vec<OwnedChunkRpcDiskRoute>,
     pub writer_lease_ms: u64,
     pub rpc_timeout_ms: u64,
@@ -59,6 +60,7 @@ pub type ChunkRpcRouteResolver = dyn Fn(Option<(u64, u64)>, bool) -> Option<Owne
 #[cfg(feature = "chunk-rpc")]
 struct OwnedTransportRoutes {
     chunkdb: Arc<ChunkRpcRouteResolver>,
+    disks: Option<Arc<ChunkRpcRouteResolver>>,
     _disk_routes: Vec<OwnedChunkRpcDiskRoute>,
 }
 
@@ -93,6 +95,7 @@ impl ChunkTransport {
             completion_capacity: options.completion_capacity,
             mirror_copies: options.mirror_copies,
             chunkdb_resolver: sys::ct_chunk_rpc_resolver::default(),
+            disk_resolver: sys::ct_chunk_rpc_resolver::default(),
         };
         let mut out = std::ptr::null_mut();
         check(unsafe { sys::ct_rpc_chunk_transport_open(&raw, &mut out) })?;
@@ -115,6 +118,7 @@ impl ChunkTransport {
             .collect();
         let owners = Arc::new(OwnedTransportRoutes {
             chunkdb: options.chunkdb,
+            disks: options.disks,
             _disk_routes: options.disk_routes,
         });
         let raw = sys::ct_chunk_rpc_transport_options {
@@ -135,6 +139,17 @@ impl ChunkTransport {
                 release_route: Some(release_route),
                 retain_context: Some(retain_context),
                 release_context: Some(release_context),
+            },
+            disk_resolver: if owners.disks.is_some() {
+                sys::ct_chunk_rpc_resolver {
+                    context: Arc::as_ptr(&owners).cast_mut().cast(),
+                    resolve: Some(resolve_disk_route),
+                    release_route: Some(release_route),
+                    retain_context: Some(retain_context),
+                    release_context: Some(release_context),
+                }
+            } else {
+                sys::ct_chunk_rpc_resolver::default()
             },
         };
         let mut out = std::ptr::null_mut();
@@ -189,13 +204,47 @@ unsafe extern "C" fn resolve_route(
     route: *mut sys::ct_chunk_rpc_route,
     lease: *mut *mut c_void,
 ) -> i32 {
+    unsafe { resolve_owned_route(context, high, low, refresh, route, lease, false) }
+}
+
+#[cfg(feature = "chunk-rpc")]
+unsafe extern "C" fn resolve_disk_route(
+    context: *mut c_void,
+    high: u64,
+    low: u64,
+    refresh: bool,
+    route: *mut sys::ct_chunk_rpc_route,
+    lease: *mut *mut c_void,
+) -> i32 {
+    unsafe { resolve_owned_route(context, high, low, refresh, route, lease, true) }
+}
+
+#[cfg(feature = "chunk-rpc")]
+unsafe fn resolve_owned_route(
+    context: *mut c_void,
+    high: u64,
+    low: u64,
+    refresh: bool,
+    route: *mut sys::ct_chunk_rpc_route,
+    lease: *mut *mut c_void,
+    disk: bool,
+) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if context.is_null() || route.is_null() || lease.is_null() {
             return -2;
         }
         let owners = unsafe { &*context.cast::<OwnedTransportRoutes>() };
-        let id = (high != 0 || low != 0).then_some((high, low));
-        let Some(resolved) = (owners.chunkdb)(id, refresh) else {
+        let id = if disk {
+            Some((high, low))
+        } else {
+            (high != 0 || low != 0).then_some((high, low))
+        };
+        let resolver = if disk {
+            owners.disks.as_ref()
+        } else {
+            Some(&owners.chunkdb)
+        };
+        let Some(resolved) = resolver.and_then(|resolver| resolver(id, refresh)) else {
             return -8;
         };
         unsafe {

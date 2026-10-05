@@ -377,6 +377,9 @@ pub async fn http_kv_put(
     Path((sid, gid)): Path<(u64, u64)>,
     Json(body): Json<KvWriteBody>,
 ) -> Result<Json<KvWriteResponse>, (StatusCode, Json<ErrorBody>)> {
+    if sid == 0 && gid == 0 {
+        return Err(err_400("Group 0 is read-only through the KV data API"));
+    }
     let key = decode_key(body.key, body.key_hex)?;
     let value = if let Some(h) = body.value_hex {
         decode_hex(&h)?
@@ -410,6 +413,9 @@ pub async fn http_kv_delete(
     Path((sid, gid)): Path<(u64, u64)>,
     Json(body): Json<KvWriteBody>,
 ) -> Result<Json<KvWriteResponse>, (StatusCode, Json<ErrorBody>)> {
+    if sid == 0 && gid == 0 {
+        return Err(err_400("Group 0 is read-only through the KV data API"));
+    }
     let key = decode_key(body.key, body.key_hex)?;
     let ctx = kv_op_context(&state, sid, gid).await?;
     let out = ops::kv_data::delete(&ctx, sid, gid, &key, Some((body.client_id, body.seq)))

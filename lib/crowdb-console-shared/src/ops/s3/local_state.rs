@@ -52,7 +52,7 @@ pub(super) fn save(data_dir: &Path, config: &ConsoleConfig) -> Result<()> {
     let group0_seeds: Vec<_> = config
         .servers
         .iter()
-        .filter(|server| server.service_type == ServiceType::Kv)
+        .filter(|server| server.service_type == ServiceType::PaxosKv)
         .map(|server| server.url.clone())
         .collect();
     let state = LocalState {
@@ -92,7 +92,7 @@ impl LocalState {
         let expected_seeds: Vec<_> = self
             .services
             .iter()
-            .filter(|service| service.service_type == ServiceType::Kv)
+            .filter(|service| service.service_type == ServiceType::PaxosKv)
             .map(|service| service.url.clone())
             .collect();
         if self.version != VERSION

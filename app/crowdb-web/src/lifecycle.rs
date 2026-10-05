@@ -8,10 +8,8 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use crowdb_console_shared::cluster::{DiskGroupId, NodeHealth, NodeId, RackId};
-use crowdb_console_shared::config::{
-    DiskEntry, DiskGroupEntry, NodeEntry, RackEntry, ServerEntry, ServiceType,
-};
+use crowdb_console_shared::cluster::{DiskGroupId, NodeId, RackId};
+use crowdb_console_shared::config::{DiskEntry, DiskGroupEntry, NodeEntry, RackEntry, ServiceType};
 use crowdb_console_shared::expand::RecursiveDepth;
 use crowdb_console_shared::ops;
 use serde::{Deserialize, Serialize};
@@ -216,6 +214,7 @@ pub async fn http_remove_node(
     State(state): State<AppState>,
     Path(id): Path<u64>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorBody>)> {
+    let _operation = crate::services::node_removal(&state, id)?;
     let t0 = std::time::Instant::now();
     // Cascade-stop the server process and drop its deployment record +
     // topology before removing the node, so a direct DELETE /api/nodes/:id
@@ -232,6 +231,7 @@ pub async fn http_remove_node(
         cfg.remove_node(id).map_err(map_config_err)?;
     }
     state.persist().map_err(map_persist_err)?;
+    crate::services::forget_plan(&state, id)?;
     let t_cfg = t0.elapsed().as_millis() - t_stop;
     // Refresh the monitor cache for remaining group-0 nodes and poll
     // until a post-election leader is observed, so the sysdata write
@@ -518,347 +518,13 @@ pub async fn http_get_node(
 
 // ── Server lifecycle (node-addressed) ────────────────────────────────
 
-/// One row of `GET /api/servers`: a deployed `crowdb-kv-server` projected
-/// from the persisted config plus the live monitor cache.
-#[derive(Debug, Serialize)]
-pub struct ServerSummary {
-    /// Owning node id (`None` for plain externally-registered servers).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_id: Option<u64>,
-    /// KV management URL. Absent for `DiskDB`, which has no public
-    /// management URL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mgmt_url: Option<String>,
-    /// Public service endpoint. Used by `DiskDB`; absent for KV when its
-    /// endpoint is represented by `rpc_url`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rpc_url: Option<String>,
-    /// Live pid if the console currently tracks the process.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
-    /// Latest health from the monitor cache (`unknown` until probed).
-    pub health: NodeHealth,
-    /// Service type: "kv" (crowdb-kv-server) or "diskdb".
-    pub service_type: String,
-}
+pub use crate::services::observation::{http_list_servers, ServerSummary};
 
-/// `GET /api/servers`. Cluster-wide list of deployed servers, one row
-/// per `ServerEntry`, with health from the monitor cache and the live
-/// pid when tracked. The CLI's `server list` renders this directly.
-///
-/// # Panics
-/// Panics if the `RwLock` is poisoned.
-pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<ServerSummary>> {
-    let snap = state.monitor_cache.snapshot().await;
-    let cfg = state.config.read().unwrap();
-    let rows = cfg
-        .servers
-        .iter()
-        .map(|s| {
-            let runtime_pid = match s.node_id {
-                Some(node_id) if s.service_type == ServiceType::Diskdb => {
-                    state.diskdb_runtime_pid(node_id.to_string())
-                }
-                Some(node_id) => state.runtime_pid(node_id.to_string()),
-                None => None,
-            };
-            let pid = runtime_pid.or_else(|| {
-                s.pid
-                    .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
-            });
-            // KV health comes from the monitor cache (probed via the KV
-            // server's /topology), overridden to Down when no PID is
-            // tracked. DDB has no topology probe, so its health is derived
-            // from PID presence alone — the shared node record reflects KV
-            // health and must not flip the DDB badge when KV is stopped or
-            // restarted while DDB keeps running.
-            let health = if s.node_id.is_none() || s.service_type == ServiceType::Diskdb {
-                if pid.is_some() {
-                    NodeHealth::Up
-                } else {
-                    NodeHealth::Down
-                }
-            } else if pid.is_some() {
-                s.node_id
-                    .and_then(|n| snap.get(&n))
-                    .map_or(NodeHealth::Up, |rec| rec.health)
-            } else {
-                NodeHealth::Down
-            };
-            ServerSummary {
-                node_id: s.node_id,
-                mgmt_url: (s.service_type == ServiceType::Kv).then(|| s.url.clone()),
-                endpoint: (s.service_type == ServiceType::Diskdb).then(|| s.url.clone()),
-                rpc_url: s.rpc_url.clone(),
-                pid,
-                health,
-                service_type: match s.service_type {
-                    crowdb_console_shared::config::ServiceType::Kv => "kv",
-                    crowdb_console_shared::config::ServiceType::Diskdb => "diskdb",
-                    crowdb_console_shared::config::ServiceType::Chunkdb => "chunkdb",
-                    crowdb_console_shared::config::ServiceType::Diskio => "diskio",
-                    crowdb_console_shared::config::ServiceType::ChunkKv => "chunk-kv",
-                    crowdb_console_shared::config::ServiceType::AccessServer => "access-server",
-                    crowdb_console_shared::config::ServiceType::Rpc => "rpc",
-                }
-                .to_string(),
-            }
-        })
-        .collect();
-    Json(rows)
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DeployNodeServerBody {
-    rest_port: u16,
-    rpc_port: u16,
-    #[serde(default)]
-    binary: Option<String>,
-    #[serde(default)]
-    election_profile: Option<String>,
-    /// `--kv-backend` value (e.g. `"file"`, `"block"`, `"mem-block"`).
-    #[serde(default)]
-    kv_backend: Option<String>,
-    /// `--wal-backend` value (e.g. `"file"`, `"mem-block"`, `"block-device"`).
-    #[serde(default)]
-    wal_backend: Option<String>,
-    /// Sets `--no-fsync` on the spawned server when `true`.
-    #[serde(default)]
-    no_fsync: bool,
-    /// `--metrics-interval` value in seconds.
-    #[serde(default)]
-    metrics_interval: Option<u64>,
-    /// `--max-inflight` value for the proposal admission window.
-    #[serde(default)]
-    max_inflight: Option<usize>,
-    /// `--coalesce-max-keys` value for R45 proposal coalescing.
-    #[serde(default)]
-    coalesce_max_keys: Option<usize>,
-    /// `--peer-pool-size` value for inter-server RPC connection pool.
-    #[serde(default)]
-    peer_pool_size: Option<usize>,
-    /// `--enable-nagle` flag for RPC connections.
-    #[serde(default)]
-    enable_nagle: Option<bool>,
-    /// `--quickack` flag for RPC connections (Linux only).
-    #[serde(default)]
-    quickack: Option<bool>,
-    /// `--event-write` flag for RPC transports.
-    #[serde(default)]
-    event_write: Option<bool>,
-    /// `--send-queue-capacity` value for per-connection send queue.
-    #[serde(default)]
-    send_queue_capacity: Option<u32>,
-    /// Optional `--config` JSON path passed to the spawned `crowdb-kv-server`.
-    #[serde(default)]
-    config: Option<String>,
-    /// `--rpc-workers` value for the spawned `crowdb-kv-server`.
-    #[serde(default)]
-    rpc_workers: Option<u32>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DeployResult {
-    node_id: NodeId,
-    mgmt_url: String,
-    rpc_url: String,
-    pid: u32,
-}
-
-/// `GET /api/nodes/:node_id/server`. Runtime info; 404 if not deployed.
-///
-/// # Panics
-/// Panics if the `RwLock` is poisoned.
-///
-/// # Errors
-/// Returns `404` if no server is deployed on this node.
-pub async fn http_get_node_server(
-    State(state): State<AppState>,
-    Path(node_id): Path<u64>,
-    Recursive(_depth): Recursive,
-) -> Result<Json<ServerEntry>, (StatusCode, Json<ErrorBody>)> {
-    let mut entry = {
-        let cfg = state.config.read().unwrap();
-        cfg.server_for_node(node_id).cloned().ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    error: format!("no server deployed on node {node_id}"),
-                }),
-            )
-        })?
-    };
-    entry.pid = state.runtime_pid(node_id);
-    Ok(Json(entry))
-}
-
-/// `POST /api/nodes/:node_id/server/deploy`. Spawn `crowdb-kv-server` on
-/// the node (local fork for `ssh_user=""`, SSH otherwise), wait for
-/// health, persist the deployment record.
-///
-/// # Panics
-/// Panics if the `RwLock` is poisoned.
-///
-/// # Errors
-/// Returns an error if deployment, config persistence, or node lookup fails.
-pub async fn http_deploy_node_server(
-    State(state): State<AppState>,
-    Path(node_id): Path<u64>,
-    Json(body): Json<DeployNodeServerBody>,
-) -> Result<(StatusCode, Json<DeployResult>), (StatusCode, Json<ErrorBody>)> {
-    use crowdb_console_shared::lifecycle::DeployRequest;
-
-    let workspace_dir = state
-        .prepare_node_workspace(node_id)
-        .map_err(|e| err_500(e.to_string()))?;
-    let req = DeployRequest {
-        server_id: node_id.to_string(),
-        rest_port: body.rest_port,
-        rpc_port: body.rpc_port,
-        group0_management_seeds: (*state.authority_seeds).clone(),
-        election_profile: body
-            .election_profile
-            .clone()
-            .or_else(|| std::env::var("CROWDB_KV_SERVER_ELECTION_PROFILE").ok()),
-        binary: body.binary.clone().map(std::path::PathBuf::from),
-        kv_backend: body.kv_backend.clone(),
-        wal_backend: body.wal_backend.clone(),
-        no_fsync: body.no_fsync,
-        metrics_interval: body.metrics_interval,
-        max_inflight: body.max_inflight,
-        coalesce_max_keys: body.coalesce_max_keys,
-        peer_pool_size: body.peer_pool_size,
-        enable_nagle: body.enable_nagle,
-        quickack: body.quickack,
-        event_write: body.event_write,
-        send_queue_capacity: body.send_queue_capacity,
-        config: body.config.clone().map(std::path::PathBuf::from),
-        rpc_workers: body.rpc_workers,
-    };
-
-    let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let deployed = ops::kv_server::deploy(&ctx, &req, Some(&workspace_dir))
-        .await
-        .map_err(map_config_err)?;
-    // Apply the server entry directly to state.config instead of
-    // commit_op_context — the snapshot-replace pattern loses
-    // concurrent updates (e.g. parallel deploys on different nodes).
-    let entry = ctx
-        .config()
-        .server_for_node(node_id)
-        .ok_or_else(|| err_500("deploy succeeded but server entry not in ctx"))?
-        .clone();
-    {
-        let mut cfg = state.config.write().unwrap();
-        cfg.add_server(entry).map_err(map_config_err)?;
-    }
-    state.persist().map_err(map_persist_err)?;
-    state.set_runtime_pid(node_id, deployed.pid);
-    crate::mgmt::refresh_node_cache(&state, node_id).await;
-    // A new server is now in the config — re-seed the shared kv_client
-    // so topology refresh can reach this node.
-    state.reseed_kv_client().await;
-    Ok((
-        StatusCode::CREATED,
-        Json(DeployResult {
-            node_id,
-            mgmt_url: deployed.mgmt_url,
-            rpc_url: deployed.rpc_url,
-            pid: deployed.pid,
-        }),
-    ))
-}
-
-/// `POST /api/nodes/:node_id/server/restart`. Stop the tracked
-/// `crowdb-kv-server` process on this node (if any) and immediately
-/// re-deploy on the same ports recorded in the `ServerEntry`. The
-/// binary path falls back to `CROWDB_KV_SERVER_BIN` / `"crowdb-kv-server"`
-/// the same way the initial deploy does when no `binary` override
-/// is supplied. Returns the new `DeployResult`.
-///
-/// Idempotent in the sense that calling it when no process is
-/// currently running still performs a deploy (so an operator can
-/// recover from an out-of-band crash).
-///
-/// # Panics
-/// Panics if the `RwLock` is poisoned.
-///
-/// # Errors
-/// Returns `404` if no server is registered for this node, `502` if
-/// the SSH/local restart cycle fails.
-pub async fn http_restart_node_server(
-    State(state): State<AppState>,
-    Path(node_id): Path<u64>,
-) -> Result<Json<DeployResult>, (StatusCode, Json<ErrorBody>)> {
-    let workspace_dir = state
-        .prepare_node_workspace(node_id)
-        .map_err(|e| err_500(e.to_string()))?;
-    let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let deployed = ops::kv_server::restart(
-        &ctx,
-        node_id,
-        Some(&workspace_dir),
-        state.runtime_pid(node_id),
-        &state.authority_seeds,
-    )
-    .await
-    .map_err(map_config_err)?;
-    // Apply the updated server entry directly to state.config (avoid
-    // commit_op_context snapshot-replace race).
-    let new_entry = ctx
-        .config()
-        .server_for_node(node_id)
-        .ok_or_else(|| err_500("restart succeeded but server entry not in ctx"))?
-        .clone();
-    {
-        let mut cfg = state.config.write().unwrap();
-        let _ = cfg.remove_server_for_node(node_id);
-        cfg.add_server(new_entry).map_err(map_config_err)?;
-    }
-    state.persist().map_err(map_persist_err)?;
-    state.set_runtime_pid(node_id, deployed.pid);
-    // Clear cached KV RPC connections so the next KV request reconnects
-    // to the restarted server instead of reusing a stale TCP connection.
-    if let Some(t) = state.kv_rpc_transport.read().await.as_ref() {
-        t.clear_connections();
-    }
-    // Mark the node as recovering so the monitor cache preserves
-    // previously-known stores until the server's /topology confirms
-    // them (WAL replay may still be in progress when the first
-    // topology fetch succeeds). Must be set BEFORE
-    // restore_persisted_topology_for_node, which calls
-    // refresh_node_cache internally.
-    state.monitor_cache.mark_recovering(node_id).await;
-    crate::mgmt::restore_persisted_topology_for_node(&state, node_id)
-        .await
-        .map_err(|e| err_502(format!("restore topology after restart: {e}")))?;
-    // Refresh the monitor cache so health badges reflect the restarted
-    // server. The process may not be listening yet, so retry a few
-    // times with short delays until the probe succeeds.
-    crate::mgmt::refresh_node_cache(&state, node_id).await;
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        for _ in 0..10 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            crate::mgmt::refresh_node_cache(&state_clone, node_id).await;
-            let snap = state_clone.monitor_cache.snapshot().await;
-            if let Some(rec) = snap.get(&node_id) {
-                if rec.health == NodeHealth::Up {
-                    break;
-                }
-            }
-        }
-    });
-
-    Ok(Json(DeployResult {
-        node_id,
-        mgmt_url: deployed.mgmt_url,
-        rpc_url: deployed.rpc_url,
-        pid: deployed.pid,
-    }))
-}
+mod kv_process;
+pub use kv_process::{
+    http_deploy_node_server, http_get_node_server, http_restart_node_server, DeployNodeServerBody,
+    DeployResult,
+};
 
 #[derive(Debug, Serialize)]
 pub struct StopResult {
@@ -1060,13 +726,36 @@ pub async fn http_cluster_clean(
 pub async fn http_internal_reset(
     State(state): State<AppState>,
 ) -> Result<Json<ResetResult>, (StatusCode, Json<ErrorBody>)> {
+    let _reset = crate::services::Operation::reset(&state).await?;
     // Graceful shutdown in dependency order:
     //   1-4. shutdown_kv_data — remove user groups → user stores →
     //        clean group-0 sysdata → remove group-0/store-0.
     //   5.   stop_all_services — SIGTERM all KV + DDB processes.
     //   6-8. config cleanup — remove nodes, racks, caches, workspaces.
-    let mut stopped = shutdown_kv_data(&state).await;
-    stopped.extend(stop_all_services(&state).await);
+    crate::services::remove_for_reset(&state).await?;
+    // Local disposable authority disappears with its owned workspaces. Stop
+    // processes directly rather than reconfiguring every Paxos group first.
+    // Attached/remote authorities still require their explicit logical teardown.
+    let local = {
+        let config = state.config.read().unwrap();
+        config
+            .servers
+            .iter()
+            .filter(|entry| entry.service_type == ServiceType::PaxosKv)
+            .all(|entry| {
+                config.local_launches.contains_key(&entry.id)
+                    && entry
+                        .node_id
+                        .and_then(|id| config.node(id))
+                        .is_some_and(|node| !node.ssh_enabled())
+            })
+    };
+    let mut stopped = if local {
+        Vec::new()
+    } else {
+        shutdown_kv_data(&state).await
+    };
+    stopped.extend(stop_all_services(&state).await?);
 
     // 6. Remove all nodes from config + drop monitor cache entries.
     let node_ids: Vec<NodeId> = {
@@ -1106,20 +795,13 @@ pub async fn http_internal_reset(
         // the reset. Without this, a restart reloads stale DGs/disks.
         cfg.disk_groups.clear();
         cfg.disks.clear();
+        cfg.local_launches.clear();
     }
 
     // 8. Clear caches and workspace directories.
     state.clear_cluster_clients().await;
-    // Defer workspace cleanup to a background task — the KV server
-    // processes are still shutting down (async SIGTERM in
-    // stop_all_services), and removing their WAL/engine files while
-    // they are open would fail or race. The background task removes
-    // the dirs best-effort; the next deploy recreates them as needed.
-    // Defer workspace cleanup — processes may still be shutting down.
-    let state_clone = state.clone();
-    tokio::task::spawn_blocking(move || {
-        let _ = state_clone.clear_workspaces();
-    });
+    // Every child has exited before deleting its open WAL and engine files.
+    state.clear_workspaces().map_err(map_persist_err)?;
     state.persist().map_err(map_persist_err)?;
 
     Ok(Json(ResetResult { stopped }))
@@ -1307,7 +989,7 @@ async fn shutdown_kv_data(state: &AppState) -> Vec<String> {
 /// Step 5: graceful stop all KV server + DDB processes (SIGTERM →
 /// graceful shutdown). Clears runtime PIDs. Returns the list of node
 /// IDs whose KV server process was stopped.
-async fn stop_all_services(state: &AppState) -> Vec<String> {
+async fn stop_all_services(state: &AppState) -> Result<Vec<String>, (StatusCode, Json<ErrorBody>)> {
     use crowdb_console_shared::lifecycle;
 
     let node_ids: Vec<NodeId> = {
@@ -1315,14 +997,11 @@ async fn stop_all_services(state: &AppState) -> Vec<String> {
         cfg.nodes.iter().map(|n| n.id).collect()
     };
     let mut stopped: Vec<String> = Vec::new();
+    let mut stopping = tokio::task::JoinSet::new();
+    let mut failures = Vec::new();
 
     for nid in &node_ids {
-        // Stop the KV server process if a PID is tracked.
-        // Send SIGTERM and reap in the background — the server's
-        // graceful shutdown can take up to 10s (shutdown_timeout_ms),
-        // and blocking here serializes N nodes × 10s = N×10s delays.
-        // The process is reaped in the background (SIGKILL after 15s
-        // if needed) so ports/WAL files are released for reuse.
+        // Stop children concurrently; workspace cleanup waits for all of them.
         if let Some(pid) = state.runtime_pid(nid) {
             let ssh = state
                 .config
@@ -1332,26 +1011,55 @@ async fn stop_all_services(state: &AppState) -> Vec<String> {
                 .is_some_and(crowdb_console_shared::config::NodeEntry::ssh_enabled);
             if ssh {
                 let node = state.config.read().unwrap().node(*nid).cloned().unwrap();
-                let _ = crowdb_console_shared::ssh::stop_via_ssh(&node, pid).await;
+                if let Err(error) = crowdb_console_shared::ssh::stop_via_ssh(&node, pid).await {
+                    failures.push(error.to_string());
+                }
             } else {
-                tokio::task::spawn_blocking(move || {
-                    let _ = lifecycle::stop_pid(pid);
+                stopping.spawn_blocking(move || {
+                    lifecycle::stop_pid(pid)?;
+                    if lifecycle::process_is_alive(pid) {
+                        return Err(crowdb_console_shared::error::Error::Config(format!(
+                            "child {pid} remains alive after stop"
+                        )));
+                    }
+                    Ok(())
                 });
             }
             stopped.push(nid.to_string());
-            state.clear_runtime_pid(nid);
         }
 
         // Stop the DDB process if a PID is tracked.
         if let Some(pid) = state.diskdb_runtime_pid(nid) {
-            tokio::task::spawn_blocking(move || {
-                let _ = lifecycle::stop_pid(pid);
+            stopping.spawn_blocking(move || {
+                lifecycle::stop_pid(pid)?;
+                if lifecycle::process_is_alive(pid) {
+                    return Err(crowdb_console_shared::error::Error::Config(format!(
+                        "child {pid} remains alive after stop"
+                    )));
+                }
+                Ok(())
             });
-            state.clear_diskdb_runtime_pid(nid);
         }
     }
 
-    stopped
+    while let Some(result) = stopping.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failures.push(error.to_string()),
+            Err(error) => failures.push(error.to_string()),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(err_500(format!(
+            "reset child stop failed: {}",
+            failures.join("; ")
+        )));
+    }
+    for nid in &node_ids {
+        state.clear_runtime_pid(nid);
+        state.clear_diskdb_runtime_pid(nid);
+    }
+    Ok(stopped)
 }
 
 #[derive(Serialize)]
@@ -1499,77 +1207,7 @@ pub async fn http_add_node_disk_group(
     Path(node_id): Path<NodeId>,
     Json(body): Json<AddDiskGroupBody>,
 ) -> Result<(StatusCode, Json<DiskGroupEntry>), (StatusCode, Json<ErrorBody>)> {
-    let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let entry = ops::hardware::add_disk_group(&ctx, node_id, body.id, &body.name)
-        .await
-        .map_err(map_config_err)?;
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
-
-    let hw = crate::mgmt::build_hardware_client(&state)
-        .await
-        .ok_or_else(|| err_502("no group-0 endpoint; disk-group owner cannot be assigned"))?;
-    if let Err(error) = auto_assign_owner(&hw, entry.rack_id, node_id, entry.id).await {
-        let rollback = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-        let _ = ops::hardware::remove_disk_group(&rollback, node_id, entry.id).await;
-        let _ = state.commit_op_context(&rollback);
-        return Err(err_502(format!("auto-assign owner: {error}")));
-    }
-
-    Ok((StatusCode::CREATED, Json(entry)))
-}
-
-/// Pick the diskdb instance with the fewest owned DGs from a list of
-/// live instance IDs and the current ownership map. Ties are broken by
-/// lowest `instance_id`. Returns `None` if `instance_ids` is empty.
-///
-/// Pure function — no I/O — so it can be unit-tested without a live
-/// group-0 connection.
-/// Auto-assign a newly created disk-group to the diskdb instance with
-/// the fewest owned DGs. Reads the service registry for live diskdb
-/// instances and the current ownership map, counts DGs per instance,
-/// picks the one with the lowest count, and writes the ownership entry
-/// to group-0. Fails if no diskdb instances are registered.
-async fn auto_assign_owner(
-    hw: &crowdb_kv_client::HardwareClient,
-    rack_id: RackId,
-    node_id: NodeId,
-    dg_id: DiskGroupId,
-) -> Result<(), String> {
-    let svc = crowdb_kv_client::ServiceRegistryClient::from_shared(hw.shared_kv());
-    let instances = svc
-        .read_all_diskdb_instances()
-        .await
-        .map_err(|e| format!("read_all_diskdb_instances: {e}"))?;
-    if instances.is_empty() {
-        return Err("no live diskdb instances registered".to_string());
-    }
-    let owners = hw.list_owners().await.map_err(|e| format!("list_owners: {e}"))?;
-    let instance_ids: Vec<u64> = instances.iter().map(|(id, _)| *id).collect();
-    let instance_id = crate::owner_assignment::pick_least_loaded_instance(&instance_ids, &owners)
-        .ok_or_else(|| "no eligible diskdb instance".to_string())?;
-    // Lease = 1 hour from now (the diskdb keepalive will refresh it).
-    #[allow(clippy::cast_possible_truncation)]
-    let lease_expiry_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
-        + 3_600_000;
-    let disk_group = hw
-        .get_disk_group(rack_id, node_id, dg_id)
-        .await
-        .map_err(|e| format!("get_disk_group: {e}"))?
-        .ok_or_else(|| format!("disk-group {dg_id} missing from group 0"))?;
-    hw.add_disk_group_with_owner(
-        rack_id,
-        node_id,
-        dg_id,
-        &disk_group.value,
-        instance_id,
-        lease_expiry_ms,
-    )
-    .await
-    .map_err(|e| format!("add_disk_group_with_owner: {e}"))?;
-    tracing::info!(dg_id, instance_id, "auto-assign: assigned DG to diskdb instance");
-    Ok(())
+    crate::physical::disk_group::create(state, node_id, body.id, body.name).await
 }
 
 /// `DELETE /api/nodes/:node_id/disk-groups/:dg_id`.

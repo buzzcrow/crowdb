@@ -199,6 +199,7 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
         .completion_capacity = 16,
         .mirror_copies       = 3,
         .chunkdb_resolver    = {},
+        .disk_resolver       = {},
     };
     RpcChunkTransport transport(options);
     ChunkId           allocated;

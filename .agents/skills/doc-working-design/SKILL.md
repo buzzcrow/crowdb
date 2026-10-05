@@ -12,6 +12,11 @@ Write `doc/working/design-<topic>.md` only for an explicitly requested design
 exploration. Normal `/implement-requirement` work uses the requirement as its
 high-level design and records implementation detail in the working plan.
 
+Keep the exploration concrete and implementation-oriented. Introduce only
+concepts needed to explain CrowDB data, state, interfaces, or verification.
+When borrowing terminology or behavior, cite primary documentation and mark it
+as external reference rather than CrowDB semantics.
+
 Link the backlog and root design; do not repeat their problem, dependencies,
 architecture, or rationale.
 

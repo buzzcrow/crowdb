@@ -27,55 +27,24 @@ import { step } from '../fixtures/stepTimer';
 const DISKDB_RACK = 501;
 const DISKDB_NODE = 501;
 
-// Right-click a tree item, then click a context menu item. Retries up to
-// 5 times with 470 ms between attempts — the sidebar tree re-renders
-// every 5 s (useCapacityTree poll), and a right-click during re-render
-// lands on a stale element so the contextmenu event never fires. After
-// each right-click, polls every 100 ms for the menu to appear; if it
-// doesn't appear within 2 s, presses Escape and retries.
-// Uses dispatchEvent('click') for the menu item — regular click()
-// dispatches mousedown which closes the menu via the outside-click
-// handler before the click event fires.
+// Assert the menu once; UI refresh must not require silent click retries.
 async function clickMenuItem(
   page: import('@playwright/test').Page,
   treeItem: import('@playwright/test').Locator,
   menuItemName: string | RegExp,
 ) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (attempt > 0) await page.waitForTimeout(470);
-    await treeItem.click({ button: 'right', timeout: 5_000 }).catch(() => {});
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      const item = page.getByRole('menuitem', { name: menuItemName });
-      if (await item.isVisible().catch(() => false)) {
-        await item.dispatchEvent('click');
-        return;
-      }
-      await page.waitForTimeout(100);
-    }
-    await page.keyboard.press('Escape').catch(() => {});
-  }
-  throw new Error(`clickMenuItem: '${menuItemName}' not found after 5 attempts`);
+  await treeItem.click({ button: 'right' });
+  const item = page.getByRole('menuitem', { name: menuItemName });
+  await expect(item).toBeVisible();
+  await item.dispatchEvent('click');
 }
 
-// Right-click a tree item and verify the context menu opens. Retries up
-// to 5 times with 470 ms between attempts. Returns when any menuitem is
-// visible. Caller inspects menu items and presses Escape when done.
 async function openContextMenu(
   page: import('@playwright/test').Page,
   treeItem: import('@playwright/test').Locator,
 ) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (attempt > 0) await page.waitForTimeout(470);
-    await treeItem.click({ button: 'right', timeout: 5_000 }).catch(() => {});
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      if (await page.getByRole('menuitem').first().isVisible().catch(() => false)) return;
-      await page.waitForTimeout(100);
-    }
-    await page.keyboard.press('Escape').catch(() => {});
-  }
-  throw new Error('openContextMenu: menu did not appear after 5 attempts');
+  await treeItem.click({ button: 'right' });
+  await expect(page.getByRole('menu')).toBeVisible();
 }
 
 /**
@@ -107,6 +76,7 @@ test.describe('chunk · capacity · disk-group', () => {
     // against the real backend.
     await deployNodeServer(baseURL, DISKDB_NODE, freePort(), freePort());
     await clusterInit(baseURL, [DISKDB_NODE]);
+    await addGroup(baseURL, 0, 1, 1, [DISKDB_NODE]);
     // Wait for group-0 to be visible in the monitor cache (store 0,
     // group 0 with an elected leader). clusterInit refreshes the cache,
     // but in the full suite the refresh may lag behind the server's
@@ -121,7 +91,7 @@ test.describe('chunk · capacity · disk-group', () => {
 
   test('capacity tree, node context menu, and Deploy DiskDB dialog', async ({ page }) => {
     await page.goto('/');
-    await page.getByTestId('domain-chunk').click();
+    await page.getByTestId('domain-capacity').click();
 
     const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 
@@ -198,7 +168,17 @@ test.describe('chunk · capacity · disk-group', () => {
 
     // Deploy a diskdb instance so addDiskGroup auto-assigns ownership
     // (required since diskdb ownership enforcement — a3d39f0e).
-    await apiDeployDiskdb(baseURL!, nodeId, freePort());
+    const deployment = await apiDeployDiskdb(baseURL!, nodeId, freePortRange(3));
+    const registrationApi = await apiContext(baseURL!);
+    try {
+      await expect.poll(async () => {
+        const response = await registrationApi.get('/api/diskdb/instances');
+        expect(response.ok(), await response.text()).toBeTruthy();
+        return (await response.json()).some((instance: { rpc_endpoint: string }) => instance.rpc_endpoint === new URL(deployment.endpoint).host);
+      }, { timeout: 3000, intervals: [100] }).toBe(true);
+    } finally {
+      await registrationApi.dispose();
+    }
 
     // Pre-create the disk-groups that are not created through the UI, so
     // the tree already holds them when the page mounts.
@@ -212,7 +192,7 @@ test.describe('chunk · capacity · disk-group', () => {
 
     try {
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${DISKDB_RACK}` }).locator('button[aria-label="Expand"]');
@@ -252,6 +232,11 @@ test.describe('chunk · capacity · disk-group', () => {
       await dgDialog.getByLabel('Name (optional)').fill('test-dg');
       const createDgBtn = dgDialog.getByRole('button', { name: /create disk group/i });
       await createDgBtn.evaluate((el) => (el as HTMLElement).click());
+
+      const createdNode = aside.getByTestId(`tree-node-N-${nodeId}`);
+      await expect(createdNode.getByRole('treeitem')).toBeVisible();
+      const openCreatedNode = createdNode.getByRole('button', { name: 'Expand', exact: true });
+      if (await openCreatedNode.count()) await openCreatedNode.click();
 
       // The disk-group should appear in the sidebar.
       await expect(aside.getByText(/test-dg.*DG-520|DG-520.*test-dg/, { exact: true })).toBeVisible({ timeout: 10_000 });
@@ -477,10 +462,8 @@ test.describe('chunk · capacity · disk-group', () => {
       // The disk-groups data arrives via fetchNodeDiskGroups (async, not
       // polled) which lags the racks tree on slow CI runners. Wait for
       // the API response before asserting DG visibility.
-      const dgResponse = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
-      await dgResponse;
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
@@ -544,10 +527,10 @@ test.describe('chunk · capacity · disk-group', () => {
           }, { timeout: 30_000, intervals: [200] }).toBeGreaterThan(0));
 
         // --- Verify the capacity panel shows non-zero ---
-        const dgResponse2 = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
         await page.goto('/');
-        await page.getByTestId('domain-chunk').click();
-        await dgResponse2;
+        await page.getByTestId('domain-capacity').click();
+        await expect(aside.getByRole('button', { name: `N-${nodeId}`, exact: true })).toBeVisible();
+        await aside.getByTestId(`tree-node-N-${nodeId}`).getByRole('button', { name: 'Expand', exact: true }).click();
         await expect(aside.getByText(/DG-590/, { exact: true })).toBeVisible({ timeout: 10_000 });
         // The Total Capacity card should show a non-zero value (not "0 B").
         const capacityText = page.getByText(/Total Capacity/).locator('..');
@@ -556,13 +539,62 @@ test.describe('chunk · capacity · disk-group', () => {
         await api.dispose();
       }
     } finally {
-      // Cleanup.
+      // Remove the bind target before the next test restarts this shared KV.
+      const cleanupApi = await apiContext(baseURL!);
+      try {
+        const response = await cleanupApi.delete(`/api/stores/${storeId}`);
+        expect(response.status(), await response.text()).toBe(204);
+      } finally {
+        await cleanupApi.dispose();
+      }
       await removeDisk(baseURL!, nodeId, dgId, diskId);
       await apiRemoveDiskGroup(baseURL!, nodeId, dgId);
       await removeDiskdb(baseURL!, nodeId);
     }
   });
 
+  test('unassigned DGs are not projected in Cluster domain (no diskdb running)', async ({ page, baseURL }) => {
+    test.setTimeout(30_000);
+    const rackId = DISKDB_RACK;
+    const nodeId = DISKDB_NODE;
+    const dgId = 593;
+
+    await apiAddDiskGroup(baseURL!, nodeId, dgId, 'test-dg-persist');
+
+    try {
+      // No diskdb is deployed on this node, so the DG has no owner and
+      // must NOT appear in the Cluster domain (design: unassigned disk
+      // groups are not projected in Cluster). It remains visible in
+      // the Capacity domain, which keeps the full physical hierarchy.
+      await page.goto('/');
+      await page.getByTestId('domain-cluster').click();
+
+      const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+      const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
+      if (await expandRack.count() > 0) await expandRack.click();
+      await expect(aside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
+
+      const expandNode = aside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` }).locator('button[aria-label="Expand"]');
+      if (await expandNode.count() > 0) await expandNode.click();
+
+      // DG should NOT be visible in Cluster without an owning diskdb.
+      await expect(aside.getByText(/DG-593/, { exact: true })).not.toBeVisible({ timeout: 5_000 });
+
+      // Switch to Capacity domain — the DG should be visible there.
+      await page.getByTestId('domain-capacity').click();
+      const capAside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+      const capExpandRack = capAside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
+      if (await capExpandRack.count() > 0) await capExpandRack.click();
+      await expect(capAside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
+      const capExpandNode = capAside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` }).locator('button[aria-label="Expand"]');
+      if (await capExpandNode.count() > 0) await capExpandNode.click();
+      await expect(capAside.getByText(/DG-593/, { exact: true })).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await apiRemoveDiskGroup(baseURL!, nodeId, dgId);
+    }
+  });
+
+  // Baseline: 2.7s (2026-10-03); trace separates stale bind-target probes from DOM work.
   test('full deploy flow: deploy diskdb via UI, restart, stop, delete via context menu', async ({ page, baseURL }) => {
     test.setTimeout(90_000);
     const nodeId = DISKDB_NODE;
@@ -594,7 +626,7 @@ test.describe('chunk · capacity · disk-group', () => {
       }
 
       await page.goto('/');
-      await page.getByTestId('domain-chunk').click();
+      await page.getByTestId('domain-capacity').click();
 
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${DISKDB_RACK}` }).locator('button[aria-label="Expand"]');
@@ -718,8 +750,8 @@ test.describe('chunk · capacity · disk-group', () => {
       // node record, so the KV badge flipped to Down even though the KV
       // process was still running.
       await page.getByTestId('domain-cluster').click();
-      await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
-      const kvItemAfterDdbStop = aside.getByRole('treeitem').filter({ hasText: `KV-${nodeId}` });
+      await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
+      const kvItemAfterDdbStop = aside.getByRole('treeitem').filter({ hasText: `PKV-${nodeId}` });
       await expect(kvItemAfterDdbStop.getByTitle('Healthy')).toBeVisible({ timeout: 10_000 });
 
       // --- restart DDB after stop (verifies entry was preserved) ---
@@ -758,11 +790,11 @@ test.describe('chunk · capacity · disk-group', () => {
       await expect(aside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
       const expandNode = aside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` }).locator('button[aria-label="Expand"]');
       if (await expandNode.count() > 0) await expandNode.first().click();
-      await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
+      await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
 
       // Right-click KV → Stop CrowDB Storage.
       const kvStopResponse = page.waitForResponse((r: { url(): string }) => r.url().includes('/server/stop'));
-      await clickMenuItem(page, aside.getByText(`KV-${nodeId}`, { exact: true }), /stop crowdb storage/i);
+      await clickMenuItem(page, aside.getByText(`PKV-${nodeId}`, { exact: true }), /stop crowdb storage/i);
       await kvStopResponse;
 
       // KV PID should be gone; DDB entry + PID must be unaffected.
@@ -788,7 +820,7 @@ test.describe('chunk · capacity · disk-group', () => {
       // stayed green even after the process was killed.
       // Note: HealthBadge renders in compact mode (icon only, no text),
       // so we assert on the title attribute, not text content.
-      const kvItem = aside.getByRole('treeitem').filter({ hasText: `KV-${nodeId}` });
+      const kvItem = aside.getByRole('treeitem').filter({ hasText: `PKV-${nodeId}` });
       await expect(kvItem.getByTitle('Healthy')).toHaveCount(0, { timeout: 10_000 });
 
       // DDB health badge must stay Healthy after KV stop.
@@ -808,9 +840,9 @@ test.describe('chunk · capacity · disk-group', () => {
       // --- restart KV, verify DDB unaffected ---
       // KV server lifecycle actions remain in the Cluster domain.
       await page.getByTestId('domain-cluster').click();
-      await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
+      await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
       const kvRestartResponse = page.waitForResponse((r: { url(): string }) => r.url().includes('/server/restart'));
-      await clickMenuItem(page, aside.getByText(`KV-${nodeId}`, { exact: true }), /restart crowdb storage/i);
+      await clickMenuItem(page, aside.getByText(`PKV-${nodeId}`, { exact: true }), /restart crowdb storage/i);
       await kvRestartResponse;
 
       {
@@ -855,7 +887,7 @@ test.describe('chunk · capacity · disk-group', () => {
       // restart bug had already removed the KV entry.
       await expect(aside.getByText(`DDB-${nodeId}`, { exact: true })).toHaveCount(0, { timeout: 10_000 });
       // Already in Cluster domain — verify the KV server still exists.
-      await expect(aside.getByText(`KV-${nodeId}`, { exact: true })).toBeVisible();
+      await expect(aside.getByText(`PKV-${nodeId}`, { exact: true })).toBeVisible();
 
       {
         const api = await apiContext(baseURL!);
@@ -877,48 +909,5 @@ test.describe('chunk · capacity · disk-group', () => {
     }
   });
 
-  test('unassigned DGs are not projected in Cluster domain (no diskdb running)', async ({ page, baseURL }) => {
-    test.setTimeout(30_000);
-    const rackId = DISKDB_RACK;
-    const nodeId = DISKDB_NODE;
-    const dgId = 593;
 
-    await apiAddDiskGroup(baseURL!, nodeId, dgId, 'test-dg-persist');
-
-    try {
-      // No diskdb is deployed on this node, so the DG has no owner and
-      // must NOT appear in the Cluster domain (design: unassigned disk
-      // groups are not projected in Cluster). It remains visible in
-      // the Capacity domain, which keeps the full physical hierarchy.
-      await page.goto('/');
-      const dgResponse = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
-      await page.getByTestId('domain-cluster').click();
-      await dgResponse;
-
-      const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-      const expandRack = aside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
-      if (await expandRack.count() > 0) await expandRack.click();
-      await expect(aside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
-
-      const expandNode = aside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` }).locator('button[aria-label="Expand"]');
-      if (await expandNode.count() > 0) await expandNode.click();
-
-      // DG should NOT be visible in Cluster without an owning diskdb.
-      await expect(aside.getByText(/DG-593/, { exact: true })).not.toBeVisible({ timeout: 5_000 });
-
-      // Switch to Capacity domain — the DG should be visible there.
-      await page.getByTestId('domain-chunk').click();
-      const capAside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-      const capDgResponse = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
-      await capDgResponse;
-      const capExpandRack = capAside.getByRole('treeitem').filter({ hasText: `R-${rackId}` }).locator('button[aria-label="Expand"]');
-      if (await capExpandRack.count() > 0) await capExpandRack.click();
-      await expect(capAside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 5_000 });
-      const capExpandNode = capAside.getByRole('treeitem').filter({ hasText: `N-${nodeId}` }).locator('button[aria-label="Expand"]');
-      if (await capExpandNode.count() > 0) await capExpandNode.click();
-      await expect(capAside.getByText(/DG-593/, { exact: true })).toBeVisible({ timeout: 10_000 });
-    } finally {
-      await apiRemoveDiskGroup(baseURL!, nodeId, dgId);
-    }
-  });
 });

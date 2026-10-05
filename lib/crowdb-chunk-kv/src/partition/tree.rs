@@ -101,6 +101,37 @@ pub trait PartitionTree: Send + Sync {
         self.checkpoint_state().map(|checkpoint| checkpoint.0)
     }
     fn last_applied_seq(&self) -> u64;
+    /// Independently sampled native counters, without scanning keys or pages.
+    fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
+        None
+    }
+    /// Copies one structural page without flushing or folding pending writes.
+    ///
+    /// # Errors
+    /// Returns a changed observation, invalid path, or storage read failure.
+    fn inspect_page(
+        &self,
+        _path: &[u32],
+        _version: Option<u64>,
+    ) -> Result<crowdb_tree_ffi::page::PageInspection> {
+        Err(ChunkKvError::InvalidRequest(
+            "page inspection is unavailable for this tree backend".into(),
+        ))
+    }
+    /// Estimates retained pack bytes without reading keys, pages or remote metadata.
+    ///
+    /// # Errors
+    /// Returns a storage error when the cached estimate cannot be read.
+    fn estimated_bytes(&self) -> Result<u64> {
+        Ok(0)
+    }
+    /// Returns an advisory structural separator without I/O or a full scan.
+    ///
+    /// # Errors
+    /// Returns a tree error when the structural hint cannot be read.
+    fn approximate_split_key(&self) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
     /// Returns chunk-backend counters, or `None` for another backend.
     ///
     /// # Errors
@@ -470,6 +501,27 @@ impl PartitionTree for CrowdbPartitionTree {
         self.tree.stats().contiguous_slot
     }
 
+    fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
+        Some(self.tree.stats())
+    }
+
+    fn inspect_page(
+        &self,
+        path: &[u32],
+        version: Option<u64>,
+    ) -> Result<crowdb_tree_ffi::page::PageInspection> {
+        self.tree
+            .inspect_page(path, version)
+            .map_err(|error| match error {
+                crowdb_tree_ffi::CtError::Unavailable => ChunkKvError::RequestConflict,
+                crowdb_tree_ffi::CtError::InvalidArgument => {
+                    ChunkKvError::InvalidRequest("invalid tree page path".into())
+                }
+                crowdb_tree_ffi::CtError::ResourceExhausted => ChunkKvError::Overloaded,
+                other => map_tree_read_error(other),
+            })
+    }
+
     fn checkpoint_state(&self) -> Result<(u64, u64)> {
         self.tree.snapshot_state().map_err(map_tree_read_error)
     }
@@ -492,6 +544,20 @@ impl PartitionTree for CrowdbPartitionTree {
             .filter(|store| store.is_chunk_backed())
             .map(|store| store.chunk_stats().map_err(map_tree_read_error))
             .transpose()
+    }
+
+    fn estimated_bytes(&self) -> Result<u64> {
+        self.config
+            .as_ref()
+            .and_then(|config| config.page_store.as_ref())
+            .filter(|store| store.is_chunk_backed())
+            .map_or(Ok(0), |store| {
+                store.chunk_estimated_bytes().map_err(map_tree_read_error)
+            })
+    }
+
+    fn approximate_split_key(&self) -> Result<Option<Vec<u8>>> {
+        self.tree.approximate_split_key().map_err(map_tree_read_error)
     }
 
     fn reclaim_before(&self, generation: u64) -> Result<u64> {

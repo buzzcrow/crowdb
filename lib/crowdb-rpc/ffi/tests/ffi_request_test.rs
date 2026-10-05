@@ -17,6 +17,77 @@ use flatbuffers::FlatBufferBuilder;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[tokio::test]
+async fn one_way_push_with_pending_request_id_does_not_complete_the_call() {
+    let server = Arc::new(RpcServer::new(None));
+    server.listen("127.0.0.1", 0).unwrap();
+    let push_client = Arc::new(RpcClient::new());
+    server.register_handler(32001, {
+        let server = Arc::clone(&server);
+        move |req| {
+            push_client
+                .send_one_way_to_handle(
+                    &server,
+                    req.conn_handle,
+                    req.request_id,
+                    test_ping_control(1, 2),
+                    None,
+                    32002,
+                )
+                .unwrap();
+            unsafe {
+                server
+                    .submit_response(
+                        req.conn_handle,
+                        test_ping_control(1, 3).as_slice(),
+                        None,
+                        32003,
+                        req.request_id,
+                    )
+                    .unwrap();
+            }
+        }
+    });
+    server.start();
+    let conn = server.connect("127.0.0.1", server.port()).unwrap();
+    let client = RpcClient::new();
+    client.attach(&conn);
+    let seen = Arc::new(AtomicBool::new(false));
+    client.register_handler(32002, {
+        let seen = Arc::clone(&seen);
+        move |req| {
+            assert_eq!(req.control(), test_ping_control(1, 2).as_slice());
+            seen.store(true, Ordering::Release);
+        }
+    });
+    let call = client
+        .call(&server, &conn, 1, test_ping_control(1, 1), None, 32001)
+        .unwrap();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(3), call)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        response.control.unwrap().as_slice(),
+        test_ping_control(1, 3).as_slice()
+    );
+    assert!(seen.load(Ordering::Acquire));
+    server.stop();
+}
+
+fn test_ping_control(id: u64, tag: u64) -> Buffer {
+    let mut builder = FlatBufferBuilder::new();
+    let request = ConnectionPingRequest::create(
+        &mut builder,
+        &ConnectionPingRequestArgs {
+            id,
+            rpc_create_nano: tag,
+        },
+    );
+    builder.finish(request, None);
+    Buffer::from_bytes(builder.finished_data())
+}
+
 // ── Client→server regression ──────────────────────────────────────
 // Verify the existing client→server path still works after the
 // on_response return-bool change and the server dispatch reorder.

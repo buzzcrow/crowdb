@@ -12,6 +12,11 @@ Write `doc/working/plan-<topic>.md` from the requirement's solution and
 acceptance criteria. It holds implementation detail, is kept live, and is
 deleted after completion.
 
+Keep tasks tied to concrete CrowDB data structures, state transitions, APIs,
+and tests. Do not create new product concepts just to organize prose. Cite
+primary sources for borrowed terminology or behavior and keep those references
+separate from CrowDB's own contract.
+
 - Start with the license, `# <Title> Plan`, upstream links, and one-line goal.
 - Group dependency-ordered tasks by phase or component.
 - Use `- [ ] **Name**: action. Files: paths.`; `[~]` marks the only active

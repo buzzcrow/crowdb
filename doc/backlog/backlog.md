@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R208** — Bump this line in the same commit when adding a new item.
+**Next R number: R213** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -71,7 +71,9 @@ The native catalog correctness milestone is complete: catalog/service foundation
 namespace, immutable FileIO, atomic table commits, reclamation and REST/official-SDK
 conformance. Its contract and executable profile are retained in
 [Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
-Caches, selected ORC and container engine workflows remain separate.
+The [container client matrix](../../container/single-node-container/tests/ecosystem/README.md)
+has separate passing engine/restart acceptance. Caches and selected ORC remain
+independent deferred work.
 
 - **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded cache and
   invalidation — Area: access server / Iceberg / Group 0 / Chunk-KV — **Deferred
@@ -80,17 +82,28 @@ Caches, selected ORC and container engine workflows remain separate.
 
 - **[R186](R186-access-iceberg-orc-validation.md)** — selected ORC validation —
   Area: access server / Iceberg — **Independent follow-up retained by user
-  decision; not absorbed by R189.** Add bounded canonical ORC schema, row-count
-  and delete validation with official-client fixtures. The Parquet catalog is
+  decision; outside the verified client ecosystem.** Add bounded canonical ORC
+  schema, row-count and delete validation with official-client fixtures. The Parquet catalog is
   complete; ORC does not block container or client-ecosystem acceptance.
-- **[R189](R189-access-iceberg-container-ecosystem.md)** — container client and
-  engine workflows — Area: Iceberg / clients / deployment — **Partially
-  implemented; Parquet-only scope.** PyIceberg/Arrow/pandas container reads and
-  writes are covered. Retain historical/batched/Polars reads, direct DuckDB REST
-  verification, Spark/Flink/Trino interoperability and the executable client
-  matrix. ORC is deferred independently under R186.
 
 ### High Priority
+
+- **[R212](R212-console-node-create-and-cluster-scope.md)** — reliable node
+  creation and Cluster scope — Area: console / node lifecycle / UI — Make Add
+  Node creation durable and retryable with service-scoped errors, and move
+  Chunk ownership out of the Cluster center panel into the Chunk tab.
+
+- **[R211](R211-console-access-health-listener.md)** — independent Access
+  Server health listener — Area: console / access server / deployment — Give
+  Access Server separate Iceberg, S3, and health ports; probe health through
+  the private health listener and expose the result in the node service view.
+
+- **[R210](R210-console-service-configuration-health.md)** — unified node
+  service configuration and health — Area: console / service deployment /
+  FlatBuffer RPC — Configure the six node services in one dialog with
+  consistent names, per-service enablement and listeners, and internal RPC
+  health probes. Remove the old `kv` service discriminator in favor of
+  `paxos-kv`.
 
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.

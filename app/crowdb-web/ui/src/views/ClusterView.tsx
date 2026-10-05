@@ -9,6 +9,9 @@ import type { NodeDiskGroups } from '../data/useClusterTree';
 const TopologyCanvas = lazy(() => import('../topology/TopologyCanvas').then((m) => ({ default: m.TopologyCanvas })));
 
 export interface ClusterViewProps {
+  active?: boolean;
+  scope?: import('../types').Domain;
+  allServers?: import('../api').ServerSummary[];
   racks: Rack[];
   nodes: Node[];
   servers: CrowdbKVServerView[];
@@ -20,15 +23,18 @@ export interface ClusterViewProps {
   diskdbInstanceIdByNodeId: Map<number, string>;
   nodeDiskGroups: Record<number, NodeDiskGroups>;
   refreshToken: number;
+  viewportWidthKey?: number;
   focusRequest: { targetId: string; subtree: boolean; nonce: number } | null;
   onEntityContextMenu: (target: MenuTarget, event: React.MouseEvent) => void;
 }
 
 export function ClusterView(props: ClusterViewProps) {
   return (
-    <Suspense fallback={<ViewFallback />}>
+    <div className="tw-h-full tw-overflow-auto">
+    <div style={{ height: '100%' }}><Suspense fallback={<ViewFallback />}>
       <TopologyCanvas {...props} />
-    </Suspense>
+    </Suspense></div>
+    </div>
   );
 }
 

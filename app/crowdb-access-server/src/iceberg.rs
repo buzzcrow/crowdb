@@ -18,6 +18,7 @@ mod file_upload;
 mod gc_control;
 mod gc_runtime;
 mod http;
+mod inspection;
 mod metrics;
 mod namespace_read;
 mod namespace_request;

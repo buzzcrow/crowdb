@@ -1,10 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { Domain } from '../types';
+import { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react';
+import { Domain, type ServiceKind } from '../types';
+import { useDomain, useNavigationSnapshot } from './DomainContext';
 
-export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk';
+export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
 
 /**
  * The single selected entity. `parentIds` carries the ancestor chain in
@@ -18,12 +19,13 @@ export interface SelectedEntity {
   domain: Domain;
   name?: string;
   /** Service flavor for `Server` entities: KV vs DiskDB. */
-  serviceType?: 'kv' | 'diskdb';
+  serviceType?: ServiceKind;
 }
 
 interface SelectionContextType {
   selectedEntity: SelectedEntity | null;
-  selectEntity: (entity: SelectedEntity | null) => void;
+  selectionForDomain: (domain: Domain) => SelectedEntity | null;
+  selectEntity: (entity: SelectedEntity | null, record?: boolean) => void;
   clearSelection: () => void;
   isSelected: (entityId: string) => boolean;
 }
@@ -31,13 +33,23 @@ interface SelectionContextType {
 const SelectionContext = createContext<SelectionContextType | undefined>(undefined);
 
 export function SelectionProvider({ children }: { children: ReactNode }) {
-  const [selectedEntity, setSelectedEntity] = useState<SelectedEntity | null>(null);
+  const { domain, checkpoint } = useDomain();
+  const [scopes, setScopes] = useState<Partial<Record<Domain, SelectedEntity | null>>>({});
+  const latestScopes = useRef(scopes); latestScopes.current = scopes;
+  const selectedEntity = scopes[domain] ?? null;
+  const selectionForDomain = useCallback((scope: Domain) => scopes[scope] ?? null, [scopes]);
 
-  const selectEntity = useCallback((entity: SelectedEntity | null) => {
-    setSelectedEntity(entity);
-  }, []);
+  useNavigationSnapshot(domain, 'selection', () => {
+    const selection = scopes[domain] ?? null;
+    return () => setScopes(previous => ({ ...previous, [domain]: selection }));
+  });
+  const selectEntity = useCallback((entity: SelectedEntity | null, record = true) => {
+    const scope = entity?.domain ?? domain;
+    if (record && JSON.stringify(latestScopes.current[scope] ?? null) !== JSON.stringify(entity)) checkpoint();
+    setScopes(previous => ({ ...previous, [scope]: entity }));
+  }, [domain, checkpoint]);
 
-  const clearSelection = useCallback(() => setSelectedEntity(null), []);
+  const clearSelection = useCallback(() => setScopes(previous => ({ ...previous, [domain]: null })), [domain]);
 
   const isSelected = useCallback(
     (entityId: string) => selectedEntity?.id === entityId,
@@ -45,7 +57,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <SelectionContext.Provider value={{ selectedEntity, selectEntity, clearSelection, isSelected }}>
+    <SelectionContext.Provider value={{ selectedEntity, selectionForDomain, selectEntity, clearSelection, isSelected }}>
       {children}
     </SelectionContext.Provider>
   );

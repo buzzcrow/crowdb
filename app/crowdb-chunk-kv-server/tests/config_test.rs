@@ -18,12 +18,13 @@ fn defaults_close_the_documented_timing_contract() {
     assert!(config.monitor.chunk_kv_range_balance.is_some());
     assert_eq!(config.balance.target_partitions_per_owner, 4);
     assert_eq!(config.balance.minimum_weighted_improvement_percent, 25);
-    assert_eq!(config.balance.cooldown_ms, 600_000);
+    assert_eq!(config.balance.cooldown_ms, 60_000);
     assert_eq!(config.max_split_catchup_lag_records, 1_024);
     assert_eq!(config.storage.metadata_store_id, 1);
     assert_eq!(config.storage.stream_writer_lease_ms, 30_000);
     assert_eq!(config.storage.tree_chunk_capacity_bytes, 256 * 1024 * 1024);
     assert_eq!(config.storage.stream_chunk_capacity_bytes, 256 * 1024 * 1024);
+    assert_eq!(config.storage.stream_extent_page_entries, 1_024);
     assert_eq!(config.storage.diskio_connections_per_endpoint, 1);
     assert_eq!(config.storage.diskio_rpc_workers, 2);
     assert_eq!(config.rpc_workers, 2);
@@ -75,5 +76,43 @@ fn invalid_identity_address_and_capacity_fail_closed() {
     assert!(config.validate().is_err());
     config.storage.tree_chunk_capacity_bytes = 256 * 1024 * 1024;
     config.storage.stream_chunk_capacity_bytes = 257 * 1024 * 1024;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn management_discovery_requires_explicit_routable_identity() {
+    let mut config = ChunkKvServerConfig {
+        instance_id: 42,
+        node_id: Some(7),
+        http_advertise_addr: Some("127.0.0.1:15101".into()),
+        ..ChunkKvServerConfig::default()
+    };
+    config.validate().unwrap();
+    let restored: ChunkKvServerConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(restored.node_id, Some(7));
+    assert_eq!(restored.http_advertise_addr.as_deref(), Some("127.0.0.1:15101"));
+    config.http_advertise_addr = Some("0.0.0.0:15101".into());
+    assert!(config.validate().is_err());
+    config.http_advertise_addr = Some("127.0.0.1:0".into());
+    assert!(config.validate().is_err());
+    config.http_advertise_addr = None;
+    config.node_id = Some(0);
+    assert!(config.validate().is_err());
+    config.node_id = None;
+    config.validate().unwrap();
+}
+
+#[test]
+fn stream_directory_geometry_survives_config_round_trip() {
+    let mut config = ChunkKvServerConfig {
+        instance_id: 1,
+        ..ChunkKvServerConfig::default()
+    };
+    config.storage.stream_chunk_capacity_bytes = 1024 * 1024;
+    config.storage.stream_extent_page_entries = 1;
+    config.validate().unwrap();
+    let restored: ChunkKvServerConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(restored.storage, config.storage);
+    config.storage.stream_extent_page_entries = 0;
     assert!(config.validate().is_err());
 }

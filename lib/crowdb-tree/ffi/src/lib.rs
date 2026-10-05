@@ -17,6 +17,7 @@ pub mod config;
 pub mod cpp_global_metrics;
 pub mod crc;
 pub mod error;
+pub mod page;
 pub mod reactor;
 pub mod scan;
 pub mod snapshot;

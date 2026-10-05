@@ -521,23 +521,18 @@ impl LifecycleHandler {
             topology.generation(),
             usage_fresh,
         );
-        let placement_repair_required =
-            !assessment.rack_protected || !assessment.node_protected || !assessment.disk_protected;
-        if placement_repair_required && !(self.allow_unsafe_ec && self.allow_degraded_failure_domains) {
-            let error = if !assessment.rack_protected {
-                crate::selector::PlacementError::RackProtectionUnavailable {
-                    loss_budget: assessment.loss_budget,
-                    actual: assessment.max_fragments_per_rack,
-                }
-            } else if !assessment.node_protected {
-                crate::selector::PlacementError::NodeProtectionUnavailable {
-                    loss_budget: assessment.loss_budget,
-                    actual: assessment.max_fragments_per_node,
-                }
-            } else {
+        let placement_repair_required = !assessment.node_protected || !assessment.disk_protected;
+        let exceeds_recovery_budget = !assessment.node_protected || !assessment.disk_protected;
+        if exceeds_recovery_budget && !(self.allow_unsafe_ec && self.allow_degraded_failure_domains) {
+            let error = if assessment.node_protected {
                 crate::selector::PlacementError::DiskProtectionUnavailable {
                     loss_budget: assessment.loss_budget,
                     actual: assessment.max_fragments_per_disk,
+                }
+            } else {
+                crate::selector::PlacementError::NodeProtectionUnavailable {
+                    loss_budget: assessment.loss_budget,
+                    actual: assessment.max_fragments_per_node,
                 }
             };
             return Err(crate::allocator::AllocError::Placement(error).into());

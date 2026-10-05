@@ -550,6 +550,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             .seal_chunk(SealChunkRequest {
                 chunk_id: Some(chunk_id),
                 seal_length: u32::try_from(cursor.div_ceil(1024)).unwrap_or(u32::MAX),
+                seal_bytes: cursor,
             })
             .await
             .map_err(io_error)?;

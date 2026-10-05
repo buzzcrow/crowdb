@@ -7,6 +7,7 @@ export type NodeId = number;
 export type StoreId = string;
 export type GroupId = string;
 export type ReplicaId = string;
+export type ServiceKind = 'paxos-kv' | 'diskdb' | 'chunkdb' | 'diskio' | 'chunk-kv' | 'access-server' | 'rpc';
 
 // SSH Credentials
 export type SshCreds =
@@ -202,7 +203,11 @@ export enum GroupHealth {
 export enum Domain {
   Cluster = 'Cluster',
   KV = 'KV',
-  Chunk = 'Chunk'
+  Capacity = 'Capacity',
+  Chunk = 'Chunk',
+  ChunkKV = 'Chunk-KV',
+  Iceberg = 'Iceberg',
+  S3 = 'S3'
 }
 
 export enum ThemeMode {
@@ -255,24 +260,6 @@ export interface ReadState {
   safe_slot: number;
 }
 
-// Metrics snapshot types (mirrors crowdb-console-shared's MetricsResponse)
-export interface MetricField {
-  key: string;
-  value: number;
-}
-
-export interface MetricPoint {
-  name: string;
-  kind: string;
-  fields: MetricField[];
-}
-
-export interface MetricsResponse {
-  window_secs: number;
-  timestamp: string;
-  metrics: MetricPoint[];
-}
-
 // ── Capacity view types (R77) ─────────────────────────────────────
 // Mirror the DTOs from crowdb-web/src/diskdb.rs.
 
@@ -286,6 +273,7 @@ export interface DiskGroupEntry {
 
 // Console-config disk entry (mirrors crowdb-console-shared DiskEntry).
 export interface DiskEntry {
+  device_path?: string;
   disk_id: string;
   disk_group_id: number;
   rack_id: number;

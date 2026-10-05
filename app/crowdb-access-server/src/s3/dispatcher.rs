@@ -31,6 +31,7 @@ pub struct S3Dispatcher {
     chunk_metrics: Option<Arc<ChunkIoClient>>,
     health: Arc<S3Health>,
     next_request_id: AtomicU64,
+    object_inspector: Option<Arc<super::ObjectInspector>>,
 }
 
 impl S3Dispatcher {
@@ -53,6 +54,7 @@ impl S3Dispatcher {
             chunk_metrics: None,
             health: Arc::new(S3Health::ready(u64::MAX)),
             next_request_id: AtomicU64::new(1),
+            object_inspector: None,
         }
     }
 
@@ -72,6 +74,12 @@ impl S3Dispatcher {
         self.body_receive_provider_factory = Some(Arc::new(move || {
             DeferredBodyReceiveProvider::native(Arc::new(allocator.object_receiver()))
         }));
+        self
+    }
+
+    #[must_use]
+    pub fn with_object_inspector(mut self, inspector: Option<super::ObjectInspector>) -> Self {
+        self.object_inspector = inspector.map(Arc::new);
         self
     }
 
@@ -168,9 +176,18 @@ impl S3Dispatcher {
 
 impl S3HttpHandler for S3Dispatcher {
     fn handle(&self, request: Request<Incoming>) -> HandlerFuture {
+        if request.uri().path() == super::OBJECT_LOCATIONS_PATH {
+            return super::inspection::dispatch(self.object_inspector.clone(), request);
+        }
         if let Some(response) = self.operational_response(&request) {
             return Box::pin(async move { Ok(response) });
         }
+        self.authenticated(request)
+    }
+}
+
+impl S3Dispatcher {
+    fn authenticated(&self, request: Request<Incoming>) -> HandlerFuture {
         let authenticator = Arc::clone(&self.authenticator);
         let operations = Arc::clone(&self.operations);
         let metrics = Arc::clone(&self.metrics);
