@@ -47,6 +47,15 @@ Final UI log: `local-ci/ui-final-serial.log`.
 
 ## Open issues
 
+- Current rerun (2026-10-06) is blocked before the historical S3 restart
+  assertion: the native fixture does not observe DiskDB ownership within its
+  3-second lifecycle budget. The fixture now sends explicit KV bindings,
+  accepts creation before owner registration, and checks that an absent
+  persisted binding needs explicit repair. Failure logs:
+  `.crowdb-runtime/artifacts/native-restart-failure-548045`.
+  The separate UI-created three-node S3/Iceberg round trip passes in 28.4 s;
+  it does not verify this historical combined restart scenario.
+
 - **OPEN: historical native S3 read after six service restarts returned 502;
   currently not reproduced.** Initial
   writes/reads and all Node 1 restarts succeed; the next GET multipart.bin
@@ -64,8 +73,3 @@ Final UI log: `local-ci/ui-final-serial.log`.
   Existing exact split-recovery/commit-proof tests also passed. Keep this issue
   open because the historical failure's root cause has not been reproduced or
   confirmed; do not describe passing reruns as a proven production fix.
-- **OPEN: remote CI logs require authentication.** The jobs API confirms five
-  failed jobs (Lint, UnitTests, ServerTests, ConsoleTests, UITests). Every log
-  endpoint returns HTTP 403 and no GitHub API credential/browser session is available.
-  Issues are recorded locally, not published on GitHub. Continue local workflow
-  reproduction; remote rerun results are not yet verified.

@@ -20,6 +20,7 @@ pub(crate) fn routes() -> axum::Router<crate::state::AppState> {
     axum::Router::new()
         .route("/api/deployment-defaults", get(defaults::get))
         .route("/api/service-plans", get(plans::list))
+        .route("/api/group0-readiness", get(dependencies::authority))
         .route("/api/chunk-storage-readiness", get(dependencies::storage))
         .route("/api/nodes/:id/service-plan", put(plans::put))
         .route("/api/nodes/:id/services/deploy", post(deployment::deploy))
@@ -71,8 +72,17 @@ pub(crate) async fn remove_for_reset(state: &crate::state::AppState) -> Result<(
         })
         .collect();
     services.sort();
-    for (_, id) in services {
-        let _ = lifecycle::delete_for_reset(state.clone(), id).await?;
+    for order in 0..4 {
+        let results = futures::future::join_all(
+            services
+                .iter()
+                .filter(|(tier, _)| *tier == order)
+                .map(|(_, id)| lifecycle::delete_for_reset(state.clone(), id.clone())),
+        )
+        .await;
+        for result in results {
+            let _ = result?;
+        }
     }
     Ok(())
 }

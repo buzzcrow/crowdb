@@ -19,10 +19,31 @@ import {
   clusterInit,
   addGroup,
   waitForLeader,
+  assignDiskGroup,
 } from '../fixtures/consoleSetup';
 
 const DISKDB_RACK = 501;
 const DISKDB_NODE = 501;
+
+async function ownDisks(baseURL: string, groups: Array<[number, string]>) {
+  const ownerApi = await apiContext(baseURL);
+  try {
+    const response = await ownerApi.get('/api/diskdb/instances');
+    expect(response.ok(), await response.text()).toBe(true);
+    const instances = await response.json();
+    expect(instances).toHaveLength(1);
+    for (const [dgId, diskId] of groups) {
+      await assignDiskGroup(baseURL, DISKDB_RACK, DISKDB_NODE, dgId, instances[0].instance_id, 0, 1);
+      await expect.poll(async () => {
+        const usage = await ownerApi.get(`/api/diskdb/usage?dg=${dgId}`);
+        if (!usage.ok()) return [];
+        const body = await usage.json();
+        return body.disk_groups.flatMap((group: { disks: { disk_id: string }[] }) => group.disks)
+          .map((disk: { disk_id: string }) => disk.disk_id.replace(/-/g, ''));
+      }, { intervals: [100] }).toContain(diskId);
+    }
+  } finally { await ownerApi.dispose(); }
+}
 
 // Assert the menu once; UI refresh must not require silent click retries.
 async function clickMenuItem(
@@ -152,6 +173,7 @@ test.describe('chunk · capacity · disk', () => {
     await addDisksBatch(baseURL!, nodeId, dg558, [{ disk_id: disk558 }]);
     await apiAddDiskGroup(baseURL!, nodeId, dg559, 'test-dg-559');
     await addDisksBatch(baseURL!, nodeId, dg559, [{ disk_id: disk559 }]);
+    await ownDisks(baseURL!, [[dg551, disk551], [dg552, disk552]]);
 
     try {
       await page.goto('/');
@@ -409,6 +431,8 @@ test.describe('chunk · capacity · disk', () => {
     await apiAddDiskGroup(baseURL!, nodeId, dg581, 'test-dg-581');
     await addDisksBatch(baseURL!, nodeId, dg581, [{ disk_id: disk581 }]);
 
+    await ownDisks(baseURL!, [[dg580, disk580], [dg581, disk581]]);
+
     try {
       const disk580Dashed = `${disk580.slice(0, 16)}-${disk580.slice(16)}`;
       const api = await apiContext(baseURL!);
@@ -436,7 +460,7 @@ test.describe('chunk · capacity · disk', () => {
       await expect(panel.getByText('Capacity — Cluster')).toBeVisible();
 
       // Both real fixture disks use the default 4-TiB geometry.
-      await expect(page.getByTestId('capacity-summary').getByText('8.0 TB', { exact: true })).toBeVisible({ timeout: 3_000 });
+      await expect(page.getByTestId('capacity-summary').locator(':scope > div').filter({ hasText: 'Total Capacity' }).getByText('8.0 TB', { exact: true })).toBeVisible({ timeout: 3_000 });
 
       // --- ClusterView: per-rack breakdown ---
       // Should show "Racks (1)" section with R-501 button.

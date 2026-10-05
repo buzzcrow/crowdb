@@ -743,7 +743,10 @@ pub async fn http_internal_reset(
             .iter()
             .filter(|entry| entry.service_type == ServiceType::PaxosKv)
             .all(|entry| {
-                config.local_launches.contains_key(&entry.id)
+                (config.local_launches.contains_key(&entry.id)
+                    || entry
+                        .node_id
+                        .is_some_and(|node| state.runtime_pid(node).is_some()))
                     && entry
                         .node_id
                         .and_then(|id| config.node(id))

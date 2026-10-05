@@ -802,7 +802,7 @@ pub async fn wait_for_disks_ready(
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(dg) = container.get_disk_group(dg_id) {
-            let disks = dg.disks.read().unwrap();
+            let disks = dg.disk_snapshot();
             let all_ready = disks.len() == expected_disks
                 && disks.iter().all(|d| {
                     d.effective_status() == HwStatus::Up

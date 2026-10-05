@@ -4,7 +4,7 @@
 import { expect, test as base } from '@playwright/test';
 
 const rejectInterception = async () => {
-  throw new Error('E2E response interception is forbidden. Provision real services/data; track unconverted scenarios in ui-todo.md (E2E-01).');
+  throw new Error('E2E response interception is forbidden. Provision real services/data.');
 };
 
 export const test = base.extend({

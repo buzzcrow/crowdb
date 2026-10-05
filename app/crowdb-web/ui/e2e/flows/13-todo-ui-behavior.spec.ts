@@ -8,6 +8,7 @@ import {
   addDisksBatch,
   addGroup,
   apiContext,
+  assignDiskGroup,
   createRack,
   clusterInit,
   createStore,
@@ -173,6 +174,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
             instanceId = String(instance?.instance_id ?? '');
             return instanceId.length > 0;
           }, { timeout: 10_000, intervals: [100] }).toBe(true);
+          await assignDiskGroup(baseURL!, RACK_ID, NODE_IDS[0], DISK_GROUP_ID, instanceId, STORE_ID, GROUP_ID);
           await expect.poll(async () => {
             const response = await api.get('/api/diskdb/instances');
             if (!response.ok()) return false;

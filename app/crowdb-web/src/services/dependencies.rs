@@ -4,6 +4,9 @@
 use crate::state::AppState;
 
 pub(crate) async fn group0_ready(state: &AppState) -> bool {
+    if state.service_operations.load().contains("cluster/init") {
+        return false;
+    }
     let sysmd = crowdb_kv_client::CrowdbSysmdClient::from_shared(state.kv_client().await);
     tokio::time::timeout(std::time::Duration::from_secs(2), sysmd.get_group(0, 0))
         .await
@@ -14,6 +17,10 @@ use crowdb_console_shared::config::ServiceType;
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+
+pub(super) async fn authority(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({"ready": group0_ready(&state).await}))
+}
 
 pub(super) async fn storage(State(state): State<AppState>) -> Json<Value> {
     let reason = tokio::time::timeout(std::time::Duration::from_secs(2), storage_wait_reason(&state))

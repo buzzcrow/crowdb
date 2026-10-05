@@ -20,6 +20,14 @@ async fn unresponsive_authority_bounds_creation_and_fences_duplicate_unknown_out
     let task = tokio::spawn(async move {
         axum::serve(listener, upstream).await.unwrap();
     });
+    // Discovery tries seeds sequentially, with a five-second budget per seed.
+    // Two unresponsive seeds keep provisioning active beyond its HTTP deadline.
+    let second_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second_origin = format!("http://{}", second_listener.local_addr().unwrap());
+    let second_task = tokio::spawn(async move {
+        let upstream = axum::Router::new().fallback(|| async { std::future::pending::<StatusCode>().await });
+        axum::serve(second_listener, upstream).await.unwrap();
+    });
     let mut config = ConsoleConfig::default();
     config
         .add_rack(RackEntry {
@@ -42,6 +50,9 @@ async fn unresponsive_authority_bounds_creation_and_fences_duplicate_unknown_out
     let mut server = ServerEntry::new("1", origin);
     server.node_id = Some(1);
     config.servers.push(server);
+    let mut second_server = ServerEntry::new("2", second_origin);
+    second_server.node_id = Some(1);
+    config.servers.push(second_server);
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("disk-group-deadline");
     let state = AppState::with_runtime_root(config, root.path().to_owned());
     let app = router(state.clone());
@@ -50,7 +61,9 @@ async fn unresponsive_authority_bounds_creation_and_fences_duplicate_unknown_out
             .method("POST")
             .uri("/api/nodes/1/disk-groups")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"id":1,"name":"storage"}"#))
+            .body(Body::from(
+                r#"{"id":1,"store_id":1,"group_id":1,"name":"storage"}"#,
+            ))
             .unwrap()
     };
     let started = std::time::Instant::now();
@@ -67,4 +80,5 @@ async fn unresponsive_authority_bounds_creation_and_fences_duplicate_unknown_out
     assert_eq!(repeated.status(), StatusCode::CONFLICT);
     assert!(state.config.read().unwrap().disk_groups.is_empty());
     task.abort();
+    second_task.abort();
 }

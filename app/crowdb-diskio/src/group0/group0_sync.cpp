@@ -13,6 +13,7 @@
 #include <folly/dynamic.h>
 #include <folly/json.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <thread>
@@ -131,7 +132,12 @@ void Group0Sync::fetch_disks_from_group0()
     }
 
     SyncCallbackCtx ctx;
-    crowdb_hw_list_disks_in_group(hw_client_, cfg_.rack_id, cfg_.node_id, cfg_.dg_id, on_ffi_complete, &ctx);
+    if (cfg_.dg_id == 0) {
+        crowdb_hw_list_disks_on_node(hw_client_, cfg_.rack_id, cfg_.node_id, on_ffi_complete, &ctx);
+    }
+    else {
+        crowdb_hw_list_disks_in_group(hw_client_, cfg_.rack_id, cfg_.node_id, cfg_.dg_id, on_ffi_complete, &ctx);
+    }
     if (!wait_for_ctx(ctx)) {
         std::fprintf(stderr, "warning: group-0 list_disks timed out\n");
         return;
@@ -163,6 +169,7 @@ void Group0Sync::reconcile_disks(const std::string &json)
 
     // Collect the disk IDs from group-0 and create/update disks.
     std::unordered_set<DiskId, DiskIdHash> seen_ids;
+    std::unordered_set<uint64_t>           seen_groups;
     for (const auto &entry : parsed) {
         if (!entry.isObject()) {
             continue;
@@ -181,6 +188,7 @@ void Group0Sync::reconcile_disks(const std::string &json)
         }
         DiskId did{.high = *high, .low = *low};
         seen_ids.insert(did);
+        seen_groups.insert(cfg_.dg_id == 0 ? static_cast<uint64_t>(entry["disk_group_id"].asInt()) : cfg_.dg_id);
 
         // Check if this disk already exists in the DiskSet.
         auto existing = disk_set_->find_disk(did);
@@ -255,6 +263,8 @@ void Group0Sync::reconcile_disks(const std::string &json)
                         static_cast<unsigned long long>(existing_id.low));
         }
     }
+    owned_dg_ids_.assign(seen_groups.begin(), seen_groups.end());
+    std::sort(owned_dg_ids_.begin(), owned_dg_ids_.end());
 }
 
 void Group0Sync::heartbeat()
@@ -265,7 +275,14 @@ void Group0Sync::heartbeat()
 
     // A node-local DiskIO instance may run before any Capacity disk group
     // exists. In that mode it remains healthy and advertises no ownership.
-    const std::string dg_ids_json = cfg_.dg_id == 0 ? "[]" : "[" + std::to_string(cfg_.dg_id) + "]";
+    folly::dynamic groups = folly::dynamic::array();
+    for (const auto id : owned_dg_ids_) {
+        groups.push_back(id);
+    }
+    if (!cfg_.auto_discover_disks && cfg_.dg_id != 0) {
+        groups.push_back(cfg_.dg_id);
+    }
+    const std::string dg_ids_json = folly::toJson(groups);
 
     SyncCallbackCtx ctx;
     crowdb_svc_heartbeat_diskio_at(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), cfg_.rack_id, cfg_.node_id,

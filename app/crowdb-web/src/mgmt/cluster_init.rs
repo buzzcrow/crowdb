@@ -44,6 +44,7 @@ pub(crate) async fn http_cluster_init(
     State(state): State<AppState>,
     Json(body): Json<ClusterInitBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let _operation = crate::services::Operation::claim(&state, vec!["cluster/init".into()])?;
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
     let summary = if state.web_mode.is_some() || state.config_path.is_some() {
         let path = state.runtime_root.join("bootstrap-intent.toml");
