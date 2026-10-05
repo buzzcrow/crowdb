@@ -84,6 +84,7 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
         children
             .0
             .insert(u32::try_from(deployed["pid"].as_u64().unwrap()).unwrap());
+        success(&app, "/api/cluster/init", json!({"nodes": [1]})).await;
         let port = crowdb_protocol::port::alloc::alloc_test_port_range(
             crowdb_protocol::ServicePort::DiskdbListen,
             3,

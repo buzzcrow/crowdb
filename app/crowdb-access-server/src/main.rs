@@ -24,7 +24,9 @@ use crowdb_access_server::config::{load_args, AccessConfig};
 #[cfg(feature = "s3")]
 use crowdb_access_server::credentials::CredentialAuthority;
 #[cfg(feature = "s3")]
-use crowdb_access_server::s3::{serve, ProductionS3Operations, S3Dispatcher, S3ServiceConfig};
+use crowdb_access_server::s3::{
+    serve, AccessHealthHandler, ProductionS3Operations, S3Dispatcher, S3ServiceConfig,
+};
 #[cfg(feature = "s3")]
 use crowdb_access_server::storage::S3StorageClients;
 #[cfg(feature = "s3")]
@@ -205,11 +207,14 @@ async fn run_s3(
             .with_health(Arc::clone(&health)),
         );
         let listener = TcpListener::bind(address).await?;
+        let health_listener = bind_health_listener(access_config).await?;
+        let health_handler = Arc::new(AccessHealthHandler(Arc::clone(&handler)));
         health.set_listener(DependencyHealth::Ready);
         #[cfg(feature = "test-util")]
         install_test_small_manager_failure(Arc::clone(&chunks));
         let serve_result: Result<(), Box<dyn std::error::Error>> = tokio::select! {
-            result = serve(listener, handler, wait_for_shutdown(shutdown)) => result.map_err(Into::into),
+            result = serve(listener, handler, wait_for_shutdown(shutdown.clone())) => result.map_err(Into::into),
+            result = serve(health_listener, health_handler, wait_for_shutdown(shutdown)) => result.map_err(Into::into),
             () = chunks.wait_for_small_write_manager_failure() => {
                 Err("S3 small-write manager stopped unexpectedly".into())
             }
@@ -224,6 +229,17 @@ async fn run_s3(
         shutdown_result?;
     }
     Ok(())
+}
+
+#[cfg(feature = "s3")]
+async fn bind_health_listener(access_config: &AccessConfig) -> std::io::Result<TcpListener> {
+    let address = access_config
+        .health
+        .listen
+        .clone()
+        .or_else(|| std::env::var("CROWDB_ACCESS_HEALTH_LISTEN").ok())
+        .unwrap_or_else(|| "127.0.0.1:9093".into());
+    TcpListener::bind(address).await
 }
 
 #[cfg(all(feature = "s3", feature = "test-util"))]

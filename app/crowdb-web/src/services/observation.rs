@@ -29,7 +29,7 @@ pub struct ServerSummary {
     pub pid: Option<u32>,
     /// Latest health from the monitor cache (`unknown` until probed).
     pub health: NodeHealth,
-    /// Service type: "kv" (crowdb-kv-server) or "diskdb".
+    /// Canonical service kind, including "paxos-kv" and "diskdb".
     pub service_type: String,
 }
 
@@ -41,11 +41,12 @@ pub struct ServerSummary {
 /// Panics if the `RwLock` is poisoned.
 pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<ServerSummary>> {
     let snap = state.monitor_cache.snapshot().await;
-    let cfg = state.config.read().unwrap();
-    let rows = cfg
-        .servers
-        .iter()
-        .map(|s| {
+    let cfg = state.config.read().unwrap().clone();
+    let rows = futures::future::join_all(cfg.servers.iter().map(|s| {
+        let state = &state;
+        let cfg = &cfg;
+        let snap = &snap;
+        async move {
             let runtime_pid = match s.node_id {
                 Some(node_id) if s.service_type == ServiceType::Diskdb => {
                     state.diskdb_runtime_pid(node_id.to_string())
@@ -59,20 +60,53 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                 s.pid
                     .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
             });
-            // KV health comes from the monitor cache. The auxiliary services
-            // do not all expose the same HTTP health contract (DiskDB and
-            // DiskIO are RPC services), so a tracked live process is the
-            // readiness signal for every deployed service.
-            let health = if s.node_id.is_none() || !matches!(s.service_type, ServiceType::PaxosKv) {
-                if pid.is_some() {
+            let health = if s.service_type == ServiceType::AccessServer {
+                if let Some(url) = cfg
+                    .local_launches
+                    .get(&s.id)
+                    .and_then(crowdb_console_shared::config::LocalLaunchSpec::access_health_url)
+                {
+                    let healthy = reqwest::Client::new()
+                        .get(url)
+                        .timeout(std::time::Duration::from_secs(1))
+                        .send()
+                        .await
+                        .is_ok_and(|response| response.status().is_success());
+                    if healthy {
+                        NodeHealth::Up
+                    } else {
+                        NodeHealth::Down
+                    }
+                } else {
+                    NodeHealth::Unknown
+                }
+            } else if s.service_type == ServiceType::PaxosKv
+                && pid.is_some()
+                && s.node_id.is_some_and(|id| {
+                    !cfg.stores.iter().any(|store| store.nodes.contains(&id))
+                        && snap.get(&id).map_or(true, |record| record.stores.is_empty())
+                })
+            {
+                // Before the first store exists, PKV reserves its RPC port but
+                // does not bind it. Process liveness covers this startup phase.
+                NodeHealth::Up
+            } else if let Some(endpoint) = &s.rpc_url {
+                if state.rpc_health.probe(endpoint).await {
                     NodeHealth::Up
                 } else {
                     NodeHealth::Down
                 }
+            } else if s.service_type == ServiceType::PaxosKv {
+                s.node_id.and_then(|id| snap.get(&id)).map_or(
+                    if pid.is_some() {
+                        NodeHealth::Up
+                    } else {
+                        NodeHealth::Unknown
+                    },
+                    |record| record.health,
+                )
             } else if pid.is_some() {
-                s.node_id
-                    .and_then(|n| snap.get(&n))
-                    .map_or(NodeHealth::Up, |rec| rec.health)
+                NodeHealth::Up
             } else {
                 NodeHealth::Down
             };
@@ -97,7 +131,8 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                 }
                 .to_string(),
             }
-        })
-        .collect();
+        }
+    }))
+    .await;
     Json(rows)
 }

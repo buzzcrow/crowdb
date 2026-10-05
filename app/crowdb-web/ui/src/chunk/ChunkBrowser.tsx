@@ -44,7 +44,8 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
   const { checkpoint } = useDomain();
   const { selectionForDomain, selectEntity } = useSelection();
   const ownership = selectionForDomain(Domain.Chunk);
-  const showOwnership = ownership && (['Datacenter', 'Rack', 'Node', 'Store', 'Group'].includes(ownership.type) ||
+  const hasOwnershipTarget = servers.some(server => server.service_type === 'chunkdb' && server.pid) || stores.some(store => store.groups.some(group => group.replicas.length > 0));
+  const showOwnership = hasOwnershipTarget && ownership && (['Datacenter', 'Rack', 'Node', 'Store', 'Group'].includes(ownership.type) ||
     ownership.type === 'Server' && ['paxos-kv', 'chunkdb'].includes(ownership.serviceType ?? ''));
   const pxgroupTargets = useMemo(() => {
     if (!ownership) return [];

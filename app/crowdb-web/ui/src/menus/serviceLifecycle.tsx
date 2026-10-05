@@ -10,9 +10,9 @@ export function serviceLifecycle(server: ServerSummary, run: MenuContext['runMut
   const label = serviceDisplayNames[kind as keyof typeof serviceDisplayNames] ?? kind;
   const id = server.id ?? '';
   const node = server.node_id!;
-  const restart = () => kind === 'kv' ? restartServer(node) : kind === 'diskdb' ? restartDiskdb(node) : serviceRequest(`/services/${encodeURIComponent(id)}/restart`, 'POST');
-  const stop = () => kind === 'kv' ? stopServer(node) : kind === 'diskdb' ? stopDiskdb(node) : serviceRequest(`/services/${encodeURIComponent(id)}/stop`, 'POST');
-  const deletion = () => kind === 'kv' ? removeServer(node) : kind === 'diskdb' ? removeDiskdb(node) : serviceRequest(`/services/${encodeURIComponent(id)}`, 'DELETE');
+  const restart = () => kind === 'paxos-kv' ? restartServer(node) : kind === 'diskdb' ? restartDiskdb(node) : serviceRequest(`/services/${encodeURIComponent(id)}/restart`, 'POST');
+  const stop = () => kind === 'paxos-kv' ? stopServer(node) : kind === 'diskdb' ? stopDiskdb(node) : serviceRequest(`/services/${encodeURIComponent(id)}/stop`, 'POST');
+  const deletion = () => kind === 'paxos-kv' ? removeServer(node) : kind === 'diskdb' ? removeDiskdb(node) : serviceRequest(`/services/${encodeURIComponent(id)}`, 'DELETE');
   return [
     { id: 'start-restart', label: `${server.pid ? 'Restart' : 'Start'} ${label}`, icon: server.pid ? <RotateCw size={16} /> : <Play size={16} />, onSelect: () => run(`Start / Restart ${label}`, id, restart) },
     { id: 'stop', label: `Stop ${label}`, icon: <Square size={16} />, disabled: !server.pid, onSelect: () => run(`Stop ${label}`, id, stop) },

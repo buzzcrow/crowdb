@@ -64,6 +64,7 @@ const BOTO3_CASES: &[&str] = &[
 ];
 
 struct AccessServerProcess {
+    health_listen: String,
     child: Child,
     log_path: PathBuf,
 }
@@ -402,7 +403,7 @@ async fn start_full_stack() -> FullStackSetup {
     let (mut second_access_server, second_listen) =
         start_access_server(cluster.runtime_mut(), &access_binary, &seeds, "secondary");
     wait_for_tcp(&mut second_access_server, &second_listen).await;
-    assert_access_ready(&listen);
+    assert_access_ready(&access_server.health_listen);
     FullStackSetup {
         access_binary,
         cluster,
@@ -593,6 +594,10 @@ fn start_access_server(
     let port = runtime
         .assign_named_port(ServicePort::AccessServerHttp, identity)
         .expect("assign access-server port");
+    let health_port = runtime
+        .assign_named_port(ServicePort::AccessServerHealthHttp, identity)
+        .expect("assign health port");
+    let health_listen = format!("127.0.0.1:{health_port}");
     let listen = format!("127.0.0.1:{port}");
     let service_root = runtime
         .service_dir("access-server", identity)
@@ -602,6 +607,7 @@ fn start_access_server(
     let child = Command::new(access_binary)
         .arg("s3")
         .env("CROWDB_S3_LISTEN", &listen)
+        .env("CROWDB_ACCESS_HEALTH_LISTEN", &health_listen)
         .env("CROWDB_MANAGEMENT_SEEDS", seeds)
         .env("CROWDB_S3_TENANT", "boto3-e2e")
         .env("CROWDB_S3_MASTER_KEY", MASTER_KEY)
@@ -621,7 +627,14 @@ fn start_access_server(
     runtime
         .record_process(child.id())
         .expect("record access-server process");
-    (AccessServerProcess { child, log_path }, listen)
+    (
+        AccessServerProcess {
+            child,
+            log_path,
+            health_listen,
+        },
+        listen,
+    )
 }
 
 fn run_boto3_case(method: &str, context: &Boto3CaseContext<'_>) {

@@ -42,6 +42,8 @@ pub enum ServiceArg {
     AccessIcebergHttp,
     #[value(name = "access-dataset-http")]
     AccessDatasetHttp,
+    #[value(name = "access-health-http")]
+    AccessHealthHttp,
 }
 
 impl From<ServiceArg> for ServicePort {
@@ -60,6 +62,7 @@ impl From<ServiceArg> for ServicePort {
             ServiceArg::AccessHttp => Self::AccessServerHttp,
             ServiceArg::AccessIcebergHttp => Self::AccessServerIcebergHttp,
             ServiceArg::AccessDatasetHttp => Self::AccessServerDatasetHttp,
+            ServiceArg::AccessHealthHttp => Self::AccessServerHealthHttp,
         }
     }
 }

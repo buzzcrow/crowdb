@@ -1241,6 +1241,7 @@ dependencies = [
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "dirs",
+ "flatbuffers",
  "futures",
  "hex",
  "hmac",

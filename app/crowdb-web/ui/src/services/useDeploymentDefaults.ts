@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { getApiBase } from '../api';
 import { readJson } from '../access/native';
-export interface DeploymentDefaults { instance_id: string; http_port?: number; rpc_port?: number; s3_port?: number }
+export interface DeploymentDefaults { instance_id: string; http_port?: number; rpc_port?: number; s3_port?: number; health_port?: number }
 export function useDeploymentDefaults(active: boolean) {
   const [values, setValues] = useState<Record<string, DeploymentDefaults> | null>(null);
   const [error, setError] = useState('');

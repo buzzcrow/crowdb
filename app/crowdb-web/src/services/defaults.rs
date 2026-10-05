@@ -61,6 +61,7 @@ fn next(used: &mut HashSet<u16>, start: u16, width: u16) -> Result<u16, Failure>
 pub(super) async fn get(State(state): State<AppState>) -> Result<Json<Value>, Failure> {
     let config = state.config.read().unwrap().clone();
     let mut used = occupied(&config);
+    used.extend(super::plans::reserved_ports(&state)?);
     let mut result = BTreeMap::new();
     for (kind, base) in [
         ("paxos-kv", 19910),
@@ -86,6 +87,7 @@ pub(super) async fn get(State(state): State<AppState>) -> Result<Json<Value>, Fa
             "access-server" => {
                 value["s3_port"] = json!(first);
                 value["http_port"] = json!(next(&mut used, base + 1, 1)?);
+                value["health_port"] = json!(next(&mut used, base + 2, 1)?);
             }
             _ => {
                 value["http_port"] = json!(first);

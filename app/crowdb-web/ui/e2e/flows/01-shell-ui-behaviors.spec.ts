@@ -263,17 +263,21 @@ test.describe('shell · UI behaviors', () => {
     await expect(refreshAside.getByText('R-352')).toBeVisible({ timeout: 3_000 });
     await expect(refreshAside.getByText('R-351')).toBeVisible();
 
-    // --- health pill shows Unknown initially and Healthy after group creation ---
+    // --- health pill follows registration, process startup, and group creation ---
     await step('shell: resetAll', () => resetAll(baseURL!));
     await step('shell: seed rack/node', () => seedRackAndNode(baseURL!, 36, 36));
-    await step('shell: deploy server', () => deployNodeServer(baseURL!, 36, freePort(), freePort()));
 
     try {
       await step('shell: goto', () => page.goto('/'));
 
-      // With no stores/groups, health should be Unknown
+      // A registered node without a process has no health observation.
       const healthPill = page.locator('header').getByText(/Unknown|Healthy|Degraded|Failed/);
       await expect(healthPill).toContainText('Unknown', { timeout: 3_000 });
+
+      // Before the first store binds RPC, the owned live process is healthy.
+      await step('shell: deploy server', () => deployNodeServer(baseURL!, 36, freePort(), freePort()));
+      await page.getByRole('button', { name: 'Refresh' }).click();
+      await expect(healthPill).toContainText('Healthy');
 
       // Create store + group with leader
       await step('shell: create store', () => createStore(baseURL!, 360, [36]));

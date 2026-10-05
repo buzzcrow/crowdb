@@ -86,7 +86,7 @@ async fn deploy(app: &axum::Router, node: u64, kind: &str) {
     let defaults = call(app, "GET", "/api/deployment-defaults", Value::Null).await;
     let mut body = defaults[kind].clone();
     let path = match kind {
-        "kv" => {
+        "paxos-kv" => {
             body = json!({"rest_port": body["http_port"], "rpc_port": body["rpc_port"]});
             format!("/api/nodes/{node}/server/deploy")
         }
@@ -196,7 +196,14 @@ async fn assert_services(app: &axum::Router) {
     let services = call(app, "GET", "/api/servers", Value::Null).await;
     assert_eq!(services.as_array().unwrap().len(), 18);
     for node in 1..=3 {
-        for kind in ["kv", "diskdb", "chunkdb", "diskio", "chunk-kv", "access-server"] {
+        for kind in [
+            "paxos-kv",
+            "diskdb",
+            "chunkdb",
+            "diskio",
+            "chunk-kv",
+            "access-server",
+        ] {
             assert!(
                 services
                     .as_array()
@@ -434,7 +441,7 @@ async fn native_cluster(inspection_only: bool) {
             json!({"id":node,"rack_id":1,"host":"127.0.0.1","ssh_port":22,"ssh_user":""}),
         )
         .await;
-        deploy(&app, node, "kv").await;
+        deploy(&app, node, "paxos-kv").await;
     }
     call(&app, "POST", "/api/cluster/init", json!({"nodes":[1,2,3]})).await;
     assert_initialization_budget(&state).await;
@@ -585,7 +592,14 @@ async fn assert_bound_groups(app: &axum::Router, hardware: &crowdb_kv_client::Ha
 }
 
 async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
-    for kind in ["kv", "diskdb", "chunkdb", "diskio", "chunk-kv", "access-server"] {
+    for kind in [
+        "paxos-kv",
+        "diskdb",
+        "chunkdb",
+        "diskio",
+        "chunk-kv",
+        "access-server",
+    ] {
         let before = call(app, "GET", "/api/servers", Value::Null).await;
         let entry = before
             .as_array()
@@ -596,7 +610,7 @@ async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
         let id = entry["id"].as_str().unwrap();
         let old_pid = u32::try_from(entry["pid"].as_u64().unwrap()).unwrap();
         let path = match kind {
-            "kv" => "/api/nodes/1/server/restart".to_owned(),
+            "paxos-kv" => "/api/nodes/1/server/restart".to_owned(),
             "diskdb" => "/api/nodes/1/diskdb/restart".to_owned(),
             _ => format!("/api/services/{id}/restart"),
         };
@@ -678,7 +692,20 @@ fn preserve_failure_logs(state: &AppState) {
 
 async fn deploy_native_services(app: &axum::Router) -> bool {
     // All Nodes exist before sealing the fixed CDB service ownership plan.
-    for kind in ["chunkdb", "diskio", "chunk-kv", "access-server"] {
+    for kind in ["diskio", "chunkdb", "chunk-kv", "access-server"] {
+        if kind == "chunkdb" {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    interval.tick().await;
+                    if call(app, "GET", "/api/chunk-storage-readiness", Value::Null).await["ready"] == true {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("live DiskIO ownership before ChunkDB");
+        }
         for node in 1..=3 {
             deploy(app, node, kind).await;
         }

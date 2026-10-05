@@ -11,14 +11,7 @@ Verification: [Console acceptance](../../app/crowdb-web/ui/e2e/README.md).
 
 ## Current tasks
 
-- **Move Chunk ownership out of the Cluster center panel.** Cluster currently
-  renders `OwnershipPanel` whenever a rack, node, datacenter, group, store, or
-  ChunkDB server is selected. This causes `Chunk ownership · R-1` and its two
-  unavailable cards to appear before any ChunkDB exists. Cluster should manage
-  topology and services only. Chunk ownership belongs to the Chunk tab: expose
-  the ownership hint on the left tree item and render the ownership details
-  there after a real ChunkDB/ownership target exists. Keep this item for the
-  next UI consolidation; do not patch it as a one-off in ClusterView.
+- None currently.
 
 ## Completed acceptance
 

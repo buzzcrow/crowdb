@@ -606,7 +606,7 @@ test.describe('chunk · capacity · disk-group', () => {
       const servers = await r.json();
       return {
         kv: servers.find((s: { node_id?: number; service_type: string }) =>
-          s.node_id === nodeId && s.service_type === 'kv'),
+          s.node_id === nodeId && s.service_type === 'paxos-kv'),
         ddb: servers.find((s: { node_id?: number; service_type: string }) =>
           s.node_id === nodeId && s.service_type === 'diskdb'),
       };

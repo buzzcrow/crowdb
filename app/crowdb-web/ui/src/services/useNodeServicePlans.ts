@@ -19,8 +19,8 @@ export const serviceLabels = {
 } as const;
 export type ServiceStep = { state: 'pending' | 'waiting' | 'deploying' | 'deployed' | 'failed' | 'warning' | 'disabled'; detail?: string };
 export type NodeServicePlan = Record<ServiceKind, ServiceStep>;
-export type ServiceOverrides = Partial<Record<ServiceKind, Partial<DeploymentDefaults>>>;
-const newPlan = (): NodeServicePlan => Object.fromEntries(serviceOrder.map(kind => [kind, { state: 'pending' }])) as NodeServicePlan;
+export type ServiceOverrides = Partial<Record<ServiceKind, Partial<Omit<DeploymentDefaults, 'instance_id'>>>>;
+export const newPlan = (): NodeServicePlan => Object.fromEntries(serviceOrder.map(kind => [kind, { state: 'pending' }])) as NodeServicePlan;
 
 /** Serializes default deployments across nodes so each step gets fresh port reservations.
  * Plans outlive dialogs; dependency changes resume waiting steps, failures need Retry.
@@ -43,24 +43,25 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     setPlans(plansRef.current);
   }, []);
   const persist = useCallback(async (id: number, plan: NodeServicePlan) => {
-    const result = await serviceRequest(`/nodes/${id}/service-plan`, 'PUT', { revision: revisions.current[id] ?? 0, steps: plan }) as { revision: number };
+    const result = await serviceRequest(`/nodes/${id}/service-plan`, 'PUT', { revision: revisions.current[id] ?? 0, steps: plan, overrides: overrides.current[id] ?? {} }) as { revision: number };
     revisions.current[id] = result.revision;
     update(id, plan);
   }, [update]);
-  const failProgress = useCallback((id: number, detail: string) => {
-    const previous = plansRef.current[id] ?? newPlan();
-    update(id, Object.fromEntries(serviceOrder.map(kind => [kind, previous[kind].state === 'deployed'
+  const failProgress = useCallback((id: number, detail: string, intended?: NodeServicePlan) => {
+    const previous = intended ?? plansRef.current[id] ?? newPlan();
+    update(id, Object.fromEntries(serviceOrder.map(kind => [kind, ['deployed', 'disabled'].includes(previous[kind].state)
       ? previous[kind] : { state: 'failed', detail }])) as NodeServicePlan);
   }, [update]);
   useEffect(() => {
     if (!enabled) return;
     let disposed = false;
     recovery.current = (async () => {
-      const stored = await serviceRequest('/service-plans', 'GET') as Record<number, { revision: number; steps: NodeServicePlan }>;
+      const stored = await serviceRequest('/service-plans', 'GET') as Record<number, { revision: number; steps: NodeServicePlan; overrides?: ServiceOverrides }>;
       if (disposed) return;
       for (const [key, saved] of Object.entries(stored)) {
         const id = Number(key);
         revisions.current[id] = saved.revision;
+        overrides.current[id] = saved.overrides ?? {};
         const steps = Object.fromEntries(serviceOrder.map(kind => {
           const savedStep = saved.steps?.[kind] ?? { state: 'pending' as const };
           const normalizedStep = kind === 'chunkdb' && savedStep.state === 'failed' && savedStep.detail?.includes('outside the fixed slot plan')
@@ -76,16 +77,18 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     void recovery.current.catch(() => {});
     return () => { disposed = true; };
   }, [enabled, update]);
-  const start = useCallback(async (id: number, selected: ServiceKind[] = [...serviceOrder], serviceOverrides: ServiceOverrides = {}) => {
+  const start = useCallback(async (id: number, selected?: ServiceKind[], serviceOverrides?: ServiceOverrides) => {
     stopped.current = false;
-    overrides.current[id] = serviceOverrides;
+    let intended: NodeServicePlan | undefined;
     try {
       await recovery.current;
       const previous = plansRef.current[id] ?? newPlan();
-      const enabled = new Set(selected);
-      await persist(id, Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : previous[kind].state === 'failed' || previous[kind].state === 'disabled' ? { state: 'pending' } : previous[kind]])) as NodeServicePlan);
+      overrides.current[id] = serviceOverrides ?? overrides.current[id] ?? {};
+      const enabled = new Set(selected ?? serviceOrder.filter(kind => previous[kind].state !== 'disabled'));
+      intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : previous[kind].state === 'failed' || previous[kind].state === 'disabled' ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
+      await persist(id, intended);
       wake.current();
-    } catch (error) { failProgress(id, String(error)); }
+    } catch (error) { failProgress(id, String(error), intended); throw error; }
   }, [persist, failProgress]);
 
   const stop = useCallback(async () => {
@@ -111,7 +114,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
             let existing;
             try { existing = await listServers(); }
             catch (error) {
-              for (const kind of serviceOrder) if (plan[kind].state !== 'deployed') await write(kind, { state: 'failed', detail: String(error) });
+              for (const kind of serviceOrder) if (!['deployed', 'disabled'].includes(plan[kind].state)) await write(kind, { state: 'failed', detail: String(error) });
               continue;
             }
             for (const kind of serviceOrder) {
@@ -138,6 +141,12 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               else if (kind === 'chunk-kv' && existing.some(server => server.service_type === 'diskio' && !server.pid)) waiting = 'Waiting: restart registered DiskIO services before connecting chunk storage';
               else if (kind === 'chunk-kv' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < 2) waiting = 'Waiting: deploy DiskIO on at least two nodes for journal mirrors';
               else if (kind === 'access-server' && plan['chunk-kv'].state !== 'deployed' && !existing.some(server => server.service_type === 'chunk-kv' && server.pid)) waiting = 'Waiting: deploy Chunk-KV and initialize its catalog';
+              if (!waiting && kind === 'chunkdb') {
+                try {
+                  const ownership = await serviceRequest('/chunk-storage-readiness', 'GET') as { ready: boolean; reason?: string };
+                  if (!ownership.ready) waiting = ownership.reason ?? 'Waiting: publish live DiskIO disk-group ownership';
+                } catch (error) { waiting = `Waiting: DiskIO ownership unavailable: ${String(error)}`; }
+              }
               if (waiting) { if (plan[kind].state !== 'waiting' || plan[kind].detail !== waiting) await write(kind, { state: 'waiting', detail: waiting }); continue; }
               await write(kind, { state: 'deploying' });
               try {
@@ -153,7 +162,8 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 });
                 await write(kind, { state: 'deployed' });
               } catch (error) {
-                const detail = String(error).slice(0, 4096);
+                const listeners = Object.entries(overrides.current[id]?.[kind] ?? {}).map(([name, port]) => `${name}=${port}`).join(', ');
+                const detail = `${serviceLabels[kind]}${listeners ? ` (${listeners})` : ''}: ${String(error)}`.slice(0, 4096);
                 // A node without a fixed ChunkDB slot is valid. Keep it as a
                 // warning so the rest of the node plan and existing balance
                 // services continue running.

@@ -123,7 +123,7 @@ async fn native(
                 format!(
                     "http://{}:{}/_crowdb/health/ready",
                     node.host,
-                    body.s3_port.unwrap()
+                    body.health_port.unwrap()
                 ),
             )
         }
@@ -133,6 +133,10 @@ async fn native(
         lifecycle::prepare_native_launch(body.kind.service_type(), workspace, &config, env_file, ready)
             .map_err(|error| err_502(error.to_string()))?;
     if matches!(body.kind, Kind::AccessServer) {
+        spec.env.insert(
+            "CROWDB_ACCESS_HEALTH_LISTEN".into(),
+            format!("{}:{}", node.host, body.health_port.unwrap()),
+        );
         spec.env.insert("CROWDB_ICEBERG_PUBLIC_URI".into(), http.clone());
         spec.env.insert(
             "CROWDB_S3_PUBLIC_URI".into(),
@@ -191,6 +195,7 @@ async fn chunk_kv_config(
 
 fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -> serde_json::Value {
     let mut config = json!({ "common":{"management_seeds":seeds},
+        "health":{"listen":format!("{}:{}",node.host,body.health_port.unwrap())},
         "s3":{"listen":format!("{}:{}",node.host,body.s3_port.unwrap()),"tenant":"default","region":"us-east-1"},
         "iceberg":{"listen":format!("{}:{}",node.host,body.http_port.unwrap())},
     });

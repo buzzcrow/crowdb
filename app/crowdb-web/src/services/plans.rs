@@ -19,12 +19,12 @@ use crate::{
 };
 
 const KINDS: [&str; 6] = [
-    "paxos-kv",
-    "diskdb",
-    "chunkdb",
-    "diskio",
-    "chunk-kv",
     "access-server",
+    "chunk-kv",
+    "chunkdb",
+    "diskdb",
+    "diskio",
+    "paxos-kv",
 ];
 const MAX_BYTES: u64 = 32 * 1024;
 
@@ -53,6 +53,44 @@ enum StepState {
 pub(super) struct Plan {
     revision: u32,
     steps: BTreeMap<String, Step>,
+    #[serde(default)]
+    overrides: BTreeMap<String, ListenerOverrides>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ListenerOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "http_port")]
+    http: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "rpc_port")]
+    rpc: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "s3_port")]
+    s3: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "health_port")]
+    health: Option<u16>,
+}
+
+fn valid_overrides(overrides: &BTreeMap<String, ListenerOverrides>) -> bool {
+    let mut ports = std::collections::HashSet::new();
+    overrides.iter().all(|(kind, value)| {
+        KINDS.contains(&kind.as_str())
+            && (kind == "access-server" || (value.s3.is_none() && value.health.is_none()))
+            && (kind != "access-server" || value.rpc.is_none())
+            && (!matches!(kind.as_str(), "diskdb" | "diskio") || value.http.is_none())
+            && (kind != "diskdb" || value.rpc.map_or(true, |port| port <= 65533))
+            && [value.http, value.rpc, value.s3, value.health]
+                .into_iter()
+                .flatten()
+                .all(|port| port != 0 && ports.insert(port))
+            && (kind != "diskdb"
+                || value
+                    .rpc
+                    .map_or(true, |port| ports.insert(port + 1) && ports.insert(port + 2)))
+    })
 }
 
 fn path(state: &AppState, id: u64) -> PathBuf {
@@ -113,6 +151,7 @@ pub(super) async fn put(
         return Err(err_404("Deployment plan node no longer exists"));
     }
     if plan.steps.len() != KINDS.len()
+        || !valid_overrides(&plan.overrides)
         || KINDS.iter().any(|kind| !plan.steps.contains_key(*kind))
         || plan
             .steps
@@ -158,4 +197,61 @@ pub(super) fn remove(state: &AppState, id: u64) -> Result<(), Failure> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(err_500(format!("Remove deployment plan: {error}"))),
     }
+}
+
+pub(super) fn selected_nodes(state: &AppState, kind: &str) -> Result<Vec<u64>, Failure> {
+    let nodes: Vec<_> = state
+        .config
+        .read()
+        .unwrap()
+        .nodes
+        .iter()
+        .map(|node| node.id)
+        .collect();
+    let mut selected = Vec::new();
+    for id in nodes {
+        if read(state, id)?.is_some_and(|plan| {
+            plan.steps
+                .get(kind)
+                .is_some_and(|step| !matches!(step.state, StepState::Disabled))
+        }) {
+            selected.push(id);
+        }
+    }
+    Ok(selected)
+}
+
+pub(super) fn reserved_ports(state: &AppState) -> Result<Vec<u16>, Failure> {
+    let nodes: Vec<_> = state
+        .config
+        .read()
+        .unwrap()
+        .nodes
+        .iter()
+        .map(|node| node.id)
+        .collect();
+    let mut ports = Vec::new();
+    for id in nodes {
+        if let Some(plan) = read(state, id)? {
+            for (kind, value) in plan.overrides {
+                if plan
+                    .steps
+                    .get(&kind)
+                    .is_some_and(|step| !matches!(step.state, StepState::Disabled))
+                {
+                    ports.extend(
+                        [value.http, value.rpc, value.s3, value.health]
+                            .into_iter()
+                            .flatten(),
+                    );
+                    if kind == "diskdb" {
+                        if let Some(port) = value.rpc.filter(|port| *port <= 65533) {
+                            ports.extend([port + 1, port + 2]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(ports)
 }

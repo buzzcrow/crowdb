@@ -48,11 +48,12 @@ test('native diagnostics: Chunk ownership matches both durable maps and node sco
   await expect(page.getByRole('region', { name: 'Chunk Serving Ownership', exact: true }).getByRole('button', { name: /^CDB-/ })).toHaveCount(3);
   const nodeRow = tree.getByTestId('tree-node-chunk-node-1').getByRole('treeitem').filter({ has: page.getByRole('button', { name: 'N-1', exact: true }) });
   await nodeRow.getByRole('button', { name: 'Expand', exact: true }).click();
+  await expect(tree.getByTestId('tree-node-chunk-server-chunkdb-1').getByText('Serving ownership', { exact: true })).toBeVisible();
   const serviceResponse = await request.get('/api/servers');
   expect(serviceResponse.status()).toBe(200);
-  const kvId = (await serviceResponse.json()).find((service: { service_type: string; node_id: number }) => service.service_type === 'kv' && service.node_id === 1).id;
+  const kvId = (await serviceResponse.json()).find((service: { service_type: string; node_id: number }) => service.service_type === 'paxos-kv' && service.node_id === 1).id;
   const kv = tree.getByTestId(`tree-node-chunk-server-${kvId}`);
-  await kv.getByRole('treeitem').filter({ has: page.getByRole('button', { name: 'KV-1', exact: true }) }).getByRole('button', { name: 'Expand', exact: true }).click();
+  await kv.getByRole('treeitem').filter({ has: page.getByRole('button', { name: 'PKV-1', exact: true }) }).getByRole('button', { name: 'Expand', exact: true }).click();
   const store = tree.getByTestId('tree-node-chunk-store-1-1');
   await store.getByRole('treeitem').filter({ has: page.getByRole('button', { name: 'S-1', exact: true }) }).getByRole('button', { name: 'Expand', exact: true }).click();
   await tree.getByTestId('tree-node-chunk-group-1-1-1').getByRole('button', { name: 'G-1', exact: true }).click();

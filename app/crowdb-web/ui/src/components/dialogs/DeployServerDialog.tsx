@@ -47,8 +47,8 @@ export function DeployServerDialog({
   const defaults = useDeploymentDefaults(isOpen);
   useEffect(() => {
     if (!defaults.values) return;
-    setRestPort(String(defaults.values.kv.http_port));
-    setRpcPort(String(defaults.values.kv.rpc_port));
+    setRestPort(String(defaults.values['paxos-kv'].http_port));
+    setRpcPort(String(defaults.values['paxos-kv'].rpc_port));
   }, [defaults.values]);
 
   const isPort = (v: string) => /^\d+$/.test(v) && Number(v) > 0 && Number(v) < 65536;

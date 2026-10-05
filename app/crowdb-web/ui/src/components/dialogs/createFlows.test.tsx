@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { ReactNode } from 'react';
 import { ToastProvider } from '../../contexts/ToastContext';
 import { AddRackDialog } from './AddRackDialog';
@@ -11,6 +11,7 @@ import { AddStoreDialog } from './AddStoreDialog';
 import { AddGroupDialog } from './AddGroupDialog';
 import { AddReplicaDialog } from './AddReplicaDialog';
 import { DeployServerDialog } from './DeployServerDialog';
+import { serviceOrder, serviceLabels } from '../../services/useNodeServicePlans';
 import { NodeHealth, ProcState } from '../../types';
 import type { Node, Rack, CrowdbKVServerView, EnrichedStoreView } from '../../types';
 import { deployPortDefaultsForNode, diskdbPortDefaultsForNode, minUnusedId } from './defaults';
@@ -33,11 +34,19 @@ interface CapturedRequest {
 }
 
 let captured: CapturedRequest[] = [];
+const deploymentDefaults = {
+  'paxos-kv': { instance_id: '1', http_port: 19911, rpc_port: 19921 },
+  diskdb: { instance_id: '1', rpc_port: 29921 },
+  diskio: { instance_id: '1', rpc_port: 13010 },
+  chunkdb: { instance_id: '1', http_port: 12010, rpc_port: 12110 },
+  'chunk-kv': { instance_id: '1', http_port: 15010, rpc_port: 15110 },
+  'access-server': { instance_id: '1', http_port: 9092, s3_port: 9091, health_port: 9093 },
+};
 
 function installFetchMock(response: any = {}, status = 200) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
-    if (url.endsWith('/deployment-defaults')) return new Response(JSON.stringify({ kv: { instance_id: '1', http_port: 19911, rpc_port: 19921 }, diskdb: { instance_id: '1', rpc_port: 29921 } }), { status: 200 });
+    if (url.endsWith('/deployment-defaults')) return new Response(JSON.stringify(deploymentDefaults), { status: 200 });
     const method = (init?.method || 'GET').toUpperCase();
     const bodyText = typeof init?.body === 'string' ? init.body : '';
     captured.push({
@@ -115,186 +124,117 @@ describe('Add Rack dialog', () => {
   });
 });
 
+describe('late node listener defaults', () => {
+  it('preserves an operator edit when defaults arrive after the input', async () => {
+    const fetchMock = installFetchMock();
+    let resolve!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(done => { resolve = done; }));
+    render(<AddNodeDialog isOpen onClose={() => {}} racks={[mockRack]} />, { wrapper });
+    fireEvent.change(screen.getByLabelText('crowdb-access-server Health port'), { target: { value: '19333' } });
+    await act(async () => { resolve(new Response(JSON.stringify(deploymentDefaults), { status: 200 })); });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create Node' })).toBeEnabled());
+    expect(screen.getByLabelText('crowdb-access-server Health port')).toHaveValue('19333');
+  });
+});
+
 describe('Add Node dialog', () => {
-  it('POSTs flat NodeEntry to /api/nodes', async () => {
+  async function ready() {
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create Node' })).toBeEnabled());
+  }
+  it('registers one flat node then persists all six services without direct deployment', async () => {
     installFetchMock({ id: 1 });
-    render(
-      <AddNodeDialog isOpen onClose={() => {}} racks={[mockRack]} defaultRackId="1" />,
-      { wrapper },
-    );
-
-    fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
-    fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
-    fireEvent.click(screen.getByLabelText('crowdb-paxos-kv'));
-    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
-    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: /create node/i }));
-
-    await waitFor(() => expect(captured.length).toBe(1));
-    expect(captured[0].url).toBe('/api/nodes');
-    expect(captured[0].method).toBe('POST');
-    // Backend `NodeEntry` shape — flat fields, NO nested `ssh` object.
-    expect(captured[0].body).toEqual({
-      id: 1,
-      rack_id: 1,
-      host: '127.0.0.1',
-      ssh_port: 22,
-      ssh_user: '',
-    });
-    expect(captured[0].body.ssh).toBeUndefined();
+    const onClose = vi.fn();
+    render(<AddNodeDialog isOpen onClose={onClose} racks={[mockRack]} />, { wrapper });
+    await ready();
+    fireEvent.change(screen.getByLabelText('SSH User (optional)'), { target: { value: 'crowdb' } });
+    fireEvent.change(screen.getByLabelText('SSH Key Path (optional)'), { target: { value: '/keys/id_rsa' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Node' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).toMatchObject({ url: '/api/nodes', method: 'POST', body: {
+      id: 1, rack_id: 1, host: '127.0.0.1', ssh_port: 22, ssh_user: 'crowdb', ssh_key: '/keys/id_rsa',
+    } });
+    expect(captured[1].url).toBe('/api/nodes/1/service-plan');
+    expect(Object.keys(captured[1].body.steps)).toEqual([...serviceOrder]);
+    expect(Object.values(captured[1].body.steps)).toEqual(serviceOrder.map(() => ({ state: 'pending' })));
+    expect(captured.some(request => request.url.endsWith('/deploy'))).toBe(false);
   });
-
-  it('includes ssh_user + ssh_key when provided', async () => {
-    installFetchMock({ id: 1 });
-    render(
-      <AddNodeDialog isOpen onClose={() => {}} racks={[mockRack]} defaultRackId="1" />,
-      { wrapper },
-    );
-
-    fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
-    fireEvent.change(screen.getByLabelText('Host'), { target: { value: '10.0.0.1' } });
-    fireEvent.change(screen.getByLabelText('SSH User (optional)'), { target: { value: 'crowdb-kv' } });
-    fireEvent.change(screen.getByLabelText('SSH Key Path (optional)'), {
-      target: { value: '/keys/id_rsa' },
-    });
-    fireEvent.click(screen.getByLabelText('crowdb-paxos-kv'));
-    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
-    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: /create node/i }));
-
-    await waitFor(() => expect(captured.length).toBe(1));
-    expect(captured[0].body).toEqual({
-      id: 1,
-      rack_id: 1,
-      host: '10.0.0.1',
-      ssh_port: 22,
-      ssh_user: 'crowdb-kv',
-      ssh_key: '/keys/id_rsa',
-    });
+  it('renders service-owned listeners and disables all Access listeners together', async () => {
+    installFetchMock();
+    render(<AddNodeDialog isOpen onClose={() => {}} racks={[mockRack]} />, { wrapper });
+    await ready();
+    const cards = screen.getByRole('list', { name: 'Default services' });
+    expect(within(cards).getAllByRole('checkbox').map(input => input.getAttribute('aria-label'))).toEqual(serviceOrder.map(kind => serviceLabels[kind]));
+    for (const kind of serviceOrder.filter(kind => kind !== 'access-server')) {
+      expect(within(screen.getByTestId(`service-card-${kind}`)).getAllByRole('textbox')).toHaveLength(1);
+      expect(screen.getByLabelText(`${serviceLabels[kind]} RPC port`)).toBeEnabled();
+    }
+    fireEvent.click(screen.getByLabelText('crowdb-access-server'));
+    for (const name of ['Iceberg', 'S3', 'Health']) expect(screen.getByLabelText(`crowdb-access-server ${name} port`)).toBeDisabled();
   });
-
-  it('uses default rack/node/host for one-click create', async () => {
-    installFetchMock({ id: 'node2' });
-    render(
-      <AddNodeDialog
-        isOpen
-        onClose={() => {}}
-        racks={[mockRack]}
-        defaultRackId="1"
-        existingNodeIds={['node1']}
-      />,
-      { wrapper },
-    );
-
-    fireEvent.click(screen.getByLabelText('crowdb-paxos-kv'));
-    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
-    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: /create node/i }));
-
-    await waitFor(() => expect(captured.length).toBe(1));
-    expect(captured[0].body).toEqual({
-      id: 2,
-      rack_id: 1,
-      host: '127.0.0.1',
-      ssh_port: 22,
-      ssh_user: '',
-    });
+  it('preserves an arbitrary subset and the operator listener overrides', async () => {
+    installFetchMock();
+    render(<AddNodeDialog isOpen onClose={() => {}} racks={[mockRack]} />, { wrapper });
+    await ready();
+    for (const kind of serviceOrder.filter(kind => kind !== 'access-server')) fireEvent.click(screen.getByLabelText(serviceLabels[kind]));
+    fireEvent.change(screen.getByLabelText('crowdb-access-server Health port'), { target: { value: '19093' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Node' }));
+    await waitFor(() => expect(captured).toHaveLength(2));
+    const plan = captured[1].body;
+    expect(plan.overrides).toEqual({ 'access-server': { http_port: 9092, s3_port: 9091, health_port: 19093 } });
+    for (const kind of serviceOrder) expect(plan.steps[kind].state).toBe(kind === 'access-server' ? 'pending' : 'disabled');
   });
-
-  it('enables CrowDB Storage by default and deploys immediately after node creation', async () => {
-    installFetchMock({ id: 1 });
-    render(
-      <AddNodeDialog
-        isOpen
-        onClose={() => {}}
-        racks={[mockRack]}
-        defaultRackId="1"
-        defaultRestPort="19911"
-        defaultRpcPort="19921"
-      />,
-      { wrapper },
-    );
-
-    expect((screen.getByLabelText('crowdb-paxos-kv') as HTMLInputElement).checked).toBe(true);
-    // Disable DiskDB — this test focuses on the CrowDB Storage deploy flow.
-    fireEvent.click(screen.getByLabelText('crowdb-disk-db'));
-    fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
-    fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
-    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: /create node/i }));
-
-    await waitFor(() => expect(captured.length).toBe(2));
-    expect(captured[0]).toMatchObject({
-      url: '/api/nodes',
-      method: 'POST',
-      body: {
-        id: 1,
-        rack_id: 1,
-        host: '127.0.0.1',
-        ssh_port: 22,
-        ssh_user: '',
-      },
-    });
-    expect(captured[1]).toMatchObject({
-      url: '/api/nodes/1/server/deploy',
-      method: 'POST',
-      body: { rest_port: 19911, rpc_port: 19921 },
-    });
+  it.each(['', '0', '65536', '9091'])('blocks invalid or duplicate health port %s', async value => {
+    installFetchMock();
+    render(<AddNodeDialog isOpen onClose={() => {}} racks={[mockRack]} />, { wrapper });
+    await ready();
+    fireEvent.change(screen.getByLabelText('crowdb-access-server Health port'), { target: { value } });
+    expect(screen.getByRole('button', { name: 'Create Node' })).toBeDisabled();
+    expect(captured).toEqual([]);
   });
-
-  it('keeps one dialog and retries failed services without recreating the node', async () => {
-    let onCloseCalled = false;
+  it('stops after registration failure and retains the editable form', async () => {
+    installFetchMock({ error: 'Node already exists' }, 409);
     const onDefaultServices = vi.fn();
-    // Custom mock: success for addNode and deployServer, 502 for deployDiskdb.
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/deployment-defaults')) return new Response(JSON.stringify({ kv: { instance_id: '1', http_port: 19911, rpc_port: 19921 }, diskdb: { instance_id: '1', rpc_port: 29921 } }), { status: 200 });
-    const method = (init?.method || 'GET').toUpperCase();
-      const bodyText = typeof init?.body === 'string' ? init.body : '';
-      captured.push({ url, method, body: bodyText ? JSON.parse(bodyText) : null });
-      const isDiskdbDeploy = url.includes('/diskdb/deploy');
-      return new Response(
-        isDiskdbDeploy ? JSON.stringify({ error: 'AddrInUse' }) : JSON.stringify({ id: 1 }),
-        { status: isDiskdbDeploy ? 502 : 201, headers: { 'content-type': 'application/json' } },
-      );
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(
-      <AddNodeDialog
-        isOpen
-        onClose={() => { onCloseCalled = true; }}
-        onDefaultServices={onDefaultServices}
-        racks={[mockRack]}
-        defaultRackId="1"
-        defaultRestPort="19911"
-        defaultRpcPort="19921"
-        defaultDiskdbRpcPort="29921"
-      />,
-      { wrapper },
-    );
-
-    fireEvent.change(screen.getByLabelText('Node ID'), { target: { value: '1' } });
-    fireEvent.change(screen.getByLabelText('Host'), { target: { value: '127.0.0.1' } });
-    // Both KV and DiskDB are enabled by default.
-    await waitFor(() => expect(screen.getByRole('button', { name: /create node/i })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: /create node/i }));
-
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('AddrInUse'));
-    expect(onCloseCalled).toBe(false);
-    // All three requests are sent: addNode, deployServer, deployDiskdb.
-    await waitFor(() => expect(captured.length).toBe(3));
-    expect(captured[0].url).toBe('/api/nodes');
-    expect(captured[1].url).toBe('/api/nodes/1/server/deploy');
-    expect(captured[2].url).toBe('/api/nodes/1/diskdb/deploy');
-    // The complete service plan remains visible/retriable after a prerequisite
-    // failure; it records the failure instead of recreating the node.
-    expect(onDefaultServices).toHaveBeenCalledWith(1, expect.any(Array), expect.any(Object));
-    fireEvent.click(screen.getByRole('button', { name: 'Retry failed services' }));
-    await waitFor(() => expect(captured.length).toBe(4));
-    expect(captured[3].url).toBe('/api/nodes/1/diskdb/deploy');
+    const onClose = vi.fn();
+    render(<AddNodeDialog isOpen onClose={onClose} onDefaultServices={onDefaultServices} racks={[mockRack]} />, { wrapper });
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Node' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Node already exists'));
+    expect(captured).toHaveLength(1);
+    expect(onDefaultServices).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Node ID')).toBeEnabled();
+  });
+  it('retries plan persistence with the same node and ports and closes only after durable success', async () => {
+    installFetchMock();
+    const onDefaultServices = vi.fn().mockRejectedValueOnce(new Error('Progress cannot be saved')).mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    render(<AddNodeDialog isOpen onClose={onClose} onDefaultServices={onDefaultServices} racks={[mockRack]} />, { wrapper });
+    await ready();
+    fireEvent.change(screen.getByLabelText('crowdb-paxos-kv RPC port'), { target: { value: '19999' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Node' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Progress cannot be saved'));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry service plan' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(captured.filter(request => request.url === '/api/nodes')).toHaveLength(1);
-    expect(captured.filter(request => request.url.endsWith('/server/deploy'))).toHaveLength(1);
+    expect(onDefaultServices.mock.calls[0]).toEqual(onDefaultServices.mock.calls[1]);
+    expect(onDefaultServices.mock.calls[1][2]['paxos-kv'].rpc_port).toBe(19999);
+  });
+  it('uses a fresh node identity when the dialog is opened again', async () => {
+    installFetchMock();
+    const onDefaultServices = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(<AddNodeDialog isOpen onClose={() => {}} onDefaultServices={onDefaultServices} racks={[mockRack]} />, { wrapper });
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Node' }));
+    await waitFor(() => expect(onDefaultServices).toHaveBeenCalledTimes(1));
+    rerender(<AddNodeDialog isOpen={false} onClose={() => {}} onDefaultServices={onDefaultServices} racks={[mockRack]} existingNodeIds={['1']} />);
+    rerender(<AddNodeDialog isOpen onClose={() => {}} onDefaultServices={onDefaultServices} racks={[mockRack]} existingNodeIds={['1']} />);
+    await ready();
+    expect(screen.getByLabelText('Node ID')).toHaveValue('2');
+    fireEvent.click(screen.getByRole('button', { name: 'Create Node' }));
+    await waitFor(() => expect(onDefaultServices).toHaveBeenCalledTimes(2));
+    expect(captured.filter(request => request.url === '/api/nodes').map(request => request.body.id)).toEqual([1, 2]);
   });
 });
 
@@ -935,7 +875,7 @@ describe('end-to-end create flow', () => {
     expect(captured.map((r) => `${r.method} ${r.url}`)).toEqual([
       'POST /api/racks',
       'POST /api/nodes',
-      'POST /api/nodes/1/server/deploy',
+      'PUT /api/nodes/1/service-plan',
       'POST /api/stores',
       'POST /api/stores/7/groups',
       'POST /api/stores/7/groups/70/replicas',

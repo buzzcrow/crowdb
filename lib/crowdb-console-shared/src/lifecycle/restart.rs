@@ -15,6 +15,16 @@ use std::{path::Path, process::Stdio, time::Duration};
 /// Returns an error when the old process cannot stop, the replacement cannot
 /// start, or its configured readiness endpoint does not become healthy.
 pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunchSpec) -> Result<u32> {
+    if (server_id.starts_with("access-server-")
+        || Path::new(&spec.program)
+            .file_name()
+            .is_some_and(|name| name == "crowdb-access-server"))
+        && spec.access_health_url().is_none()
+    {
+        return Err(Error::Config(
+            "Access health listener requires reconciliation before restart".into(),
+        ));
+    }
     let private_env = private_environment(spec)?;
     if pid > 0 && process_is_alive(pid) {
         stop_pid_with_timeout(pid, Duration::from_secs(15))?;

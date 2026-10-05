@@ -1002,7 +1002,19 @@ async fn stop_all_services(state: &AppState) -> Result<Vec<String>, (StatusCode,
 
     for nid in &node_ids {
         // Stop children concurrently; workspace cleanup waits for all of them.
-        if let Some(pid) = state.runtime_pid(nid) {
+        let kv_pid = state.runtime_pid(nid).or_else(|| {
+            let config = state.config.read().unwrap();
+            config.server_for_node(*nid).and_then(|server| {
+                config
+                    .local_launches
+                    .contains_key(&server.id)
+                    .then_some(server.pid)
+                    .flatten()
+            })
+        });
+        // A stop response clears the runtime PID before its background reap
+        // finishes. The retained launch PID still owns open workspace files.
+        if let Some(pid) = kv_pid {
             let ssh = state
                 .config
                 .read()

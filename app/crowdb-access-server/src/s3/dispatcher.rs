@@ -99,7 +99,7 @@ impl S3Dispatcher {
         format!("{:016x}", self.next_request_id.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn operational_response(&self, request: &Request<Incoming>) -> Option<Response<ResponseBody>> {
+    pub(super) fn operational_response(&self, request: &Request<Incoming>) -> Option<Response<ResponseBody>> {
         if request.method() != Method::GET && request.method() != Method::HEAD {
             return None;
         }
@@ -179,7 +179,10 @@ impl S3HttpHandler for S3Dispatcher {
         if request.uri().path() == super::OBJECT_LOCATIONS_PATH {
             return super::inspection::dispatch(self.object_inspector.clone(), request);
         }
-        if let Some(response) = self.operational_response(&request) {
+        if let Some(response) = (!request.uri().path().starts_with("/_crowdb/health/"))
+            .then(|| self.operational_response(&request))
+            .flatten()
+        {
             return Box::pin(async move { Ok(response) });
         }
         self.authenticated(request)

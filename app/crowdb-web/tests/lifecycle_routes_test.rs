@@ -516,6 +516,10 @@ async fn reset_waits_for_owned_children_before_removing_workspaces() {
         guard.pids.insert(node.to_string(), pid);
         assert!(dir.join(format!("N-{node}")).exists());
     }
+    // Stop clears the in-memory PID while process teardown runs in the
+    // background. Reset must also wait for that retained launch PID.
+    let (status, body) = json_post(&client, &format!("{base}/api/nodes/1/server/stop"), json!({})).await;
+    assert!(status.is_success(), "{status}: {body}");
     let (status, body) = json_post(&client, &format!("{base}/internal/reset"), json!({})).await;
     assert!(status.is_success(), "{status}: {body}");
     for (node, pid) in &guard.pids {

@@ -97,6 +97,14 @@ async fn run(
     launch: &LocalLaunchSpec,
     action: Action,
 ) -> Result<Json<Value>, Failure> {
+    if matches!(action, Action::Restart)
+        && entry.service_type == ServiceType::AccessServer
+        && launch.access_health_url().is_none()
+    {
+        return Err(err_409(
+            "Access health listener requires reconciliation before restart",
+        ));
+    }
     let pid = matching_pid(entry, launch)?;
     // Persist the operator's stop intent before signalling the old process.
     {

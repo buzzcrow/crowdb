@@ -298,6 +298,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     assert_eq!(snapshot["racks"][0]["id"], 1);
     assert_eq!(snapshot["nodes"][0]["id"], 1);
     assert_eq!(snapshot["stores"][0]["store_id"], 0);
+    verify_canonical_service_kinds(&snapshot);
     let diskio = snapshot["services"]
         .as_array()
         .unwrap()
@@ -312,6 +313,19 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     drop(cluster);
     verify_unavailable_snapshot(app, &store, &mut status, &run_root).await;
     std::fs::remove_dir_all(run_root).unwrap();
+}
+
+fn verify_canonical_service_kinds(snapshot: &serde_json::Value) {
+    assert!(snapshot["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|service| service["kind"] == "paxos-kv"));
+    assert!(!snapshot["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|service| service["kind"] == "kv-server"));
 }
 
 async fn verify_chunk_kv_placement(app: &axum::Router, sysmd: &CrowdbSysmdClient) {

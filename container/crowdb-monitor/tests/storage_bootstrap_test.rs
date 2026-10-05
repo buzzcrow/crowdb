@@ -99,7 +99,7 @@ impl TestRoot {
                 "diskio" => vec![ports.diskio_rpc],
                 "chunkdb" => vec![ports.chunkdb_http, ports.chunkdb_rpc],
                 "chunk-kv" => vec![ports.chunk_kv_http, ports.chunk_kv_rpc],
-                "access" => vec![ports.iceberg, ports.s3],
+                "access" => vec![ports.iceberg, ports.s3, ports.health],
                 _ => unreachable!(),
             }
             .into_iter()
@@ -116,7 +116,7 @@ impl TestRoot {
             };
             if service.id == "access" {
                 service.additional_probes[0].target =
-                    format!("http://127.0.0.1:{}/_crowdb/health/ready", ports.s3);
+                    format!("http://127.0.0.1:{}/_crowdb/health/ready", ports.health);
             }
         }
         profile.validate().unwrap();
@@ -124,6 +124,10 @@ impl TestRoot {
     }
 
     fn configure_access_env(&self, service: &mut crowdb_monitor::ServiceProfile, ports: &Ports) {
+        service.env.insert(
+            "CROWDB_ACCESS_HEALTH_LISTEN".into(),
+            format!("127.0.0.1:{}", ports.health),
+        );
         service.env.insert(
             "CROWDB_MANAGEMENT_SEEDS".into(),
             format!("http://127.0.0.1:{}", ports.kv_management),
@@ -216,12 +220,13 @@ struct Ports {
     chunk_kv_rpc: u16,
     iceberg: u16,
     s3: u16,
+    health: u16,
 }
 
 impl Ports {
     async fn allocate() -> Self {
         let mut listeners = Vec::new();
-        for _ in 0..12 {
+        for _ in 0..13 {
             listeners.push(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
         }
         let ports = listeners
@@ -241,6 +246,7 @@ impl Ports {
             chunk_kv_rpc: ports[9],
             iceberg: ports[10],
             s3: ports[11],
+            health: ports[12],
         }
     }
 }

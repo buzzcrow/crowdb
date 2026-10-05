@@ -23,6 +23,8 @@ export function ChunkHierarchy({ racks, nodes, servers, stores }: { active: bool
       children: nodes.filter(node => node.rack_id === rack.id).map(node => ({ id: `chunk-node-${node.id}`, rawId: node.id, parentIds: { rack_id: rack.id }, label: `N-${node.id}`, type: 'Node', icon: <Monitor className={icon} />,
         children: servers.filter(server => server.node_id === node.id && ['paxos-kv', 'chunkdb'].includes(server.service_type)).map(server => ({
           id: `chunk-server-${server.id}`, rawId: server.id, serviceType: server.service_type as 'paxos-kv' | 'chunkdb', parentIds: { node_id: node.id, rack_id: rack.id },
+          footer: <span className="tw-text-xs tw-text-muted">{server.service_type === 'chunkdb' ? 'Serving ownership' : 'Storage ownership'}</span>,
+          title: server.service_type === 'chunkdb' ? 'Chunk serving ownership' : 'Chunk storage ownership',
           label: serviceInstanceLabel(server.service_type, server.id ?? String(node.id)), type: 'Server', icon: <Cog className={icon} />,
           children: server.service_type !== 'paxos-kv' ? undefined : stores.flatMap(store => {
             const groups = store.groups.filter(group => group.replicas.some(replica => String(replica.node_id) === String(node.id)));

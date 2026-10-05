@@ -739,10 +739,15 @@ async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String], protected_test: bool)
 async fn spawn_access(data_dir: &Path, seeds: &[String]) -> Result<SpawnedService> {
     let binary = find_binary("CROWDB_ACCESS_SERVER_BIN", "crowdb-access-server")?;
     let port = assign_cluster_port(data_dir, ServicePort::AccessServerHttp, "access-server-1")?;
+    let health_port = assign_cluster_port(data_dir, ServicePort::AccessServerHealthHttp, "access-server-1")?;
     let workdir = data_dir.join("services/access-server-1");
     std::fs::create_dir_all(workdir.join("log"))?;
     let mut env = BTreeMap::new();
     env.insert("CROWDB_S3_LISTEN".into(), format!("127.0.0.1:{port}"));
+    env.insert(
+        "CROWDB_ACCESS_HEALTH_LISTEN".into(),
+        format!("127.0.0.1:{health_port}"),
+    );
     env.insert("CROWDB_MANAGEMENT_SEEDS".into(), seeds.join(","));
     env.insert("CROWDB_S3_TENANT".into(), "local".into());
     env.insert("CROWDB_S3_MASTER_KEY".into(), MASTER_KEY.into());
@@ -756,7 +761,7 @@ async fn spawn_access(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServic
         args: vec!["s3".into()],
         workdir: workdir.to_string_lossy().into_owned(),
         env,
-        readiness_url: Some(format!("http://127.0.0.1:{port}/_crowdb/health/ready")),
+        readiness_url: Some(format!("http://127.0.0.1:{health_port}/_crowdb/health/ready")),
     };
     let pid = spawn(&runtime_launch, "access-server-1").await?;
     let mut persisted_launch = runtime_launch;

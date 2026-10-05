@@ -160,7 +160,7 @@ fn default_pxgroup_limit() -> u32 {
     100
 }
 
-/// Scan only ChunkDB chunk records owned by one Paxos group directly through
+/// Scan only `ChunkDB` chunk records owned by one Paxos group directly through
 /// the KV client. Other KV records in the group are intentionally excluded.
 pub(crate) async fn pxgroup_list(
     State(state): State<AppState>,

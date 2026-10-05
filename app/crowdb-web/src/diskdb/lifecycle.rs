@@ -77,7 +77,7 @@ async fn deploy_diskdb(
     node_id: u64,
     body: DeployDiskdbBody,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), (StatusCode, Json<ErrorBody>)> {
-    if !crate::mgmt::cluster_initialized(&state).await {
+    if !crate::services::dependencies::group0_ready(&state).await {
         return Err(err_409(
             "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting DiskDB",
         ));

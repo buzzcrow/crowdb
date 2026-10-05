@@ -57,6 +57,37 @@ pub struct LocalLaunchSpec {
     pub readiness_url: Option<String>,
 }
 
+impl LocalLaunchSpec {
+    /// An Access launch must retain a dedicated readiness listener.
+    #[must_use]
+    pub fn access_health_url(&self) -> Option<String> {
+        let address = self
+            .env
+            .get("CROWDB_ACCESS_HEALTH_LISTEN")?
+            .parse::<std::net::SocketAddr>()
+            .ok()?;
+        if address.port() == 0 {
+            return None;
+        }
+        let url = format!("http://{address}/_crowdb/health/ready");
+        if self.readiness_url.as_deref() != Some(url.as_str()) {
+            return None;
+        }
+        for name in ["CROWDB_S3_PUBLIC_URI", "CROWDB_ICEBERG_PUBLIC_URI"] {
+            if self
+                .env
+                .get(name)
+                .and_then(|value| reqwest::Url::parse(value).ok())
+                .and_then(|url| url.port_or_known_default())
+                == Some(address.port())
+            {
+                return None;
+            }
+        }
+        Some(url)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RackEntry {
     pub id: RackId,
@@ -135,6 +166,7 @@ pub struct DiskEntry {
 
 /// Discriminator for ephemeral console deployment inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
 pub enum ServiceType {
     #[default]
     #[serde(rename = "paxos-kv")]

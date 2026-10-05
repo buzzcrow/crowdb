@@ -74,8 +74,8 @@ verify_public_services() {
     iceberg_port=$(port 9092)
     s3_port=$(port 9091)
     web_port=$(port 9090)
-    curl --fail --silent --show-error --max-time 5 \
-        "http://127.0.0.1:$s3_port/_crowdb/health/ready" >/dev/null
+    docker exec "$name" curl --fail --silent --show-error --max-time 5 \
+        "http://127.0.0.1:9093/_crowdb/health/ready" >/dev/null
     curl --fail --silent --show-error --max-time 5 \
         "http://127.0.0.1:$web_port/api/authority" | jq -e '.source == "group0" and .available == true' >/dev/null
     curl --fail --silent --show-error --max-time 5 \

@@ -5,6 +5,7 @@
 
 pub(crate) mod access;
 pub(crate) mod defaults;
+pub(crate) mod dependencies;
 mod deployment;
 mod lifecycle;
 pub(crate) mod observation;
@@ -12,12 +13,14 @@ mod operation;
 pub(crate) use operation::Operation;
 mod plans;
 mod publication;
+pub(crate) mod rpc_health;
 
 pub(crate) fn routes() -> axum::Router<crate::state::AppState> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/api/deployment-defaults", get(defaults::get))
         .route("/api/service-plans", get(plans::list))
+        .route("/api/chunk-storage-readiness", get(dependencies::storage))
         .route("/api/nodes/:id/service-plan", put(plans::put))
         .route("/api/nodes/:id/services/deploy", post(deployment::deploy))
         .route("/api/services/:id/restart", post(lifecycle::restart))
