@@ -511,6 +511,9 @@ async fn native_cluster(inspection_only: bool) {
     }
     assert_native_access(&app).await;
     assert_native_locations(&app, &state).await;
+    if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
+        assert_native_browser_diagnostics(app.clone(), None).await;
+    }
     assert_native_restarts(&app, &state).await;
     assert_native_locations(&app, &state).await;
     if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
@@ -637,6 +640,17 @@ async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
             metrics.transport_error_retry,
             metrics.retries_exhausted,
             state.monitor_cache.group0_leader_endpoint().await
+        );
+        assert_eq!(
+            s3_request(
+                app,
+                "GET",
+                "/api/access/s3/native-locations/multipart.bin",
+                vec![]
+            )
+            .await,
+            b"replacement",
+            "durable S3 object remains readable after {kind} restarts"
         );
     }
     assert_eq!(

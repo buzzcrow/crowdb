@@ -282,6 +282,11 @@ async fn physical_ec_reports_the_two_rack_layout_truthfully() {
                 "two racks cannot protect {data_num}+{code_num}"
             );
             assert!(assessment.max_fragments_per_rack > assessment.loss_budget);
+            assert_eq!(
+                strip.placement_repair_required,
+                !assessment.node_protected || !assessment.disk_protected,
+                "rack-only degradation must not admit a placement repair"
+            );
         }
     }
 }
@@ -378,25 +383,15 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
         return;
     }
     let cluster = KvCluster::start().await;
+    // Two nodes exceed every matrix entry's node loss budget before expansion.
     let mut disk_groups = seed_hardware_layout_with_zones(
         &cluster.make_hardware_client(),
-        &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
+        &[(100, vec![10]), (101, vec![20])],
         32,
     )
     .await;
     let diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
-    let mut diskio = start_diskio_groups(
-        &cluster,
-        &[
-            (1000, 100, 10),
-            (1001, 100, 11),
-            (1002, 100, 12),
-            (1003, 100, 13),
-            (1004, 101, 20),
-            (1005, 101, 21),
-        ],
-        2_000,
-    );
+    let mut diskio = start_diskio_groups(&cluster, &[(1000, 100, 10), (1001, 101, 20)], 2_000);
     let service = cluster.make_service_registry_client();
     let hardware = cluster.make_hardware_client();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -410,7 +405,9 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    let harness = ChunkdbHarness::start(&cluster).await;
+    let harness =
+        ChunkdbHarness::start_with_disk_group_count(&cluster, Duration::from_secs(30), disk_groups.len())
+            .await;
     let handler = Arc::new(
         LifecycleHandler::new(
             Arc::clone(&harness.store),
@@ -443,12 +440,25 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
     let Some(Strip::EcStrip(ec)) = chunk.strips[0].strip.as_ref() else {
         panic!("expected EC strip");
     };
+    assert!(chunk.strips[0].placement_repair_required);
+    assert!(
+        !chunk.strips[0]
+            .placement_assessment
+            .as_ref()
+            .unwrap()
+            .node_protected
+    );
     for segment in &ec.segments {
         io.write_segment(segment, 1024 * 1024, Bytes::from(vec![0x97; 1024 * 1024]))
             .await
             .expect("seed source data");
     }
-    let expansion_layout: Vec<_> = (0..required_racks.saturating_sub(2))
+    // Each seeded node has three disks. Preserve a spare physical disk for
+    // the capacity move even in the largest matrix entry.
+    let expansion_racks = (required_racks + 1)
+        .max(u64::from(data_num + code_num).div_ceil(3) + 1)
+        .saturating_sub(2);
+    let expansion_layout: Vec<_> = (0..expansion_racks)
         .map(|offset| (102 + offset, vec![30 + offset]))
         .collect();
     let new_disk_groups =
@@ -458,7 +468,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
     diskdb
         .refresh_disk_groups(&cluster, &new_disk_groups, &disk_groups, 32)
         .await;
-    let expansion_groups: Vec<_> = (0..required_racks.saturating_sub(2))
+    let expansion_groups: Vec<_> = (0..expansion_racks)
         .map(|offset| (2000 + offset, 102 + offset, 30 + offset))
         .collect();
     diskio.extend(start_diskio_groups(&cluster, &expansion_groups, 3_000));
@@ -710,12 +720,14 @@ async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_g
     let cluster = KvCluster::start().await;
     let disk_groups = seed_hardware_layout_with_zones(
         &cluster.make_hardware_client(),
-        &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
+        &[(100, vec![10]), (101, vec![20])],
         32,
     )
     .await;
     let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
-    let harness = ChunkdbHarness::start(&cluster).await;
+    let harness =
+        ChunkdbHarness::start_with_disk_group_count(&cluster, Duration::from_secs(30), disk_groups.len())
+            .await;
     let handler = Arc::new(
         LifecycleHandler::new(
             Arc::clone(&harness.store),
