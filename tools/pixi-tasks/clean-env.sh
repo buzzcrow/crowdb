@@ -6,23 +6,14 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 runtime_root="${CROWDB_RUNTIME_ROOT:-$repo_root/.crowdb-runtime}"
-mode="${1:-env}"
-
-case "$mode" in
-    env | all-disposable | all) ;;
-    *)
-        echo "usage: $0 [env|all-disposable|all]" >&2
-        exit 2
-        ;;
-esac
 
 if [ ! -d "$runtime_root" ]; then
-    echo "[clean-runtime] runtime root does not exist: $runtime_root"
+    echo "[clean-env] runtime root does not exist: $runtime_root"
     exit 0
 fi
 runtime_root=$(cd "$runtime_root" && pwd -P)
 if [ "$runtime_root" = "/" ] || [ "$runtime_root" = "$repo_root" ]; then
-    echo "[clean-runtime] refusing unsafe runtime root: $runtime_root" >&2
+    echo "[clean-env] refusing unsafe runtime root: $runtime_root" >&2
     exit 2
 fi
 
@@ -90,13 +81,4 @@ terminate_recorded_processes
 rm -rf "$runtime_root/ephemeral"
 prune_ephemeral_claims
 
-if [ "$mode" = "all-disposable" ]; then
-    rm -rf "$runtime_root/artifacts"
-fi
-
-if [ "$mode" = "all" ]; then
-    rm -rf "$runtime_root"
-    echo "[clean-runtime] removed runtime root: $runtime_root"
-else
-    echo "[clean-runtime] removed disposable runtime state; preserved $runtime_root/persistent"
-fi
+echo "[clean-env] removed disposable runtime state; preserved $runtime_root/persistent"

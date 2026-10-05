@@ -199,7 +199,7 @@ profile-write = { cmd = "bash tools/profiling/profile-write.sh", depends-on = ["
 # Test Design"). Each group maps 1:1 to a parallel CI job. Run
 # Each test group builds only its own Rust targets. C++ ctest tasks need
 # `pixi run build-cpp`.
-clean-env = "bash tools/runtime/clean-runtime.sh env"
+clean-env = "bash tools/pixi-tasks/clean-env.sh"
 # Optional full-workspace compile check. CI test groups use their component
 # tasks to avoid building unrelated test targets on each runner.
 build-tests = "cargo test --workspace --all-targets --no-run"
