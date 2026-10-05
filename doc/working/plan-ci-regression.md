@@ -9,22 +9,27 @@ open issues for blockers before continuing other jobs.
 This is a persistent issue record requested by the user; keep unresolved items
 and remove resolved issues after verification.
 
-## Job verification
+## Job verification results
 
-- [x] **Lint**: exact workflow fmt, task inventory and workspace Clippy passed.
+- **Lint — PASS**: exact workflow fmt, task inventory and workspace Clippy passed.
   TypeScript and tree lint also passed.
-- [x] **UnitTests**: `pixi run clean-env` and `pixi run test-unit` passed.
-- [x] **CppTests**: C++ build, tree/common/RPC/DiskIO and Rust FFI passed.
-- [x] **ServerTests**: original job failed on two EC fixtures (open issue below);
+- **UnitTests — PASS**: `pixi run clean-env` and `pixi run test-unit` passed.
+- **CppTests — PASS**: C++ build, tree/common/RPC/DiskIO and Rust FFI passed.
+- **ServerTests — TWO FAILURES SKIPPED, REMAINDER PASS**:
+  original job failed on two EC fixtures (open issue below);
   continuation passed every other target with those two tests explicitly skipped.
-- [x] **ConsoleTests**: shared and CLI passed; full web rerun passed after
+- **ConsoleTests — PASS**: shared and CLI passed; full web rerun passed after
   fixing cancellation Group 0 setup and pre-store PKV health fallback.
-- [x] **UITests**: full job passed, 153 frontend UT and 60 browser tests.
+- **UITests — PASS**: full job passed, 153 frontend UT and 60 browser tests.
   The updated rack/node spec also passed all eight tests, including added
   six-service pre-Group-0 acceptance. Together these cover 61 browser cases.
-- [~] **S3E2E**: run `pixi run -e s3-e2e test-boto3-e2e`.
-- [ ] **IcebergE2E**: run `pixi run -e iceberg-e2e test-iceberg-e2e`.
-- [ ] **IcebergSDK**: run `pixi run -e iceberg-e2e test-iceberg-sdk`.
+- **S3E2E — PASS**: full job passed, including all 32 full-stack tests, boto3,
+  AWS CLI, rclone and individual service recovery scenarios.
+- **IcebergE2E — PASS**: full job passed, including PyIceberg, native files,
+  GC, capacity recovery and file/table durable-write crash matrices.
+- **IcebergSDK — PASS**: full job passed, including Java Catalog, commit and
+  response-loss tests, all three native Java FileIO tests and selected Apache
+  Iceberg RCK catalog tests. SDK thread cleanup warnings remain open below.
 
 Full local logs: `.crowdb-runtime/artifacts/local-ci/`.
 Runtime jobs execute sequentially because cleanup removes owned subprocesses.
@@ -38,6 +43,9 @@ Runtime jobs execute sequentially because cleanup removes owned subprocesses.
   Logs: `.crowdb-runtime/artifacts/native-restart-failure-86554`.
   Skip this failure as requested; the failing assertion remains intact.
   Isolated real three-node ownership browser acceptance passed separately.
+  S3E2E's individual Group 0, Access, ChunkDB, DiskDB, DiskIO and Chunk-KV
+  restart recovery tests all passed; the open failure is the combined native
+  console restart fixture.
 - **OPEN: remote CI logs require authentication.** The jobs API confirms five
   failed jobs (Lint, UnitTests, ServerTests, ConsoleTests, UITests). Every log
   endpoint returns HTTP 403 and no GitHub credential/session is available.
@@ -55,3 +63,13 @@ Runtime jobs execute sequentially because cleanup removes owned subprocesses.
   Keep assertions intact and skip these two tests as requested; continue all
   other ChunkDB and ServerTests targets. Logs: `local-ci/ServerTests.log` and
   `local-ci/Chunkdb-degraded-marker.log` under the artifact directory.
+
+- **OPEN: Java native FileIO fixtures leave SDK threads alive at Maven exit.**
+  `official_java_catalog_commits_native_parquet_snapshots_and_staged_tables`
+  passes its assertions and Maven exits successfully, but exec:java reports
+  34 surviving worker/reaper/scheduler threads on the write phase and 10 on
+  the restart read phase, each after its existing 15-second cleanup wait.
+  Reproduce with `pixi run -e iceberg-e2e test-java-iceberg-fileio-e2e`.
+  Follow up on fixture/client FileIO resource ownership and shutdown; keep
+  the warnings visible and continue the SDK job as requested.
+  Evidence: `.crowdb-runtime/artifacts/local-ci/IcebergSDK.log`.

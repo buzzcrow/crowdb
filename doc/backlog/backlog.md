@@ -88,23 +88,6 @@ independent deferred work.
 
 ### High Priority
 
-- **[R212](R212-console-node-create-and-cluster-scope.md)** — reliable node
-  creation and Cluster scope — Area: console / node lifecycle / UI — Make Add
-  Node creation durable and retryable with service-scoped errors, and move
-  Chunk ownership out of the Cluster center panel into the Chunk tab.
-
-- **[R211](R211-console-access-health-listener.md)** — independent Access
-  Server health listener — Area: console / access server / deployment — Give
-  Access Server separate Iceberg, S3, and health ports; probe health through
-  the private health listener and expose the result in the node service view.
-
-- **[R210](R210-console-service-configuration-health.md)** — unified node
-  service configuration and health — Area: console / service deployment /
-  FlatBuffer RPC — Configure the six node services in one dialog with
-  consistent names, per-service enablement and listeners, and internal RPC
-  health probes. Remove the old `kv` service discriminator in favor of
-  `paxos-kv`.
-
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
   **Deferred beyond the completed direct-KV stage.** When selected, migrate
