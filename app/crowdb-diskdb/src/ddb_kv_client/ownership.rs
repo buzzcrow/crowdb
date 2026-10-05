@@ -3,7 +3,6 @@
 
 //! Data-group fencing for `DiskGroup` management handovers.
 
-use bytes::Bytes;
 use crowdb_kv_client::{BatchOp, Error, GetOutcome, ReadMode, Result};
 use serde::{Deserialize, Serialize};
 
@@ -99,50 +98,10 @@ impl DdbKvClient {
             };
         };
         let key = fence.key();
-        for _ in 0..64 {
-            let GetOutcome::Found { value, revision } = self
-                .kv
-                .get(bind.0, bind.1, &key, ReadMode::Linearizable, None)
-                .await?
-            else {
-                return Err(fenced());
-            };
-            let current: OwnershipFence =
-                serde_json::from_slice(&value).map_err(|e| Error::Server(e.to_string()))?;
-            if current != **fence {
-                return Err(fenced());
-            }
-            if let Some((record, expected)) = record_condition {
-                let actual = match self
-                    .kv
-                    .get(bind.0, bind.1, record, ReadMode::Linearizable, None)
-                    .await?
-                {
-                    GetOutcome::NotFound => 0,
-                    GetOutcome::Found { revision, .. } => revision,
-                };
-                if actual != expected {
-                    return Err(Error::CasFailed {
-                        current_revision: actual,
-                    });
-                }
-            }
-            // Advancing this guard also protects the optional record revision read.
-            let mut guarded = ops.to_vec();
-            guarded.push(BatchOp::Put {
-                key: Bytes::from(key.clone()),
-                value,
-            });
-            match self
-                .kv
-                .batch_write_cas(bind.0, bind.1, &guarded, &key, revision)
-                .await
-            {
-                Ok(outcome) => return Ok(outcome.revision),
-                Err(Error::CasFailed { .. } | Error::CasBusy) => tokio::task::yield_now().await,
-                Err(error) => return Err(error),
-            }
-        }
-        Err(Error::CasBusy)
+        let expected = serde_json::to_vec(&**fence).map_err(|error| Error::Server(error.to_string()))?;
+        self.kv
+            .batch_write_owned(bind.0, bind.1, ops, &key, &expected, record_condition)
+            .await
+            .map(|write| write.revision)
     }
 }

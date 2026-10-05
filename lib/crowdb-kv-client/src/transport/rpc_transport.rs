@@ -16,6 +16,8 @@
 //! window; `CrowdbKvClient` selects the transport via
 //! `with_rpc_transport`.
 
+mod owned;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -451,6 +453,7 @@ impl KvRpcTransport {
             group_id,
             forwarded: false,
             precondition: None,
+            owner_fence: None,
         };
         let req = FBKvBatchWriteRequest::create(&mut builder, &args);
         builder.finish(req, None);
@@ -525,6 +528,7 @@ impl KvRpcTransport {
                 group_id,
                 forwarded: false,
                 precondition: Some(precondition),
+                owner_fence: None,
             },
         );
         builder.finish(request, None);

@@ -31,6 +31,7 @@
 //! (`KvClientRpcForwarder`) lives in `crowdb-kv` itself (not
 //! `crowdb-kv-client`) to avoid a crate cycle.
 
+mod owner_fence;
 mod response_correlation;
 mod watch;
 
@@ -716,8 +717,17 @@ impl KvRpcService {
                     condition.expected_revision(),
                 )
             });
-            let resp = if let Some((precondition_key, expected_revision)) = precondition {
-                if client_id == 0 || !items.iter().any(|item| item.key == precondition_key) {
+            let resp = if let Some(response) = owner_fence::write(&store, &fb_req, &items).await {
+                response
+            } else if let Some((precondition_key, expected_revision)) = precondition {
+                if client_id == 0
+                    || !items.iter().any(|item| item.key == precondition_key)
+                    || items.iter().any(|item| {
+                        item.key
+                            .starts_with(crate::cluster::group_owner_fence::OWNER_PREFIX)
+                            && item.key != precondition_key
+                    })
+                {
                     crate::rpc::KvResponse::cas_error(
                         crate::rpc::KvErrorCode::KvErrorCasFailed,
                         0,

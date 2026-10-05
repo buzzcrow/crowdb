@@ -1088,6 +1088,11 @@ export async function addDisksBatch(
   );
 }
 
+/** Authoritative disk-group bindings across the cluster. */
+export async function listDiskGroupBindings(): Promise<{ rack_id: number; node_id: number; dg_id: number; store_id: number; group_id: number }[]> {
+  return jsonOrThrow(await fetchWithOptions('/api/hardware/disk-group-bindings', { method: 'GET' }));
+}
+
 /** `GET /api/nodes/:id/disk-groups` — list disk-groups on a node. */
 export async function listNodeDiskGroups(nodeId: number, options?: RequestOptions): Promise<import('./types').DiskGroupEntry[]> {
   return jsonOrThrow(await fetchWithOptions(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups`, { ...options, method: 'GET' }));

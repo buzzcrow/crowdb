@@ -118,6 +118,12 @@ table FBKvBatchItem {
     is_delete:bool;
 }
 
+table FBKvOwnerFence {
+    key:[ubyte];
+    expected_value:[ubyte];
+    record_precondition:FBKvRevisionPrecondition;
+}
+
 table FBKvBatchWriteRequest {
     id:uint64;
     rpc_create_nano:uint64;
@@ -130,6 +136,7 @@ table FBKvBatchWriteRequest {
     group_id:uint64;
     forwarded:bool;
     precondition:FBKvRevisionPrecondition;
+    owner_fence:FBKvOwnerFence;
 }
 
 // Unified mutation + get response (mirrors kv.proto KvResponse).

@@ -56,6 +56,10 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/diskdb/instances", get(diskdb::http_list_diskdb_instances))
             .route("/api/diskdb/usage", get(diskdb::http_diskdb_usage))
             .route("/api/hardware/capacity", get(diskdb::http_hardware_capacity))
+            .route(
+                "/api/hardware/disk-group-bindings",
+                get(diskdb::http_disk_group_bindings),
+            )
             .route("/api/diskdb/scan-status", get(diskdb::http_diskdb_scan_status))
             .route(
                 "/api/diskdb/scan",
@@ -235,6 +239,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/diskdb/instances", get(diskdb::http_list_diskdb_instances))
         .route("/api/diskdb/usage", get(diskdb::http_diskdb_usage))
         .route("/api/hardware/capacity", get(diskdb::http_hardware_capacity))
+        .route(
+            "/api/hardware/disk-group-bindings",
+            get(diskdb::http_disk_group_bindings),
+        )
         .route("/api/diskdb/scan-status", get(diskdb::http_diskdb_scan_status))
         .route("/api/diskdb/scan", post(diskdb::http_diskdb_scan))
         .route("/api/diskdb/recalc", post(diskdb::http_diskdb_recalc))

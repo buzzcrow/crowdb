@@ -914,8 +914,8 @@ test.describe('chunk · capacity · disk-group', () => {
 });
 
 
-// Baseline: 3.1s (2026-10-05)
-test('explicit KV binding is required and initialization creates Group 1', async ({ page, baseURL }) => {
+// Baseline: 3.9s (2026-10-06); includes global recommendation and manual override.
+test('KV binding recommends the least loaded group and initialization creates Group 1', async ({ page, baseURL }) => {
   const api = await apiContext(baseURL!);
   const nodeId = 591;
   try {
@@ -938,19 +938,43 @@ test('explicit KV binding is required and initialization creates Group 1', async
     const dialog = page.getByRole('dialog', { name: 'Add Disk Group' });
     await dialog.getByLabel('Disk Group ID (auto-assigned)').fill('591');
     const submit = dialog.getByRole('button', { name: 'Create Disk Group', exact: true });
-    await expect(submit).toBeDisabled();
+    const binding = dialog.getByRole('combobox', { name: 'KV group', exact: true });
+    await expect(binding).toHaveValue('0/1');
+    await expect(submit).toBeEnabled();
     const missing = await api.post('/api/nodes/591/disk-groups', { data: { id: 591 } });
     expect(missing.status()).toBe(422);
     const empty = await api.get('/api/nodes/591/disk-groups');
     expect(await empty.json()).toEqual([]);
-    await dialog.getByRole('combobox', { name: 'KV group', exact: true }).selectOption('0/1');
-    await expect(submit).toBeEnabled();
     await submit.click();
     await expect(dialog).toBeHidden();
     const created = await api.get('/api/nodes/591/disk-groups');
     expect(await created.json()).toEqual(expect.arrayContaining([expect.objectContaining({ id: 591 })]));
     await aside.getByTestId('tree-node-N-591').getByRole('button', { name: 'Expand', exact: true }).click();
     await expect(aside.getByText('DG-591', { exact: true })).toBeVisible();
+    await addGroup(baseURL!, 0, 2, 1, [nodeId]);
+    await waitForLeader(baseURL!, 0, 2);
+    // A group on another node must contribute to the cluster-wide count.
+    await createNode(baseURL!, { id: 592, rack_id: 591, host: '127.0.0.1' });
+    await apiAddDiskGroup(baseURL!, 592, 592, undefined, { store_id: 0, group_id: 1 });
+    await clickMenuItem(page, aside.getByText('N-591', { exact: true }), /add disk group/i);
+    await expect(binding).toHaveValue('0/2');
+    await expect(binding.locator('option[value="0/1"]')).toHaveText('Store 0 / Group 1 · 2 disk groups');
+    await expect(binding.locator('option[value="0/2"]')).toHaveText('Store 0 / Group 2 · 0 disk groups · Recommended');
+    await binding.selectOption('0/1');
+    await expect(binding).toHaveValue('0/1');
+    await binding.selectOption('0/2');
+    await dialog.getByLabel('Disk Group ID (auto-assigned)').fill('593');
+    await submit.click();
+    await expect(dialog).toBeHidden();
+    const distribution = await api.get('/api/hardware/disk-group-bindings');
+    expect(distribution.ok(), await distribution.text()).toBe(true);
+    expect(await distribution.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ node_id: 591, dg_id: 593, store_id: 0, group_id: 2 }),
+    ]));
+    await clickMenuItem(page, aside.getByText('N-591', { exact: true }), /add disk group/i);
+    await expect(binding).toHaveValue('0/2');
+    await expect(binding.locator('option[value="0/2"]')).toHaveText('Store 0 / Group 2 · 1 disk groups · Recommended');
+    await page.keyboard.press('Escape');
   } finally {
     const reset = await api.post('/internal/reset');
     expect(reset.ok(), await reset.text()).toBe(true);

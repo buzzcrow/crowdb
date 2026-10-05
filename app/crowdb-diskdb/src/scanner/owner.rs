@@ -58,7 +58,7 @@ impl BusyBlockOwnerScanner {
             let Some(dg) = ctx.container.get_disk_group(disk_group_id) else {
                 continue;
             };
-            let mut disks = dg.disks.read().unwrap().clone();
+            let mut disks = dg.disk_snapshot().as_ref().clone();
             disks.sort_unstable_by_key(|disk| (disk.disk_id.high, disk.disk_id.low));
             for disk in disks {
                 let mut zones = disk.zones.load().as_ref().clone();

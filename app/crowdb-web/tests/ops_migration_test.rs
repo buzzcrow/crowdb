@@ -182,15 +182,22 @@ async fn cluster_init_delegates_to_ops_cluster_init() {
     assert_eq!(body["group_id"], 0);
 
     // Missing data topology is rejected before hardware is published.
-    let groups_url = format!("{base}/api/nodes/1/disk-groups");
+    let node_disk_groups_url = format!("{base}/api/nodes/1/disk-groups");
     let response = http
-        .post(&groups_url)
+        .post(&node_disk_groups_url)
         .json(&json!({"id":1}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 422);
-    let groups: serde_json::Value = http.get(&groups_url).send().await.unwrap().json().await.unwrap();
+    let groups: serde_json::Value = http
+        .get(&node_disk_groups_url)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(groups, json!([]));
 
     // Console initialization completes both groups, including on an older
@@ -202,8 +209,15 @@ async fn cluster_init_delegates_to_ops_cluster_init() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 201, "{}", resp.text().await.unwrap());
-    let group_url = format!("{base}/api/stores/0/groups/1");
-    let before: serde_json::Value = http.get(&group_url).send().await.unwrap().json().await.unwrap();
+    let kv_group_url = format!("{base}/api/stores/0/groups/1");
+    let before: serde_json::Value = http
+        .get(&kv_group_url)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(before["replicas"].as_array().unwrap().len(), 1);
     let resp = http
         .post(format!("{base}/api/cluster/init"))
@@ -216,19 +230,33 @@ async fn cluster_init_delegates_to_ops_cluster_init() {
         json!({"id":1,"store_id":0,"group_id":0}),
         json!({"id":1,"store_id":0,"group_id":99}),
     ] {
-        let response = http.post(&groups_url).json(&body).send().await.unwrap();
+        let response = http.post(&node_disk_groups_url).json(&body).send().await.unwrap();
         assert!(!response.status().is_success());
-        let groups: serde_json::Value = http.get(&groups_url).send().await.unwrap().json().await.unwrap();
+        let groups: serde_json::Value = http
+            .get(&node_disk_groups_url)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         assert_eq!(groups, json!([]));
     }
     let response = http
-        .post(&groups_url)
+        .post(&node_disk_groups_url)
         .json(&json!({"id":1,"store_id":0,"group_id":1}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 201, "{}", response.text().await.unwrap());
-    let after: serde_json::Value = http.get(&group_url).send().await.unwrap().json().await.unwrap();
+    let after: serde_json::Value = http
+        .get(&kv_group_url)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(
         before["replicas"][0]["replica_id"],
         after["replicas"][0]["replica_id"]

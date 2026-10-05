@@ -728,7 +728,7 @@ pub(super) fn build_disk_info_offset<'a>(
             zone_size_units: dv.zone_size_units,
             unit_size_bytes: dv.unit_size_bytes,
             zone_count: dv.zone_count,
-            status: hw_status_to_fb(dv.status),
+            status: hw_status_to_fb(disk.effective_status() as i32),
             busy_units: usage.busy_bytes / u64::from(dv.unit_size_bytes).max(1),
             free_units: usage.free_bytes / u64::from(dv.unit_size_bytes).max(1),
             capacity_bytes: usage.capacity_bytes,

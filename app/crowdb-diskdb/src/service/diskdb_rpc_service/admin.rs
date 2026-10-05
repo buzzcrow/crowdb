@@ -480,7 +480,7 @@ impl DiskdbRpcService {
         for dg_id in dg_ids {
             if let Some(n) = self.container.get_disk_group(dg_id) {
                 let owns = {
-                    let disks = n.disks.read().unwrap();
+                    let disks = n.disk_snapshot();
                     disks.iter().any(|d| &d.disk_id == disk_id)
                 };
                 if owns {
@@ -497,7 +497,7 @@ impl DiskdbRpcService {
         for dg_id in dg_ids {
             if let Some(n) = self.container.get_disk_group(dg_id) {
                 let disk_clone = {
-                    let disks = n.disks.read().unwrap();
+                    let disks = n.disk_snapshot();
                     disks.iter().find(|d| &d.disk_id == disk_id).cloned()
                 };
                 if let Some(d) = disk_clone {
@@ -514,7 +514,7 @@ impl DiskdbRpcService {
         for dg_id in dg_ids {
             if let Some(n) = self.container.get_disk_group(dg_id) {
                 let dv_clone = {
-                    let disks = n.disks.read().unwrap();
+                    let disks = n.disk_snapshot();
                     disks
                         .iter()
                         .find(|d| &d.disk_id == disk_id)

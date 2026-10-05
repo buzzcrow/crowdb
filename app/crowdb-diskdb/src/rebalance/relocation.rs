@@ -128,7 +128,7 @@ impl RelocationWorker {
             return Ok((key, existing));
         }
         let owner_chunk = source.owner_chunk.ok_or(RelocationWorkerError::InvalidSource)?;
-        let disks = dg.disks.read().unwrap().clone();
+        let disks = dg.disk_snapshot().as_ref().clone();
         if source_disk == target_disk_id || !disks.iter().any(|disk| disk.disk_id == target_disk_id) {
             return Err(RelocationWorkerError::InvalidTarget);
         }
@@ -213,9 +213,7 @@ impl RelocationWorker {
         }
         let target_disk = target.disk_id.ok_or(RelocationWorkerError::InvalidTarget)?;
         if !target_dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .any(|disk| disk.disk_id == target_disk)
         {
@@ -334,12 +332,8 @@ impl RelocationWorker {
                             .into_iter()
                             .find_map(|disk_group_id| {
                                 let group = ctx.container.get_disk_group(disk_group_id)?;
-                                let owns_source = group
-                                    .disks
-                                    .read()
-                                    .unwrap()
-                                    .iter()
-                                    .any(|disk| disk.disk_id == disk_id);
+                                let owns_source =
+                                    group.disk_snapshot().iter().any(|disk| disk.disk_id == disk_id);
                                 owns_source.then_some(group)
                             })
                     });

@@ -163,8 +163,9 @@ pub struct PxGroup {
     /// restore must first finish bulk Phase 1 recovery and locally relearn the
     /// chosen prefix before it can safely serve reads.
     pub(crate) leader_read_ready: AtomicBool,
-    pub(crate) cas_transient_map: SkipMap<Bytes, CasOwnerToken>,
-    pub(crate) cas_request_nonce: AtomicU64,
+    pub(crate) cas_transient_map: Arc<SkipMap<Bytes, CasOwnerToken>>,
+    pub(crate) owner_admission: Arc<SkipMap<Bytes, Arc<super::group_owner_fence::OwnerAdmission>>>,
+    pub(crate) cas_request_nonce: Arc<AtomicU64>,
     /// Last-known `contiguous_applied` per voting peer, refreshed from
     /// heartbeat replies. Peers never heard from are absent (treated as
     /// `0`), which keeps [`Self::group_safe_slot`] conservative until every
@@ -394,8 +395,9 @@ impl PxGroup {
             pending_leader_handoff: parking_lot::Mutex::new(None),
             proposing_term: AtomicU64::new(0),
             leader_read_ready: AtomicBool::new(true),
-            cas_transient_map: SkipMap::new(),
-            cas_request_nonce: AtomicU64::new(1),
+            cas_transient_map: Arc::new(SkipMap::new()),
+            owner_admission: Arc::new(SkipMap::new()),
+            cas_request_nonce: Arc::new(AtomicU64::new(1)),
             peer_applied: parking_lot::Mutex::new(HashMap::new()),
             group_safe_slot: AtomicU64::new(0),
             peer_durable: parking_lot::Mutex::new(HashMap::new()),

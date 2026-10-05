@@ -318,7 +318,7 @@ impl DiskdbRpcService {
                 Err(AllocError::NoSpace) => {
                     metrics.allocate_errors_total.inc();
                     metrics.allocate_no_space_errors.inc();
-                    let disks = params.dg.disks.read().unwrap();
+                    let disks = params.dg.disk_snapshot();
                     let diagnostics: Vec<_> = disks
                         .iter()
                         .map(|disk| {
@@ -495,7 +495,7 @@ impl DiskdbRpcService {
 
         // Validate all segments belong to the resolved disk-group.
         let group_disk_ids: std::collections::HashSet<DiskId> = {
-            let disks = dg.disks.read().unwrap();
+            let disks = dg.disk_snapshot();
             disks.iter().map(|d| d.disk_id).collect()
         };
         for seg in &segments {

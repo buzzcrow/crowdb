@@ -92,7 +92,7 @@ impl KeepAlive {
         }
 
         let current_disk_ids: Vec<DiskId> = {
-            let disks_guard = dg.disks.read().unwrap();
+            let disks_guard = dg.disk_snapshot();
             disks_guard.iter().map(|d| d.disk_id).collect()
         };
 
@@ -143,7 +143,7 @@ impl KeepAlive {
         outcome: &mut KeepAliveOutcome,
     ) {
         let disk = {
-            let disks_guard = dg.disks.read().unwrap();
+            let disks_guard = dg.disk_snapshot();
             disks_guard.iter().find(|d| d.disk_id == *disk_id).cloned()
         };
         let Some(disk) = disk else { return };
@@ -224,7 +224,7 @@ impl KeepAlive {
         outcome: &mut KeepAliveOutcome,
     ) {
         let disk = {
-            let disks_guard = dg.disks.read().unwrap();
+            let disks_guard = dg.disk_snapshot();
             disks_guard.iter().find(|d| d.disk_id == *disk_id).cloned()
         };
         let Some(disk) = disk else { return };

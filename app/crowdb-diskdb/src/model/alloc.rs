@@ -94,7 +94,7 @@ async fn compact_fallback(
     let scoped_kv = kv.for_group(dg);
     let kv = &scoped_kv;
     let bind = dg.bind();
-    let disks = dg.disks.read().unwrap().clone();
+    let disks = dg.disk_snapshot().as_ref().clone();
     for disk in disks {
         // Collect active zone indices to skip (I4).
         let active_zone_indices: std::collections::HashSet<u32> = {

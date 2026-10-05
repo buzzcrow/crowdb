@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog } from '../Dialog';
 import { Input } from '../ui/Input';
 import { useToast } from '../../contexts/ToastContext';
-import { addDiskGroup, listNodeDiskGroups, listStores } from '../../api';
+import { addDiskGroup, listDiskGroupBindings, listNodeDiskGroups, listStores } from '../../api';
 import { minUnusedId } from './defaults';
 
 export interface AddDiskGroupDialogProps {
@@ -26,12 +26,12 @@ export function AddDiskGroupDialog({
   const [dgId, setDgId] = useState('');
   const [name, setName] = useState('');
   const [binding, setBinding] = useState('');
-  const [groups, setGroups] = useState<{ value: string; label: string }[]>([]);
+  const [groups, setGroups] = useState<{ value: string; label: string; count: number }[]>([]);
+  const [recommended, setRecommended] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [registered, setRegistered] = useState(false);
   const userEditedIdRef = useRef(false);
-  const wasOpenRef = useRef(false);
   const { success } = useToast();
 
   // Fetch fresh DG list when the dialog opens, then compute the next
@@ -39,20 +39,34 @@ export function AddDiskGroupDialog({
   // the polled nodeDiskGroups state is stale. Uses a ref to track user
   // edits so the async fetch doesn't clobber a user-typed value.
   useEffect(() => {
-    if (!isOpen || wasOpenRef.current) {
-      wasOpenRef.current = isOpen;
-      return;
-    }
-    wasOpenRef.current = isOpen;
+    if (!isOpen) return;
     setName('');
     setBinding('');
     setGroups([]);
-    listStores(1).then(stores => {
-      setGroups(stores.flatMap(store => store.groups.filter(group => Number(group.group_id) !== 0).map(group => ({
-        value: String(store.store_id) + '/' + String(group.group_id),
-        label: 'Store ' + store.store_id + ' / Group ' + group.group_id,
-      }))));
-    }).catch(err => setSubmitError('Could not load KV groups: ' + String(err)));
+    setRecommended('');
+    const controller = new AbortController();
+    Promise.all([listStores(1), listDiskGroupBindings()]).then(([stores, bindings]) => {
+      if (controller.signal.aborted) return;
+      const counts = new Map<string, number>();
+      for (const entry of bindings) {
+        const key = `${entry.store_id}/${entry.group_id}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      const choices = [...stores].sort((a, b) => Number(a.store_id) - Number(b.store_id)).flatMap(store =>
+        [...store.groups].filter(group => Number(group.group_id) !== 0)
+          .sort((a, b) => Number(a.group_id) - Number(b.group_id)).map(group => ({
+            value: `${store.store_id}/${group.group_id}`,
+            label: `Store ${store.store_id} / Group ${group.group_id}`,
+            count: counts.get(`${store.store_id}/${group.group_id}`) ?? 0,
+          })));
+      const best = choices.reduce<typeof choices[number] | undefined>((best, group) =>
+        !best || group.count < best.count ? group : best, undefined);
+      setGroups(choices);
+      setRecommended(best?.value ?? '');
+      setBinding(best?.value ?? '');
+    }).catch(err => {
+      if (!controller.signal.aborted) setSubmitError('Could not load KV group distribution: ' + String(err));
+    });
 
     setSubmitError('');
     setRegistered(false);
@@ -60,13 +74,16 @@ export function AddDiskGroupDialog({
     setDgId('');
     listNodeDiskGroups(nodeId)
       .then((dgs) => {
+        if (controller.signal.aborted) return;
         const ids = dgs.map((dg) => dg.id);
         if (!userEditedIdRef.current) setDgId(minUnusedId([...existingDgIds, ...ids], 1));
       })
       .catch(() => {
+        if (controller.signal.aborted) return;
         if (!userEditedIdRef.current) setDgId(minUnusedId(existingDgIds, 1));
       });
-  }, [isOpen, nodeId, existingDgIds]);
+    return () => controller.abort();
+  }, [isOpen, nodeId]);
 
   const defaultDgId = useMemo(() => minUnusedId(existingDgIds, 1), [existingDgIds]);
 
@@ -140,9 +157,9 @@ export function AddDiskGroupDialog({
             onChange={event => setBinding(event.target.value)}
             className="tw-mt-1 tw-block tw-w-full tw-rounded tw-border tw-border-border tw-bg-panel tw-p-2">
             <option value="">Select a KV group</option>
-            {groups.map(group => <option key={group.value} value={group.value}>{group.label}</option>)}
+            {groups.map(group => <option key={group.value} value={group.value}>{group.label} · {group.count} disk groups{group.value === recommended ? ' · Recommended' : ''}</option>)}
           </select>
-          <span className="tw-mt-1 tw-block tw-text-muted">Required and fixed at creation. Create an ordinary KV group first if none are available.</span>
+          <span className="tw-mt-1 tw-block tw-text-muted">Automatically recommends the KV group with the fewest bound disk groups across the cluster. You can change it before creation. Create an ordinary KV group first if none are available.</span>
         </label>
         <Input
           label="Name (optional)"

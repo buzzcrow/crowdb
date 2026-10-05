@@ -394,9 +394,7 @@ async fn scan_ghosts_detects_and_corrects_ghost_busy() {
     //    (the scanner skips active zones) and a high bit index that
     //    allocation would never touch (allocation fills from low bits).
     let disk = dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .find(|d| d.disk_id == segments[0].disk_id.unwrap_or_default())
         .cloned()
@@ -499,7 +497,7 @@ async fn scan_integrity_detects_corrupt_snapshot() {
 
     // Pick the first disk + a non-active zone (the scanner skips the
     // active set).
-    let disk = dg.disks.read().unwrap()[0].clone();
+    let disk = dg.disk_snapshot()[0].clone();
     let disk_id = disk.disk_id;
     let zone_idx: u32 = ZONE_COUNT - 1;
 

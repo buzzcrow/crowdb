@@ -374,21 +374,25 @@ disk-group's bound data group.
   `diskdb-ownership` monitor assigns bound disk-groups to live, fencing-capable
   DiskDB instances. Missing or dead owners are replaced; count balancing moves
   at most one healthy group per tick. Updates compare the owner record revision.
-- **Binding map** (`/hw/dg_bind/...`) — the console requires an explicit
-  ordinary KV group at creation and publishes the binding, hardware record,
+- **Binding map** (`/hw/dg_bind/...`) — the console recommends the ordinary KV group with the fewest
+  bound DiskGroups cluster-wide and allows an explicit override at creation and publishes the binding, hardware record,
   and node membership atomically. Missing selections, Group 0, and unknown
   groups are rejected. Existing bindings are fixed; adding KV groups does not
   migrate DiskGroups. The monitor skips unbound groups without repairing them.
 - **Ownership fence** — before loading a group's allocation state, the target
   claims `/diskdb/ownership-fence/<rack>/<node>/<dg>` in its bound data group,
-  using the Group 0 owner revision as generation. Every metadata mutation
-  checks and advances this fence in the same conditional batch as its writes.
-  Background tasks retain the generation of the exact group object they use;
-  stale work cannot write after a newer generation claims the fence. This adds
-  data-group reads and CAS contention per mutation; bounded contention retries
-  return a busy error when exhausted. Unknown write outcomes are not retried.
-  All participating DiskDB servers must enforce fencing before automatic
-  handover is enabled; an unfenced binary must not rejoin.
+  using the Group 0 owner revision as generation. Metadata requests carry the
+  expected owner identity; the KV leader validates its applied fence locally
+  and admits concurrent writes without changing that fence. Business-record
+  revision CAS remains independent. Only an ownership CAS closes admission,
+  drains previously admitted writes through apply, and persists the new fence.
+  Admission survives request cancellation and topology snapshot replacement;
+  unknown outcomes disable readiness until the leader recovery barrier resolves
+  prior slots. Background tasks retain their exact group's generation, so stale
+  work cannot write after a newer generation claims the fence. Ordinary writes
+  cannot mutate the fence namespace. All participating KV and DiskDB servers
+  must support owner fencing before automatic handover is enabled; older KV
+  servers reject the versioned owner request rather than silently bypassing it.
 - **Service registry** (`/srv/<service>/<instance_id>`) — written by
   each service instance on heartbeat (diskdb, kv-server); used by the
   console and other components for discovery.

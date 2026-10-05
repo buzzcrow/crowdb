@@ -26,6 +26,7 @@ pub type Bind = (u64, u64);
 
 #[derive(Default)]
 struct DiskMembership {
+    disks: Arc<Vec<Arc<DdbDisk>>>,
     by_id: HashMap<DiskId, Arc<DdbDisk>>,
     allocating: AllocateDiskContext,
 }
@@ -64,7 +65,7 @@ pub struct DdbDiskGroup {
     status: AtomicI32,
     /// `(store_id, group_id)` for the bound paxos data group.
     bind: ArcSwap<Bind>,
-    pub disks: RwLock<Vec<Arc<DdbDisk>>>,
+    disks: RwLock<Vec<Arc<DdbDisk>>>,
     /// Coherent RCU snapshot of disk lookup and allocation routes.
     membership: ArcSwap<DiskMembership>,
     /// Round-robin cursor over the snapshot's allocatable disks.
@@ -260,8 +261,17 @@ impl DdbDiskGroup {
             .map(|disk| (disk.disk_id, Arc::clone(disk)))
             .collect();
         let allocating = disks.iter().filter(|d| d.allocatable()).cloned().collect();
-        self.membership
-            .store(Arc::new(DiskMembership { by_id, allocating }));
+        self.membership.store(Arc::new(DiskMembership {
+            disks: Arc::new(disks.clone()),
+            by_id,
+            allocating,
+        }));
+    }
+
+    /// Retain the published disk list without holding the membership writer lock.
+    #[must_use]
+    pub fn disk_snapshot(&self) -> Arc<Vec<Arc<DdbDisk>>> {
+        Arc::clone(&self.membership.load().disks)
     }
 
     /// Generate the next monotonic allocation incarnation.
@@ -531,8 +541,8 @@ impl DdbDiskGroup {
     /// capacity still counts in the total.
     #[must_use]
     pub fn aggregate_usage(&self) -> DiskGroupUsage {
-        let disks_guard = self.disks.read().unwrap();
         let membership = self.membership.load();
+        let disks_guard = &membership.disks;
         let mut capacity_bytes = 0u64;
         let mut busy_bytes = 0u64;
         let mut allocatable_capacity_bytes = 0u64;

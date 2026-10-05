@@ -275,8 +275,8 @@ async fn main() {
 
     // Service-registry keep-alive: register this chunkdb instance under
     // `/srv/chunkdb/<instance_id>` and heartbeat periodically. The
-    // crowdb-kv-server group-0 leader's `BindingMonitor` reads these
-    // entries to compute the chunkdb range binding table.
+    // fixed service-slot ownership map is bootstrapped separately; registry
+    // liveness does not automatically reassign chunk slots.
     let keepalive_handle = spawn_chunkdb_keepalive(
         svc_keepalive,
         config.server.instance_id.as_deref(),

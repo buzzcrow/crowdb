@@ -150,9 +150,7 @@ impl RebalancePlannerTask {
 
     async fn find_source(&self, ctx: &BgCtx, dg: &Arc<DdbDiskGroup>, source_disk: DiskId) -> Option<Segment> {
         let disk = dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|disk| disk.disk_id == source_disk)
             .cloned()?;
@@ -216,9 +214,7 @@ impl BackgroundTask for RebalancePlannerTask {
 
 fn select_imbalanced_pair(dg: &DdbDiskGroup, threshold: u32) -> Option<(DiskId, DiskId)> {
     let allocatable: HashSet<_> = dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .filter(|disk| disk.allocatable())
         .map(|disk| disk.disk_id)

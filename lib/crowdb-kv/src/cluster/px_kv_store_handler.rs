@@ -36,6 +36,20 @@ async fn write_and_respond(
     request_id: u64,
     request_create_ms: u64,
 ) -> crate::rpc::KvResponse {
+    if mutations.iter().any(|mutation| {
+        let key = match mutation {
+            KvGroupMutation::Put { key, .. } | KvGroupMutation::Delete { key } => key,
+        };
+        key.starts_with(super::group_owner_fence::OWNER_PREFIX)
+    }) {
+        return crate::rpc::KvResponse::cas_error(
+            crate::rpc::KvErrorCode::KvErrorCasFailed,
+            0,
+            "DiskGroup ownership changes require a conditional write",
+            request_id,
+            request_create_ms,
+        );
+    }
     let Some(operations) = operations else {
         return missing_group_response(request_id, request_create_ms);
     };

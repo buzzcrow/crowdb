@@ -588,7 +588,7 @@ async fn run_zone_load(
             crowdb_protocol::common::DiskId,
             crowdb_protocol::diskdb::rpc::DiskValue,
         )> = {
-            let disks_guard = dg.disks.read().unwrap();
+            let disks_guard = dg.disk_snapshot();
             disks_guard
                 .iter()
                 .map(|d| (d.disk_id, d.disk_value.clone()))

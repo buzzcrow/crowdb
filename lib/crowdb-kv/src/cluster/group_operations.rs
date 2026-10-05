@@ -251,6 +251,30 @@ impl KvGroupOperations {
         self.finish_write(result, true).await
     }
 
+    /// Admit an owner-fenced write and wait through local apply.
+    pub(crate) async fn owner_write_encoded(
+        &self,
+        payload: Vec<u8>,
+        key: Bytes,
+        expected_value: Bytes,
+        record_condition: Option<(Bytes, u64)>,
+        identity: KvRequestIdentity,
+    ) -> Result<KvGroupWrite, KvGroupOperationError> {
+        self.ensure_tenure()?;
+        let result = self
+            .group
+            .propose_owner_write(
+                payload,
+                key,
+                expected_value,
+                record_condition,
+                identity.client_id,
+                identity.sequence,
+            )
+            .await;
+        self.finish_write(result, true).await
+    }
+
     /// Scan one ordered key interval under a stable read cutoff.
     ///
     /// # Errors

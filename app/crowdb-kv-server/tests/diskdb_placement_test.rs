@@ -142,7 +142,7 @@ async fn assigns_balances_and_replaces_dead_owners_without_changing_bindings() {
     let mut counts = [0; 2];
     for dg in 1..=4 {
         let owner: OwnerMapValue = get_json(&control, &owner_key(dg)).await;
-        counts[owner.instance_id as usize - 1] += 1;
+        counts[usize::try_from(owner.instance_id).unwrap() - 1] += 1;
     }
     assert_eq!(counts, [2, 2]);
     instance(&control, 1, 1).await;

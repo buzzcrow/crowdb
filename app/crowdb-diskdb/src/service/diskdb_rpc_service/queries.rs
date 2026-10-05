@@ -57,7 +57,7 @@ impl DiskdbRpcService {
                 return;
             };
             let disk = {
-                let disks = dg.disks.read().unwrap();
+                let disks = dg.disk_snapshot();
                 disks.iter().find(|d| d.disk_id == did).cloned()
             };
             let Some(disk) = disk else {
@@ -121,11 +121,11 @@ impl DiskdbRpcService {
                 if let Some(dg) = self.container.get_disk_group(dg_id) {
                     let usage = dg.aggregate_usage();
                     let disk_ids: Vec<DiskId> = {
-                        let disks = dg.disks.read().unwrap();
+                        let disks = dg.disk_snapshot();
                         disks.iter().map(|d| d.disk_id).collect()
                     };
                     let disks: Vec<Arc<DdbDisk>> = {
-                        let disks = dg.disks.read().unwrap();
+                        let disks = dg.disk_snapshot();
                         disks.iter().cloned().collect()
                     };
                     out.push((dg, usage, disk_ids, disks));
@@ -181,7 +181,7 @@ impl DiskdbRpcService {
         };
         let usage = dg.aggregate_usage();
         let disk_ids: Vec<DiskId> = {
-            let disks = dg.disks.read().unwrap();
+            let disks = dg.disk_snapshot();
             disks.iter().map(|d| d.disk_id).collect()
         };
         let ctrl = build_get_disk_group_info_response(
@@ -254,7 +254,7 @@ impl DiskdbRpcService {
             low: fb_disk_id.low(),
         };
         let disk = {
-            let disks = dg.disks.read().unwrap();
+            let disks = dg.disk_snapshot();
             disks.iter().find(|d| d.disk_id == disk_id).cloned()
         };
         let Some(disk) = disk else {

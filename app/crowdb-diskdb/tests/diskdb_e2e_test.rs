@@ -207,7 +207,7 @@ async fn diskdb_e2e_allocate_free() {
         .expect("disk-group should be in container");
     let (bind, disk_count, zone_count) = {
         let bind = dg.bind();
-        let disks = dg.disks.read().unwrap();
+        let disks = dg.disk_snapshot();
         assert_eq!(disks.len(), 3, "expected 3 disks");
         let zone_count = {
             let zones = disks[0].zones.load();
@@ -588,7 +588,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
             "{label}: capacity mismatch"
         );
         // Per-disk usage should sum to the aggregate.
-        let disks = dg.disks.read().unwrap();
+        let disks = dg.disk_snapshot();
         let mut disk_busy_sum = 0u64;
         let mut disk_free_sum = 0u64;
         for disk in disks.iter() {
@@ -839,9 +839,7 @@ async fn diskdb_e2e_compact_zone_rpc() {
     let zone_index = segments[0].zone_index;
     {
         let disk = dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|d| d.disk_id == disk_id)
             .cloned()
@@ -868,9 +866,7 @@ async fn diskdb_e2e_compact_zone_rpc() {
     let disk = {
         let dg = container.get_disk_group(DG_ID).expect("disk-group exists");
         let disk = dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|d| d.disk_id == disk_id)
             .cloned()
@@ -918,9 +914,7 @@ async fn diskdb_e2e_compact_zone_rpc() {
     // 6. Verify bitmap is cleared only when a positive cutoff was available.
     let compacted = {
         let disk = dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|d| d.disk_id == disk_id)
             .cloned()
@@ -1022,7 +1016,7 @@ async fn diskdb_e2e_suspect_rediscovery() {
     // Pick one disk to remove + rediscover.
     let target_disk_id = make_disk_id(0, 1);
     let target_disk = {
-        let disks = dg.disks.read().unwrap();
+        let disks = dg.disk_snapshot();
         disks
             .iter()
             .find(|d| d.disk_id == target_disk_id)

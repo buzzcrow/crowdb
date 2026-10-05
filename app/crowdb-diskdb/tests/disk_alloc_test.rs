@@ -266,9 +266,7 @@ fn dg_allocate_block_round_robins_across_disks() {
 fn dg_load_aware_allocation_prefers_the_disk_with_more_free_space() {
     let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
     let first = dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .find(|disk| disk.disk_id == disk_id(1))
         .unwrap()
@@ -281,7 +279,7 @@ fn dg_load_aware_allocation_prefers_the_disk_with_more_free_space() {
 #[test]
 fn dg_can_disable_load_aware_allocation_for_round_robin_fallback() {
     let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
-    let first = dg.disks.read().unwrap()[0].clone();
+    let first = dg.disk_snapshot()[0].clone();
     first.disk_allocate(64, CAS_RETRY, ZONE_ROTATE).unwrap();
     dg.set_allocation_policy(false, LoadAwareWeight::FreeBytes);
     let (selected, _, _) = dg.allocate_block(1, &[], CAS_RETRY, ZONE_ROTATE).unwrap();
@@ -391,7 +389,7 @@ fn node_rebuild_allocating_disks_on_status_change() {
     // Transition disk 1 to Missing — rebuild_allocating_disks should
     // remove it from the RCU context.
     {
-        let all_disks = dg.disks.read().unwrap();
+        let all_disks = dg.disk_snapshot();
         let target = all_disks.iter().find(|d| d.disk_id == disk_id(1)).unwrap();
         target.set_effective_status(HwStatus::Missing);
     }
@@ -439,4 +437,18 @@ fn disk_membership_and_allocation_routes_publish_together() {
     }
     finished.store(true, Ordering::Release);
     reader.join().expect("membership reader");
+}
+
+#[test]
+fn disk_snapshot_survives_membership_changes() {
+    let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
+    let retained = dg.disk_snapshot();
+    let removed = dg.get_disk(disk_id(2)).expect("disk 2");
+    dg.remove_disk_from_memory(&disk_id(2));
+    assert_eq!(retained.len(), 2);
+    assert_eq!(dg.disk_snapshot().len(), 1);
+    assert!(dg.get_disk(disk_id(2)).is_none());
+    dg.add_disk(removed);
+    assert_eq!(dg.disk_snapshot().len(), 2);
+    assert_eq!(retained.len(), 2);
 }

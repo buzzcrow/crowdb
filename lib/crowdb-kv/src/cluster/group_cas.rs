@@ -109,6 +109,16 @@ impl PxGroup {
             return ProposeResult::CasBusy;
         }
 
+        let mut owner_change = self.begin_owner_change(&precondition_key, tenure).await;
+        if owner_change
+            .as_ref()
+            .is_some_and(super::group_owner_fence::OwnerChange::unresolved)
+        {
+            self.leader_read_ready.store(false, Ordering::Release);
+            entry.remove();
+            return ProposeResult::OutcomeUnknown;
+        }
+
         let observed = self
             .local_replica
             .learner
@@ -123,6 +133,9 @@ impl PxGroup {
                 } else if !self.cas_admission_ready(tenure, required_term) {
                     self.cas_not_ready_result()
                 } else {
+                    if let Some(change) = &mut owner_change {
+                        change.begin_proposal();
+                    }
                     let tag = [RequestIdentity { client_id, seq }];
                     if let Some(required_term) = required_term {
                         self.propose_inner_conditional_in_tenure(
@@ -148,25 +161,35 @@ impl PxGroup {
 
         if let ProposeResult::Chosen { slot } = result {
             self.local_replica.await_apply_fence(slot).await;
+            if let Some(change) = &mut owner_change {
+                change.finish_proposal();
+            }
             entry.remove();
             ProposeResult::Chosen { slot }
         } else {
             if matches!(result, ProposeResult::Err(_) | ProposeResult::OutcomeUnknown) {
+                if let Some(change) = &owner_change {
+                    change.mark_unresolved();
+                }
                 self.leader_read_ready.store(false, Ordering::Release);
+            } else if !matches!(result, ProposeResult::NotLeader { .. }) {
+                if let Some(change) = &mut owner_change {
+                    change.finish_proposal();
+                }
             }
             entry.remove();
             result
         }
     }
 
-    fn cas_admission_ready(&self, tenure: u64, required_term: Option<u64>) -> bool {
+    pub(crate) fn cas_admission_ready(&self, tenure: u64, required_term: Option<u64>) -> bool {
         self.leader_read_ready.load(Ordering::Acquire)
             && self.local_replica.role() == PxLocalReplicaRole::Leader
             && self.local_replica.current_term_snapshot() == tenure
             && required_term.map_or(true, |term| term == tenure)
     }
 
-    fn cas_not_ready_result(&self) -> ProposeResult {
+    pub(crate) fn cas_not_ready_result(&self) -> ProposeResult {
         if self.local_replica.role() == PxLocalReplicaRole::Leader {
             ProposeResult::OutcomeUnknown
         } else {

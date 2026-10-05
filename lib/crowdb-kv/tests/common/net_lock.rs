@@ -11,25 +11,19 @@
 //! load, so [`lock`] provides a mutex that tests can hold for their entire
 //! duration to prevent timing-induced failures.
 
-use std::sync::{
-    atomic::{AtomicU16, Ordering},
-    OnceLock,
-};
+use std::sync::OnceLock;
 
 use tokio::sync::Mutex;
 
-/// Global counter — incremented per allocation so every call gets a
-/// unique port. Starts well above the ephemeral range to avoid clashes
-/// with OS-assigned `:0` ports.
-static PORT_COUNTER: AtomicU16 = AtomicU16::new(20_000);
-
 static NET_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-/// Allocate a unique port for a test node. Each call returns the next
-/// available port, guaranteeing no two nodes (even across parallel tests)
-/// share the same placeholder port.
+/// Reserve a port through the shared process namespace so different test
+/// binaries cannot reuse each other's live or deliberately closed ports.
+///
+/// # Panics
+/// Panics when the shared port allocator cannot reserve a port.
 pub fn unique_port() -> u16 {
-    PORT_COUNTER.fetch_add(1, Ordering::Relaxed)
+    crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
 }
 
 /// Acquire the global network test lock. Hold the guard for the duration of
