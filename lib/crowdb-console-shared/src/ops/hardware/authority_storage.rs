@@ -6,7 +6,7 @@
 use crowdb_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskValue};
-use crowdb_protocol::key::{DiskGroupKey, DiskKey, NodeKey, RackKey, TextKey};
+use crowdb_protocol::key::{BindMapKey, DiskGroupKey, DiskKey, NodeKey, RackKey, TextKey};
 use crowdb_protocol::DiskIdExt;
 
 use crate::config::{DiskEntry, DiskGroupEntry};
@@ -114,6 +114,20 @@ pub async fn add_disk_group_to_group0(
     dg_id: u64,
     name: &str,
 ) -> Result<DiskGroupEntry> {
+    add_disk_group_bound_to_group0(ctx, node_id, dg_id, name, None).await
+}
+
+/// Publish hardware and an explicitly selected binding atomically.
+///
+/// # Errors
+/// Returns missing topology, conflicting bindings, or authority write errors.
+pub async fn add_disk_group_bound_to_group0(
+    ctx: &OpContext,
+    node_id: u64,
+    dg_id: u64,
+    name: &str,
+    binding: Option<crowdb_protocol::common::BindMapValue>,
+) -> Result<DiskGroupEntry> {
     authority::ready(ctx).await?;
     let rack_id = node_location(&ctx.sysmd().list_nodes().await?, node_id)?;
     let entry = DiskGroupEntry {
@@ -129,6 +143,18 @@ pub async fn add_disk_group_to_group0(
         disk_group_id: dg_id,
     }
     .to_path();
+    let bind_path = BindMapKey {
+        rack_id,
+        node_id,
+        disk_group_id: dg_id,
+    }
+    .to_path();
+    if let Some(binding) = &binding {
+        let groups = ctx.sysmd().list_groups_in_store(binding.store_id).await?;
+        if binding.group_id == 0 || !groups.iter().any(|g| g.group_id == binding.group_id) {
+            return Err(Error::Config("Select an existing ordinary KV group".into()));
+        }
+    }
     for attempt in 0..RETRIES {
         let (rack_path, rack, revision) = rack_revision(ctx, rack_id).await?;
         let (mut node, _) = required::<NodeValue>(ctx, &node_path, "node", node_id.to_string()).await?;
@@ -139,6 +165,16 @@ pub async fn add_disk_group_to_group0(
                     kind: "disk_group".into(),
                     id: dg_id.to_string(),
                 });
+            }
+            if let Some(requested) = &binding {
+                let current = optional::<crowdb_protocol::common::BindMapValue>(ctx, &bind_path).await?;
+                if !current
+                    .is_some_and(|v| v.store_id == requested.store_id && v.group_id == requested.group_id)
+                {
+                    return Err(Error::Config(
+                        "Existing DiskGroup binding differs or is absent".into(),
+                    ));
+                }
             }
             return Ok(entry);
         }
@@ -156,15 +192,11 @@ pub async fn add_disk_group_to_group0(
             disk_ids: Vec::new(),
             name: name.into(),
         };
-        if fenced(
-            ctx,
-            &rack_path,
-            &rack,
-            revision,
-            vec![put(&node_path, &node)?, put(&group_path, &group)?],
-        )
-        .await?
-        {
+        let mut writes = vec![put(&node_path, &node)?, put(&group_path, &group)?];
+        if let Some(binding) = &binding {
+            writes.push(put(&bind_path, binding)?);
+        }
+        if fenced(ctx, &rack_path, &rack, revision, writes).await? {
             return Ok(entry);
         }
         pause(attempt).await;

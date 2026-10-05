@@ -35,8 +35,8 @@ function renderHeader(overrides: Partial<{
 
 describe('Header', () => {
   it('renders the brand title', () => {
-    const { getByText } = renderHeader();
-    expect(getByText(/CrowDB Storage Console/)).toBeTruthy();
+    const { getByLabelText } = renderHeader();
+    expect(getByLabelText('CrowDB Console')).toHaveTextContent('CrowDBConsole');
   });
 
   it('renders the cluster health pill', () => {

@@ -316,6 +316,7 @@ async fn main() {
                 Arc::new(ChunkdbRangeMonitorDriver::new()),
                 Arc::new(ChunkKvRangeMonitorDriver::new()),
                 Arc::new(DiskdbOwnershipMonitorDriver::new()),
+                Arc::new(crowdb_kv_server::background::domain_monitor::DiskdbPlacementMonitorDriver),
             ]),
             std::time::Duration::from_secs(args.binding_monitor_interval),
         ))

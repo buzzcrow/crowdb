@@ -174,6 +174,7 @@ impl RelocationWorker {
             last_error: String::new(),
         };
         ctx.kv
+            .for_group(dg)
             .put_relocation_journal(dg.bind(), &key, &value)
             .await
             .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))?;
@@ -255,6 +256,7 @@ impl RelocationWorker {
             last_error: String::new(),
         };
         ctx.kv
+            .for_group(target_dg)
             .put_relocation_journal(target_dg.bind(), &key, &value)
             .await
             .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))?;
@@ -312,12 +314,7 @@ impl RelocationWorker {
                             return Ok(());
                         }
                         RelocationHandoffDisposition::Rejected => {
-                            value.last_error = "owner rejected relocation handoff".into();
-                            value.updated_at_ms = now_ms();
-                            ctx.kv
-                                .put_relocation_journal(dg.bind(), key, value)
-                                .await
-                                .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))?;
+                            self.persist_rejection(ctx, dg, key, value).await?;
                             return Err(RelocationWorkerError::Rejected);
                         }
                     }
@@ -371,6 +368,23 @@ impl RelocationWorker {
         }
     }
 
+    async fn persist_rejection(
+        &self,
+        ctx: &BgCtx,
+        dg: &Arc<DdbDiskGroup>,
+        key: &RelocationJournalKey,
+        value: &mut RelocationJournalValue,
+    ) -> Result<(), RelocationWorkerError> {
+        value.last_error = "owner rejected relocation handoff".into();
+        value.updated_at_ms = now_ms();
+        ctx.kv
+            .for_group(dg)
+            .put_relocation_journal(dg.bind(), key, value)
+            .await
+            .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))?;
+        Ok(())
+    }
+
     async fn checkpoint(
         &self,
         ctx: &BgCtx,
@@ -383,6 +397,7 @@ impl RelocationWorker {
         value.updated_at_ms = now_ms();
         value.last_error.clear();
         ctx.kv
+            .for_group(dg)
             .put_relocation_journal(dg.bind(), key, value)
             .await
             .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))

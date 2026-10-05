@@ -230,7 +230,7 @@ async fn main() {
     ));
     let monitor_request = EnsureDomainMonitorRequest {
         descriptor: DomainMonitorDescriptor {
-            domain: "diskdb".into(),
+            domain: "diskdb-ownership".into(),
             service_registry_name: "diskdb".into(),
             driver_version: 1,
             capability_version: 1,
@@ -240,8 +240,8 @@ async fn main() {
             lease_duration_ms: 20_000,
             max_clock_skew_ms: 1_000,
             self_fence_margin_ms: 1_000,
-            failure_policy: DomainFailurePolicy::OperatorOnly,
-            balance_policy: "operator-only-v1".into(),
+            failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
+            balance_policy: "disk-group-count-v1".into(),
             chunk_kv_range_balance: None,
         },
     };
@@ -288,9 +288,12 @@ async fn main() {
         runner.start();
         info!(interval_secs = args.metrics_interval, "metrics runner started");
     }
-    let dg_kv =
-        Arc::new(DdbKvClient::from_shared(Arc::clone(&kv_client)).with_metrics(Arc::new(metrics.clone())));
-    let dg_kv_sync = DdbKvClient::from_shared(Arc::clone(&kv_client)).with_metrics(Arc::new(metrics.clone()));
+    let dg_kv = Arc::new(
+        DdbKvClient::from_shared(Arc::clone(&kv_client))
+            .with_metrics(Arc::new(metrics.clone()))
+            .with_ownership_fencing(),
+    );
+    let dg_kv_sync = (*dg_kv).clone();
 
     // Phase = Syncing. Run initial keep-alive tick (blocking) to
     // populate the in-memory disk-group/disk/zone state.
@@ -309,6 +312,7 @@ async fn main() {
         None
     };
     let keepalive = KeepAlive::new(hw, svc, container.clone(), keepalive_cfg)
+        .with_ownership_fencing()
         .with_cas_retry_metric(Arc::clone(&metrics.allocate_retry_cas_bit))
         .with_config_handle(Arc::clone(&config))
         .with_rpc_endpoint(config.load().server.rpc_listen_addr.clone())
@@ -572,11 +576,12 @@ async fn run_zone_load(
     metrics: &DiskdbMetrics,
 ) {
     info!("running R73 zone load (background)");
-    let zone_loader = ZoneLoader::new(kv, config.persistence.load_concurrency);
+
     for dg_id in container.disk_group_ids() {
         let Some(dg) = container.get_disk_group(dg_id) else {
             continue;
         };
+        let zone_loader = ZoneLoader::new(Arc::new(kv.for_group(&dg)), config.persistence.load_concurrency);
         let bind = dg.bind();
         let group_status = dg.status();
         let disks: Vec<(
@@ -608,6 +613,7 @@ async fn run_zone_load(
                 return;
             }
         };
+        loaded.set_ownership_fence(dg.ownership_fence());
         loaded.set_status(group_status);
         loaded.rebuild_allocating_disks();
         if !container.replace_disk_group_if_current(&dg, bind, &loaded) {

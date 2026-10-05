@@ -181,7 +181,7 @@ impl ScannerTask {
             for (disk_id, zones) in disks_snapshot {
                 let active_zones = collect_active_zones(&dg, disk_id);
                 scan_one_disk(
-                    &ctx.kv,
+                    &Arc::new(ctx.kv.for_group(&dg)),
                     bind,
                     disk_id,
                     &zones,

@@ -147,3 +147,7 @@ path = "tests/free_batch_test.rs"
 [[test]]
 name = "relocation_journal_test"
 path = "tests/relocation_journal_test.rs"
+
+[[test]]
+name = "ownership_fence_test"
+path = "tests/ownership_fence_test.rs"

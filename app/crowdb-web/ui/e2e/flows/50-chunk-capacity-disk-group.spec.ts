@@ -230,6 +230,7 @@ test.describe('chunk · capacity · disk-group', () => {
       // Override with a specific ID and submit.
       await dgIdInput.fill(String(dg520));
       await dgDialog.getByLabel('Name (optional)').fill('test-dg');
+      await dgDialog.getByRole('combobox', { name: 'KV group', exact: true }).selectOption('0/1');
       const createDgBtn = dgDialog.getByRole('button', { name: /create disk group/i });
       await createDgBtn.evaluate((el) => (el as HTMLElement).click());
 
@@ -910,4 +911,49 @@ test.describe('chunk · capacity · disk-group', () => {
   });
 
 
+});
+
+
+// Baseline: 3.1s (2026-10-05)
+test('explicit KV binding is required and initialization creates Group 1', async ({ page, baseURL }) => {
+  const api = await apiContext(baseURL!);
+  const nodeId = 591;
+  try {
+    const reset = await api.post('/internal/reset');
+    expect(reset.ok(), await reset.text()).toBe(true);
+    await createRack(baseURL!, { id: 591, name: 'binding-test' });
+    await createNode(baseURL!, { id: nodeId, rack_id: 591, host: '127.0.0.1' });
+    await deployNodeServer(baseURL!, nodeId, freePort(), freePort());
+    await page.goto('/?domain=KV');
+    await page.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
+    const init = page.getByRole('dialog', { name: 'Initialize Cluster' });
+    await expect(init).toContainText('data Group 1');
+    await init.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
+    await expect(init).toBeHidden({ timeout: 10_000 });
+    const group = await api.get('/api/stores/0/groups/1');
+    expect(group.ok(), await group.text()).toBe(true);
+    await page.getByTestId('domain-capacity').click();
+    const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+    await clickMenuItem(page, aside.getByText('N-591', { exact: true }), /add disk group/i);
+    const dialog = page.getByRole('dialog', { name: 'Add Disk Group' });
+    await dialog.getByLabel('Disk Group ID (auto-assigned)').fill('591');
+    const submit = dialog.getByRole('button', { name: 'Create Disk Group', exact: true });
+    await expect(submit).toBeDisabled();
+    const missing = await api.post('/api/nodes/591/disk-groups', { data: { id: 591 } });
+    expect(missing.status()).toBe(422);
+    const empty = await api.get('/api/nodes/591/disk-groups');
+    expect(await empty.json()).toEqual([]);
+    await dialog.getByRole('combobox', { name: 'KV group', exact: true }).selectOption('0/1');
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(dialog).toBeHidden();
+    const created = await api.get('/api/nodes/591/disk-groups');
+    expect(await created.json()).toEqual(expect.arrayContaining([expect.objectContaining({ id: 591 })]));
+    await aside.getByTestId('tree-node-N-591').getByRole('button', { name: 'Expand', exact: true }).click();
+    await expect(aside.getByText('DG-591', { exact: true })).toBeVisible();
+  } finally {
+    const reset = await api.post('/internal/reset');
+    expect(reset.ok(), await reset.text()).toBe(true);
+    await api.dispose();
+  }
 });

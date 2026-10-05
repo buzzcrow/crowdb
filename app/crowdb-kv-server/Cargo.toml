@@ -109,3 +109,7 @@ path = "tests/startup_test.rs"
 [[test]]
 name = "system_init_test"
 path = "tests/system_init_test.rs"
+
+[[test]]
+name = "diskdb_placement_test"
+path = "tests/diskdb_placement_test.rs"

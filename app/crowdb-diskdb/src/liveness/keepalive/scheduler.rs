@@ -51,6 +51,7 @@ pub struct KeepAliveOutcome {
 }
 
 struct ObservedDiskGroup {
+    fence: Option<Arc<crate::ddb_kv_client::OwnershipFence>>,
     owner: crowdb_protocol::DiskdbOwnerEntry,
     bind: (u64, u64),
     node_status: HwStatus,
@@ -68,6 +69,7 @@ struct RecoveryScanHandle {
 
 /// Background sync loop: keep-alive + hardware read + disk-add init.
 pub struct KeepAlive {
+    ownership_fencing: bool,
     hw: HardwareClient,
     svc: ServiceRegistryClient,
     container: Arc<DdbDiskGroupContainer>,
@@ -117,6 +119,12 @@ pub struct KeepAlive {
 }
 
 impl KeepAlive {
+    #[must_use]
+    pub fn with_ownership_fencing(mut self) -> Self {
+        self.ownership_fencing = true;
+        self
+    }
+
     pub fn new(
         hw: HardwareClient,
         svc: ServiceRegistryClient,
@@ -125,6 +133,7 @@ impl KeepAlive {
     ) -> Self {
         let status_machine = HwStateMachine::new(config.temp_failure_timeout_secs);
         Self {
+            ownership_fencing: false,
             hw,
             svc,
             container,

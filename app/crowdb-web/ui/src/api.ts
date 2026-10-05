@@ -564,6 +564,7 @@ export async function removeStore(storeId: string, options?: RequestOptions): Pr
  */
 export interface InitClusterRequest {
   nodes: number[];
+  create_data_group?: boolean;
 }
 
 /**
@@ -574,7 +575,7 @@ export async function initCluster(
   req: InitClusterRequest,
   options?: RequestOptions
 ): Promise<unknown> {
-  const body = JSON.stringify({ nodes: req.nodes });
+  const body = JSON.stringify(req);
   const url = `/api/cluster/init`;
   return jsonOrThrow(
     await fetchWithOptions(url, {
@@ -1098,7 +1099,7 @@ export async function listDisksInGroup(nodeId: number, dgId: number, options?: R
 }
 
 /** `POST /api/nodes/:id/disk-groups` — add a disk-group to a node. */
-export async function addDiskGroup(nodeId: number, body: { id: number; name?: string }, options?: RequestOptions): Promise<import('./types').DiskGroupEntry> {
+export async function addDiskGroup(nodeId: number, body: { id: number; name?: string; store_id: number; group_id: number }, options?: RequestOptions): Promise<import('./types').DiskGroupEntry> {
   return jsonOrThrow(
     await fetchWithOptions(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups`, {
       ...options,

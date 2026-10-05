@@ -17,7 +17,7 @@ and Rust source; this doc covers decisions and architecture only.
 - [3. Key Design Decisions](#3-key-design-decisions)
   - [3.1 Group 0 is the centralized sysdata store](#31-group-0-is-the-centralized-sysdata-store)
   - [3.2 disk-group → paxos group binding via a table (not hash)](#32-disk-group--paxos-group-binding-via-a-table-not-hash)
-  - [3.3 No CAS needed; exclusive ownership](#33-no-cas-needed-exclusive-ownership)
+  - [3.3 Incarnation-safe lifecycle transitions](#33-incarnation-safe-lifecycle-transitions)
   - [3.4 Records are the source of truth; bitmap is derived](#34-records-are-the-source-of-truth-bitmap-is-derived)
   - [3.5 Zone is a logical concept; sizes may vary](#35-zone-is-a-logical-concept-sizes-may-vary)
   - [3.6 Common protocol crate; crowdb-rpc transport](#36-common-protocol-crate-crowdb-rpc-transport)
@@ -152,11 +152,12 @@ move through the fenced relocation path in §10.
 ### 3.3 Incarnation-safe lifecycle transitions
 
 Each disk-group is owned by exactly one diskdb instance at a time (map in group
-0). Allocation and free remain blind, batchable record writes; allocation
+0). Allocation and free use batchable writes guarded by the ownership fence; allocation
 incarnations and compaction-time validation make delayed frees safe. Commit
 uses an exact matching tentative cache entry when present; otherwise it reads
 the authoritative BusyBlock and validates its allocation incarnation. It
-changes Tentative to Committed with an ordinary batch write. An already
+changes Tentative to Committed with a conditional batch that preserves both
+the observed record revision and ownership generation. An already
 Committed record is idempotent success.
 In-memory concurrency within one instance is handled by **per-bit CAS**
 on the usage bitmap (`compare_exchange` on 64-bit words), not a
@@ -369,12 +370,25 @@ disk-group's bound data group.
 
 ### Map semantics
 
-- **Ownership map** (`/hw/dg_owner/...`) — written by the operator (via
-  `HardwareClient` through the console) to assign a disk-group to a
-  diskdb instance. Read by diskdb on sync.
-- **Binding map** (`/hw/dg_bind/...`) — written by the operator to bind
-  a disk-group to a paxos data group. Read by diskdb to route zone
-  record writes.
+- **Ownership map** (`/hw/dg_owner/...`) — the Group 0 leader's
+  `diskdb-ownership` monitor assigns bound disk-groups to live, fencing-capable
+  DiskDB instances. Missing or dead owners are replaced; count balancing moves
+  at most one healthy group per tick. Updates compare the owner record revision.
+- **Binding map** (`/hw/dg_bind/...`) — the console requires an explicit
+  ordinary KV group at creation and publishes the binding, hardware record,
+  and node membership atomically. Missing selections, Group 0, and unknown
+  groups are rejected. Existing bindings are fixed; adding KV groups does not
+  migrate DiskGroups. The monitor skips unbound groups without repairing them.
+- **Ownership fence** — before loading a group's allocation state, the target
+  claims `/diskdb/ownership-fence/<rack>/<node>/<dg>` in its bound data group,
+  using the Group 0 owner revision as generation. Every metadata mutation
+  checks and advances this fence in the same conditional batch as its writes.
+  Background tasks retain the generation of the exact group object they use;
+  stale work cannot write after a newer generation claims the fence. This adds
+  data-group reads and CAS contention per mutation; bounded contention retries
+  return a busy error when exhausted. Unknown write outcomes are not retried.
+  All participating DiskDB servers must enforce fencing before automatic
+  handover is enabled; an unfenced binary must not rejoin.
 - **Service registry** (`/srv/<service>/<instance_id>`) — written by
   each service instance on heartbeat (diskdb, kv-server); used by the
   console and other components for discovery.

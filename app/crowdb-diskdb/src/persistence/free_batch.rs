@@ -22,9 +22,31 @@ pub type PersistFuture<'a> = Pin<Box<dyn Future<Output = Result<(), FreeError>> 
 /// Persistence boundary used by the coalescer and deterministic tests.
 pub trait FreeBatchPersist: Send + Sync + 'static {
     fn persist<'a>(&'a self, bind: Bind, records: &'a [FreeRecord]) -> PersistFuture<'a>;
+    fn persist_owned<'a>(
+        &'a self,
+        group: &'a crate::model::disk_group::DdbDiskGroup,
+        bind: Bind,
+        records: &'a [FreeRecord],
+    ) -> PersistFuture<'a> {
+        let _ = group;
+        self.persist(bind, records)
+    }
 }
 
 impl FreeBatchPersist for DdbKvClient {
+    fn persist_owned<'a>(
+        &'a self,
+        group: &'a crate::model::disk_group::DdbDiskGroup,
+        bind: Bind,
+        records: &'a [FreeRecord],
+    ) -> PersistFuture<'a> {
+        Box::pin(async move {
+            self.for_group(group)
+                .persist_free_batch(bind, records)
+                .await
+                .map_err(FreeError::from)
+        })
+    }
     fn persist<'a>(&'a self, bind: Bind, records: &'a [FreeRecord]) -> PersistFuture<'a> {
         Box::pin(async move {
             self.persist_free_batch(bind, records)
@@ -82,7 +104,7 @@ impl<P: FreeBatchPersist> FreeBatcher<P> {
         tokio::spawn(async move {
             let result = batcher
                 .persistence
-                .persist(prepared.bind(), &prepared.records)
+                .persist_owned(&prepared.dg, prepared.bind(), &prepared.records)
                 .await;
             let result = match result {
                 Ok(()) => {
@@ -221,7 +243,10 @@ impl<P: FreeBatchPersist> FreeBatcher<P> {
             let request = deferred.pop_front().expect("candidate count is exact");
             let request_records = request.prepared.record_count();
             let next_cap = cap.min(request.max_records);
-            if request.prepared.bind() == bind && records.saturating_add(request_records) <= next_cap {
+            if request.prepared.bind() == bind
+                && request.prepared.dg.ownership_fence() == batch[0].prepared.dg.ownership_fence()
+                && records.saturating_add(request_records) <= next_cap
+            {
                 records += request_records;
                 cap = next_cap;
                 batch.push(request);
@@ -241,7 +266,10 @@ impl<P: FreeBatchPersist> FreeBatcher<P> {
             .inc_by(records.len().try_into().unwrap_or(u64::MAX));
         self.update_ratio();
 
-        let result = self.persistence.persist(bind, &records).await;
+        let result = self
+            .persistence
+            .persist_owned(&batch[0].prepared.dg, bind, &records)
+            .await;
         if result.is_ok() {
             let prepared: Vec<&PreparedFree> = batch.iter().map(|request| &request.prepared).collect();
             commit_prepared_batch(&prepared);

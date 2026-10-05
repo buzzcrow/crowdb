@@ -23,10 +23,12 @@ use crate::store_registry::KvStoreRegistry;
 mod chunk_kv;
 mod chunkdb;
 mod diskdb;
+mod diskdb_placement;
 
 pub use chunk_kv::ChunkKvRangeMonitorDriver;
 pub use chunkdb::ChunkdbRangeMonitorDriver;
 pub use diskdb::DiskdbOwnershipMonitorDriver;
+pub use diskdb_placement::DiskdbPlacementMonitorDriver;
 
 /// Run one monitor child at a time and reconstruct it after an unexpected
 /// return or panic.

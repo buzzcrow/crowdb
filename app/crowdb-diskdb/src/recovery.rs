@@ -98,6 +98,11 @@ pub struct ZoneLoader {
 }
 
 impl ZoneLoader {
+    #[must_use]
+    pub fn for_group(&self, group: &DdbDiskGroup) -> Self {
+        Self::new(Arc::new(self.kv.for_group(group)), self.load_concurrency)
+    }
+
     /// Create a new zone loader with the given data-group client
     /// and zone-load concurrency limit.
     #[must_use]
@@ -127,6 +132,7 @@ impl ZoneLoader {
     ) -> Result<Arc<DdbDiskGroup>, ZoneLoadError> {
         let dg = Arc::new(DdbDiskGroup::new(dg_id, node_id, rack_id));
         dg.set_bind(bind);
+        dg.set_ownership_fence(self.kv.ownership_fence());
 
         // Track max freed_ts across all zones in all disks — used to
         // seed the per-disk-group monotonic timestamp source (§8).

@@ -8,11 +8,12 @@ export default {
       colors: {
         bg: 'var(--color-bg, #0b0d10)',
         panel: 'var(--color-panel, #161a1f)',
-        accent: 'var(--color-accent, #88c0d0)',
-        'brand-accent': 'var(--brand-accent, var(--color-accent, #88c0d0))',
-        accent2: 'var(--color-accent2, #81a1c1)',
-        muted: 'var(--color-muted, #a0a9bd)',
-        text: 'var(--color-text, #d8dee9)',
+        accent: 'var(--color-accent, #60a5fa)',
+        'brand-accent': 'var(--brand-accent, var(--color-accent, #60a5fa))',
+        brand: 'var(--color-brand, #e88a64)',
+        accent2: 'var(--color-accent2, #93c5fd)',
+        muted: 'var(--color-muted, #a1aec2)',
+        text: 'var(--color-text, #e5eaf3)',
         border: 'var(--color-border, #2e3440)',
         healthy: "#10b981",
         degraded: "#f59e0b",
@@ -21,6 +22,7 @@ export default {
         remote: "#8b5cf6",
       },
       fontFamily: {
+        sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Arial', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       animation: {

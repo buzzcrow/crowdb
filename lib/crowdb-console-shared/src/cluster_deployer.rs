@@ -517,6 +517,8 @@ impl CrowdbClusterDeployer {
                     .add_disk_group(
                         node_id,
                         &AddDiskGroupBody {
+                            store_id: topo.store_base,
+                            group_id: topo.group_base,
                             id: dg_id,
                             name: format!("dg-{dg_id}"),
                         },

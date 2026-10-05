@@ -1079,6 +1079,8 @@ pub struct ResetResult {
 #[derive(Debug, Deserialize)]
 pub struct AddDiskGroupBody {
     id: DiskGroupId,
+    store_id: u64,
+    group_id: u64,
     #[serde(default)]
     name: String,
 }
@@ -1214,7 +1216,17 @@ pub async fn http_add_node_disk_group(
     Path(node_id): Path<NodeId>,
     Json(body): Json<AddDiskGroupBody>,
 ) -> Result<(StatusCode, Json<DiskGroupEntry>), (StatusCode, Json<ErrorBody>)> {
-    crate::physical::disk_group::create(state, node_id, body.id, body.name).await
+    crate::physical::disk_group::create(
+        state,
+        node_id,
+        body.id,
+        body.name,
+        crowdb_protocol::common::BindMapValue {
+            store_id: body.store_id,
+            group_id: body.group_id,
+        },
+    )
+    .await
 }
 
 /// `DELETE /api/nodes/:node_id/disk-groups/:dg_id`.

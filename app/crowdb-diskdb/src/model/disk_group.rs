@@ -57,6 +57,7 @@ struct TentativeEntry {
 
 /// A disk-group manager — one per owned disk-group.
 pub struct DdbDiskGroup {
+    ownership_fence: arc_swap::ArcSwapOption<crate::ddb_kv_client::OwnershipFence>,
     pub disk_group_id: DiskGroupId,
     pub node_id: u64,
     pub rack_id: u64,
@@ -81,6 +82,14 @@ pub struct DdbDiskGroup {
 }
 
 impl DdbDiskGroup {
+    pub fn ownership_fence(&self) -> Option<Arc<crate::ddb_kv_client::OwnershipFence>> {
+        self.ownership_fence.load_full()
+    }
+
+    pub fn set_ownership_fence(&self, fence: Option<Arc<crate::ddb_kv_client::OwnershipFence>>) {
+        self.ownership_fence.store(fence);
+    }
+
     pub fn new(disk_group_id: DiskGroupId, node_id: u64, rack_id: u64) -> Self {
         Self::with_tentative_capacity(disk_group_id, node_id, rack_id, MAX_TENTATIVE_BLOCKS)
     }
@@ -92,6 +101,7 @@ impl DdbDiskGroup {
         tentative_capacity: usize,
     ) -> Self {
         Self {
+            ownership_fence: arc_swap::ArcSwapOption::empty(),
             disk_group_id,
             node_id,
             rack_id,

@@ -273,8 +273,15 @@ impl CompactionEngine {
                     if backlog < threshold {
                         continue;
                     }
-                    if let Err(e) =
-                        compact_zone(&self.kv, bind, disk.disk_id, zone, zone.zone_index, metrics).await
+                    if let Err(e) = compact_zone(
+                        &self.kv.for_group(&dg),
+                        bind,
+                        disk.disk_id,
+                        zone,
+                        zone.zone_index,
+                        metrics,
+                    )
+                    .await
                     {
                         tracing::warn!(
                             disk_id = ?disk.disk_id,
@@ -381,8 +388,14 @@ impl PreparatoryThread {
             let bind = dg.bind();
             let disks = dg.disks.read().unwrap().clone();
             for disk in disks {
-                self.preparatory_cycle_for_disk(bind, &disk, zone_rotate_count, metrics)
-                    .await;
+                self.preparatory_cycle_for_disk(
+                    &self.kv.for_group(&dg),
+                    bind,
+                    &disk,
+                    zone_rotate_count,
+                    metrics,
+                )
+                .await;
             }
         }
     }
@@ -390,6 +403,7 @@ impl PreparatoryThread {
     /// Pre-compact the next batch of zones for one disk.
     async fn preparatory_cycle_for_disk(
         &self,
+        kv: &DdbKvClient,
         bind: Bind,
         disk: &Arc<crate::model::disk::DdbDisk>,
         zone_rotate_count: u32,
@@ -432,7 +446,7 @@ impl PreparatoryThread {
                 continue;
             }
             // Compact this zone and mark it ready.
-            if let Err(e) = compact_zone(&self.kv, bind, disk.disk_id, zone, zone.zone_index, metrics).await {
+            if let Err(e) = compact_zone(kv, bind, disk.disk_id, zone, zone.zone_index, metrics).await {
                 tracing::warn!(
                     disk_id = ?disk.disk_id,
                     zone_index = zone.zone_index,

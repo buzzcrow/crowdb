@@ -101,7 +101,7 @@ impl DiskdbRpcService {
             vec![req_zone_index]
         };
 
-        let zone_loader = Arc::clone(&self.zone_loader);
+        let zone_loader = self.zone_loader.for_group(&dg);
         let conn_handle_usize = req.conn_handle as usize;
         let server = Arc::clone(server);
         self.rt.spawn(async move {
@@ -331,7 +331,7 @@ impl DiskdbRpcService {
             zone_indices
         };
 
-        let kv = Arc::clone(&self.kv);
+        let kv = self.kv.for_group(&dg);
         let metrics = Arc::clone(&self.metrics);
         let conn_handle_usize = req.conn_handle as usize;
         let server = Arc::clone(server);

@@ -20,13 +20,15 @@
   }
 
   :root {
-    /* Single dark theme (v1 ships dark only). */
+    /* Website brand palette adapted to the console's dark canvas. */
+    color-scheme: dark;
+    --color-brand: #e88a64;
     --color-bg: #0b0d10;
     --color-panel: #161a1f;
-    --color-accent: #88c0d0;
-    --color-accent2: #81a1c1;
-    --color-muted: #a0a9bd;
-    --color-text: #d8dee9;
+    --color-accent: #60a5fa;
+    --color-accent2: #93c5fd;
+    --color-muted: #a1aec2;
+    --color-text: #e5eaf3;
     --color-border: #2e3440;
 
     /* Radix UI color system for backward compatibility */
@@ -53,12 +55,14 @@
 
   .tw-dark {
     /* Dark theme (default) */
+    color-scheme: dark;
+    --color-brand: #e88a64;
     --color-bg: #0b0d10;
     --color-panel: #161a1f;
-    --color-accent: #88c0d0;
-    --color-accent2: #81a1c1;
-    --color-muted: #a0a9bd;
-    --color-text: #d8dee9;
+    --color-accent: #60a5fa;
+    --color-accent2: #93c5fd;
+    --color-muted: #a1aec2;
+    --color-text: #e5eaf3;
     --color-border: #2e3440;
 
     /* Radix UI color system for backward compatibility */
@@ -85,6 +89,20 @@
 }
 
 @layer components {
+  .crowdb-console .console-domains button {
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    white-space: nowrap;
+  }
+  .crowdb-console .console-domains button[aria-pressed="true"] {
+    border-bottom-color: var(--color-accent);
+    background: #172b48;
+  }
+  .crowdb-console :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
   /* Legacy styles for backward compatibility */
   .panel {
     @apply tw-bg-panel tw-border tw-border-border tw-rounded-md tw-p-4;

@@ -465,11 +465,22 @@ export async function removeDiskdb(baseURL: string, nodeId: number) {
   }
 }
 
-export async function addDiskGroup(baseURL: string, nodeId: number, dgId: number, name?: string) {
+export async function addDiskGroup(baseURL: string, nodeId: number, dgId: number, name?: string, binding?: { store_id: number; group_id: number }) {
   const api = await apiContext(baseURL);
   try {
+    // Test setup explicitly selects an existing data destination before creation.
+    if (!binding) {
+      const response = await api.get('/api/stores?recursive=1');
+      expect(response.ok(), await response.text()).toBe(true);
+      const stores = await response.json();
+      for (const store of stores) {
+        const group = store.groups.find((candidate: { group_id: number }) => Number(candidate.group_id) !== 0);
+        if (group) { binding = { store_id: Number(store.store_id), group_id: Number(group.group_id) }; break; }
+      }
+    }
+    expect(binding, 'test setup requires an ordinary KV group').toBeDefined();
     const response = await api.post(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups`, {
-      data: { id: dgId, name: name ?? '' },
+      data: { id: dgId, name: name ?? '', ...binding },
     });
     expect(response.status(), await response.text()).toBe(201);
   } finally {

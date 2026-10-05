@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 /**
- * Host-facing entrypoint for embedding the CrowDB Storage Console.
+ * Host-facing entrypoint for embedding the CrowDB Console.
  *
  * Usage from a host React app:
  *   import { CrowdbConsole } from 'crowdb-console';

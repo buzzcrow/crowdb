@@ -56,6 +56,8 @@ pub struct AddRackBody {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AddDiskGroupBody {
+    pub store_id: u64,
+    pub group_id: u64,
     pub id: DiskGroupId,
     #[serde(default)]
     pub name: String,
