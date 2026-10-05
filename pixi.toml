@@ -249,7 +249,7 @@ test-server = { cmd = "bash tools/pixi-tasks/test-server.sh" }
 # Build the debug binary explicitly so tests find it at target/debug/.
 test-console-shared = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-console-shared --tests" }
 test-console-cli = { cmd = "cargo test -p crowdb-cli --tests" }
-test-console-server = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb && cargo test -p crowdb-web --tests" }
+test-console-server = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb && cargo test -p crowdb-web --tests" }
 test-console = { cmd = "bash tools/pixi-tasks/test-console.sh" }
 
 # ── UITests job: Playwright browser E2E + subprocess spawning ──

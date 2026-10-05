@@ -207,22 +207,27 @@ TEST(Stress, ConcurrentScanDuringChurnNoCorruption)
                 // find_leaf_page_id start-point + early-stop path specifically).
                 std::string prefix = (rng() % 2 == 0) ? "" : make_key(static_cast<int>(rng() % K)).substr(0, 6);
                 std::vector<scan_entry> out;
-                bool                    trunc = false;
-                if (!t.scan(Slice(prefix), Slice(), Slice(), 0, 0, false, 0, &out, &trunc).ok()) {
+                bool                    trunc  = false;
+                const auto              status = t.scan(Slice(prefix), Slice(), Slice(), 0, 0, false, 0, &out, &trunc);
+                if (!status.ok()) {
+                    ADD_FAILURE() << "scan failed: " << status.to_string() << " prefix=" << prefix;
                     bad.store(true);
                     return;
                 }
                 for (size_t i = 0; i < out.size(); ++i) {
                     if (!Slice(out[i].key).starts_with(Slice(prefix))) {
+                        ADD_FAILURE() << "prefix mismatch: key=" << out[i].key << " prefix=" << prefix;
                         bad.store(true); // key doesn't belong in this prefix's results
                         return;
                     }
                     if (i > 0 && !(Slice(out[i - 1].key).compare(Slice(out[i].key)) < 0)) {
+                        ADD_FAILURE() << "unordered keys: " << out[i - 1].key << " then " << out[i].key;
                         bad.store(true); // not strictly increasing -> duplicate or out of order
                         return;
                     }
                     // Values are always written as "v<slot>"; anything else is corruption.
                     if (out[i].value.empty() || out[i].value[0] != 'v') {
+                        ADD_FAILURE() << "malformed value: key=" << out[i].key << " value=" << out[i].value;
                         bad.store(true);
                         return;
                     }

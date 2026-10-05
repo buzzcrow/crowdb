@@ -82,6 +82,11 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   const [demoSession] = useState(() => crypto.randomUUID().replace(/-/g, ''));
   const scanReqIdRef = useRef(0);
   const scanAbortRef = useRef<AbortController>();
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const cancelRefresh = useCallback(() => {
+    clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = undefined;
+  }, []);
   const restoreQuery = useRef<QueryState | null>(null);
   const [restoreVersion, setRestoreVersion] = useState(0);
   useNavigationSnapshot(Domain.KV, 'operator-query', () => {
@@ -175,6 +180,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   // one's await kvScan may still be in flight; without this guard the old
   // response silently overwrites the table with wrong-store data.
   useEffect(() => {
+    cancelRefresh();
     ++scanReqIdRef.current;
     scanAbortRef.current?.abort();
     setScanLoading(false);
@@ -186,10 +192,11 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     setScanRows([]); setScanDone(false); setScanCursors(new Map()); setScanTruncated(false);
     setPutKey(''); setPutValue(''); setDeleteKey('');
     setPageStarts([]); setPageStart(new Map()); setPageNumber(1);
-    return () => { ++scanReqIdRef.current; scanAbortRef.current?.abort(); };
-  }, [storeId, groupId, scanPrefix]);
+    return () => { cancelRefresh(); ++scanReqIdRef.current; scanAbortRef.current?.abort(); };
+  }, [storeId, groupId, scanPrefix, cancelRefresh]);
 
   const fetchPage = useCallback(async (start: Cursor, direction: 'first' | 'next' | 'previous' | 'restore', focus?: QueryState['focused']) => {
+    cancelRefresh();
     if (!storeId || !groupId || !activeRef.current) return;
     if (groupId === ALL_GROUPS && groupIdsInStore.length > 10) { setErrorMsg('All Groups is limited to 10 groups. Select a specific group.'); return; }
     scanAbortRef.current?.abort();
@@ -219,9 +226,10 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     } finally {
       if (request === scanReqIdRef.current) { setScanLoading(false); setLoadingMore(false); }
     }
-  }, [storeId, groupId, groupIdsInStore, scanPrefix, pageStart]);
+  }, [storeId, groupId, groupIdsInStore, scanPrefix, pageStart, cancelRefresh]);
   useEffect(() => {
     if (!active) {
+      cancelRefresh();
       scanAbortRef.current?.abort(); ++scanReqIdRef.current;
       setScanLoading(false); setLoadingMore(false);
       if (!scanDone) setAutoScanned(false);
@@ -233,20 +241,26 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     setPageStarts(state.previous.map(cursor => new Map(cursor))); setPageNumber(state.number);
     setAutoScanned(true);
     void fetchPage(new Map(state.start), 'restore', state.focused);
-  }, [active, storeId, groupId, scanPrefix, restoreVersion, fetchPage, scanDone]);
+  }, [active, storeId, groupId, scanPrefix, restoreVersion, fetchPage, scanDone, cancelRefresh]);
 
   const handleScan = useCallback(() => fetchPage(new Map(), 'first'), [fetchPage]);
 
   const handleScanRef = useRef(handleScan);
   useEffect(() => { handleScanRef.current = handleScan; }, [handleScan]);
 
-  // Mirror `autoScan` into a ref so delayed auto-scan timers (scheduled by
-  // `handlePut`/`handleDeleteKey` via setTimeout) can re-check the current
-  // value when they fire. Without this, a stale closure that captured
-  // `autoScan=true` can schedule a timer that fires after the user turned
-  // auto-scan off, overwriting a manual prefix scan with an unfiltered one.
   const autoScanRef = useRef(autoScan);
   useEffect(() => { autoScanRef.current = autoScan; }, [autoScan]);
+
+  // Coalesce mutation refreshes. A newer manual scan consumes the pending
+  // refresh so an older timer cannot abort its response while it is loading.
+  const scheduleRefresh = useCallback((requireAutoScan = false) => {
+    cancelRefresh();
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = undefined;
+      if (requireAutoScan && !autoScanRef.current) return;
+      void handleScanRef.current();
+    }, 100);
+  }, [cancelRefresh]);
 
   useEffect(() => {
     if (active && !restoreQuery.current && storeId && groupId && autoScan && !autoScanned && !scanLoading && scanRows.length === 0) {
@@ -291,10 +305,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       setPutValue('');
       if (autoScan) {
         setGroupId(targetGid);
-        setTimeout(() => {
-          if (!autoScanRef.current) return;
-          handleScanRef.current();
-        }, 100);
+        scheduleRefresh(true);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Put failed';
@@ -304,7 +315,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     } finally {
       setPutLoading(false);
     }
-  }, [putKey, putValue, storeId, groupId, writableGroupIds, isSystemGroup, autoScan, log, success, error, handleScan]);
+  }, [putKey, putValue, storeId, groupId, writableGroupIds, isSystemGroup, autoScan, log, success, error, scheduleRefresh]);
 
   const handleDeleteKey = useCallback(async () => {
     if (!deleteKey || !storeId || !groupId || groupId === ALL_GROUPS || isSystemGroup) return;
@@ -315,10 +326,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         log({ action: 'KV Delete', target: `${storeId}/${groupId}`, status: 'Success', message: `key: "${deleteKey}"` });
         success(`Key deleted: "${deleteKey}"`);
         setDeleteKey('');
-        if (autoScan) setTimeout(() => {
-          if (!autoScanRef.current) return;
-          handleScanRef.current();
-        }, 100);
+        if (autoScan) scheduleRefresh(true);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Delete failed';
         setErrorMsg(msg);
@@ -328,7 +336,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         setDeleteLoading(false);
       }
     }});
-  }, [deleteKey, storeId, groupId, isSystemGroup, autoScan, log, success, error, handleScan]);
+  }, [deleteKey, storeId, groupId, isSystemGroup, autoScan, log, success, error, scheduleRefresh]);
 
   const handleDeletePrefix = useCallback(async () => {
     if (!deleteKey || !storeId || !groupId || isSystemGroup) return;
@@ -356,9 +364,9 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       log({ action: 'KV Delete Prefix', target: targetLabel, status: fail > 0 ? 'Failed' : 'Success', message: `${ok} deleted, ${fail} failed` });
       success(`Deleted ${ok} keys${fail > 0 ? `, ${fail} failed` : ''}`);
       setDeleteLoading(false);
-      setTimeout(() => handleScan(), 100);
+      scheduleRefresh();
     }});
-  }, [deleteKey, storeId, groupId, isSystemGroup, writableGroupIds, targetLabel, log, success, handleScan]);
+  }, [deleteKey, storeId, groupId, isSystemGroup, writableGroupIds, targetLabel, log, success, scheduleRefresh]);
 
   const selectedRows = scanRows.filter((r) => r.selected);
   const handleDeleteSelected = useCallback(async () => {
@@ -380,9 +388,9 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       log({ action: 'KV Delete Selected', target: targetLabel, status: fail > 0 ? 'Failed' : 'Success', message: `${ok} deleted, ${fail} failed` });
       success(`Deleted ${ok} keys${fail > 0 ? `, ${fail} failed` : ''}`);
       setDeleteLoading(false);
-      setTimeout(() => handleScan(), 100);
+      scheduleRefresh();
     }});
-  }, [selectedRows, storeId, targetLabel, log, success, handleScan]);
+  }, [selectedRows, storeId, targetLabel, log, success, scheduleRefresh]);
 
   const handleInlineDelete = useCallback((row: ScanRow) => {
     const gid = row.groupId;
@@ -394,7 +402,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         await kvDelete(storeId, gid, { key_hex: row.key_hex });
         log({ action: 'KV Delete', target: `${storeId}/${gid}`, status: 'Success', message: `key: "${key}"` });
         success(`Key deleted: "${key}"`);
-        setTimeout(() => handleScan(), 100);
+        scheduleRefresh();
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Delete failed';
         setErrorMsg(msg);
@@ -403,7 +411,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         setDeleteLoading(false);
       }
     }});
-  }, [storeId, log, success, error, handleScan]);
+  }, [storeId, log, success, error, scheduleRefresh]);
 
   const handleDemoInject = useCallback(async () => {
     if (!storeId || demoCount <= 0) return;
@@ -428,8 +436,8 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
     log({ action: 'Demo Inject', target: targetLabel, status: fail > 0 ? 'Failed' : 'Success', message: `${ok} injected, ${fail} failed` });
     success(`Injected ${ok} demo keys${fail > 0 ? `, ${fail} failed` : ''}`);
     setDemoLoading(false);
-    setTimeout(() => handleScan(), 100);
-  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoCount, demoSession, targetLabel, log, success, handleScan]);
+    scheduleRefresh();
+  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoCount, demoSession, targetLabel, log, success, scheduleRefresh]);
 
   const handleDemoDelete = useCallback(async () => {
     if (!storeId || !groupId) return;
@@ -514,9 +522,9 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       log({ action: 'Demo Delete All', target: targetLabel, status: fail > 0 ? 'Failed' : 'Success', message: `${ok} deleted, ${fail} failed` });
       success(`Deleted ${ok} demo keys${fail > 0 ? `, ${fail} failed` : ''}`);
       setDemoLoading(false);
-      setTimeout(() => handleScan(), 100);
+      scheduleRefresh();
     }});
-  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoSession, targetLabel, log, success, handleScan]);
+  }, [storeId, groupId, isSystemGroup, writableGroupIds, demoSession, targetLabel, log, success, scheduleRefresh]);
 
   const toggleRow = useCallback((idx: number) => {
     setScanRows((prev) => prev.map((r, i) => (i === idx ? { ...r, selected: !r.selected } : r)));

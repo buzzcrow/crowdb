@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: advanced flow 4.9s, demos 0.847/2.8s (2026-10-04).
+// Baseline: advanced flow 10.0s, demos 2.0/5.0s (2026-10-05).
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { addGroup, createStore, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/consoleSetup';
@@ -37,16 +37,15 @@ async function putKey(page: any, key: string, value: string) {
 
 async function scanAndRefresh(page: any) {
   await step('kv: scan', async () => {
-    const scanResponse = page.waitForResponse((r: any) => r.url().includes('/kv/scan'));
     const scan = page.getByRole('button', { name: /^Scan$/ });
     await expect(scan).toBeEnabled();
+    const scanResponse = page.waitForResponse((r: any) => r.url().includes('/kv/scan'));
     await scan.click();
     const response = await scanResponse;
     expect(response.ok(), await response.text()).toBeTruthy();
     expect(await response.json()).toMatchObject({ items: expect.any(Array) });
-    // The response can arrive before React commits this scan, and a put's
-    // delayed auto-scan may supersede it. Wait for the latest scan to finish
-    // so subsequent row actions cannot target a detached table element.
+    // The response can arrive before React commits this scan. Wait for it
+    // to finish rendering so row actions cannot target a detached element.
     await expect(scan).toBeEnabled();
     await expect(page.getByTestId('kv-scan-table')).toBeVisible({ timeout: 3_000 });
   });
