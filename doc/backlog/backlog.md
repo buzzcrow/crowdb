@@ -88,13 +88,6 @@ independent deferred work.
 
 ### High Priority
 
-- **[R221](R221-chunkdb-dynamic-service-ownership.md)** — dynamic ChunkDB service
-  slot ownership — Area: chunkdb / KV / Group 0 / Console — High complexity.
-  Durable incarnation/generation fencing, resumable handoff, failed-owner
-  takeover and bounded slot balance; storage maps and payload remain unchanged.
-  Selected for implementation. Fixed policy remains available; R103 retains
-  independent storage-slot migration.
-
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
   **Deferred beyond the completed direct-KV stage.** When selected, migrate
