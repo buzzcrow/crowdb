@@ -16,114 +16,87 @@ For test strategy, layer scope, and coverage details, see [`design/kv/design-cro
 
 ## Current CI Test Design
 
-Regular CI uses nine parallel jobs, grouped by runtime requirements. Local tests are
-organized by component tasks in `pixi.toml`; each component script owns its package
-list and execution order. GitHub Actions calls the same component tasks. See
-[tools/README.md](../../tools/README.md) for the tooling map.
+Local and CI tests use the same component tasks from `pixi.toml`. Each component
+script owns its package list and execution order. CI runs ten parallel jobs;
+manual workflows cover the container image and the Iceberg SDK matrix.
 
-| Job           | Component task(s)                       | Coverage                                         |
-| ------------- | ---------------------------------------- | ------------------------------------------------ |
-| Lint          | `check-ci-test-tasks`, fmt, clippy        | Package assignments and reachable CI tasks       |
-| CppTests      | `test-cpp`                               | C++ and Rust FFI                                 |
-| UnitTests     | `test-core`                              | Core Rust libraries                              |
-| ServerTests   | `test-storage`, `test-access`             | Native services, streams, access and monitor     |
-| S3E2E         | `-e s3-e2e test-boto3-e2e`              | Access S3, access server and 17 boto3 cases      |
-| IcebergE2E    | `-e iceberg-e2e test-iceberg-e2e`       | PyIceberg, native storage, GC and crash recovery |
-| IcebergSDK    | `-e iceberg-e2e test-iceberg-sdk`       | Official Java SDK and pinned Apache RCK          |
-| ConsoleTests  | `test-console`                          | Shared operations, CLI and Web                   |
-| UITests       | `test-console-ui`                       | Vitest and real-backend Playwright               |
+| Job          | Pixi task(s)                         | Coverage                                      |
+| ------------ | ------------------------------------ | --------------------------------------------- |
+| Lint         | checks, fmt, clippy                  | Formatting, lints and CI task reachability    |
+| CppTests     | `test-cpp`                           | C++ and Rust FFI                              |
+| UnitTests    | `test-core`                          | Core Rust libraries                           |
+| StorageTests | `test-storage`                       | Native storage, services and streams          |
+| AccessTests  | `test-access`                        | Access services, dataset and monitor          |
+| S3E2E        | `-e s3-e2e test-boto3-e2e`           | S3 access and boto3 acceptance                |
+| IcebergE2E   | `-e iceberg-e2e test-iceberg-e2e`    | PyIceberg, native storage and recovery        |
+| IcebergSDK   | `-e iceberg-e2e test-iceberg-sdk`    | Java SDK and Apache RCK                       |
+| ConsoleTests | `test-console`                       | Console shared, CLI and web server tests      |
+| UITests      | `test-console-ui`                    | Vitest and real-backend Playwright            |
 
-Subprocess suites run sequentially inside each job and clean disposable runtime
-state. Iceberg jobs use the pinned `iceberg-e2e` Pixi environment for Python,
-Maven and Java; Rust/native builds use the default environment. The RCK task
-fetches and verifies its exact Apache Iceberg source revision. Test-only child
-listener functions remain ignored and are invoked by their parent crash tests.
+`test-suite` runs these component tasks sequentially for local full-suite
+verification. It also runs the Rust Iceberg SDK task because that task is
+manual-only in CI. The component tasks can be run independently, for example:
 
-The `test-storage` component builds the KV, DiskDB and ChunkDB binaries before
-running stream acceptance tests. The `test-console` component builds the
-runtime binaries needed for deployment and restart coverage. Components must
-work without service binaries left by another job.
+```sh
+pixi run test-core
+pixi run test-storage
+pixi run test-access
+pixi run test-console
+pixi run test-console-ui
+```
 
-`test-suite` runs the host groups, including both Iceberg groups and the Rust
-SDK task. The Rust SDK task is available through
-`pixi run -e iceberg-e2e test-rust-iceberg-e2e` and the manual-only
-`IcebergRustSDK` workflow. It does not run on regular pushes or pull requests.
-DockerPreview is a manual-only workflow that runs
+Component scripts build the service binaries they need, so a component does not
+depend on artifacts left by another task. Subprocess suites clean disposable
+runtime state before starting. Iceberg tasks use the pinned `iceberg-e2e`
+environment for Python, Maven and Java.
+
+`IcebergSDK` and `DockerPreview` are manual workflows. `DockerPreview` runs
 `pixi run test-single-node-container` on a Linux amd64 Docker host. The release
-workflow also runs this image test before publication.
+workflow runs the same image checks before publication.
 
-IcebergE2E uses the release profile for PyIceberg and native acceptance. The
-access-server component suite runs in ServerTests, so IcebergE2E does not run it
-again.
-
-### CI test-task check
+### CI component check
 
 `pixi run check-ci-test-tasks` validates every workspace package against
-`COMPONENT_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`, including the
-test harness's own runtime-namespace tests.
-The guard follows Pixi group calls and checked-in shell scripts from CI, so a
-required component task disconnected from its job fails validation. It also
-checks that DockerPreview and IcebergRustSDK are reachable from their manual
+`COMPONENT_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`. It follows the
+component task calls in Pixi and the checked-in workflow scripts, so a package
+that is not covered by a CI-reachable component fails validation. It also checks
+that the manual-only container and Iceberg SDK tasks remain reachable from their
 workflows and absent from regular CI.
 
 ### Adding tests
 
-1. Add package tests under the owning crate's `tests/`; existing component tasks
-   discover ordinary targets through `--all-targets`.
-2. For a new package, add a component task and its `TASK_PACKAGES` assignment.
-3. Add the component to the group script matching its runtime requirements.
-4. Feature-gated or ignored tests require explicit task selectors. Do not count
-   compiling an ignored test as executing it; exclude subprocess helper entries.
-5. Run `pixi run check-ci-test-tasks`, the affected suites, and workflow validation.
-6. Measure changed suites with `pixi run bash tools/test-metrics/measure.sh TASK...`
-   and update the timing table. Environment selection is automatic.
+1. Add package tests under the owning crate's `tests/` directory.
+2. If a package is new, add it to the appropriate component script and to
+   `COMPONENT_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`.
+3. Add explicit selectors for feature-gated or ignored tests. Compiling an
+   ignored test does not count as executing it; exclude subprocess helper entries.
+4. Run `pixi run check-ci-test-tasks`, the affected component task and workflow
+   validation.
+5. For a timing update, run
+   `pixi run bash tools/test-metrics/measure.sh test-core test-storage` (replace
+   the tasks as needed). Store the generated artifacts under
+   `.crowdb-runtime/artifacts/measure-tests/`.
 
 ## Suite Timing
 
-Each platform section keeps one row per test package and only the latest run.
-Leave unexecuted packages in place with `—`; record elapsed time in seconds.
+Timing measurements are recorded by component task. The old package-level table
+was removed when Pixi tasks were consolidated; historical package rows are not
+invocable tasks anymore and must not be used as current CI expectations. New
+measurements should record the exact component task, environment, date, test
+count and exit code. Timing includes incremental builds and subprocess
+startup/shutdown, so cold builds and feature changes can affect the result.
 
-### macOS
-
-| Test package       | Date       | Tests                                    | Seconds | Status |
-| ------------------ | ---------- | ---------------------------------------- | ------- | ------ |
-| `test-cpp`         | —          | —                                        | —       | ⏳     |
-| `test-core`        | —          | —                                        | —       | ⏳     |
-| `test-storage`     | —          | —                                        | —       | ⏳     |
-| `test-access`      | —          | —                                        | —       | ⏳     |
-| `test-console`     | —          | —                                        | —       | ⏳     |
-| `test-console-ui`  | 2026-10-07 | 63 (55 passed, 4 failed, 4 did not run) | 336     | ❌     |
-| `test-boto3-e2e`   | —          | —                                        | —       | ⏳     |
-| `test-iceberg-e2e` | —          | —                                        | —       | ⏳     |
-| `test-iceberg-sdk` | —          | —                                        | —       | ⏳     |
-
-### intel7960
-
-| Test package       | Date | Tests | Seconds | Status |
-| ------------------ | ---- | ----- | ------- | ------ |
-| `test-cpp`         | —    | —     | —       | ⏳     |
-| `test-core`        | —    | —     | —       | ⏳     |
-| `test-storage`     | —    | —     | —       | ⏳     |
-| `test-access`      | —    | —     | —       | ⏳     |
-| `test-console`     | —    | —     | —       | ⏳     |
-| `test-console-ui`  | —    | —     | —       | ⏳     |
-| `test-boto3-e2e`   | —    | —     | —       | ⏳     |
-| `test-iceberg-e2e` | —    | —     | —       | ⏳     |
-| `test-iceberg-sdk` | —    | —     | —       | ⏳     |
-
-### amd5950
-
-| Test package       | Date | Tests | Seconds | Status |
-| ------------------ | ---- | ----- | ------- | ------ |
-| `test-cpp`         | —    | —     | —       | ⏳     |
-| `test-core`        | —    | —     | —       | ⏳     |
-| `test-storage`     | —    | —     | —       | ⏳     |
-| `test-access`      | —    | —     | —       | ⏳     |
-| `test-console`     | —    | —     | —       | ⏳     |
-| `test-console-ui`  | —    | —     | —       | ⏳     |
-| `test-boto3-e2e`   | —    | —     | —       | ⏳     |
-| `test-iceberg-e2e` | —    | —     | —       | ⏳     |
-| `test-iceberg-sdk` | —    | —     | —       | ⏳     |
+| Component task       | Environment   | Date | Tests | Time | Status |
+| -------------------- | ------------- | ---- | ----- | ---- | ------ |
+| `test-cpp`           | default       | —    | —     | —    | ⏳     |
+| `test-core`          | default       | —    | —     | —    | ⏳     |
+| `test-storage`       | default       | —    | —     | —    | ⏳     |
+| `test-access`        | default       | —    | —     | —    | ⏳     |
+| `test-console`       | default       | —    | —     | —    | ⏳     |
+| `test-console-ui`    | default + iceberg-e2e | — | — | — | ⏳ |
+| `test-boto3-e2e`      | s3-e2e        | —    | —     | —    | ⏳     |
+| `test-iceberg-e2e`    | iceberg-e2e   | —    | —     | —    | ⏳     |
+| `test-iceberg-sdk`    | iceberg-e2e   | —    | —     | —    | ⏳     |
 
 The measurement helper writes logs and aggregate results below
 `.crowdb-runtime/artifacts/measure-tests/`. Keep slow individual-test notes next
