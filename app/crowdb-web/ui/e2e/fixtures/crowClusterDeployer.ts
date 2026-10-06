@@ -348,9 +348,17 @@ export async function waitForLeader(baseURL: string, storeId: number, groupId: n
 export async function clusterInit(baseURL: string, nodeIds: number[]) {
   const api = await apiContext(baseURL);
   try {
-    const response = await api.post('/api/cluster/init', { data: { nodes: nodeIds }, timeout: 10_000 });
-    if (response.status() !== 201 && response.status() !== 409) {
-      throw new Error(`cluster_init failed: ${response.status()} ${await response.text()}`);
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await api.post('/api/cluster/init', { data: { nodes: nodeIds }, timeout: 10_000 });
+      if (response.status() === 201 || response.status() === 409) return;
+      const text = await response.text();
+      if (response.status() === 500 && text.includes('not leader') && attempt < maxAttempts) {
+        console.log(`cluster_init attempt ${attempt} got transient not-leader response; retrying...`);
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        continue;
+      }
+      throw new Error(`cluster_init failed: ${response.status()} ${text}`);
     }
   } finally {
     await api.dispose();
