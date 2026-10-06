@@ -82,7 +82,7 @@
   Catalog 未初始化是独立的 readiness 问题，不能靠把 disk 颜色改绿解决。
 
 ChunkDB 动态 service ownership 的待实施合同见
-[R213](doc/backlog/R213-chunkdb-dynamic-service-ownership.md)。
+[R221](doc/backlog/R221-chunkdb-dynamic-service-ownership.md)。
 
 回归排查补充：修复 KV 测试 fixture 的进程内端口计数器，改用现有跨进程租约，
 避免 closed-port 测试误连其它 test binary。排查期间出现过一次 native SIGSEGV，

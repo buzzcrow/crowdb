@@ -3,7 +3,7 @@
 
 # ChunkDB dynamic service ownership Plan
 
-Contract: [R213](../backlog/R213-chunkdb-dynamic-service-ownership.md).
+Contract: [R221](../backlog/R221-chunkdb-dynamic-service-ownership.md).
 Architecture: [slot routing](../design/chunkdb/design-crowdb-chunkdb-range-binding.md).
 Goal: safely redistribute ChunkDB execution authority without relocating storage.
 
