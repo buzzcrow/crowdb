@@ -108,8 +108,8 @@ jobs:
       uses: Swatinem/rust-cache@v2
     - name: Clean env
       run: pixi run clean-env
-    - name: Run unit tests
-      run: pixi run test-unit
+    - name: Run core component tests
+      run: pixi run test-core
     - name: Capture runner state on failure
       if: failure()
       run: |
@@ -154,8 +154,8 @@ jobs:
       run: pixi run clean-env
     - name: Build C++ libs (crowdb-diskio subprocess)
       run: pixi run build-cpp
-    - name: Run server tests
-      run: pixi run test-server
+    - name: Run storage and access component tests
+      run: pixi run test-storage && pixi run test-access
     - name: Capture runner state on failure
       if: failure()
       run: |

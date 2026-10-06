@@ -6,8 +6,8 @@
 Start with the task name in [`pixi.toml`](../pixi.toml), then read its script.
 Run commands through `pixi run`. Read only the directory relevant to the task.
 
-- **`pixi-tasks/`** — build, install, clean, test-group and Iceberg client
-  commands extracted from Pixi. Component test commands remain in `pixi.toml`.
+- **`pixi-tasks/`** — build, install, clean, component test and Iceberg client
+  commands extracted from Pixi.
   `clean` stops all CROWDB services owned by the current user, then removes
   the complete runtime tree and build output. `clean-env` stops only recorded
   ephemeral processes and preserves persistent clusters.
@@ -31,12 +31,13 @@ Common entry points:
 pixi run check-ci-test-tasks
 pixi run check-version
 pixi run clean-env
-pixi run bash tools/test-metrics/measure.sh test-access-iceberg test-monitor
+pixi run bash tools/test-metrics/measure.sh test-access test-console
 ```
 
 For test ownership and timings, read
-[`doc/working/test.md`](../doc/working/test.md). CI calls Pixi group tasks;
-update the group script when adding a component, then run `check-ci-test-tasks`.
+[`doc/working/test.md`](../doc/working/test.md). CI calls component tasks;
+update the component script when adding a package, then run
+`check-ci-test-tasks`.
 Feature-gated or ignored client tests need explicit task selection.
 
 Container packaging and its acceptance scripts live under

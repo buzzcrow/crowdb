@@ -212,47 +212,15 @@ check-ci-test-tasks = "python tools/ci-checks/check-ci-test-tasks.py"
 # ── Lint job ──
 # (uses rs-fmt / rs-lint / tree-lint defined above, no separate test-* tasks)
 
-# ── CppTests job: C++ ctest (needs build-cpp) + Rust FFI (cc::Build) ──
-test-tree-ct = { cmd = "ctest --test-dir lib/crowdb-tree/build --output-on-failure", depends-on = ["build-cpp"] }
-test-common-ct = { cmd = "lib/crowdb-tree/build/crowdb-common-build/crowdbcommon_tests", depends-on = ["build-cpp"] }
-test-rpc-ct = { cmd = "ctest --test-dir lib/crowdb-rpc/build --output-on-failure", depends-on = ["build-cpp"] }
-test-diskio-ct = { cmd = "ctest --test-dir app/crowdb-diskio/build --output-on-failure", depends-on = ["build-cpp"] }
-test-tree-ffi = { cmd = "cargo test -p crowdb-tree-ffi --tests" }
-test-rpc-ffi = { cmd = "cargo test -p crowdb-rpc-ffi --tests" }
 test-cpp = { cmd = "bash tools/pixi-tasks/test-cpp.sh", depends-on = ["build-cpp"] }
 
-# ── UnitTests job: pure Rust, no subprocess spawning ──
-test-common = { cmd = "cargo test -p crowdb-common --tests" }
-test-harness = { cmd = "cargo test -p crowdb-test-harness --tests" }
-test-protocol = { cmd = "cargo test -p crowdb-protocol --tests" }
-test-kv-core = { cmd = "cargo test -p crowdb-kv --tests" }
-test-kv-client = { cmd = "cargo test -p crowdb-kv-client --tests" }
-test-chunkdb-client = { cmd = "cargo test -p crowdb-chunkdb-client --tests" }
-test-chunk-kv = { cmd = "cargo test -p crowdb-chunk-kv --tests" }
-test-chunk-kv-client = { cmd = "cargo test -p crowdb-chunk-kv-client --tests" }
-test-chunk-kv-server = { cmd = "cargo test -p crowdb-chunk-kv-server --tests" }
-test-access-multipart = { cmd = "cargo test -p crowdb-access-multipart --tests" }
-test-unit = { cmd = "bash tools/pixi-tasks/test-unit.sh" }
-
-# ── ServerTests job: spawns crowdb-kv-server / crowdb-diskdb / crowdb-diskio ──
-test-chunk-stream = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb && cargo test -p crowdb-chunk-stream --tests", depends-on = ["build-cpp"] }
-test-kv-server = { cmd = "cargo test -p crowdb-kv-server --tests" }
-test-diskdb = { cmd = "cargo test -p crowdb-diskdb --tests" }
-test-diskdb-client = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb && cargo test -p crowdb-diskdb-client --tests" }
-test-chunkdb = { cmd = "cargo test -p crowdb-chunkdb --tests" }
-test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --tests" }
-test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --tests" }
-test-access-s3 = { cmd = "cargo test -p crowdb-access-s3 --tests" }
-test-access-iceberg = { cmd = "cargo test -p crowdb-access-iceberg --tests" }
-test-access-server = { cmd = "cargo test -p crowdb-access-server --tests" }
-test-monitor = { cmd = "cargo test -p crowdb-monitor --tests" }
-test-server = { cmd = "bash tools/pixi-tasks/test-server.sh" }
+# ── Component tests ─────────────────────────────────────────────
+test-core = { cmd = "bash tools/pixi-tasks/test-core.sh" }
+test-storage = { cmd = "bash tools/pixi-tasks/test-storage.sh", depends-on = ["build-cpp"] }
+test-access = { cmd = "bash tools/pixi-tasks/test-access.sh" }
 
 # ── ConsoleTests job: spawns crowdb-kv-server via lifecycle::deploy_local ──
 # Build the debug binary explicitly so tests find it at target/debug/.
-test-console-shared = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-console-shared --tests" }
-test-console-cli = { cmd = "cargo test -p crowdb-cli --tests" }
-test-console-server = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb && cargo test -p crowdb-web --tests" }
 test-console = { cmd = "bash tools/pixi-tasks/test-console.sh" }
 
 # ── UITests job: Playwright browser E2E + subprocess spawning ──

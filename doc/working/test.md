@@ -16,18 +16,17 @@ For test strategy, layer scope, and coverage details, see [`design/kv/design-cro
 
 ## Current CI Test Design
 
-Regular CI uses nine parallel jobs, grouped by runtime requirements. Component tasks in
-`pixi.toml` select library, binary, and integration test targets with
-`--tests`; benchmark targets are excluded. Group scripts under
-`tools/pixi-tasks/` define execution order. GitHub Actions calls those group
-tasks. See [tools/README.md](../../tools/README.md) for the tooling map.
+Regular CI uses nine parallel jobs, grouped by runtime requirements. Local tests are
+organized by component tasks in `pixi.toml`; each component script owns its package
+list and execution order. GitHub Actions calls the same component tasks. See
+[tools/README.md](../../tools/README.md) for the tooling map.
 
-| Job           | Group task                              | Coverage                                         |
-| ------------- | --------------------------------------- | ------------------------------------------------ |
-| Lint          | `check-ci-test-tasks`, fmt, clippy       | Package assignments and reachable CI tasks       |
-| CppTests      | `test-cpp`                              | C++ and Rust FFI                                 |
-| UnitTests     | `test-unit`                             | Rust libraries, including `test-access-iceberg`  |
-| ServerTests   | `test-server`                           | Native services, streams, access server, monitor  |
+| Job           | Component task(s)                       | Coverage                                         |
+| ------------- | ---------------------------------------- | ------------------------------------------------ |
+| Lint          | `check-ci-test-tasks`, fmt, clippy        | Package assignments and reachable CI tasks       |
+| CppTests      | `test-cpp`                               | C++ and Rust FFI                                 |
+| UnitTests     | `test-core`                              | Core Rust libraries                              |
+| ServerTests   | `test-storage`, `test-access`             | Native services, streams, access and monitor     |
 | S3E2E         | `-e s3-e2e test-boto3-e2e`              | Access S3, access server and 17 boto3 cases      |
 | IcebergE2E    | `-e iceberg-e2e test-iceberg-e2e`       | PyIceberg, native storage, GC and crash recovery |
 | IcebergSDK    | `-e iceberg-e2e test-iceberg-sdk`       | Official Java SDK and pinned Apache RCK          |
@@ -40,10 +39,10 @@ Maven and Java; Rust/native builds use the default environment. The RCK task
 fetches and verifies its exact Apache Iceberg source revision. Test-only child
 listener functions remain ignored and are invoked by their parent crash tests.
 
-`test-chunk-stream` runs in ServerTests because its acceptance tests spawn KV,
-DiskDB, ChunkDB and DiskIO. The component task builds those binaries before
-testing. `test-console-server` builds KV and DiskDB for deployment and restart
-coverage. These tasks must work without service binaries left by another job.
+The `test-storage` component builds the KV, DiskDB and ChunkDB binaries before
+running stream acceptance tests. The `test-console` component builds the
+runtime binaries needed for deployment and restart coverage. Components must
+work without service binaries left by another job.
 
 `test-suite` runs the host groups, including both Iceberg groups and the Rust
 SDK task. The Rust SDK task is available through
@@ -60,7 +59,7 @@ again.
 ### CI test-task check
 
 `pixi run check-ci-test-tasks` validates every workspace package against
-`TASK_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`, including the
+`COMPONENT_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`, including the
 test harness's own runtime-namespace tests.
 The guard follows Pixi group calls and checked-in shell scripts from CI, so a
 required component task disconnected from its job fails validation. It also

@@ -5,6 +5,8 @@ set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
 pixi run clean-env
-pixi run test-console-shared
-pixi run test-console-cli
-pixi run test-console-server
+cargo build -p crowdb-kv-server
+cargo test -p crowdb-console-shared --tests
+cargo test -p crowdb-cli --tests
+cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+cargo test -p crowdb-web --tests
