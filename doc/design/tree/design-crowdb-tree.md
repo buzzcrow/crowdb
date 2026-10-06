@@ -13,7 +13,7 @@ consumed from the Rust `crowdb-kv` crate over a C ABI. It records the decisions
 behind that design and maps the sub-design documents. `libcrowdb-tree` is fully
 implemented, wired into `crowdb-kv` (`CrowdbTreeEngine`), and shipped; this document
 set is the durable record of *why* it looks the way it does, not a build plan.
-See [`todo_code.md`](../todo_code.md) for anything still open.
+See [`todo_code.md`](../../working/todo_code.md) for anything still open.
 
 ## Table of Contents
 

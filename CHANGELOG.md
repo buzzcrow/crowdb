@@ -3,7 +3,7 @@
 
 # Changelog
 
-CROWDB is preparing `0.2.2`. This is a development version, not a
+CROWDB is developing `0.3.0`. This is a development version, not a
 production release or a compatibility promise.
 
 CROWDB does not yet maintain compatibility for persisted data, WAL, metadata,
@@ -21,17 +21,33 @@ policy.
 
 ## [Unreleased]
 
-### 0.2.2 preparation
+The following changes are being prepared for `0.3.0`.
 
-- Build service binaries before stream and console acceptance tests in CI.
-- Wait for stopped KV children before deleting console workspaces during reset.
+### Added
 
-### 0.2.1 preparation
+- Dataset access support with namespace, manifest, cursor, retention, transport,
+  and publication primitives.
+- A Python dataset client surface for iterating dataset records.
 
-- S3 and Iceberg own separate chunk types, storage policies, and write pools
+### Changed
+
+- S3 and Iceberg use separate chunk types, storage policies, and write pools
   behind one access-server process.
-- Explicit single-node test and three-node production protection profiles,
-  with strip-level mirror and EC I/O and repairable degraded EC placement.
+- Single-node and three-node profiles now make storage protection explicit,
+  including strip-level mirror and EC I/O with repairable degraded placement.
+
+### Internal
+
+- Local and CI tests are organized around component tasks rather than package-
+  level Pixi tasks.
+
+## [0.2.2] - 2026-10-06
+
+### Fixed
+
+- CI builds service binaries before stream and console acceptance tests.
+- Console workspace reset waits for stopped KV children before deleting runtime
+  state.
 
 ## [0.1.0]
 

@@ -56,7 +56,7 @@ def main() -> int:
         print("Rust workspace packages missing from CI test tasks:")
         for package in missing:
             print(f"  {package}")
-        print("Add the package to TASK_PACKAGES in tools/ci-checks/check-ci-test-tasks.py")
+        print("Add the package to COMPONENT_PACKAGES in tools/ci-checks/check-ci-test-tasks.py")
         return 1
     if unknown_support:
         print("Support-package allowlist contains packages not in the workspace:")

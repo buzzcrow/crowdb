@@ -23,7 +23,6 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
 - **`benchmark/`** — repeatable performance regressions, shared result handling,
   leak inspection and KV write sentinel checks.
 - **`profiling/`** — perf setup and write-path flamegraphs.
-- **`media/`** — convert recordings for documentation.
 
 Common entry points:
 

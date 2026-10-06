@@ -16,157 +16,91 @@ For test strategy, layer scope, and coverage details, see [`design/kv/design-cro
 
 ## Current CI Test Design
 
-Regular CI uses nine parallel jobs, grouped by runtime requirements. Local tests are
-organized by component tasks in `pixi.toml`; each component script owns its package
-list and execution order. GitHub Actions calls the same component tasks. See
-[tools/README.md](../../tools/README.md) for the tooling map.
+Local and CI tests use the same component tasks from `pixi.toml`. Each component
+script owns its package list and execution order. CI runs ten parallel jobs;
+manual workflows cover the container image and the Iceberg SDK matrix.
 
-| Job           | Component task(s)                       | Coverage                                         |
-| ------------- | ---------------------------------------- | ------------------------------------------------ |
-| Lint          | `check-ci-test-tasks`, fmt, clippy        | Package assignments and reachable CI tasks       |
-| CppTests      | `test-cpp`                               | C++ and Rust FFI                                 |
-| UnitTests     | `test-core`                              | Core Rust libraries                              |
-| ServerTests   | `test-storage`, `test-access`             | Native services, streams, access and monitor     |
-| S3E2E         | `-e s3-e2e test-boto3-e2e`              | Access S3, access server and 17 boto3 cases      |
-| IcebergE2E    | `-e iceberg-e2e test-iceberg-e2e`       | PyIceberg, native storage, GC and crash recovery |
-| IcebergSDK    | `-e iceberg-e2e test-iceberg-sdk`       | Official Java SDK and pinned Apache RCK          |
-| ConsoleTests  | `test-console`                          | Shared operations, CLI and Web                   |
-| UITests       | `test-console-ui`                       | Vitest and real-backend Playwright               |
+| Job          | Pixi task(s)                         | Coverage                                      |
+| ------------ | ------------------------------------ | --------------------------------------------- |
+| Lint         | checks, fmt, clippy                  | Formatting, lints and CI task reachability    |
+| CppTests     | `test-cpp`                           | C++ and Rust FFI                              |
+| UnitTests    | `test-core`                          | Core Rust libraries                           |
+| StorageTests | `test-storage`                       | Native storage, services and streams          |
+| AccessTests  | `test-access`                        | Access services, dataset and monitor          |
+| S3E2E        | `-e s3-e2e test-boto3-e2e`           | S3 access and boto3 acceptance                |
+| IcebergE2E   | `-e iceberg-e2e test-iceberg-e2e`    | PyIceberg, native storage and recovery        |
+| IcebergSDK   | `-e iceberg-e2e test-iceberg-sdk`    | Java SDK and Apache RCK                       |
+| ConsoleTests | `test-console`                       | Console shared, CLI and web server tests      |
+| UITests      | `test-console-ui`                    | Vitest and real-backend Playwright            |
 
-Subprocess suites run sequentially inside each job and clean disposable runtime
-state. Iceberg jobs use the pinned `iceberg-e2e` Pixi environment for Python,
-Maven and Java; Rust/native builds use the default environment. The RCK task
-fetches and verifies its exact Apache Iceberg source revision. Test-only child
-listener functions remain ignored and are invoked by their parent crash tests.
+`test-suite` runs these component tasks sequentially for local full-suite
+verification. It also runs the Rust Iceberg SDK task because that task is
+manual-only in CI. The component tasks can be run independently, for example:
 
-The `test-storage` component builds the KV, DiskDB and ChunkDB binaries before
-running stream acceptance tests. The `test-console` component builds the
-runtime binaries needed for deployment and restart coverage. Components must
-work without service binaries left by another job.
+```sh
+pixi run test-core
+pixi run test-storage
+pixi run test-access
+pixi run test-console
+pixi run test-console-ui
+```
 
-`test-suite` runs the host groups, including both Iceberg groups and the Rust
-SDK task. The Rust SDK task is available through
-`pixi run -e iceberg-e2e test-rust-iceberg-e2e` and the manual-only
-`IcebergRustSDK` workflow. It does not run on regular pushes or pull requests.
-DockerPreview is a manual-only workflow that runs
+Component scripts build the service binaries they need, so a component does not
+depend on artifacts left by another task. Subprocess suites clean disposable
+runtime state before starting. Iceberg tasks use the pinned `iceberg-e2e`
+environment for Python, Maven and Java.
+
+`IcebergSDK` and `DockerPreview` are manual workflows. `DockerPreview` runs
 `pixi run test-single-node-container` on a Linux amd64 Docker host. The release
-workflow also runs this image test before publication.
+workflow runs the same image checks before publication.
 
-IcebergE2E uses the release profile for PyIceberg and native acceptance. The
-access-server component suite runs in ServerTests, so IcebergE2E does not run it
-again.
-
-### CI test-task check
+### CI component check
 
 `pixi run check-ci-test-tasks` validates every workspace package against
-`COMPONENT_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`, including the
-test harness's own runtime-namespace tests.
-The guard follows Pixi group calls and checked-in shell scripts from CI, so a
-required component task disconnected from its job fails validation. It also
-checks that DockerPreview and IcebergRustSDK are reachable from their manual
+`COMPONENT_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`. It follows the
+component task calls in Pixi and the checked-in workflow scripts, so a package
+that is not covered by a CI-reachable component fails validation. It also checks
+that the manual-only container and Iceberg SDK tasks remain reachable from their
 workflows and absent from regular CI.
 
 ### Adding tests
 
-1. Add package tests under the owning crate's `tests/`; existing component tasks
-   discover ordinary targets through `--all-targets`.
-2. For a new package, add a component task and its `TASK_PACKAGES` assignment.
-3. Add the component to the group script matching its runtime requirements.
-4. Feature-gated or ignored tests require explicit task selectors. Do not count
-   compiling an ignored test as executing it; exclude subprocess helper entries.
-5. Run `pixi run check-ci-test-tasks`, the affected suites, and workflow validation.
-6. Measure changed suites with `pixi run bash tools/test-metrics/measure.sh TASK...`
-   and update the timing table. Environment selection is automatic.
+1. Add package tests under the owning crate's `tests/` directory.
+2. If a package is new, add it to the appropriate component script and to
+   `COMPONENT_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`.
+3. Add explicit selectors for feature-gated or ignored tests. Compiling an
+   ignored test does not count as executing it; exclude subprocess helper entries.
+4. Run `pixi run check-ci-test-tasks`, the affected component task and workflow
+   validation.
+5. For a timing update, run
+   `pixi run bash tools/test-metrics/measure.sh test-core test-storage` (replace
+   the tasks as needed). Store the generated artifacts under
+   `.crowdb-runtime/artifacts/measure-tests/`.
 
 ## Suite Timing
 
-Keep baseline timings alongside new measurements to identify runtime regressions.
-The machine columns retain independent runs; their dates appear below the header.
-The m5pro measurement date was not recorded. New measurements, exact commands,
-reported test counts and exit codes are saved under
-`.crowdb-runtime/artifacts/measure-tests/`. Timing includes incremental builds
-and subprocess startup/shutdown, so feature changes and cold builds affect it.
-Counts are runner-reported cases, not assertions; ignored cases are excluded.
-IcebergE2E and Java/Rust/RCK SDK acceptance use release binaries, matching
-the published container profile. Other component suites retain their default
-test profile. The focused debug native 100 MiB multipart upload, completion,
-restart, replay, and full read passed on 2026-09-29 in 54.40 s. Its previous
-10 s completion deadline failure did not recur after the streaming I/O changes.
+Timing measurements are recorded by component task. The old package-level table
+was removed when Pixi tasks were consolidated; historical package rows are not
+invocable tasks anymore and must not be used as current CI expectations. New
+measurements should record the exact component task, environment, date, test
+count and exit code. Timing includes incremental builds and subprocess
+startup/shutdown, so cold builds and feature changes can affect the result.
 
-Status icons: ✅ = PASS, ⚠️ = PASS with ignored tests, ❌ = FAIL,
-⏳ = measurement pending.
-A dash means timing was not recorded, not a skipped test. Container scenarios
-are checked by scripts and do not report a Rust-style test count.
+| Component task       | Environment   | Date | Tests | Time | Status |
+| -------------------- | ------------- | ---- | ----- | ---- | ------ |
+| `test-cpp`           | default       | —    | —     | —    | ⏳     |
+| `test-core`          | default       | —    | —     | —    | ⏳     |
+| `test-storage`       | default       | —    | —     | —    | ⏳     |
+| `test-access`        | default       | —    | —     | —    | ⏳     |
+| `test-console`       | default       | —    | —     | —    | ⏳     |
+| `test-console-ui`    | default + iceberg-e2e | — | — | — | ⏳ |
+| `test-boto3-e2e`      | s3-e2e        | —    | —     | —    | ⏳     |
+| `test-iceberg-e2e`    | iceberg-e2e   | —    | —     | —    | ⏳     |
+| `test-iceberg-sdk`    | iceberg-e2e   | —    | —     | —    | ⏳     |
 
-| Suite                          | Tests | m5pro   | 5950-24.04 | 7960-24.04 | Status |
-| ------------------------------ | ----- | ------- | ---------- | ---------- | ------ |
-| Test date                      | —     | —       | 2026-09-10 | 2026-09-28 | —      |
-| `test-tree-ct`                 | 568   | 20.1 s  | 52.75 s    | —          | ✅      |
-| `test-common-ct`               | 28    | —       | 0.66 s     | —          | ✅      |
-| `test-tree-ffi`                | 31    | 13.5 s  | 2.89 s     | —          | ✅      |
-| `test-rpc-ct`                  | 67    | —       | 4.32 s     | —          | ✅      |
-| `test-rpc-ffi`                 | 15    | —       | 10.43 s    | —          | ✅      |
-| `test-diskio-ct`               | 121   | —       | 8.12 s     | —          | ✅      |
-| `test-common`                  | 77    | 21.9 s  | 20.56 s    | —          | ✅      |
-| `test-harness`                 | 2     | —       | —          | —          | ✅      |
-| `test-protocol`                | 135   | 12.2 s  | 3.75 s     | —          | ✅      |
-| `test-kv-core`                 | 572   | 43.2 s  | 72.87 s    | —          | ✅      |
-| `test-kv-client`               | 58    | 23.4 s  | 27.55 s    | —          | ✅      |
-| `test-chunkdb-client`          | 10    | 13.8 s  | 7.65 s     | —          | ✅      |
-| `test-chunk-kv`                | 19    | —       | 5.32 s     | —          | ✅      |
-| `test-chunk-stream`            | 15    | —       | 1.56 s     | —          | ✅      |
-| `test-chunk-kv-client`         | 12    | —       | 0.37 s     | —          | ✅      |
-| `test-chunk-kv-server`         | 24    | —       | 6.57 s     | —          | ✅      |
-| `test-kv-server`               | 89    | 53.0 s  | 53.94 s    | —          | ✅      |
-| `test-diskdb`                  | 141   | 42.8 s  | 36.88 s    | —          | ✅      |
-| `test-diskdb-client`           | 7     | 13.9 s  | 25.44 s    | —          | ✅      |
-| `test-chunkdb`                 | 102   | 27.8 s  | 41.61 s    | —          | ✅      |
-| `test-chunk-client`            | 105   | —       | 57.98 s    | —          | ✅      |
-| `test-diskio-client`           | 4     | —       | 10.33 s    | —          | ✅      |
-| `test-access-s3`               | 59    | —       | 5.02 s     | —          | ✅      |
-| `test-console-shared`          | 115   | 39.2 s  | 81.29 s    | —          | ✅      |
-| `test-console-cli`             | 15    | 69.4 s  | 8.54 s     | —          | ✅      |
-| `test-console-server`          | 82    | 50.7 s  | 79.91 s    | —          | ✅      |
-| `test-console-ui`              | 142   | 165.7 s | 252.99 s   | —          | ✅      |
-| `test-boto3-e2e`               | 162   | —       | 162 s      | —          | ✅      |
-| `test-access-iceberg`          | 692   | —       | —          | 110.69 s   | ✅      |
-| `test-access-server`           | 85    | —       | —          | 60.33 s    | ✅      |
-| `test-monitor`                 | 56    | —       | —          | 45.86 s    | ✅      |
-| `test-pyiceberg-e2e`           | 87    | —       | —          | —          | ✅      |
-| `test-iceberg-native`          | 9     | —       | —          | 1024.67 s  | ✅      |
-| `test-java-iceberg-e2e`        | 10    | —       | —          | 551.31 s   | ✅      |
-| `test-java-iceberg-fileio-e2e` | 3     | —       | —          | —          | ✅      |
-| `test-rust-iceberg-e2e`        | 5     | —       | —          | 1457.31 s  | ✅      |
-| `test-iceberg-rck`             | 1     | —       | —          | 307.34 s   | ✅      |
-| `test-single-node-container`   | —     | —       | —          | —          | ✅      |
-
-The Java group includes the FileIO task; its row is not an additional run.
-PyIceberg, S3, UI and container acceptance passed before timing collection;
-their task wall-clock durations were not recorded. The completed UI rerun has
-86 component and 56 browser cases (browser runner time: 4.7 minutes).
-
----
-
-## Slowest Tests (2026-09-10)
-
-All individual tests or test binaries with wall-clock time >= 7 s.
-
-| Suite                 | Time    | Test / binary                                                               |
-| --------------------- | ------- | --------------------------------------------------------------------------- |
-| `test-kv-core`        | 38.76 s | `group_test` — Paxos group election, reconfiguration, recovery (99 tests)   |
-| `test-console-ui`     | 21.7 s  | `13-todo-ui-behavior:29` — deploy 3 nodes, disjoint DiskDB listeners        |
-| `test-chunk-client`   | 18.33 s | `small_object_writer_e2e` — small-write E2E with real ChunkDB + DiskIO (14) |
-| `test-console-server` | 18.07 s | `cluster_deployer_test` — deployer lifecycle (3 tests)                      |
-| `test-console-shared` | 15.12 s | `lifecycle_e2e_test` — lifecycle E2E (1 test)                               |
-| `test-console-ui`     | 10.8 s  | `50-chunk-capacity-disk-group:428` — assign disk-group to diskdb via UI     |
-| `test-chunk-client`   | 10.39 s | `chunk_reader_e2e` — chunk reader E2E with failure injection (6 tests)      |
-| `test-console-server` | 9.93 s  | `cluster_restart_incremental_test` — restart cycles (5 tests)               |
-| `test-console-ui`     | 8.9 s   | `21-kv-reconfig:254` — stop non-leader, stop leader triggers reelection     |
-| `test-chunkdb`        | 8.42 s  | `full_stack_test` — full stack E2E (20 tests)                               |
-| `test-console-ui`     | 8.0 s   | `13-todo-ui-behavior:269` — close dialog, preserve KV on DiskDB fail        |
-| `test-console-server` | 7.97 s  | `replica_leader_removal_test` — leader removal (2 tests)                    |
-| `test-kv-server`      | 7.75 s  | `cluster_e2e_test` — cluster E2E with kv-server subprocess spawns (6)       |
-| `test-console-ui`     | 7.7 s   | `31-kv-ops-advanced:98` — prefix/selected/inline delete + copy, load more   |
+The measurement helper writes logs and aggregate results below
+`.crowdb-runtime/artifacts/measure-tests/`. Keep slow individual-test notes next
+to the component measurement that produced them.
 
 ---
 

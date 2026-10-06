@@ -1,6 +1,6 @@
 [workspace]
 name = "crowdb-kv"
-version = "0.2.2"
+version = "0.3.0"
 description = "CROWDB — distributed key-value store with multi-paxos groups"
 channels = ["conda-forge"]
 # Keep glibc requirement low (2.17 = CentOS 7 / Ubuntu 16.04 era) so that

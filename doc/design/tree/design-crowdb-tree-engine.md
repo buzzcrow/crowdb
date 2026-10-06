@@ -505,7 +505,7 @@ guard). Design rules:
 - **Allocator seam.** `alloc()` routes owned allocations larger than
   `kInlineCap` through a single internal allocator hook (today: glibc
   `malloc`); a size-classed pool or RDMA-pinned allocator could slot in here
-  later with no call-site changes. See [`todo_code.md`](../../todo_code.md) for
+  later with no call-site changes. See [`todo_code.md`](../../working/todo_code.md) for
   why that hasn't been done speculatively.
 - **MemTable = `absl::btree_map<std::string, cell_entry>`.** The KEY stays
   `std::string`, the VALUE is a `cell_entry{slot, flags, cell}`. The
