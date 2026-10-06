@@ -2052,7 +2052,10 @@ async fn deletion_during_conversion_clears_task_ownership_before_tentative_clean
         ))],
     )
     .unwrap();
-    executor.execute(TaskClaim { task }).await.unwrap();
+    executor
+        .execute(TaskClaim::from_task_for_tests(task))
+        .await
+        .unwrap();
 
     let failed = task_store
         .get(&chunk_id, TASK_KIND_MIRROR_TO_EC, &prepared.task_id)

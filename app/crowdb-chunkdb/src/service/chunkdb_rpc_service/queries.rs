@@ -23,7 +23,7 @@ impl ChunkdbRpcService {
 
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBQueryChunkRequest>(req.control()) else {
                 submit_error(
                     &server,
@@ -96,7 +96,7 @@ impl ChunkdbRpcService {
         let conn_handle = req.conn_handle as usize;
         let owner = self.owner.clone();
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Some(owner) = owner else {
                 submit_owner_error(
                     &server,
@@ -194,7 +194,7 @@ impl ChunkdbRpcService {
             .as_ref()
             .map(|runtime| Arc::clone(&runtime.handler));
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBListChunksRequest>(req.control()) else {
                 submit_error(
                     &server,

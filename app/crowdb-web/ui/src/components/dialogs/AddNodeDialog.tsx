@@ -69,7 +69,7 @@ export function AddNodeDialog({ isOpen, onClose, racks, defaultRackId,
     })));
   }, [defaults.values]);
 
-  const allPorts = selected.flatMap(kind => [...Object.values(ports[kind] ?? {}), ...(kind === 'diskdb' && ports[kind]?.rpc_port ? [ports[kind]!.rpc_port! + 1, ports[kind]!.rpc_port! + 2] : [])]);
+  const allPorts = selected.flatMap(kind => [...Object.values(ports[kind] ?? {}).filter((value): value is number => typeof value === 'number'), ...(kind === 'diskdb' && ports[kind]?.rpc_port ? [ports[kind]!.rpc_port! + 1, ports[kind]!.rpc_port! + 2] : [])]);
   const validPorts = selected.every(kind => listenerFields(kind).every(([field]) => ports[kind]?.[field] != null))
     && allPorts.every(port => Number.isInteger(port) && port > 0 && port <= 65535)
     && new Set(allPorts).size === allPorts.length
@@ -131,6 +131,11 @@ export function AddNodeDialog({ isOpen, onClose, racks, defaultRackId,
             onToggle={() => setSelected(current => current.includes(kind) ? current.filter(value => value !== kind) : [...current, kind])}
             onChange={(field, value) => setPorts(current => ({ ...current, [kind]: { ...current[kind], [field]: value } }))} />)}
         </ul>
+        {selected.includes('chunkdb') && <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox"
+          checked={ports.chunkdb?.dynamic_ownership ?? false}
+          disabled={defaults.values?.chunkdb?.dynamic_ownership != null}
+          onChange={event => setPorts(current => ({ ...current, chunkdb: { ...current.chunkdb, dynamic_ownership: event.target.checked } }))} />Automatically redistribute ChunkDB slots</label>}
+
       </fieldset>
     </div>
   </Dialog>;

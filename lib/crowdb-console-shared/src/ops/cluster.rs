@@ -705,6 +705,7 @@ pub async fn local_deploy_chunkdb(
                 .join(format!("node{}", node.id))
                 .join(&server_id);
             let request = ChunkdbDeployRequest {
+                dynamic_ownership: false,
                 server_id: server_id.clone(),
                 instance_id,
                 http_port: http_ports[index],

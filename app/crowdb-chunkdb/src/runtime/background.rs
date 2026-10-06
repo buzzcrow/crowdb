@@ -27,6 +27,7 @@ impl RuntimeContext {
         } = self.clone();
         let reservation_reconcile_handle = {
             let conversion = Arc::clone(conversion);
+            let authority = Arc::clone(&range_guard);
             let mut stop = stop_rx.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_secs(1));
@@ -34,7 +35,7 @@ impl RuntimeContext {
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {
-                            match conversion.reconcile_reservations(256, unix_time_ms()).await {
+                            match authority.capture().scope(conversion.reconcile_reservations(256, unix_time_ms())).await {
                                 Ok(reconciled) if reconciled > 0 => {
                                     info!(reconciled, "expired strip reservations reconciled");
                                 }
@@ -80,6 +81,7 @@ impl RuntimeContext {
         };
         let conversion_scan_handle = config.conversion.enabled.then(|| {
             let conversion = Arc::clone(conversion);
+            let authority = Arc::clone(&range_guard);
             let mut stop = stop_rx.clone();
             let interval = Duration::from_secs(config.conversion.scan_interval_secs);
             tokio::spawn(async move {
@@ -87,7 +89,7 @@ impl RuntimeContext {
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {
-                            match conversion.trigger_configured_batch(false, 256, unix_time_ms()).await {
+                            match authority.capture().scope(conversion.trigger_configured_batch(false, 256, unix_time_ms())).await {
                                 Ok(accepted_chunks) if accepted_chunks > 0 => {
                                     info!(accepted_chunks, "automatic mirror-to-EC scan admitted chunks");
                                 }
@@ -123,11 +125,13 @@ impl RuntimeContext {
         let Self {
             config,
             pool,
+            range_guard,
             stop_rx,
             ..
         } = self.clone();
         let placement_repair_scan_handle = config.placement_repair.enabled.then(|| {
             let placement_repair = Arc::clone(placement_repair);
+            let authority = Arc::clone(&range_guard);
             let mut stop = stop_rx.clone();
             let interval = Duration::from_secs(config.placement_repair.scan_interval_secs);
             tokio::spawn(async move {
@@ -136,7 +140,7 @@ impl RuntimeContext {
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {
-                            if let Err(error) = placement_repair.scan_batch(256, unix_time_ms()).await {
+                            if let Err(error) = authority.capture().scope(placement_repair.scan_batch(256, unix_time_ms())).await {
                                 warn!(%error, "placement repair reconciliation failed");
                             }
                         }
@@ -155,6 +159,7 @@ impl RuntimeContext {
             Arc::clone(&pool),
             config.placement_rebalance.clone(),
         ));
+        let authority = Arc::clone(&range_guard);
         let mut stop = stop_rx.clone();
         let interval = Duration::from_secs(config.placement_rebalance.scan_interval_secs);
         tokio::spawn(async move {
@@ -163,7 +168,7 @@ impl RuntimeContext {
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        match planner.run_once(unix_time_ms()).await {
+                        match authority.capture().scope(planner.run_once(unix_time_ms())).await {
                             Ok(moved) if moved > 0 => info!(moved, "cross-domain rebalance moves handed to DiskDB"),
                             Ok(_) => {}
                             Err(error) => warn!(%error, "cross-domain rebalance planning failed"),
@@ -180,6 +185,7 @@ impl RuntimeContext {
     });
         let repair_scan_handle = config.repair.enabled.then(|| {
             let repair = Arc::clone(repair);
+            let authority = Arc::clone(&range_guard);
             let mut stop = stop_rx.clone();
             let interval = Duration::from_secs(config.repair.scan_interval_secs);
             tokio::spawn(async move {
@@ -188,7 +194,7 @@ impl RuntimeContext {
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {
-                            match repair.scan_batch(256, unix_time_ms()).await {
+                            match authority.capture().scope(repair.scan_batch(256, unix_time_ms())).await {
                                 Ok(accepted) if accepted > 0 => {
                                     info!(accepted, "read-repair scan admitted tasks");
                                 }

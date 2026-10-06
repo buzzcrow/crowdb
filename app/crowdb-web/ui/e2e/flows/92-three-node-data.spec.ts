@@ -1,30 +1,42 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 29.9s (2026-10-06), UI-created three-node cluster and real data round trips.
+// Baseline: 49.6s (2026-10-06), three storage nodes, three diskless nodes and real data round trips.
 import { test, expect } from '../fixtures/realBackend';
 import { resetAll, waitForLeader } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
+import { observeDefaultDeployments } from '../fixtures/defaultDeployments';
+import { disklessExpansion, verifyDisklessSlotBalance } from '../fixtures/disklessExpansion';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 
 import type { APIRequestContext, Page } from '@playwright/test';
 
-type UIContext = { page: Page; request: APIRequestContext; baseURL: string };
+type UIContext = { page: Page; request: APIRequestContext; baseURL: string; deployments: ReturnType<typeof observeDefaultDeployments> };
 
-test('UI creates three nodes, then S3 and Iceberg persist real data', async ({ page, request, baseURL }) => {
-  const context = { page, request, baseURL: baseURL! };
+test('UI creates three storage nodes, adds three diskless nodes, then KV, S3 and Iceberg persist real data', async ({ page, request, baseURL }) => {
+  const context = { page, request, baseURL: baseURL!, deployments: observeDefaultDeployments(page) };
   await step('three-node: empty owned backend', () => resetAll(baseURL!));
+  let primaryFailure: unknown;
   try {
     await page.goto('/');
     await createCluster(context);
     await addDisks(context);
     await verifyServices(context);
+    await disklessExpansion(context);
     await s3RoundTrip(context);
     await icebergRoundTrip(context);
+    await verifyDisklessSlotBalance(context);
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
   } finally {
     await page.close();
-    await teardown(context);
+    try { await teardown(context); }
+    catch (cleanupFailure) {
+      if (primaryFailure) throw new AggregateError([primaryFailure, cleanupFailure], `Cluster flow failed: ${String(primaryFailure)}; teardown failed: ${String(cleanupFailure)}`);
+      throw cleanupFailure;
+    }
   }
 });
 
@@ -42,10 +54,17 @@ async function createCluster({ page, request, baseURL }: UIContext) {
       await dialog.getByLabel('Node ID', { exact: true }).fill(String(id));
       await dialog.getByLabel('Host', { exact: true }).fill('127.0.0.1');
       await expect(dialog.getByRole('checkbox', { checked: true })).toHaveCount(7);
+      await dialog.getByLabel('Automatically redistribute ChunkDB slots').check();
       await dialog.getByRole('button', { name: 'Create Node', exact: true }).click();
       await expect(dialog).toHaveCount(0);
     }
     await expect.poll(async () => (await (await request.get('/api/servers')).json()).filter((s: { service_type: string; pid: number }) => s.service_type === 'paxos-kv' && s.pid).length, { intervals: [100] }).toBe(3);
+    // Initialization selects the live UI snapshot when its dialog opens.
+    // A registered PID alone does not prove that the UI has observed readiness.
+    const servers = await (await request.get('/api/servers')).json();
+    for (const server of servers.filter((server: { service_type: string }) => server.service_type === 'paxos-kv')) {
+      await expect(sidebar.getByTestId(`tree-node-SERVICE-${server.id}`).getByTitle('Healthy', { exact: true })).toBeVisible();
+    }
   });
   await step('three-node: initialize both KV groups through UI', async () => {
     await page.getByTestId('domain-kv').click();
@@ -95,11 +114,12 @@ async function addDisks({ page }: UIContext) {
   });
 }
 
-async function verifyServices({ page, request }: UIContext) {
+async function verifyServices({ page, request, deployments }: UIContext) {
   await step('three-node: all six services resume without Retry', async () => {
     await expect.poll(async () => (await (await request.get('/api/chunk-storage-readiness')).json()), { intervals: [100] }).toMatchObject({ ready: true });
     for (const kind of ['paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server']) {
       for (const id of [1, 2, 3]) {
+        await deployments.verify(id, kind);
         await expect.poll(async () => {
           const plans = await (await request.get('/api/service-plans')).json();
           return plans[id].steps[kind];

@@ -6,6 +6,27 @@
 use super::{Arc, Bytes, ChunkDomain, ChunkId, ChunkStore, RangeGuard, Result, Route, StoreError};
 
 impl ChunkStore {
+    pub(super) fn capture_authority(
+        &self,
+        id: &ChunkId,
+    ) -> Result<Option<crate::range_guard::ExecutionAuthority>> {
+        self.check_authority(id)?;
+        Ok(self.scope.as_ref().map(|(guard, _)| guard.capture()))
+    }
+
+    pub(super) fn check_submission(
+        &self,
+        id: &ChunkId,
+        authority: Option<&crate::range_guard::ExecutionAuthority>,
+    ) -> Result<()> {
+        if let Some((guard, _)) = &self.scope {
+            let authority = authority.ok_or(StoreError::Authority)?;
+            guard
+                .check_submission(id, authority)
+                .map_err(|error| StoreError::OwnershipChanged(error.bucket))?;
+        }
+        Ok(())
+    }
     #[must_use]
     pub fn with_scope(mut self, guard: Arc<RangeGuard>, domain: ChunkDomain) -> Self {
         self.scope = Some((guard, domain));

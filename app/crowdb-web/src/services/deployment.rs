@@ -52,6 +52,8 @@ impl Kind {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Deploy {
+    #[serde(default)]
+    dynamic_ownership: bool,
     kind: Kind,
     #[serde(deserialize_with = "deserialize_id")]
     instance_id: u64,

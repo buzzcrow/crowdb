@@ -43,6 +43,10 @@ crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 
 [[test]]
+name = "chunk_dynamic_monitor_test"
+path = "tests/chunk_dynamic_monitor_test.rs"
+
+[[test]]
 name = "group0_discovery_test"
 path = "tests/group0_discovery_test.rs"
 

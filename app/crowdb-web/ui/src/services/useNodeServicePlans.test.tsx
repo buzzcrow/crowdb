@@ -19,6 +19,38 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('finishes every selected ChunkDB deployment before journal bootstrap can block the serial plan', async () => {
+    const first = newPlan();
+    const second = newPlan();
+    for (const kind of serviceOrder) first[kind] = second[kind] = { state: 'disabled' };
+    first.chunkdb = { state: 'deployed' };
+    first['chunk-kv'] = { state: 'waiting' };
+    second.chunkdb = { state: 'pending' };
+    const existing = [
+      { node_id: 1, service_type: 'chunkdb', pid: 11 },
+      { node_id: 1, service_type: 'diskio', pid: 12 },
+      { node_id: 2, service_type: 'diskio', pid: 22 },
+    ] as Awaited<ReturnType<typeof listServers>>;
+    vi.mocked(listServers).mockImplementation(async () => existing);
+    let release!: () => void;
+    const deployment = new Promise<void>(resolve => { release = () => {
+      existing.push({ node_id: 2, service_type: 'chunkdb', pid: 21 } as typeof existing[number]);
+      resolve();
+    }; });
+    const request = vi.mocked(serviceRequest).getMockImplementation()!;
+    vi.mocked(serviceRequest).mockImplementation(async (path, method, body) => {
+      if (path === '/service-plans') return { 1: { revision: 1, steps: first }, 2: { revision: 1, steps: second } };
+      if (path === '/nodes/2/services/deploy') await deployment;
+      return request(path, method, body);
+    });
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(result.current.plans[1]['chunk-kv']).toEqual({ state: 'waiting', detail: 'Waiting: deploy selected ChunkDB services before starting Chunk-KV' });
+    expect(serviceRequest).toHaveBeenCalledWith('/nodes/2/services/deploy', 'POST', expect.objectContaining({ kind: 'chunkdb' }));
+    expect(vi.mocked(serviceRequest).mock.calls.some(([, method, body]) => method === 'POST' && (body as { kind?: string })?.kind === 'chunk-kv')).toBe(false);
+    await act(async () => { release(); await vi.advanceTimersByTimeAsync(2000); });
+    expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/services/deploy', 'POST', expect.objectContaining({ kind: 'chunk-kv' }));
+  });
   it('rechecks authority after initialization completes without another topology change', async () => {
     let ready = false;
     vi.mocked(listServers).mockResolvedValue([{ node_id: 1, service_type: 'paxos-kv', pid: 10 }] as Awaited<ReturnType<typeof listServers>>);
@@ -45,6 +77,7 @@ describe('node service plans', () => {
     vi.mocked(listServers).mockResolvedValue([
       { node_id: 1, service_type: 'paxos-kv', pid: 10 },
       { node_id: 1, service_type: 'diskdb', pid: 11 },
+      { node_id: 1, service_type: 'chunkdb', pid: 13 },
       { node_id: 1, service_type: 'diskio', pid: 12 },
       { node_id: 2, service_type: 'diskio', pid: 20 },
     ] as Awaited<ReturnType<typeof listServers>>);
@@ -187,6 +220,18 @@ describe('node service plans', () => {
     expect(deployServer).toHaveBeenCalledWith(1, { rest_port: 19222, rpc_port: 19223 });
     for (const kind of serviceOrder.filter(kind => kind !== 'paxos-kv')) expect(result.current.plans[1][kind].state).toBe('disabled');
     expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/service-plan', 'PUT', expect.objectContaining({ overrides: { 'paxos-kv': { http_port: 19222, rpc_port: 19223 } } }));
+  });
+  it('retries a saved fixed-slot warning as an idle ChunkDB deployment', async () => {
+    const steps = newPlan();
+    for (const kind of serviceOrder) steps[kind] = { state: 'disabled' };
+    steps.chunkdb = { state: 'warning', detail: 'CDB instance is outside the fixed slot plan' };
+    vi.mocked(listServers).mockResolvedValue([{ node_id: 1, service_type: 'diskio', pid: 10 }] as Awaited<ReturnType<typeof listServers>>);
+    vi.mocked(serviceRequest).mockImplementation(async path => path === '/service-plans'
+      ? { 1: { revision: 4, steps } } : path === '/deployment-defaults'
+        ? { chunkdb: { instance_id: '4', http_port: 12010, rpc_port: 12110 } } : { revision: 5, ready: true });
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => { await result.current.start(1); });
+    expect(result.current.plans[1].chunkdb.state).toBe('deployed');
   });
   it('keeps disabled steps disabled when server observation fails', async () => {
     vi.mocked(listServers).mockRejectedValue(new Error('Registry unavailable'));

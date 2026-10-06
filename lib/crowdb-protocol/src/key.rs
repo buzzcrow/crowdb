@@ -40,8 +40,8 @@ pub use chunk_task::{ChunkTaskKey, FinalizeChunkTaskKey, LeasedChunkTaskKey, Rea
 pub use chunkdb::{ChunkdbRangeBindingKey, ChunkdbRangeMigrationKey};
 mod chunk_slot;
 pub use chunk_slot::{
-    ChunkServiceHandoffKey, ChunkServiceSlotsKey, ChunkSlotFenceKey, ChunkSlotMapHeadKey,
-    ChunkStorageSlotsKey,
+    ChunkServiceAuthorityKey, ChunkServiceHandoffKey, ChunkServiceSlotsKey, ChunkSlotFenceKey,
+    ChunkSlotMapHeadKey, ChunkStorageSlotsKey,
 };
 pub use common::{NodeKey, RackKey};
 pub use diskdb::{

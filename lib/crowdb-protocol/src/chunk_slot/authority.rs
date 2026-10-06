@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 
 /// A process lifetime, including restarts under the same service instance ID.
+///
+/// Service admission uses owner plus a durable per-slot epoch. Restart and
+/// reassignment must advance that epoch even when the owner ID is unchanged,
+/// so incarnation is not an additional admission condition. This type remains
+/// in the existing KV fence wire format, which still compares the full encoded
+/// identity until its `ChunkDB` callers are migrated to submission-time checks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "[u8; 16]", into = "[u8; 16]")]
 pub struct ChunkServiceIncarnation([u8; 16]);
@@ -47,6 +53,14 @@ impl From<ChunkServiceIncarnation> for [u8; 16] {
 
 /// Authority for one slot in its selected data group. Ordinary writes retain
 /// this value; refreshing a map must never replace an in-flight operation's value.
+///
+/// Capture owner/epoch at request entry and recheck that slot before each client
+/// KV submission. Another slot's publication must not invalidate this request.
+/// Rejection stops the execution; rerouting starts a new execution with the same
+/// request ID, even if this process remains owner under a newer epoch. Never
+/// replace the captured epoch and continue using the old execution's state.
+/// Submitted work may finish without handoff draining it; an unknown submitted
+/// outcome still requires reconciliation before replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChunkSlotAuthority {

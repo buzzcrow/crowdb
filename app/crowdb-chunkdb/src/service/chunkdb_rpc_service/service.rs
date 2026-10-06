@@ -86,6 +86,16 @@ pub struct ChunkdbRpcService {
 }
 
 impl ChunkdbRpcService {
+    fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        let authority = self.handler.execution_authority();
+        self.rt.spawn(async move {
+            if let Some(authority) = authority {
+                authority.scope(future).await;
+            } else {
+                future.await;
+            }
+        });
+    }
     pub fn new(handler: Arc<LifecycleHandler>, metrics: Arc<ChunkdbMetrics>, rt: Handle) -> Self {
         Self {
             handler,

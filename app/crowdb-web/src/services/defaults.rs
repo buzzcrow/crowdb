@@ -94,6 +94,19 @@ pub(super) async fn get(State(state): State<AppState>) -> Result<Json<Value>, Fa
                 value["rpc_port"] = json!(next(&mut used, base + 100, 1)?);
             }
         }
+        if kind == "chunkdb" {
+            if let Some(server) = config
+                .servers
+                .iter()
+                .find(|server| server.service_type == ServiceType::Chunkdb)
+            {
+                value["dynamic_ownership"] = json!(config
+                    .local_launches
+                    .get(&server.id)
+                    .and_then(|launch| launch.env.get("CROWDB_CHUNKDB_OWNERSHIP_POLICY"))
+                    .is_some_and(|policy| policy == "dynamic"));
+            }
+        }
         result.insert(kind, value);
     }
     Ok(Json(json!(result)))

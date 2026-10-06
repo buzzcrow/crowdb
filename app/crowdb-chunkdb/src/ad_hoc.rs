@@ -125,6 +125,28 @@ impl AdHocRecoveryShared {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum AdHocRequestError {
+    #[error(transparent)]
+    Lifecycle(#[from] crate::lifecycle::LifecycleError),
+    #[error(transparent)]
+    Task(#[from] crate::task::TaskStoreError),
+    #[error(transparent)]
+    Repair(#[from] crate::repair::RepairError),
+    #[error("{0}")]
+    Other(String),
+}
+impl From<String> for AdHocRequestError {
+    fn from(value: String) -> Self {
+        Self::Other(value)
+    }
+}
+impl From<&str> for AdHocRequestError {
+    fn from(value: &str) -> Self {
+        Self::Other(value.into())
+    }
+}
+
 pub struct AdHocRecoveryManager {
     shared: Arc<AdHocRecoveryShared>,
     lifecycle: Arc<LifecycleHandler>,
@@ -160,7 +182,7 @@ impl AdHocRecoveryManager {
     pub async fn request(
         self: &Arc<Self>,
         request: AdHocEcRecoveryRequest,
-    ) -> Result<AdHocEcRecoveryResponse, String> {
+    ) -> Result<AdHocEcRecoveryResponse, AdHocRequestError> {
         let chunk_id = request.chunk_id.ok_or("chunk ID is required")?;
         let segment = request.failed_segment.ok_or("failed segment is required")?;
         if request.version != 1 || request.operation_id.is_none() || segment.owner_chunk != Some(chunk_id) {
@@ -171,11 +193,7 @@ impl AdHocRecoveryManager {
             strip_sequence: request.strip_sequence,
             segment,
         };
-        let chunk = self
-            .lifecycle
-            .query_chunk(&chunk_id)
-            .await
-            .map_err(|error| error.to_string())?;
+        let chunk = self.lifecycle.query_chunk(&chunk_id).await?;
         let Some((index, strip)) = chunk
             .strips
             .iter()
@@ -241,8 +259,14 @@ impl AdHocRecoveryManager {
         let mut receiver = entry.result.subscribe();
         if elected {
             let owner = Arc::clone(self);
+            let authority = self.lifecycle.execution_authority();
             tokio::spawn(async move {
-                owner.run_task(key, entry).await;
+                let future = owner.run_task(key, entry);
+                if let Some(authority) = authority {
+                    Box::pin(authority.scope(future)).await;
+                } else {
+                    future.await;
+                }
             });
         }
         let recovered = tokio::time::timeout(Duration::from_secs(30), async {
@@ -281,12 +305,9 @@ impl AdHocRecoveryManager {
         strip: &ChunkStrip,
         segment: Segment,
         operation_id: ChunkId,
-    ) -> Result<(), String> {
+    ) -> Result<(), AdHocRequestError> {
         if strip.unavailable_segments.contains(&segment) {
-            self.coordinator
-                .admit_chunk(chunk, now_ms())
-                .await
-                .map_err(|error| error.to_string())?;
+            self.coordinator.admit_chunk(chunk, now_ms()).await?;
             return Ok(());
         }
         self.diskdb.mark_blocks_corrupt(vec![segment]).await?;
@@ -303,12 +324,8 @@ impl AdHocRecoveryManager {
                 std::slice::from_ref(&replacement),
                 operation_id,
             )
-            .await
-            .map_err(|error| error.to_string())?;
-        self.coordinator
-            .admit_chunk(&updated, now_ms())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
+        self.coordinator.admit_chunk(&updated, now_ms()).await?;
         Ok(())
     }
 

@@ -28,6 +28,17 @@ pub enum TaskAdmission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskClaim {
     pub task: ChunkTaskValue,
+    pub(crate) authority: Option<crate::range_guard::ExecutionAuthority>,
+}
+
+impl TaskClaim {
+    #[cfg(feature = "test-util")]
+    pub fn from_task_for_tests(task: ChunkTaskValue) -> Self {
+        Self {
+            task,
+            authority: None,
+        }
+    }
 }
 
 /// Stateless transition manager over a durable [`TaskStore`].
@@ -40,6 +51,8 @@ pub struct TaskManager {
 
 impl TaskManager {
     pub(crate) async fn verify_claim(&self, claim: &TaskClaim) -> Result<(), TaskManagerError> {
+        self.store
+            .check_submission(&claim.task.partition_id, claim.authority.as_ref())?;
         let current = self
             .load(&claim.task)
             .await?
@@ -72,6 +85,8 @@ impl TaskManager {
 
     /// Extend an owned running claim while its handler is still executing.
     pub async fn renew(&self, claim: &TaskClaim, now_ms: u64) -> Result<(), TaskManagerError> {
+        self.store
+            .check_submission(&claim.task.partition_id, claim.authority.as_ref())?;
         let current = self
             .load(&claim.task)
             .await?
@@ -83,7 +98,7 @@ impl TaskManager {
         renewed.revision = renewed.revision.saturating_add(1);
         renewed.updated_at_ms = now_ms;
         renewed.claim_deadline_ms = now_ms.saturating_add(self.lease_ms);
-        self.store.write_transition(Some(&current), &renewed).await?;
+        self.write_claim_transition(claim, &current, &renewed).await?;
         Ok(())
     }
 
@@ -138,6 +153,21 @@ impl TaskManager {
         index: &ReadyChunkTaskKey,
         now_ms: u64,
     ) -> Result<Option<TaskClaim>, TaskManagerError> {
+        let authority = self.store.execution_authority();
+        let future = self.claim_captured(index, now_ms, authority.clone());
+        if let Some(authority) = authority {
+            authority.scope(future).await
+        } else {
+            future.await
+        }
+    }
+
+    async fn claim_captured(
+        &self,
+        index: &ReadyChunkTaskKey,
+        now_ms: u64,
+        authority: Option<crate::range_guard::ExecutionAuthority>,
+    ) -> Result<Option<TaskClaim>, TaskManagerError> {
         let Some(current) = self
             .store
             .get(&index.partition_id, index.kind, &index.task_id)
@@ -164,7 +194,10 @@ impl TaskManager {
             return Ok(None);
         };
         if owns_claim(&stored, self.instance_id, claimed.claim_generation) {
-            Ok(Some(TaskClaim { task: stored }))
+            Ok(Some(TaskClaim {
+                task: stored,
+                authority,
+            }))
         } else {
             Ok(None)
         }
@@ -269,6 +302,8 @@ impl TaskManager {
         error: &str,
         eligible_at_ms: u64,
     ) -> Result<(), TaskManagerError> {
+        self.store
+            .check_submission(&claim.task.partition_id, claim.authority.as_ref())?;
         let current = self
             .load(&claim.task)
             .await?
@@ -285,7 +320,22 @@ impl TaskManager {
         next.claim_deadline_ms = 0;
         next.last_error_code = error_code;
         next.last_error = error.into();
-        self.store.write_transition(Some(&current), &next).await?;
+        self.write_claim_transition(claim, &current, &next).await?;
+        Ok(())
+    }
+
+    async fn write_claim_transition(
+        &self,
+        claim: &TaskClaim,
+        previous: &ChunkTaskValue,
+        next: &ChunkTaskValue,
+    ) -> Result<(), TaskManagerError> {
+        let future = self.store.write_transition(Some(previous), next);
+        if let Some(authority) = &claim.authority {
+            authority.clone().scope(future).await?;
+        } else {
+            future.await?;
+        }
         Ok(())
     }
 

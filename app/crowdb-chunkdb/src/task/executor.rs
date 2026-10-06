@@ -85,6 +85,16 @@ impl TaskExecutor {
     /// # Errors
     /// Returns a task-manager error if the outcome cannot be persisted.
     pub async fn execute(&self, claim: TaskClaim) -> Result<(), TaskRegistryError> {
+        let authority = claim.authority.clone();
+        let future = self.execute_captured(claim);
+        if let Some(authority) = authority {
+            authority.scope(future).await
+        } else {
+            future.await
+        }
+    }
+
+    async fn execute_captured(&self, claim: TaskClaim) -> Result<(), TaskRegistryError> {
         let _permit = self
             .permits
             .acquire()

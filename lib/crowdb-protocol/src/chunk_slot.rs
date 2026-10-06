@@ -8,6 +8,7 @@ mod bitmap;
 mod bootstrap;
 mod handoff;
 mod map;
+mod reassignment;
 
 pub use authority::{ChunkServiceIncarnation, ChunkSlotAuthority, ChunkSlotAuthorityError};
 pub use bitmap::ChunkSlotBitmap;

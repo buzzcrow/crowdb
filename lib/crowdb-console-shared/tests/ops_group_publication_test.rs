@@ -24,7 +24,7 @@ impl Drop for TestServer {
     }
 }
 
-async fn verify_group_publication(drop_reply: bool) {
+async fn verify_group_publication(drop_reply: bool, target_has_store: bool) {
     let cluster = KvCluster::start().await;
     let proxy = rpc_response_proxy::TestResponseProxy::start(cluster.group0_leader_endpoint.clone()).await;
     let ctx = OpContext::new(
@@ -33,13 +33,28 @@ async fn verify_group_publication(drop_reply: bool) {
         ConsoleConfig::default(),
     );
     let armed = proxy.armed.clone();
-    let app = Router::new().route(
-        "/stores/:sid/groups",
-        post(move || {
-            armed.store(drop_reply, Ordering::SeqCst);
-            async { StatusCode::CREATED }
-        }),
-    );
+    let created_store = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(target_has_store));
+    let store_state = created_store.clone();
+    let group_state = created_store.clone();
+    let app = Router::new()
+        .route(
+            "/stores",
+            post(move || {
+                store_state.store(true, Ordering::SeqCst);
+                async { (StatusCode::CREATED, axum::Json(serde_json::json!({"store_id": 77, "group_count": 0, "listen_addr": "127.0.0.1:10100"}))) }
+            }),
+        )
+        .route(
+            "/stores/:sid/groups",
+            post(move || {
+                assert!(
+                    group_state.load(Ordering::SeqCst),
+                    "local store must exist before creating its group"
+                );
+                armed.store(drop_reply, Ordering::SeqCst);
+                async { StatusCode::CREATED }
+            }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let _server = TestServer(tokio::spawn(
@@ -59,7 +74,10 @@ async fn verify_group_publication(drop_reply: bool) {
         )
         .await
         .unwrap();
-    ctx.sysmd().add_store(77, &[701]).await.unwrap();
+    ctx.sysmd()
+        .add_store(77, if target_has_store { &[701] } else { &[] })
+        .await
+        .unwrap();
     kv_logical::add_group(&ctx, 77, 7, 700, &[701]).await.unwrap();
     let mut revisions = Vec::new();
     for key in [
@@ -94,12 +112,17 @@ async fn verify_group_publication(drop_reply: bool) {
 
 #[tokio::test]
 async fn group_and_initial_replica_share_one_committed_revision() {
-    verify_group_publication(false).await;
+    verify_group_publication(false, true).await;
 }
 
 #[tokio::test]
 async fn lost_batch_response_confirms_complete_group_membership() {
-    verify_group_publication(true).await;
+    verify_group_publication(true, true).await;
+}
+
+#[tokio::test]
+async fn group_creation_prepares_a_local_store_on_new_nodes() {
+    verify_group_publication(false, false).await;
 }
 
 #[tokio::test]

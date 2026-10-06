@@ -212,7 +212,10 @@ async fn convert(
         .await
         .unwrap()
         .unwrap();
-    executor.execute(TaskClaim { task }).await.unwrap();
+    executor
+        .execute(TaskClaim::from_task_for_tests(task))
+        .await
+        .unwrap();
     assert_eq!(
         tasks
             .get(&id, TASK_KIND_MIRROR_TO_EC, &prepared.task_id)

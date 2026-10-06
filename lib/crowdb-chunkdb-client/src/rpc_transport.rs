@@ -76,6 +76,10 @@ pub struct ChunkdbRpcTransport {
     next_req_id: AtomicU64,
 }
 
+tokio::task_local! {
+    static REQUEST_IDENTITY: (usize, u64);
+}
+
 impl std::fmt::Debug for ChunkdbRpcTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChunkdbRpcTransport")
@@ -185,7 +189,18 @@ impl ChunkdbRpcTransport {
     }
 
     fn next_id(&self) -> u64 {
-        self.next_req_id.fetch_add(1, Ordering::Relaxed)
+        REQUEST_IDENTITY
+            .try_with(|(transport, id)| (*transport == self as *const Self as usize).then_some(*id))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| self.next_req_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub(crate) async fn with_request_identity<F: std::future::Future>(&self, future: F) -> F::Output {
+        let id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
+        REQUEST_IDENTITY
+            .scope((self as *const Self as usize, id), future)
+            .await
     }
 
     /// Get or create a `Connection` for the given rpc endpoint.
@@ -1099,7 +1114,7 @@ async fn call_rpc(
                 .connections
                 .invalidate(&normalized, selected.generation());
         }
-        rpc_error_to_client(error)
+        ChunkdbClientError::OutcomeUnknown(format!("rpc entered transport: {error:?}"))
     };
     let fut = transport
         .rpc
@@ -1112,7 +1127,11 @@ async fn call_rpc(
             msg_type,
         )
         .map_err(&map_error)?;
-    let resp = fut.await.map_err(map_error)?;
+    let resp = fut.await.map_err(|error| {
+        // The request entered transport; a lost response does not prove rejection.
+        let error = map_error(error);
+        ChunkdbClientError::OutcomeUnknown(error.to_string())
+    })?;
     resp.control.ok_or_else(|| {
         ChunkdbClientError::Rpc(format!("response missing control buffer from {rpc_endpoint}"))
     })

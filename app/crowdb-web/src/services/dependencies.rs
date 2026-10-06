@@ -66,7 +66,7 @@ pub(super) async fn storage_wait_reason(state: &AppState) -> Option<String> {
         let ownership = instance
             .and_then(|(_, value)| value.extra.as_ref())
             .and_then(|extra| extra.diskdb.as_ref());
-        let Some(ownership) = ownership.filter(|value| !value.owned_dg_ids.is_empty()) else {
+        let Some(ownership) = ownership else {
             return Some(format!(
                 "Waiting: {} must publish live disk-group ownership",
                 server.id

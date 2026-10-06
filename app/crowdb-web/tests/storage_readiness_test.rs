@@ -50,6 +50,16 @@ async fn chunk_storage_requires_live_complete_ownership_even_when_diskio_pid_is_
     server.pid = Some(std::process::id());
     server.rpc_url = Some(format!("http://{endpoint}"));
     config.servers.push(server);
+    let mut diskless = ServerEntry::new("diskio-2", "http://127.0.0.1:2");
+    diskless.service_type = ServiceType::Diskio;
+    diskless.node_id = Some(2);
+    diskless.pid = Some(std::process::id());
+    diskless.rpc_url = Some("http://127.0.0.1:13011".into());
+    config.servers.push(diskless);
+    registry
+        .heartbeat_diskio(2, "127.0.0.1:13011", &[], &[])
+        .await
+        .unwrap();
     let state = AppState::with_config(config, None);
     *state.kv_client.write().await = Some(kv);
     let app = router(state);

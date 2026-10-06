@@ -23,7 +23,7 @@ impl ChunkdbRpcService {
         let connection = request.conn_handle as usize;
         let server = Arc::clone(server);
         let handler = Arc::clone(&self.handler);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let parsed = flatbuffers::root::<FBReserveStripGroupRequest>(request.control())
                 .map_err(|_| "invalid reserve strip group request")
                 .and_then(|value| {
@@ -84,7 +84,7 @@ impl ChunkdbRpcService {
         let connection = request.conn_handle as usize;
         let server = Arc::clone(server);
         let handler = Arc::clone(&self.handler);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let parsed = flatbuffers::root::<FBMutateStripReservationRequest>(request.control())
                 .map_err(|_| "invalid mutate strip reservation request")
                 .and_then(|value| {

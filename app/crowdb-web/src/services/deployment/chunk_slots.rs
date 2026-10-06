@@ -14,7 +14,7 @@ use crowdb_protocol::{
     key::{ChunkSlotMapHeadKey, TextKey},
 };
 
-pub(super) async fn prepare(state: &AppState, instance_id: u64) -> Result<(), Failure> {
+pub(super) async fn prepare(state: &AppState, instance_id: u64, dynamic: bool) -> Result<(), Failure> {
     state
         .op_context()
         .await
@@ -28,16 +28,21 @@ pub(super) async fn prepare(state: &AppState, instance_id: u64) -> Result<(), Fa
             .map_err(|error| err_502(error.to_string()))?,
         GetOutcome::Found { .. }
     ) {
-        let service = maps
-            .read_service()
+        maps.read_service()
             .await
             .map_err(|error| err_502(error.to_string()))?;
         maps.read_storage()
             .await
             .map_err(|error| err_502(error.to_string()))?;
-        if !service.bindings().iter().any(|entry| entry.owner == instance_id) {
+        if dynamic
+            != maps
+                .read_dynamic_service_snapshot()
+                .await
+                .map_err(|error| err_502(error.to_string()))?
+                .is_some()
+        {
             return Err(err_409(
-                "CDB instance is outside the fixed slot plan; explicit slot migration is required",
+                "ChunkDB ownership policy differs from the initialized cluster",
             ));
         }
         return Ok(());
@@ -97,5 +102,11 @@ pub(super) async fn prepare(state: &AppState, instance_id: u64) -> Result<(), Fa
         storage_groups: vec![storage],
     })
     .await
-    .map_err(|error| err_502(format!("Chunk slot initialization: {error}")))
+    .map_err(|error| err_502(format!("Chunk slot initialization: {error}")))?;
+    if dynamic {
+        maps.initialize_service_epochs()
+            .await
+            .map_err(|error| err_502(error.to_string()))?;
+    }
+    Ok(())
 }

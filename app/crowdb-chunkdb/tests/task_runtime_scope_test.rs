@@ -139,3 +139,76 @@ async fn restarted_owner_replaces_expired_claim_and_fences_old_execution_and_com
     assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
     after.complete(&current, 201).await.unwrap();
 }
+
+#[path = "common/submission_epoch.rs"]
+mod submission_epoch;
+
+#[tokio::test]
+async fn dynamic_epoch_regrant_revokes_task_renewal_and_completion_in_both_domains() {
+    use crowdb_chunkdb::task::{TaskManagerError, TaskStoreError};
+    use crowdb_protocol::chunk_slot::ChunkSlot;
+    let test = TestGroups::start().await;
+    let layout = ChunkSlotBootstrap {
+        service_instances: vec![1],
+        storage_groups: vec![ChunkStorageGroup {
+            store_id: 0,
+            group_id: 1,
+        }],
+    };
+    let routes = BindingCache::new();
+    routes
+        .replace(BindingTable::new(layout.storage_map().unwrap()))
+        .unwrap();
+    for (purpose, domain) in [(1_u64, ChunkDomain::System), (5, ChunkDomain::UserData)] {
+        let id = ChunkId {
+            high: purpose << 56,
+            low: 55,
+        };
+        let slot = ChunkSlot::for_chunk(&id);
+        let guard = Arc::new(RangeGuard::new());
+        let map = submission_epoch::TestEpochLayout::map(1, slot, 1, 1, 1);
+        guard.install_dynamic(&map, 1).unwrap();
+        let store = Arc::new(
+            TaskStore::new(Arc::clone(&test.kv), routes.clone()).with_scope(Arc::clone(&guard), domain),
+        );
+        let manager = Arc::new(TaskManager::new(Arc::clone(&store), 1, 100));
+        let mut task = finalize(id);
+        task.kind = 42;
+        manager.admit(task).await.unwrap();
+        let stale = manager
+            .claim(&store.scan_ready(100, 1).await.unwrap()[0], 100)
+            .await
+            .unwrap()
+            .unwrap();
+        guard
+            .install_dynamic(&map.reassign(&[(slot, 1)]).unwrap(), 1)
+            .unwrap();
+        assert!(matches!(
+            manager.renew(&stale, 150).await,
+            Err(TaskManagerError::Store(TaskStoreError::Authority))
+        ));
+        assert!(matches!(
+            manager.complete(&stale, 150).await,
+            Err(TaskManagerError::Store(TaskStoreError::Authority))
+        ));
+        let handler = TestTaskHandler::new(None);
+        let executor = TaskExecutor::new(Arc::clone(&manager), 1, vec![handler.clone()]).unwrap();
+        assert!(executor.execute(stale).await.is_err());
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 0);
+        manager
+            .recover_expired(&store.scan_expired_leases(200, 1).await.unwrap()[0], 200)
+            .await
+            .unwrap();
+        let fresh = manager
+            .claim(&store.scan_ready(200, 1).await.unwrap()[0], 200)
+            .await
+            .unwrap()
+            .unwrap();
+        executor.execute(fresh).await.unwrap();
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store.get(&id, 42, &id).await.unwrap().unwrap().state,
+            ChunkTaskState::Completed
+        );
+    }
+}

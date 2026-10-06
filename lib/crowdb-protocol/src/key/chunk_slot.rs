@@ -6,7 +6,48 @@
 use super::encoding::{
     check_path_exact, decode_path_u64, encode_path_header, encode_path_u64, KeyError, TextKey,
 };
-use crate::chunk_slot::ChunkSlot;
+use crate::chunk_slot::{ChunkSlot, ChunkSlotAuthority};
+
+/// Bitmap for one incarnation and per-slot epoch, separate from endpoint routing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkServiceAuthorityKey {
+    pub authority: ChunkSlotAuthority,
+}
+
+impl TextKey for ChunkServiceAuthorityKey {
+    const PATH_MAGIC: &'static str = "/chunkdb";
+    const PATH_TYPE: &'static str = "slot_authority";
+
+    fn encode_to_path(&self, out: &mut String) {
+        encode_path_header(out, Self::PATH_MAGIC, Self::PATH_TYPE);
+        out.push('/');
+        for byte in self.authority.to_fence_value() {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+    }
+
+    fn decode_path(parts: &[&str]) -> Result<Self, KeyError> {
+        check_path_exact(parts, 1)?;
+        let text = parts[0].as_bytes();
+        if text.len() != 66 {
+            return Err(KeyError::BadTag);
+        }
+        let mut value = [0; 33];
+        for (index, pair) in text.chunks_exact(2).enumerate() {
+            let digit = |byte| match byte {
+                b'0'..=b'9' => Ok(byte - b'0'),
+                b'a'..=b'f' => Ok(byte - b'a' + 10),
+                _ => Err(KeyError::BadTag),
+            };
+            value[index] = digit(pair[0])? * 16 + digit(pair[1])?;
+        }
+        Ok(Self {
+            authority: ChunkSlotAuthority::from_fence_value(&value).map_err(|_| KeyError::BadTag)?,
+        })
+    }
+}
 
 /// One active service handoff cohort in group zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +157,7 @@ impl TextKey for ChunkStorageSlotsKey {
 pub enum ChunkSlotMapHeadKey {
     Service,
     Storage,
+    Authority,
 }
 
 impl TextKey for ChunkSlotMapHeadKey {
@@ -128,6 +170,7 @@ impl TextKey for ChunkSlotMapHeadKey {
         out.push_str(match self {
             Self::Service => "service",
             Self::Storage => "storage",
+            Self::Authority => "authority",
         });
     }
 
@@ -136,6 +179,7 @@ impl TextKey for ChunkSlotMapHeadKey {
         match parts[0] {
             "service" => Ok(Self::Service),
             "storage" => Ok(Self::Storage),
+            "authority" => Ok(Self::Authority),
             _ => Err(KeyError::ShortInput),
         }
     }

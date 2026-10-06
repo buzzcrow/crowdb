@@ -29,12 +29,14 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
   const firstGroup = stores.find(entry => String(entry.store_id) === store)?.groups.find(entry => String(entry.group_id) !== '0');
   const [bootstrap, setBootstrap] = useState(!!firstGroup);
   const [group, setGroup] = useState(String(firstGroup?.group_id ?? ''));
+  const [dynamicOwnership, setDynamicOwnership] = useState(false);
   const [testMode, setTestMode] = useState(false);
   const defaults = useDeploymentDefaults(true);
   useEffect(() => {
     const value = defaults.values?.[kind];
     if (!value) return;
     setInstance(value.instance_id);
+    setDynamicOwnership(value.dynamic_ownership ?? false);
     setHttpPort(String(value.http_port ?? ''));
     setRpcPort(String(value.rpc_port ?? ''));
     setS3Port(String(value.s3_port ?? ''));
@@ -52,6 +54,7 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
     setBusy(true); setError('');
     try {
       await serviceRequest(`/nodes/${nodeId}/services/deploy`, 'POST', {
+        ...(kind === 'chunkdb' ? { dynamic_ownership: dynamicOwnership } : {}),
         kind, instance_id: instance, test_single_node: testMode,
         ...(kind !== 'diskio' ? { http_port: Number(httpPort) } : {}),
         ...(kind === 'access-server' ? { s3_port: Number(s3Port), health_port: Number(healthPort) } : { rpc_port: Number(rpcPort) }),
@@ -81,6 +84,9 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
           <option value="">Select non-system group</option>{stores.find(entry => String(entry.store_id) === store)?.groups.filter(entry => String(entry.group_id) !== '0').map(group => <option key={group.group_id} value={group.group_id}>Group {group.group_id}</option>)}
         </select></label>}
       </>}
+      {kind === 'chunkdb' && <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={dynamicOwnership}
+        disabled={defaults.values?.chunkdb?.dynamic_ownership != null}
+        onChange={event => setDynamicOwnership(event.target.checked)} />Automatically redistribute ChunkDB slots</label>}
       <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={testMode} onChange={event => setTestMode(event.target.checked)} />Single-node test deployment (reduced redundancy)</label>
       {kind === 'diskio' && <p className="tw-text-xs tw-text-muted">Production requires disks with device paths. Test deployments may use in-memory disks.</p>}
       {defaults.error && <p role="alert">{defaults.error}</p>}

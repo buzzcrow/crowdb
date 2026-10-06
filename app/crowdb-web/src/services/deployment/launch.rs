@@ -35,13 +35,14 @@ pub(super) async fn launch(
         Kind::Chunkdb => {
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                super::chunk_slots::prepare(state, body.instance_id),
+                super::chunk_slots::prepare(state, body.instance_id, body.dynamic_ownership),
             )
             .await
             .map_err(|_| {
                 err_502("Chunk slot initialization timed out; reconcile the layout before retrying")
             })??;
             let request = ChunkdbDeployRequest {
+                dynamic_ownership: body.dynamic_ownership,
                 server_id: id.into(),
                 instance_id: body.instance_id,
                 http_port: body.http_port.unwrap(),

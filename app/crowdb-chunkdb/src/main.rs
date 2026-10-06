@@ -188,20 +188,37 @@ async fn main() {
         error!(%error, "KV voting topology does not satisfy deployment mode; refusing readiness");
         return;
     }
+    let dynamic_ownership =
+        config.service_ownership == crowdb_chunkdb::chunkdb_config::ServiceOwnershipPolicy::Dynamic;
     let monitor_request = crowdb_protocol::chunk_kv::EnsureDomainMonitorRequest {
         descriptor: crowdb_protocol::chunk_kv::DomainMonitorDescriptor {
             domain: "chunkdb".into(),
             service_registry_name: "chunkdb".into(),
-            driver_version: 2,
+            driver_version: if dynamic_ownership { 3 } else { 2 },
             capability_version: 1,
-            heartbeat_interval_ms: 5_000,
+            heartbeat_interval_ms: if dynamic_ownership {
+                u64::from(config.server.keepalive_interval_secs)
+                    .saturating_mul(1_000)
+                    .max(1)
+            } else {
+                5_000
+            },
             suspect_after_ms: 10_000,
             dead_after_ms: 15_000,
             lease_duration_ms: 20_000,
             max_clock_skew_ms: 1_000,
             self_fence_margin_ms: 1_000,
-            failure_policy: crowdb_protocol::chunk_kv::DomainFailurePolicy::OperatorOnly,
-            balance_policy: "fixed-slots-v1".into(),
+            failure_policy: if dynamic_ownership {
+                crowdb_protocol::chunk_kv::DomainFailurePolicy::AutomaticSharedStorage
+            } else {
+                crowdb_protocol::chunk_kv::DomainFailurePolicy::OperatorOnly
+            },
+            balance_policy: if dynamic_ownership {
+                "dynamic-service-slots-v1"
+            } else {
+                "fixed-slots-v1"
+            }
+            .into(),
             chunk_kv_range_balance: None,
         },
     };
@@ -246,6 +263,12 @@ async fn main() {
             return;
         }
     }
+    if dynamic_ownership {
+        if let Err(error) = slot_maps.initialize_service_epochs().await {
+            error!(%error, "dynamic slot initialization failed; refusing startup");
+            return;
+        }
+    }
     let storage_map = match slot_maps.read_storage().await {
         Ok(map) => map,
         Err(error) => {
@@ -273,16 +296,33 @@ async fn main() {
         return;
     }
 
+    if dynamic_ownership {
+        if let Err(error) = slot_maps.regrant_service_epochs(instance_id).await {
+            error!(%error, "restart epoch publication failed; refusing startup");
+            return;
+        }
+        if let Err(error) = range_guard.load_from_group0(&kv, instance_id).await {
+            error!(%error, "restart authority refresh failed; refusing startup");
+            return;
+        }
+    }
+
     // Service-registry keep-alive: register this chunkdb instance under
     // `/srv/chunkdb/<instance_id>` and heartbeat periodically. The
     // fixed service-slot ownership map is bootstrapped separately; registry
     // liveness does not automatically reassign chunk slots.
+    let prepared = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let keepalive_handle = spawn_chunkdb_keepalive(
         svc_keepalive,
         config.server.instance_id.as_deref(),
         &config.server.rpc_listen_addr,
         Duration::from_secs(u64::from(config.server.keepalive_interval_secs)),
         stop_rx.clone(),
+        if dynamic_ownership {
+            Some(Arc::clone(&prepared))
+        } else {
+            None
+        },
     );
 
     let range_refresh_guard = Arc::clone(&range_guard);
@@ -410,6 +450,7 @@ async fn main() {
         .expect("rpc server listen");
     rpc_service.register_handlers(&rpc_server);
     rpc_server.start();
+    prepared.store(true, std::sync::atomic::Ordering::Release);
     info!(%rpc_listen_addr, "crowdb-rpc server listening (R116 migration)");
 
     // Start HTTP health + metrics + cache invalidation server.
@@ -524,6 +565,7 @@ fn spawn_chunkdb_keepalive(
     listen_addr: &str,
     interval: Duration,
     mut stop: tokio::sync::watch::Receiver<bool>,
+    prepared: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let instance_id = instance_id_str?.parse::<u64>().ok()?;
     let rpc_endpoint = format!("http://{listen_addr}");
@@ -540,6 +582,11 @@ fn spawn_chunkdb_keepalive(
                 _ = ticker.tick() => {
                     if let Err(e) = svc.heartbeat_chunkdb(instance_id, &rpc_endpoint).await {
                         warn!(error = %e, "chunkdb keep-alive: heartbeat failed");
+                    }
+                    if prepared.as_ref().is_some_and(|prepared| prepared.load(std::sync::atomic::Ordering::Acquire)) {
+                        if let Err(error) = svc.register("chunkdb-epoch-v1",instance_id,&rpc_endpoint,&crowdb_protocol::common::ServiceExtra::default()).await {
+                            warn!(%error, instance_id, "dynamic chunkdb readiness heartbeat failed");
+                        }
                     }
                 }
                 _ = stop.changed() => {

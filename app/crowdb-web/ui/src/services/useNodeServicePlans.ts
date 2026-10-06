@@ -89,7 +89,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
       const previous = plansRef.current[id] ?? newPlan();
       overrides.current[id] = serviceOverrides ?? overrides.current[id] ?? {};
       const enabled = new Set(selected ?? serviceOrder.filter(kind => previous[kind].state !== 'disabled'));
-      intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : previous[kind].state === 'failed' || previous[kind].state === 'disabled' ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
+      intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : ['failed', 'warning', 'disabled'].includes(previous[kind].state) ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
       await persist(id, intended);
       wake.current();
     } catch (error) { failProgress(id, String(error), intended); throw error; }
@@ -148,6 +148,12 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               else if (kind === 'chunkdb' && existing.some(server => server.service_type === 'diskio' && !server.pid)) waiting = 'Waiting: restart registered DiskIO services before connecting chunk storage';
               else if (kind === 'chunkdb' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < Object.keys(currentGroups).length) waiting = 'Waiting: deploy DiskIO services before starting ChunkDB';
               else if (kind === 'chunk-kv' && !metadata) waiting = 'Waiting: create a non-system metadata group in KV';
+              else if (kind === 'chunk-kv' && Object.entries(plansRef.current).some(([node, selectedPlan]) =>
+                selectedPlan.chunkdb.state !== 'disabled' && !existing.some(server => server.node_id === Number(node) && server.service_type === 'chunkdb' && server.pid))) {
+                // Journal bootstrap can route to any published ChunkDB owner.
+                // Finish their deployments before a serial launch awaits the journal.
+                waiting = 'Waiting: deploy selected ChunkDB services before starting Chunk-KV';
+              }
               else if (kind === 'chunk-kv' && existing.some(server => server.service_type === 'diskio' && !server.pid)) waiting = 'Waiting: restart registered DiskIO services before connecting chunk storage';
               else if (kind === 'chunk-kv' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < 2) waiting = 'Waiting: deploy DiskIO on at least two nodes for journal mirrors';
               else if (kind === 'access-server' && plan['chunk-kv'].state !== 'deployed' && !existing.some(server => server.service_type === 'chunk-kv' && server.pid)) waiting = 'Waiting: deploy Chunk-KV and initialize its catalog';

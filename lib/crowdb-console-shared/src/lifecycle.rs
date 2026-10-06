@@ -115,6 +115,7 @@ pub use native::prepare_native_launch;
 /// Inputs for a local `ChunkDB` deployment.
 #[derive(Debug, Clone)]
 pub struct ChunkdbDeployRequest {
+    pub dynamic_ownership: bool,
     pub server_id: String,
     pub instance_id: u64,
     pub http_port: u16,
@@ -1280,7 +1281,10 @@ pub async fn deploy_chunkdb_local(
             program: launch_binary.to_string_lossy().into_owned(),
             args: chunkdb_launch_args(req, &config_path, &log_dir),
             workdir: workspace_dir.to_string_lossy().into_owned(),
-            env: std::collections::BTreeMap::default(),
+            env: std::collections::BTreeMap::from([(
+                "CROWDB_CHUNKDB_OWNERSHIP_POLICY".into(),
+                if req.dynamic_ownership { "dynamic" } else { "fixed" }.into(),
+            )]),
             readiness_url: Some(management),
         },
     })
@@ -1304,7 +1308,8 @@ fn chunkdb_config(req: &ChunkdbDeployRequest, node: &NodeEntry) -> String {
         "protected"
     };
     format!(
-        "[deployment]\nmode = \"{}\"\n\n[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nmode = \"{}\"\nallow_unsafe_ec = {}\nallow_degraded_failure_domains = {}\n",
+        "service_ownership = \"{}\"\n\n[deployment]\nmode = \"{}\"\n\n[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nmode = \"{}\"\nallow_unsafe_ec = {}\nallow_degraded_failure_domains = {}\n",
+        if req.dynamic_ownership { "dynamic" } else { "fixed" },
         deployment_mode,
         req.rpc_workers.unwrap_or(2),
         node.host,

@@ -50,6 +50,23 @@ pub struct TaskStore {
 }
 
 impl TaskStore {
+    pub(crate) fn execution_authority(&self) -> Option<crate::range_guard::ExecutionAuthority> {
+        self.scope.as_ref().map(|(guard, _)| guard.capture())
+    }
+
+    pub(crate) fn check_submission(
+        &self,
+        id: &ChunkId,
+        authority: Option<&crate::range_guard::ExecutionAuthority>,
+    ) -> Result<(), TaskStoreError> {
+        if let Some((guard, _)) = &self.scope {
+            let authority = authority.ok_or(TaskStoreError::Authority)?;
+            guard
+                .check_submission(id, authority)
+                .map_err(|_| TaskStoreError::Authority)?;
+        }
+        Ok(())
+    }
     #[must_use]
     pub fn new(kv: Arc<CrowdbKvClient>, bindings: BindingCache) -> Self {
         Self {
@@ -189,6 +206,7 @@ impl TaskStore {
         ops: &[BatchOp],
     ) -> Result<(), TaskStoreError> {
         self.check_authority(partition_id)?;
+        let authority = self.execution_authority();
         let task_route = route(&self.bindings, partition_id)?;
         let expected_revision = match previous {
             Some(previous) => {
@@ -207,6 +225,7 @@ impl TaskStore {
             }
             None => 0,
         };
+        self.check_submission(partition_id, authority.as_ref())?;
         self.kv
             .batch_write_cas(
                 task_route.kv_store_id,

@@ -182,7 +182,9 @@ impl ChunkStore {
         ops: &[BatchOp],
         chunk: Option<&Chunk>,
     ) -> Result<()> {
+        let authority = self.capture_authority(chunk_id)?;
         let Some(chunk) = chunk else {
+            self.check_submission(chunk_id, authority.as_ref())?;
             return self
                 .kv
                 .batch_write(store_id, group_id, ops)
@@ -209,6 +211,7 @@ impl ChunkStore {
                 revision
             }
         };
+        self.check_submission(chunk_id, authority.as_ref())?;
         match self
             .kv
             .batch_write_cas(store_id, group_id, ops, &key, expected_revision)
