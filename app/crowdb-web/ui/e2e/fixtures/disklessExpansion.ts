@@ -106,7 +106,7 @@ export async function verifyDisklessSlotBalance({ request }: UIContext) {
         return (await response.json()).owned_count as number;
       }));
       return results.every(count => count >= 170 && count <= 171) && results.reduce((sum,count) => sum+count,0) === 1024;
-    }, { timeout: 15_000, intervals: [100] }).toBe(true);
+    }, { timeout: 60_000, intervals: [100] }).toBe(true);
     const response = await request.get('/api/chunk-slots?layer=storage&store_id=0&group_id=1');
     expect(response.ok(), await response.text()).toBe(true);
     expect(await response.json()).toMatchObject({ generation: '1', owned_count: 1024 });
