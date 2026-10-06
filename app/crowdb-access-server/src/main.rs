@@ -39,8 +39,16 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "dataset") {
+        args.remove(0);
+        init_access_logging()?;
+        return crowdb_access_server::dataset::run(args)
+            .await
+            .map_err(|error| -> Box<dyn std::error::Error> { error });
+    }
     if args.first().is_some_and(|arg| arg == "iceberg") {
         args.remove(0);
         init_access_logging()?;
@@ -78,20 +86,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let s3 = run_s3(&access_config, Some(shutdown_rx.clone()));
-        let iceberg = crowdb_access_server::iceberg::run_with_shutdown(args, Some(shutdown_rx));
-        tokio::pin!(s3, iceberg);
-        tokio::select! {
-            result = &mut s3 => {
-                let _ = shutdown_tx.send(true);
-                let other = iceberg.await;
-                result?;
-                other.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+        let iceberg = crowdb_access_server::iceberg::run_with_shutdown(args, Some(shutdown_rx.clone()));
+        let dataset_enabled =
+            access_config.dataset.listen.is_some() || std::env::var_os("CROWDB_DATASET_LISTEN").is_some();
+        if dataset_enabled {
+            let dataset = crowdb_access_server::dataset::run_with_shutdown(
+                std::env::args().skip(1).filter(|arg| arg != "dataset").collect(),
+                wait_for_shutdown(Some(shutdown_rx)),
+            );
+            tokio::pin!(s3, iceberg, dataset);
+            tokio::select! {
+                result = &mut s3 => {
+                    let _ = shutdown_tx.send(true);
+                    let _ = dataset.await;
+                    let other = iceberg.await;
+                    result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+                    other.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+                }
+                result = &mut iceberg => {
+                    let _ = shutdown_tx.send(true);
+                    let _ = dataset.await;
+                    let other = s3.await;
+                    result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+                    other?;
+                }
+                result = &mut dataset => {
+                    let _ = shutdown_tx.send(true);
+                    let other_s3 = s3.await;
+                    let other_iceberg = iceberg.await;
+                    result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+                    other_s3?;
+                    other_iceberg.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+                }
             }
-            result = &mut iceberg => {
-                let _ = shutdown_tx.send(true);
-                let other = s3.await;
-                result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
-                other?;
+        } else {
+            tokio::pin!(s3, iceberg);
+            tokio::select! {
+                result = &mut s3 => {
+                    let _ = shutdown_tx.send(true);
+                    let other = iceberg.await;
+                    result?;
+                    other.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+                }
+                result = &mut iceberg => {
+                    let _ = shutdown_tx.send(true);
+                    let other = s3.await;
+                    result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
+                    other?;
+                }
             }
         }
     }
@@ -238,7 +280,7 @@ async fn bind_health_listener(access_config: &AccessConfig) -> std::io::Result<T
         .listen
         .clone()
         .or_else(|| std::env::var("CROWDB_ACCESS_HEALTH_LISTEN").ok())
-        .unwrap_or_else(|| "127.0.0.1:9093".into());
+        .unwrap_or_else(|| "127.0.0.1:9094".into());
     TcpListener::bind(address).await
 }
 

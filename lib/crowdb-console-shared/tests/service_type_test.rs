@@ -40,11 +40,11 @@ async fn legacy_access_restart_is_rejected_before_spawning_or_stopping() {
 fn access_health_launch_never_falls_back_to_the_s3_listener() {
     let mut spec = LocalLaunchSpec {
         env: [
-            ("CROWDB_ACCESS_HEALTH_LISTEN".into(), "127.0.0.1:9093".into()),
+            ("CROWDB_ACCESS_HEALTH_LISTEN".into(), "127.0.0.1:9094".into()),
             ("CROWDB_S3_PUBLIC_URI".into(), "http://127.0.0.1:9091".into()),
         ]
         .into(),
-        readiness_url: Some("http://127.0.0.1:9093/_crowdb/health/ready".into()),
+        readiness_url: Some("http://127.0.0.1:9094/_crowdb/health/ready".into()),
         ..Default::default()
     };
     assert!(spec.access_health_url().is_some());

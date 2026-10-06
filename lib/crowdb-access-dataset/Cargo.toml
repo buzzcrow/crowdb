@@ -1,0 +1,25 @@
+[package]
+name = "crowdb-access-dataset"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native Dataset authority and bounded sample access."
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+bincode = "1.3"
+crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
+crowdb-protocol = { path = "../crowdb-protocol" }
+md-5 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

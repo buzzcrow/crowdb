@@ -52,7 +52,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
     assert_eq!(access_service.additional_probes.len(), 1);
     assert_eq!(
         access_service.additional_probes[0].target,
-        "http://127.0.0.1:9093/_crowdb/health/ready"
+        "http://127.0.0.1:9094/_crowdb/health/ready"
     );
     assert_eq!(
         access_service.additional_probes[0].failure_threshold,

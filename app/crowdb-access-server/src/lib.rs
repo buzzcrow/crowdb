@@ -4,6 +4,7 @@
 //! Independent listener lifecycle for external access protocols.
 
 pub mod config;
+pub mod dataset;
 mod http_receive;
 pub mod iceberg;
 mod multipart_complete;

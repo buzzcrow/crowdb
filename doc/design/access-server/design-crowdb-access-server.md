@@ -41,7 +41,7 @@ is an implementation choice and is not part of the architecture contract.
 | ------- | ------------------------------------------ | ---------------- | ---------------------------- |
 | S3      | Buckets, objects, multipart, S3 lifecycle | HTTP             | Optional direct data plane   |
 | Iceberg | Catalogs, namespaces, tables, snapshots   | HTTP             | Delegated immutable FileIO   |
-| Dataset | Generations, samples, shards, tensors     | HTTP             | Topology-aware native client |
+| Dataset | Namespaces, snapshots, samples, fields  | HTTP             | Topology-aware native client |
 
 Related designs:
 
@@ -98,8 +98,8 @@ on another model:
 - Iceberg owns catalog, table, snapshot, commit, immutable file, and
   reachability semantics. Its S3-shaped file locations do not make S3 the
   authority.
-- Dataset owns generation publication, sample and shard selection, batching,
-  streaming, prefetch, and tensor-oriented delivery.
+- Dataset owns namespace-scoped identity, snapshot publication, sample and field
+  selection, batching, streaming, prefetch, and bounded delivery.
 
 The models may share physical bytes only through an explicit reference contract.
 Sharing never transfers namespace, publication, authorization, or reclamation
@@ -155,7 +155,7 @@ describes scheduling and stage measurements in detail.
 
 The Dataset native path embeds routing, retry, bounded planning, streaming, and
 buffer ownership in the application. It resolves one immutable dataset
-generation and distributes work directly to responsible CROWDB services. A
+snapshot and distributes work directly to responsible CROWDB services. A
 topology view routes work but never grants placement authority.
 
 The accelerated direction is an end-to-end path from storage to the final
@@ -191,7 +191,7 @@ or retry. Protocol-local caches are discardable hints.
 Direct Dataset access also preserves the storage authority boundary. A client
 authenticates before receiving topology, metadata, or payload authority. Direct
 operations use short-lived capabilities bound to the principal, logical object,
-immutable generation, operation, ranges, limits, expiry, and topology epoch.
+immutable snapshot, operation, ranges, limits, expiry, and topology epoch.
 Topology and memory descriptors alone grant no access.
 
 All paths bound connections, metadata work, stream windows, retained buffers,
@@ -199,7 +199,7 @@ registered memory, retries, and background work independently of total object,
 table, or dataset size.
 
 The process has a separate HTTP health listener configured by `HealthConfig`
-(or `CROWDB_ACCESS_HEALTH_LISTEN`), defaulting to loopback port 9093. Its
+(or `CROWDB_ACCESS_HEALTH_LISTEN`), defaulting to loopback port 9094. Its
 `/_crowdb/health/live` and `/_crowdb/health/ready` routes are independent of the
 S3 and Iceberg listeners. All three ports are distinct. Health serves no
 user-data routes; S3 requests cannot bypass authentication through a health
@@ -216,7 +216,7 @@ address; a missing address requires deployment reconciliation before restart.
 - **AS-I3 — Native directness:** Dataset native access reaches responsible
   CROWDB services without an Access Server request or payload hop.
 - **AS-I4 — Semantic equivalence:** Dataset HTTP, native CPU, and accelerated
-  GPU paths select the same immutable generation and logical data.
+  GPU paths select the same immutable snapshot and logical data.
 - **AS-I5 — Storage authority:** no Access Server module or native client owns
   physical chunk placement, replicas, erasure-coding shards, or disks.
 - **AS-I6 — Stateless server:** an authoritative operation survives loss of the

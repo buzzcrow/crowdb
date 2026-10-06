@@ -26,6 +26,7 @@ members = [
     "container/crowdb-monitor",
     "lib/crowdb-access-s3",
     "lib/crowdb-access-iceberg",
+    "lib/crowdb-access-dataset",
     "lib/crowdb-access-multipart",
 ]
 exclude = ["third-party/hyper"]

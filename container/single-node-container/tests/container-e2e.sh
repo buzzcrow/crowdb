@@ -45,7 +45,7 @@ start_container() {
     fi
     docker run -d --name "$name" \
         "${mount_args[@]}" \
-        -p 127.0.0.1:9092:9092 -p 127.0.0.1::9091 -p 127.0.0.1::9090 \
+        -p 127.0.0.1:9092:9092 -p 127.0.0.1::9091 -p 127.0.0.1::9090 -p 127.0.0.1::9093 -p 127.0.0.1::9094 \
         "$image" >/dev/null
     for attempt in $(seq 1 240); do
         state=$(docker inspect --format '{{.State.Status}}' "$name")
@@ -70,15 +70,19 @@ port() {
 }
 
 verify_public_services() {
-    local iceberg_port s3_port web_port token
+    local iceberg_port s3_port web_port dataset_port token
     iceberg_port=$(port 9092)
     s3_port=$(port 9091)
     web_port=$(port 9090)
+    dataset_port=$(port 9093)
     docker exec "$name" crowdb-monitor readiness >/dev/null
+    docker exec "$name" curl --fail --silent --show-error --max-time 5 \
+        "http://127.0.0.1:9094/_crowdb/health/ready" >/dev/null
     curl --fail --silent --show-error --max-time 5 \
         "http://127.0.0.1:$web_port/api/authority" | jq -e '.source == "group0" and .available == true' >/dev/null
     curl --fail --silent --show-error --max-time 5 \
         "http://127.0.0.1:$web_port/api/preview" | jq -e '.source == "group0" and (.services | length) > 0' >/dev/null
+    [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "http://127.0.0.1:$dataset_port/v1/dataset/open")" == 404 ]]
     token=$(printf '%s\n' "$client_env" | sed -n 's/^ICEBERG_TOKEN=//p')
     [[ -n "$token" ]]
     printf 'header = "Authorization: Bearer %s"\nurl = "http://127.0.0.1:%s/v1/config"\n' "$token" "$iceberg_port" |
