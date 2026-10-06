@@ -205,7 +205,7 @@ Status NativeFrameIterator::next(size_t max_frames, std::vector<NativeFrame> *ou
                     overflow_heads.push_back(cell.overflow_head());
                 }
             }
-            for (unsigned long &overflow_head : std::views::reverse(overflow_heads)) {
+            for (auto &overflow_head : std::views::reverse(overflow_heads)) {
                 impl_->schedule(
                     {.page_id = overflow_head, .lower = std::nullopt, .upper = std::nullopt, .overflow = true});
             }

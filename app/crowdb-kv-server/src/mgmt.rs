@@ -63,9 +63,19 @@ pub(crate) async fn resolve_store_port(state: &RegistryArc, explicit: Option<u16
     if let Some(p) = state.next_port() {
         return p;
     }
-    persisted_port_for_store(&state.config.config_root, store_id)
-        .await
-        .unwrap_or(0)
+    let Some(port) = persisted_port_for_store(&state.config.config_root, store_id).await else {
+        return 0;
+    };
+
+    // A reset test can leave an old node-config entry behind while another
+    // local store is already using that listener. Reuse persisted ports only
+    // when they are currently available; otherwise let the OS choose a fresh
+    // listener instead of failing the new store with EADDRINUSE.
+    if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+        port
+    } else {
+        0
+    }
 }
 
 /// Resolve the persisted listen port for `store_id` from the on-disk

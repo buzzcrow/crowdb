@@ -6,6 +6,7 @@
 #include "crowdb-rpc/transport/socket_transport.h"
 
 #include <gtest/gtest.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -15,6 +16,22 @@
 
 namespace
 {
+int socketpair_nonblocking(int sockets[2])
+{
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
+        return -1;
+    }
+    for (int socket : {sockets[0], sockets[1]}) {
+        const int flags = ::fcntl(socket, F_GETFL, 0);
+        if (flags < 0 || ::fcntl(socket, F_SETFL, flags | O_NONBLOCK) != 0) {
+            ::close(sockets[0]);
+            ::close(sockets[1]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 struct Completion
 {
     std::atomic<int> calls{0};
@@ -40,8 +57,8 @@ TEST(ClientDisconnectTest, PeerCloseFailsSlabAndMapWithoutReaperAndPreservesOthe
     transport.start();
     int first[2]{};
     int second[2]{};
-    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, first), 0);
-    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, second), 0);
+    ASSERT_EQ(socketpair_nonblocking(first), 0);
+    ASSERT_EQ(socketpair_nonblocking(second), 0);
     std::atomic<int> cleanups{0};
     auto             closed = transport.create_connection(first[0], "closed", {}, [&](Connection *) { ++cleanups; });
     auto             live   = transport.create_connection(second[0], "live");

@@ -153,7 +153,7 @@ target_include_directories(crowdb_rpc_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp/include
 )
 target_link_libraries(crowdb_rpc_tests PRIVATE crowdb-rpc GTest::gtest)
-gtest_discover_tests(crowdb_rpc_tests DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(crowdb_rpc_tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 60)
 
 # ── Example: standalone fb server ────────────────────────────────
 add_executable(crowdb-rpc-fb-server examples/fb_server.cpp)

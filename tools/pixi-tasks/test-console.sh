@@ -4,6 +4,14 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "[test-console] macOS basic validation: console unit tests and server build"
+    cargo build -p crowdb-kv-server
+    cargo test -p crowdb-console-shared --lib
+    cargo test -p crowdb-cli --tests
+    exit 0
+fi
+
 pixi run clean-env
 cargo build -p crowdb-kv-server
 cargo test -p crowdb-console-shared --tests

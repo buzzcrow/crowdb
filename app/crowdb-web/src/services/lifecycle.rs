@@ -162,39 +162,67 @@ fn matching_pid(entry: &ServerEntry, launch: &LocalLaunchSpec) -> Result<Option<
     else {
         return Ok(None);
     };
-    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
-        .map_err(|error| err_409(format!("Cannot verify service process: {error}")))?;
-    let expected = std::fs::canonicalize(&launch.workdir).map_err(|error| err_409(error.to_string()))?;
-    if cwd != expected {
-        return Err(err_409(
-            "Recorded PID belongs to a different workspace; refusing to signal it",
-        ));
-    }
-    let command =
-        std::fs::read(format!("/proc/{pid}/cmdline")).map_err(|error| err_409(error.to_string()))?;
-    let arguments: Vec<_> = command
-        .split(|byte| *byte == 0)
-        .filter(|part| !part.is_empty())
-        .collect();
-    let program = std::fs::canonicalize(&launch.program).map_err(|error| err_409(error.to_string()))?;
-    let executable =
-        std::fs::read_link(format!("/proc/{pid}/exe")).map_err(|error| err_409(error.to_string()))?;
-    // Linux retains the original executable mapping after an atomic upgrade.
-    // Keep verifying the exact workspace and arguments before signalling it.
-    let replaced_program = executable
-        .to_str()
-        .and_then(|path| path.strip_suffix(" (deleted)"))
-        .is_some_and(|path| std::path::Path::new(path) == program);
-    if (executable != program && !replaced_program)
-        || arguments.get(1..).map_or(true, |args| {
-            args.len() != launch.args.len()
-                || args
-                    .iter()
-                    .zip(&launch.args)
-                    .any(|(actual, expected)| *actual != expected.as_bytes())
-        })
+    #[cfg(target_os = "macos")]
     {
-        return Err(err_409("Recorded PID command does not match the retained launch"));
+        // macOS has no /proc filesystem. Verify the live command through ps
+        // before signalling it; the launch registry still supplies the exact
+        // program and arguments that must belong to this service.
+        let output = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .map_err(|error| err_409(format!("Cannot verify service process: {error}")))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let command = String::from_utf8_lossy(&output.stdout);
+        let program = std::fs::canonicalize(&launch.program).map_err(|error| err_409(error.to_string()))?;
+        let program_text = std::path::Path::new(&launch.program).to_string_lossy();
+        let canonical_text = program.to_string_lossy();
+        // The staged executable path is unique to this service workspace.
+        // macOS `ps` may normalize or truncate long argument strings, so the
+        // executable identity is the stable check available here; Linux keeps
+        // the stricter cwd, executable, and argument validation below.
+        if !command.contains(program_text.as_ref()) && !command.contains(canonical_text.as_ref()) {
+            return Err(err_409("Recorded PID command does not match the retained launch"));
+        }
+        return Ok(Some(pid));
     }
-    Ok(Some(pid))
+    #[cfg(not(target_os = "macos"))]
+    {
+        let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
+            .map_err(|error| err_409(format!("Cannot verify service process: {error}")))?;
+        let expected = std::fs::canonicalize(&launch.workdir).map_err(|error| err_409(error.to_string()))?;
+        if cwd != expected {
+            return Err(err_409(
+                "Recorded PID belongs to a different workspace; refusing to signal it",
+            ));
+        }
+        let command =
+            std::fs::read(format!("/proc/{pid}/cmdline")).map_err(|error| err_409(error.to_string()))?;
+        let arguments: Vec<_> = command
+            .split(|byte| *byte == 0)
+            .filter(|part| !part.is_empty())
+            .collect();
+        let program = std::fs::canonicalize(&launch.program).map_err(|error| err_409(error.to_string()))?;
+        let executable =
+            std::fs::read_link(format!("/proc/{pid}/exe")).map_err(|error| err_409(error.to_string()))?;
+        // Linux retains the original executable mapping after an atomic upgrade.
+        // Keep verifying the exact workspace and arguments before signalling it.
+        let replaced_program = executable
+            .to_str()
+            .and_then(|path| path.strip_suffix(" (deleted)"))
+            .is_some_and(|path| std::path::Path::new(path) == program);
+        if (executable != program && !replaced_program)
+            || arguments.get(1..).map_or(true, |args| {
+                args.len() != launch.args.len()
+                    || args
+                        .iter()
+                        .zip(&launch.args)
+                        .any(|(actual, expected)| *actual != expected.as_bytes())
+            })
+        {
+            return Err(err_409("Recorded PID command does not match the retained launch"));
+        }
+        Ok(Some(pid))
+    }
 }

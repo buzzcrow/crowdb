@@ -231,7 +231,7 @@ bool frame_validate(const uint8_t *f, uint32_t page_bytes)
         return false;
     }
 
-    auto valid_record = [f, free_hi, body](const uint8_t *slot, bool has_cell) {
+    auto valid_record = [free_hi, body](const uint8_t *slot, bool has_cell) {
         const uint32_t off   = frame_u32(slot, 0);
         const uint32_t klen  = frame_u32(slot, 4);
         const uint32_t extra = has_cell ? frame_u32(slot, 8) : 0;

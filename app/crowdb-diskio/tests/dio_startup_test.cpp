@@ -18,6 +18,9 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#    include <mach-o/dyld.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -45,11 +48,18 @@ std::string find_binary()
     // The test executable is at app/crowdb-diskio/build/crowdb_diskio_tests.
     // The binary is at app/crowdb-diskio/build/crowdb-diskio.
     char    buf[4096];
+#ifdef __APPLE__
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) != 0) {
+        return "";
+    }
+#else
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n <= 0) {
         return "";
     }
     buf[n] = '\0';
+#endif
     std::string path(buf);
     // Replace "crowdb_diskio_tests" with "crowdb-diskio".
     size_t pos = path.rfind("crowdb_diskio_tests");

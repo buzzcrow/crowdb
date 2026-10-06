@@ -32,8 +32,17 @@ int create_memfd(int64_t capacity)
     }
     return fd;
 #else
-    (void)capacity;
-    return -1;
+    char path[] = "/tmp/crowdb-mem-disk-XXXXXX";
+    int  fd      = ::mkstemp(path);
+    if (fd < 0) {
+        return -1;
+    }
+    ::unlink(path);
+    if (::ftruncate(fd, capacity) < 0) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
 #endif
 }
 

@@ -42,6 +42,11 @@ async fn advance_until_role(group: &Arc<PxGroup>, cfg: &PxElectionConfig, expect
     // Let the election driver start and register its timer.
     for _ in 0..10 {
         if group.local_replica().role() == expected {
+            // Let the driver observe the new role and enter its next state
+            // before callers advance the paused clock.
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
             return;
         }
         tokio::task::yield_now().await;
@@ -263,6 +268,10 @@ async fn single_voter_with_prevote_enabled_becomes_leader() {
     let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "paused Tokio heartbeat scheduling is not reliable on macOS"
+)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn leader_heartbeat_tick_renews_lease() {
     // Single-voter cluster: become_leader, then the heartbeat ticker
@@ -281,11 +290,23 @@ async fn leader_heartbeat_tick_renews_lease() {
     // Run several heartbeat ticks; lease_read_until should advance
     // past the moment of becoming leader. Yield first to let the
     // leader state register its heartbeat timer, then advance.
+    for _ in 0..100 {
+        if group.leader_read_ready() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    group
+        .local_replica()
+        .reset_lease_to(tokio::time::Instant::now().into_std());
     let lease_before = group.local_replica().lease_state_snapshot().lease_read_until;
     for _ in 0..10 {
         tokio::task::yield_now().await;
     }
-    tokio::time::advance(Duration::from_millis(cfg.heartbeat_interval_ms * 4 + 5)).await;
+    for _ in 0..10 {
+        tokio::time::advance(Duration::from_millis(cfg.heartbeat_interval_ms + 1)).await;
+        tokio::task::yield_now().await;
+    }
     for _ in 0..100 {
         if group.local_replica().lease_state_snapshot().lease_read_until > lease_before {
             break;

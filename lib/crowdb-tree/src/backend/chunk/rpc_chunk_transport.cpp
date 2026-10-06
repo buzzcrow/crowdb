@@ -537,7 +537,7 @@ struct RpcChunkTransport::Impl
     ct_chunk_rpc_transport_options                           options;
     std::vector<ct_chunk_rpc_disk_route>                     disk_routes;
     inline static std::atomic<uint64_t>                      request_ids{1};
-    mutable std::atomic<std::shared_ptr<const RemoteChunks>> chunks;
+    mutable AtomicSharedPtr<const RemoteChunks> chunks;
     std::jthread                                             liveness_thread;
 };
 

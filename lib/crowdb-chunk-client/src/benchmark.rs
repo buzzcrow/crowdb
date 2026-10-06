@@ -9,7 +9,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+#[cfg(target_os = "linux")]
 use crowdb_common::metrics::perf::DramBwCounter;
+#[cfg(not(target_os = "linux"))]
+struct DramBwCounter;
+#[cfg(not(target_os = "linux"))]
+impl DramBwCounter {
+    fn new() -> Option<Self> {
+        None
+    }
+
+    fn read_bytes_per_sec(&mut self) -> Option<(Option<f64>, Option<f64>, f64)> {
+        None
+    }
+}
 use serde::Serialize;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::task::JoinSet;

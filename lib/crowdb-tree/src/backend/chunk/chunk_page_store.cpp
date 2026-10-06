@@ -30,7 +30,6 @@ static crowdb::protocol::FrameMagic page_frame_magic(PagePurpose purpose)
 namespace
 {
 
-constexpr uint64_t kAnchorSlotBytes      = 4096;
 constexpr size_t   kReferencesPerSegment = 256;
 constexpr uint64_t kMaxChunkBytes        = 256U * 1024U * 1024U;
 

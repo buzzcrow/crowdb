@@ -22,7 +22,8 @@ export function observeDefaultDeployments(page: Page) {
   return {
     async verify(node: number, kind: string) {
       const identity = `${node}:${kind}`;
-      const response = replies.get(identity) ?? await page.waitForResponse(response => key(response) === identity);
+      const timeout = process.platform === 'darwin' ? 30_000 : 3_000;
+      const response = replies.get(identity) ?? await page.waitForResponse(response => key(response) === identity, { timeout });
       expect(response.status(), `Node ${node} ${kind}: ${await response.text()}`).toBe(201);
     },
   };

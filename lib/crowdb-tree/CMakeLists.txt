@@ -119,7 +119,7 @@ endif()
 # PRE_TEST: enumerate tests at ctest time, not build time. Required so sanitizer
 # builds (which can't run the binary at build time under restrictive ASLR) build
 # cleanly; the suite is then run via `setarch -R` (see Makefile).
-gtest_discover_tests(crowdb_tree_tests DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(crowdb_tree_tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 60)
 
 # ── Microbenchmarks (opt-in: -DCROWDB_TREE_BENCH=ON, plan-tree #9/Q2) ──
 # Compares MemTable ordered containers (std::map / absl::btree_map / folly skip

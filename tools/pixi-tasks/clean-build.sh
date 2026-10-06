@@ -11,19 +11,26 @@ crowdb_pids() {
         awk '$2 ~ /^crowdb-/ && $3 !~ /^Z/ { print $1 }'
 }
 
+collect_service_pids() {
+    service_pids=()
+    while IFS= read -r pid; do
+        [ -n "$pid" ] && service_pids+=("$pid")
+    done < <(crowdb_pids)
+}
+
 echo "[clean] stop CROWDB services"
-mapfile -t service_pids < <(crowdb_pids)
+collect_service_pids
 if [ "${#service_pids[@]}" -gt 0 ]; then
     kill -TERM "${service_pids[@]}" 2>/dev/null || true
     sleep 0.2
 fi
 for _ in {1..20}; do
-    mapfile -t service_pids < <(crowdb_pids)
+    collect_service_pids
     [ "${#service_pids[@]}" -gt 0 ] || break
     kill -KILL "${service_pids[@]}" 2>/dev/null || true
     sleep 0.1
 done
-mapfile -t service_pids < <(crowdb_pids)
+collect_service_pids
 if [ "${#service_pids[@]}" -gt 0 ]; then
     echo "[clean] CROWDB processes still alive: ${service_pids[*]}" >&2
     exit 1

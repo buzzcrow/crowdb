@@ -26,6 +26,10 @@ const TEST_UNIT_BYTES: u32 = 1024 * 1024;
 const TEST_ZONE_SIZE_UNITS: u64 = 16 * 1024;
 const TEST_CAPACITY_UNITS: u64 = TEST_ZONE_SIZE_UNITS;
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "restart/diskio FFI test requires Linux shared-library layout"
+)]
 #[tokio::test]
 async fn production_idle_writer_stops_after_ownership_takeover() {
     assert!(
@@ -282,6 +286,10 @@ fn kv_client(cluster: &KvCluster) -> Arc<CrowdbKvClient> {
     kv
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "restart/diskio FFI test requires Linux shared-library layout"
+)]
 #[tokio::test]
 async fn production_stream_recovers_exact_bytes_after_service_restarts() {
     assert!(
@@ -380,6 +388,10 @@ async fn production_stream_recovers_exact_bytes_after_service_restarts() {
     );
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "restart/diskio FFI test requires Linux shared-library layout"
+)]
 #[tokio::test]
 async fn production_stream_write_returns_after_diskio_failure() {
     assert!(
@@ -449,6 +461,10 @@ async fn production_stream_write_returns_after_diskio_failure() {
     );
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "restart/diskio FFI test requires Linux shared-library layout"
+)]
 #[tokio::test]
 async fn production_stream_write_returns_after_live_diskio_errors() {
     assert!(

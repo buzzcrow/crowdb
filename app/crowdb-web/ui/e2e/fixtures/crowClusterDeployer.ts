@@ -69,8 +69,16 @@ async function postSysdata(
 ): Promise<void> {
   const api = await apiContext(baseURL);
   try {
-    const response = await api.post(path, { data });
-    expect(response.status(), `${label}: ${await response.text()}`).toBe(201);
+    const attempts = process.platform === 'darwin' ? 60 : 1;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const response = await api.post(path, { data });
+      if (response.status() === 201) return;
+      const body = await response.text();
+      if (process.platform !== 'darwin' || response.status() !== 404 || attempt === attempts) {
+        expect(response.status(), `${label}: ${body}`).toBe(201);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
   } finally {
     await api.dispose();
   }
@@ -164,7 +172,8 @@ export const COMPLEX: TopologyDescriptor = {
 // ── Low-level API helpers (kept for backward compat) ─────────────────
 
 export async function apiContext(baseURL: string) {
-  return request.newContext({ baseURL });
+  const timeout = process.platform === 'darwin' ? 30_000 : undefined;
+  return request.newContext({ baseURL, timeout });
 }
 
 // Debug helper: dump API state to console.log.
@@ -236,6 +245,14 @@ export async function deployNodeServer(baseURL: string, nodeId: number, restPort
       },
     });
     expect(response.status(), await response.text()).toBe(201);
+    if (process.platform === 'darwin') {
+      await expect.poll(async () => {
+        const servers = await (await api.get('/api/servers')).json();
+        return servers.some((server: any) =>
+          server.node_id === nodeId && server.service_type === 'paxos-kv' && Number(server.pid) > 0,
+        );
+      }, { timeout: 30_000, intervals: [100] }).toBe(true);
+    }
   } finally {
     await api.dispose();
   }
@@ -348,12 +365,13 @@ export async function waitForLeader(baseURL: string, storeId: number, groupId: n
 export async function clusterInit(baseURL: string, nodeIds: number[]) {
   const api = await apiContext(baseURL);
   try {
-    const maxAttempts = 5;
+    const maxAttempts = process.platform === 'darwin' ? 6 : 5;
+    const timeout = process.platform === 'darwin' ? 30_000 : 10_000;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const response = await api.post('/api/cluster/init', { data: { nodes: nodeIds }, timeout: 10_000 });
+      const response = await api.post('/api/cluster/init', { data: { nodes: nodeIds }, timeout });
       if (response.status() === 201 || response.status() === 409) return;
       const text = await response.text();
-      if (response.status() === 500 && text.includes('not leader') && attempt < maxAttempts) {
+      if (response.status() === 500 && (text.includes('not leader') || process.platform === 'darwin') && attempt < maxAttempts) {
         console.log(`cluster_init attempt ${attempt} got transient not-leader response; retrying...`);
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         continue;

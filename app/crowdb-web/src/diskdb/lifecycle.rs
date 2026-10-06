@@ -42,6 +42,16 @@ fn validate_diskdb_ports(body: &DeployDiskdbBody) -> Result<(u16, u16, u16), (St
     Ok((listen_port, http_port, rpc_listen_port))
 }
 
+#[cfg(target_os = "macos")]
+fn ensure_local_ports_free(ports: [u16; 3]) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+    for port in ports {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+            return Err(err_409(format!("DiskDB listener port {port} is unavailable")));
+        }
+    }
+    Ok(())
+}
+
 /// `POST /api/nodes/:id/diskdb/deploy` — spawn `crowdb-diskdb` on the
 /// node's workspace. Registers a `ServerEntry` with
 /// `service_type: Diskdb` and tracks the PID.
@@ -83,6 +93,8 @@ async fn deploy_diskdb(
         ));
     }
     let (listen_port, http_port, rpc_listen_port) = validate_diskdb_ports(&body)?;
+    #[cfg(target_os = "macos")]
+    ensure_local_ports_free([listen_port, http_port, rpc_listen_port])?;
     let _ports = crate::services::defaults::claim_ports(&state, &[listen_port, http_port, rpc_listen_port])?;
     let node = {
         let cfg = state.config.read().unwrap();

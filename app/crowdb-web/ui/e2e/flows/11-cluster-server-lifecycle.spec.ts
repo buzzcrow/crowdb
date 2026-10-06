@@ -167,8 +167,8 @@ test.describe('cluster · server lifecycle', () => {
   test('deploys and stops a real crowdb-kv-server through the UI', async ({ page, baseURL }) => {
     await step('deploy-ui: seedRackAndNode', () => seedRackAndNode(baseURL!, 4, 4));
 
-    const restPort = freePort();
-    const rpcPort = freePort();
+    const restPort = freePort('kv-mgmt');
+    const rpcPort = freePort('kv-listen');
     const api = await apiContext(baseURL!);
     try {
       await step('deploy-ui: deploy dialog', async () => {
@@ -183,7 +183,9 @@ test.describe('cluster · server lifecycle', () => {
         await expect(page.getByRole('dialog', { name: /deploy CrowDB Storage on 4/i })).toBeVisible();
         await page.getByLabel('REST Port').fill(String(restPort));
         await page.getByLabel('RPC Port').fill(String(rpcPort));
-        await page.getByRole('button', { name: 'Deploy' }).click();
+        const deploy = page.getByRole('button', { name: 'Deploy' });
+        await expect(deploy).toBeEnabled({ timeout: process.platform === 'darwin' ? 30_000 : 3_000 });
+        await deploy.click();
       });
 
       await step('deploy-ui: poll server', () => expect.poll(async () => {

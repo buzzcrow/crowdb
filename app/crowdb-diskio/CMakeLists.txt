@@ -78,6 +78,12 @@ enable_testing()
 include(GoogleTest)
 find_package(GTest REQUIRED)
 file(GLOB_RECURSE CROWDB_DISKIO_TEST_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
+if(APPLE)
+  list(REMOVE_ITEM CROWDB_DISKIO_TEST_SRC
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/uring_engine_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/sq_full_test.cpp
+  )
+endif()
 if(CROWDB_DISKIO_TEST_SRC)
   list(APPEND CROWDB_DISKIO_TEST_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-common/cpp/tests/test_main.cpp)
   add_executable(crowdb_diskio_tests ${CROWDB_DISKIO_TEST_SRC})
@@ -87,5 +93,5 @@ if(CROWDB_DISKIO_TEST_SRC)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-common/cpp/include
   )
   target_link_libraries(crowdb_diskio_tests PRIVATE crowdb-diskio-lib GTest::gtest)
-  gtest_discover_tests(crowdb_diskio_tests DISCOVERY_MODE PRE_TEST)
+  gtest_discover_tests(crowdb_diskio_tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 60)
 endif()

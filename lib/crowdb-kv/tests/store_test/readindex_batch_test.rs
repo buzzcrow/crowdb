@@ -84,6 +84,9 @@ async fn readindex_batch_serves_n_reads_with_one_round() {
     let slot = put.revision;
 
     let group = store.get_group(1).expect("group exists");
+    // The write may establish a fresh leader lease. Force the read path under
+    // test to take the quorum round regardless of that incidental state.
+    group.local_replica().reset_lease_to(std::time::Instant::now());
 
     // Hold the next ReadIndex round open so the burst deterministically
     // batches. The lease starts expired (fresh leader, no driver), so

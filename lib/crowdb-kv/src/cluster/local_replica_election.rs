@@ -36,7 +36,9 @@ impl PxLocalReplica {
             .store(PxLocalReplicaRole::Follower.as_u8(), Ordering::Release);
         // Lease is no longer meaningful as a non-leader. Expire it so any
         // stale read fast-path attempt rejects.
-        self.reset_lease_to(Instant::now());
+        // Use Tokio's clock so paused-time election tests and production
+        // heartbeat bookkeeping share the same monotonic time source.
+        self.reset_lease_to(tokio::time::Instant::now().into_std());
         info!(current_term = new_term, role = "follower", "role transition");
     }
 

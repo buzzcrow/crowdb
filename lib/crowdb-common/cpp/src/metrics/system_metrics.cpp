@@ -18,6 +18,8 @@
 #    include <sys/ioctl.h>
 #    include <sys/syscall.h>
 #    include <unistd.h>
+#else
+#    include <sys/resource.h>
 #endif
 
 namespace crowdb::common::metrics
@@ -483,7 +485,12 @@ static std::pair<uint64_t, uint64_t> read_cpu_times()
 
 static uint64_t read_rss_kb()
 {
-    return 0;
+    struct rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+    // macOS reports ru_maxrss in bytes; Linux reports it in kilobytes.
+    return static_cast<uint64_t>(usage.ru_maxrss) / 1024;
 }
 
 static std::pair<uint64_t, uint64_t> read_tcp_stats()

@@ -88,7 +88,11 @@ pub fn crowdb_lib_dir() -> Option<std::path::PathBuf> {
     ];
     for c in &candidates {
         let p = std::path::PathBuf::from(c);
-        if p.join("libcrowdb_kv_client.so").exists() {
+        #[cfg(target_os = "macos")]
+        let exists = p.join("libcrowdb_kv_client.dylib").exists();
+        #[cfg(not(target_os = "macos"))]
+        let exists = p.join("libcrowdb_kv_client.so").exists();
+        if exists {
             return p.canonicalize().ok();
         }
     }
@@ -206,9 +210,12 @@ impl DiskioProcess {
 
         let mut cmd = Command::new(&bin);
         cmd.args(["--port", &assigned_port.to_string(), "--bind", "127.0.0.1"])
-            .env("LD_LIBRARY_PATH", lib_dir.to_str().unwrap())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_file2));
+        #[cfg(target_os = "macos")]
+        cmd.env("DYLD_LIBRARY_PATH", &lib_dir);
+        #[cfg(not(target_os = "macos"))]
+        cmd.env("LD_LIBRARY_PATH", &lib_dir);
 
         if opts.no_o_direct {
             cmd.arg("--no-o-direct");
