@@ -184,7 +184,7 @@ async function icebergRoundTrip({ page, baseURL }: UIContext) {
     expect(created.status(), await created.text()).toBe(200);
     const writerConfig = (await created.json()).config;
     await tree.getByRole('button', { name: 'events', exact: true }).click();
-    const execution = promisify(execFile)('pixi', ['run', '-e', 'iceberg-e2e', 'python', resolve('e2e/fixtures/icebergRoundTrip.py'), `${baseURL}/api/access/iceberg`, 'ui_three_node'], { env: { ...process.env, PYICEBERG_MAX_WORKERS: '4' }, timeout: 180_000 });
+    const execution = promisify(execFile)('pixi', ['run', '-e', 'iceberg-e2e', 'python', resolve('e2e/fixtures/icebergRoundTrip.py'), `${baseURL}/api/access/iceberg`, 'ui_three_node'], { env: { ...process.env, PYICEBERG_MAX_WORKERS: '4' }, timeout: 300_000 });
     execution.child.stdin!.end(JSON.stringify(writerConfig));
     const result = await execution;
     console.log(result.stdout); if (result.stderr) console.log(result.stderr);

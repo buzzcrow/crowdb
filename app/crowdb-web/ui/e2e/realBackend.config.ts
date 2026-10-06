@@ -3,6 +3,18 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number(process.env.CROWDB_WEB_E2E_PORT ?? 4193);
 const baseURL = `http://127.0.0.1:${port}`;
+const webBinary = process.env.CROWDB_WEB_BINARY;
+
+if (webBinary && !existsSync(webBinary)) {
+  throw new Error(`CROWDB_WEB_BINARY does not exist: ${webBinary}`);
+}
+
+// test-console-ui builds this binary before starting Playwright. Starting the
+// binary directly keeps webServer's health check focused on process startup;
+// falling back to cargo run preserves ad-hoc local invocations.
+const serverCommand = webBinary
+  ? `${JSON.stringify(webBinary)} --bind 127.0.0.1 --port ${port} --test-mode`
+  : `cargo run -p crowdb-web -- --bind 127.0.0.1 --port ${port} --test-mode`;
 
 // Browser selection, in priority order:
 //   1. PLAYWRIGHT_CHANNEL (e.g. "chrome"/"msedge") — use Playwright's channel support.
@@ -63,7 +75,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `npm run build && cargo run -p crowdb-web -- --bind 127.0.0.1 --port ${port} --test-mode`,
+    command: `npm run build && ${serverCommand}`,
     url: `${baseURL}/healthz`,
     reuseExistingServer: false,
     gracefulShutdown: { signal: 'SIGTERM', timeout: 60_000 },
