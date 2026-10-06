@@ -129,6 +129,23 @@ the catalog connection URI alone does not change delegated FileIO endpoints.
 The Access Server runs as the existing unprivileged user without a low-port
 binding capability.
 
+For a local host workflow, map the three client-facing ports. The profile's
+loopback addresses then match the host mappings, including delegated Iceberg
+FileIO locations:
+
+```sh
+docker run -d --name crowdb-iceberg \
+  --mount type=volume,source=crowdb-iceberg-data,target=/opt/crowdb/data \
+  -p 127.0.0.1:9090:9090 \
+  -p 127.0.0.1:9091:9091 \
+  -p 127.0.0.1:9092:9092 \
+  crowdb/crowdb-iceberg:0.2.2
+```
+
+For a different reachable address or a client on the same Docker network, set
+`CROWDB_S3_PUBLIC_URI` and `CROWDB_ICEBERG_PUBLIC_URI` at startup. The monitor
+passes those values to the access service instead of the profile defaults.
+
 ## S3 container usage
 
 Start the published S3 image with a named data volume and map host port 9091

@@ -66,7 +66,7 @@ pub enum PreviewError {
 /// Fails closed on incompatible durable state or any unready child.
 pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
     let profile_bytes = fs::read(profile_path)?;
-    let profile = DeploymentProfile::parse(
+    let mut profile = DeploymentProfile::parse(
         std::str::from_utf8(&profile_bytes).map_err(|_| PreviewError::Invalid("profile is not UTF-8"))?,
     )?;
     if profile.name != PROFILE_NAME {
@@ -74,6 +74,7 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
             "run supports only the named preview profile",
         ));
     }
+    apply_public_uri_overrides(&mut profile);
     let config_bytes = config_digest_input(&profile)?;
     let steps = step_names(&profile)?;
     let step_refs = steps.iter().map(String::as_str).collect::<Vec<_>>();
@@ -157,6 +158,19 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
     .await;
     supervisor.shutdown().await?;
     runtime
+}
+
+fn apply_public_uri_overrides(profile: &mut DeploymentProfile) {
+    let Some(access) = profile.services.iter_mut().find(|service| service.id == "access") else {
+        return;
+    };
+    for name in ["CROWDB_S3_PUBLIC_URI", "CROWDB_ICEBERG_PUBLIC_URI"] {
+        if let Ok(value) = std::env::var(name) {
+            if !value.is_empty() {
+                access.env.insert(name.to_owned(), value);
+            }
+        }
+    }
 }
 
 async fn run_ready_services(
