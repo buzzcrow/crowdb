@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { randomUUID } from '../utils/randomUUID';
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Search, Info, Database, Trash2, Loader2, Copy, AlertTriangle, FlaskConical } from 'lucide-react';
 import { useNavigationSnapshot } from '../contexts/DomainContext';
@@ -79,7 +80,7 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
 
   const [demoCount, setDemoCount] = useState(20);
   const [demoLoading, setDemoLoading] = useState(false);
-  const [demoSession] = useState(() => crypto.randomUUID().replace(/-/g, ''));
+  const [demoSession] = useState(() => randomUUID().replace(/-/g, ''));
   const scanReqIdRef = useRef(0);
   const scanAbortRef = useRef<AbortController>();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout>>();

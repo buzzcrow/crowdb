@@ -108,10 +108,17 @@ def load(args, catalog, token, work):
         return args.load_report.resolve()
     report = work / "iceberg-report.json"
     env = {**os.environ, "ICEBERG_URI": catalog, "ICEBERG_TOKEN": token}
+    fileio_args = []
+    if args.catalog_uri:
+        # Container metadata may advertise localhost, which refers to the host
+        # when this loader runs outside Docker. Keep the vended credentials.
+        env["CROWDB_TPC_FILEIO_ENDPOINT"] = catalog.rstrip("/")
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO / "tools"), env.get("PYTHONPATH")]))
+        fileio_args = ["--catalog-property", "py-io-impl=tpc_container_fileio.ContainerFileIO"]
     subprocess.run([
         sys.executable, "-m", "crowdb_tpc_loader", "load", "--benchmark", "tpch",
         "--sf", args.sf, "--namespace", args.namespace, "--work-dir", str(work),
-        "--keep-files", "--report-file", str(report),
+        "--keep-files", "--report-file", str(report), *fileio_args,
     ], env=env, check=True)
     return report
 

@@ -176,6 +176,9 @@ build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["build-c
 default = { depends-on = ["build"] }
 stage-single-node-container = "bash container/single-node-container/build.sh stage"
 build-single-node-container = "bash container/single-node-container/build.sh image"
+start-container = { cmd = "bash container/single-node-container/dev-container.sh start", depends-on = ["build-single-node-container"] }
+inject-container = "bash container/single-node-container/dev-container.sh inject"
+clean-container = "bash container/single-node-container/dev-container.sh clean"
 test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["build-single-node-container", "install-ui-deps"] }
 
 # ── Run ──────────────────────────────────────────────────────────

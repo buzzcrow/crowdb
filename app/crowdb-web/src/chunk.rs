@@ -97,7 +97,8 @@ pub(crate) async fn list(State(state): State<AppState>, Query(query): Query<List
         async move {
             let request = ListChunksRequest {
                 start_token,
-                max_keys: limit,
+                // Read one extra record to prove that another window exists.
+                max_keys: limit + 1,
                 ..Default::default()
             };
             (
@@ -113,11 +114,9 @@ pub(crate) async fn list(State(state): State<AppState>, Query(query): Query<List
     .await;
     let mut candidates = BTreeMap::new();
     let mut failures = Vec::new();
-    let mut more = false;
     for (owner, result) in results {
         match result {
             Ok(Ok(page)) => {
-                more |= page.next_token.is_some();
                 for chunk in page.chunks {
                     if let Some(id) = chunk.id {
                         candidates.insert(id_text(id), (owner.to_string(), chunk));
@@ -128,7 +127,7 @@ pub(crate) async fn list(State(state): State<AppState>, Query(query): Query<List
             Err(_) => failures.push(json!({"owner":owner.to_string(),"error":"query timed out"})),
         }
     }
-    more |= candidates.len() > limit as usize;
+    let more = candidates.len() > limit as usize;
     let scanned: Vec<_> = candidates.into_iter().take(limit as usize).collect();
     let after = scanned.last().map(|(id, _)| id.clone());
     let chunks: Vec<_> = scanned
@@ -154,6 +153,7 @@ pub(crate) struct PxgroupListQuery {
     start_after: Option<String>,
     #[serde(default = "default_pxgroup_limit")]
     limit: u32,
+    chunk_type: Option<i32>,
 }
 
 fn default_pxgroup_limit() -> u32 {
@@ -171,6 +171,14 @@ pub(crate) async fn pxgroup_list(
         return Err(err_400("limit must be between 1 and 256"));
     }
     let prefix = b"/chunk/";
+    let mut scan_prefix = prefix.to_vec();
+    if let Some(kind) = query.chunk_type {
+        let kind = u8::try_from(kind)
+            .ok()
+            .filter(|kind| (1..=6).contains(kind))
+            .ok_or_else(|| err_400("chunk_type must be between 1 and 6"))?;
+        scan_prefix.push(kind);
+    }
     let start_after = query
         .start_after
         .map(|token| hex::decode(token).map_err(|_| err_400("start_after must be a hex key token")))
@@ -184,7 +192,7 @@ pub(crate) async fn pxgroup_list(
         &ctx,
         store_id,
         group_id,
-        prefix,
+        &scan_prefix,
         &start_after,
         query.limit,
     )

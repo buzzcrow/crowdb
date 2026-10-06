@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { randomUUID } from '../utils/randomUUID';
 import { createContext, useContext, useState, useRef, useCallback, useEffect, ReactNode } from 'react';
 import { Domain } from '../types';
 import { captureScroll, cancelScrollRestore } from './navigationScroll';
@@ -24,7 +25,7 @@ const DomainContext = createContext<DomainContextType | undefined>(undefined);
 export function DomainProvider({ children, initialDomain }: { children: ReactNode; initialDomain?: Domain }) {
   const [domain, updateDomain] = useState<Domain>(initialDomain ?? Domain.Cluster);
   const [returning, setReturning] = useState(false);
-  const session = useRef(crypto.randomUUID());
+  const session = useRef(randomUUID());
   const visitKey = useRef(0);
   const sequence = useRef(0);
   const current = useRef(domain); current.current = domain;

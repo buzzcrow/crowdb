@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { randomUUID } from '../utils/randomUUID';
 import { useState, useRef, useEffect } from 'react';
 import { Workbench, inputClass, buttonClass } from '../access/Workbench';
 import { s3, xml, xmlText, objectPath, previewBytes } from '../access/native';
@@ -161,7 +162,7 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
       <p className="tw-text-xs tw-text-muted tw-break-all">Target: {bucket || 'S3'}{selected ? ` / ${selected.key}` : ''}</p>
       {!bucket && <>
     {!readonly && <><button className={buttonClass} disabled={!connected || busy || !!demoBucket} onClick={() => void run(async () => {
-      const demo = `console-demo-${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`;
+      const demo = `console-demo-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
       await request('PUT', objectPath(demo)); setDemoBucket(demo);
       await request('PUT', objectPath(demo, 'example.txt'), {}, 'CROWDB console demo\n'); await listBuckets();
     }, 'Demo bucket and object created')}>Create object demo</button>

@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { randomUUID } from '../utils/randomUUID';
 import { useState, useEffect, useRef } from 'react';
 import { ResourceActions } from '../access/ResourceActions';
 import { Workbench, inputClass, buttonClass } from '../access/Workbench';
@@ -179,7 +180,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
       <p className="tw-text-xs tw-text-muted">Drop removes the catalog reference. Physical reclamation follows service GC.</p>
       </>}
       {!namespace && <div className="tw-flex tw-gap-2 tw-items-center tw-flex-wrap"><button className={buttonClass} disabled={busy || !!demoNamespace} onClick={() => void run(async () => {
-        const demo = `console_demo_${crypto.randomUUID().replace(/-/g, '')}`;
+        const demo = `console_demo_${randomUUID().replace(/-/g, '')}`;
         await iceberg('/v1/namespaces', token, 'POST', { namespace: [demo], properties: { purpose: 'console demo' } }); setDemoNamespace(demo);
         await iceberg(`${namespacePath([demo])}/tables`, token, 'POST', { name: 'example', schema: { type: 'struct', 'schema-id': 0, fields: JSON.parse(initialFields) } }); await loadNamespaces();
       }, 'Demo namespace and table created')}>Create metadata demo</button>
