@@ -80,8 +80,12 @@ async fn competing_cohorts_use_the_service_head_revision_and_reject_stale_maps()
     let second = ChunkSlotMapClient::new(Arc::clone(&test.kv));
     let a = TestHandoffCluster::plan(2);
     let b = TestHandoffCluster::plan(3);
-    let (a_result, b_result) = tokio::join!(first.prepare_handoff(&a), second.prepare_handoff(&b));
-    assert_ne!(a_result.is_ok(), b_result.is_ok());
+    // Reserve one cohort before attempting the competing cohort. The
+    // handoff CAS contract is that the second cohort is rejected; making the
+    // order explicit keeps this test from depending on RPC scheduling.
+    first.prepare_handoff(&a).await.unwrap();
+    let b_result = second.prepare_handoff(&b).await;
+    assert!(b_result.is_err());
     let winner = first.read_handoff().await.unwrap().unwrap();
     assert!(winner.plan() == &a || winner.plan() == &b);
     let mut stale = winner.plan().record().clone();

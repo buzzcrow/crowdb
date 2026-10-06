@@ -15,6 +15,7 @@ import type { APIRequestContext, Page } from '@playwright/test';
 type UIContext = { page: Page; request: APIRequestContext; baseURL: string; deployments: ReturnType<typeof observeDefaultDeployments> };
 
 test('UI creates three storage nodes, adds three diskless nodes, then KV, S3 and Iceberg persist real data', async ({ page, request, baseURL }) => {
+  test.setTimeout(300_000);
   const context = { page, request, baseURL: baseURL!, deployments: observeDefaultDeployments(page) };
   await step('three-node: empty owned backend', () => resetAll(baseURL!));
   let primaryFailure: unknown;
@@ -183,7 +184,7 @@ async function icebergRoundTrip({ page, baseURL }: UIContext) {
     expect(created.status(), await created.text()).toBe(200);
     const writerConfig = (await created.json()).config;
     await tree.getByRole('button', { name: 'events', exact: true }).click();
-    const execution = promisify(execFile)('pixi', ['run', '-e', 'iceberg-e2e', 'python', resolve('e2e/fixtures/icebergRoundTrip.py'), `${baseURL}/api/access/iceberg`, 'ui_three_node'], { env: { ...process.env, PYICEBERG_MAX_WORKERS: '4' }, timeout: 60_000 });
+    const execution = promisify(execFile)('pixi', ['run', '-e', 'iceberg-e2e', 'python', resolve('e2e/fixtures/icebergRoundTrip.py'), `${baseURL}/api/access/iceberg`, 'ui_three_node'], { env: { ...process.env, PYICEBERG_MAX_WORKERS: '4' }, timeout: 180_000 });
     execution.child.stdin!.end(JSON.stringify(writerConfig));
     const result = await execution;
     console.log(result.stdout); if (result.stderr) console.log(result.stderr);

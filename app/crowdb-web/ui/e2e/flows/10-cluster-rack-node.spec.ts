@@ -176,8 +176,13 @@ test.describe('cluster · rack + node CRUD', () => {
             return (await r.json()).pid ?? 0;
           }, { timeout: 10_000, intervals: [100] }).toBeGreaterThan(0);
 
+          await expect.poll(async () => {
+            const response = await api.get('/api/service-plans');
+            expect(response.ok(), await response.text()).toBeTruthy();
+            const plans = await response.json();
+            return plans[String(nodeId)]?.steps?.diskdb?.state;
+          }, { intervals: [100] }).toBe('waiting');
           const queued = await (await api.get('/api/service-plans')).json();
-          expect(queued[String(nodeId)].steps.diskdb.state).toBe('waiting');
           expect(queued[String(nodeId)].overrides.diskdb.rpc_port).toBe(diskdbRpcPort);
           const initialized = await api.post('/api/cluster/init', { data: { nodes: [nodeId] } });
           expect(initialized.status(), await initialized.text()).toBe(201);
