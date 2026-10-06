@@ -22,6 +22,11 @@ Goal: safely redistribute ChunkDB execution authority without relocating storage
   must cover every moved slot before the complete map can be published. Read
   routing and authority as one validated generation. An initialized fixed
   runtime must not silently acquire dynamic authority.
+  Implemented: validated `ChunkServiceHandoff` cohorts, canonical singleton key,
+  service-head CAS reservation, revision-CAS progress, data-group fence CAS and
+  receipt verification. Remaining in this active task: complete routing/authority
+  snapshot schema and atomic Publish transaction; forward supersession of a
+  target that fails after fencing must preserve the newer revoked authority.
 
 ## ChunkDB authority
 
@@ -94,4 +99,19 @@ be stopped by the ephemeral test cleanup.
 - Workspace `pixi run rs-lint` passed after fixing documentation markup and
   positive conditional branch order. `pixi run rs-fmt-check` passed.
 - Runtime activation, persistent handoff, balancing and dynamic Console policy
-  remain unimplemented; the fixed deployment behavior remains the active policy.
+  are not wired into the monitor; the fixed deployment remains the active policy.
+
+## Verified durable handoff foundation
+
+- Protocol: `pixi run cargo test -p crowdb-protocol --test chunk_slot_handoff_test`
+  — 3 passed: receipts, phase ordering, canonical recovery and schema rejection.
+- Persistence: `pixi run clean-env && pixi run cargo test -p crowdb-kv-client
+  --test chunk_slot_handoff_test --test chunk_slot_map_test` — 10 passed.
+  Tests use real group-0 and data-group RPCs. A replacement controller resumes
+  partial fences, retries do not rewrite the fence, forged receipts are rejected,
+  competing controllers reserve one cohort, stale updates cannot remove another
+  controller's receipts, and the fixed routing map remains unchanged.
+- Standalone Publish is rejected until complete routing/authority publication is
+  implemented. Activation/recovery and the dynamic policy remain pending.
+- Workspace `pixi run rs-lint`, `pixi run rs-fmt-check` and diff whitespace checks
+  passed for this stage.

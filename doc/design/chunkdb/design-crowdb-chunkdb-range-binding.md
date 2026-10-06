@@ -20,6 +20,7 @@ and fixed-layout operating limits.
 - [5. Maintenance authority](#5-maintenance-authority)
 - [6. Costs and operating limits](#6-costs-and-operating-limits)
 - [7. Data-group execution fences](#7-data-group-execution-fences)
+- [8. Durable handoff records](#8-durable-handoff-records)
 
 ## 1. Slot identity and invariants
 
@@ -179,3 +180,33 @@ an unresolved proposal blocks handover and readiness until the leader's
 recovery barrier resolves it. Topology replacement preserves the admission
 state, while a new leader tenure requires its own recovery barrier. Delayed
 writes retaining the old comparison value fail after fence publication.
+
+## 8. Durable handoff records
+
+Group zero stores one service handoff cohort at `/chunkdb/slot_handoff/service`.
+`ChunkServiceHandoff` validates its source service generation, unchanged storage
+generation, distinct moved slots, previous and target incarnations, selected
+data groups and per-slot fence receipts. Target authority advances exactly one
+generation; a missing previous authority is reserved for bootstrap without
+admitted writers. Transfer and receipt ordering is canonical.
+
+The phases are Prepare, Fence, Publish and Activate. A cohort is reserved with
+revision CAS on the complete service-map head; its unchanged head value and
+the prepared record are written atomically. Advancing the head revision keeps
+concurrent controllers from reserving different cohorts against the same source.
+An unfinished cohort is resumed rather than replaced.
+
+Data-group fencing requires a persisted Fence-phase snapshot. An already
+applied target identity is reconciled using its revision instead of issuing
+another CAS. Otherwise the source value must match the recorded previous
+identity. Unknown outcomes are reread through the KV recovery barrier, without
+choosing another target or epoch. Before saving a new receipt, the client checks
+the target authority and applied revision in its selected data group.
+
+Progress updates CAS the observed handoff revision. They cannot change cohort
+identity, remove receipts or return to an earlier phase. Decoding rejects
+duplicate slots, conflicting receipts and Publish/Activate records without
+complete fence coverage. Publish cannot be saved as a standalone progress
+update: it belongs in the same transaction as complete routing and authority
+publication. Fixed-policy execution does not initiate handoff or activate
+dynamic assignments.

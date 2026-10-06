@@ -8,6 +8,29 @@ use super::encoding::{
 };
 use crate::chunk_slot::ChunkSlot;
 
+/// One active service handoff cohort in group zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkServiceHandoffKey;
+
+impl TextKey for ChunkServiceHandoffKey {
+    const PATH_MAGIC: &'static str = "/chunkdb";
+    const PATH_TYPE: &'static str = "slot_handoff";
+
+    fn encode_to_path(&self, out: &mut String) {
+        encode_path_header(out, Self::PATH_MAGIC, Self::PATH_TYPE);
+        out.push_str("/service");
+    }
+
+    fn decode_path(parts: &[&str]) -> Result<Self, KeyError> {
+        check_path_exact(parts, 1)?;
+        if parts[0] == "service" {
+            Ok(Self)
+        } else {
+            Err(KeyError::BadTag)
+        }
+    }
+}
+
 /// One persistent execution fence per slot in the selected data KV group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChunkSlotFenceKey {

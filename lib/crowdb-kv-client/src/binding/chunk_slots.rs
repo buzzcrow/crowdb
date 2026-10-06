@@ -3,6 +3,9 @@
 
 //! Fixed-layout bitmap publication and consistent group-0 reads.
 
+mod handoff;
+pub use handoff::ChunkServiceHandoffSnapshot;
+
 use std::sync::Arc;
 
 use bytes::Bytes;

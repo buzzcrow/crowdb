@@ -6,11 +6,16 @@
 mod authority;
 mod bitmap;
 mod bootstrap;
+mod handoff;
 mod map;
 
 pub use authority::{ChunkServiceIncarnation, ChunkSlotAuthority, ChunkSlotAuthorityError};
 pub use bitmap::ChunkSlotBitmap;
 pub use bootstrap::ChunkSlotBootstrap;
+pub use handoff::{
+    ChunkServiceHandoff, ChunkServiceHandoffError, ChunkServiceHandoffPhase, ChunkServiceHandoffRecord,
+    ChunkSlotFenceReceipt, ChunkSlotTransfer,
+};
 pub use map::{ChunkSlotBinding, ChunkSlotMap, ChunkSlotMapHead, ChunkSlotOwner, ChunkStorageGroup};
 
 use serde::{Deserialize, Serialize};

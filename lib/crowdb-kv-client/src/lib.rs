@@ -32,8 +32,9 @@ mod transport;
 pub mod ffi;
 
 pub use binding::{
-    compute_sub_range_assignment, BindingMonitor, BindingStrategy, ChunkSlotMapClient, ChunkdbRangeBinding,
-    ChunkdbRangeStrategy, MonitorTickResult, RangeBindingClient, RangeRouteError, DEFAULT_SUB_RANGE_COUNT,
+    compute_sub_range_assignment, BindingMonitor, BindingStrategy, ChunkServiceHandoffSnapshot,
+    ChunkSlotMapClient, ChunkdbRangeBinding, ChunkdbRangeStrategy, MonitorTickResult, RangeBindingClient,
+    RangeRouteError, DEFAULT_SUB_RANGE_COUNT,
 };
 pub use client::{
     new_client_id, BatchOp, CrowdbKvClient, GetOutcome, JournalOp, JournalScanOutcome, ScanDirection,
