@@ -177,6 +177,44 @@ pub unsafe extern "C" fn crowdb_hw_list_disks_in_group(
     });
 }
 
+/// List every disk on a node, retaining its disk-group identity.
+#[no_mangle]
+pub unsafe extern "C" fn crowdb_hw_list_disks_on_node(
+    client: crowdb_hw_client_t,
+    rack_id: u64,
+    node_id: u64,
+    callback: crowdb_kv_on_complete,
+    user_data: *mut c_void,
+) {
+    if client.is_null() {
+        callback(-1, ptr::null(), user_data);
+        return;
+    }
+    let hw = (*(client as *const HardwareClient)).clone();
+    spawn_op(callback, user_data, move || async move {
+        hw.kv().refresh_topology().await.map_err(|e| e.to_string())?;
+        let groups = hw
+            .list_disk_groups_on_node(rack_id, node_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut entries = Vec::new();
+        for group in groups {
+            let disks = hw
+                .list_disks_in_group(rack_id, node_id, group.dg_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            for (disk_id, value) in disks {
+                entries.push(serde_json::json!({
+                    "disk_group_id": group.dg_id,
+                    "disk_id": {"high": disk_id.high.to_string(), "low": disk_id.low.to_string()},
+                    "value": value,
+                }));
+            }
+        }
+        serde_json::to_string(&entries).map_err(|e| e.to_string())
+    });
+}
+
 /// List all diskdb ownership entries. Returns a JSON array of
 /// `DiskdbOwnerEntry` objects.
 #[no_mangle]

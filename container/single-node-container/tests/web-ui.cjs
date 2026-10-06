@@ -15,6 +15,12 @@ async function main() {
   const browser = await chromium.launch({ executablePath, headless: true });
   try {
     const page = await browser.newPage();
+    const pageErrors = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    // Exercise the HTTP-origin path even when acceptance uses localhost.
+    await page.addInitScript(() => {
+      Object.defineProperty(crypto, 'randomUUID', { value: undefined });
+    });
     await page.goto(process.argv[2]);
     await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0', { timeout: 3000 });
     await expect(page.getByTestId('managed-readonly')).toHaveText('Hardware topology and disk management are read-only', { timeout: 3000 });
@@ -35,6 +41,7 @@ async function main() {
       mkdirSync(process.env.CROWDB_PREVIEW_TEST_ARTIFACTS, { recursive: true });
       await page.screenshot({ path: resolve(process.env.CROWDB_PREVIEW_TEST_ARTIFACTS, 'managed-web.png'), fullPage: true });
     }
+    expect(pageErrors).toEqual([]);
     console.log('Container managed Web browser acceptance passed');
   } finally {
     await browser.close();

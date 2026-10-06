@@ -35,13 +35,14 @@ pub(super) async fn launch(
         Kind::Chunkdb => {
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                super::chunk_slots::prepare(state, body.instance_id),
+                super::chunk_slots::prepare(state, body.instance_id, body.dynamic_ownership),
             )
             .await
             .map_err(|_| {
                 err_502("Chunk slot initialization timed out; reconcile the layout before retrying")
             })??;
             let request = ChunkdbDeployRequest {
+                dynamic_ownership: body.dynamic_ownership,
                 server_id: id.into(),
                 instance_id: body.instance_id,
                 http_port: body.http_port.unwrap(),
@@ -123,7 +124,7 @@ async fn native(
                 format!(
                     "http://{}:{}/_crowdb/health/ready",
                     node.host,
-                    body.s3_port.unwrap()
+                    body.health_port.unwrap()
                 ),
             )
         }
@@ -133,6 +134,10 @@ async fn native(
         lifecycle::prepare_native_launch(body.kind.service_type(), workspace, &config, env_file, ready)
             .map_err(|error| err_502(error.to_string()))?;
     if matches!(body.kind, Kind::AccessServer) {
+        spec.env.insert(
+            "CROWDB_ACCESS_HEALTH_LISTEN".into(),
+            format!("{}:{}", node.host, body.health_port.unwrap()),
+        );
         spec.env.insert("CROWDB_ICEBERG_PUBLIC_URI".into(), http.clone());
         spec.env.insert(
             "CROWDB_S3_PUBLIC_URI".into(),
@@ -191,6 +196,7 @@ async fn chunk_kv_config(
 
 fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -> serde_json::Value {
     let mut config = json!({ "common":{"management_seeds":seeds},
+        "health":{"listen":format!("{}:{}",node.host,body.health_port.unwrap())},
         "s3":{"listen":format!("{}:{}",node.host,body.s3_port.unwrap()),"tenant":"default","region":"us-east-1"},
         "iceberg":{"listen":format!("{}:{}",node.host,body.http_port.unwrap())},
     });

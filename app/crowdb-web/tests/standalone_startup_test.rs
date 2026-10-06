@@ -398,10 +398,9 @@ async fn test_disposable_termination(forced: bool) {
         assert!(!exited.success());
         assert!(crowdb_console_shared::lifecycle::process_is_alive(pid));
         let cleanup =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/runtime/clean-runtime.sh");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/pixi-tasks/clean-env.sh");
         assert!(Command::new("bash")
             .arg(cleanup)
-            .arg("env")
             .env("CROWDB_RUNTIME_ROOT", root.path())
             .status()
             .unwrap()

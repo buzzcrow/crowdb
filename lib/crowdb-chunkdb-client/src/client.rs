@@ -38,6 +38,8 @@ use crate::{ChunkdbClientError, ChunkdbRpcTransport, Result};
 
 #[path = "native_routes.rs"]
 mod native_routes;
+#[path = "retry.rs"]
+mod retry;
 pub use native_routes::NativeChunkRoutes;
 
 const REGISTRY_REFRESH_INTERVAL_MS: u64 = 5_000;
@@ -213,79 +215,10 @@ impl ChunkdbClient {
         Ok(vec![self.first_endpoint().await?])
     }
 
-    /// Execute a crowdb-rpc call with retry on transient errors.
-    async fn with_rpc_retry<T, F, Fut>(&self, chunk_id: Option<&ChunkId>, op: F) -> Result<T>
-    where
-        F: Fn(Arc<ChunkdbRpcTransport>, String) -> Fut,
-        Fut: std::future::Future<Output = Result<T>>,
-    {
-        let transport = Arc::clone(&self.rpc_transport);
-        let mut attempts = 0u32;
-        let mut backoff = self.retry.initial_backoff;
-        loop {
-            let endpoints = self.endpoints_for_chunk(chunk_id).await?;
-            let mut last_error = None;
-            for endpoint in endpoints {
-                match op(Arc::clone(&transport), endpoint).await {
-                    Ok(value) => return Ok(value),
-                    Err(error) if error.is_transient() => last_error = Some(error),
-                    Err(error) => return Err(error),
-                }
-            }
-            let Some(error) = last_error else {
-                return Err(ChunkdbClientError::Unreachable(
-                    "range routing supplied no endpoint".into(),
-                ));
-            };
-            if attempts >= self.retry.max_retries {
-                return Err(error);
-            }
-            attempts += 1;
-            tokio::time::sleep(backoff).await;
-            backoff = backoff.saturating_mul(2);
-            let _ = self.refresh_endpoints().await;
-            // A restarted owner may advertise a new RPC endpoint while the
-            // cached range binding still names its old socket. Refresh both
-            // sources on transient failures, not only on NotMyRange.
-            let _ = self.range_binding.refresh().await;
-        }
-    }
-
-    /// Allocate a new chunk.
     pub async fn allocate_chunk(&self, req: AllocateChunkRequest) -> Result<AllocateChunkResponse> {
-        let chunk_id = req.chunk_id;
-        let mut attempts = 0_u32;
-        let mut backoff = self.retry.initial_backoff;
-        loop {
-            let endpoints = self.endpoints_for_chunk(chunk_id.as_ref()).await?;
-            let mut safe_retry = None;
-            for endpoint in endpoints {
-                // Allocation is not idempotent at the DiskDB layer. Retry only
-                // an explicit ownership rejection or a pre-submission failure.
-                match self.rpc_transport.send_allocate_chunk(&endpoint, &req).await {
-                    Ok(response) => return Ok(response),
-                    Err(
-                        error @ (ChunkdbClientError::NotMyRange(_) | ChunkdbClientError::ConnectFailed(_)),
-                    ) => {
-                        safe_retry = Some(error);
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            let Some(error) = safe_retry else {
-                return Err(ChunkdbClientError::Unreachable(
-                    "range routing supplied no endpoint".into(),
-                ));
-            };
-            if attempts >= self.retry.max_retries {
-                return Err(error);
-            }
-            attempts += 1;
-            tokio::time::sleep(backoff).await;
-            backoff = backoff.saturating_mul(2);
-            let _ = self.refresh_endpoints().await;
-            let _ = self.range_binding.refresh().await;
-        }
+        self.rpc_transport
+            .with_request_identity(self.allocate_chunk_retry(req))
+            .await
     }
 
     /// Append strips to an existing chunk.
@@ -340,7 +273,7 @@ impl ChunkdbClient {
     /// Query a chunk by ID.
     pub async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         let chunk_id = req.chunk_id;
-        self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
+        self.with_read_retry(chunk_id.as_ref(), |t, ep| {
             let req = req.clone();
             async move { t.send_query_chunk(&ep, &req).await }
         })
@@ -353,7 +286,7 @@ impl ChunkdbClient {
         req: QuerySegmentOwnerRequest,
     ) -> Result<QuerySegmentOwnerResponse> {
         let chunk_id = req.chunk_id;
-        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+        self.with_read_retry(chunk_id.as_ref(), |transport, endpoint| {
             let req = req.clone();
             async move { transport.send_query_segment_owner(&endpoint, &req).await }
         })
@@ -506,7 +439,7 @@ impl ChunkdbClient {
 
     /// List chunks with pagination.
     pub async fn list_chunks(&self, req: ListChunksRequest) -> Result<ListChunksResponse> {
-        self.with_rpc_retry(None, |t, ep| {
+        self.with_read_retry(None, |t, ep| {
             let req = req.clone();
             async move { t.send_list_chunks(&ep, &req).await }
         })

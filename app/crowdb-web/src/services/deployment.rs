@@ -52,6 +52,8 @@ impl Kind {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Deploy {
+    #[serde(default)]
+    dynamic_ownership: bool,
     kind: Kind,
     #[serde(deserialize_with = "deserialize_id")]
     instance_id: u64,
@@ -61,6 +63,8 @@ pub(super) struct Deploy {
     rpc_port: Option<u16>,
     #[serde(default)]
     s3_port: Option<u16>,
+    #[serde(default)]
+    health_port: Option<u16>,
     #[serde(default)]
     disk_group_id: Option<u64>,
     #[serde(default)]
@@ -88,9 +92,21 @@ pub(super) async fn deploy(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
     Json(body): Json<Deploy>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let kind = body.kind.name();
+    let listeners = json!({"http_port":body.http_port,"rpc_port":body.rpc_port,"s3_port":body.s3_port,"health_port":body.health_port});
+    deploy_inner(state, node_id, body).await.map_err(|(status, Json(error))| {
+        (status, Json(json!({"error":error.error,"service":kind,"node_id":node_id,"listeners":listeners,"retryable":true})))
+    })
+}
+
+async fn deploy_inner(
+    state: AppState,
+    node_id: u64,
+    body: Deploy,
 ) -> Result<(StatusCode, Json<Value>), Failure> {
     validate(&body)?;
-    if !crate::mgmt::cluster_initialized(&state).await {
+    if !super::dependencies::group0_ready(&state).await {
         return Err(err_409(
             "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting this service",
         ));
@@ -101,13 +117,16 @@ pub(super) async fn deploy(
         claims.push("access-credentials".into());
     }
     let operation = Operation::claim(&state, claims)?;
-    let ports: Vec<_> = [body.http_port, body.rpc_port, body.s3_port]
+    let ports: Vec<_> = [body.http_port, body.rpc_port, body.s3_port, body.health_port]
         .into_iter()
         .flatten()
         .collect();
     let port_claim = super::defaults::claim_ports(&state, &ports)?;
     let (node, seeds) = inputs(&state, node_id, &id, &body)?;
     if matches!(body.kind, Kind::Chunkdb | Kind::ChunkKv) && !body.test_single_node {
+        if let Some(reason) = super::dependencies::storage_wait_reason(&state).await {
+            return Err(err_409(reason));
+        }
         geometry::validate(&state).await?;
     }
     // Request cancellation cannot abandon a spawned process before its registration.
@@ -126,7 +145,7 @@ fn validate(body: &Deploy) -> Result<(), Failure> {
     }
     let ports = match body.kind {
         Kind::Diskio => vec![body.rpc_port],
-        Kind::AccessServer => vec![body.http_port, body.s3_port],
+        Kind::AccessServer => vec![body.http_port, body.s3_port, body.health_port],
         _ => vec![body.http_port, body.rpc_port],
     };
     if ports.iter().any(|port| port.map_or(true, |port| port == 0))
@@ -144,6 +163,7 @@ fn validate(body: &Deploy) -> Result<(), Failure> {
         || (!matches!(body.kind, Kind::ChunkKv)
             && (body.metadata_store_id.is_some() || body.bootstrap_group_id.is_some()))
         || (!matches!(body.kind, Kind::AccessServer) && body.s3_port.is_some())
+        || (!matches!(body.kind, Kind::AccessServer) && body.health_port.is_some())
         || (matches!(body.kind, Kind::AccessServer) && body.rpc_port.is_some())
         || (matches!(body.kind, Kind::Diskio) && body.http_port.is_some())
     {
@@ -185,7 +205,7 @@ fn inputs(
         ));
     }
     node.host = "127.0.0.1".into();
-    let requested: Vec<_> = [body.http_port, body.rpc_port, body.s3_port]
+    let requested: Vec<_> = [body.http_port, body.rpc_port, body.s3_port, body.health_port]
         .into_iter()
         .flatten()
         .collect();

@@ -198,6 +198,15 @@ All paths bound connections, metadata work, stream windows, retained buffers,
 registered memory, retries, and background work independently of total object,
 table, or dataset size.
 
+The process has a separate HTTP health listener configured by `HealthConfig`
+(or `CROWDB_ACCESS_HEALTH_LISTEN`), defaulting to loopback port 9093. Its
+`/_crowdb/health/live` and `/_crowdb/health/ready` routes are independent of the
+S3 and Iceberg listeners. All three ports are distinct. Health serves no
+user-data routes; S3 requests cannot bypass authentication through a health
+path. Readiness observes the same storage dependencies and cleanup backlog
+as the data dispatcher. Retained launch records identify the dedicated health
+address; a missing address requires deployment reconciliation before restart.
+
 ## 8. Correctness invariants
 
 - **AS-I1 — First-class models:** S3, Iceberg, and Dataset each own their

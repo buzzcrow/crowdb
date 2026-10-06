@@ -23,7 +23,7 @@ impl ChunkdbRpcService {
         let conn_handle = req.conn_handle as usize;
         let relocation = self.relocation.clone();
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Some(relocation) = relocation else {
                 submit_handoff_response(
                     &server,
@@ -82,7 +82,16 @@ impl ChunkdbRpcService {
                     req_id,
                     create_nano,
                     msg_type,
-                    FBChunkdbRetCode::InvalidArgument,
+                    if matches!(
+                        error,
+                        crate::relocation::RelocationAdmissionError::Manager(
+                            crate::task::TaskManagerError::Store(crate::task::TaskStoreError::Authority)
+                        )
+                    ) {
+                        FBChunkdbRetCode::NotMyRange
+                    } else {
+                        FBChunkdbRetCode::InvalidArgument
+                    },
                     Some(&error.to_string()),
                     RelocationHandoffDisposition::Rejected,
                 ),

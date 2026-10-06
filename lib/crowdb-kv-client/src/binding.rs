@@ -5,7 +5,7 @@
 
 mod chunk_slots;
 pub mod chunkdb_strategy;
-pub use chunk_slots::ChunkSlotMapClient;
+pub use chunk_slots::{ChunkServiceHandoffSnapshot, ChunkServiceSnapshot, ChunkSlotMapClient};
 pub mod framework;
 pub mod range;
 

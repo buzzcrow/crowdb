@@ -128,7 +128,7 @@ impl RelocationWorker {
             return Ok((key, existing));
         }
         let owner_chunk = source.owner_chunk.ok_or(RelocationWorkerError::InvalidSource)?;
-        let disks = dg.disks.read().unwrap().clone();
+        let disks = dg.disk_snapshot().as_ref().clone();
         if source_disk == target_disk_id || !disks.iter().any(|disk| disk.disk_id == target_disk_id) {
             return Err(RelocationWorkerError::InvalidTarget);
         }
@@ -174,6 +174,7 @@ impl RelocationWorker {
             last_error: String::new(),
         };
         ctx.kv
+            .for_group(dg)
             .put_relocation_journal(dg.bind(), &key, &value)
             .await
             .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))?;
@@ -212,9 +213,7 @@ impl RelocationWorker {
         }
         let target_disk = target.disk_id.ok_or(RelocationWorkerError::InvalidTarget)?;
         if !target_dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .any(|disk| disk.disk_id == target_disk)
         {
@@ -255,6 +254,7 @@ impl RelocationWorker {
             last_error: String::new(),
         };
         ctx.kv
+            .for_group(target_dg)
             .put_relocation_journal(target_dg.bind(), &key, &value)
             .await
             .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))?;
@@ -312,12 +312,7 @@ impl RelocationWorker {
                             return Ok(());
                         }
                         RelocationHandoffDisposition::Rejected => {
-                            value.last_error = "owner rejected relocation handoff".into();
-                            value.updated_at_ms = now_ms();
-                            ctx.kv
-                                .put_relocation_journal(dg.bind(), key, value)
-                                .await
-                                .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))?;
+                            self.persist_rejection(ctx, dg, key, value).await?;
                             return Err(RelocationWorkerError::Rejected);
                         }
                     }
@@ -337,12 +332,8 @@ impl RelocationWorker {
                             .into_iter()
                             .find_map(|disk_group_id| {
                                 let group = ctx.container.get_disk_group(disk_group_id)?;
-                                let owns_source = group
-                                    .disks
-                                    .read()
-                                    .unwrap()
-                                    .iter()
-                                    .any(|disk| disk.disk_id == disk_id);
+                                let owns_source =
+                                    group.disk_snapshot().iter().any(|disk| disk.disk_id == disk_id);
                                 owns_source.then_some(group)
                             })
                     });
@@ -371,6 +362,23 @@ impl RelocationWorker {
         }
     }
 
+    async fn persist_rejection(
+        &self,
+        ctx: &BgCtx,
+        dg: &Arc<DdbDiskGroup>,
+        key: &RelocationJournalKey,
+        value: &mut RelocationJournalValue,
+    ) -> Result<(), RelocationWorkerError> {
+        value.last_error = "owner rejected relocation handoff".into();
+        value.updated_at_ms = now_ms();
+        ctx.kv
+            .for_group(dg)
+            .put_relocation_journal(dg.bind(), key, value)
+            .await
+            .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))?;
+        Ok(())
+    }
+
     async fn checkpoint(
         &self,
         ctx: &BgCtx,
@@ -383,6 +391,7 @@ impl RelocationWorker {
         value.updated_at_ms = now_ms();
         value.last_error.clear();
         ctx.kv
+            .for_group(dg)
             .put_relocation_journal(dg.bind(), key, value)
             .await
             .map_err(|error| RelocationWorkerError::Persistence(error.to_string()))

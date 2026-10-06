@@ -16,6 +16,7 @@ pub mod group_inflight;
 pub mod group_maintenance;
 pub mod group_membership;
 pub mod group_operations;
+pub(crate) mod group_owner_fence;
 pub mod group_prepare;
 pub mod group_propose;
 #[cfg(feature = "test-util")]
@@ -30,6 +31,7 @@ pub mod local_replica_replay;
 pub mod node_config;
 pub mod px_kv_store;
 mod px_kv_store_handler;
+mod px_kv_store_owner;
 pub mod remote_replica;
 pub mod replica;
 pub mod status;

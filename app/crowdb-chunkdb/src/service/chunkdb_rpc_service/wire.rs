@@ -25,6 +25,13 @@ use crowdb_protocol::chunkdb_fb::{FBPlacementAssessment, FBPlacementAssessmentAr
 /// Map a `LifecycleError` to `(ret_code, message, range_start, range_end)`.
 pub(super) fn map_error(e: &LifecycleError) -> (FBChunkdbRetCode, String, u32, u32) {
     match e {
+        LifecycleError::Storage(crate::storage::StoreError::Authority) => {
+            (FBChunkdbRetCode::NotMyRange, e.to_string(), 0, 0)
+        }
+        LifecycleError::Storage(crate::storage::StoreError::OwnershipChanged(bucket)) => {
+            let b = u32::from(*bucket);
+            (FBChunkdbRetCode::NotMyRange, e.to_string(), b, b)
+        }
         LifecycleError::NotMyRange { bucket } => {
             let b = u32::from(*bucket);
             (FBChunkdbRetCode::NotMyRange, e.to_string(), b, b)
@@ -454,6 +461,9 @@ fn map_conversion_error(error: &ConversionError) -> (FBChunkdbRetCode, String) {
         }
         ConversionError::Conflict => (FBChunkdbRetCode::Aborted, error.to_string()),
         ConversionError::StaleClaim => (FBChunkdbRetCode::FailedPrecondition, error.to_string()),
+        ConversionError::TaskStore(crate::task::TaskStoreError::Authority) => {
+            (FBChunkdbRetCode::NotMyRange, error.to_string())
+        }
         ConversionError::TaskStore(_) | ConversionError::Payload(_) => {
             (FBChunkdbRetCode::Internal, error.to_string())
         }

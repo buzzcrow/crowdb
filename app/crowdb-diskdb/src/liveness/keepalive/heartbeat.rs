@@ -6,6 +6,14 @@ impl KeepAlive {
     /// enters degraded mode on threshold breach.
     pub(super) async fn heartbeat(&self) -> bool {
         let instance_id = self.container.instance_id;
+        if self.ownership_fencing {
+            let key = format!("/diskdb/ownership-capability/{instance_id}");
+            if let Err(error) = self.hw.kv().put(0, 0, key.as_bytes(), b"1", None).await {
+                warn!(%error, "ownership capability publication failed");
+                self.record_observation_failure();
+                return false;
+            }
+        }
         // Compute per-disk-group usage summaries from the in-memory
         // bitmap (R74 §8 keepalive piggyback). Recomputed each tick
         // (not cached); derived, not a source of truth.

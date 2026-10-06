@@ -100,15 +100,11 @@ async fn production_idle_writer_stops_after_ownership_takeover() {
 }
 
 fn all_binaries_available() -> bool {
-    let available = (std::env::var("CROWDB_KV_SERVER_BIN").is_ok()
+    (std::env::var("CROWDB_KV_SERVER_BIN").is_ok()
         || crowdb_test_harness::cluster::crowdb_kv_server_bin().is_some())
         && diskdb_harness::crowdb_diskdb_bin().is_some()
         && diskio_harness::crowdb_diskio_bin().is_some()
-        && chunkdb_harness::crowdb_chunkdb_bin().is_some();
-    if !available {
-        eprintln!("skipping real-process stream restart test: required binaries are unavailable");
-    }
-    available
+        && chunkdb_harness::crowdb_chunkdb_bin().is_some()
 }
 
 fn create_disks(root: &TestDir) -> Vec<DiskArg> {
@@ -288,9 +284,10 @@ fn kv_client(cluster: &KvCluster) -> Arc<CrowdbKvClient> {
 
 #[tokio::test]
 async fn production_stream_recovers_exact_bytes_after_service_restarts() {
-    if !all_binaries_available() {
-        return;
-    }
+    assert!(
+        all_binaries_available(),
+        "native stream acceptance requires all binaries"
+    );
 
     let disk_root = TestDir::new("chunk-stream-restart").expect("create test disk root");
     let disks = create_disks(&disk_root);
@@ -385,9 +382,10 @@ async fn production_stream_recovers_exact_bytes_after_service_restarts() {
 
 #[tokio::test]
 async fn production_stream_write_returns_after_diskio_failure() {
-    if !all_binaries_available() {
-        return;
-    }
+    assert!(
+        all_binaries_available(),
+        "native stream acceptance requires all binaries"
+    );
 
     let disk_root = TestDir::new("chunk-stream-diskio-failure").expect("create test disk root");
     let disks = create_disks(&disk_root);
@@ -453,9 +451,10 @@ async fn production_stream_write_returns_after_diskio_failure() {
 
 #[tokio::test]
 async fn production_stream_write_returns_after_live_diskio_errors() {
-    if !all_binaries_available() {
-        return;
-    }
+    assert!(
+        all_binaries_available(),
+        "native stream acceptance requires all binaries"
+    );
 
     let cluster = KvCluster::start().await;
     seed_restart_hardware(&cluster.make_hardware_client()).await;

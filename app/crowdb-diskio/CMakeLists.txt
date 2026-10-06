@@ -35,15 +35,14 @@ if(APPLE)
 else()
   set(CROWDB_KV_CLIENT_FFI_LIB ${CROWDB_ROOT_DIR}/target/${CARGO_PROFILE}/libcrowdb_kv_client.so)
 endif()
-add_custom_command(
-  OUTPUT ${CROWDB_KV_CLIENT_FFI_LIB}
+add_custom_target(crowdb-kv-client-ffi
+  BYPRODUCTS ${CROWDB_KV_CLIENT_FFI_LIB}
   COMMAND pixi run cargo build -p crowdb-kv-client --features ffi
           $<$<STREQUAL:${CARGO_PROFILE},release>:--release>
   WORKING_DIRECTORY ${CROWDB_ROOT_DIR}
   COMMENT "Building crowdb-kv-client (Rust cdylib with ffi feature)"
   VERBATIM
 )
-add_custom_target(crowdb-kv-client-ffi DEPENDS ${CROWDB_KV_CLIENT_FFI_LIB})
 
 # ── Source files (exclude dio_main.cpp from the library) ──────────
 file(GLOB_RECURSE CROWDB_DISKIO_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)

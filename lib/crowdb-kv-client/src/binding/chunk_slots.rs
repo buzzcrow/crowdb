@@ -3,6 +3,11 @@
 
 //! Fixed-layout bitmap publication and consistent group-0 reads.
 
+mod handoff;
+mod publication;
+pub use handoff::ChunkServiceHandoffSnapshot;
+pub use publication::ChunkServiceSnapshot;
+
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -88,6 +93,16 @@ impl ChunkSlotMapClient {
     }
 
     async fn read<O: MapOwner>(&self) -> Result<ChunkSlotMap<O>> {
+        for _ in 0..4 {
+            match self.read_once::<O>().await {
+                Err(Error::CasFailed { .. }) => {}
+                result => return result,
+            }
+        }
+        Err(Error::CasBusy)
+    }
+
+    async fn read_once<O: MapOwner>(&self) -> Result<ChunkSlotMap<O>> {
         self.reject_legacy().await?;
         let key = O::head().to_path();
         let (head, revision) = self
@@ -108,7 +123,9 @@ impl ChunkSlotMapClient {
             .await?
             .ok_or_else(|| invalid(&key, "slot map head disappeared"))?;
         if head != after || revision != after_revision {
-            return Err(invalid(&key, "slot map changed while reading"));
+            return Err(Error::CasFailed {
+                current_revision: after_revision,
+            });
         }
         ChunkSlotMap::new(head, bindings).map_err(|error| invalid(&key, &error.to_string()))
     }

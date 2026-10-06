@@ -103,7 +103,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/protocol/design-crowdb-protocol-key.md`                           | Binary/text key encoding and evolution.                 |
 | `doc/design/protocol/design-crowdb-protocol-types.md`                         | Wire types, ID aliases, schemas, re-exports.            |
 | `doc/design/chunkdb/design-crowdb-chunkdb-mirror-to-ec.md`                    | Mirror-to-EC tasks, leases, publication, recovery.      |
-| `doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md`                   | Fixed hash slots, service/storage maps, task scope.     |
+| `doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md`                   | Slot maps, dynamic ownership epochs, task authority.   |
 | `doc/design/chunkdb/design-crowdb-chunkdb-rpc.md`                             | Chunkdb RPC schema, service, transport, errors.         |
 | `doc/design/chunkdb/chunkdb-allocate-flow-analysis.md`                        | EC allocation benchmark and bottlenecks.                |
 | `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md`             | Shared-chunk admission, routing, recovery, elasticity.  |

@@ -44,6 +44,8 @@ pub enum StoreError {
     Serde(String),
     #[error("chunk is outside this runtime domain or service slot authority")]
     Authority,
+    #[error("chunk slot {0} ownership changed before submission")]
+    OwnershipChanged(u16),
 }
 
 /// Result alias.
@@ -200,6 +202,7 @@ impl ChunkStore {
             return Err(StoreError::Conflict);
         }
         let route = self.route(id)?;
+        let authority = self.capture_authority(id)?;
         let chunk_key = chunk_key(id);
         let task_key = ChunkTaskKey {
             partition_id: *id,
@@ -227,6 +230,7 @@ impl ChunkStore {
                 value: Bytes::new(),
             },
         ];
+        self.check_submission(id, authority.as_ref())?;
         match self
             .kv
             .batch_write_cas(route.kv_store_id, route.kv_group_id, &ops, &chunk_key, 0)
@@ -267,6 +271,8 @@ impl ChunkStore {
         value: &[u8],
         chunk: &Chunk,
     ) -> Result<()> {
+        let id = chunk.id.as_ref().ok_or(StoreError::Conflict)?;
+        let authority = self.capture_authority(id)?;
         let observed = self
             .kv
             .get(store_id, group_id, key, ReadMode::Linearizable, None)
@@ -288,6 +294,7 @@ impl ChunkStore {
                 revision
             }
         };
+        self.check_submission(id, authority.as_ref())?;
         match self
             .kv
             .put_cas(store_id, group_id, key, value, expected_revision)
@@ -330,6 +337,8 @@ impl ChunkStore {
         let r = self.route(id)?;
         let key = chunk_key(id);
 
+        let authority = self.capture_authority(id)?;
+        self.check_submission(id, authority.as_ref())?;
         self.kv
             .delete(r.kv_store_id, r.kv_group_id, &key, None)
             .await

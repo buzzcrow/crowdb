@@ -1,4 +1,5 @@
 import com.sun.net.httpserver.HttpServer;
+import java.io.StringReader;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -6,6 +7,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.iceberg.aws.s3.S3FileIO;
@@ -19,7 +21,9 @@ import software.amazon.awssdk.services.s3.model.CompletedPart;
 public class TestIcebergFileIO {
   public static void main(String[] args) throws Exception {
     Properties configuration = new Properties();
-    configuration.load(System.in);
+    // Maven may consume stdin before launching the standalone SDK process.
+    configuration.load(new StringReader(Objects.requireNonNull(
+        System.getenv("CROWDB_TEST_FILEIO_PROPERTIES"), "FileIO fixture configuration")));
     Map<String, String> properties = new HashMap<>();
     properties.put("s3.endpoint", configuration.getProperty("endpoint"));
     properties.put("client.region", "us-east-1");

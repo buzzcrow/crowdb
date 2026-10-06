@@ -67,11 +67,12 @@ class Group0Sync
     void reconcile_disks(const std::string &json);
     void heartbeat();
 
-    Group0SyncConfig                     cfg_;
-    std::shared_ptr<DiskSet>             disk_set_;
-    std::shared_ptr<IoEngine>            engine_;
+    Group0SyncConfig                       cfg_;
+    std::shared_ptr<DiskSet>               disk_set_;
+    std::shared_ptr<IoEngine>              engine_;
     crowdb::rpc::ScheduledExecutor        &executor_;
     crowdb::rpc::ScheduledExecutor::TaskId sync_task_id_{0};
+    std::vector<uint64_t>                  owned_dg_ids_;
 
     // FFI handles (opaque pointers from crowdb-kv-client FFI).
     void *hw_client_  = nullptr;

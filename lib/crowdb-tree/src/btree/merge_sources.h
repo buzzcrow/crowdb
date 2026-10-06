@@ -101,7 +101,15 @@ class LoserTree
     // Replay a source whose key changed externally (L1 refilled a new leaf).
     void replay_source(int src)
     {
-        replay(src);
+        if (src == winner()) {
+            replay(src);
+        }
+        else {
+            // Only the winner has all its opponents recorded along its path.
+            // Reviving a losing source requires rebuilding the tournament;
+            // replaying it directly can discard another source's winner.
+            init(sources_, k_);
+        }
     }
 
     [[nodiscard]] bool winner_valid() const

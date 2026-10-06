@@ -183,6 +183,9 @@ impl Drop for AllocationMetricGuard {
 }
 
 impl LifecycleHandler {
+    pub(crate) fn execution_authority(&self) -> Option<crate::range_guard::ExecutionAuthority> {
+        self.range_guard.as_ref().map(|guard| guard.capture())
+    }
     #[must_use]
     pub fn layout_validity_ms(&self) -> u64 {
         self.layout_validity_ms
@@ -743,7 +746,13 @@ impl LifecycleHandler {
             .renew_finalize_chunk(chunk_id, writer_epoch, now_ms, FINALIZE_CHUNK_LIVENESS_MS)
             .await
             .map_err(|error| {
-                LifecycleError::InvalidRequest(format!("chunk liveness renewal failed: {error}"))
+                if matches!(error, crate::task::TaskStoreError::Authority) {
+                    LifecycleError::NotMyRange {
+                        bucket: crate::range_guard::chunk_bucket(chunk_id),
+                    }
+                } else {
+                    LifecycleError::InvalidRequest(format!("chunk liveness renewal failed: {error}"))
+                }
             })?;
         self.liveness_renewed_at.insert(*chunk_id, now_ms);
         Ok(now_ms)

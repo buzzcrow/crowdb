@@ -276,7 +276,7 @@ pub async fn add_group(
             let rid = replica_id + i as u64;
             let single = nodes.len() <= 1;
             async move {
-                let client = server_client(ctx, nid).await?;
+                let (client, _) = ensure_replica_store(ctx, store_id, nid).await?;
                 let req = AddGroupRequest {
                     group_id,
                     replica_id: rid,

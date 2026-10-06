@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+import { randomUUID } from '../utils/randomUUID';
 import { useState, useEffect, useRef } from 'react';
 import { ResourceActions } from '../access/ResourceActions';
 import { Workbench, inputClass, buttonClass } from '../access/Workbench';
@@ -179,7 +180,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
       <p className="tw-text-xs tw-text-muted">Drop removes the catalog reference. Physical reclamation follows service GC.</p>
       </>}
       {!namespace && <div className="tw-flex tw-gap-2 tw-items-center tw-flex-wrap"><button className={buttonClass} disabled={busy || !!demoNamespace} onClick={() => void run(async () => {
-        const demo = `console_demo_${crypto.randomUUID().replace(/-/g, '')}`;
+        const demo = `console_demo_${randomUUID().replace(/-/g, '')}`;
         await iceberg('/v1/namespaces', token, 'POST', { namespace: [demo], properties: { purpose: 'console demo' } }); setDemoNamespace(demo);
         await iceberg(`${namespacePath([demo])}/tables`, token, 'POST', { name: 'example', schema: { type: 'struct', 'schema-id': 0, fields: JSON.parse(initialFields) } }); await loadNamespaces();
       }, 'Demo namespace and table created')}>Create metadata demo</button>
@@ -195,7 +196,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
           <label className="tw-block tw-text-xs">Property updates (JSON)<textarea className={`${inputClass} tw-w-full`} value={propertyText} onChange={event => setPropertyText(event.target.value)} /></label><label className="tw-block tw-text-xs">Property removals (JSON array)<input className={`${inputClass} tw-w-full`} value={removals} onChange={event => setRemovals(event.target.value)} /></label><button className={buttonClass} disabled={busy || !supported('POST', '/v1/namespaces/{namespace}/properties')}>Update properties</button>
         </form>
         <form className="tw-space-y-2" onSubmit={event => { event.preventDefault(); void run(async () => { await iceberg(`${path}/tables`, token, 'POST', { name: newTable, schema: { type: 'struct', 'schema-id': 0, fields: JSON.parse(fields) } }); await loadNamespace(namespace); }, 'Table created'); }}>
-          <h2 className="tw-font-semibold">Create table</h2><label className="tw-text-xs">Table name<input className={`${inputClass} tw-ml-2`} required value={newTable} onChange={event => setNewTable(event.target.value)} /></label><label className="tw-block tw-text-xs">Schema fields (JSON)<textarea className={`${inputClass} tw-w-full`} rows={3} value={fields} onChange={event => setFields(event.target.value)} /></label><button className={buttonClass} disabled={busy || !supported('POST', '/v1/namespaces/{namespace}/tables')}>Create table</button>
+          <h2 className="tw-font-semibold">Create table</h2><label className="tw-text-xs">Table name<input className={`${inputClass} tw-ml-2`} required value={newTable} onChange={event => setNewTable(event.target.value)} /></label><label className="tw-block tw-text-xs">Schema fields (JSON)<textarea aria-label="Schema fields (JSON)" className={`${inputClass} tw-w-full`} rows={3} value={fields} onChange={event => setFields(event.target.value)} /></label><button className={buttonClass} disabled={busy || !supported('POST', '/v1/namespaces/{namespace}/tables')}>Create table</button>
         </form>
         <button className={`${buttonClass} tw-text-failed tw-border-failed/30`} disabled={busy || !supported('DELETE', '/v1/namespaces/{namespace}')} onClick={() => { if (confirm(`Drop empty namespace ${namespace.join('.')}?`)) void run(async () => { await iceberg(path, token, 'DELETE'); setNamespace(null); setProperties(null); await loadNamespaces(); }, 'Namespace dropped'); }}>Drop namespace</button>
       </>}

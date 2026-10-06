@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! R2: Cluster initialization — delegates to `ops::cluster::init`.
+//! Cluster initialization and optional first data group provisioning.
 
 use crate::error::{err_502, map_config_err, map_persist_err, ErrorBody};
 use crate::mgmt::refresh_node_cache;
@@ -19,6 +19,10 @@ pub(crate) struct ClusterInitBody {
     /// Must be non-empty. For a single node, group 0 self-elects.
     /// For multiple nodes, remotes are wired and election starts after.
     pub nodes: Vec<u64>,
+    /// Console bootstrap includes an ordinary data group on the same nodes.
+    /// Omitted by callers that manage their data topology separately.
+    #[serde(default)]
+    pub create_data_group: bool,
     /// Optional versioned bootstrap topology file for a first bare-metal init.
     #[serde(default)]
     pub bootstrap_file: Option<std::path::PathBuf>,
@@ -40,6 +44,7 @@ pub(crate) async fn http_cluster_init(
     State(state): State<AppState>,
     Json(body): Json<ClusterInitBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let _operation = crate::services::Operation::claim(&state, vec!["cluster/init".into()])?;
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
     let summary = if state.web_mode.is_some() || state.config_path.is_some() {
         let path = state.runtime_root.join("bootstrap-intent.toml");
@@ -74,6 +79,13 @@ pub(crate) async fn http_cluster_init(
     // reset has stale/empty seeds and every KV op retries for ~5s.
     state.reseed_kv_client().await;
 
+    if body.create_data_group {
+        let nodes: Vec<_> = summary.nodes.iter().map(|(node, _)| *node).collect();
+        ensure_data_group(&ctx, &nodes).await.map_err(|error| {
+            err_502(format!("Group 0 is initialized, but Group 1 setup did not complete: {error}. Retry Initialize Cluster with the same nodes."))
+        })?;
+    }
+
     // Refresh the monitor cache for all init nodes so health badges
     // and RPC endpoint resolution reflect the new group-0 state.
     futures::future::join_all(
@@ -89,10 +101,34 @@ pub(crate) async fn http_cluster_init(
         Json(serde_json::json!({
             "store_id": summary.store_id,
             "group_id": summary.group_id,
+            "data_group_id": body.create_data_group.then_some(1),
             "nodes": summary.nodes.iter().map(|(n, r)| serde_json::json!({
                 "node_id": n,
                 "replica_id": r,
             })).collect::<Vec<_>>(),
         })),
     ))
+}
+
+async fn ensure_data_group(ctx: &ops::OpContext, nodes: &[u64]) -> crowdb_console_shared::error::Result<()> {
+    if ctx.sysmd().get_group(0, 1).await?.is_some() {
+        let mut actual: Vec<_> = ctx
+            .sysmd()
+            .list_replicas_in_group(0, 1)
+            .await?
+            .iter()
+            .map(|replica| replica.node_id)
+            .collect();
+        let mut expected = nodes.to_vec();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        if actual != expected {
+            return Err(crowdb_console_shared::error::Error::Conflict {
+                kind: "existing Group 1 membership differs from initialization nodes".into(),
+                id: "0/1".into(),
+            });
+        }
+        return Ok(());
+    }
+    ops::kv_logical::add_group(ctx, 0, 1, 1, nodes).await
 }

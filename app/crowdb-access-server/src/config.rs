@@ -18,6 +18,13 @@ pub struct AccessConfig {
     pub small_write: SmallWriteConfig,
     pub s3: S3Config,
     pub iceberg: IcebergConfig,
+    pub health: HealthConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HealthConfig {
+    pub listen: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -334,13 +341,19 @@ impl BaseConfig for AccessConfig {
         {
             return Err("S3 object and listing limits must be nonzero".into());
         }
-        for listen in [self.s3.listen.as_deref(), self.iceberg.listen.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            listen
+        let listeners = [
+            self.s3.listen.as_deref(),
+            self.iceberg.listen.as_deref(),
+            self.health.listen.as_deref(),
+        ];
+        let mut ports = std::collections::HashSet::new();
+        for listen in listeners.into_iter().flatten() {
+            let address = listen
                 .parse::<std::net::SocketAddr>()
                 .map_err(|error| error.to_string())?;
+            if address.port() == 0 || !ports.insert(address.port()) {
+                return Err("Access listeners require distinct, nonzero ports".into());
+            }
         }
         Ok(())
     }

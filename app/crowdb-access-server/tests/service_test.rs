@@ -106,6 +106,7 @@ mod s3_dispatcher {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let (health_address, health_server) = start_health_server(&dispatcher).await;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             serve(listener, dispatcher, async move {
@@ -115,7 +116,7 @@ mod s3_dispatcher {
             .unwrap();
         });
 
-        assert_operational_endpoints(address, &authenticator).await;
+        assert_operational_endpoints(address, health_address, &authenticator).await;
 
         let rejected = request(address, "POST /bucket/key?uploads HTTP/1.1").await;
         assert!(rejected.starts_with("HTTP/1.1 403"));
@@ -185,20 +186,49 @@ mod s3_dispatcher {
         assert_eq!(body_allocator.retained_bytes(), 0);
         assert_terminal_outcomes(address, &operations, &metrics).await;
 
-        metrics.enqueue_cleanup(2);
-        let not_ready = request(address, "GET /_crowdb/health/ready HTTP/1.1").await;
-        assert!(not_ready.starts_with("HTTP/1.1 503"));
-        assert!(not_ready.contains(r#""cleanup":"unavailable""#));
-
+        assert_health_isolation(address, health_address, &metrics).await;
+        health_server.abort();
         let _ = shutdown_tx.send(());
         server.await.unwrap();
     }
 
-    async fn assert_operational_endpoints(address: std::net::SocketAddr, authenticator: &TestAuthenticator) {
-        let live = request(address, "GET /_crowdb/health/live HTTP/1.1").await;
+    async fn start_health_server(
+        dispatcher: &Arc<S3Dispatcher>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<std::io::Result<()>>) {
+        let health_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let health_address = health_listener.local_addr().unwrap();
+        let health_handler = Arc::new(crowdb_access_server::s3::AccessHealthHandler(Arc::clone(
+            dispatcher,
+        )));
+        let health_server = tokio::spawn(serve(health_listener, health_handler, std::future::pending()));
+        (health_address, health_server)
+    }
+
+    async fn assert_health_isolation(
+        address: std::net::SocketAddr,
+        health_address: std::net::SocketAddr,
+        metrics: &S3Metrics,
+    ) {
+        metrics.enqueue_cleanup(2);
+        let not_ready = request(health_address, "GET /_crowdb/health/ready HTTP/1.1").await;
+        assert!(not_ready.starts_with("HTTP/1.1 503"));
+        assert!(not_ready.contains(r#""cleanup":"unavailable""#));
+
+        let data_on_health = request(health_address, "GET /bucket/key HTTP/1.1").await;
+        assert!(data_on_health.starts_with("HTTP/1.1 404"));
+        let health_on_data = request(address, "GET /_crowdb/health/ready HTTP/1.1").await;
+        assert!(!health_on_data.contains(r#""ready":true"#));
+    }
+
+    async fn assert_operational_endpoints(
+        address: std::net::SocketAddr,
+        health_address: std::net::SocketAddr,
+        authenticator: &TestAuthenticator,
+    ) {
+        let live = request(health_address, "GET /_crowdb/health/live HTTP/1.1").await;
         assert!(live.starts_with("HTTP/1.1 200"));
         assert!(live.contains(r#"{"live":true}"#));
-        let ready = request(address, "GET /_crowdb/health/ready HTTP/1.1").await;
+        let ready = request(health_address, "GET /_crowdb/health/ready HTTP/1.1").await;
         assert!(ready.starts_with("HTTP/1.1 200"));
         assert!(ready.contains(r#""ready":true"#));
         let exported = request(address, "GET /_crowdb/metrics HTTP/1.1").await;

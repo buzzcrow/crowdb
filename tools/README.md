@@ -8,6 +8,9 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
 
 - **`pixi-tasks/`** — build, install, clean, test-group and Iceberg client
   commands extracted from Pixi. Component test commands remain in `pixi.toml`.
+  `clean` stops all CROWDB services owned by the current user, then removes
+  the complete runtime tree and build output. `clean-env` stops only recorded
+  ephemeral processes and preserves persistent clusters.
 - **`ci-checks/`** — version consistency, production concurrency-container
   policy and package-to-Pixi-to-CI coverage. `task_graph.py` follows task calls
   through shell scripts; it is shared with timing collection.
@@ -20,8 +23,6 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
 - **`benchmark/`** — repeatable performance regressions, shared result handling,
   leak inspection and KV write sentinel checks.
 - **`profiling/`** — perf setup and write-path flamegraphs.
-- **`runtime/`** — clean recorded runtime processes and state; `clean-env`
-  preserves persistent clusters while `clean` removes the complete runtime tree.
 - **`media/`** — convert recordings for documentation.
 
 Common entry points:

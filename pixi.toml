@@ -1,6 +1,6 @@
 [workspace]
 name = "crowdb-kv"
-version = "0.2.1"
+version = "0.2.2"
 description = "CROWDB — distributed key-value store with multi-paxos groups"
 channels = ["conda-forge"]
 # Keep glibc requirement low (2.17 = CentOS 7 / Ubuntu 16.04 era) so that
@@ -176,6 +176,9 @@ build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["build-c
 default = { depends-on = ["build"] }
 stage-single-node-container = "bash container/single-node-container/build.sh stage"
 build-single-node-container = "bash container/single-node-container/build.sh image"
+start-container = { cmd = "bash container/single-node-container/dev-container.sh start", depends-on = ["build-single-node-container"] }
+inject-container = "bash container/single-node-container/dev-container.sh inject"
+clean-container = "bash container/single-node-container/dev-container.sh clean"
 test-single-node-container = { cmd = "bash container/single-node-container/tests/release-policy.sh && bash container/single-node-container/tests/image-smoke.sh && bash container/single-node-container/tests/container-e2e.sh", depends-on = ["build-single-node-container", "install-ui-deps"] }
 
 # ── Run ──────────────────────────────────────────────────────────
@@ -199,7 +202,7 @@ profile-write = { cmd = "bash tools/profiling/profile-write.sh", depends-on = ["
 # Test Design"). Each group maps 1:1 to a parallel CI job. Run
 # Each test group builds only its own Rust targets. C++ ctest tasks need
 # `pixi run build-cpp`.
-clean-env = "bash tools/runtime/clean-runtime.sh env"
+clean-env = "bash tools/pixi-tasks/clean-env.sh"
 # Optional full-workspace compile check. CI test groups use their component
 # tasks to avoid building unrelated test targets on each runner.
 build-tests = "cargo test --workspace --all-targets --no-run"
@@ -226,13 +229,13 @@ test-kv-core = { cmd = "cargo test -p crowdb-kv --tests" }
 test-kv-client = { cmd = "cargo test -p crowdb-kv-client --tests" }
 test-chunkdb-client = { cmd = "cargo test -p crowdb-chunkdb-client --tests" }
 test-chunk-kv = { cmd = "cargo test -p crowdb-chunk-kv --tests" }
-test-chunk-stream = { cmd = "cargo test -p crowdb-chunk-stream --tests" }
 test-chunk-kv-client = { cmd = "cargo test -p crowdb-chunk-kv-client --tests" }
 test-chunk-kv-server = { cmd = "cargo test -p crowdb-chunk-kv-server --tests" }
 test-access-multipart = { cmd = "cargo test -p crowdb-access-multipart --tests" }
 test-unit = { cmd = "bash tools/pixi-tasks/test-unit.sh" }
 
 # ── ServerTests job: spawns crowdb-kv-server / crowdb-diskdb / crowdb-diskio ──
+test-chunk-stream = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb && cargo test -p crowdb-chunk-stream --tests", depends-on = ["build-cpp"] }
 test-kv-server = { cmd = "cargo test -p crowdb-kv-server --tests" }
 test-diskdb = { cmd = "cargo test -p crowdb-diskdb --tests" }
 test-diskdb-client = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb && cargo test -p crowdb-diskdb-client --tests" }
@@ -249,7 +252,7 @@ test-server = { cmd = "bash tools/pixi-tasks/test-server.sh" }
 # Build the debug binary explicitly so tests find it at target/debug/.
 test-console-shared = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-console-shared --tests" }
 test-console-cli = { cmd = "cargo test -p crowdb-cli --tests" }
-test-console-server = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-web --tests" }
+test-console-server = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb && cargo test -p crowdb-web --tests" }
 test-console = { cmd = "bash tools/pixi-tasks/test-console.sh" }
 
 # ── UITests job: Playwright browser E2E + subprocess spawning ──

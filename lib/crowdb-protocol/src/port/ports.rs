@@ -46,6 +46,7 @@
 //! - `16000`–`16999` — crowdb-access-server S3 HTTP (prefix 16)
 //! - `17000`–`17999` — crowdb-access-server Iceberg HTTP (prefix 17)
 //! - `18000`–`18999` — crowdb-access-server Dataset HTTP (prefix 18)
+//! - `19000`–`19999` — crowdb-access-server health HTTP (prefix 19)
 //!
 //! The group-0 kv-server mgmt port (`10000`) is the famous bootstrap
 //! discovery port — any client can contact group-0 to read the service
@@ -105,6 +106,9 @@ pub const ACCESS_SERVER_ICEBERG_HTTP_BASE: u16 = 17000;
 /// crowdb-access-server Dataset HTTP service — base port.
 pub const ACCESS_SERVER_DATASET_HTTP_BASE: u16 = 18000;
 
+/// Independent Access health listener.
+pub const ACCESS_SERVER_HEALTH_HTTP_BASE: u16 = 19000;
+
 /// CROWDB service type for default port allocation.
 ///
 /// Use [`ServicePort::port`] to compute the listen port for the
@@ -144,6 +148,8 @@ pub enum ServicePort {
     AccessServerIcebergHttp,
     /// crowdb-access-server Dataset HTTP service.
     AccessServerDatasetHttp,
+    /// Internal Access liveness/readiness HTTP service.
+    AccessServerHealthHttp,
 }
 
 impl ServicePort {
@@ -166,6 +172,7 @@ impl ServicePort {
             Self::AccessServerHttp => "access_server_http",
             Self::AccessServerIcebergHttp => "access_server_iceberg_http",
             Self::AccessServerDatasetHttp => "access_server_dataset_http",
+            Self::AccessServerHealthHttp => "access_server_health_http",
         }
     }
 
@@ -188,6 +195,7 @@ impl ServicePort {
             Self::AccessServerHttp => ACCESS_SERVER_HTTP_BASE,
             Self::AccessServerIcebergHttp => ACCESS_SERVER_ICEBERG_HTTP_BASE,
             Self::AccessServerDatasetHttp => ACCESS_SERVER_DATASET_HTTP_BASE,
+            Self::AccessServerHealthHttp => ACCESS_SERVER_HEALTH_HTTP_BASE,
         }
     }
 
@@ -213,7 +221,10 @@ impl ServicePort {
     #[must_use]
     pub const fn range_size(self) -> u16 {
         match self {
-            Self::AccessServerHttp | Self::AccessServerIcebergHttp | Self::AccessServerDatasetHttp => 1000,
+            Self::AccessServerHttp
+            | Self::AccessServerIcebergHttp
+            | Self::AccessServerDatasetHttp
+            | Self::AccessServerHealthHttp => 1000,
             _ => 500,
         }
     }

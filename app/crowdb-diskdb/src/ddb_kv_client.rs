@@ -26,6 +26,9 @@ use crowdb_protocol::{RecoveryScanProgressValueExt, ZoneValueExt};
 
 use crate::model::records::{BusyRecord, FreeRecord, ZoneRecords};
 
+mod ownership;
+pub use ownership::OwnershipFence;
+
 /// `(store_id, group_id)` identifying a bound paxos data group.
 pub type Bind = (u64, u64);
 
@@ -38,6 +41,8 @@ pub type Bind = (u64, u64);
 pub struct DdbKvClient {
     kv: Arc<CrowdbKvClient>,
     metrics: Option<Arc<crate::metrics::DiskdbMetrics>>,
+    require_fence: bool,
+    fence: Option<Arc<OwnershipFence>>,
 }
 
 impl DdbKvClient {
@@ -48,12 +53,17 @@ impl DdbKvClient {
         key: &RelocationJournalKey,
         value: &RelocationJournalValue,
     ) -> Result<()> {
-        let (store_id, group_id) = bind;
         let bytes = bincode::serialize(value).expect("serialize relocation journal");
-        self.kv
-            .put(store_id, group_id, &key.to_bytes(), &bytes, None)
-            .await
-            .map(|_| ())
+        self.write_owned(
+            bind,
+            &[BatchOp::Put {
+                key: Bytes::from(key.to_bytes()),
+                value: Bytes::from(bytes),
+            }],
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Read one exact-source relocation checkpoint.
@@ -138,21 +148,30 @@ impl DdbKvClient {
         key: &TentativeOwnerGraceKey,
         first_absent_at_secs: u64,
     ) -> Result<()> {
-        let (store_id, group_id) = bind;
         let value = bincode::serialize(&first_absent_at_secs).expect("serialize grace timestamp");
-        self.kv
-            .put(store_id, group_id, &key.to_bytes(), &value, None)
-            .await
-            .map(|_| ())
+        self.write_owned(
+            bind,
+            &[BatchOp::Put {
+                key: Bytes::from(key.to_bytes()),
+                value: Bytes::from(value),
+            }],
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Delete a grace marker once its exact incarnation is referenced or freed.
     pub async fn delete_tentative_owner_grace(&self, bind: Bind, key: &TentativeOwnerGraceKey) -> Result<()> {
-        let (store_id, group_id) = bind;
-        self.kv
-            .delete(store_id, group_id, &key.to_bytes(), None)
-            .await
-            .map(|_| ())
+        self.write_owned(
+            bind,
+            &[BatchOp::Delete {
+                key: Bytes::from(key.to_bytes()),
+            }],
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Wrap a `CrowdbKvClient` for data-group access.
@@ -161,13 +180,20 @@ impl DdbKvClient {
         Self {
             kv: Arc::new(kv),
             metrics: None,
+            require_fence: false,
+            fence: None,
         }
     }
 
     /// Wrap an already-shared `CrowdbKvClient`.
     #[must_use]
     pub fn from_shared(kv: Arc<CrowdbKvClient>) -> Self {
-        Self { kv, metrics: None }
+        Self {
+            kv,
+            metrics: None,
+            require_fence: false,
+            fence: None,
+        }
     }
 
     /// Attach `DiskDB` workflow metrics.
@@ -238,11 +264,7 @@ impl DdbKvClient {
             key: Bytes::from(busy_key.to_bytes()),
             value: Bytes::from(busy_bytes),
         }];
-        let (store_id, group_id) = bind;
-        self.kv
-            .batch_write(store_id, group_id, &ops)
-            .await
-            .map(|outcome| outcome.revision)
+        self.write_owned(bind, &ops, None).await
     }
 
     /// Replace one busy record only when its observed revision remains current.
@@ -261,11 +283,15 @@ impl DdbKvClient {
             unit_offset,
         };
         let bytes = bincode::serialize(value).expect("serialize BusyBlockValue");
-        let (store_id, group_id) = bind;
-        self.kv
-            .put_cas(store_id, group_id, &key.to_bytes(), &bytes, expected_revision)
-            .await
-            .map(|outcome| outcome.revision)
+        self.write_owned(
+            bind,
+            &[BatchOp::Put {
+                key: Bytes::from(key.to_bytes()),
+                value: Bytes::from(bytes),
+            }],
+            Some((&key.to_bytes(), expected_revision)),
+        )
+        .await
     }
 
     /// Persist a batch of busy-block records in one `batch_write`
@@ -288,18 +314,13 @@ impl DdbKvClient {
                 value: Bytes::from(busy_bytes),
             });
         }
-        let (store_id, group_id) = bind;
         if let Some(metrics) = &self.metrics {
             metrics.kv_client_inflight.inc();
             metrics
                 .kv_client_batch_write_ops
                 .inc_by(u64::try_from(ops.len()).unwrap_or(u64::MAX));
         }
-        let result = self
-            .kv
-            .batch_write(store_id, group_id, &ops)
-            .await
-            .map(|outcome| outcome.revision);
+        let result = self.write_owned(bind, &ops, None).await;
         if let Some(metrics) = &self.metrics {
             metrics.kv_client_inflight.dec();
             if result.is_err() {
@@ -329,8 +350,7 @@ impl DdbKvClient {
             key: Bytes::from(free_key.to_bytes()),
             value: Bytes::from(free_bytes),
         }];
-        let (store_id, group_id) = bind;
-        self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ())
+        self.write_owned(bind, &ops, None).await.map(|_| ())
     }
 
     /// Persist a batch of free records in one `batch_write` (one
@@ -355,8 +375,7 @@ impl DdbKvClient {
                 value: Bytes::from(free_bytes),
             });
         }
-        let (store_id, group_id) = bind;
-        self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ())
+        self.write_owned(bind, &ops, None).await.map(|_| ())
     }
 
     /// Put a `ZoneValue` snapshot at `ZoneKey`.
@@ -372,11 +391,16 @@ impl DdbKvClient {
             zone_index,
         };
         let bytes = bincode::serialize(value).expect("serialize ZoneValue");
-        let (store_id, group_id) = bind;
-        self.kv
-            .put(store_id, group_id, &key.to_bytes(), &bytes, None)
-            .await
-            .map(|_| ())
+        self.write_owned(
+            bind,
+            &[BatchOp::Put {
+                key: Bytes::from(key.to_bytes()),
+                value: Bytes::from(bytes),
+            }],
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Read all records for one zone: `ZoneValue` + all `BusyBlockKey`
@@ -554,8 +578,7 @@ impl DdbKvClient {
                 key: Bytes::from(k.clone()),
             })
             .collect();
-        let (store_id, group_id) = bind;
-        self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ())
+        self.write_owned(bind, &ops, None).await.map(|_| ())
     }
 
     /// Atomic compaction write: Put the new `ZoneValue` + Delete all
@@ -591,8 +614,7 @@ impl DdbKvClient {
                 key: Bytes::from(k.clone()),
             });
         }
-        let (store_id, group_id) = bind;
-        self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ())
+        self.write_owned(bind, &ops, None).await.map(|_| ())
     }
 
     /// Point-lookup the `ZoneValue` snapshot at `ZoneKey` only (1
@@ -726,11 +748,16 @@ impl DdbKvClient {
     ) -> Result<()> {
         let key = RecoveryScanProgressKey { disk_id: *disk_id };
         let bytes = value.to_bytes();
-        let (store_id, group_id) = bind;
-        self.kv
-            .put(store_id, group_id, &key.to_bytes(), &bytes, None)
-            .await
-            .map(|_| ())
+        self.write_owned(
+            bind,
+            &[BatchOp::Put {
+                key: Bytes::from(key.to_bytes()),
+                value: Bytes::from(bytes),
+            }],
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Read the `RecoveryScanProgressValue` for a disk. Returns
@@ -767,11 +794,15 @@ impl DdbKvClient {
     /// cleared).
     pub async fn delete_recovery_scan_progress(&self, bind: Bind, disk_id: &DiskId) -> Result<()> {
         let key = RecoveryScanProgressKey { disk_id: *disk_id };
-        let (store_id, group_id) = bind;
-        self.kv
-            .delete(store_id, group_id, &key.to_bytes(), None)
-            .await
-            .map(|_| ())
+        self.write_owned(
+            bind,
+            &[BatchOp::Delete {
+                key: Bytes::from(key.to_bytes()),
+            }],
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 }
 

@@ -1218,8 +1218,7 @@ async fn multipart_100_mib_survives_restart_and_complete_replay() {
 async fn official_java_s3_fileio_uploads_and_reads_native_files() {
     use base64::Engine as _;
     use crowdb_access_iceberg::wire::LoadCredentialsResponse;
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
+    use std::process::Command;
 
     let (_stack, _process, client, table) = setup().await;
     let response = serde_json::to_vec(&LoadCredentialsResponse::from(client.credentials)).unwrap();
@@ -1235,7 +1234,7 @@ async fn official_java_s3_fileio_uploads_and_reads_native_files() {
     );
     let status = tokio::task::spawn_blocking(move || {
         let maven = std::env::var_os("CROWDB_ICEBERG_E2E_MVN").unwrap_or_else(|| "mvn".into());
-        let mut child = Command::new("timeout")
+        Command::new("timeout")
             .arg("600")
             .arg(maven)
             .args(["--batch-mode", "--no-transfer-progress", "-f"])
@@ -1243,17 +1242,13 @@ async fn official_java_s3_fileio_uploads_and_reads_native_files() {
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/common/iceberg_java/pom.xml"
             ))
-            .args(["compile", "exec:java"])
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
+            // SDK worker pools live for the JVM lifetime. Run the client in its
+            // own JVM instead of Maven's interrupt-driven embedded thread group.
+            .args(["compile", "exec:exec", "-Dexec.executable=java"])
+            .arg("-Dexec.args=-classpath %classpath TestIcebergFileIO")
+            .env("CROWDB_TEST_FILEIO_PROPERTIES", configuration)
+            .status()
             .unwrap()
-            .write_all(configuration.as_bytes())
-            .unwrap();
-        child.wait().unwrap()
     })
     .await
     .unwrap();
@@ -1304,9 +1299,10 @@ async fn run_sdk(endpoint: String, class: &'static str, mode: &'static str) {
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/common/iceberg_java/pom.xml"
             ))
-            .args(["compile", "exec:java"])
-            .arg(format!("-Dexec.mainClass={class}"))
-            .arg(format!("-Dexec.args={endpoint} {mode}"))
+            .args(["compile", "exec:exec", "-Dexec.executable=java"])
+            .arg(format!(
+                "-Dexec.args=-classpath %classpath {class} {endpoint} {mode}"
+            ))
             .status()
             .unwrap()
     })

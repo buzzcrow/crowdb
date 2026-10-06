@@ -153,14 +153,23 @@ provide observable capacity and bitmap fixtures.
   pattern as KV/DiskDB. It must not route other service types through KV APIs.
 - **CLU-03:** Add Node is one dialog and one submit. Defaults select the current
   Rack, next available Node ID, valid host settings, and a complete six-service
-  set. Advanced overrides remain available before submission.
-- Creating a Node produces an immutable created identity in the same dialog.
+  set in order: Access, Chunk-KV, ChunkDB, DiskDB, DiskIO, Paxos-KV.
+  Canonical service types use `paxos-kv`; the legacy `kv` wire value is rejected.
+  Internal cards expose RPC ports; management HTTP stays on loopback and hidden.
+  Access exposes independent Iceberg, S3 and Health HTTP ports.
+  Each service can be disabled independently, including all its listeners.
+- Registration produces an immutable Node identity. The dialog closes after
+  its selected services and listener overrides are durably saved; plan-save
+  failure retains the identity and allows another save without registration.
   Per-service rows show queued, waiting for dependency, deploying, deployed,
   or failed, with a specific reason. Closing progress is not another deployment
   confirmation and does not cancel already accepted work.
 - Waiting deployment steps resume when prerequisites become available while
   the console session is active. The Node menu reopens/resumes the plan after
   navigation or reload; deployed instances are reconciled before retry.
+  Waiting plans reevaluate dependencies every ten seconds. Only Paxos-KV can
+  start before Group 0 exists. ChunkDB additionally requires live DiskIO
+  registrations covering every configured disk group and selected DiskIO node.
 - Six-service progress is saved in each Node workspace, with a revision checked
   on every update. Saving progress must succeed before a deployment starts.
   A competing browser receives a conflict and must reload. Reload turns an
@@ -170,8 +179,17 @@ provide observable capacity and bitmap fixtures.
   resetting the cluster clears its deployment intent. This is durable progress,
   not an unattended scheduler while the console is closed.
 - A partial failure retains the Node and successful services. Retry operates
-  only on missing/failed steps and revalidates defaults. It never creates a
+  only on missing/failed steps and retains selected/disabled states and explicit
+  listener overrides while revalidating defaults. It never creates a
   second Node or a second copy of a successful service.
+- Internal service health probes the RPC endpoint independently for each
+  service. Startup records lacking RPC endpoints use process observation.
+  Before its first store exists, PKV reserves but does not bind its RPC port;
+  process liveness covers that startup phase. Once a store exists, a failed
+  RPC probe remains Failed even when the process is alive.
+  Access health probes its dedicated listener; missing retained health
+  configuration is Unknown and requires reconciliation before restart.
+- Cluster selections never display or request Chunk ownership.
 - **CLU-04:** Cluster readiness is reported by capability: KV quorum, storage,
   Chunk-KV, and Access protocols. A PID or registry entry alone is not Ready.
   Missing prerequisites link to the domain where they can be resolved.
@@ -460,7 +478,9 @@ Unsupported features are explicit rather than represented as working controls.
   KV branches expand Store → Group without Replicas. Chunk ownership has two
   independent maps over slots 0–1023: Serving assigns a ChunkDB instance;
   Storage assigns the metadata Store/Group. Chunk-KV ordered splits and payload
-  disk placement are separate concepts.
+  disk placement are separate concepts. Ownership hints appear on the relevant
+  tree rows; details are requested only when a real ChunkDB or replica target
+  exists. Unprovisioned selections do not send ownership probes.
 - Selecting a CDB or Group displays its full 32×32 bitmap; parent selections
   display one combined bitmap per layer. Each cell is exactly one slot, ordered
   left-to-right then top-to-bottom. Owner colors remain stable across scopes;

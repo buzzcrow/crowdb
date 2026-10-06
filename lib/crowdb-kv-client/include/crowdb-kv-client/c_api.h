@@ -18,8 +18,7 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
 // ── Opaque handles ────────────────────────────────────────────────
@@ -43,8 +42,13 @@ void crowdb_hw_client_destroy(crowdb_hw_client_t client);
 
 // List disks in a disk-group. Callback receives a JSON array of
 // {"disk_id": {"high": u64, "low": u64}, "value": {...DiskValue...}}.
-void crowdb_hw_list_disks_in_group(crowdb_hw_client_t client, uint64_t rack_id, uint64_t node_id,
-                                 uint64_t dg_id, crowdb_kv_on_complete callback, void *user_data);
+void crowdb_hw_list_disks_in_group(crowdb_hw_client_t client, uint64_t rack_id, uint64_t node_id, uint64_t dg_id,
+                                   crowdb_kv_on_complete callback, void *user_data);
+
+// List disks across all disk-groups on a node. Each disk entry additionally
+// carries disk_group_id; disk identity words are decimal strings.
+void crowdb_hw_list_disks_on_node(crowdb_hw_client_t client, uint64_t rack_id, uint64_t node_id,
+                                  crowdb_kv_on_complete callback, void *user_data);
 
 // List all diskdb ownership entries. Callback receives a JSON array
 // of DiskdbOwnerEntry objects.
@@ -65,16 +69,14 @@ void crowdb_svc_client_destroy(crowdb_svc_client_t client);
 // Heartbeat a diskio instance.
 // owned_dg_ids_json: JSON array of u64 disk-group IDs (e.g. "[1,2,3]").
 // group_usages_json: JSON array of DiskGroupUsageSummary objects (can be "[]").
-void crowdb_svc_heartbeat_diskio(crowdb_svc_client_t client, uint64_t instance_id,
-                               const char *rpc_endpoint, const char *owned_dg_ids_json,
-                               const char *group_usages_json, crowdb_kv_on_complete callback,
-                               void *user_data);
+void crowdb_svc_heartbeat_diskio(crowdb_svc_client_t client, uint64_t instance_id, const char *rpc_endpoint,
+                                 const char *owned_dg_ids_json, const char *group_usages_json,
+                                 crowdb_kv_on_complete callback, void *user_data);
 
 // Heartbeat with the authoritative hardware rack/node identity.
-void crowdb_svc_heartbeat_diskio_at(crowdb_svc_client_t client, uint64_t instance_id,
-                                  const char *rpc_endpoint, uint64_t rack_id, uint64_t node_id,
-                                  const char *owned_dg_ids_json, const char *group_usages_json,
-                                  crowdb_kv_on_complete callback, void *user_data);
+void crowdb_svc_heartbeat_diskio_at(crowdb_svc_client_t client, uint64_t instance_id, const char *rpc_endpoint,
+                                    uint64_t rack_id, uint64_t node_id, const char *owned_dg_ids_json,
+                                    const char *group_usages_json, crowdb_kv_on_complete callback, void *user_data);
 
 // ── Runtime lifecycle ─────────────────────────────────────────────
 

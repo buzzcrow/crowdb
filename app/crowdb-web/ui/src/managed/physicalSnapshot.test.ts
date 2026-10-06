@@ -17,6 +17,16 @@ describe('confirmed physical snapshot', () => {
       disk_id: 'ffffffffffffffffffffffffffffffff', capacity_bytes: 4194304, zone_size_bytes: 1048576, unit_size_bytes: 4096,
     });
   });
+  it('projects canonical Paxos-KV health and management endpoints in managed mode', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      source: 'group0', racks: [{ id: 1 }], nodes: [{ id: 7, rack_id: 1 }], disk_groups: [], disks: [],
+      services: [{ kind: 'paxos-kv', instance_id: '9', node_id: 7, endpoint: 'http://127.0.0.1:10000', monitor: { pid: 123, healthy: true } }],
+    }))));
+    const snapshot = await physicalSnapshot();
+    expect(snapshot.nodes[0]).toMatchObject({ has_server: true, kv_server: { mgmt_url: 'http://127.0.0.1:10000', pid: 123, health: 'up' } });
+    expect(snapshot.servers[0]).toMatchObject({ service_type: 'paxos-kv', mgmt_url: 'http://127.0.0.1:10000', health: 'up' });
+    expect(snapshot.servers[0].rpc_url).toBeUndefined();
+  });
   it('does not render a missing authority as a confirmed empty topology', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ source: 'local' }))));
     await expect(physicalSnapshot()).rejects.toThrow('Confirmed Group 0 snapshot unavailable');

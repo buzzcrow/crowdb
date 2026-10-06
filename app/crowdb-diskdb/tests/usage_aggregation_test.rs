@@ -85,7 +85,7 @@ fn disk_group_aggregate_usage_sums_disks() {
 
     // Allocate in disk 1, zone 0.
     {
-        let d1 = dg.disks.read().unwrap()[0].clone();
+        let d1 = dg.disk_snapshot()[0].clone();
         let zones = d1.zones.load();
         let _ = zones[0].allocate(5, 100);
     }

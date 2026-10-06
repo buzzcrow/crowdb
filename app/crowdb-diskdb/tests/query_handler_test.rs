@@ -180,3 +180,72 @@ fn get_disk_unknown_returns_none() {
     assert!(dg.get_disk(disk_id(999)).is_none());
     assert!(dg.get_disk(disk_id(1)).is_some());
 }
+
+/// Query responses must report current runtime status, not hardware status
+/// copied before initialization or a later runtime failure.
+#[tokio::test]
+async fn disk_rpc_reports_effective_status() {
+    use arc_swap::ArcSwap;
+    use crowdb_diskdb::ddb_config::{DdbConfig, StorageDefaults};
+    use crowdb_diskdb::ddb_kv_client::DdbKvClient;
+    use crowdb_diskdb::metrics::{DiskdbMetrics, RecalcEngine};
+    use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
+    use crowdb_diskdb::recovery::ZoneLoader;
+    use crowdb_diskdb::scanner::ScanState;
+    use crowdb_diskdb::service::DiskdbRpcService;
+    use crowdb_diskdb_client::rpc_transport::DiskdbRpcTransport;
+    use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+
+    let dg = make_dg();
+    let disk = dg.get_disk(disk_id(1)).unwrap();
+    let container = Arc::new(DdbDiskGroupContainer::new(1));
+    container.replace_disk_group(&dg);
+    let kv = Arc::new(DdbKvClient::new(CrowdbKvClient::new(ClientConfig::new(vec![]))));
+    let service = Arc::new(DiskdbRpcService::new(
+        container.clone(),
+        kv.clone(),
+        StorageDefaults::default(),
+        Arc::new(ZoneLoader::new(kv.clone(), 4)),
+        Arc::new(RecalcEngine::new(kv, container)),
+        ScanState::new(),
+        Arc::new(DiskdbMetrics::disabled()),
+        Arc::new(ArcSwap::from_pointee(DdbConfig::default())),
+        tokio::runtime::Handle::current(),
+    ));
+    let port = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::DiskdbRpc);
+    let server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
+    server.listen("127.0.0.1", i32::from(port)).unwrap();
+    service.register_handlers(&server);
+    server.start();
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let transport = DiskdbRpcTransport::new();
+    for status in [HwStatus::Init, HwStatus::Offline, HwStatus::Up] {
+        disk.set_effective_status(status);
+        let response = transport
+            .get_disk_info(&endpoint, DG, disk.disk_id)
+            .await
+            .unwrap();
+        assert_eq!(response.disk.unwrap().status, status as i32);
+        let response = transport
+            .query_capacity_stats(
+                &endpoint,
+                &crowdb_protocol::diskdb::rpc::QueryCapacityStatsRequest {
+                    disk_group_id: DG,
+                    disk_id: None,
+                    zone_index: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.disk_groups[0]
+                .disks
+                .iter()
+                .find(|info| info.disk_id == Some(disk.disk_id))
+                .unwrap()
+                .status,
+            status as i32
+        );
+    }
+    server.stop();
+}

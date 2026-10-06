@@ -52,7 +52,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
     assert_eq!(access_service.additional_probes.len(), 1);
     assert_eq!(
         access_service.additional_probes[0].target,
-        "http://127.0.0.1:9091/_crowdb/health/ready"
+        "http://127.0.0.1:9093/_crowdb/health/ready"
     );
     assert_eq!(
         access_service.additional_probes[0].failure_threshold,
@@ -63,7 +63,7 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         Some(&"http://127.0.0.1:10000".to_owned())
     );
     assert_eq!(access_service.args[1], "/opt/crowdb/run/config/access.toml");
-    assert_eq!(access_service.fence_listeners.len(), 2);
+    assert_eq!(access_service.fence_listeners.len(), 3);
     let access = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates/access.toml"),
     )

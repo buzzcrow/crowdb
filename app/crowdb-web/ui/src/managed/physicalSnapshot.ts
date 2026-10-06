@@ -17,7 +17,7 @@ export async function physicalSnapshot() {
   const snapshot = await readJson<Snapshot>(await fetch(`${getApiBase()}/preview`, { cache: 'no-store' }));
   if (snapshot.source !== 'group0') throw new Error('Confirmed Group 0 snapshot unavailable');
   const nodes: Node[] = snapshot.nodes.map(node => {
-    const server = snapshot.services.find(service => service.kind === 'kv-server' && service.node_id === node.id);
+    const server = snapshot.services.find(service => service.kind === 'paxos-kv' && service.node_id === node.id);
     const running = server?.monitor?.healthy;
     const diskdb = snapshot.services.find(service => service.kind === 'diskdb' && service.node_id === node.id);
     return { id: node.id, rack_id: node.rack_id, host: node.management_host ?? '', ssh: { type: 'KeyDefault', user: '' },
@@ -42,9 +42,9 @@ export async function physicalSnapshot() {
   }
   const servers: ServerSummary[] = snapshot.services.map(service => ({
     id: `${service.kind}-${service.instance_id ?? service.endpoint}`, node_id: service.node_id,
-    service_type: service.kind === 'kv-server' ? 'paxos-kv' : service.kind,
-    endpoint: service.endpoint, rpc_url: service.kind === 'kv-server' ? undefined : service.endpoint,
-    mgmt_url: service.http_endpoint ?? (service.kind === 'kv-server' ? service.endpoint : undefined),
+    service_type: service.kind,
+    endpoint: service.endpoint, rpc_url: service.kind === 'paxos-kv' ? undefined : service.endpoint,
+    mgmt_url: service.http_endpoint ?? (service.kind === 'paxos-kv' ? service.endpoint : undefined),
     pid: service.monitor?.pid ?? undefined,
     health: service.monitor ? service.monitor.healthy ? 'up' : 'down' : 'unknown',
   }));

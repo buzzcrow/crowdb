@@ -6,6 +6,21 @@ use crossbeam_skiplist::SkipMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+#[derive(Clone)]
+struct CachedChunk {
+    epoch: Option<(u64, u64)>,
+    chunk: Chunk,
+}
+
+impl CachedChunk {
+    fn new(id: &ChunkId, chunk: Chunk) -> Self {
+        Self {
+            epoch: crate::range_guard::ExecutionAuthority::cache_epoch(id),
+            chunk,
+        }
+    }
+}
+
 const REAPING: usize = usize::MAX;
 
 struct ChunkLockEntry {
@@ -50,7 +65,7 @@ impl Drop for ChunkLockHandle {
 /// Per-chunk lock map + payload cache.
 pub struct ChunkLockMap {
     locks: SkipMap<(u64, u64), Arc<ChunkLockEntry>>,
-    chunks: Arc<Cache<ChunkId, Chunk>>,
+    chunks: Arc<Cache<ChunkId, CachedChunk>>,
     metrics: Arc<LifecycleMetrics>,
     hold_warn_threshold: Duration,
 }
@@ -65,6 +80,14 @@ impl ChunkLockMap {
             metrics,
             hold_warn_threshold,
         }
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn users_for_tests(&self, id: &ChunkId) -> usize {
+        self.locks
+            .get(&(id.high, id.low))
+            .map_or(0, |entry| entry.value().users.load(Ordering::Acquire))
     }
 
     /// Acquire the per-chunk lock and serve the latest chunk record
@@ -83,22 +106,26 @@ impl ChunkLockMap {
         self.metrics
             .record_lock_wait(u64::try_from(wait_dur.as_micros()).unwrap_or(u64::MAX));
 
-        let chunk = if let Some(c) = self.chunks.get(chunk_id) {
-            self.metrics.record_cache_hit();
-            Some(c)
-        } else {
-            self.metrics.record_cache_miss();
-            match store.get_chunk(chunk_id).await {
-                Ok(c) => {
-                    if hint == CacheHint::Cache {
-                        self.chunks.insert(*chunk_id, c.clone());
+        let chunk =
+            if let Some(c) = self.chunks.get(chunk_id).filter(|cached| {
+                cached.epoch == crate::range_guard::ExecutionAuthority::cache_epoch(chunk_id)
+            }) {
+                self.metrics.record_cache_hit();
+                Some(c.chunk)
+            } else {
+                self.metrics.record_cache_miss();
+                match store.get_chunk(chunk_id).await {
+                    Ok(c) => {
+                        if hint == CacheHint::Cache {
+                            self.chunks
+                                .insert(*chunk_id, CachedChunk::new(chunk_id, c.clone()));
+                        }
+                        Some(c)
                     }
-                    Some(c)
+                    Err(StoreError::ChunkNotFound) => return Err(LifecycleError::ChunkNotFound),
+                    Err(e) => return Err(LifecycleError::Storage(e)),
                 }
-                Err(StoreError::ChunkNotFound) => return Err(LifecycleError::ChunkNotFound),
-                Err(e) => return Err(LifecycleError::Storage(e)),
-            }
-        };
+            };
         Ok(ChunkGuard {
             lock,
             guard,
@@ -142,7 +169,7 @@ impl ChunkLockMap {
     /// Populate the cache directly (for auto-generated chunk IDs that
     /// skip the lock).
     pub fn populate_cache(&self, chunk_id: &ChunkId, chunk: Chunk) {
-        self.chunks.insert(*chunk_id, chunk);
+        self.chunks.insert(*chunk_id, CachedChunk::new(chunk_id, chunk));
     }
 
     /// Reap entries with no owner, waiter, or acquisition in progress.
@@ -260,7 +287,7 @@ pub struct ChunkGuard {
     hint: CacheHint,
     chunk_id: ChunkId,
     hold_start: Instant,
-    chunks: Arc<Cache<ChunkId, Chunk>>,
+    chunks: Arc<Cache<ChunkId, CachedChunk>>,
     metrics: Arc<LifecycleMetrics>,
     hold_warn_threshold: Duration,
 }
@@ -288,7 +315,8 @@ impl ChunkGuard {
     /// the guard's local copy.
     pub fn refresh(&mut self, chunk: Chunk) {
         if self.hint == CacheHint::Cache {
-            self.chunks.insert(self.chunk_id, chunk.clone());
+            self.chunks
+                .insert(self.chunk_id, CachedChunk::new(&self.chunk_id, chunk.clone()));
         }
         self.chunk = Some(chunk);
     }

@@ -211,6 +211,11 @@ impl PxGroup {
     }
 
     pub fn inherit_local_state_from(&mut self, prior: &Self) {
+        // Inherited learners must also share admission state with requests
+        // still finishing against the prior topology snapshot.
+        self.owner_admission = Arc::clone(&prior.owner_admission);
+        self.cas_transient_map = Arc::clone(&prior.cas_transient_map);
+        self.cas_request_nonce = Arc::clone(&prior.cas_request_nonce);
         self.local_replica = PxLocalReplica::new_inheriting_election_state(prior.local_replica());
         self.next_slot.store(
             self.next_slot
@@ -460,11 +465,14 @@ impl PxGroup {
             safe_slot: h.safe_slot.snapshot(),
         });
 
+        let (owner_fence_active_writes, owner_fence_handovers) = self.owner_admission_status();
         GroupStatus {
             group_id: self.group_id,
             leader_id: self.leader_id(),
             local_replica_id: local_replica.id,
             force_classic: self.config.force_classic,
+            owner_fence_active_writes,
+            owner_fence_handovers,
             status,
             messages,
             local_replica,

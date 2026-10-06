@@ -8,8 +8,8 @@ Behavior authority: [Console UI specification](../../../../doc/design/console/de
 ## Acceptance policy
 
 - E2E must use real services, APIs, persisted metadata and file bytes. The shared
-  fixture rejects Page/Context routing and HAR replay. See the persistent [UI tasks](../../../../doc/working/ui-todo.md) for newly
-  discovered issues. Mocked observations cannot satisfy acceptance.
+  fixture rejects Page/Context routing and HAR replay. Mocked observations cannot
+  satisfy acceptance.
 - Collection counts do not imply native coverage or passing acceptance. Existing
   page-only configurations and mocked observations below describe historical
   coverage; they cannot satisfy the current acceptance policy.
@@ -47,6 +47,11 @@ Behavior authority: [Console UI specification](../../../../doc/design/console/de
 - `60`: current Catalog/Namespace/Table/Snapshot/Manifest/File tree, nested
   schema, independent reference pages, properties, shared Actions and resizing.
 - `70–72`: paged S3 browser, HEAD/preview/multipart and native protocol chain.
+- `92`: empty backend → UI-created rack and three default node plans → UI KV
+  initialization → late DiskGroups/disks → automatic six-service deployment.
+  Verifies Group 1 bindings and DiskDB/DiskIO ownership, UI S3 upload/preview
+  with exact object bytes, and UI-created Iceberg tables with SDK append/scan
+  of actual Parquet rows. The normal UI task builds all six service binaries.
 - `90`: one short cross-function management/data smoke. Dedicated specs retain
   dialog validation, partial failures and multi-node reconfiguration coverage.
 

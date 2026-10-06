@@ -58,7 +58,7 @@ impl BusyBlockOwnerScanner {
             let Some(dg) = ctx.container.get_disk_group(disk_group_id) else {
                 continue;
             };
-            let mut disks = dg.disks.read().unwrap().clone();
+            let mut disks = dg.disk_snapshot().as_ref().clone();
             disks.sort_unstable_by_key(|disk| (disk.disk_id.high, disk.disk_id.low));
             for disk in disks {
                 let mut zones = disk.zones.load().as_ref().clone();
@@ -169,12 +169,20 @@ impl BusyBlockOwnerScanner {
             Some(SegmentOwnerDisposition::Referenced) => {
                 ctx.metrics.tentative_owner_referenced.inc();
                 if commit_blocks(dg, &[segment], &ctx.kv, &ctx.metrics).await.is_ok() {
-                    let _ = ctx.kv.delete_tentative_owner_grace(dg.bind(), &grace_key).await;
+                    let _ = ctx
+                        .kv
+                        .for_group(dg)
+                        .delete_tentative_owner_grace(dg.bind(), &grace_key)
+                        .await;
                 }
             }
             Some(SegmentOwnerDisposition::TaskPending) => {
                 ctx.metrics.tentative_owner_task_pending.inc();
-                let _ = ctx.kv.delete_tentative_owner_grace(dg.bind(), &grace_key).await;
+                let _ = ctx
+                    .kv
+                    .for_group(dg)
+                    .delete_tentative_owner_grace(dg.bind(), &grace_key)
+                    .await;
             }
             Some(SegmentOwnerDisposition::Absent) => {
                 ctx.metrics.tentative_owner_absent.inc();
@@ -205,6 +213,7 @@ impl BusyBlockOwnerScanner {
             Ok(None) => {
                 if ctx
                     .kv
+                    .for_group(dg)
                     .put_tentative_owner_grace(dg.bind(), &grace_key, now_secs)
                     .await
                     .is_err()
@@ -220,7 +229,11 @@ impl BusyBlockOwnerScanner {
             return;
         }
         if free_blocks(dg, &[segment], &ctx.kv).await.is_ok() {
-            let _ = ctx.kv.delete_tentative_owner_grace(dg.bind(), &grace_key).await;
+            let _ = ctx
+                .kv
+                .for_group(dg)
+                .delete_tentative_owner_grace(dg.bind(), &grace_key)
+                .await;
         }
     }
 }

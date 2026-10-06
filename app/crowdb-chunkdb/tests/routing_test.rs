@@ -118,8 +118,13 @@ fn uninitialized_and_zero_slot_owners_never_allow_all() {
     let map = ChunkSlotMap::new(head, bindings).unwrap();
     guard.install(&map, 14).unwrap();
     assert!(guard.is_empty());
+    assert!(guard.is_ready());
     assert_eq!(guard.quota_share(u64::MAX), 0);
     assert!(guard.check(&id).is_err());
     assert!(guard.install(&map, 11).is_err());
-    assert!(RangeGuard::new().install(&map, 99).is_err());
+    let idle = RangeGuard::new();
+    idle.install(&map, 99).unwrap();
+    assert!(idle.is_ready());
+    assert!(idle.is_empty());
+    assert!(idle.check(&id).is_err());
 }

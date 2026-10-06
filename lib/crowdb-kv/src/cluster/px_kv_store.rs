@@ -590,7 +590,7 @@ impl PxKvStore {
         let Some(operations) = self.group_operations(group_id) else {
             return missing_group_response(request_id, request_create_ms);
         };
-        match operations
+        let result = operations
             .compare_encoded(
                 payload,
                 precondition_key,
@@ -600,42 +600,8 @@ impl PxKvStore {
                     sequence: seq,
                 },
             )
-            .await
-        {
-            Ok(write) => crate::rpc::KvResponse::ok_chosen(write.chosen_slot, request_id, request_create_ms),
-            Err(KvGroupOperationError::NotLeader { leader_hint }) => {
-                crate::rpc::KvResponse::not_leader(leader_hint, request_id, request_create_ms)
-            }
-            Err(KvGroupOperationError::CompareFailed { current_revision }) => {
-                crate::rpc::KvResponse::cas_error(
-                    crate::rpc::KvErrorCode::KvErrorCasFailed,
-                    current_revision,
-                    "compare-and-set precondition failed",
-                    request_id,
-                    request_create_ms,
-                )
-            }
-            Err(KvGroupOperationError::Busy | KvGroupOperationError::CompareBusy) => {
-                crate::rpc::KvResponse::cas_error(
-                    crate::rpc::KvErrorCode::KvErrorCasBusy,
-                    0,
-                    "compare-and-set admission busy",
-                    request_id,
-                    request_create_ms,
-                )
-            }
-            Err(
-                KvGroupOperationError::OutcomeUnknown
-                | KvGroupOperationError::Unavailable(_)
-                | KvGroupOperationError::Internal(_),
-            ) => crate::rpc::KvResponse::cas_error(
-                crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
-                0,
-                "compare-and-set outcome is unknown",
-                request_id,
-                request_create_ms,
-            ),
-        }
+            .await;
+        super::px_kv_store_owner::write_response(result, request_id, request_create_ms)
     }
 
     // ── KV payload encoding ───────────────────────────────────

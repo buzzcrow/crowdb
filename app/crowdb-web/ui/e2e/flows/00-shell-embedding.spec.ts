@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: four tests passed; embedding 2.4s, domain toggle 0.7s (2026-09-27)
+// Baseline: embedding 3.1s, domain toggle 1.0s (2026-10-05)
 
 import { test, expect } from '../fixtures/realBackend';
 import {
@@ -81,6 +81,9 @@ test.describe('shell · embedding', () => {
 
   test('domain toggle switches between all seven domains', async ({ page }) => {
     await step('shell: goto', () => page.goto('/'));
+
+    await expect(page).toHaveTitle('CrowDB Console');
+    await expect(page.getByLabel('CrowDB Console', { exact: true })).toBeVisible();
 
     // Domain toggle buttons are visible.
     await expect(page.getByTestId('domain-cluster')).toBeVisible({ timeout: 3_000 });

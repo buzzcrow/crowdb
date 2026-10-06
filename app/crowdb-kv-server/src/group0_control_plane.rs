@@ -24,6 +24,21 @@ pub struct Group0ControlPlane {
 }
 
 impl Group0ControlPlane {
+    /// Publish a complete conditional metadata batch in this exact leader tenure.
+    ///
+    /// # Errors
+    /// Returns a revision conflict, ended tenure or consensus error.
+    pub async fn compare_and_batch(
+        &self,
+        mutations: &[KvGroupMutation],
+        key: Bytes,
+        expected_revision: u64,
+    ) -> Result<u64, KvGroupOperationError> {
+        self.operations
+            .compare_and_write(mutations, key, expected_revision, self.next_identity()?)
+            .await
+            .map(|write| write.chosen_slot)
+    }
     /// Acquire a linearizable barrier on local `(store=0, group=0)` and bind
     /// this facade to that exact leader term.
     ///

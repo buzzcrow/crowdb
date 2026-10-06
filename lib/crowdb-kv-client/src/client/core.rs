@@ -9,6 +9,7 @@
 
 mod conditional;
 mod operations;
+mod owned;
 mod scans;
 
 use std::sync::atomic::AtomicU64;

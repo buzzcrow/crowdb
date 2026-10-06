@@ -44,15 +44,16 @@ export function Header({
 
   return (
     <header className="tw-fixed tw-top-0 tw-left-0 tw-right-0 tw-z-40 tw-h-14 tw-bg-panel tw-border-b tw-border-border tw-flex tw-items-center tw-gap-4 tw-px-4">
+      {/* The website crow mark uses the console's fixed dark palette. */}
+      <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-2.5 tw-whitespace-nowrap" aria-label="CrowDB Console">
+        <img src={new URL('../assets/crowdb-mark.svg', import.meta.url).href} alt="" width={30} height={30} />
+        <span className="tw-text-[17px] tw-font-bold tw-tracking-wide">Crow<span className="tw-text-brand">DB</span></span>
+        <span className="tw-border-l tw-border-border tw-pl-3 tw-text-sm tw-text-muted">Console</span>
+      </div>
       <nav aria-label="Navigation history" className="tw-flex tw-gap-1">
         <button aria-label="Back" title="Back" disabled={!canBack} onClick={back} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">←</button>
         <button aria-label="Forward" title="Forward" disabled={!canForward} onClick={forward} className="tw-rounded tw-border tw-border-border tw-px-2 tw-py-1 disabled:tw-opacity-40">→</button>
       </nav>
-      {/* Brand */}
-      <div className="tw-flex tw-items-center tw-gap-2 tw-font-semibold tw-text-text">
-        <span className="tw-text-accent">◆</span> CrowDB Storage Console
-      </div>
-
       {/* Health pill */}
       <span
         className={cn(
@@ -66,7 +67,7 @@ export function Header({
       </span>
 
       {/* Domain toggle */}
-      <div className="tw-flex tw-items-center tw-rounded-md tw-border tw-border-border tw-overflow-hidden">
+      <div className="console-domains tw-flex tw-items-center tw-self-stretch">
         <button
           data-testid="domain-cluster"
           onClick={() => { setDomain(Domain.Cluster); onShowTopology?.(); }}

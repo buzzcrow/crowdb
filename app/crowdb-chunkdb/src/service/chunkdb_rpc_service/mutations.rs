@@ -32,7 +32,7 @@ impl ChunkdbRpcService {
         let handle = req.conn_handle as usize;
         let manager = self.ad_hoc.clone();
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let parsed = flatbuffers::root::<FBAdHocEcRecoveryRequest>(req.control());
             let request_data = parsed.ok().map(|frame| AdHocEcRecoveryRequest {
                 version: frame.version(),
@@ -70,12 +70,27 @@ impl ChunkdbRpcService {
                     };
                     (FBChunkdbRetCode::Success, None, disposition, result.data)
                 }
-                Err(message) => (
-                    FBChunkdbRetCode::Unavailable,
-                    Some(message),
-                    FbDisposition::Saturated,
-                    Vec::new(),
-                ),
+                Err(error) => {
+                    let code = match &error {
+                        crate::ad_hoc::AdHocRequestError::Lifecycle(error) => map_error(error).0,
+                        crate::ad_hoc::AdHocRequestError::Task(crate::task::TaskStoreError::Authority) => {
+                            FBChunkdbRetCode::NotMyRange
+                        }
+                        crate::ad_hoc::AdHocRequestError::Repair(crate::repair::RepairError::Lifecycle(
+                            error,
+                        )) => map_error(error).0,
+                        crate::ad_hoc::AdHocRequestError::Repair(crate::repair::RepairError::Store(
+                            crate::task::TaskStoreError::Authority,
+                        )) => FBChunkdbRetCode::NotMyRange,
+                        _ => FBChunkdbRetCode::Unavailable,
+                    };
+                    (
+                        code,
+                        Some(error.to_string()),
+                        FbDisposition::Saturated,
+                        Vec::new(),
+                    )
+                }
             };
             let mut builder = flatbuffers::FlatBufferBuilder::new();
             let error_msg = message.as_deref().map(|value| builder.create_string(value));
@@ -109,7 +124,7 @@ impl ChunkdbRpcService {
         let conn_handle = req.conn_handle as usize;
         let conversion = self.conversion.clone();
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let parsed = (|| {
                 let fb = flatbuffers::root::<FBTriggerConversionRequest>(req.control())
                     .map_err(|_| ConversionError::Payload("invalid conversion trigger".into()))?;
@@ -160,7 +175,7 @@ impl ChunkdbRpcService {
             .as_ref()
             .and_then(|runtime| runtime.conversion.clone());
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let parsed = flatbuffers::root::<FBTriggerConversionBatchRequest>(req.control())
                 .map(|fb| (fb.sealed_only(), fb.max_chunks()))
                 .map_err(|_| ConversionError::Payload("invalid batch conversion trigger".into()));
@@ -209,7 +224,7 @@ impl ChunkdbRpcService {
         let conn_handle = req.conn_handle as usize;
         let conversion = self.conversion.clone();
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Some(conversion) = conversion else {
                 submit_prepared_conversion_result(
                     &server,
@@ -298,7 +313,7 @@ impl ChunkdbRpcService {
         let conn_handle = req.conn_handle as usize;
         let conversion = self.conversion.clone();
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let parsed = (|| {
                 let fb = flatbuffers::root::<FBCompleteMirrorToEcConversionRequest>(req.control())
                     .map_err(|_| ConversionError::Payload("invalid completion request".into()))?;
@@ -352,7 +367,7 @@ impl ChunkdbRpcService {
         let conn_handle = req.conn_handle as usize;
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(request_fb) = flatbuffers::root::<FBDiscardReplacementSegmentRequest>(req.control())
             else {
                 submit_error(
@@ -428,7 +443,7 @@ impl ChunkdbRpcService {
         let conn_handle = req.conn_handle as usize;
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(request_fb) = flatbuffers::root::<FBAllocateReplacementSegmentRequest>(req.control())
             else {
                 submit_error(
@@ -511,7 +526,7 @@ impl ChunkdbRpcService {
         let conn_handle = req.conn_handle as usize;
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(request_fb) = flatbuffers::root::<FBReplaceChunkStripRangeRequest>(req.control()) else {
                 submit_invalid_request(
                     &server,
@@ -621,7 +636,7 @@ impl ChunkdbRpcService {
 
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             // Parse the flatbuffer inside the async task — zero-copy from
             // the owned Frame (released when `req` drops at block end).
             let Ok(fb_req) = flatbuffers::root::<FBAllocateChunkRequest>(req.control()) else {
@@ -717,7 +732,7 @@ impl ChunkdbRpcService {
         let conn_handle_usize = req.conn_handle as usize;
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBAdvanceChunkWriteRequest>(req.control()) else {
                 submit_error(
                     &server,
@@ -786,7 +801,7 @@ impl ChunkdbRpcService {
 
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBAppendChunkRequest>(req.control()) else {
                 submit_error(
                     &server,
@@ -869,7 +884,7 @@ impl ChunkdbRpcService {
 
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBSealChunkRequest>(req.control()) else {
                 submit_error(
                     &server,
@@ -934,7 +949,7 @@ impl ChunkdbRpcService {
 
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBDeleteChunkRequest>(req.control()) else {
                 submit_error(
                     &server,
@@ -993,7 +1008,7 @@ impl ChunkdbRpcService {
         let conn_handle_usize = req.conn_handle as usize;
 
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBDeleteChunkRangeRequest>(req.control()) else {
                 submit_error(
                     &server,
@@ -1058,7 +1073,7 @@ impl ChunkdbRpcService {
 
         let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBUpdateChunkStripRequest>(req.control()) else {
                 submit_error(
                     &server,

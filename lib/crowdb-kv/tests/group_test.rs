@@ -37,6 +37,10 @@ mod group_propose;
 #[path = "group_test/cas_test.rs"]
 mod cas;
 
+#[cfg(feature = "test-util")]
+#[path = "group_test/owner_fence_test.rs"]
+mod owner_fence;
+
 #[path = "group_test/kv_test.rs"]
 mod kv;
 

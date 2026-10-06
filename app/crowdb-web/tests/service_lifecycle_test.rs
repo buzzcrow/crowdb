@@ -72,7 +72,7 @@ async fn typed_deployment_rejects_invalid_scope_before_starting_processes() {
         json!({"kind":"chunkdb","instance_id":"9223372036854775808","http_port":43000,"rpc_port":43001}),
         json!({"kind":"chunkdb","instance_id":"1","http_port":43000,"rpc_port":43000}),
         json!({"kind":"access-server","instance_id":"1","http_port":43000,"s3_port":43001,"rpc_port":43002}),
-        json!({"kind":"diskio","instance_id":"1","rpc_port":43000}),
+        json!({"kind":"diskio","instance_id":"1","rpc_port":43000,"http_port":43001}),
         json!({"kind":"chunk-kv","instance_id":"1","http_port":43000,"rpc_port":43001,"metadata_store_id":1,"bootstrap_group_id":0}),
         json!({"kind":"chunkdb","instance_id":"1","http_port":43000,"rpc_port":43001,"metadata_store_id":1}),
     ] {
@@ -139,7 +139,7 @@ async fn auxiliary_lifecycle_keeps_exact_identity_and_preserves_data() {
         .unwrap();
     assert_eq!(row["pid"], replacement);
     assert_eq!(row["service_type"], "chunkdb");
-    assert_eq!(row["health"], "unknown");
+    assert_eq!(row["health"], "up");
     let (status, _) = request(&app, "POST", &format!("{path}/stop"), Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!crowdb_console_shared::lifecycle::process_is_alive(replacement));
@@ -258,8 +258,9 @@ async fn deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch() {
     kv.seed_leader(0, 1, cluster.group1_leader_endpoint.clone());
     let sysmd = crowdb_kv_client::CrowdbSysmdClient::from_shared(kv.clone());
     sysmd.add_store(0, &[1]).await.unwrap();
+    sysmd.add_group(0, 0).await.unwrap();
     sysmd.add_group(0, 1).await.unwrap();
-    let hardware = crowdb_kv_client::HardwareClient::from_shared(kv);
+    let hardware = crowdb_kv_client::HardwareClient::from_shared(kv.clone());
     hardware
         .add_rack(
             1,
@@ -292,6 +293,7 @@ async fn deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch() {
         config.servers.push(server);
     }
     let state = AppState::with_runtime_root(config, workspace.path().to_owned());
+    *state.kv_client.write().await = Some(kv);
     let app = router(state.clone());
     let http = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::Web);
     let rpc = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::Web);
@@ -388,7 +390,7 @@ async fn deployment_defaults_avoid_cross_service_and_live_listener_conflicts() {
     assert_eq!(body["access-server"]["instance_id"], "8");
     let mut ports = std::collections::HashSet::new();
     for (kind, values) in body.as_object().unwrap() {
-        for name in ["http_port", "rpc_port", "s3_port"] {
+        for name in ["http_port", "rpc_port", "s3_port", "health_port"] {
             if let Some(port) = values[name].as_u64() {
                 assert!(![9091, 9092, 19191].contains(&port));
                 if occupied.is_some() {

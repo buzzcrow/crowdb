@@ -9,6 +9,7 @@ import type { DeploymentDefaults } from './useDeploymentDefaults';
 
 export const serviceOrder = ['access-server', 'chunk-kv', 'chunkdb', 'diskdb', 'diskio', 'paxos-kv'] as const;
 export type ServiceKind = typeof serviceOrder[number];
+const deploymentOrder: ServiceKind[] = ['paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server'];
 export const serviceLabels = {
   'access-server': 'crowdb-access-server',
   'chunk-kv': 'crowdb-chunk-kv',
@@ -19,8 +20,8 @@ export const serviceLabels = {
 } as const;
 export type ServiceStep = { state: 'pending' | 'waiting' | 'deploying' | 'deployed' | 'failed' | 'warning' | 'disabled'; detail?: string };
 export type NodeServicePlan = Record<ServiceKind, ServiceStep>;
-export type ServiceOverrides = Partial<Record<ServiceKind, Partial<DeploymentDefaults>>>;
-const newPlan = (): NodeServicePlan => Object.fromEntries(serviceOrder.map(kind => [kind, { state: 'pending' }])) as NodeServicePlan;
+export type ServiceOverrides = Partial<Record<ServiceKind, Partial<Omit<DeploymentDefaults, 'instance_id'>>>>;
+export const newPlan = (): NodeServicePlan => Object.fromEntries(serviceOrder.map(kind => [kind, { state: 'pending' }])) as NodeServicePlan;
 
 /** Serializes default deployments across nodes so each step gets fresh port reservations.
  * Plans outlive dialogs; dependency changes resume waiting steps, failures need Retry.
@@ -35,6 +36,9 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
   input.current = { stores, groups, refresh, enabled };
   const wake = useRef<() => void>(() => {});
   const busy = useRef(false);
+  const wakePending = useRef(false);
+  const prerequisiteKey = JSON.stringify([stores.map(store => [store.store_id, store.groups.map(group => [group.group_id, group.state, group.leader])]),
+    Object.entries(groups).map(([id, value]) => [id, value.diskGroups.map(group => [group.id, value.disksByDg[group.id]?.map(disk => [disk.disk_id, disk.device_path])])])]);
   const stopped = useRef(false);
   const running = useRef<Promise<void>>(Promise.resolve());
   const overrides = useRef<Record<number, ServiceOverrides>>({});
@@ -43,24 +47,25 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     setPlans(plansRef.current);
   }, []);
   const persist = useCallback(async (id: number, plan: NodeServicePlan) => {
-    const result = await serviceRequest(`/nodes/${id}/service-plan`, 'PUT', { revision: revisions.current[id] ?? 0, steps: plan }) as { revision: number };
+    const result = await serviceRequest(`/nodes/${id}/service-plan`, 'PUT', { revision: revisions.current[id] ?? 0, steps: plan, overrides: overrides.current[id] ?? {} }) as { revision: number };
     revisions.current[id] = result.revision;
     update(id, plan);
   }, [update]);
-  const failProgress = useCallback((id: number, detail: string) => {
-    const previous = plansRef.current[id] ?? newPlan();
-    update(id, Object.fromEntries(serviceOrder.map(kind => [kind, previous[kind].state === 'deployed'
+  const failProgress = useCallback((id: number, detail: string, intended?: NodeServicePlan) => {
+    const previous = intended ?? plansRef.current[id] ?? newPlan();
+    update(id, Object.fromEntries(serviceOrder.map(kind => [kind, ['deployed', 'disabled'].includes(previous[kind].state)
       ? previous[kind] : { state: 'failed', detail }])) as NodeServicePlan);
   }, [update]);
   useEffect(() => {
     if (!enabled) return;
     let disposed = false;
     recovery.current = (async () => {
-      const stored = await serviceRequest('/service-plans', 'GET') as Record<number, { revision: number; steps: NodeServicePlan }>;
+      const stored = await serviceRequest('/service-plans', 'GET') as Record<number, { revision: number; steps: NodeServicePlan; overrides?: ServiceOverrides }>;
       if (disposed) return;
       for (const [key, saved] of Object.entries(stored)) {
         const id = Number(key);
         revisions.current[id] = saved.revision;
+        overrides.current[id] = saved.overrides ?? {};
         const steps = Object.fromEntries(serviceOrder.map(kind => {
           const savedStep = saved.steps?.[kind] ?? { state: 'pending' as const };
           const normalizedStep = kind === 'chunkdb' && savedStep.state === 'failed' && savedStep.detail?.includes('outside the fixed slot plan')
@@ -76,16 +81,18 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     void recovery.current.catch(() => {});
     return () => { disposed = true; };
   }, [enabled, update]);
-  const start = useCallback(async (id: number, selected: ServiceKind[] = [...serviceOrder], serviceOverrides: ServiceOverrides = {}) => {
+  const start = useCallback(async (id: number, selected?: ServiceKind[], serviceOverrides?: ServiceOverrides) => {
     stopped.current = false;
-    overrides.current[id] = serviceOverrides;
+    let intended: NodeServicePlan | undefined;
     try {
       await recovery.current;
       const previous = plansRef.current[id] ?? newPlan();
-      const enabled = new Set(selected);
-      await persist(id, Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : previous[kind].state === 'failed' || previous[kind].state === 'disabled' ? { state: 'pending' } : previous[kind]])) as NodeServicePlan);
+      overrides.current[id] = serviceOverrides ?? overrides.current[id] ?? {};
+      const enabled = new Set(selected ?? serviceOrder.filter(kind => previous[kind].state !== 'disabled'));
+      intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : ['failed', 'warning', 'disabled'].includes(previous[kind].state) ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
+      await persist(id, intended);
       wake.current();
-    } catch (error) { failProgress(id, String(error)); }
+    } catch (error) { failProgress(id, String(error), intended); throw error; }
   }, [persist, failProgress]);
 
   const stop = useCallback(async () => {
@@ -111,10 +118,16 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
             let existing;
             try { existing = await listServers(); }
             catch (error) {
-              for (const kind of serviceOrder) if (plan[kind].state !== 'deployed') await write(kind, { state: 'failed', detail: String(error) });
+              for (const kind of serviceOrder) if (!['deployed', 'disabled'].includes(plan[kind].state)) await write(kind, { state: 'failed', detail: String(error) });
               continue;
             }
-            for (const kind of serviceOrder) {
+            let authorityReady = false;
+            if (input.current.stores.some(store => String(store.store_id) === '0')) {
+              try { authorityReady = (await serviceRequest('/group0-readiness', 'GET') as { ready: boolean }).ready; }
+              catch { /* Keep dependent services queued while authority is unavailable. */ }
+            }
+            let deploymentStarted = false;
+            for (const kind of deploymentOrder) {
               if (disposed || stopped.current || !input.current.enabled) break;
               if (plan[kind].state === 'disabled') continue;
               if (plan[kind].state === 'failed' || plan[kind].state === 'warning') continue;
@@ -130,15 +143,28 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               const disks = currentGroups[id];
               const diskGroup = disks?.diskGroups.find(group => disks.disksByDg[group.id]?.length && disks.disksByDg[group.id].every(disk => disk.device_path?.trim()));
               let waiting = '';
-              if (kind !== 'paxos-kv' && !currentStores.some(store => String(store.store_id) === '0')) waiting = 'Waiting: initialize Group 0 in Paxos KV';
+              if (kind !== 'paxos-kv' && !authorityReady) waiting = 'Waiting: initialize Group 0 in Paxos KV';
               else if (kind === 'chunkdb' && !metadata) waiting = 'Waiting: create an ordinary data group in KV for chunk storage slots';
               else if (kind === 'chunkdb' && existing.some(server => server.service_type === 'diskio' && !server.pid)) waiting = 'Waiting: restart registered DiskIO services before connecting chunk storage';
               else if (kind === 'chunkdb' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < Object.keys(currentGroups).length) waiting = 'Waiting: deploy DiskIO services before starting ChunkDB';
               else if (kind === 'chunk-kv' && !metadata) waiting = 'Waiting: create a non-system metadata group in KV';
+              else if (kind === 'chunk-kv' && Object.entries(plansRef.current).some(([node, selectedPlan]) =>
+                selectedPlan.chunkdb.state !== 'disabled' && !existing.some(server => server.node_id === Number(node) && server.service_type === 'chunkdb' && server.pid))) {
+                // Journal bootstrap can route to any published ChunkDB owner.
+                // Finish their deployments before a serial launch awaits the journal.
+                waiting = 'Waiting: deploy selected ChunkDB services before starting Chunk-KV';
+              }
               else if (kind === 'chunk-kv' && existing.some(server => server.service_type === 'diskio' && !server.pid)) waiting = 'Waiting: restart registered DiskIO services before connecting chunk storage';
               else if (kind === 'chunk-kv' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < 2) waiting = 'Waiting: deploy DiskIO on at least two nodes for journal mirrors';
               else if (kind === 'access-server' && plan['chunk-kv'].state !== 'deployed' && !existing.some(server => server.service_type === 'chunk-kv' && server.pid)) waiting = 'Waiting: deploy Chunk-KV and initialize its catalog';
+              if (!waiting && (kind === 'chunkdb' || kind === 'chunk-kv')) {
+                try {
+                  const ownership = await serviceRequest('/chunk-storage-readiness', 'GET') as { ready: boolean; reason?: string };
+                  if (!ownership.ready) waiting = ownership.reason ?? 'Waiting: publish live DiskIO disk-group ownership';
+                } catch (error) { waiting = `Waiting: DiskIO ownership unavailable: ${String(error)}`; }
+              }
               if (waiting) { if (plan[kind].state !== 'waiting' || plan[kind].detail !== waiting) await write(kind, { state: 'waiting', detail: waiting }); continue; }
+              if (deploymentStarted) continue;
               await write(kind, { state: 'deploying' });
               try {
                 const defaults = await serviceRequest('/deployment-defaults', 'GET') as Record<ServiceKind, DeploymentDefaults>;
@@ -152,8 +178,12 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                   ...(kind === 'chunk-kv' ? { metadata_store_id: Number(metadata!.store), bootstrap_group_id: Number(metadata!.group) } : {}),
                 });
                 await write(kind, { state: 'deployed' });
+                // Revisit every node before advancing another dependent service.
+                wakePending.current = true;
+                deploymentStarted = true;
               } catch (error) {
-                const detail = String(error).slice(0, 4096);
+                const listeners = Object.entries(overrides.current[id]?.[kind] ?? {}).map(([name, port]) => `${name}=${port}`).join(', ');
+                const detail = `${serviceLabels[kind]}${listeners ? ` (${listeners})` : ''}: ${String(error)}`.slice(0, 4096);
                 // A node without a fixed ChunkDB slot is valid. Keep it as a
                 // warning so the rest of the node plan and existing balance
                 // services continue running.
@@ -169,12 +199,17 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
       }
       if (!disposed) {
         const hasQueuedWork = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].state === 'waiting'));
-        timer = setTimeout(() => { running.current = tick(); }, hasQueuedWork ? 10000 : 2000);
+        const waitingForAuthority = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail === 'Waiting: initialize Group 0 in Paxos KV'));
+        const hasDisks = Object.values(input.current.groups).some(node => Object.values(node.disksByDg).some(disks => disks.length > 0));
+        const delay = wakePending.current ? 0 : hasQueuedWork && !hasDisks && !waitingForAuthority ? 10000 : 2000;
+        wakePending.current = false;
+        timer = setTimeout(() => { running.current = tick(); }, delay);
       }
     }
-    wake.current = () => { if (!busy.current) { clearTimeout(timer); running.current = tick(); } };
+    wake.current = () => { if (busy.current) wakePending.current = true; else { clearTimeout(timer); running.current = tick(); } };
     running.current = tick();
     return () => { disposed = true; clearTimeout(timer); };
   }, [persist, failProgress]);
+  useEffect(() => { wake.current(); }, [prerequisiteKey]);
   return { plans, start, stop };
 }

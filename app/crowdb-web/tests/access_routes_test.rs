@@ -313,6 +313,8 @@ async fn chunk_query_rejects_invalid_ids_and_unbounded_pages() {
         "/api/chunks?prefix=not-hex",
         "/api/chunks?after=abc",
         "/api/chunks/abc",
+        "/api/stores/0/groups/1/chunks?chunk_type=0",
+        "/api/stores/0/groups/1/chunks?chunk_type=7",
     ] {
         let response = router(AppState::new(vec![]))
             .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())

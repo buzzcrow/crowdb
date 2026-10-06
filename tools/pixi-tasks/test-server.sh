@@ -10,6 +10,7 @@ pixi run test-diskdb
 pixi run test-diskdb-client
 pixi run test-chunkdb
 pixi run test-chunk-client
+pixi run test-chunk-stream
 pixi run test-diskio-client
 pixi run test-access-server
 pixi run test-monitor

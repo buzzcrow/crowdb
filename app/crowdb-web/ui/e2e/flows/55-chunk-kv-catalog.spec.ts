@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 // Baseline: partition/overlay 1.4s, unavailable 0.208s, journal 0.534s, placement 0.321s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
+import type { CatalogPage, Partition } from '../../src/chunk-kv/catalog';
 
 test('native diagnostics: journal identity survives Chunk navigation and owner interruption', async ({ page, request }) => {
   const bucket = `journal-${process.pid}-${Date.now()}`;
@@ -176,19 +177,21 @@ test('native diagnostics: production split displays actual inherited and current
   expect(first.ok(), await first.text()).toBe(true);
   await expect(page.getByRole('button', { name: 'Refresh catalog', exact: true })).toBeEnabled();
   const started = Date.now();
-  let catalog;
-  let partition;
+  const observed: { catalog?: CatalogPage; partition?: Partition } = {};
   await expect.poll(async () => {
     const observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
     await page.getByRole('button', { name: 'Refresh catalog', exact: true }).click();
     const response = await observation;
     expect(response.ok(), await response.text()).toBe(true);
-    catalog = await response.json();
+    const catalog: CatalogPage = await response.json();
+    observed.catalog = catalog;
     await expect(page.getByText(`Generation ${catalog.generation} ·`, { exact: false })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Refresh catalog', exact: true })).toBeEnabled();
-    partition = catalog.entries.find((entry: any) => entry.artifact.tail_overlay);
-    return Boolean(partition);
+    observed.partition = catalog.entries.find(entry => entry.artifact.tail_overlay);
+    return Boolean(observed.partition);
   }, { timeout: 11 * 60_000, intervals: [100], message: 'normal policy must publish a real split overlay' }).toBe(true);
+  const { catalog, partition } = observed;
+  if (!catalog || !partition || !partition.artifact.tail_overlay) throw new Error('Expected an observed catalog partition with a real split overlay');
   console.log(`Observed production split after ${Date.now() - started}ms, generation ${catalog.generation}`);
   await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${partition.id}`, exact: true }).click();
   const overlay = partition.artifact.tail_overlay;
@@ -214,6 +217,7 @@ test('native diagnostics: production split displays actual inherited and current
     const response = await request.get('/api/chunk-kv/catalog?page=0&offset=0');
     expect(response.ok(), await response.text()).toBe(true);
     current = await response.json();
+    if (!current) throw new Error('Expected an observed catalog generation');
     return current.generation;
   }, { timeout: 11 * 60_000, intervals: [100] }).not.toBe(catalog.generation);
   expect((await request.get(`/api/chunk-kv/runtime?${stale}`)).status()).toBe(409);

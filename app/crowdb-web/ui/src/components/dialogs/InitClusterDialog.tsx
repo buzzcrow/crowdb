@@ -18,10 +18,7 @@ export interface InitClusterDialogProps {
 }
 
 /**
- * Initialize the cluster by bootstrapping the system group
- * (store 0, group 0) on the selected CrowDB Storage nodes.
- *
- * Backend contract: `crowdb-console/web/src/mgmt.rs::ClusterInitBody`.
+ * Initialize system Group 0 and ordinary data Group 1 in Store 0.
  */
 export function InitClusterDialog({
   isOpen,
@@ -39,12 +36,14 @@ export function InitClusterDialog({
     defaultSelectedNodeIds.length > 0 ? defaultSelectedNodeIds : availableNodes.map((n) => n.id),
   );
   const [isLoading, setIsLoading] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const wasOpenRef = useRef(false);
-  const { success, error } = useToast();
+  const { success } = useToast();
 
   const valid = selectedNodeIds.length > 0;
 
   const reset = () => {
+    setSubmitError('');
     setSelectedNodeIds(
       defaultSelectedNodeIds.length > 0 ? defaultSelectedNodeIds : availableNodes.map((n) => n.id),
     );
@@ -58,15 +57,16 @@ export function InitClusterDialog({
   const handleSubmit = async () => {
     if (!valid) return;
     setIsLoading(true);
+    setSubmitError('');
     try {
-      await initCluster({ nodes: selectedNodeIds });
+      await initCluster({ nodes: selectedNodeIds, create_data_group: true });
       success('Cluster initialized successfully');
       reset();
       onClose();
       await onSuccess?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to initialize cluster';
-      error(message);
+      setSubmitError(message);
     } finally {
       setIsLoading(false);
     }
@@ -88,13 +88,14 @@ export function InitClusterDialog({
       isOpen={isOpen}
       onClose={handleClose}
       title="Initialize Cluster"
-      description="Bootstrap the system group (store 0, group 0) on the selected CrowDB Storage nodes. This must be done before creating any KV store."
+      description="Create system Group 0 and data Group 1 in Store 0 on the selected nodes. Group 1 is the initial data destination for DiskGroups."
       confirmLabel="Initialize Cluster"
       onConfirm={handleSubmit}
       confirmDisabled={!valid || isLoading}
       confirmLoading={isLoading}
     >
       <div className="tw-space-y-4">
+        {submitError && <p role="alert" className="tw-text-sm tw-text-failed">{submitError}</p>}
         <div className="tw-space-y-2">
           <label className="tw-text-xs tw-font-medium tw-text-text">
             CrowDB Storage Nodes (select at least one)

@@ -133,3 +133,17 @@ fn protocol_small_write_overrides_are_independent() {
     );
     assert_eq!(config.small_write.ec_data, 8);
 }
+
+#[test]
+fn independent_health_listener_rejects_data_listener_ports() {
+    use crowdb_common::config::BaseConfig;
+    let mut config = crowdb_access_server::config::AccessConfig::default();
+    config.s3.listen = Some("0.0.0.0:9091".into());
+    config.iceberg.listen = Some("0.0.0.0:9092".into());
+    config.health.listen = Some("127.0.0.1:9093".into());
+    config.validate().unwrap();
+    for value in ["127.0.0.1:9091", "127.0.0.1:9092", "127.0.0.1:0", "invalid"] {
+        config.health.listen = Some(value.into());
+        assert!(config.validate().is_err(), "{value}");
+    }
+}

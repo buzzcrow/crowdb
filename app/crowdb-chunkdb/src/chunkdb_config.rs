@@ -48,6 +48,9 @@ impl Default for DeploymentConfig {
 /// Top-level configuration for a chunkdb instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkdbConfig {
+    /// Explicit service ownership policy; existing deployments remain fixed.
+    #[serde(default)]
+    pub service_ownership: ServiceOwnershipPolicy,
     /// Optional explicit initialization; omitted on restart of an initialized cluster.
     #[serde(default)]
     pub slot_bootstrap: Option<crowdb_protocol::chunk_slot::ChunkSlotBootstrap>,
@@ -73,6 +76,14 @@ pub struct ChunkdbConfig {
     pub reservation: ReservationConfig,
     #[serde(default)]
     pub conversion_io: ConversionIoConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceOwnershipPolicy {
+    #[default]
+    Fixed,
+    Dynamic,
 }
 
 /// DiskIO transport used by background conversion and repair.

@@ -32,6 +32,7 @@ pub struct AppState {
     /// spawning 6+ threads per request. Shared by the cached `kv_client`.
     pub kv_rpc_transport: Arc<tokio::sync::RwLock<Option<Arc<crowdb_kv_client::KvRpcTransport>>>>,
     /// Immutable transport shared by bounded Chunk diagnostics requests.
+    pub(crate) rpc_health: Arc<crate::services::rpc_health::RpcHealth>,
     pub(crate) chunk_rpc_transport: Arc<crowdb_chunkdb_client::ChunkdbRpcTransport>,
     /// Cached `CrowdbKvClient` reused across KV requests so the topology
     /// cache persists — avoids re-discovering the leader from seeds on
@@ -103,6 +104,7 @@ impl AppState {
             runtime_pids: Arc::new(std::sync::Mutex::new(HashMap::new())),
             diskdb_client: Arc::new(tokio::sync::RwLock::new(None)),
             kv_rpc_transport: Arc::new(tokio::sync::RwLock::new(None)),
+            rpc_health: Arc::new(crate::services::rpc_health::RpcHealth::new()),
             chunk_rpc_transport: Arc::new(crowdb_chunkdb_client::ChunkdbRpcTransport::new()),
             kv_client: Arc::new(tokio::sync::RwLock::new(None)),
             discovery_client: Arc::new(tokio::sync::RwLock::new(None)),

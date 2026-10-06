@@ -53,6 +53,14 @@ impl TaskScanner {
     /// Returns an index-scan error. Individual stale claims and handler errors
     /// are isolated and reported in the summary.
     pub async fn run_once(&self, now_ms: u64) -> Result<TaskScanSummary, TaskStoreError> {
+        let authority = self.store.execution_authority();
+        match authority {
+            Some(authority) => authority.scope(self.run_once_captured(now_ms)).await,
+            None => self.run_once_captured(now_ms).await,
+        }
+    }
+
+    async fn run_once_captured(&self, now_ms: u64) -> Result<TaskScanSummary, TaskStoreError> {
         let mut summary = TaskScanSummary::default();
         for expired in self.store.scan_expired_leases(now_ms, self.scan_limit).await? {
             match self.manager.recover_expired(&expired, now_ms).await {

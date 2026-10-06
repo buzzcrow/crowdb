@@ -12,7 +12,7 @@ use crowdb_protocol::common::ChunkId;
 use std::sync::Arc;
 
 pub struct TestGroups {
-    server: Arc<PxKvStore>,
+    pub server: Arc<PxKvStore>,
     pub kv: Arc<CrowdbKvClient>,
 }
 

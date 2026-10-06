@@ -13,14 +13,14 @@ use crowdb_monitor::{
     DeploymentProfile, HardwareBootstrap, IcebergBootstrap, KvBootstrap, LogicalBootstrap, ServerCredentials,
     Supervisor,
 };
+use crowdb_protocol::{port::alloc as port_alloc, ServicePort};
 use uuid::Uuid;
 
 struct TestRoot(PathBuf);
 
 impl TestRoot {
     fn new() -> Self {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.crowdb-runtime/ephemeral")
+        let root = crowdb_test_harness::test_dirs::ephemeral_root()
             .join(format!("monitor-storage-{}", Uuid::new_v4()));
         for path in ["bin", "templates", "data", "run"] {
             fs::create_dir_all(root.join(path)).unwrap();
@@ -99,7 +99,7 @@ impl TestRoot {
                 "diskio" => vec![ports.diskio_rpc],
                 "chunkdb" => vec![ports.chunkdb_http, ports.chunkdb_rpc],
                 "chunk-kv" => vec![ports.chunk_kv_http, ports.chunk_kv_rpc],
-                "access" => vec![ports.iceberg, ports.s3],
+                "access" => vec![ports.iceberg, ports.s3, ports.health],
                 _ => unreachable!(),
             }
             .into_iter()
@@ -116,7 +116,7 @@ impl TestRoot {
             };
             if service.id == "access" {
                 service.additional_probes[0].target =
-                    format!("http://127.0.0.1:{}/_crowdb/health/ready", ports.s3);
+                    format!("http://127.0.0.1:{}/_crowdb/health/ready", ports.health);
             }
         }
         profile.validate().unwrap();
@@ -124,6 +124,10 @@ impl TestRoot {
     }
 
     fn configure_access_env(&self, service: &mut crowdb_monitor::ServiceProfile, ports: &Ports) {
+        service.env.insert(
+            "CROWDB_ACCESS_HEALTH_LISTEN".into(),
+            format!("127.0.0.1:{}", ports.health),
+        );
         service.env.insert(
             "CROWDB_MANAGEMENT_SEEDS".into(),
             format!("http://127.0.0.1:{}", ports.kv_management),
@@ -216,31 +220,27 @@ struct Ports {
     chunk_kv_rpc: u16,
     iceberg: u16,
     s3: u16,
+    health: u16,
 }
 
 impl Ports {
-    async fn allocate() -> Self {
-        let mut listeners = Vec::new();
-        for _ in 0..12 {
-            listeners.push(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
-        }
-        let ports = listeners
-            .iter()
-            .map(|listener| listener.local_addr().unwrap().port())
-            .collect::<Vec<_>>();
+    fn allocate() -> Self {
+        // Listener ranges stay outside the OS ephemeral client-port range.
+        // Retain process-owned claims until both bootstrap/restart phases finish.
         Self {
-            kv_management: ports[0],
-            kv_rpc: ports[1],
-            diskdb_listen: ports[2],
-            diskdb_http: ports[3],
-            diskdb_rpc: ports[4],
-            diskio_rpc: ports[5],
-            chunkdb_http: ports[6],
-            chunkdb_rpc: ports[7],
-            chunk_kv_http: ports[8],
-            chunk_kv_rpc: ports[9],
-            iceberg: ports[10],
-            s3: ports[11],
+            kv_management: port_alloc::alloc_test_port(ServicePort::KvServerMgmt),
+            kv_rpc: port_alloc::alloc_test_port(ServicePort::KvServerListen),
+            diskdb_listen: port_alloc::alloc_test_port(ServicePort::DiskdbListen),
+            diskdb_http: port_alloc::alloc_test_port(ServicePort::DiskdbHttp),
+            diskdb_rpc: port_alloc::alloc_test_port(ServicePort::DiskdbRpc),
+            diskio_rpc: port_alloc::alloc_test_port(ServicePort::DiskioRpc),
+            chunkdb_http: port_alloc::alloc_test_port(ServicePort::ChunkdbHttp),
+            chunkdb_rpc: port_alloc::alloc_test_port(ServicePort::ChunkdbRpc),
+            chunk_kv_http: port_alloc::alloc_test_port(ServicePort::ChunkKvHttp),
+            chunk_kv_rpc: port_alloc::alloc_test_port(ServicePort::ChunkKvRpc),
+            iceberg: port_alloc::alloc_test_port(ServicePort::AccessServerIcebergHttp),
+            s3: port_alloc::alloc_test_port(ServicePort::AccessServerHttp),
+            health: port_alloc::alloc_test_port(ServicePort::AccessServerHealthHttp),
         }
     }
 }
@@ -266,7 +266,7 @@ async fn preview_chunk_services_start_and_recover() {
         return;
     }
     let root = TestRoot::new();
-    let ports = Ports::allocate().await;
+    let ports = Ports::allocate();
     root.templates(&ports);
     let profile = root.profile(
         &ports,
@@ -419,7 +419,7 @@ async fn preview_real_iceberg_catalog_and_listener_survive_restart() {
         return;
     }
     let root = TestRoot::new();
-    let ports = Ports::allocate().await;
+    let ports = Ports::allocate();
     root.templates(&ports);
     let mut links = vec![("kv", kv_binary.as_path())];
     links.extend(binaries.iter().map(|(id, path)| (*id, path.as_path())));

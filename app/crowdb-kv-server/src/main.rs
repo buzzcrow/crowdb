@@ -307,15 +307,17 @@ async fn main() {
     // leader tenure, so followers remain idle without loopback RPC.
     let domain_monitors = if args.binding_monitor_interval > 0 {
         use crowdb_kv_server::background::domain_monitor::{
-            spawn_domain_monitor_supervisor, ChunkKvRangeMonitorDriver, ChunkdbRangeMonitorDriver,
-            DiskdbOwnershipMonitorDriver, DomainMonitorDrivers,
+            spawn_domain_monitor_supervisor, ChunkKvRangeMonitorDriver, ChunkdbDynamicMonitorDriver,
+            ChunkdbRangeMonitorDriver, DiskdbOwnershipMonitorDriver, DomainMonitorDrivers,
         };
         Some(spawn_domain_monitor_supervisor(
             Arc::clone(&registry),
             DomainMonitorDrivers::new(vec![
                 Arc::new(ChunkdbRangeMonitorDriver::new()),
+                Arc::new(ChunkdbDynamicMonitorDriver),
                 Arc::new(ChunkKvRangeMonitorDriver::new()),
                 Arc::new(DiskdbOwnershipMonitorDriver::new()),
+                Arc::new(crowdb_kv_server::background::domain_monitor::DiskdbPlacementMonitorDriver),
             ]),
             std::time::Duration::from_secs(args.binding_monitor_interval),
         ))

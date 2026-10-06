@@ -34,7 +34,7 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="tw-fixed tw-bottom-6 tw-right-6 tw-z-50 tw-flex tw-flex-col tw-gap-3 tw-w-full tw-max-w-sm tw-pointer-events-none">
+    <div className="tw-fixed tw-bottom-6 tw-right-6 tw-z-[110] tw-flex tw-flex-col tw-gap-3 tw-w-full tw-max-w-sm tw-pointer-events-none">
       {toasts.map(toast => (
         <div
           key={toast.id}
@@ -46,7 +46,7 @@ export function ToastContainer() {
         >
           <div className="tw-flex-shrink-0">{toastIcons[toast.type]}</div>
           <div className="tw-flex-1 tw-min-w-0">
-            <p className={cn('tw-text-sm tw-font-medium', toastTextColors[toast.type])}>{toast.message}</p>
+            <p className={cn('tw-pointer-events-auto tw-select-text tw-break-words tw-text-sm tw-font-medium', toastTextColors[toast.type])}>{toast.message}</p>
             {toast.action && (
               <div className="tw-mt-2">
                 <Button

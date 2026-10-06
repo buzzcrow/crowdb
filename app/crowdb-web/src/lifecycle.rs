@@ -743,7 +743,10 @@ pub async fn http_internal_reset(
             .iter()
             .filter(|entry| entry.service_type == ServiceType::PaxosKv)
             .all(|entry| {
-                config.local_launches.contains_key(&entry.id)
+                (config.local_launches.contains_key(&entry.id)
+                    || entry
+                        .node_id
+                        .is_some_and(|node| state.runtime_pid(node).is_some()))
                     && entry
                         .node_id
                         .and_then(|id| config.node(id))
@@ -1002,7 +1005,14 @@ async fn stop_all_services(state: &AppState) -> Result<Vec<String>, (StatusCode,
 
     for nid in &node_ids {
         // Stop children concurrently; workspace cleanup waits for all of them.
-        if let Some(pid) = state.runtime_pid(nid) {
+        let kv_pid = state.runtime_pid(nid).or_else(|| {
+            let config = state.config.read().unwrap();
+            config.server_for_node(*nid).and_then(|server| server.pid)
+        });
+        // A stop response clears the runtime PID before its background reap
+        // finishes. Node-addressed deployments retain that PID in the server
+        // entry even when they have no launch-registry record.
+        if let Some(pid) = kv_pid {
             let ssh = state
                 .config
                 .read()
@@ -1072,6 +1082,8 @@ pub struct ResetResult {
 #[derive(Debug, Deserialize)]
 pub struct AddDiskGroupBody {
     id: DiskGroupId,
+    store_id: u64,
+    group_id: u64,
     #[serde(default)]
     name: String,
 }
@@ -1207,7 +1219,17 @@ pub async fn http_add_node_disk_group(
     Path(node_id): Path<NodeId>,
     Json(body): Json<AddDiskGroupBody>,
 ) -> Result<(StatusCode, Json<DiskGroupEntry>), (StatusCode, Json<ErrorBody>)> {
-    crate::physical::disk_group::create(state, node_id, body.id, body.name).await
+    crate::physical::disk_group::create(
+        state,
+        node_id,
+        body.id,
+        body.name,
+        crowdb_protocol::common::BindMapValue {
+            store_id: body.store_id,
+            group_id: body.group_id,
+        },
+    )
+    .await
 }
 
 /// `DELETE /api/nodes/:node_id/disk-groups/:dg_id`.

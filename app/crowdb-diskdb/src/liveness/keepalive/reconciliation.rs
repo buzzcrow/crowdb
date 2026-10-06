@@ -11,13 +11,19 @@ impl KeepAlive {
         let mut groups_removed = 0usize;
 
         for entry in observed {
-            if !current_ids.contains(&entry.owner.dg_id) {
+            if !current_ids.contains(&entry.owner.dg_id)
+                || self
+                    .container
+                    .get_disk_group(entry.owner.dg_id)
+                    .is_some_and(|group| group.ownership_fence() != entry.fence)
+            {
                 let dg = Arc::new(DdbDiskGroup::new(
                     entry.owner.dg_id,
                     entry.owner.node_id,
                     entry.owner.rack_id,
                 ));
                 dg.set_bind(entry.bind);
+                dg.set_ownership_fence(entry.fence.clone());
                 self.container.add_disk_group(&dg);
                 groups_added += 1;
             } else if let Some(dg) = self.container.get_disk_group(entry.owner.dg_id) {
@@ -86,7 +92,7 @@ impl KeepAlive {
         }
 
         let current_disk_ids: Vec<DiskId> = {
-            let disks_guard = dg.disks.read().unwrap();
+            let disks_guard = dg.disk_snapshot();
             disks_guard.iter().map(|d| d.disk_id).collect()
         };
 
@@ -137,7 +143,7 @@ impl KeepAlive {
         outcome: &mut KeepAliveOutcome,
     ) {
         let disk = {
-            let disks_guard = dg.disks.read().unwrap();
+            let disks_guard = dg.disk_snapshot();
             disks_guard.iter().find(|d| d.disk_id == *disk_id).cloned()
         };
         let Some(disk) = disk else { return };
@@ -161,7 +167,7 @@ impl KeepAlive {
                             dg_id = dg.disk_group_id,
                             "reconcile: Init disk now bound; spawning deferred zone load"
                         );
-                        self.spawn_zone_load(dg, &disk, disk_value, bind, kv.clone());
+                        self.spawn_zone_load(dg, &disk, disk_value, bind, kv);
                     }
                 }
             }
@@ -218,7 +224,7 @@ impl KeepAlive {
         outcome: &mut KeepAliveOutcome,
     ) {
         let disk = {
-            let disks_guard = dg.disks.read().unwrap();
+            let disks_guard = dg.disk_snapshot();
             disks_guard.iter().find(|d| d.disk_id == *disk_id).cloned()
         };
         let Some(disk) = disk else { return };
@@ -425,7 +431,7 @@ impl KeepAlive {
         let task = RecoveryScanTask::new(
             Arc::clone(disk),
             bind,
-            kv.clone(),
+            kv.for_group(dg),
             Arc::clone(&cancel),
             Arc::clone(impacted),
         );
@@ -479,10 +485,10 @@ impl KeepAlive {
         if let Some(ref kv) = self.kv {
             let bind = dg.bind();
             if let Some(m) = &self.metrics {
-                recover_disk_to_up(disk, bind, kv, self.config.zone_rotate_count, m).await;
+                recover_disk_to_up(disk, bind, &kv.for_group(dg), self.config.zone_rotate_count, m).await;
             } else {
                 let m = crate::metrics::DiskdbMetrics::disabled();
-                recover_disk_to_up(disk, bind, kv, self.config.zone_rotate_count, &m).await;
+                recover_disk_to_up(disk, bind, &kv.for_group(dg), self.config.zone_rotate_count, &m).await;
             }
         } else {
             // No kv client (test mode) — status already set; just

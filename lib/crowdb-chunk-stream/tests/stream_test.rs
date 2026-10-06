@@ -584,7 +584,7 @@ async fn append_rotates_an_active_chunk_sealed_by_its_writer_lease() {
     assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn watchdog_observes_without_cancelling_or_repeating_after_completion() {
     let store = Arc::new(MemoryStreamStore::new(32));
     store.pause_writes();

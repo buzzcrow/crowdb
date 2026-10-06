@@ -38,6 +38,12 @@ impl ChunkSlotOwner for u64 {
     }
 }
 
+impl ChunkSlotOwner for super::ChunkSlotAuthority {
+    fn is_valid(self) -> bool {
+        true
+    }
+}
+
 /// An explicitly eligible direct-KV destination. Group zero is never eligible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

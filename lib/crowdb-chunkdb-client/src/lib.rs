@@ -32,6 +32,8 @@ pub enum ChunkdbClientError {
     Unreachable(String),
     #[error("chunkdb server unavailable (transient): {0}")]
     Unavailable(String),
+    #[error("chunkdb submitted outcome is unknown; reconcile before retry: {0}")]
+    OutcomeUnknown(String),
     #[error("chunk not found: {0}")]
     NotFound(String),
     #[error("chunk already exists: {0}")]

@@ -133,14 +133,16 @@ async fn start_access_with_fault(
     seeds: &[String],
     s3_addr: SocketAddr,
     iceberg_addr: SocketAddr,
-    ports: RuntimeNamespace,
+    mut ports: RuntimeNamespace,
     stop_s3_manager_file: Option<&Path>,
 ) -> RunningAccess {
+    let health_port = ports.assign_port(ServicePort::AccessServerHealthHttp, 0).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-access-server"));
     command
         .args(["--config", config.to_str().unwrap()])
         .env("CROWDB_MANAGEMENT_SEEDS", seeds.join(","))
         .env("CROWDB_S3_LISTEN", s3_addr.to_string())
+        .env("CROWDB_ACCESS_HEALTH_LISTEN", format!("127.0.0.1:{health_port}"))
         .env("CROWDB_S3_TENANT", "local")
         .env(
             "CROWDB_S3_MASTER_KEY",
@@ -168,7 +170,7 @@ async fn start_access_with_fault(
                 panic!("combined access process exited before readiness: {status}");
             }
             let s3_ready = client
-                .get(format!("http://{s3_addr}/_crowdb/health/ready"))
+                .get(format!("http://127.0.0.1:{health_port}/_crowdb/health/ready"))
                 .send()
                 .await
                 .is_ok_and(|response| response.status().is_success());

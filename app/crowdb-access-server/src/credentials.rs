@@ -10,7 +10,7 @@ use crowdb_access_s3::auth::{
 };
 use crowdb_kv_client::{CrowdbKvClient, Error as KvError, ReadMode};
 
-const CREDENTIAL_PREFIX: &[u8] = b"\0crowdb/s3/credential/";
+const CREDENTIAL_PREFIX: &[u8] = b"crowdb/s3/credential/";
 const CREATE_ATTEMPTS: usize = 8;
 
 pub struct CredentialAuthority {

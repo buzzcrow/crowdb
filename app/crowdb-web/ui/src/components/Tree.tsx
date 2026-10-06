@@ -144,6 +144,7 @@ function TreeNodeComponent({
         </div>
       </div>
 
+      {node.footer && <div style={{ paddingLeft: `${level * 16 + 28}px` }}>{node.footer}</div>}
       {hasChildren && isExpanded && (
         <div role="group">
           {node.children?.map((child) => (
@@ -157,7 +158,6 @@ function TreeNodeComponent({
               onNodeContextMenu={onNodeContextMenu}
             />
           ))}
-          {node.footer && <div style={{ paddingLeft: `${(level + 1) * 16 + 12}px` }}>{node.footer}</div>}
         </div>
       )}
     </div>

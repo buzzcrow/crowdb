@@ -31,6 +31,7 @@ pub enum RangeRouteError {
 struct ServiceSnapshot {
     map: ChunkSlotMap<u64>,
     bindings: HashMap<u64, ChunkdbRangeBinding>,
+    dynamic: bool,
 }
 
 pub struct RangeBindingClient {
@@ -58,9 +59,13 @@ impl RangeBindingClient {
     /// Rejects incomplete layouts, storage-independent service read failures,
     /// or unsupported changes to the fixed service assignment.
     pub async fn refresh(&self) -> Result<()> {
-        let map = ChunkSlotMapClient::new(Arc::clone(&self.kv))
-            .read_service()
-            .await?;
+        let maps = ChunkSlotMapClient::new(Arc::clone(&self.kv));
+        let dynamic = maps.read_dynamic_service_snapshot().await?;
+        let map = if let Some(snapshot) = &dynamic {
+            snapshot.service().clone()
+        } else {
+            maps.read_service().await?
+        };
         let endpoints: HashMap<_, _> = ServiceRegistryClient::from_shared(Arc::clone(&self.kv))
             .read_all_chunkdb_instances()
             .await?
@@ -82,16 +87,29 @@ impl RangeBindingClient {
                 )
             })
             .collect();
-        let replacement = Arc::new(ServiceSnapshot { map, bindings });
+        let replacement = Arc::new(ServiceSnapshot {
+            map,
+            bindings,
+            dynamic: dynamic.is_some(),
+        });
         loop {
             let current = self.snapshot.load_full();
             if let Some(current) = &current {
-                if current.map.head() != replacement.map.head()
-                    || current
-                        .map
-                        .bindings()
-                        .iter()
-                        .any(|binding| !replacement.map.bindings().contains(binding))
+                let advances =
+                    replacement.dynamic && replacement.map.head().generation > current.map.head().generation;
+                if current.dynamic && !replacement.dynamic {
+                    return Err(Error::SysdataDecode {
+                        key: "/chunkdb/slot_head/authority".into(),
+                        reason: "dynamic authority disappeared".into(),
+                    });
+                }
+                if !advances
+                    && (current.map.head() != replacement.map.head()
+                        || current
+                            .map
+                            .bindings()
+                            .iter()
+                            .any(|binding| !replacement.map.bindings().contains(binding)))
                 {
                     return Err(Error::SysdataDecode {
                         key: "/chunkdb/slot_service/".into(),

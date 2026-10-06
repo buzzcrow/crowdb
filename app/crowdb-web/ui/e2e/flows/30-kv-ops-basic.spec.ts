@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 // Baseline: CRUD 1.2s, delete 0.742s, auto-scan 0.560s (2026-10-03).
+// Baseline: binary byte runs 1.6s (2026-10-06).
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { addGroup, createStore, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/consoleSetup';
@@ -120,13 +121,21 @@ test.describe('kv ops · put/get/scan/delete', () => {
       await expect(table).not.toContainText('0x');
       await expect(table.locator('[data-byte-format="hex"]')).toHaveText(['00FF', 'FE8001']);
       for (const run of await table.locator('[data-byte-format="hex"]').all()) {
-        await expect(run).toHaveCSS('color', 'rgb(229, 189, 119)');
-        await expect(run).toHaveCSS('background-color', 'rgb(53, 45, 34)');
+        await expect(run).toHaveCSS('color', 'rgb(133, 133, 133)');
+        await expect(run).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+        await expect(run).toHaveCSS('border-width', '0px');
+        await expect(run).toHaveCSS('padding', '0px');
+        await expect(run).toHaveCSS('margin', '0px');
       }
       await table.getByText('field', { exact: true }).click();
       const detail = page.getByRole('region', { name: 'Selected key' });
       await expect(detail).toContainText('helloFE8001中文');
       await expect(detail.locator('[data-byte-format="hex"]')).toHaveText(['00FF', 'FE8001']);
+      for (const run of await detail.locator('[data-byte-format="hex"]').all()) {
+        await expect(run).toHaveCSS('color', 'rgb(133, 133, 133)');
+        await expect(run).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+        await expect(run).toHaveCSS('border-width', '0px');
+      }
       await expect(page.getByLabel('Put key')).toHaveValue('');
     } finally { await removeRows(request, records); }
   });

@@ -23,24 +23,28 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
   const [httpPort, setHttpPort] = useState(String(base));
   const [rpcPort, setRpcPort] = useState(String(kind === 'diskio' ? base : base + 100));
   const [s3Port, setS3Port] = useState('9091');
+  const [healthPort, setHealthPort] = useState('9093');
   const [diskGroup, setDiskGroup] = useState(String(diskGroups[0]?.id ?? ''));
   const [store, setStore] = useState(String(stores.find(store => String(store.store_id) !== '0')?.store_id ?? stores[0]?.store_id ?? ''));
   const firstGroup = stores.find(entry => String(entry.store_id) === store)?.groups.find(entry => String(entry.group_id) !== '0');
   const [bootstrap, setBootstrap] = useState(!!firstGroup);
   const [group, setGroup] = useState(String(firstGroup?.group_id ?? ''));
+  const [dynamicOwnership, setDynamicOwnership] = useState(false);
   const [testMode, setTestMode] = useState(false);
   const defaults = useDeploymentDefaults(true);
   useEffect(() => {
     const value = defaults.values?.[kind];
     if (!value) return;
     setInstance(value.instance_id);
+    setDynamicOwnership(value.dynamic_ownership ?? false);
     setHttpPort(String(value.http_port ?? ''));
     setRpcPort(String(value.rpc_port ?? ''));
     setS3Port(String(value.s3_port ?? ''));
+    setHealthPort(String(value.health_port ?? ''));
   }, [defaults.values, kind]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const ports = kind === 'diskio' ? [rpcPort] : kind === 'access-server' ? [httpPort, s3Port] : [httpPort, rpcPort];
+  const ports = kind === 'diskio' ? [rpcPort] : kind === 'access-server' ? [httpPort, s3Port, healthPort] : [httpPort, rpcPort];
   const valid = /^\d+$/.test(instance) && BigInt(instance) > 0n && BigInt(instance) <= 9223372036854775807n
     && ports.every(port => /^\d+$/.test(port) && Number(port) > 0 && Number(port) <= 65535)
     && new Set(ports.map(Number)).size === ports.length
@@ -50,9 +54,10 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
     setBusy(true); setError('');
     try {
       await serviceRequest(`/nodes/${nodeId}/services/deploy`, 'POST', {
+        ...(kind === 'chunkdb' ? { dynamic_ownership: dynamicOwnership } : {}),
         kind, instance_id: instance, test_single_node: testMode,
         ...(kind !== 'diskio' ? { http_port: Number(httpPort) } : {}),
-        ...(kind === 'access-server' ? { s3_port: Number(s3Port) } : { rpc_port: Number(rpcPort) }),
+        ...(kind === 'access-server' ? { s3_port: Number(s3Port), health_port: Number(healthPort) } : { rpc_port: Number(rpcPort) }),
         ...(kind === 'diskio' ? { disk_group_id: Number(diskGroup) } : {}),
         ...(kind === 'chunk-kv' ? { metadata_store_id: Number(store), ...(bootstrap ? { bootstrap_group_id: Number(group) } : {}) } : {}),
       });
@@ -66,6 +71,7 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
       {kind !== 'diskio' && <Input label={kind === 'access-server' ? 'Iceberg HTTP port' : 'Management HTTP port'} value={httpPort} onChange={event => setHttpPort(event.target.value)} />}
       {kind !== 'access-server' && <Input label="RPC port" value={rpcPort} onChange={event => setRpcPort(event.target.value)} />}
       {kind === 'access-server' && <Input label="S3 HTTP port" value={s3Port} onChange={event => setS3Port(event.target.value)} />}
+      {kind === 'access-server' && <Input label="Health HTTP port" value={healthPort} onChange={event => setHealthPort(event.target.value)} />}
       {kind === 'diskio' && <label className="tw-block tw-text-sm">Disk group<select aria-label="Disk group" className={inputClass} value={diskGroup} onChange={event => setDiskGroup(event.target.value)}>
         <option value="">Select disk group</option>{diskGroups.map(group => <option key={group.id} value={group.id}>DG {group.id} {group.name}</option>)}
       </select></label>}
@@ -78,6 +84,9 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
           <option value="">Select non-system group</option>{stores.find(entry => String(entry.store_id) === store)?.groups.filter(entry => String(entry.group_id) !== '0').map(group => <option key={group.group_id} value={group.group_id}>Group {group.group_id}</option>)}
         </select></label>}
       </>}
+      {kind === 'chunkdb' && <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={dynamicOwnership}
+        disabled={defaults.values?.chunkdb?.dynamic_ownership != null}
+        onChange={event => setDynamicOwnership(event.target.checked)} />Automatically redistribute ChunkDB slots</label>}
       <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox" checked={testMode} onChange={event => setTestMode(event.target.checked)} />Single-node test deployment (reduced redundancy)</label>
       {kind === 'diskio' && <p className="tw-text-xs tw-text-muted">Production requires disks with device paths. Test deployments may use in-memory disks.</p>}
       {defaults.error && <p role="alert">{defaults.error}</p>}

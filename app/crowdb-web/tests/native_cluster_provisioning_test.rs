@@ -86,7 +86,7 @@ async fn deploy(app: &axum::Router, node: u64, kind: &str) {
     let defaults = call(app, "GET", "/api/deployment-defaults", Value::Null).await;
     let mut body = defaults[kind].clone();
     let path = match kind {
-        "kv" => {
+        "paxos-kv" => {
             body = json!({"rest_port": body["http_port"], "rpc_port": body["rpc_port"]});
             format!("/api/nodes/{node}/server/deploy")
         }
@@ -110,22 +110,14 @@ async fn deploy(app: &axum::Router, node: u64, kind: &str) {
     call(app, "POST", &path, body).await;
 }
 
-async fn pending_group(app: &axum::Router) {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/nodes/1/disk-groups")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"id":1,"name":"storage"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
-    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
-    assert!(String::from_utf8_lossy(&bytes).contains("deploy a registered DiskDB service"));
+async fn group_before_owner(app: &axum::Router) {
+    call(
+        app,
+        "POST",
+        "/api/nodes/1/disk-groups",
+        json!({"id":1,"store_id":1,"group_id":1,"name":"storage"}),
+    )
+    .await;
 }
 
 async fn assert_mixed_geometry_rejected(app: &axum::Router, state: &AppState) {
@@ -196,7 +188,14 @@ async fn assert_services(app: &axum::Router) {
     let services = call(app, "GET", "/api/servers", Value::Null).await;
     assert_eq!(services.as_array().unwrap().len(), 18);
     for node in 1..=3 {
-        for kind in ["kv", "diskdb", "chunkdb", "diskio", "chunk-kv", "access-server"] {
+        for kind in [
+            "paxos-kv",
+            "diskdb",
+            "chunkdb",
+            "diskio",
+            "chunk-kv",
+            "access-server",
+        ] {
             assert!(
                 services
                     .as_array()
@@ -400,6 +399,103 @@ async fn assert_native_browser_diagnostics(app: axum::Router, chunks: Option<Val
 }
 
 #[tokio::test]
+#[ignore = "Requires installed native KV and DiskIO binaries"]
+async fn node_diskio_discovers_disk_groups_created_after_deployment() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("late-diskio-groups");
+    let state = AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned());
+    let _services = TestServices(state.clone());
+    let app = router(state.clone());
+    assert_eq!(
+        call(&app, "GET", "/api/group0-readiness", Value::Null).await["ready"],
+        false
+    );
+    call(&app, "POST", "/api/racks", json!({"id":1})).await;
+    call(
+        &app,
+        "POST",
+        "/api/nodes",
+        json!({"id":1,"rack_id":1,"host":"127.0.0.1"}),
+    )
+    .await;
+    deploy(&app, 1, "paxos-kv").await;
+    call(&app, "POST", "/api/cluster/init", json!({"nodes":[1]})).await;
+    assert_eq!(
+        call(&app, "GET", "/api/group0-readiness", Value::Null).await["ready"],
+        true
+    );
+    call(
+        &app,
+        "POST",
+        "/api/stores/0/groups",
+        json!({"group_id":1,"replica_id":10,"nodes":[1]}),
+    )
+    .await;
+    let mut body =
+        call(&app, "GET", "/api/deployment-defaults?node_id=1", Value::Null).await["diskio"].clone();
+    body["kind"] = json!("diskio");
+    call(&app, "POST", "/api/nodes/1/services/deploy", body).await;
+    let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(state.kv_client().await);
+    let initial = registry.read_all_diskio_instances().await.unwrap();
+    assert_eq!(initial.len(), 1);
+    assert!(initial[0]
+        .1
+        .extra
+        .as_ref()
+        .unwrap()
+        .diskdb
+        .as_ref()
+        .unwrap()
+        .owned_dg_ids
+        .is_empty());
+    create_late_diskio_groups(&app).await;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            interval.tick().await;
+            let instances = registry.read_all_diskio_instances().await.unwrap();
+            let owned = &instances[0]
+                .1
+                .extra
+                .as_ref()
+                .unwrap()
+                .diskdb
+                .as_ref()
+                .unwrap()
+                .owned_dg_ids;
+            if owned == &[11, 12] {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("node-local DiskIO discovers both late groups");
+    assert_eq!(
+        call(&app, "GET", "/api/chunk-storage-readiness", Value::Null).await["ready"],
+        true
+    );
+}
+
+async fn create_late_diskio_groups(app: &axum::Router) {
+    for group in [11, 12] {
+        call(
+            app,
+            "POST",
+            "/api/nodes/1/disk-groups",
+            json!({"id":group,"store_id":0,"group_id":1}),
+        )
+        .await;
+        call(
+            app,
+            "POST",
+            &format!("/api/nodes/1/disk-groups/{group}/disks"),
+            json!({"disk_id":format!("{group:032x}"),"disk_type":"Hdd","capacity_bytes":1_073_741_824_u64,
+                "zone_size_bytes":1_073_741_824_u64,"unit_size_bytes":1_048_576,"device_path":""}),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
 #[ignore = "Cold normal three-node chain; requires all six installed native server binaries"]
 async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() {
     native_cluster(false).await;
@@ -434,7 +530,7 @@ async fn native_cluster(inspection_only: bool) {
             json!({"id":node,"rack_id":1,"host":"127.0.0.1","ssh_port":22,"ssh_user":""}),
         )
         .await;
-        deploy(&app, node, "kv").await;
+        deploy(&app, node, "paxos-kv").await;
     }
     call(&app, "POST", "/api/cluster/init", json!({"nodes":[1,2,3]})).await;
     assert_initialization_budget(&state).await;
@@ -447,9 +543,9 @@ async fn native_cluster(inspection_only: bool) {
         json!({"group_id":1,"replica_id":10,"nodes":[1,2,3]}),
     )
     .await;
-    // A group can predate DDB registration. Repeating the same create after
-    // registration reconciles its owner, without an administrative bind/owner write.
-    pending_group(&app).await;
+    // A group can predate DDB registration. Live DiskDB instances acquire
+    // ownership after registration, without an administrative owner write.
+    group_before_owner(&app).await;
     let hardware = crowdb_kv_client::HardwareClient::from_shared(state.kv_client().await);
     let binding = hardware.get_bind(1, 1, 1).await.unwrap().unwrap();
     assert_eq!((binding.store_id, binding.group_id), (1, 1));
@@ -470,7 +566,7 @@ async fn native_cluster(inspection_only: bool) {
             &app,
             "POST",
             &format!("/api/nodes/{node}/disk-groups"),
-            json!({"id":node,"name":"storage"}),
+            json!({"id":node,"store_id":u64::from(node == 1),"group_id":1,"name":"storage"}),
         )
         .await;
         add_native_disk(&app, node, root.path()).await;
@@ -504,6 +600,9 @@ async fn native_cluster(inspection_only: bool) {
     }
     assert_native_access(&app).await;
     assert_native_locations(&app, &state).await;
+    if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
+        assert_native_browser_diagnostics(app.clone(), None).await;
+    }
     assert_native_restarts(&app, &state).await;
     assert_native_locations(&app, &state).await;
     if std::env::var_os("CROWDB_NATIVE_UI_E2E").is_some() {
@@ -552,11 +651,11 @@ async fn assert_native_access(app: &axum::Router) {
 
 async fn assert_bound_groups(app: &axum::Router, hardware: &crowdb_kv_client::HardwareClient) {
     for node in 1..=3 {
-        assert!(hardware.get_owner(1, node, node).await.unwrap().is_some());
+        wait_for_native_owner(hardware, node).await;
         let binding = hardware.get_bind(1, node, node).await.unwrap().unwrap();
         let expected_store = u64::from(node == 1);
         assert_eq!((binding.store_id, binding.group_id), (expected_store, 1));
-        // An exact-ID retry preserves both the automatic binding and owner.
+        // An exact-ID retry preserves both the selected binding and owner.
         let owner = hardware.get_owner(1, node, node).await.unwrap();
         if node == 3 {
             // Reproduce persisted partial state using real authoritative records.
@@ -564,14 +663,16 @@ async fn assert_bound_groups(app: &axum::Router, hardware: &crowdb_kv_client::Ha
             hardware.remove_owner(1, node, node).await.unwrap();
             assert!(hardware.get_bind(1, node, node).await.unwrap().is_none());
             assert!(hardware.get_owner(1, node, node).await.unwrap().is_none());
+            assert_missing_binding_requires_repair(app, node, expected_store).await;
         }
         call(
             app,
             "POST",
             &format!("/api/nodes/{node}/disk-groups"),
-            json!({"id":node,"name":"storage"}),
+            json!({"id":node,"store_id":expected_store,"group_id":1,"name":"storage"}),
         )
         .await;
+        wait_for_native_owner(hardware, node).await;
         let renewed = hardware.get_owner(1, node, node).await.unwrap().unwrap();
         let previous = owner.unwrap();
         assert_eq!((renewed.rack_id, renewed.node_id, renewed.dg_id), (1, node, node));
@@ -584,8 +685,56 @@ async fn assert_bound_groups(app: &axum::Router, hardware: &crowdb_kv_client::Ha
     }
 }
 
+async fn assert_missing_binding_requires_repair(app: &axum::Router, node: u64, store: u64) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/nodes/{node}/disk-groups"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"id":node,"store_id":store,"group_id":1,"name":"storage"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("Existing DiskGroup binding differs or is absent"));
+    call(
+        app,
+        "PUT",
+        &format!("/api/disk-groups/1/{node}/{node}/bind"),
+        json!({"store_id":store,"group_id":1}),
+    )
+    .await;
+}
+
+async fn wait_for_native_owner(hardware: &crowdb_kv_client::HardwareClient, node: u64) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            interval.tick().await;
+            if hardware.get_owner(1, node, node).await.unwrap().is_some() {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("live DiskDB acquires the configured disk group");
+}
+
 async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
-    for kind in ["kv", "diskdb", "chunkdb", "diskio", "chunk-kv", "access-server"] {
+    for kind in [
+        "paxos-kv",
+        "diskdb",
+        "chunkdb",
+        "diskio",
+        "chunk-kv",
+        "access-server",
+    ] {
         let before = call(app, "GET", "/api/servers", Value::Null).await;
         let entry = before
             .as_array()
@@ -596,7 +745,7 @@ async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
         let id = entry["id"].as_str().unwrap();
         let old_pid = u32::try_from(entry["pid"].as_u64().unwrap()).unwrap();
         let path = match kind {
-            "kv" => "/api/nodes/1/server/restart".to_owned(),
+            "paxos-kv" => "/api/nodes/1/server/restart".to_owned(),
             "diskdb" => "/api/nodes/1/diskdb/restart".to_owned(),
             _ => format!("/api/services/{id}/restart"),
         };
@@ -623,6 +772,17 @@ async fn assert_native_restarts(app: &axum::Router, state: &AppState) {
             metrics.transport_error_retry,
             metrics.retries_exhausted,
             state.monitor_cache.group0_leader_endpoint().await
+        );
+        assert_eq!(
+            s3_request(
+                app,
+                "GET",
+                "/api/access/s3/native-locations/multipart.bin",
+                vec![]
+            )
+            .await,
+            b"replacement",
+            "durable S3 object remains readable after {kind} restarts"
         );
     }
     assert_eq!(
@@ -678,7 +838,20 @@ fn preserve_failure_logs(state: &AppState) {
 
 async fn deploy_native_services(app: &axum::Router) -> bool {
     // All Nodes exist before sealing the fixed CDB service ownership plan.
-    for kind in ["chunkdb", "diskio", "chunk-kv", "access-server"] {
+    for kind in ["diskio", "chunkdb", "chunk-kv", "access-server"] {
+        if kind == "chunkdb" {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    interval.tick().await;
+                    if call(app, "GET", "/api/chunk-storage-readiness", Value::Null).await["ready"] == true {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("live DiskIO ownership before ChunkDB");
+        }
         for node in 1..=3 {
             deploy(app, node, kind).await;
         }

@@ -182,7 +182,7 @@ impl RecalcEngine {
         let dg = self.container.get_disk_group(dg_id)?;
         let bind = dg.bind();
         let disks_snapshot: Vec<(DiskId, ZoneList)> = {
-            let disks = dg.disks.read().unwrap();
+            let disks = dg.disk_snapshot();
             disks
                 .iter()
                 .map(|d| {

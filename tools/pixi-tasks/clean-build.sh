@@ -4,8 +4,33 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
-# Stop recorded processes and remove the complete workspace runtime tree.
-bash tools/runtime/clean-runtime.sh all
+# Stop all CROWDB services owned by this user, including unrecorded children.
+# Match executable names so a shell or editor mentioning CROWDB is not killed.
+crowdb_pids() {
+    ps -u "$(id -u)" -o pid=,comm=,stat= |
+        awk '$2 ~ /^crowdb-/ && $3 !~ /^Z/ { print $1 }'
+}
+
+echo "[clean] stop CROWDB services"
+mapfile -t service_pids < <(crowdb_pids)
+if [ "${#service_pids[@]}" -gt 0 ]; then
+    kill -TERM "${service_pids[@]}" 2>/dev/null || true
+    sleep 0.2
+fi
+for _ in {1..20}; do
+    mapfile -t service_pids < <(crowdb_pids)
+    [ "${#service_pids[@]}" -gt 0 ] || break
+    kill -KILL "${service_pids[@]}" 2>/dev/null || true
+    sleep 0.1
+done
+mapfile -t service_pids < <(crowdb_pids)
+if [ "${#service_pids[@]}" -gt 0 ]; then
+    echo "[clean] CROWDB processes still alive: ${service_pids[*]}" >&2
+    exit 1
+fi
+
+echo "[clean] complete runtime tree"
+rm -rf -- "$PIXI_PROJECT_ROOT/.crowdb-runtime"
 
 # ── Rust build artifacts ──
 echo "[clean] cargo clean"

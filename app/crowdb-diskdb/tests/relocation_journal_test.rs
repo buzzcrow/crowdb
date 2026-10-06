@@ -426,9 +426,7 @@ async fn relocation_restart_matrix_resumes_every_durable_phase() {
         .remove(0);
         alloc::commit_blocks(&dg, &[source], &kv, &metrics).await.unwrap();
         let target_disk = dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|disk| Some(disk.disk_id) != source.disk_id)
             .unwrap()
@@ -560,9 +558,7 @@ async fn relocation_stale_discards_target_while_rejected_quarantines_it() {
     .remove(0);
     alloc::commit_blocks(&dg, &[source], &kv, &metrics).await.unwrap();
     let target_disk = dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .find(|disk| Some(disk.disk_id) != source.disk_id)
         .unwrap()
@@ -624,9 +620,7 @@ async fn relocation_stale_discards_target_while_rejected_quarantines_it() {
         .await
         .unwrap();
     let rejected_target_disk = dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .find(|disk| Some(disk.disk_id) != rejected_source.disk_id)
         .unwrap()

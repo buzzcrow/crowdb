@@ -91,8 +91,10 @@ async fn compact_fallback(
     zone_rotate_count: u32,
     metrics: &crate::metrics::DiskdbMetrics,
 ) {
+    let scoped_kv = kv.for_group(dg);
+    let kv = &scoped_kv;
     let bind = dg.bind();
-    let disks = dg.disks.read().unwrap().clone();
+    let disks = dg.disk_snapshot().as_ref().clone();
     for disk in disks {
         // Collect active zone indices to skip (I4).
         let active_zone_indices: std::collections::HashSet<u32> = {
@@ -154,6 +156,8 @@ pub async fn allocate_block(
     zone_rotate_count: u32,
     metrics: &crate::metrics::DiskdbMetrics,
 ) -> std::result::Result<Segment, AllocError> {
+    let scoped_kv = kv.for_group(dg);
+    let kv = &scoped_kv;
     // Phase 1: bitmap CAS.
     let (disk, zone, range) = match dg.allocate_block(unit_count, &[], cas_retry_limit, zone_rotate_count) {
         Ok(claim) => claim,
@@ -238,6 +242,8 @@ pub async fn allocate_blocks(
     zone_rotate_count: u32,
     metrics: &crate::metrics::DiskdbMetrics,
 ) -> std::result::Result<Vec<Segment>, AllocError> {
+    let scoped_kv = kv.for_group(dg);
+    let kv = &scoped_kv;
     // Phase 1: bitmap CAS for all blocks.
     let allocate = || {
         if allow_disk_reuse {
@@ -380,6 +386,8 @@ pub async fn free_block(
     segment: &Segment,
     kv: &DdbKvClient,
 ) -> std::result::Result<(), FreeError> {
+    let scoped_kv = kv.for_group(dg);
+    let kv = &scoped_kv;
     let disk_id = segment.disk_id.ok_or_else(|| {
         FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
             key: "segment.disk_id".to_string(),
@@ -453,6 +461,8 @@ pub async fn free_blocks(
     segments: &[Segment],
     kv: &DdbKvClient,
 ) -> std::result::Result<FreeBatchResult, FreeError> {
+    let scoped_kv = kv.for_group(dg);
+    let kv = &scoped_kv;
     let prepared = prepare_free(dg, segments)?;
     kv.persist_free_batch(prepared.bind, &prepared.records).await?;
     let result = prepared.result();
@@ -613,6 +623,8 @@ pub async fn commit_blocks(
     kv: &DdbKvClient,
     metrics: &crate::metrics::DiskdbMetrics,
 ) -> std::result::Result<u32, FreeError> {
+    let scoped_kv = kv.for_group(dg);
+    let kv = &scoped_kv;
     let bind = dg.bind();
     let mut seen = std::collections::HashSet::with_capacity(segments.len());
     let mut unique = Vec::with_capacity(segments.len());
@@ -680,6 +692,8 @@ pub async fn mark_blocks_corrupt(
     segments: &[Segment],
     kv: &DdbKvClient,
 ) -> std::result::Result<u32, FreeError> {
+    let scoped_kv = kv.for_group(dg);
+    let kv = &scoped_kv;
     let bind = dg.bind();
     let mut seen = std::collections::HashSet::with_capacity(segments.len());
     let mut marked = 0u32;

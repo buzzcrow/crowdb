@@ -50,6 +50,8 @@ test.describe('kv cluster · store + group CRUD', () => {
         await page.getByLabel('Group ID (numeric)').fill('570');
         await page.getByLabel('Starting Replica ID (numeric)').fill('5700');
         await page.getByLabel(/^5\b/).check();
+        await page.getByLabel(/^171\b/).check();
+        await page.getByLabel(/^172\b/).check();
         await page.getByRole('button', { name: /create group/i }).click();
 
         // Expand the freshly-created store row (created after tree mount, so it
@@ -68,9 +70,20 @@ test.describe('kv cluster · store + group CRUD', () => {
         await aside.getByText('S-57').first().click({ button: 'right' });
         await page.getByRole('menuitem', { name: /add group/i }).click();
         await expect(page.getByRole('dialog', { name: 'Add Group' })).toBeVisible();
-        await page.getByLabel('Group ID (numeric)').fill('580');
+        await page.getByLabel('Group ID (numeric)').fill('570');
         await page.getByLabel('Starting Replica ID (numeric)').fill('5800');
         await page.getByLabel(/^5\b/).check();
+        const rejected = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/api/stores/57/groups'));
+        await page.getByRole('button', { name: /create group/i }).click();
+        expect((await rejected).status()).toBe(409);
+        const message = page.getByText(/^HTTP 409:/);
+        await expect(message).toHaveCSS('pointer-events', 'auto');
+        await expect(message).toHaveCSS('user-select', 'text');
+        await message.click({ clickCount: 3 });
+        const copied = await page.evaluate(() => window.getSelection()!.toString());
+        expect(copied).toContain('HTTP 409:');
+        await message.locator('../..').getByRole('button', { name: 'Close notification' }).click();
+        await page.getByLabel('Group ID (numeric)').fill('580');
         await page.getByRole('button', { name: /create group/i }).click();
 
         await expect(aside.getByText('G-580').first()).toBeVisible({ timeout: 3_000 });

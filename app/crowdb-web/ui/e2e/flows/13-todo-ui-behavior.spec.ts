@@ -8,7 +8,9 @@ import {
   addDisksBatch,
   addGroup,
   apiContext,
+  assignDiskGroup,
   createRack,
+  clusterInit,
   createStore,
   freePort,
   freePortRange,
@@ -50,7 +52,8 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
     }
   });
 
-  test('creates three fully-enabled nodes and keeps derived DiskDB listeners disjoint', async ({ page, baseURL }) => {
+  // Baseline: 17.1s (2026-10-06)
+  test('creates three PKV and DiskDB node plans and keeps derived listeners disjoint', async ({ page, baseURL }) => {
     test.setTimeout(120_000);
     await step('todo-ui: reset', () => resetAll(baseURL!));
     await step('todo-ui: create rack', () => createRack(baseURL!, { id: RACK_ID, name: 'Todo UI Rack' }));
@@ -85,22 +88,12 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
           await expect(dialog).toBeVisible();
           await dialog.getByLabel('Node ID').fill(String(nodeId));
           await dialog.getByLabel('Host').fill('127.0.0.1');
-          await expect(dialog.getByLabel('Enable CrowDB Storage on this node')).toBeChecked();
-          await expect(dialog.getByLabel('Enable DiskDB on this node')).toBeChecked();
-          await dialog.getByLabel('Deploy complete service set', { exact: true }).uncheck();
-          await dialog.getByLabel('REST Port').fill(String(rest));
-          await dialog.getByTestId('kv-rpc-port').fill(String(kvRpc));
-          await dialog.getByTestId('diskdb-rpc-port').fill(String(diskdbRpc));
-          const diskdbDeployResponse = page.waitForResponse(
-            (response) => response.url().includes(`/api/nodes/${nodeId}/diskdb/deploy`),
-            { timeout: 30_000 },
-          );
+          await expect(dialog.getByRole('checkbox', { name: 'crowdb-paxos-kv', exact: true })).toBeChecked();
+          await expect(dialog.getByRole('checkbox', { name: 'crowdb-disk-db', exact: true })).toBeChecked();
+          for (const name of ['crowdb-access-server', 'crowdb-chunk-kv', 'crowdb-chunk-db', 'crowdb-disk-io']) await dialog.getByLabel(name, { exact: true }).uncheck();
+          await dialog.getByLabel('crowdb-paxos-kv RPC port').fill(String(kvRpc));
+          await dialog.getByLabel('crowdb-disk-db RPC port').fill(String(diskdbRpc));
           await dialog.getByRole('button', { name: /create node/i }).click();
-
-          const diskdbResponse = await diskdbDeployResponse;
-          expect(diskdbResponse.status(), await diskdbResponse.text()).toBe(201);
-          await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeEnabled();
-          await dialog.getByRole('button', { name: 'Close', exact: true }).click();
           await expect(dialog).toHaveCount(0);
           await expect(aside.getByText(`N-${nodeId}`, { exact: true })).toBeVisible({ timeout: 10_000 });
         });
@@ -108,13 +101,27 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
 
       const api = await apiContext(baseURL!);
       try {
+        await expect.poll(async () => {
+          const response = await api.get('/api/servers');
+          expect(response.ok()).toBe(true);
+          const servers = await response.json();
+          return NODE_IDS.every(nodeId => servers.some((server: any) => server.node_id === nodeId && server.service_type === 'paxos-kv' && server.pid));
+        }, { timeout: 10_000, intervals: [100] }).toBe(true);
+        // PKV registration precedes the persisted dependency state for DiskDB.
+        await expect.poll(async () => {
+          const response = await api.get('/api/service-plans');
+          expect(response.ok()).toBe(true);
+          const queued = await response.json();
+          return NODE_IDS.map(nodeId => queued[nodeId]?.steps.diskdb.state);
+        }, { intervals: [100] }).toEqual(NODE_IDS.map(() => 'waiting'));
+        await clusterInit(baseURL!, NODE_IDS);
         await step('todo-ui: verify service registrations and listeners', async () => {
           await expect.poll(async () => {
             const response = await api.get('/api/servers');
             if (!response.ok()) return [];
             const servers = await response.json();
             return NODE_IDS.every((nodeId) =>
-              servers.some((s: any) => s.node_id === nodeId && String(s.service_type ?? 'kv').toLowerCase() === 'kv') &&
+              servers.some((s: any) => s.node_id === nodeId && String(s.service_type ?? 'paxos-kv').toLowerCase() === 'paxos-kv') &&
               servers.some((s: any) => s.node_id === nodeId && String(s.service_type).toLowerCase() === 'diskdb'),
             ) ? servers : [];
           }, { timeout: 30_000, intervals: [250] }).not.toEqual([]);
@@ -173,6 +180,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
             instanceId = String(instance?.instance_id ?? '');
             return instanceId.length > 0;
           }, { timeout: 10_000, intervals: [100] }).toBe(true);
+          await assignDiskGroup(baseURL!, RACK_ID, NODE_IDS[0], DISK_GROUP_ID, instanceId, STORE_ID, GROUP_ID);
           await expect.poll(async () => {
             const response = await api.get('/api/diskdb/instances');
             if (!response.ok()) return false;
@@ -266,90 +274,54 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
     }
   });
 
-  test('retains failed progress and preserves KV when DiskDB deployment fails', async ({ page, baseURL }) => {
-    test.setTimeout(120_000);
+  test('retains failed progress and retries DiskDB with the same node and listener values', async ({ page, baseURL }) => {
     await resetAll(baseURL!);
     await createRack(baseURL!, { id: 704, name: 'Failure Rack' });
-
     const diskdbBase = freePortRange(3, 'diskdb-listen');
     const blocker = createServer();
-    const blockerSockets = new Set<import('node:net').Socket>();
-    blocker.on('connection', (sock) => {
-      blockerSockets.add(sock);
-      sock.on('close', () => blockerSockets.delete(sock));
-    });
-    const destroyAndClose = (srv: typeof blocker) => {
-      for (const s of blockerSockets) s.destroy();
-      blockerSockets.clear();
-      return new Promise<void>((resolve) => srv.close(() => resolve()));
-    };
     await new Promise<void>((resolve, reject) => {
-      blocker.once('error', reject);
-      blocker.listen(diskdbBase + 1, '127.0.0.1', () => resolve());
+      blocker.once('error', reject); blocker.listen(diskdbBase + 1, '127.0.0.1', resolve);
     });
-
+    const closeBlocker = () => new Promise<void>(resolve => blocker.close(() => resolve()));
+    const registrations: string[] = [];
+    page.on('request', request => {
+      if (request.method() === 'POST' && request.url().endsWith('/api/nodes')) registrations.push(request.url());
+    });
     try {
-      await page.goto('/');
-      await page.getByTestId('domain-cluster').click();
+      await page.goto('/?domain=Cluster');
       const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
       await aside.getByText('R-704 (Failure Rack)').click({ button: 'right' });
       await page.getByRole('menuitem', { name: /add node/i }).click();
-
       const dialog = page.getByRole('dialog', { name: 'Add Node' });
       await dialog.getByLabel('Node ID').fill('704');
-      await dialog.getByLabel('Host').fill('127.0.0.1');
-      await dialog.getByLabel('REST Port').fill(String(freePort('kv-mgmt')));
-      await dialog.getByTestId('kv-rpc-port').fill(String(freePort('kv-listen')));
-      await dialog.getByTestId('diskdb-rpc-port').fill(String(diskdbBase));
-
-      const diskdbResponse = page.waitForResponse((response) => response.url().includes('/api/nodes/704/diskdb/deploy'));
-      await dialog.getByRole('button', { name: /create node/i }).click();
-      expect((await diskdbResponse).status()).toBe(409);
-      await expect(dialog.getByRole('button', { name: /Retry failed services/ })).toBeEnabled();
-      await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+      for (const name of ['crowdb-access-server', 'crowdb-chunk-kv', 'crowdb-chunk-db', 'crowdb-disk-io']) await dialog.getByLabel(name, { exact: true }).uncheck();
+      await dialog.getByLabel('crowdb-disk-db RPC port').fill(String(diskdbBase));
+      await dialog.getByRole('button', { name: 'Create Node' }).click();
       await expect(dialog).toHaveCount(0);
-      await expect(aside.getByText('N-704', { exact: true })).toBeVisible({ timeout: 10_000 });
-      await expect.poll(async () => (await page.request.get(`${baseURL}/api/nodes/704/server`)).ok(), { timeout: 10_000 }).toBe(true);
-
+      await expect.poll(async () => (await page.request.get('/api/nodes/704/server')).ok(), { timeout: 10_000, intervals: [100] }).toBe(true);
+      await clusterInit(baseURL!, [704]);
+      await expect.poll(async () => {
+        const plans = await (await page.request.get('/api/service-plans')).json();
+        return plans['704'].steps.diskdb.state;
+      }, { timeout: 10_000, intervals: [100] }).toBe('failed');
+      const saved = (await (await page.request.get('/api/service-plans')).json())['704'];
+      expect(saved.overrides.diskdb.rpc_port).toBe(diskdbBase);
+      expect(saved.steps.diskdb.detail).toContain('crowdb-disk-db');
+      expect(saved.steps.diskdb.detail).toContain(String(diskdbBase));
+      await closeBlocker();
       await aside.getByText('N-704', { exact: true }).click({ button: 'right' });
-      await expect(page.getByRole('menuitem', { name: /deploy diskdb/i })).toBeVisible();
-
-      // Release the conflict, then retry DiskDB from the node context menu.
-      // The retry must only deploy DiskDB — it must not redeploy KV or
-      // attempt to recreate the node.
-      await destroyAndClose(blocker);
-
-      await page.getByRole('menuitem', { name: /deploy diskdb/i }).click();
-      const deployDialog = page.getByRole('dialog', { name: 'Deploy DiskDB' });
-      await expect(deployDialog).toBeVisible();
-      await deployDialog.getByLabel('RPC Port (crowdb-rpc)').fill(String(diskdbBase));
-      const retryResponse = page.waitForResponse(
-        (response) => response.url().includes('/api/nodes/704/diskdb/deploy'),
-        { timeout: 30_000 },
-      );
-      await deployDialog.getByRole('button', { name: /deploy/i }).click();
-      expect((await retryResponse).status()).toBe(201);
-      await expect(deployDialog).toHaveCount(0, { timeout: 10_000 });
-
-      // Verify the DiskDB server is registered and the node shows it.
-      const api = await apiContext(baseURL!);
-      try {
-        await expect.poll(async () => {
-          const response = await api.get('/api/servers');
-          if (!response.ok()) return false;
-          const servers = await response.json();
-          return servers.some((s: any) => s.node_id === 704 && String(s.service_type).toLowerCase() === 'diskdb');
-        }, { timeout: 30_000, intervals: [250] }).toBe(true);
-      } finally {
-        await api.dispose();
-      }
-      // Force a UI refresh — the dialog's onSuccess callback may have
-      // raced with the server registration. Clicking Refresh guarantees
-      // allServers is updated so DDB-704 appears in the sidebar.
-      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-      await expect(aside.getByText('DDB-704', { exact: true })).toBeVisible({ timeout: 30_000 });
+      await page.getByRole('menuitem', { name: /Deploy default services/i }).click();
+      const progress = page.getByRole('dialog', { name: 'Node 704 services' });
+      await progress.getByRole('button', { name: 'Retry failed services' }).click();
+      await expect.poll(async () => {
+        const plans = await (await page.request.get('/api/service-plans')).json();
+        return plans['704'].steps.diskdb.state;
+      }, { timeout: 10_000, intervals: [100] }).toBe('deployed');
+      expect(registrations).toHaveLength(1);
+      const nodes = await (await page.request.get('/api/nodes')).json();
+      expect(nodes.filter((node: any) => node.id === 704)).toHaveLength(1);
     } finally {
-      await destroyAndClose(blocker);
+      if (blocker.listening) await closeBlocker();
       await resetAll(baseURL!);
     }
   });

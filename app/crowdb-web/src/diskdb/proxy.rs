@@ -385,6 +385,22 @@ pub async fn http_hardware_capacity(
         .map_err(|e| err_502(format!("capacity_summary: {e}")))
 }
 
+/// Return the authoritative disk-group distribution across KV groups.
+///
+/// # Errors
+/// Returns `502` when group-0 cannot be read.
+pub async fn http_disk_group_bindings(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crowdb_protocol::KVGroupBindEntry>>, (StatusCode, Json<ErrorBody>)> {
+    let hw = build_hardware_client(&state)
+        .await
+        .ok_or_else(|| err_502("no group-0 endpoint; cluster not initialized"))?;
+    hw.list_binds()
+        .await
+        .map(Json)
+        .map_err(|e| err_502(format!("disk-group bindings: {e}")))
+}
+
 /// Query a specific instance directly (bypass the dg cache).
 async fn query_instance_direct(
     endpoint: &str,

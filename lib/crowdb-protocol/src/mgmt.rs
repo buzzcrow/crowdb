@@ -283,6 +283,12 @@ pub struct GroupStatus {
     pub leader_id: u64,
     pub local_replica_id: u64,
     pub force_classic: bool,
+    /// Admitted owner-fenced writes still awaiting a definite outcome/apply.
+    #[serde(default)]
+    pub owner_fence_active_writes: u64,
+    /// `DiskGroup` owner fences currently draining writes for handover.
+    #[serde(default)]
+    pub owner_fence_handovers: u64,
     #[serde(default)]
     pub status: StatusLevel,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

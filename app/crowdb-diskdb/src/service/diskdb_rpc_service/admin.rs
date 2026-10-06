@@ -101,7 +101,7 @@ impl DiskdbRpcService {
             vec![req_zone_index]
         };
 
-        let zone_loader = Arc::clone(&self.zone_loader);
+        let zone_loader = self.zone_loader.for_group(&dg);
         let conn_handle_usize = req.conn_handle as usize;
         let server = Arc::clone(server);
         self.rt.spawn(async move {
@@ -331,7 +331,7 @@ impl DiskdbRpcService {
             zone_indices
         };
 
-        let kv = Arc::clone(&self.kv);
+        let kv = self.kv.for_group(&dg);
         let metrics = Arc::clone(&self.metrics);
         let conn_handle_usize = req.conn_handle as usize;
         let server = Arc::clone(server);
@@ -480,7 +480,7 @@ impl DiskdbRpcService {
         for dg_id in dg_ids {
             if let Some(n) = self.container.get_disk_group(dg_id) {
                 let owns = {
-                    let disks = n.disks.read().unwrap();
+                    let disks = n.disk_snapshot();
                     disks.iter().any(|d| &d.disk_id == disk_id)
                 };
                 if owns {
@@ -497,7 +497,7 @@ impl DiskdbRpcService {
         for dg_id in dg_ids {
             if let Some(n) = self.container.get_disk_group(dg_id) {
                 let disk_clone = {
-                    let disks = n.disks.read().unwrap();
+                    let disks = n.disk_snapshot();
                     disks.iter().find(|d| &d.disk_id == disk_id).cloned()
                 };
                 if let Some(d) = disk_clone {
@@ -514,7 +514,7 @@ impl DiskdbRpcService {
         for dg_id in dg_ids {
             if let Some(n) = self.container.get_disk_group(dg_id) {
                 let dv_clone = {
-                    let disks = n.disks.read().unwrap();
+                    let disks = n.disk_snapshot();
                     disks
                         .iter()
                         .find(|d| &d.disk_id == disk_id)

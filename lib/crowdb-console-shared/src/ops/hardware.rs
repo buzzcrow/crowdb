@@ -19,8 +19,9 @@ mod authority;
 mod authority_storage;
 
 pub use authority_storage::{
-    add_disk_group_to_group0, add_disk_to_group0, list_disk_groups_from_group0, list_disks_from_group0,
-    remove_disk_from_group0, remove_disk_group_from_group0,
+    add_disk_group_bound_to_group0, add_disk_group_to_group0, add_disk_to_group0,
+    list_disk_groups_from_group0, list_disks_from_group0, remove_disk_from_group0,
+    remove_disk_group_from_group0,
 };
 
 /// Create a rack only after Group 0 confirms the exact record.

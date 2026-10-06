@@ -245,7 +245,7 @@ async fn recovery_strategy1_full_scan_rebuilds_bitmap() {
     let recovery_kv = Arc::new(cluster.make_ddb_kv_client());
     let recovery = ZoneLoader::new(Arc::clone(&recovery_kv), 4);
 
-    let disks = dg2.disks.read().unwrap().clone();
+    let disks = dg2.disk_snapshot().as_ref().clone();
     for disk in &disks {
         let zone_size_units = disk.disk_value.zone_size_units;
         let zone_count = disk.disk_value.zone_count;
@@ -282,9 +282,7 @@ async fn recovery_strategy1_full_scan_rebuilds_bitmap() {
     //    freed segments' bits are clear.
     for seg in &remaining_segments {
         let disk = dg2
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|d| d.disk_id == seg.disk_id.unwrap_or_default())
             .cloned()
@@ -300,9 +298,7 @@ async fn recovery_strategy1_full_scan_rebuilds_bitmap() {
     }
     for seg in &segments[0..1] {
         let disk = dg2
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|d| d.disk_id == seg.disk_id.unwrap_or_default())
             .cloned()
@@ -320,9 +316,7 @@ async fn recovery_strategy1_full_scan_rebuilds_bitmap() {
     // 7. Verify the recovered used_count = 2 (2 remaining busy blocks
     //    of 1 unit each).
     let total_used: u64 = dg2
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .map(|d| {
             d.zones
@@ -479,7 +473,7 @@ async fn recovery_strategy2_journal_replay() {
 
     // 4. Load via load_disk_group (strategy 2 with fallback).
     let disks: Vec<(DiskId, DiskValue)> = {
-        let disks_guard = dg2.disks.read().unwrap();
+        let disks_guard = dg2.disk_snapshot();
         disks_guard
             .iter()
             .map(|d| (d.disk_id, d.disk_value.clone()))
@@ -497,9 +491,7 @@ async fn recovery_strategy2_journal_replay() {
     // over-estimate — compaction is the sole bit-clearer).
     for seg in &remaining_segments {
         let disk = recovered_dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|d| d.disk_id == seg.disk_id.unwrap_or_default())
             .cloned()
@@ -515,9 +507,7 @@ async fn recovery_strategy2_journal_replay() {
     }
     for seg in &segments[0..1] {
         let disk = recovered_dg
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|d| d.disk_id == seg.disk_id.unwrap_or_default())
             .cloned()
@@ -535,9 +525,7 @@ async fn recovery_strategy2_journal_replay() {
     // 6. Total used = 3 (conservative over-estimate: 2 busy + 1 freed-
     // but-not-compacted). Compaction will correct this.
     let total_used: u64 = recovered_dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .map(|d| {
             d.zones
@@ -558,9 +546,7 @@ async fn recovery_strategy2_journal_replay() {
     let freed_disk_id = freed_seg.disk_id.unwrap();
     let freed_zone_idx = freed_seg.zone_index;
     let freed_disk = recovered_dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .find(|d| d.disk_id == freed_disk_id)
         .cloned()
@@ -589,9 +575,7 @@ async fn recovery_strategy2_journal_replay() {
     let compacted = freed_zone.compact_slot.load(std::sync::atomic::Ordering::Acquire) > 0;
     assert_eq!(freed_zone.usage_bits.is_set(freed_bit), !compacted);
     let total_used_after_compaction: u64 = recovered_dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .map(|d| {
             d.zones
@@ -664,9 +648,7 @@ async fn compaction_compact_zone_writes_snapshot_and_deletes_free_records() {
     // 3. Get the zone that has the free record.
     let disk_id = segment.disk_id.unwrap();
     let disk = dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .find(|d| d.disk_id == disk_id)
         .cloned()
@@ -812,9 +794,7 @@ async fn compaction_watermark_prevents_double_free_after_crashed_compaction() {
     // but DON'T delete the free record. This is the legacy two-op
     // crash window: snapshot written, free records not deleted.
     let disk = dg
-        .disks
-        .read()
-        .unwrap()
+        .disk_snapshot()
         .iter()
         .find(|d| d.disk_id == disk_id)
         .cloned()
@@ -1019,7 +999,7 @@ async fn recovery_persist_only_is_idempotent() {
 
     // 3. Collect the disk values for recovery.
     let disk_values: Vec<(DiskId, DiskValue)> = {
-        let disks = dg.disks.read().unwrap();
+        let disks = dg.disk_snapshot();
         disks.iter().map(|d| (d.disk_id, d.disk_value.clone())).collect()
     };
 
@@ -1036,7 +1016,7 @@ async fn recovery_persist_only_is_idempotent() {
     // u64 and sortable.
     let mut state1: Vec<(u64, u32, u32)> = Vec::new();
     {
-        let disks = dg1.disks.read().unwrap();
+        let disks = dg1.disk_snapshot();
         for disk in disks.iter() {
             let zones = disk.zones.load();
             for zone in zones.iter() {
@@ -1060,7 +1040,7 @@ async fn recovery_persist_only_is_idempotent() {
     // 7. Collect used_count per zone per disk from second recovery.
     let mut state2: Vec<(u64, u32, u32)> = Vec::new();
     {
-        let disks = dg2.disks.read().unwrap();
+        let disks = dg2.disk_snapshot();
         for disk in disks.iter() {
             let zones = disk.zones.load();
             for zone in zones.iter() {
@@ -1089,9 +1069,7 @@ async fn recovery_persist_only_is_idempotent() {
     let freed_offset = segments[0].unit_offset as u32;
     for (dg_ref, label) in [(&dg1, "first"), (&dg2, "second")] {
         let disk = dg_ref
-            .disks
-            .read()
-            .unwrap()
+            .disk_snapshot()
             .iter()
             .find(|d| d.disk_id == freed_disk_id)
             .cloned()
@@ -1169,7 +1147,7 @@ async fn preparatory_thread_produces_ready_zones() {
 
     // 3. Collect which zones have uncompacted free records (backlog > 0).
     let zones_with_backlog: Vec<(DiskId, u32)> = {
-        let disks = dg.disks.read().unwrap();
+        let disks = dg.disk_snapshot();
         let mut result = Vec::new();
         for disk in disks.iter() {
             let zones = disk.zones.load();
@@ -1201,7 +1179,7 @@ async fn preparatory_thread_produces_ready_zones() {
     // compacted_ready = true.
     let mut ready_count = 0u32;
     {
-        let disks = dg.disks.read().unwrap();
+        let disks = dg.disk_snapshot();
         for disk in disks.iter() {
             // Collect active zone indices.
             let active_indices: std::collections::HashSet<u32> = {
@@ -1228,7 +1206,7 @@ async fn preparatory_thread_produces_ready_zones() {
     // deleted by compaction).
     let mut all_clear = true;
     {
-        let disks = dg.disks.read().unwrap();
+        let disks = dg.disk_snapshot();
         for disk in disks.iter() {
             let active_indices: std::collections::HashSet<u32> = {
                 let active = disk.active_zone_context.load();

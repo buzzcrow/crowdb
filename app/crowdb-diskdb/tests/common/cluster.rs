@@ -292,6 +292,7 @@ impl KvCluster {
 
     /// Build a `HardwareClient` seeded with the group-0 leader endpoint.
     #[must_use]
+    #[allow(dead_code)] // Shared harness: only hardware tests use this helper.
     pub fn make_hardware_client(&self) -> HardwareClient {
         let kv = CrowdbKvClient::new(test_client_config(self.mgmt_endpoints.clone()));
         kv.seed_leader(0, 0, self.group0_leader_endpoint.clone());
@@ -300,6 +301,7 @@ impl KvCluster {
 
     /// Build a `ServiceRegistryClient` seeded with the group-0 leader.
     #[must_use]
+    #[allow(dead_code)] // Shared harness: only registry tests use this helper.
     pub fn make_service_registry_client(&self) -> ServiceRegistryClient {
         let kv = CrowdbKvClient::new(test_client_config(self.mgmt_endpoints.clone()));
         kv.seed_leader(0, 0, self.group0_leader_endpoint.clone());
@@ -422,7 +424,7 @@ pub async fn wait_for_disks_ready(
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(dg) = container.get_disk_group(dg_id) {
-            let disks = dg.disks.read().unwrap();
+            let disks = dg.disk_snapshot();
             let all_ready = disks.len() == expected_disks
                 && disks.iter().all(|d| {
                     d.effective_status() == HwStatus::Up
@@ -436,7 +438,7 @@ pub async fn wait_for_disks_ready(
             let dg = container.get_disk_group(dg_id);
             let status = match dg {
                 Some(dg) => {
-                    let disks = dg.disks.read().unwrap();
+                    let disks = dg.disk_snapshot();
                     disks
                         .iter()
                         .map(|d| {

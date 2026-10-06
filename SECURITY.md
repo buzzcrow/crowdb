@@ -14,7 +14,7 @@ If you discover a security vulnerability in CROWDB, please report it responsibly
 
 ## Scope
 
-CROWDB `0.2.1` is a development version for evaluation with disposable data.
+CROWDB `0.2.2` is a development version for evaluation with disposable data.
 There is no production support commitment, supported stable release series, or
 guaranteed response time. Security reports are reviewed by the maintainers.
 

@@ -7,10 +7,10 @@
 //! and the crowdb-rpc service handlers (`TriggerScan` / `GetScanStatus`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 
 use crowdb_protocol::common::DiskId;
 
@@ -72,7 +72,7 @@ impl ScanSummary {
 #[derive(Clone)]
 pub struct ScanState {
     /// Last completed scan summary.
-    last: Arc<RwLock<Option<ScanSummary>>>,
+    last: Arc<ArcSwapOption<ScanSummary>>,
     /// Set by `TriggerScan` — checked at the start of the next
     /// `run_cycle`. Cleared when the cycle starts.
     scan_requested: Arc<AtomicBool>,
@@ -84,7 +84,7 @@ impl ScanState {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            last: Arc::new(RwLock::new(None)),
+            last: Arc::new(ArcSwapOption::empty()),
             scan_requested: Arc::new(AtomicBool::new(false)),
             in_progress: Arc::new(AtomicBool::new(false)),
         }
@@ -116,12 +116,12 @@ impl ScanState {
     /// Read the last summary (cloned). `None` if no scan has run.
     #[must_use]
     pub fn last_summary(&self) -> Option<ScanSummary> {
-        self.last.read().unwrap().clone()
+        self.last.load_full().map(|summary| (*summary).clone())
     }
 
     /// Record a completed scan summary.
     fn record_summary(&self, summary: ScanSummary) {
-        *self.last.write().unwrap() = Some(summary);
+        self.last.store(Some(Arc::new(summary)));
     }
 
     /// Test-only setter to inject a summary.
@@ -181,7 +181,7 @@ impl ScannerTask {
             for (disk_id, zones) in disks_snapshot {
                 let active_zones = collect_active_zones(&dg, disk_id);
                 scan_one_disk(
-                    &ctx.kv,
+                    &Arc::new(ctx.kv.for_group(&dg)),
                     bind,
                     disk_id,
                     &zones,
@@ -234,7 +234,7 @@ impl ScannerTask {
 
 /// Snapshot all disks + zones in a disk-group for the scan loop.
 fn snapshot_disk_zones(dg: &crate::model::disk_group::DdbDiskGroup) -> Vec<(DiskId, ZoneList)> {
-    let disks = dg.disks.read().unwrap();
+    let disks = dg.disk_snapshot();
     disks
         .iter()
         .map(|d| {
@@ -252,7 +252,7 @@ fn snapshot_disk_zones(dg: &crate::model::disk_group::DdbDiskGroup) -> Vec<(Disk
 /// The `Arc`s keep the zones alive for the scan duration (the active
 /// set is RCU-published via `Arc` swap).
 fn collect_active_zones(dg: &crate::model::disk_group::DdbDiskGroup, disk_id: DiskId) -> Vec<Arc<DdbZone>> {
-    let disks = dg.disks.read().unwrap();
+    let disks = dg.disk_snapshot();
     let Some(disk) = disks.iter().find(|d| d.disk_id == disk_id) else {
         return Vec::new();
     };

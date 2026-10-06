@@ -34,7 +34,7 @@ impl KeepAlive {
                 return;
             }
             if disk.try_claim_zone_load() {
-                self.spawn_zone_load(dg, &disk, disk_value, bind, kv.clone());
+                self.spawn_zone_load(dg, &disk, disk_value, bind, kv);
             }
         } else {
             // No kv client (test mode) — transition Init → Up with
@@ -68,14 +68,14 @@ impl KeepAlive {
         disk: &Arc<DdbDisk>,
         disk_value: &DiskValue,
         bind: Bind,
-        kv: DdbKvClient,
+        kv: &DdbKvClient,
     ) {
         let disk_id = disk.disk_id;
         let zone_rotate_count = self.config.zone_rotate_count;
         let status_machine = self.status_machine.clone();
         let dg = Arc::clone(dg);
         let disk = Arc::clone(disk);
-        let kv = Arc::new(kv);
+        let kv = Arc::new(kv.for_group(&dg));
         let cas_retry_metric = self.cas_retry_metric.clone();
         let disk_value_owned = disk_value.clone();
         let hw = self.hw.clone();

@@ -77,7 +77,7 @@ async fn deploy_diskdb(
     node_id: u64,
     body: DeployDiskdbBody,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), (StatusCode, Json<ErrorBody>)> {
-    if !crate::mgmt::cluster_initialized(&state).await {
+    if !crate::services::dependencies::group0_ready(&state).await {
         return Err(err_409(
             "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting DiskDB",
         ));
@@ -106,14 +106,13 @@ async fn deploy_diskdb(
         })?
     };
 
-    // Look up the kv-server management URL(s) on this node so the
-    // diskdb can discover group-0. If no kv-server is deployed, the
-    // diskdb will fall back to the default seed port.
+    // A new node may not host Group 0. Discover authority through the
+    // cluster seeds rather than relying on that node's empty local KV store.
     let kv_server_mgmt_seeds: Vec<String> = {
         let cfg = state.config.read().unwrap();
         cfg.servers
             .iter()
-            .filter(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::PaxosKv)
+            .filter(|s| s.service_type == ServiceType::PaxosKv)
             .map(|s| s.url.clone())
             .collect()
     };
@@ -165,23 +164,7 @@ async fn deploy_diskdb(
         cfg.add_server(entry).map_err(|e| err_500(format!("{e}")))?;
     }
     state.persist().map_err(|e| err_500(format!("{e}")))?;
-    // Refresh the monitor cache so health badges reflect the new DDB
-    // process. The process may not be listening yet, so retry a few
-    // times with short delays until the probe succeeds.
-    crate::mgmt::refresh_node_cache(&state, node_id).await;
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        for _ in 0..10 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            crate::mgmt::refresh_node_cache(&state_clone, node_id).await;
-            let snap = state_clone.monitor_cache.snapshot().await;
-            if let Some(rec) = snap.get(&node_id) {
-                if rec.health == crowdb_console_shared::cluster::NodeHealth::Up {
-                    break;
-                }
-            }
-        }
-    });
+    refresh_started_diskdb(&state, node_id);
 
     Ok((
         StatusCode::CREATED,
@@ -236,13 +219,12 @@ async fn restart_diskdb(
             .map_err(|e| err_500(format!("stop_pid (diskdb restart): {e}")))?;
     }
 
-    // Look up the kv-server management URL(s) on this node so the
-    // diskdb can discover group-0 after restart.
+    // Group 0 can live on other nodes, including after this node restarts.
     let kv_server_mgmt_seeds: Vec<String> = {
         let cfg = state.config.read().unwrap();
         cfg.servers
             .iter()
-            .filter(|s| s.node_id == Some(node_id) && s.service_type == ServiceType::PaxosKv)
+            .filter(|s| s.service_type == ServiceType::PaxosKv)
             .map(|s| s.url.clone())
             .collect()
     };
@@ -306,7 +288,7 @@ async fn restart_diskdb(
         cfg.add_server(new_entry).map_err(|e| err_500(format!("{e}")))?;
     }
     state.persist().map_err(|e| err_500(format!("{e}")))?;
-    refresh_started_diskdb(&state, node_id).await;
+    refresh_started_diskdb(&state, node_id);
 
     Ok(Json(DiskdbDeployResult {
         node_id,
@@ -469,13 +451,12 @@ fn diskdb_restart_inputs(
     Ok((entry, node))
 }
 
-async fn refresh_started_diskdb(state: &AppState, node_id: u64) {
-    // Refresh the monitor cache so health badges reflect the restarted
-    // DDB process. The process may not be listening yet, so retry a few
-    // times with short delays until the probe succeeds.
-    crate::mgmt::refresh_node_cache(state, node_id).await;
+fn refresh_started_diskdb(state: &AppState, node_id: u64) {
+    // The service readiness probe already succeeded. A broader node probe
+    // may time out on an empty local KV store; it must not hold up deployment.
     let state_clone = state.clone();
     tokio::spawn(async move {
+        crate::mgmt::refresh_node_cache(&state_clone, node_id).await;
         for _ in 0..10 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             crate::mgmt::refresh_node_cache(&state_clone, node_id).await;

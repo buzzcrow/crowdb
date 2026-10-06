@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { getApiBase } from '../api';
 import { readJson } from '../access/native';
 import { Workbench, JsonView, inputClass, buttonClass } from '../access/Workbench';
@@ -14,6 +14,8 @@ import type { SelectedEntity } from '../contexts/SelectionContext';
 import { Domain, type Rack, type Node } from '../types';
 import type { ServerSummary } from '../api';
 import { ChunkHierarchy } from './ChunkHierarchy';
+import { useChunkTargets } from './useChunkTargets';
+import { DEFAULT_DC_NAME } from '../data/defaultDatacenter';
 
 interface Segment { disk_id: { high: string | number; low: string | number } | null; zone_index: number; unit_offset: string | number; unit_count: number; allocation_ts: string | number }
 interface Strip { strip_sequence: number; chunk_offset: number; capacity: number; unit_kb: number; sealed_length: number; strip_type: number; strip: { MirrorStrip?: { segments: Segment[] }; EcStrip?: { segments: Segment[]; data_num: number; code_num: number; ec_state: number } } | null; unavailable_segments: Segment[]; placement_repair_required: boolean; placement_assessment: unknown }
@@ -44,32 +46,11 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
   const { checkpoint } = useDomain();
   const { selectionForDomain, selectEntity } = useSelection();
   const ownership = selectionForDomain(Domain.Chunk);
-  const showOwnership = ownership && (['Datacenter', 'Rack', 'Node', 'Store', 'Group'].includes(ownership.type) ||
-    ownership.type === 'Server' && ['paxos-kv', 'chunkdb'].includes(ownership.serviceType ?? ''));
-  const pxgroupTargets = useMemo(() => {
-    if (!ownership) return [];
-    if (ownership.type === 'Group') {
-      const storeId = Number(ownership.parentIds?.store_id);
-      const groupId = Number(ownership.id);
-      return Number.isFinite(storeId) && Number.isFinite(groupId) ? [{ storeId, groupId }] : [];
-    }
-    if (ownership.type === 'Store') {
-      const store = stores.find(candidate => String(candidate.store_id) === String(ownership.id));
-      return store?.groups.map(group => ({ storeId: Number(store.store_id), groupId: Number(group.group_id) }))
-        .filter(target => Number.isFinite(target.storeId) && Number.isFinite(target.groupId)) ?? [];
-    }
-    const nodeIds = ownership.type === 'Node'
-      ? [Number(ownership.id)]
-      : ownership.type === 'Rack'
-        ? nodes.filter(node => String(node.rack_id) === String(ownership.id)).map(node => Number(node.id))
-        : ownership.type === 'Datacenter'
-          ? nodes.map(node => Number(node.id))
-            : [];
-    if (!nodeIds.length && ownership.type !== 'Datacenter') return [];
-    return stores.flatMap(store => store.groups
-      .filter(group => ownership.type === 'Datacenter' || group.replicas.some(replica => nodeIds.includes(Number(replica.node_id))))
-      .map(group => ({ storeId: store.store_id, groupId: group.group_id })));
-  }, [nodes, ownership, stores]);
+  const hasOwnershipTarget = servers.some(server => server.service_type === 'chunkdb' && server.pid) || stores.some(store => store.groups.some(group => group.replicas.length > 0));
+  const ownershipTarget: SelectedEntity = ownership ?? { domain: Domain.Chunk, type: 'Datacenter', id: 'datacenter', name: DEFAULT_DC_NAME };
+  const showOwnership = hasOwnershipTarget && (['Datacenter', 'Rack', 'Node', 'Store', 'Group'].includes(ownershipTarget.type) ||
+    ownershipTarget.type === 'Server' && ['paxos-kv', 'chunkdb'].includes(ownershipTarget.serviceType ?? ''));
+  const pxgroupTargets = useChunkTargets(ownership, nodes, stores);
   const isScopedSelection = ['Datacenter', 'Rack', 'Node', 'Store', 'Group'].includes(ownership?.type ?? '');
   const isPxgroupMode = isScopedSelection && pxgroupTargets.length > 0;
   const isEmptyPxgroupScope = isScopedSelection && pxgroupTargets.length === 0;
@@ -133,25 +114,30 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
       const responses = await Promise.all(pxgroupTargets.map(async ({ storeId, groupId }) => {
         const scope = `${storeId}/${groupId}`;
         const startAfter = reset ? undefined : pxgroupStarts.current[scope]?.[pageIndex];
-        const params = new URLSearchParams({ limit: '10' });
+        if (pageIndex > 0 && !startAfter) return { scope, items: [], next: undefined };
+        const params = new URLSearchParams({ limit: '10', ...(kind ? { chunk_type: kind } : {}) });
         if (startAfter) params.set('start_after', startAfter);
         const result = await readJson<{ items: Array<Omit<PxgroupItem, 'store_id' | 'group_id'> >; next_start_after?: string }>(
           await fetch(`${getApiBase()}/stores/${storeId}/groups/${groupId}/chunks?${params}`, { signal: request.signal }),
         );
-        pxgroupStarts.current[scope] ??= [];
-        pxgroupStarts.current[scope][pageIndex + 1] = result.next_start_after;
-        return { items: result.items.map(item => ({ ...item, store_id: Number(storeId), group_id: Number(groupId) })), hasNext: Boolean(result.next_start_after) };
+        return { scope, items: result.items.map(item => ({ ...item, store_id: Number(storeId), group_id: Number(groupId) })), next: result.next_start_after };
       }));
       if (version === revision.current) {
+        if (reset) pxgroupStarts.current = {};
+        for (const response of responses) {
+          const starts = (pxgroupStarts.current[response.scope] ?? []).slice(0, pageIndex + 1);
+          starts[pageIndex + 1] = response.next;
+          pxgroupStarts.current[response.scope] = starts;
+        }
         setPxgroupRows(responses.flatMap(response => response.items));
-        setPxgroupNext(responses.some(response => response.hasNext));
+        setPxgroupNext(responses.some(response => response.next));
         setPxgroupPage(pageIndex);
-        loadedPxgroupScope.current = JSON.stringify({ targets: pxgroupTargets, page: pageIndex });
+        loadedPxgroupScope.current = JSON.stringify({ targets: pxgroupTargets, kind, page: pageIndex });
       }
     } catch (queryError) {
       if (version === revision.current && (queryError as Error).name !== 'AbortError') setError(String(queryError));
     } finally { if (version === revision.current) setBusy(false); }
-  }, [pxgroupTargets]);
+  }, [pxgroupTargets, kind]);
   const inspect = useCallback(async (id: string, record = true) => {
     if (record) checkpoint();
     controller.current?.abort();
@@ -204,15 +190,15 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
         setLookup(openRequest.id); setRows([]); setPage(null);
         void inspect(openRequest.id, false);
       } else if (isPxgroupMode) {
-        if (loadedPxgroupScope.current !== JSON.stringify({ targets: pxgroupTargets, page: pxgroupPage })) void queryPxgroups(0, true);
+        if (loadedPxgroupScope.current !== JSON.stringify({ targets: pxgroupTargets, kind, page: pxgroupPage })) void queryPxgroups(0, true);
       } else if (isPkvSelection || isEmptyPxgroupScope) {
         setDetail(null);
         setPxgroupRows([]);
         loadedPxgroupScope.current = '';
-      } else if (loadedKind.current !== kind) void query();
+      } else if (loadedKind.current !== kind || !page) void query();
     }
     return () => { controller.current?.abort(); ++revision.current; setBusy(false); };
-  }, [active, kind, query, queryPxgroups, inspect, openRequest, restoreRevision, isPxgroupMode, pxgroupPage, pxgroupTargets]);
+  }, [active, kind, query, queryPxgroups, inspect, openRequest, restoreRevision, isPxgroupMode, isPkvSelection, isEmptyPxgroupScope, pxgroupPage, pxgroupTargets]);
   const chunk = detail?.chunk;
   const strip = chunk?.strips.find(strip => strip.strip_sequence === stripSequence);
   const ordered = [...(chunk?.strips ?? [])].sort((a, b) => a.chunk_offset - b.chunk_offset || a.strip_sequence - b.strip_sequence);
@@ -220,6 +206,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
   const layout = (strip: Strip) => strip.strip?.MirrorStrip ? `Mirror ×${strip.strip.MirrorStrip.segments.length}` : strip.strip?.EcStrip ? `EC ${strip.strip.EcStrip.data_num}+${strip.strip.EcStrip.code_num} · ${strip.strip.EcStrip.ec_state === 1 ? 'Parity' : 'No parity'}` : `Unknown layout (${strip.strip_type})`;
   const visibleRows = rows.filter(value => `${value.id_hex} ${kindName(value.chunk_type)} ${states[value.state]}`.toLowerCase().includes(filter.toLowerCase()));
   const fields = (values: Record<string, unknown>) => <dl className="chunk-properties">{Object.entries(values).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value == null ? 'Unknown' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>;
+  const typeSelector = <select aria-label="Chunk type" className={inputClass} value={kind} onChange={event => { checkpoint(); setKind(event.target.value); setFilter(''); }}><option value="">All types</option>{kinds.map(type => <option key={type.value} value={type.value}>{type.label}</option>)}</select>;
   return <Workbench showActivity={false} sidebar={<ChunkHierarchy stores={stores} active={active} racks={racks} nodes={nodes} servers={servers} />} detail={chunk && detail ? <section aria-label="Chunk properties" aria-busy={detailBusy} className="tw-space-y-3">
     <h3 className="tw-font-semibold">{strip ? blockIndex === null ? `Strip sequence ${strip.strip_sequence}` : `${layout(strip)} · Block ${blockIndex + 1}` : 'Chunk properties'}</h3>
     {strip ? <>
@@ -238,19 +225,18 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
     </> : fields({ ID: chunk.id_hex, Type: kindName(chunk.chunk_type), State: states[chunk.state], 'Capacity (KiB)': chunk.capacity, 'Sealed (KiB)': chunk.sealed_length, 'Acknowledged (bytes)': chunk.acknowledged_cursor, Revision: chunk.modify_ts, 'Writer epoch': chunk.writer_epoch, Strips: chunk.strips.length })}
     {fields({ 'Layout observed': new Date(detail.observed_at_ms).toLocaleTimeString(), 'Placement observed': new Date(detail.placement_observed_at_ms).toLocaleTimeString(), 'Validity (ms)': detail.layout_validity_ms })}
   </section> : undefined}>
-    {showOwnership && ownership && <OwnershipPanel active={active} selection={ownership} nodes={nodes} servers={servers} stores={stores} onSelect={selectEntity} />}
+    {showOwnership && <OwnershipPanel active={active} selection={ownershipTarget} nodes={nodes} servers={servers} stores={stores} onSelect={selectEntity} />}
+    <div hidden={isPkvSelection} className="chunk-toolbar"><h1 className="tw-text-lg tw-font-semibold">{isScopedSelection ? 'Chunk keys' : 'Chunks'}</h1>
+      {typeSelector}
+      {isScopedSelection ? <span className="tw-text-xs tw-text-muted">{pxgroupTargets.length} groups</span> : <input aria-label="Filter current window" placeholder="Filter this window" className={inputClass} value={filter} onChange={event => setFilter(event.target.value)} />}
+      <button className={buttonClass} disabled={busy || isEmptyPxgroupScope} onClick={() => isPxgroupMode ? void queryPxgroups(0, true) : void query()}>Refresh chunks</button>
+    </div>
     {isPxgroupMode && <section aria-label="Pxgroup chunks" className="tw-space-y-3">
-      <div className="chunk-toolbar"><h1 className="tw-text-lg tw-font-semibold">Chunk keys</h1><span className="tw-text-xs tw-text-muted">{pxgroupTargets.length} groups</span><button className={buttonClass} disabled={busy} onClick={() => { pxgroupStarts.current = {}; void queryPxgroups(0, true); }}>Refresh chunks</button></div>
       {busy && <p role="status" className="tw-text-xs tw-text-muted">Scanning Paxos groups…</p>}
       <div className="chunk-list"><table className="tw-w-full tw-text-sm" aria-label="Pxgroup chunks"><thead><tr><th>Store</th><th>Group</th><th>Chunk key</th><th>Type</th><th>Status</th><th>Strips</th><th>Size</th><th>Sealed</th></tr></thead><tbody>{pxgroupRows.map(item => <tr key={`${item.store_id}-${item.group_id}-${item.key_hex}`}><td>{item.store_id}</td><td>{item.group_id}</td><td className="tw-font-mono tw-text-xs" title={item.key_hex}><button className="tw-font-mono tw-text-accent tw-text-left" disabled={busy} onClick={() => void inspect(item.chunk_id)}>{item.chunk_id}</button></td><td>{item.chunk_type == null ? '—' : kindName(item.chunk_type)}</td><td>{item.state == null ? '—' : states[item.state] ?? `Unknown (${item.state})`}</td><td>{item.strip_count ?? '—'}</td><td>{formatKiB(item.capacity)}</td><td>{formatKiB(item.sealed_length)}</td></tr>)}</tbody></table></div>
       {!busy && !pxgroupRows.length && <p className="tw-text-sm tw-text-muted">No records in the selected Paxos groups.</p>}
       <nav aria-label="Pxgroup chunk pages" className="tw-flex tw-items-center tw-gap-3"><button className={buttonClass} disabled={busy || pxgroupPage === 0} onClick={() => void queryPxgroups(pxgroupPage - 1)}>Previous</button><span className="tw-text-xs tw-text-muted">Page {pxgroupPage + 1} · {pxgroupRows.length} chunk keys</span><button className={buttonClass} disabled={busy || !pxgroupNext} onClick={() => void queryPxgroups(pxgroupPage + 1)}>Next</button></nav>
     </section>}
-    <div hidden={isScopedSelection || isPkvSelection} className="chunk-toolbar"><h1 className="tw-text-lg tw-font-semibold">Chunks</h1>
-      <select aria-label="Chunk type" className={inputClass} value={kind} onChange={event => { checkpoint(); setKind(event.target.value); setFilter(''); }}><option value="">All types</option>{kinds.map(type => <option key={type.value} value={type.value}>{type.label}</option>)}</select>
-      <input aria-label="Filter current window" placeholder="Filter this window" className={inputClass} value={filter} onChange={event => setFilter(event.target.value)} />
-      <button className={buttonClass} disabled={busy} onClick={() => void query()}>Refresh chunks</button>
-    </div>
     <form hidden={isScopedSelection || isPkvSelection} className="chunk-toolbar" aria-label="Exact chunk lookup" onSubmit={event => { event.preventDefault(); void inspect(lookup.toLowerCase()); }}>
       <label className="tw-flex tw-items-center tw-gap-2 tw-text-xs">Exact Chunk ID<input className={`${inputClass} tw-font-mono`} style={{ width: '34ch' }} required pattern="[0-9a-fA-F]{32}" value={lookup} onChange={event => setLookup(event.target.value)} placeholder="32-digit chunk ID" /></label>
       <button className={buttonClass} disabled={busy}>Lookup ID</button>

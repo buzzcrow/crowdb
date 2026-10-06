@@ -51,8 +51,7 @@ test.describe('flow · full chain', () => {
       await expect(page.getByRole('dialog')).toBeVisible();
       await page.getByLabel('Node ID').fill('77');
       await page.getByLabel('Host').fill('127.0.0.1');
-      await page.getByLabel('Enable CrowDB Storage on this node').uncheck();
-      await page.getByLabel('Enable DiskDB on this node').uncheck();
+      await page.getByLabel('Configure services on this node').uncheck();
       await page.getByRole('button', { name: /create node/i }).click();
       await expect(aside.getByText('N-77', { exact: true })).toBeVisible({ timeout: 3_000 });
     });

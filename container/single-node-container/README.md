@@ -26,6 +26,37 @@ pixi run build-single-node-container
 pixi run test-single-node-container
 ```
 
+For an interactive local container workflow, use:
+
+```sh
+pixi run start-container
+pixi run inject-container
+pixi run clean-container
+```
+
+`start-container` builds the image, starts `crowdb-single-node`, exposes
+ports 9090–9093 on the container network, waits for readiness, and prints client
+credentials. Docker creates an anonymous data volume unless configured
+otherwise. `inject-container` loads TPC-H SF1 into Iceberg and copies its
+Parquet files to the container's S3 endpoint. The loader retains its data and
+reports under `.crowdb-runtime/artifacts/tpc-loader/`. `clean-container`
+removes the named container, other exited containers created from the selected
+image, and all untagged images that are not referenced by any container. Set
+`CROWDB_CONTAINER_IMAGE` or `CROWDB_CONTAINER_NAME` to select another image or
+container name.
+
+`inject-container` discovers running CROWDB containers by their image metadata
+or CROWDB image name. If exactly one is running, it uses that container. With
+multiple candidates it lists their IDs, names, images and IP addresses and exits
+without loading data. Select one explicitly (also supported through
+`CROWDB_CONTAINER_NAME`):
+
+```sh
+pixi run inject-container crowdb-single-node
+pixi run inject-container 671a2e13b8ba
+pixi run inject-container 172.17.0.2
+```
+
 - Compilation runs on the host with the locked repository dependencies. Cargo
   and CMake reuse existing build outputs; npm uses its local download cache.
 - The build stages release programs, their required shared libraries, UI and
@@ -41,7 +72,7 @@ pixi run test-single-node-container
 
 `pixi run stage-single-node-container` produces the runtime directory without
 building a Docker image. Work on a `release/<version>` branch whose `VERSION`
-matches the branch name, such as `release/0.2.1`. After pushing each candidate
+matches the branch name, such as `release/0.2.2`. After pushing each candidate
 commit, select that branch in the GitHub Actions manual run form, or dispatch
 it from a clean checkout that matches the remote branch:
 
