@@ -5,7 +5,7 @@
 
 use crate::metadata::{
     BucketId, BucketNameRecord, ChunkKvMetadataStore, MetadataKey, MetadataRecordError, MetadataStoreError,
-    PutIfAbsentOutcome, TenantId,
+    ObjectRecord, PutIfAbsentOutcome, TenantId,
 };
 
 const LIST_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -120,10 +120,13 @@ pub async fn list_buckets(
         .await?;
     values
         .into_iter()
-        .map(|value| BucketNameRecord::decode(&value.value))
-        .filter_map(|record| match record {
+        // Object keys can share this legacy interval when their random bucket
+        // ID starts with a low byte. Decode them as objects before treating a
+        // failed bucket decode as corrupt bucket metadata.
+        .filter_map(|value| match BucketNameRecord::decode(&value.value) {
             Ok(record) if !record.tombstone => Some(Ok(record)),
             Ok(_) => None,
+            Err(_) if ObjectRecord::decode(&value.value).is_ok() => None,
             Err(error) => Some(Err(error.into())),
         })
         .collect()
