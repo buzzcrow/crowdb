@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R213** — Bump this line in the same commit when adding a new item.
+**Next R number: R214** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -87,6 +87,13 @@ independent deferred work.
   complete; ORC does not block container or client-ecosystem acceptance.
 
 ### High Priority
+
+- **[R213](R213-chunkdb-dynamic-service-ownership.md)** — dynamic ChunkDB service
+  slot ownership — Area: chunkdb / KV / Group 0 / Console — High complexity.
+  Durable incarnation/generation fencing, resumable handoff, failed-owner
+  takeover and bounded slot balance; storage maps and payload remain unchanged.
+  Selected for implementation. Fixed policy remains available; R103 retains
+  independent storage-slot migration.
 
 - **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
   tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
