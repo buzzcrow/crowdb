@@ -52,6 +52,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
     }
   });
 
+  // Baseline: 17.1s (2026-10-06)
   test('creates three PKV and DiskDB node plans and keeps derived listeners disjoint', async ({ page, baseURL }) => {
     test.setTimeout(120_000);
     await step('todo-ui: reset', () => resetAll(baseURL!));
@@ -106,8 +107,13 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
           const servers = await response.json();
           return NODE_IDS.every(nodeId => servers.some((server: any) => server.node_id === nodeId && server.service_type === 'paxos-kv' && server.pid));
         }, { timeout: 10_000, intervals: [100] }).toBe(true);
-        const queued = await (await api.get('/api/service-plans')).json();
-        for (const nodeId of NODE_IDS) expect(queued[nodeId].steps.diskdb.state).toBe('waiting');
+        // PKV registration precedes the persisted dependency state for DiskDB.
+        await expect.poll(async () => {
+          const response = await api.get('/api/service-plans');
+          expect(response.ok()).toBe(true);
+          const queued = await response.json();
+          return NODE_IDS.map(nodeId => queued[nodeId]?.steps.diskdb.state);
+        }, { intervals: [100] }).toEqual(NODE_IDS.map(() => 'waiting'));
         await clusterInit(baseURL!, NODE_IDS);
         await step('todo-ui: verify service registrations and listeners', async () => {
           await expect.poll(async () => {
