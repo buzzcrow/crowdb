@@ -420,15 +420,7 @@ impl KvRpcService {
                 )
             });
             let resp = if let Some((precondition_key, expected_revision)) = precondition {
-                if precondition_key.as_ref() != key || client_id == 0 {
-                    crate::rpc::KvResponse::cas_error(
-                        crate::rpc::KvErrorCode::KvErrorCasFailed,
-                        0,
-                        "invalid conditional put precondition",
-                        request_id,
-                        request_create_ms,
-                    )
-                } else {
+                if owner_fence::valid_conditional_put(group_id, client_id, key, &precondition_key, value) {
                     let payload = PxKvStore::encode_kv_payload(&[(key, Some(value))]);
                     store
                         .propose_cas_and_respond(
@@ -442,6 +434,14 @@ impl KvRpcService {
                             request_create_ms,
                         )
                         .await
+                } else {
+                    crate::rpc::KvResponse::cas_error(
+                        crate::rpc::KvErrorCode::KvErrorCasFailed,
+                        0,
+                        "invalid conditional put precondition",
+                        request_id,
+                        request_create_ms,
+                    )
                 }
             } else {
                 store
@@ -720,22 +720,7 @@ impl KvRpcService {
             let resp = if let Some(response) = owner_fence::write(&store, &fb_req, &items).await {
                 response
             } else if let Some((precondition_key, expected_revision)) = precondition {
-                if client_id == 0
-                    || !items.iter().any(|item| item.key == precondition_key)
-                    || items.iter().any(|item| {
-                        item.key
-                            .starts_with(crate::cluster::group_owner_fence::OWNER_PREFIX)
-                            && item.key != precondition_key
-                    })
-                {
-                    crate::rpc::KvResponse::cas_error(
-                        crate::rpc::KvErrorCode::KvErrorCasFailed,
-                        0,
-                        "conditional batch must mutate its precondition key",
-                        request_id,
-                        request_create_ms,
-                    )
-                } else {
+                if owner_fence::valid_conditional_batch(group_id, client_id, &precondition_key, &items) {
                     let payload = PxKvStore::encode_kv_batch_items(&items);
                     store
                         .propose_cas_and_respond(
@@ -749,6 +734,14 @@ impl KvRpcService {
                             request_create_ms,
                         )
                         .await
+                } else {
+                    crate::rpc::KvResponse::cas_error(
+                        crate::rpc::KvErrorCode::KvErrorCasFailed,
+                        0,
+                        "conditional batch must mutate its precondition key",
+                        request_id,
+                        request_create_ms,
+                    )
                 }
             } else {
                 store

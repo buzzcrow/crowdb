@@ -3,10 +3,12 @@
 
 //! Fixed chunk-ID hash space. Never derive placement from the number of owners.
 
+mod authority;
 mod bitmap;
 mod bootstrap;
 mod map;
 
+pub use authority::{ChunkServiceIncarnation, ChunkSlotAuthority, ChunkSlotAuthorityError};
 pub use bitmap::ChunkSlotBitmap;
 pub use bootstrap::ChunkSlotBootstrap;
 pub use map::{ChunkSlotBinding, ChunkSlotMap, ChunkSlotMapHead, ChunkSlotOwner, ChunkStorageGroup};

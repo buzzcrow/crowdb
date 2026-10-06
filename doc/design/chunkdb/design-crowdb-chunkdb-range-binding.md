@@ -19,6 +19,7 @@ and fixed-layout operating limits.
 - [4. Client and storage routing](#4-client-and-storage-routing)
 - [5. Maintenance authority](#5-maintenance-authority)
 - [6. Costs and operating limits](#6-costs-and-operating-limits)
+- [7. Data-group execution fences](#7-data-group-execution-fences)
 
 ## 1. Slot identity and invariants
 
@@ -56,8 +57,8 @@ Group 0 contains two independent map namespaces:
 
 Each binding contains owner identity, generation, and a 1024-bit bitmap.
 JSON encoding adds metadata overhead; the raw bitmap is exactly 128 bytes.
-There are no per-slot or per-contiguous-range records. Service endpoints are
-registered separately and can refresh after same-instance restart.
+These routing maps have no per-slot or per-contiguous-range records. Service
+endpoints are registered separately and can refresh after same-instance restart.
 
 ## 3. Publication and startup
 
@@ -146,3 +147,35 @@ need task-authority handoff; storage changes must move complete chunk/task/
 index/reservation state before ownership cutover. Neither operation implicitly
 moves DiskIO payload. Chunk-kv is not a ChunkDB metadata backend; its ordinary
 batch API does not supply the required conditional multi-record atomicity.
+
+## 7. Data-group execution fences
+
+KV supports a separate execution fence at `/chunkdb/ownership-fence/<slot>`
+inside the selected data group. The slot segment uses canonical decimal in
+0..1023; slot fence operations reject group zero. This namespace is independent
+of routing-map records in group 0 and of DiskDB's ownership namespace.
+Fixed-policy ChunkDB does not initialize or
+use these execution fences.
+
+`ChunkSlotAuthority` identifies an instance, a nonzero 128-bit process
+incarnation and a nonzero per-slot generation. A same-ID process restart has
+a distinct incarnation. The canonical comparison value has exactly 33 bytes:
+version 1, big-endian instance ID, incarnation bytes and big-endian generation.
+Unknown versions, zero identity fields and malformed keys are rejected. A
+routing-map generation and a slot-authority generation are separate values.
+
+`batch_write_owned` compares the applied authority without mutating its fence
+record. Business-record revision CAS remains independent and must be supplied
+for conditional chunk/task transitions. Ordinary Put, Delete and Batch cannot
+mutate either reserved ownership namespace. A conditional ownership batch
+may change only the reserved key used as its revision precondition; slot
+fences cannot be deleted or replaced by malformed authority values.
+
+Owner writes use concurrent atomic admission for one fence key and leader
+tenure. A fence CAS closes that admission, drains previously admitted work
+through apply, and then publishes the changed value. Other slots retain their
+own admissions. Cancelling the caller does not release a pending proposal;
+an unresolved proposal blocks handover and readiness until the leader's
+recovery barrier resolves it. Topology replacement preserves the admission
+state, while a new leader tenure requires its own recovery barrier. Delayed
+writes retaining the old comparison value fail after fence publication.

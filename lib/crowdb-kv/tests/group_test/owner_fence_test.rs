@@ -17,13 +17,13 @@ fn encode(key: &Bytes, value: &[u8]) -> Vec<u8> {
     payload
 }
 
-async fn owner_group() -> (Arc<PxGroup>, Bytes) {
+async fn owner_group(key: &[u8]) -> (Arc<PxGroup>, Bytes) {
     let group = Arc::new(PxGroup::new(
         1,
         PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
     ));
     group.set_self_weak();
-    let key = Bytes::from_static(b"/diskdb/ownership-fence/1/1/1");
+    let key = Bytes::copy_from_slice(key);
     assert!(matches!(
         group
             .propose_cas(encode(&key, b"old"), key.clone(), 0, 1, 1)
@@ -33,9 +33,8 @@ async fn owner_group() -> (Arc<PxGroup>, Bytes) {
     (group, key)
 }
 
-#[tokio::test]
-async fn concurrent_owner_writes_do_not_advance_or_contend_on_the_fence() {
-    let (group, fence) = owner_group().await;
+async fn concurrent_owner_writes_do_not_advance_or_contend_on_the_fence(key: &[u8]) {
+    let (group, fence) = owner_group(key).await;
     let writes = futures::future::join_all((1..=32).map(|id| {
         let group = group.clone();
         let fence = fence.clone();
@@ -69,9 +68,8 @@ async fn concurrent_owner_writes_do_not_advance_or_contend_on_the_fence() {
     );
 }
 
-#[tokio::test]
-async fn handover_drains_old_writes_even_when_the_claim_caller_is_cancelled() {
-    let (group, fence) = owner_group().await;
+async fn handover_drains_old_writes_even_when_the_claim_caller_is_cancelled(key: &[u8]) {
+    let (group, fence) = owner_group(key).await;
     let admitted = group.hold_owner_write_for_tests(fence.clone());
     let claim = {
         let group = group.clone();
@@ -147,9 +145,8 @@ async fn handover_drains_old_writes_even_when_the_claim_caller_is_cancelled() {
     ));
 }
 
-#[tokio::test]
-async fn owner_admission_preserves_business_record_cas() {
-    let (group, fence) = owner_group().await;
+async fn owner_admission_preserves_business_record_cas(key: &[u8]) {
+    let (group, fence) = owner_group(key).await;
     let record = Bytes::from_static(b"chunk-info");
     let writes = futures::future::join_all((1..=8).map(|id| {
         let group = group.clone();
@@ -182,9 +179,8 @@ async fn owner_admission_preserves_business_record_cas() {
     )));
 }
 
-#[tokio::test]
-async fn topology_replacement_preserves_the_handover_barrier() {
-    let (prior, fence) = owner_group().await;
+async fn topology_replacement_preserves_the_handover_barrier(key: &[u8]) {
+    let (prior, fence) = owner_group(key).await;
     let admitted = prior.hold_owner_write_for_tests(fence.clone());
     let mut replacement = PxGroup::new(1, PxLocalReplica::new(1, PxLocalReplicaRole::Leader));
     replacement.inherit_local_state_from(&prior);
@@ -227,10 +223,9 @@ async fn topology_replacement_preserves_the_handover_barrier() {
     );
 }
 
-#[tokio::test]
-async fn new_leader_tenure_does_not_reuse_a_closed_old_admission() {
+async fn new_leader_tenure_does_not_reuse_a_closed_old_admission(key: &[u8]) {
     use crowdb_kv::cluster::group_election::LeaderElection;
-    let (group, fence) = owner_group().await;
+    let (group, fence) = owner_group(key).await;
     let admitted = group.hold_owner_write_for_tests(fence.clone());
     let old_claim = {
         let group = group.clone();
@@ -275,9 +270,8 @@ async fn new_leader_tenure_does_not_reuse_a_closed_old_admission() {
     ));
 }
 
-#[tokio::test]
-async fn unresolved_old_proposal_blocks_a_topology_replacement_from_claiming_ownership() {
-    let (prior, fence) = owner_group().await;
+async fn unresolved_old_proposal_blocks_a_topology_replacement_from_claiming_ownership(key: &[u8]) {
+    let (prior, fence) = owner_group(key).await;
     let proposal = prior.hold_owner_proposal_for_tests(fence.clone());
     let mut replacement = PxGroup::new(1, PxLocalReplica::new(1, PxLocalReplicaRole::Leader));
     replacement.inherit_local_state_from(&prior);
@@ -319,3 +313,39 @@ async fn unresolved_old_proposal_blocks_a_topology_replacement_from_claiming_own
         ProposeResult::OutcomeUnknown
     ));
 }
+
+// Exercise identical cancellation, CAS and recovery invariants in both namespaces.
+macro_rules! owner_fence_tests {
+    ($namespace:ident, $key:expr, $($test:ident),+ $(,)?) => {
+        mod $namespace {
+            $(
+                #[tokio::test]
+                async fn $test() {
+                    super::$test($key).await;
+                }
+            )+
+        }
+    };
+}
+
+owner_fence_tests!(
+    diskdb,
+    b"/diskdb/ownership-fence/1/1/1",
+    concurrent_owner_writes_do_not_advance_or_contend_on_the_fence,
+    handover_drains_old_writes_even_when_the_claim_caller_is_cancelled,
+    owner_admission_preserves_business_record_cas,
+    topology_replacement_preserves_the_handover_barrier,
+    new_leader_tenure_does_not_reuse_a_closed_old_admission,
+    unresolved_old_proposal_blocks_a_topology_replacement_from_claiming_ownership,
+);
+
+owner_fence_tests!(
+    chunkdb,
+    b"/chunkdb/ownership-fence/0",
+    concurrent_owner_writes_do_not_advance_or_contend_on_the_fence,
+    handover_drains_old_writes_even_when_the_claim_caller_is_cancelled,
+    owner_admission_preserves_business_record_cas,
+    topology_replacement_preserves_the_handover_barrier,
+    new_leader_tenure_does_not_reuse_a_closed_old_admission,
+    unresolved_old_proposal_blocks_a_topology_replacement_from_claiming_ownership,
+);

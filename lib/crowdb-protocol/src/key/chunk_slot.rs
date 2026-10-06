@@ -6,6 +6,38 @@
 use super::encoding::{
     check_path_exact, decode_path_u64, encode_path_header, encode_path_u64, KeyError, TextKey,
 };
+use crate::chunk_slot::ChunkSlot;
+
+/// One persistent execution fence per slot in the selected data KV group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkSlotFenceKey {
+    pub slot: ChunkSlot,
+}
+
+impl TextKey for ChunkSlotFenceKey {
+    const PATH_MAGIC: &'static str = "/chunkdb";
+    const PATH_TYPE: &'static str = "ownership-fence";
+
+    fn encode_to_path(&self, out: &mut String) {
+        encode_path_header(out, Self::PATH_MAGIC, Self::PATH_TYPE);
+        encode_path_u64(out, u64::from(self.slot.value()));
+    }
+
+    fn decode_path(parts: &[&str]) -> Result<Self, KeyError> {
+        check_path_exact(parts, 1)?;
+        let text = parts[0];
+        if text.is_empty()
+            || (text.len() > 1 && text.starts_with('0'))
+            || !text.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(KeyError::BadTag);
+        }
+        let value = text.parse::<u16>().map_err(|_| KeyError::BadTag)?;
+        Ok(Self {
+            slot: ChunkSlot::try_from(value).map_err(|_| KeyError::BadTag)?,
+        })
+    }
+}
 
 /// One record per service instance, not per slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

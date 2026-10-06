@@ -106,7 +106,8 @@ request-rate balance. Dynamic storage migration is outside this requirement.
   trips remain valid without adding local disks. E2E test.
 
 ```sh
-pixi run cargo test -p crowdb-protocol --test chunk_slot_test
+pixi run cargo test -p crowdb-protocol --test chunk_slot_test --test chunk_slot_authority_test
+pixi run clean-env && pixi run cargo test -p crowdb-kv-client --test chunk_slot_owner_fence_test --test conditional_retry_test
 pixi run clean-env && pixi run cargo test -p crowdb-kv --test group_test
 pixi run clean-env && pixi run cargo test -p crowdb-kv-client --test chunkdb_partition_test
 pixi run clean-env && pixi run cargo test -p crowdb-kv-server --test domain_monitor_test

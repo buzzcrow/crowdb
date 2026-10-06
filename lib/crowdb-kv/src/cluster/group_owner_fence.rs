@@ -6,12 +6,12 @@
 use super::group::{ProposeResult, PxGroup};
 use crate::paxos::roles::RequestIdentity;
 use bytes::Bytes;
+use crowdb_protocol::owner_fence::is_owner_fence_key;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
 const CLOSED: u64 = 1 << 63;
-pub(crate) const OWNER_PREFIX: &[u8] = b"/diskdb/ownership-fence/";
 
 pub(crate) struct OwnerAdmission {
     tenure: u64,
@@ -113,7 +113,7 @@ impl PxGroup {
     }
 
     pub(crate) async fn begin_owner_change(&self, key: &Bytes, tenure: u64) -> Option<OwnerChange> {
-        if !key.starts_with(OWNER_PREFIX) {
+        if !is_owner_fence_key(key) {
             return None;
         }
         let admission = self.owner_admission(key.clone(), tenure);

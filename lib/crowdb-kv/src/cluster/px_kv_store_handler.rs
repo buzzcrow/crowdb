@@ -40,12 +40,12 @@ async fn write_and_respond(
         let key = match mutation {
             KvGroupMutation::Put { key, .. } | KvGroupMutation::Delete { key } => key,
         };
-        key.starts_with(super::group_owner_fence::OWNER_PREFIX)
+        crowdb_protocol::owner_fence::is_owner_fence_key(key)
     }) {
         return crate::rpc::KvResponse::cas_error(
             crate::rpc::KvErrorCode::KvErrorCasFailed,
             0,
-            "DiskGroup ownership changes require a conditional write",
+            "ownership changes require a conditional write",
             request_id,
             request_create_ms,
         );

@@ -5,6 +5,7 @@ use super::{now_ms, BatchOp, CrowdbKvClient, WriteOutcome};
 use crate::error::{Error, Result};
 use bytes::Bytes;
 use crowdb_kv::rpc::{KvBatchItem, KvErrorCode};
+use crowdb_protocol::owner_fence::{is_owner_fence_key, valid_owner_fence, valid_owner_fence_scope};
 use std::sync::atomic::Ordering;
 
 impl CrowdbKvClient {
@@ -36,15 +37,13 @@ impl CrowdbKvClient {
                 },
             })
             .collect();
-        if items
-            .iter()
-            .any(|item| item.key.starts_with(b"/diskdb/ownership-fence/"))
-            || !precondition_key.starts_with(b"/diskdb/ownership-fence/")
-            || expected_value.is_empty()
+        if items.iter().any(|item| is_owner_fence_key(&item.key))
+            || !valid_owner_fence(precondition_key, expected_value)
+            || !valid_owner_fence_scope(precondition_key, group_id)
             || record_condition.is_some_and(|(key, _)| !items.iter().any(|item| item.key.as_ref() == key))
         {
             return Err(Error::Server(
-                "owner fence must be read-only and identify a DiskGroup".into(),
+                "owner fence must be read-only and identify a DiskGroup or ChunkDB slot".into(),
             ));
         }
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
