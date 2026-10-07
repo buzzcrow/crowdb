@@ -3,16 +3,50 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { configure, connections } from './native';
+import { getApiBase } from '../api';
 import { PanelDivider } from '../components/PanelDivider';
 import { ActivityLog } from '../panels/ActivityLog';
+import { BookOpen, ExternalLink } from 'lucide-react';
 
 export const inputClass = 'tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1.5 tw-text-sm tw-text-text';
 export const buttonClass = 'tw-rounded tw-border tw-border-border tw-px-3 tw-py-1.5 tw-text-xs hover:tw-bg-accent/10 disabled:tw-opacity-40';
-export function Workbench({ sidebar, children, detail, showActivity = true, resizableSidebar = true }: { resizableSidebar?: boolean; showActivity?: boolean; sidebar: ReactNode; children: ReactNode; detail?: ReactNode }) {
+export function DocsHelp({ href, title, description, auth }: { href: string; title: string; description: string; auth?: string }) {
+  const [credentials, setCredentials] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const reveal = async () => {
+    setError('');
+    try {
+      const response = await fetch(`${getApiBase()}/access/credentials`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const value = await response.json() as { s3: Record<string, string | null>; iceberg: Record<string, string | null> };
+      const lines = [
+        `ICEBERG_URI=${value.iceberg.uri ?? ''}`,
+        `ICEBERG_TOKEN=${value.iceberg.token ?? ''}`,
+        `AWS_ENDPOINT_URL=${value.s3.endpoint ?? ''}`,
+        `AWS_DEFAULT_REGION=${value.s3.region ?? ''}`,
+        `AWS_ACCESS_KEY_ID=${value.s3.access_key_id ?? ''}`,
+        `AWS_SECRET_ACCESS_KEY=${value.s3.secret_access_key ?? ''}`,
+      ];
+      setCredentials(lines.join('\n'));
+    } catch (reason) {
+      setError(`Credentials are unavailable: ${String(reason)}`);
+    }
+  };
+  const copy = () => { if (credentials) void navigator.clipboard?.writeText(credentials); };
+  return <section aria-label={`${title} help`} className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-3 tw-space-y-2">
+    <div className="tw-flex tw-items-center tw-justify-between tw-gap-2">
+      <div className="tw-flex tw-items-center tw-gap-2 tw-text-sm tw-font-semibold"><BookOpen className="tw-h-4 tw-w-4 tw-text-accent" />{title}</div>
+      <a className="tw-inline-flex tw-items-center tw-gap-1 tw-text-xs tw-text-accent tw-underline" href={href} target="_blank" rel="noreferrer">Help <ExternalLink className="tw-h-3 tw-w-3" /></a>
+    </div>
+    <p className="tw-text-xs tw-text-muted">{description}</p>
+    {auth && <details className="tw-text-xs tw-text-muted"><summary className="tw-cursor-pointer">Connection credentials</summary><p className="tw-mt-2">{auth}</p><div className="tw-mt-2 tw-flex tw-gap-2"><button type="button" className={buttonClass} onClick={() => void reveal()}>Show local credentials</button>{credentials && <button type="button" className={buttonClass} onClick={copy}>Copy env</button>}</div>{error && <p role="alert" className="tw-mt-2 tw-text-failed">{error}</p>}{credentials && <pre className="tw-mt-2 tw-max-h-40 tw-overflow-auto tw-whitespace-pre-wrap tw-break-all tw-rounded tw-bg-bg tw-p-2 tw-text-[10px]">{credentials}</pre>}</details>}
+  </section>;
+}
+export function Workbench({ sidebar, children, detail, showActivity = true, resizableSidebar = true, help }: { resizableSidebar?: boolean; showActivity?: boolean; sidebar: ReactNode; children: ReactNode; detail?: ReactNode; help?: ReactNode }) {
   const [width, setWidth] = useState(280);
   const [detailWidth, setDetailWidth] = useState(320);
   return <div className="tw-grid tw-h-full" style={{ gridTemplateColumns: `${resizableSidebar ? width : 280}px ${resizableSidebar ? '6px ' : ''}minmax(0,1fr)${detail ? ` 6px ${detailWidth}px` : ''}` }}>
-    <aside data-navigation-scroll="workbench-left" className="tw-overflow-auto tw-border-r tw-border-border tw-bg-bg tw-p-4 tw-space-y-3">{sidebar}</aside>
+    <aside data-navigation-scroll="workbench-left" className="tw-overflow-auto tw-border-r tw-border-border tw-bg-bg tw-p-4 tw-space-y-3">{help}{sidebar}</aside>
     {resizableSidebar && <PanelDivider side="left" width={width} onResize={setWidth} />}
     <section data-navigation-scroll="workbench-center" className="tw-overflow-auto tw-p-5 tw-space-y-4">{children}{showActivity && <details className="tw-border-t tw-border-border tw-pt-3"><summary className="tw-text-xs tw-text-muted tw-cursor-pointer">Session activity</summary><p className="tw-text-xs tw-text-muted">Browser session history; reload clears this log.</p><ActivityLog /></details>}</section>
     {detail && <PanelDivider side="right" width={detailWidth} onResize={setDetailWidth} />}

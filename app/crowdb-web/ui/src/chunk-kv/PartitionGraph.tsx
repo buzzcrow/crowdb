@@ -156,7 +156,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
     x += width + 35;
   }
   nodes.unshift({ id: 'root', type: 'chunkKv', position: { x: Math.max(0, (x - 205) / 2), y: 0 },
-    data: { kind: 'root', label: 'Chunk-KV', subtitle: `${groups.length} servers · loaded catalog window` } });
+    data: { kind: 'root', label: 'ChunkKV', subtitle: `${groups.length} servers · loaded catalog window` } });
   const layoutKey = nodes.map(node => node.id).join('/');
   return <section aria-label="Partition range map" className="tw-space-y-2">
     <div className="tw-flex tw-items-center tw-gap-3 tw-text-xs tw-text-muted">

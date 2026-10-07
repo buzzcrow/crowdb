@@ -4,7 +4,7 @@
 import { lazy, Suspense, useEffect, useState, useRef } from 'react';
 import { getApiBase, getManagementToken, type ServerSummary } from '../api';
 import { readJson } from '../access/native';
-import { Workbench, buttonClass } from '../access/Workbench';
+import { DocsHelp, Workbench, buttonClass } from '../access/Workbench';
 import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { Domain } from '../types';
 import { initialSplitQuery, initialGraphQuery, type SplitQuery, type GraphQuery } from './query';
@@ -88,7 +88,7 @@ export function ChunkKvView({ active, racks, nodes, servers, onChunk }: { onChun
     if (selected?.partition.id !== partition.id || selected.generation !== page!.generation) { checkpoint(); changeQuery(initialSplitQuery()); }
     setSelected({ partition, generation: page!.generation, catalogPage: page!.page, catalogOffset: page!.offset });
   };
-  return <Workbench showActivity={false} detail={<div ref={setPropertyHost} aria-label="Chunk-KV properties">{!selected && <p className="tw-text-sm tw-text-muted">Select a Split to inspect its properties.</p>}</div>} sidebar={<nav aria-label="Partition placement" className="tw--mx-4">
+  return <Workbench showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/deploy/chunk/" title="ChunkKV" description="Inspect partition placement and the current catalog generation." />} detail={<div ref={setPropertyHost} aria-label="ChunkKV properties">{!selected && <p className="tw-text-sm tw-text-muted">Select a Split to inspect its properties.</p>}</div>} sidebar={<nav aria-label="Partition placement" className="tw--mx-4">
     <Tree nodes={tree} expandedIds={expandedTree ?? expanded} onExpansionChange={setExpandedTree} onNodeClick={node => {
       if (node.type === 'Partition') {
         const entry = page?.entries.find(entry => entry.id === node.rawId);
@@ -96,10 +96,10 @@ export function ChunkKvView({ active, racks, nodes, servers, onChunk }: { onChun
       }
     }} />
   </nav>}>
-    <div className="tw-flex tw-items-center tw-justify-between"><h1 className="tw-text-lg tw-font-semibold">Chunk-KV range distribution</h1><button className={buttonClass} disabled={busy} onClick={() => { restoreSelection.current = null; setCursor({ page: 0, offset: 0 }); setRefresh(value => value + 1); }}>Refresh catalog</button></div>
+    <div className="tw-flex tw-items-center tw-justify-between"><h1 className="tw-text-lg tw-font-semibold">ChunkKV range distribution</h1><button className={buttonClass} disabled={busy} onClick={() => { restoreSelection.current = null; setCursor({ page: 0, offset: 0 }); setRefresh(value => value + 1); }}>Refresh catalog</button></div>
     {busy && <p role="status">Loading catalog…</p>}
     {error && <p role="alert" className="tw-text-failed">{error}{page && ' Previous observation remains visible.'}</p>}
-    {!page && !busy && error && <p className="tw-text-sm tw-text-muted">Catalog unavailable. Check Group 0 and the current cluster's Chunk-KV deployment in Cluster.</p>}
+    {!page && !busy && error && <p className="tw-text-sm tw-text-muted">Catalog unavailable. Check Group 0 and the current cluster's ChunkKV deployment in Cluster.</p>}
     {page && <>
       <p className="tw-text-xs tw-text-muted">Generation {page.generation} · catalog page {page.page + 1} / {page.catalog_pages} · {page.entries.length} loaded partitions. Catalog assignment; live serving state is not observed.</p>
       <Suspense fallback={<p role="status">Loading topology…</p>}><PartitionGraph entries={entries} servers={registered}

@@ -51,8 +51,6 @@ import { ChunkBrowser } from './chunk/ChunkBrowser';
 import { ChunkKvView } from './chunk-kv/ChunkKvView';
 import { IcebergView } from './views/IcebergView';
 import { S3View } from './views/S3View';
-import { ManagementSession } from './managed/ManagementSession';
-import { MonitorSummary } from './managed/MonitorSummary';
 
 const Inspector = lazy(() => import('./shell/Inspector').then((m) => ({ default: m.Inspector })));
 
@@ -545,10 +543,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           marginRight: selectedEntity && !ownsSidebar ? inspectorWidth : 0,
         }}
       >
-        {managed && <ManagementSession />}
         {(
-          <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col"><div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · {managed ? 'Container: topology is read-only' : 'Deploy and manage services here'}</div>
-          {managed && <MonitorSummary apiPrefix={apiPrefix} />}
+          <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
           {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
             active={domain === Domain.Cluster}
@@ -567,6 +563,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             nodeDiskGroups={nodeDiskGroups}
             refreshToken={lastRefreshTime.getTime()}
             focusRequest={canvasFocusRequest}
+            onFocusChange={targetId => setCanvasFocusRequest({ targetId, subtree: true, nonce: Date.now() })}
             onEntityContextMenu={onCanvasContextMenu}
           /></div></div>
         )}
