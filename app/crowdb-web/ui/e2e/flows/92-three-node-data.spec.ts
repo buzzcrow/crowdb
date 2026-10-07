@@ -106,6 +106,10 @@ async function addDisks({ page }: UIContext) {
       const branch = sidebar.getByTestId(`tree-node-N-${id}`);
       const expand = branch.getByRole('button', { name: 'Expand', exact: true });
       if (await expand.count()) await expand.click();
+      await expect.poll(
+        () => sidebar.getByRole('button', { name: `DG-${id}`, exact: true }).count(),
+        { timeout: 5_000, intervals: [100], message: `Disk group DG-${id} appears in the refreshed tree` },
+      ).toBeGreaterThan(0);
       await sidebar.getByRole('button', { name: `DG-${id}`, exact: true }).click({ button: 'right' });
       await page.getByRole('menuitem', { name: 'Add Disk', exact: true }).click();
       const disks = page.getByRole('dialog', { name: 'Add Disks', exact: true });

@@ -139,6 +139,10 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
   test.describe.configure({ timeout: 180_000 });
 
   test.beforeAll(async () => {
+    // The full UI suite leaves many service processes to drain through the
+    // reset endpoint.  Give macOS enough time for those registrations to
+    // disappear before bootstrapping the next group-0 cluster.
+    test.setTimeout(180_000);
     await step('topology: resetAll', () => resetAll(apiBase));
 
     const allNodes = [

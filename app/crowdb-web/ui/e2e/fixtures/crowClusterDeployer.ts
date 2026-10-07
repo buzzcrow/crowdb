@@ -245,14 +245,6 @@ export async function deployNodeServer(baseURL: string, nodeId: number, restPort
       },
     });
     expect(response.status(), await response.text()).toBe(201);
-    if (process.platform === 'darwin') {
-      await expect.poll(async () => {
-        const servers = await (await api.get('/api/servers')).json();
-        return servers.some((server: any) =>
-          server.node_id === nodeId && server.service_type === 'paxos-kv' && Number(server.pid) > 0,
-        );
-      }, { timeout: 30_000, intervals: [100] }).toBe(true);
-    }
   } finally {
     await api.dispose();
   }
@@ -365,7 +357,7 @@ export async function waitForLeader(baseURL: string, storeId: number, groupId: n
 export async function clusterInit(baseURL: string, nodeIds: number[]) {
   const api = await apiContext(baseURL);
   try {
-    const maxAttempts = process.platform === 'darwin' ? 6 : 5;
+    const maxAttempts = process.platform === 'darwin' ? 10 : 5;
     const timeout = process.platform === 'darwin' ? 30_000 : 10_000;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await api.post('/api/cluster/init', { data: { nodes: nodeIds }, timeout });

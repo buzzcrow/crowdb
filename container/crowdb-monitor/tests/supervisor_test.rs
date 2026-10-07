@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,7 +75,7 @@ async fn exited_service_restarts_with_same_identity_and_event_log() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let marker = roots.0.join("first-exit");
     let script = format!(
-        "if [ ! -e '{}' ]; then : > '{}'; sleep 0.2; exit 0; fi; exec sleep 30",
+        "if [ ! -e '{}' ]; then : > '{}'; /bin/sleep 0.2; exit 0; fi; exec /bin/sleep 30",
         marker.display(),
         marker.display()
     );
@@ -110,7 +111,7 @@ async fn restarted_service_waits_for_authority_validation() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let marker = roots.0.join("validation-exit");
     let script = format!(
-        "if [ ! -e '{}' ]; then : > '{}'; sleep 0.2; exit 0; fi; exec sleep 30",
+        "if [ ! -e '{}' ]; then : > '{}'; /bin/sleep 0.2; exit 0; fi; exec /bin/sleep 30",
         marker.display(),
         marker.display()
     );
@@ -144,7 +145,7 @@ async fn repeated_exits_exhaust_budget_and_leave_unready() {
     let roots = TestRoots::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let profile = roots.profile(
-        "sleep 0.2; exit 1".into(),
+        "/bin/sleep 0.2; exit 1".into(),
         listener.local_addr().unwrap().port(),
         1,
     );
@@ -172,7 +173,11 @@ async fn repeated_exits_exhaust_budget_and_leave_unready() {
 async fn stable_health_resets_crash_loop_budget() {
     let roots = TestRoots::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut profile = roots.profile("exec sleep 30".into(), listener.local_addr().unwrap().port(), 1);
+    let mut profile = roots.profile(
+        "exec /bin/sleep 30".into(),
+        listener.local_addr().unwrap().port(),
+        1,
+    );
     profile.services[0].restart.stable_after_ms = 50;
     let mut supervisor = Supervisor::new(
         profile,
@@ -190,11 +195,22 @@ async fn stable_health_resets_crash_loop_budget() {
         rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
-            let status = fs::read_to_string(format!("/proc/{}/status", pid.as_raw_pid())).unwrap();
-            if status
-                .lines()
-                .any(|line| line.starts_with("State:") && line.contains('Z'))
-            {
+            let exited = if cfg!(target_os = "linux") {
+                fs::read_to_string(format!("/proc/{}/status", pid.as_raw_pid()))
+                    .map(|status| {
+                        status
+                            .lines()
+                            .any(|line| line.starts_with("State:") && line.contains('Z'))
+                    })
+                    .unwrap_or(true)
+            } else {
+                let output = Command::new("ps")
+                    .args(["-p", &pid.as_raw_pid().to_string(), "-o", "stat="])
+                    .output()
+                    .unwrap();
+                !output.status.success() || String::from_utf8_lossy(&output.stdout).contains('Z')
+            };
+            if exited {
                 break;
             }
             assert!(tokio::time::Instant::now() < deadline);
@@ -220,7 +236,7 @@ async fn live_listener_prevents_replacement_after_child_exit() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let mut profile = roots.profile(
-        "sleep 0.2; exit 1".into(),
+        "/bin/sleep 0.2; exit 1".into(),
         listener.local_addr().unwrap().port(),
         1,
     );
@@ -249,7 +265,7 @@ async fn transient_probe_failure_clears_readiness_without_restarting() {
     let roots = TestRoots::new();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let mut profile = roots.profile("exec sleep 30".into(), address.port(), 2);
+    let mut profile = roots.profile("exec /bin/sleep 30".into(), address.port(), 2);
     profile.services[0].probe.failure_threshold = 2;
     let mut supervisor = Supervisor::new(
         profile,
@@ -297,7 +313,7 @@ async fn child_exit_after_probe_failure_is_recorded() {
             stream.write_all(response.as_bytes()).await.unwrap();
         }
     });
-    let mut profile = roots.profile("exec sleep 30".into(), address.port(), 2);
+    let mut profile = roots.profile("exec /bin/sleep 30".into(), address.port(), 2);
     profile.services[0].probe.kind = ProbeKind::Http;
     profile.services[0].probe.target = format!("http://{address}/health");
     profile.services[0].probe.failure_threshold = 5;
@@ -349,7 +365,7 @@ async fn dependency_restart_stops_dependents_before_replacement() {
     let dependent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let marker = roots.0.join("first-exit");
     let script = format!(
-        "if [ ! -e '{}' ]; then : > '{}'; sleep 0.2; exit 0; fi; exec sleep 30",
+        "if [ ! -e '{}' ]; then : > '{}'; /bin/sleep 0.2; exit 0; fi; exec /bin/sleep 30",
         marker.display(),
         marker.display()
     );
@@ -357,7 +373,7 @@ async fn dependency_restart_stops_dependents_before_replacement() {
     let mut dependent = profile.services[0].clone();
     dependent.id = "web".into();
     dependent.dependencies = vec!["kv".into()];
-    dependent.args = vec!["-c".into(), "exec sleep 30".into()];
+    dependent.args = vec!["-c".into(), "exec /bin/sleep 30".into()];
     dependent.probe.target = dependent_listener.local_addr().unwrap().to_string();
     profile.services.push(dependent);
     profile.validate().unwrap();

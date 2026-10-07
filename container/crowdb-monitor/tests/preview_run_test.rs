@@ -9,7 +9,12 @@ struct TestRoot(PathBuf);
 
 impl TestRoot {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("cm-preview-{}", Uuid::new_v4().simple()));
+        let temp_root = if cfg!(target_os = "macos") {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let path = temp_root.join(format!("cm-preview-{}", Uuid::new_v4().simple()));
         for name in ["bin", "templates", "data", "run"] {
             fs::create_dir_all(path.join(name)).unwrap();
         }
@@ -35,7 +40,12 @@ impl TestRoot {
             let name = service.program.file_name().unwrap();
             service.program = self.0.join("bin").join(name);
             if service.id == "kv" {
-                symlink("/bin/false", &service.program).unwrap();
+                let failing_program = if cfg!(target_os = "macos") {
+                    "/usr/bin/false"
+                } else {
+                    "/bin/false"
+                };
+                symlink(failing_program, &service.program).unwrap();
                 for argument in &mut service.args {
                     if argument == "/opt/crowdb/data/kv/node-1" {
                         *argument = self.0.join("data/kv/node-1").to_string_lossy().into_owned();

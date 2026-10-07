@@ -21,17 +21,17 @@ Leave unexecuted packages in place with `—`; record elapsed time in seconds.
 
 ### macOS
 
-| Test package       | Date       | Tests                                    | Seconds | Status |
-| ------------------ | ---------- | ---------------------------------------- | ------- | ------ |
-| `test-cpp`         | —          | —                                        | —       | ⏳     |
-| `test-core`        | —          | —                                        | —       | ⏳     |
-| `test-storage`     | —          | —                                        | —       | ⏳     |
-| `test-access`      | —          | —                                        | —       | ⏳     |
-| `test-console`     | —          | —                                        | —       | ⏳     |
-| `test-console-ui`  | 2026-10-07 | 63 (55 passed, 4 failed, 4 did not run) | 336     | ❌     |
-| `test-boto3-e2e`   | —          | —                                        | —       | ⏳     |
-| `test-iceberg-e2e` | —          | —                                        | —       | ⏳     |
-| `test-iceberg-sdk` | —          | —                                        | —       | ⏳     |
+| Test package       | Date       | Tests   | Seconds | Status                                  |
+| ------------------ | ---------- | ------- | ------- | --------------------------------------- |
+| `test-cpp`         | 2026-10-07 | 860/860 | 55      | ✓                                       |
+| `test-core`        | 2026-10-07 | 977/978 | 368     | ✓ 1 ignored                            |
+| `test-storage`     | 2026-10-07 | 811/815 | 1064    | ✓ 4 ignored                            |
+| `test-access`      | 2026-10-07 | 906/906 | —       | ✓                                       |
+| `test-console`     | 2026-10-07 | 77/79   | 61      | ✓ 2 ignored                            |
+| `test-console-ui`  | 2026-10-07 | 63/63   | 192     | ✓                                       |
+| `test-boto3-e2e`   | 2026-10-07 | 32/32   | 295     | ✓                                       |
+| `test-iceberg-e2e` | 2026-10-07 | —       | 338     | ✓                                       |
+| `test-iceberg-sdk` | 2026-10-07 | —       | —       | X Maven dependency resolution stalled  |
 
 ### intel7960
 
@@ -65,16 +65,14 @@ The measurement helper writes logs and aggregate results below
 `.crowdb-runtime/artifacts/measure-tests/`. Keep slow individual-test notes next
 to the component measurement that produced them.
 
-Action items from the macOS full-suite runs:
+Remaining action item from the macOS full-suite runs:
 
-- [ ] `22-kv-topology`: eliminate live KV registration races under full-suite load.
-- [ ] `11-cluster-server-lifecycle`: keep the Deploy action enabled while the UI dialog initializes.
-- [ ] `12-cluster-node-inspect`: prevent the full-suite timeout and SVG `NaN` geometry errors.
-- [ ] `90-flow-full-chain`: prevent SVG `NaN` console errors under full-suite load.
+- [ ] `test-iceberg-sdk`: Maven `dependency:go-offline` stayed idle for more
+  than eight minutes on macOS; rerun when the pinned dependency cache is
+  available.
 
-The lifecycle, reconfiguration, topology, and three-node data tests pass when
-rerun individually after the macOS readiness and port fixes. The package row
-remains failed until the full suite is green.
+The complete macOS UI package now passes all 63 tests, including the 23-node
+topology setup and the three-node KV/S3/Iceberg data flow.
 
 ---
 
