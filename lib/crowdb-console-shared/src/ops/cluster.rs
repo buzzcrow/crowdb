@@ -1138,7 +1138,7 @@ pub struct KvDeployTunables {
     /// spawned server's own default (5s) in effect.
     pub metrics_interval: Option<u64>,
     /// `--kv-backend` value (e.g. `"file"`, `"block"`, `"mem-block"`).
-    /// `None` leaves the spawned server's own default (`file`) in effect.
+    /// `None` leaves the spawned server's own default (`block`) in effect.
     pub kv_backend: Option<String>,
     /// `--wal-backend` value (e.g. `"file"`, `"mem-block"`, `"block-device"`).
     /// `None` leaves the spawned server's own default in effect.

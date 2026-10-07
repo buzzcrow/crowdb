@@ -8,6 +8,15 @@ import { resolve } from 'node:path';
 import { parseIcebergJson } from '../../src/iceberg/json';
 import type { TableLoad } from '../../src/iceberg/types';
 
+test('native diagnostics: Iceberg empty Catalog shows the first-success guide', async ({ page }) => {
+  await page.goto('/?domain=Iceberg');
+  const guide = page.getByRole('region', { name: 'First success guide', exact: true });
+  await expect(guide).toBeVisible();
+  await expect(guide).toContainText('pyiceberg');
+  await expect(guide).toContainText('ICEBERG_TOKEN');
+  await expect(guide.getByRole('link', { name: 'Open the Iceberg quick start', exact: true })).toHaveAttribute('href', 'https://crowdb.dev/docs/quickstart/');
+});
+
 // Baseline: 12.3s (2026-10-04), including 101 real files and owned teardown.
 test('native diagnostics: Iceberg committed references and Parquet footer', async ({ page, request, baseURL }) => {
   const namespace = `console_files_${process.pid}_${Date.now()}`;

@@ -218,6 +218,9 @@ impl TableHttp {
                             authority: access.authority,
                             principal: access.principal,
                         },
+                        headers
+                            .get(hyper::header::HOST)
+                            .and_then(|value| value.to_str().ok()),
                     )?;
                     let mut digest = Sha256::new();
                     digest.update(etag.as_bytes());

@@ -124,7 +124,7 @@ pub enum ClusterVerb {
         #[arg(long, default_value_t = 0)]
         metrics_interval: u64,
         /// [kv] `--kv-backend` for the spawned server (file|block|mem-block).
-        /// Empty = server default (file).
+        /// Empty = server default (block).
         #[arg(long, default_value = "")]
         kv_backend: String,
         /// [kv] `--wal-backend` for the spawned server (file|mem-block|block-device).
