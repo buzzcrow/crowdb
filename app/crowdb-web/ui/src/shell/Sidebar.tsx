@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useState, useMemo } from 'react';
-import { FolderTree, Monitor, Database, Boxes, HardDrive, Cog, Rocket, Building2, ExternalLink } from 'lucide-react';
+import { FolderTree, Monitor, Database, Boxes, HardDrive, Cog, Plus, Rocket, Building2, ExternalLink } from 'lucide-react';
 import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { Tree, TreeNode } from '../components/Tree';
 import { Button } from '../components/ui/Button';
@@ -83,7 +83,7 @@ export function Sidebar({
 }: SidebarProps) {
   const { domain } = useDomain();
   const help = domainTabs.find(tab => tab.domain === domain);
-  const helpTitle = domain === Domain.Cluster ? 'cluster' : domain === Domain.KV ? 'paxosKV' : 'capacity';
+  const helpTitle = domain === Domain.Cluster ? 'Cluster' : domain === Domain.KV ? 'PaxosKV' : 'Capacity';
   const [expansions, setExpansions] = useState<Partial<Record<Domain, string[]>>>({});
   const serverByNodeId = useMemo(() => crowdbKvServerByNodeId(servers), [servers]);
 
@@ -91,7 +91,8 @@ export function Sidebar({
     if (domain === Domain.Cluster) {
       // Cluster domain: rack → node → services → owned disk groups and disks.
       // No KV stores/groups — those live in the KV domain.
-      if (racks.length === 0) return [];
+      // Keep the synthetic datacenter visible while empty so the root context
+      // menu remains available for creating the first rack.
 
       // Build lookup maps for status badges.
       const dgStatusByKey = new Map<string, number>();
@@ -210,7 +211,8 @@ export function Sidebar({
 
     if (domain === Domain.KV) {
       // KV domain is logical only: datacenter → store → group → replica.
-      if (stores.length === 0) return [];
+      // Keep the synthetic datacenter visible while empty so the root context
+      // menu remains available for creating the first store.
       return [datacenterRoot(stores.map((store) => ({
         id: `S-${store.store_id}`,
         rawId: String(store.store_id),
@@ -242,7 +244,7 @@ export function Sidebar({
     if (domain === Domain.Capacity) {
       // Chunk domain: datacenter → rack → node → physical disk groups/disks
       // plus a separate DiskDB service item.
-      if (racks.length === 0) return [];
+      // Capacity uses the same physical root menu to create the first rack.
 
       const dgStatusByKey = new Map<string, number>();
       const diskStatusById = new Map<string, number>();
@@ -320,7 +322,7 @@ export function Sidebar({
     }
 
     // Fallback (uninitialized KV domain): logical store tree.
-    if (stores.length === 0) return [];
+    // The fallback logical tree also needs a root to expose Add Storage.
     return [datacenterRoot(stores.map((store) => {
       const sid = String(store.store_id);
       return {
@@ -381,6 +383,11 @@ export function Sidebar({
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-2">
           <h3 className="tw-text-sm tw-font-semibold tw-text-text">{helpTitle}</h3>
           <div className="tw-flex tw-items-center tw-gap-2">
+            {!readonly && onAdd && domain !== Domain.Capacity && (
+              <Button variant="ghost" size="sm" onClick={onAdd} aria-label={domain === Domain.KV && !clusterInitialized ? 'Initialize Cluster' : domain === Domain.KV ? 'Add Store' : 'Add Rack'} className="tw-h-7 tw-px-2">
+                <Plus className="tw-h-3.5 tw-w-3.5" />
+              </Button>
+            )}
             {help && <a className="tw-inline-flex tw-items-center tw-gap-1 tw-text-xs tw-text-accent tw-underline" href={help.docs} target="_blank" rel="noreferrer">Help <ExternalLink className="tw-h-3 tw-w-3" /></a>}
           </div>
         </div>

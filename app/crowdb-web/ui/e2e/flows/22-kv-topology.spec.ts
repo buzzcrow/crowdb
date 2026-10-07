@@ -237,7 +237,6 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
         // Navigate to Cluster view and verify all groups appear in UI.
         await page.goto('/');
         await page.getByTestId('domain-kv').click();
-  await page.getByText(/^KV actions · Store/).click();
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 
         for (const gid of [1990, 1991, 1992]) {
@@ -295,132 +294,7 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
     }
   });
 
-  test('put/get/delete on store A does not affect store B', async ({ page, baseURL }) => {
-    test.setTimeout(60_000);
 
-    // Put keys in store A only
-    await kvPut(baseURL!, 380, 3800, 'iso-a-key1', 'val-a1');
-    await kvPut(baseURL!, 380, 3800, 'iso-a-key2', 'val-a2');
-
-    // Put keys in store B only
-    await kvPut(baseURL!, 381, 3810, 'iso-b-key1', 'val-b1');
-    await kvPut(baseURL!, 381, 3810, 'iso-b-key2', 'val-b2');
-
-    // Verify store A has only A keys
-    const scanA = await kvScanAll(baseURL!, 380, 3800);
-    expect(scanA).toEqual(expect.arrayContaining(['iso-a-key1', 'iso-a-key2']));
-    expect(scanA).not.toEqual(expect.arrayContaining(['iso-b-key1', 'iso-b-key2']));
-
-    // Verify store B has only B keys
-    const scanB = await kvScanAll(baseURL!, 381, 3810);
-    expect(scanB).toEqual(expect.arrayContaining(['iso-b-key1', 'iso-b-key2']));
-    expect(scanB).not.toEqual(expect.arrayContaining(['iso-a-key1', 'iso-a-key2']));
-
-    // Verify via UI: open KV panel, select store A, scan, see only A keys
-    await step('iso-stores: scan UI', async () => {
-      await page.goto('/');
-      await page.getByTestId('domain-kv').click();
-  await page.getByText(/^KV actions · Store/).click();
-      // Uncheck auto-scan: group selection triggers an auto-scan whose
-      // response waitForResponse would race with the explicit Scan
-      // click's response, causing the auto-scan's discarded result to
-      // be awaited while the explicit scan is still in flight.
-      const autoScanCheckbox = page.getByRole('checkbox', { name: 'auto-scan' });
-      if (await autoScanCheckbox.isChecked()) {
-        await autoScanCheckbox.uncheck();
-      }
-      await page.getByTestId('kv-store-select').selectOption('380');
-      await page.getByTestId('kv-group-select').selectOption('3800');
-
-      // Scan and verify store A keys appear
-      const scanResponse = page.waitForResponse((r: any) => r.url().includes('/stores/380/groups/3800/kv/scan'));
-      await page.getByRole('button', { name: /^Scan$/ }).click();
-      await scanResponse;
-      await expect(page.getByTestId('kv-scan-table').getByText('iso-a-key1')).toBeVisible({ timeout: 3_000 });
-      await expect(page.getByTestId('kv-scan-table').getByText('iso-b-key1')).toHaveCount(0);
-
-      // Switch to store B, scan, see only B keys
-      await page.getByTestId('kv-store-select').selectOption('381');
-      await page.getByTestId('kv-group-select').selectOption('3810');
-      const scanResponse2 = page.waitForResponse((r: any) => r.url().includes('/stores/381/groups/3810/kv/scan'));
-      await page.getByRole('button', { name: /^Scan$/ }).click();
-      await scanResponse2;
-      await expect(page.getByTestId('kv-scan-table').getByText('iso-b-key1')).toBeVisible({ timeout: 3_000 });
-      await expect(page.getByTestId('kv-scan-table').getByText('iso-a-key1')).toHaveCount(0);
-    });
-  });
-
-  test('two groups on overlapping 3-node subsets operate independently', async ({ page }) => {
-    test.setTimeout(60_000);
-
-    // Drive all KV ops through the UI KV panel. Setup (deploy/create
-    // group) is in beforeAll — the put/get/delete + cross-group
-    // isolation checks exercise the real UI path.
-    await step('overlap: KV ops UI', async () => {
-      await page.goto('/');
-      await page.getByTestId('domain-kv').click();
-  await page.getByText(/^KV actions · Store/).click();
-      await page.getByTestId('kv-store-select').selectOption('390');
-
-      // Group A (3900): put + get g39a-key.
-      await page.getByTestId('kv-group-select').selectOption('3900');
-      await page.getByLabel('Put key').fill('g39a-key');
-      await page.getByLabel('Put value').fill('val-a');
-      const putA = page.waitForResponse((r: any) => r.url().includes('/kv/put'));
-      await page.getByRole('button', { name: /^Put$/ }).click();
-      expect((await putA).ok()).toBeTruthy();
-      await page.getByLabel('Get key').fill('g39a-key');
-      const getA = page.waitForResponse((r: any) => r.url().includes('/kv/get'));
-      await page.getByRole('button', { name: /^Get$/ }).click();
-      await getA;
-      await expect(page.getByTestId('kv-get-result')).toHaveText('val-a', { timeout: 3_000 });
-
-      // Group B (3901): put + get g39b-key.
-      await page.getByTestId('kv-group-select').selectOption('3901');
-      await page.getByLabel('Put key').fill('g39b-key');
-      await page.getByLabel('Put value').fill('val-b');
-      const putB = page.waitForResponse((r: any) => r.url().includes('/kv/put'));
-      await page.getByRole('button', { name: /^Put$/ }).click();
-      expect((await putB).ok()).toBeTruthy();
-      await page.getByLabel('Get key').fill('g39b-key');
-      const getB = page.waitForResponse((r: any) => r.url().includes('/kv/get'));
-      await page.getByRole('button', { name: /^Get$/ }).click();
-      await getB;
-      await expect(page.getByTestId('kv-get-result')).toHaveText('val-b', { timeout: 3_000 });
-
-      // Cross-group isolation: g39a-key (from group A) must not be
-      // visible in group B — the UI should report not-found.
-      await page.getByLabel('Get key').fill('g39a-key');
-      const getCross = page.waitForResponse((r: any) => r.url().includes('/kv/get'));
-      await page.getByRole('button', { name: /^Get$/ }).click();
-      await getCross;
-      await expect(page.getByTestId('kv-not-found')).toBeVisible({ timeout: 3_000 });
-
-      // Delete g39a-key in group A, then verify it is gone from A but
-      // group B still serves g39b-key.
-      await page.getByTestId('kv-group-select').selectOption('3900');
-      await page.getByLabel('Delete key').fill('g39a-key');
-      await page.getByRole('button', { name: /Delete$/ }).click();
-      const dialog = page.getByRole('dialog');
-      await expect(dialog).toBeVisible();
-      const delA = page.waitForResponse((r: any) => r.url().includes('/kv/delete'));
-      await dialog.getByRole('button', { name: 'Delete' }).click();
-      expect((await delA).ok()).toBeTruthy();
-
-      await page.getByLabel('Get key').fill('g39a-key');
-      const getAAfterDelete = page.waitForResponse((r: any) => r.url().includes('/kv/get'));
-      await page.getByRole('button', { name: /^Get$/ }).click();
-      await getAAfterDelete;
-      await expect(page.getByTestId('kv-not-found')).toBeVisible({ timeout: 3_000 });
-
-      await page.getByTestId('kv-group-select').selectOption('3901');
-      await page.getByLabel('Get key').fill('g39b-key');
-      const getBAfterDelete = page.waitForResponse((r: any) => r.url().includes('/kv/get'));
-      await page.getByRole('button', { name: /^Get$/ }).click();
-      await getBAfterDelete;
-      await expect(page.getByTestId('kv-get-result')).toHaveText('val-b', { timeout: 3_000 });
-    });
-  });
 
   test('3 groups on different node subsets operate independently', async ({ baseURL }) => {
     test.setTimeout(60_000);

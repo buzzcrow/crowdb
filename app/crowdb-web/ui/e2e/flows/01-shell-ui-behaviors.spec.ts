@@ -219,7 +219,6 @@ test.describe('shell · UI behaviors', () => {
     await step('shell: goto', () => page.goto('/'));
     await page.getByTestId('domain-cluster').click();
 
-    const filterAside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
     const rackA = page.getByRole('treeitem').filter({ hasText: 'R-341' });
     const rackB = page.getByRole('treeitem').filter({ hasText: 'R-342' });
     const rackC = page.getByRole('treeitem').filter({ hasText: 'R-343' });

@@ -142,7 +142,7 @@ test('native diagnostics: Chunk-KV graph survives tab changes, refresh and resiz
   await step('native graph initial visible bounds', verify);
   await step('native graph tab return', async () => {
     for (let index = 0; index < 3; index++) {
-      await page.getByRole('button', { name: 'KV', exact: true }).click();
+      await page.getByRole('button', { name: 'PaxosKV', exact: true }).click();
       await observeCatalog(() => page.getByRole('button', { name: 'Chunk-KV', exact: true }).click());
       await verify();
     }

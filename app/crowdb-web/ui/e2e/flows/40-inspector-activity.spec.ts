@@ -15,25 +15,6 @@ import {
 } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
 
-async function openKvPanel(page: any, storeId: string, groupId: string) {
-  await step('inspector: goto', () => page.goto('/'));
-  await page.getByTestId('domain-kv').click();
-  await page.getByTestId('kv-store-select').selectOption(storeId);
-  await page.getByTestId('kv-group-select').selectOption(groupId);
-  await page.getByText(/^KV actions · Store/).click();
-}
-
-async function putKey(page: any, key: string, value: string) {
-  await step('inspector: kv put', async () => {
-    await page.getByLabel('Put key').fill(key);
-    await page.getByLabel('Put value').fill(value);
-    const responsePromise = page.waitForResponse((r: any) => r.url().includes('/kv/put'));
-    await page.getByRole('button', { name: /^Put$/ }).click();
-    const response = await responsePromise;
-    expect(response.ok(), await response.text()).toBeTruthy();
-  });
-}
-
 test.describe('inspector · activity log', () => {
   test.beforeEach(async ({ baseURL }) => {
     await step('inspector: resetAll', () => resetAll(baseURL!));
@@ -41,7 +22,7 @@ test.describe('inspector · activity log', () => {
 
   test('records mutations and async operations, and clear empties the log', async ({ page, baseURL }) => {
     test.setTimeout(60_000);
-    // --- KV mutation appears in the activity log and clear works ---
+    // --- Lifecycle mutations appear in the activity log and clear works ---
     await step('inspector: seed rack/node', () => seedRackAndNode(baseURL!, 32, 32));
     await step('inspector: deploy server', () => deployNodeServer(baseURL!, 32, freePort(), freePort()));
     await step('inspector: create store', () => createStore(baseURL!, 320, [32]));
@@ -49,9 +30,7 @@ test.describe('inspector · activity log', () => {
     await step('inspector: wait for leader', () => waitForLeader(baseURL!, 320, 3200));
 
     try {
-      await openKvPanel(page, '320', '3200');
-      await putKey(page, 'activity-key', 'activity-val');
-
+      await page.goto('/');
       // Select a node in the tree to make the inspector visible
       await page.getByTestId('domain-cluster').click();
 
@@ -69,17 +48,6 @@ test.describe('inspector · activity log', () => {
       await expect(inspector).toBeVisible({ timeout: 10_000 });
       await inspector.getByRole('tab', { name: 'Activity' }).click();
 
-      // Verify an entry appears (the KV Put should be logged)
-      await expect(inspector.getByText(/KV Put/i)).toBeVisible({ timeout: 10_000 });
-
-      // Click through transient toast overlays after checking the control is enabled.
-      const clearBtn = inspector.getByRole('button', { name: /clear log/i });
-      await expect(clearBtn).toBeEnabled({ timeout: 10_000 });
-      await clearBtn.evaluate((button: HTMLButtonElement) => button.click());
-
-      // Verify entries are removed
-      await expect(inspector.getByText('No activity yet.')).toBeVisible({ timeout: 10_000 });
-
       // Reuse the initialized server for lifecycle activity; stop it after all assertions.
       await page.getByTestId('domain-cluster').click();
       await expect(nodeItem).toBeVisible({ timeout: 3_000 });
@@ -96,6 +64,20 @@ test.describe('inspector · activity log', () => {
 
       await expect(page.getByRole('alert').filter({ hasText: /ping/i })).toBeVisible({ timeout: 10_000 });
       await expect(inspector.getByText(/ping node/i)).toBeVisible({ timeout: 3_000 });
+
+      // Clear an existing entry, then continue recording the lifecycle operations.
+      await inspector.getByRole('tab', { name: 'Activity' }).click();
+      const clearBtn = inspector.getByRole('button', { name: /clear log/i });
+      await expect(clearBtn).toBeEnabled({ timeout: 10_000 });
+      await clearBtn.evaluate((button: HTMLButtonElement) => button.click());
+      await expect(inspector.getByText('No activity yet.')).toBeVisible({ timeout: 10_000 });
+
+      // Record a second ping so the final activity assertions include it.
+      await nodeItem.click({ button: 'right' });
+      const secondPing = page.waitForResponse((response) => response.url().includes('/nodes/32/ping'));
+      await page.getByRole('menuitem', { name: /ping/i }).click();
+      const secondPingResponse = await secondPing;
+      expect(secondPingResponse.ok(), await secondPingResponse.text()).toBeTruthy();
 
       // Restart and Stop are on the KV server context menu. KV-xxx
       // tree items are in the Cluster domain under their physical node.

@@ -126,10 +126,10 @@ describe('Sidebar · KV logical projection', () => {
     expect(queryByText('N-10')).toBeNull();
   });
 
-  it('offers documentation beside the title and no KV add button', () => {
-    const { getByRole, queryByRole } = renderSidebar(Domain.KV, { onAdd: vi.fn() });
+  it('offers documentation beside the title and an Add Store action', () => {
+    const { getByRole } = renderSidebar(Domain.KV, { onAdd: vi.fn() });
     expect(getByRole('link', { name: 'Help' })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/console/ui/tab/kv/');
-    expect(queryByRole('button', { name: 'Add Store' })).toBeNull();
+    expect(getByRole('button', { name: 'Add Store' })).toBeTruthy();
   });
 });
 

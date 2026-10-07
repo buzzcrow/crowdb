@@ -244,9 +244,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
         // KV has one logical tree: no KV server or physical node parent exists.
         await expect(aside.getByText(`PKV-${NODE_IDS[0]}`, { exact: true })).toHaveCount(0);
 
-        await page.getByText(/^KV actions · Store/).click();
-        await expect(page.getByLabel('Put key')).toBeVisible();
-        await expect(page.getByLabel('Put value')).toBeVisible();
+        await expect(page.getByLabel('Query key')).toBeVisible();
         await group.click();
         const inspector = page.locator('aside[aria-label="Entity inspector"]');
         await expect(inspector).toBeVisible();

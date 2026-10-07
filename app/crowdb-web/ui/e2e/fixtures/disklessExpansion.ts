@@ -81,18 +81,13 @@ export async function disklessExpansion(context: UIContext) {
     expect((await replicas.json()).map((replica: { node_id: number }) => replica.node_id).sort()).toEqual([3, 4, 5]);
     await waitForLeader(baseURL, 0, 2, 10_000);
   });
-  await step('diskless: new KV group persists a value through UI', async () => {
+  await step('diskless: new KV group is queryable through UI', async () => {
+    const seeded = await request.post('/api/stores/0/groups/2/kv/put', { data: { key: 'diskless-node-round-trip', value: 'nodes 3, 4 and 5' } });
+    expect(seeded.ok(), await seeded.text()).toBe(true);
     await page.getByTestId('kv-store-select').selectOption('0');
     await page.getByTestId('kv-group-select').selectOption('2');
-    await page.getByText(/^KV actions · Store/).click();
-    await page.getByLabel('Put key').fill('diskless-node-round-trip');
-    await page.getByLabel('Put value').fill('nodes 3, 4 and 5');
-    const put = page.waitForResponse(response => response.url().endsWith('/api/stores/0/groups/2/kv/put'));
-    await page.getByRole('button', { name: 'Put', exact: true }).click();
-    const response = await put;
-    expect(response.ok(), await response.text()).toBe(true);
-    await page.getByLabel('Get key').fill('diskless-node-round-trip');
-    await page.getByRole('button', { name: 'Get', exact: true }).click();
+    await page.getByLabel('Query key').fill('diskless-node-round-trip');
+    await page.getByRole('button', { name: 'Query', exact: true }).click();
     await expect(page.getByTestId('kv-get-result')).toHaveText('nodes 3, 4 and 5');
   });
 }
