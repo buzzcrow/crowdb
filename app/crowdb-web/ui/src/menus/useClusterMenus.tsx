@@ -22,25 +22,24 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
         return serviceLifecycle(allServers?.find(server => server.id === id) ?? { id, node_id: Number(p.node_id), service_type: t.serviceType, health: 'unknown' }, runMutation, requestDelete);
       }
 
-      if (physicalActive || domain === Domain.KV) {
+      if (domain === Domain.KV && t.type === 'Datacenter') {
+        items.push({
+          id: 'add-store',
+          label: 'Add Storage',
+          icon: <Database className="tw-h-4 tw-w-4" />,
+          onSelect: () => setDialog((d) => ({ ...d, addStore: true })),
+        });
+        return items;
+      }
+
+      if (physicalActive) {
         if (t.type === 'Datacenter') {
-          // The default DC is immutable. Physical view creates racks; PaxosKV
-          // creates a logical storage store from the same root context menu.
-          if (domain === Domain.KV) {
-            items.push({
-              id: 'add-store',
-              label: 'Add Storage',
-              icon: <Database className="tw-h-4 tw-w-4" />,
-              onSelect: () => setDialog((d) => ({ ...d, addStore: true })),
-            });
-          } else {
-            items.push({
-              id: 'add-rack',
-              label: 'Add Rack',
-              icon: <Plus className="tw-h-4 tw-w-4" />,
-              onSelect: () => setDialog((d) => ({ ...d, addRack: true })),
-            });
-          }
+          items.push({
+            id: 'add-rack',
+            label: 'Add Rack',
+            icon: <Plus className="tw-h-4 tw-w-4" />,
+            onSelect: () => setDialog((d) => ({ ...d, addRack: true })),
+          });
         } else if (t.type === 'Rack' && modules?.nodes !== false) {
           const rackId = Number(t.rawId ?? t.id);
           items.push({

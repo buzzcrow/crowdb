@@ -739,61 +739,12 @@ export interface KvScanResponse {
   truncated: boolean;
 }
 
-export interface KvWriteResponse {
-  ok: boolean;
-  revision: number;
-}
-
 /**
  * Get a value from the KV store
  */
 export async function kvGet(storeId: string, groupId: string, key: string, options?: RequestOptions): Promise<KvGetResponse> {
   const url = `/api/stores/${encodeURIComponent(storeId)}/groups/${encodeURIComponent(groupId)}/kv/get${qs({ key })}`;
   return jsonOrThrow(await fetchWithOptions(url, { ...options, method: 'GET' }));
-}
-
-/**
- * Put a value into the KV store
- */
-export async function kvPut(
-  storeId: string,
-  groupId: string,
-  req: { key: string; value: string; client_id?: number; seq?: number },
-  options?: RequestOptions
-): Promise<KvWriteResponse> {
-  const body = JSON.stringify(req);
-  const url = `/api/stores/${encodeURIComponent(storeId)}/groups/${encodeURIComponent(groupId)}/kv/put`;
-  return jsonOrThrow(
-    await fetchWithOptions(url, {
-      ...options,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      skipDeduplication: true,
-    })
-  );
-}
-
-/**
- * Delete a value from the KV store
- */
-export async function kvDelete(
-  storeId: string,
-  groupId: string,
-  req: { key?: string; key_hex?: string; client_id?: number; seq?: number },
-  options?: RequestOptions
-): Promise<KvWriteResponse> {
-  const body = JSON.stringify(req);
-  const url = `/api/stores/${encodeURIComponent(storeId)}/groups/${encodeURIComponent(groupId)}/kv/delete`;
-  return jsonOrThrow(
-    await fetchWithOptions(url, {
-      ...options,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      skipDeduplication: true,
-    })
-  );
 }
 
 /**

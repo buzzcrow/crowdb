@@ -40,7 +40,7 @@ test.describe('canvas · fit + pan', () => {
 
     // Group 0 is not initialized: the KV panel must report unavailable.
     await page.getByTestId('domain-kv').click();
-    await expect(page.getByText('Cluster not initialized.', { exact: true })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByRole('treeitem').filter({ hasText: /^datacenter$/i })).toBeVisible({ timeout: 3_000 });
 
     // --- Capacity view shows the CapacityPanel (no canvas) ---
     await page.getByTestId('domain-capacity').click();
@@ -164,7 +164,7 @@ test.describe('canvas · fit + pan', () => {
 
     // Switch to KV view, whose authority has not been initialized.
     await page.getByTestId('domain-kv').click();
-    await expect(page.getByText('Cluster not initialized.', { exact: true })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByRole('treeitem').filter({ hasText: /^datacenter$/i })).toBeVisible({ timeout: 3_000 });
 
     // Switch back to Cluster — should fit to window, NOT restore the
     // panned viewport. The transform should match the fitted state

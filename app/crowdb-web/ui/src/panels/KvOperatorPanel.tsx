@@ -272,7 +272,7 @@ export function KvOperatorPanel({ stores, selectedEntity, backendError, loading,
   return (
     <div className="tw-h-full tw-overflow-y-auto tw-bg-bg tw-text-text">
       <div className="tw-p-5 tw-space-y-4">
-        <h1 className="tw-text-lg tw-font-semibold">PaxosKV data</h1>
+        <h1 className="tw-text-lg tw-font-semibold">PaxosKV</h1>
         {selectedEntity?.type === 'Group' && selectedEntity.id !== '0' && <OwnershipPanel active={active} selection={selectedEntity} nodes={[]} servers={[]} stores={stores} />}
         {/* Selector bar */}
         <div className="tw-flex tw-items-center tw-gap-3 tw-flex-wrap">

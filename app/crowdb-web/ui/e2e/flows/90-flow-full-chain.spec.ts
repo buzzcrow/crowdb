@@ -27,7 +27,7 @@ test.describe('flow · full chain', () => {
 
     // --- Shell renders ---
     await expect(page.getByTestId('domain-cluster')).toBeVisible({ timeout: 3_000 });
-    await expect(page.getByRole('button', { name: 'KV', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'PaxosKV', exact: true })).toBeVisible();
 
     const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 
@@ -114,31 +114,30 @@ test.describe('flow · full chain', () => {
     await step('full-chain: waitForLeader group 70', () =>
       waitForLeader(baseURL!, 7, 70, 10_000));
 
-    // --- KV via KV Operator panel ---
-    await step('full-chain: KV put UI', async () => {
+    // --- KV via read-only KV Operator panel ---
+    await step('full-chain: seed KV through API', async () => {
+      const api = await apiContext(baseURL!);
+      try {
+        const response = await api.post('/api/stores/7/groups/70/kv/put', { data: { key: 'smoke-key', value: 'smoke-value' } });
+        expect(response.ok(), await response.text()).toBeTruthy();
+      } finally { await api.dispose(); }
+    });
+    await step('full-chain: open KV read panel', async () => {
       await page.getByTestId('domain-kv').click();
 
       // Wait for the KV operator panel to load stores, then select the
-      // test store and group so the Put inputs are rendered.
+      // test store and group so the read-only query controls are rendered.
       await expect(page.getByTestId('kv-store-select')).toBeVisible({ timeout: 5_000 });
       await page.getByTestId('kv-store-select').selectOption('7');
       await expect(page.getByTestId('kv-group-select')).toBeVisible({ timeout: 5_000 });
       await page.getByTestId('kv-group-select').selectOption('70');
 
-      await page.getByRole('group', { name: /^KV actions/ }).locator('summary').click();
-      // Put
-      await page.getByLabel('Put key').fill('smoke-key');
-      await page.getByLabel('Put value').fill('smoke-value');
-      const putResponsePromise = page.waitForResponse((r) => r.url().includes('/kv/put'));
-      await page.getByRole('button', { name: /^Put$/ }).click();
-      await putResponsePromise;
     });
 
     await step('full-chain: KV get UI', async () => {
-      // Get
-      await page.getByLabel('Get key').fill('smoke-key');
-      await page.getByRole('button', { name: /^Get$/ }).click();
-      await expect(page.getByTestId('kv-get-result')).toBeVisible({ timeout: 3_000 });
+      await page.getByLabel('Query key').fill('smoke-key');
+      await page.getByRole('button', { name: /^Query$/ }).click();
+      await expect(page.getByTestId('kv-get-result')).toContainText('smoke-value');
     });
     expect(consoleErrors.filter((e) => !/Failed to load resource/i.test(e)), 'console errors after KV ops').toEqual([]);
 

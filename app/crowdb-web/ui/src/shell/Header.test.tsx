@@ -47,7 +47,7 @@ describe('Header', () => {
   it('renders all seven domain toggle buttons', () => {
     const { getByTestId } = renderHeader();
     expect(getByTestId('domain-cluster')).toHaveTextContent('Cluster');
-    expect(getByTestId('domain-kv')).toHaveTextContent('KV');
+    expect(getByTestId('domain-kv')).toHaveTextContent('PaxosKV');
     expect(getByTestId('domain-capacity')).toHaveTextContent('Capacity');
     expect(getByTestId('domain-chunk')).toHaveTextContent('Chunk');
     expect(getByTestId('domain-chunk-kv')).toHaveTextContent('ChunkKV');

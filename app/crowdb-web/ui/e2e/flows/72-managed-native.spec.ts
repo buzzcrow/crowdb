@@ -17,18 +17,14 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
       expect(response.status(), path).toBe(503);
     }
   });
-  await step('managed user KV mutation and read', async () => {
+  await step('managed user KV read', async () => {
     await page.getByTestId('domain-kv').click();
-    await page.getByText(/^KV actions · Store/).click();
     await page.getByTestId('kv-store-select').selectOption('0');
     await page.getByTestId('kv-group-select').selectOption('1');
-    await page.getByLabel('Put key').fill('console_native_ui_demo');
-    await page.getByLabel('Put value').fill('native-value');
-    const put = page.waitForResponse(response => response.url().endsWith('/kv/put'));
-    await page.getByRole('button', { name: 'Put', exact: true }).click();
-    expect((await put).ok()).toBeTruthy();
-    await page.getByLabel('Get key').fill('console_native_ui_demo');
-    await page.getByRole('button', { name: 'Get', exact: true }).click();
+    const seeded = await request.post('/api/stores/0/groups/1/kv/put', { data: { key: 'console_native_ui_demo', value: 'native-value' } });
+    expect(seeded.ok(), await seeded.text()).toBeTruthy();
+    await page.getByLabel('Query key').fill('console_native_ui_demo');
+    await page.getByRole('button', { name: 'Query', exact: true }).click();
     await expect(page.getByTestId('kv-get-result')).toHaveText('native-value', { timeout: 3000 });
     const deleted = await request.post('/api/stores/0/groups/1/kv/delete', { data: { key: 'console_native_ui_demo' } });
     expect(deleted.ok(), await deleted.text()).toBeTruthy();
