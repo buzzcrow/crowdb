@@ -1,9 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 
-import { RefreshCw, Network, Database, RotateCcw, HardDrive, Layers, Package } from 'lucide-react';
+import { RefreshCw, RotateCcw, Info } from 'lucide-react';
 import { useDomain } from '../contexts/DomainContext';
 import { Domain } from '../types';
 import { cn } from '../utils/cn';
+import { domainTabs } from './domainTabs';
 
 export type ClusterHealth = 'Healthy' | 'Degraded' | 'Failed' | 'Unknown';
 
@@ -66,49 +67,21 @@ export function Header({
         {clusterHealth}
       </span>
 
-      {/* Domain toggle */}
-      <div className="console-domains tw-flex tw-items-center tw-self-stretch">
-        <button
-          data-testid="domain-cluster"
-          onClick={() => { setDomain(Domain.Cluster); onShowTopology?.(); }}
-          className={cn(
-            'tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors',
-            domain === Domain.Cluster ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg',
-          )}
-          aria-pressed={domain === Domain.Cluster}
-        >
-          <Network className="tw-h-3.5 tw-w-3.5" /> Cluster
-        </button>
-        <button
-          data-testid="domain-kv"
-          onClick={() => { setDomain(Domain.KV); onShowTopology?.(); }}
-          className={cn(
-            'tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors',
-            domain === Domain.KV ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg',
-          )}
-          aria-pressed={domain === Domain.KV}
-        >
-          <Database className="tw-h-3.5 tw-w-3.5" /> KV
-        </button>
-        <button
-          data-testid="domain-capacity"
-          onClick={() => { setDomain(Domain.Capacity); onShowCapacity?.(); }}
-          className={cn(
-            'tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors',
-            domain === Domain.Capacity ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg',
-          )}
-          aria-pressed={domain === Domain.Capacity}
-        >
-          <HardDrive className="tw-h-3.5 tw-w-3.5" /> Capacity
-        </button>
-        {[{ domain: Domain.Chunk, id: 'chunk', Icon: Package }, { domain: Domain.ChunkKV, id: 'chunk-kv', Icon: Database }, { domain: Domain.Iceberg, id: 'iceberg', Icon: Layers }, { domain: Domain.S3, id: 's3', Icon: Package }].map(({ domain: target, id, Icon }) => (
-          <button key={id} data-testid={`domain-${id}`} onClick={() => setDomain(target)}
-            className={cn('tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors', domain === target ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg')}
-            aria-pressed={domain === target}>
-            <Icon className="tw-h-3.5 tw-w-3.5" /> {target}
-          </button>
+      <nav aria-label="Console domains" className="console-domains tw-flex tw-items-center tw-self-stretch">
+        {domainTabs.map(({ domain: target, id, label, description, docs, Icon }) => (
+          <div key={id} className="tw-flex tw-items-center tw-self-stretch">
+            <button data-testid={`domain-${id}`} onClick={() => { setDomain(target); if (target === Domain.Cluster || target === Domain.KV) onShowTopology?.(); if (target === Domain.Capacity) onShowCapacity?.(); }}
+              className={cn('tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors', domain === target ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg')}
+              aria-pressed={domain === target} title={description}>
+              <Icon className="tw-h-3.5 tw-w-3.5" /> {label}
+            </button>
+            <a href={docs} target="_blank" rel="noreferrer" aria-label={`${label} documentation`} title={`${description} · Open documentation`}
+              onClick={event => event.stopPropagation()} className="tw-p-1 tw-text-muted hover:tw-text-accent">
+              <Info className="tw-h-3.5 tw-w-3.5" />
+            </a>
+          </div>
         ))}
-      </div>
+      </nav>
 
       <div className="tw-flex-1" />
 

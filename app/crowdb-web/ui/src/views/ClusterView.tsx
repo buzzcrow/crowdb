@@ -25,6 +25,7 @@ export interface ClusterViewProps {
   refreshToken: number;
   viewportWidthKey?: number;
   focusRequest: { targetId: string; subtree: boolean; nonce: number } | null;
+  onFocusChange?: (targetId: string) => void;
   onEntityContextMenu: (target: MenuTarget, event: React.MouseEvent) => void;
 }
 

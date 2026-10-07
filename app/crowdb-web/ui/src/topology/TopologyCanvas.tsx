@@ -53,6 +53,7 @@ interface TopologyCanvasProps {
   /** Changes when the main canvas width changes because the inspector opens or resizes. */
   viewportWidthKey?: number;
   focusRequest?: { targetId: string; subtree: boolean; nonce: number } | null;
+  onFocusChange?: (targetId: string) => void;
   /** Right-click on a canvas node. */
   onEntityContextMenu?: (target: MenuTarget, event: React.MouseEvent) => void;
 }
@@ -127,7 +128,7 @@ function selectedNodeId(entity: SelectedEntity): string | null {
   }
 }
 
-function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, viewportWidthKey, focusRequest, onEntityContextMenu }: TopologyCanvasProps) {
+function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, servers, stores, nodeStores, nodeHealthById, diskdbNodeIds, diskdbInstances, diskdbInstanceIdByNodeId, nodeDiskGroups, refreshToken, viewportWidthKey, focusRequest, onFocusChange, onEntityContextMenu }: TopologyCanvasProps) {
   const { domain: activeDomain, returning } = useDomain();
   const domain = scope ?? activeDomain;
   const { selectionForDomain, selectEntity } = useSelection();
@@ -308,14 +309,25 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   }, [active, canvasSizeKey, domain, fitView, nodesInitialized, positioned.nodes.length]);
 
   const selId = selectedEntity ? selectedNodeId(selectedEntity) : null;
+  const activateNode = useCallback((node: Node) => {
+    onFocusChange?.(node.id);
+    const entity = (node.data as FlowNodeData).entity;
+    if (entity) selectEntity({ ...entity, domain });
+    if (childCounts.has(node.id)) setCollapsedByDomain(previous => {
+      const next = new Set(previous[domain] ?? defaultCollapsed);
+      if (next.has(node.id)) next.delete(node.id); else next.add(node.id);
+      return { ...previous, [domain]: next };
+    });
+  }, [onFocusChange, selectEntity, domain, childCounts, defaultCollapsed]);
   const decoratedNodes: Node[] = useMemo(
     () =>
       positioned.nodes.map((n) => ({
         ...n,
         data: { ...(n.data as FlowNodeData), isSelected: n.id === selId,
-          childCount: childCounts.get(n.id) ?? 0, collapsed: collapsed.has(n.id) },
+          childCount: childCounts.get(n.id) ?? 0, collapsed: collapsed.has(n.id),
+          onActivate: () => activateNode(n) },
       })),
-    [positioned.nodes, selId, childCounts, collapsed],
+    [positioned.nodes, selId, childCounts, collapsed, activateNode],
   );
 
   useEffect(() => {
@@ -357,16 +369,8 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   }, [fitView, domain]);
 
   const onNodeClick: NodeMouseHandler = useCallback(
-    (_e, node) => {
-      const entity = (node.data as FlowNodeData).entity;
-      if (entity) selectEntity({ ...entity, domain });
-      if (childCounts.has(node.id)) setCollapsedByDomain(previous => {
-        const next = new Set(previous[domain] ?? defaultCollapsed);
-        if (next.has(node.id)) next.delete(node.id); else next.add(node.id);
-        return { ...previous, [domain]: next };
-      });
-    },
-    [selectEntity, domain, childCounts, defaultCollapsed],
+    (_e, node) => activateNode(node),
+    [activateNode],
   );
 
   const onNodeContextMenu = useCallback(

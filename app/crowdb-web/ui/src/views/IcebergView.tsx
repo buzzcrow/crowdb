@@ -4,7 +4,7 @@
 import { randomUUID } from '../utils/randomUUID';
 import { useState, useEffect, useRef } from 'react';
 import { ResourceActions } from '../access/ResourceActions';
-import { Workbench, inputClass, buttonClass } from '../access/Workbench';
+import { DocsHelp, Workbench, inputClass, buttonClass } from '../access/Workbench';
 import { connections, iceberg } from '../access/native';
 import { Fields } from '../iceberg/Fields';
 import { InspectionView } from '../iceberg/ReferenceExplorer';
@@ -156,7 +156,7 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
   const selectedType = selected ? ({ snapshot: 'Snapshot', list: 'Manifest List', manifest: 'Manifest', file: selected.file?.format ?? 'File' }[selected.kind]) : table ? 'Table' : namespace ? 'Namespace' : 'Catalog';
   const selectedProperties = selected ? { Type: selectedType, ...(selected.kind === 'snapshot' ? { ...selected.snapshot, 'Manifest list size': inspector.cache[inspector.key(selected)]?.size } : selected.kind === 'file' ? selected.file : selected.kind === 'manifest' ? selected.manifest : { location: selected.snapshot['manifest-list'] }), 'Parent table': table, ...(selected.kind !== 'snapshot' ? { 'Snapshot ID': selected.snapshot['snapshot-id'] } : {}) } : table ? { Type: 'Table', ...overview } : namespace ? { Type: 'Namespace', Name: namespace.join('.'), ...properties } : { Type: 'Catalog', ...catalog };
   const focusTitle = selected ? selected.kind === 'snapshot' ? `Snapshot ${selected.snapshot['snapshot-id']}` : (selected.file?.location ?? selected.manifest?.location ?? selected.snapshot['manifest-list'] ?? '').split('/').pop() : table || namespace?.join('.') || 'Iceberg catalog';
-  return <Workbench resizableSidebar showActivity={false} detail={<div aria-label="Iceberg properties" className="tw-space-y-4"><h2 className="tw-font-semibold">Properties</h2><div ref={setPropertyHost} /><Fields stacked values={selectedProperties} /></div>} sidebar={<>
+  return <Workbench resizableSidebar showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/manual/iceberg/" title="Iceberg Catalog" description="Create tables, inspect snapshots, manifests, and Parquet files from this catalog." auth="The Console uses its server-side bearer token. External clients use ICEBERG_TOKEN; there is no separate username or password." />} detail={<div aria-label="Iceberg properties" className="tw-space-y-4"><h2 className="tw-font-semibold">Properties</h2><div ref={setPropertyHost} /><Fields stacked values={selectedProperties} /></div>} sidebar={<>
     {busy && !catalog && <p role="status" className="tw-text-xs">Loading catalog…</p>}
     {catalog && <CatalogTree namespaces={namespaces} pages={namespacePages} namespace={namespace} table={table} loaded={loaded} inspector={inspector}
       onCatalog={selectCatalog} onNamespace={selectNamespace} onTable={selectTable}

@@ -50,7 +50,7 @@ describe('Header', () => {
     expect(getByTestId('domain-kv')).toHaveTextContent('KV');
     expect(getByTestId('domain-capacity')).toHaveTextContent('Capacity');
     expect(getByTestId('domain-chunk')).toHaveTextContent('Chunk');
-    expect(getByTestId('domain-chunk-kv')).toHaveTextContent('Chunk-KV');
+    expect(getByTestId('domain-chunk-kv')).toHaveTextContent('ChunkKV');
     expect(getByTestId('domain-iceberg')).toHaveTextContent('Iceberg');
     expect(getByTestId('domain-s3')).toHaveTextContent('S3');
   });

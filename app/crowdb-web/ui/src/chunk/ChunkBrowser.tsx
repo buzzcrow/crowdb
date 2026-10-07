@@ -4,7 +4,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { getApiBase } from '../api';
 import { readJson } from '../access/native';
-import { Workbench, JsonView, inputClass, buttonClass } from '../access/Workbench';
+import { DocsHelp, Workbench, JsonView, inputClass, buttonClass } from '../access/Workbench';
 import './chunk-browser.css';
 import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { useSelection } from '../contexts/SelectionContext';
@@ -207,7 +207,7 @@ export function ChunkBrowser({ active, onPlacement, openRequest, racks, nodes, s
   const visibleRows = rows.filter(value => `${value.id_hex} ${kindName(value.chunk_type)} ${states[value.state]}`.toLowerCase().includes(filter.toLowerCase()));
   const fields = (values: Record<string, unknown>) => <dl className="chunk-properties">{Object.entries(values).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value == null ? 'Unknown' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>;
   const typeSelector = <select aria-label="Chunk type" className={inputClass} value={kind} onChange={event => { checkpoint(); setKind(event.target.value); setFilter(''); }}><option value="">All types</option>{kinds.map(type => <option key={type.value} value={type.value}>{type.label}</option>)}</select>;
-  return <Workbench showActivity={false} sidebar={<ChunkHierarchy stores={stores} active={active} racks={racks} nodes={nodes} servers={servers} />} detail={chunk && detail ? <section aria-label="Chunk properties" aria-busy={detailBusy} className="tw-space-y-3">
+  return <Workbench showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/manual/cluster/" title="Chunk storage" description="Browse user-data chunks and inspect their placement and physical layout." />} sidebar={<ChunkHierarchy stores={stores} active={active} racks={racks} nodes={nodes} servers={servers} />} detail={chunk && detail ? <section aria-label="Chunk properties" aria-busy={detailBusy} className="tw-space-y-3">
     <h3 className="tw-font-semibold">{strip ? blockIndex === null ? `Strip sequence ${strip.strip_sequence}` : `${layout(strip)} · Block ${blockIndex + 1}` : 'Chunk properties'}</h3>
     {strip ? <>
       {fields({ Sequence: strip.strip_sequence, Layout: layout(strip), 'Logical offset (KiB)': strip.chunk_offset, 'Capacity (KiB)': strip.capacity, 'Sealed (KiB)': strip.sealed_length, 'Unit (KiB)': strip.unit_kb, 'Repair required': strip.placement_repair_required })}
