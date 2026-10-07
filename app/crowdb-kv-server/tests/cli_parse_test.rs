@@ -162,6 +162,26 @@ fn rpc_workers_is_only_an_explicit_override() {
 }
 
 #[test]
+fn production_tree_backend_defaults_to_block() {
+    let defaults = Cli::parse_from([
+        "crowdb-kv-server",
+        "--root",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
+    ]);
+    assert_eq!(defaults.kv_backend, "block");
+    assert_eq!(CrowDBConfig::default().crowtree_backend, "block");
+
+    let file = Cli::parse_from([
+        "crowdb-kv-server",
+        "--root",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
+        "--kv-backend",
+        "file",
+    ]);
+    assert_eq!(file.kv_backend, "file");
+}
+
+#[test]
 fn config_values_survive_absent_cli_and_explicit_values_override() {
     let defaults = Cli::parse_from([
         "crowdb-kv-server",

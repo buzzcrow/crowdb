@@ -58,8 +58,11 @@ impl TableFileConfig {
         bytes: &mut Vec<u8>,
         target: TableFileTarget<'_>,
         access: TableFileAccess<'_>,
+        request_host: Option<&str>,
     ) -> Result<(), IcebergErrorResponse> {
-        let mut properties = self.properties(target.namespace, target.name, target.table);
+        let endpoint = request_host.and_then(|host| self.endpoint_for_host(host));
+        let mut properties =
+            self.properties(target.namespace, target.name, target.table, endpoint.as_deref());
         let credentials = FileDelegationLimits {
             ttl_ms: 900_000,
             max_request_bytes: 1024 * 1024 * 1024,
@@ -130,12 +133,13 @@ impl TableFileConfig {
         namespace: &NamespaceIdentifier,
         name: &str,
         table: TableId,
+        endpoint: Option<&str>,
     ) -> BTreeMap<&'static str, String> {
         let namespace = namespace.components().join("\u{1f}");
         let namespace = percent_encoding::utf8_percent_encode(&namespace, percent_encoding::NON_ALPHANUMERIC);
         let name = percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC);
         BTreeMap::from([
-            ("s3.endpoint", self.endpoint.clone()),
+            ("s3.endpoint", endpoint.unwrap_or(&self.endpoint).to_owned()),
             ("s3.path-style-access", "true".into()),
             ("client.region", "us-east-1".into()),
             (
@@ -143,6 +147,17 @@ impl TableFileConfig {
                 format!("/v1/namespaces/{namespace}/tables/{name}/credentials?table-id={table}"),
             ),
         ])
+    }
+
+    fn endpoint_for_host(&self, host: &str) -> Option<String> {
+        let base: hyper::Uri = self.endpoint.parse().ok()?;
+        let candidate = format!("{}://{host}", base.scheme_str()?);
+        let uri: hyper::Uri = candidate.parse().ok()?;
+        let authority = uri.authority()?;
+        if authority.as_str().contains('@') || uri.path() != "/" || uri.query().is_some() {
+            return None;
+        }
+        Some(candidate)
     }
 }
 

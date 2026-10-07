@@ -63,6 +63,23 @@ async fn optional_access_delegation_list_does_not_change_table_identity() {
 }
 
 #[tokio::test]
+async fn table_fileio_endpoint_follows_request_host_for_custom_port_mapping() {
+    let fixture = TestTableHttp::vending().await;
+    fixture.install("events").await;
+    let response = reqwest::Client::new()
+        .get(format!("{}{PATH}", fixture.endpoint()))
+        .header("Host", "127.0.0.1:19092")
+        .bearer_auth("r".repeat(32))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["config"]["s3.endpoint"], "http://127.0.0.1:19092");
+    fixture.finish().await;
+}
+
+#[tokio::test]
 async fn successful_load_counts_selected_version_and_emitted_response() {
     let fixture = TestTableHttp::new().await;
     fixture.install("events").await;

@@ -161,8 +161,8 @@ async fn create_group_with_wal_restores_and_resumes_at_next_slot() {
 /// (`PxLocalReplica::restore_from_replay_with_engine`), not by any
 /// resume-from-last-applied-slot shortcut (not implemented; see /// #20's note on why that needs separate, careful frontier-seeding work).
 /// Parameterized over [`CrowdbTreeBackend`] so the same
-/// scenario covers both the default buffered-file backend and the raw
-/// `O_DIRECT` block-device backend.
+/// scenario covers both the explicit file backend and the raw `O_DIRECT`
+/// block-device backend.
 async fn crowdb_tree_engine_persists_across_restart(crowtree_backend: CrowdbTreeBackend) {
     let temp = crowdb_test_harness::test_dirs::tempdir_in_test_data("startup");
     let wal_root = temp.path().join("wal-root");

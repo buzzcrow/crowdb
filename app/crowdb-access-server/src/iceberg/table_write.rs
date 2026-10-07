@@ -96,6 +96,11 @@ impl TableWrites {
         let key = RequestKey::parse(header, now).map_err(|_| bad_request())?;
         let uri = request.uri().clone();
         let method = request.method().clone();
+        let request_host = request
+            .headers()
+            .get(hyper::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let bytes = read_body(request.into_body()).await?;
         let capabilities = authority.capabilities;
         let configuration_target = self.configuration_target(&uri, &method, &bytes);
@@ -124,8 +129,15 @@ impl TableWrites {
                 .try_direct_update(&record, capabilities, &uri, &bytes)
                 .await?
             {
-                let body =
-                    self.decorate_response(200, body, configuration_target, context, authority, principal)?;
+                let body = self.decorate_response(
+                    200,
+                    body,
+                    configuration_target,
+                    context,
+                    authority,
+                    principal,
+                    request_host.as_deref(),
+                )?;
                 return Ok(response(200, body));
             }
         }
@@ -140,6 +152,7 @@ impl TableWrites {
                     context,
                     authority,
                     principal,
+                    request_host.as_deref(),
                 )?;
                 return Ok(response(record.status, body));
             }
@@ -173,8 +186,15 @@ impl TableWrites {
             .finish(record, status, body.clone(), now_ms()?)
             .await
             .map_err(|error| mutation_error(&error))?;
-        let body =
-            self.decorate_response(status, body, configuration_target, context, authority, principal)?;
+        let body = self.decorate_response(
+            status,
+            body,
+            configuration_target,
+            context,
+            authority,
+            principal,
+            request_host.as_deref(),
+        )?;
         Ok(response(status, body))
     }
 
@@ -211,6 +231,7 @@ impl TableWrites {
         context: CatalogContext,
         authority: &CatalogAuthority,
         principal: Principal,
+        request_host: Option<&str>,
     ) -> Result<Vec<u8>, IcebergErrorResponse> {
         if status == 200 {
             if let (Some(config), Some((namespace, name, staged))) = (&self.file_config, configuration_target)
@@ -247,6 +268,7 @@ impl TableWrites {
                         authority,
                         principal,
                     },
+                    request_host,
                 )?;
             }
         }
