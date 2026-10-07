@@ -156,27 +156,12 @@ export function IcebergView({ active, readonly: domainReadonly }: { active: bool
   const selectedType = selected ? ({ snapshot: 'Snapshot', list: 'Manifest List', manifest: 'Manifest', file: selected.file?.format ?? 'File' }[selected.kind]) : table ? 'Table' : namespace ? 'Namespace' : 'Catalog';
   const selectedProperties = selected ? { Type: selectedType, ...(selected.kind === 'snapshot' ? { ...selected.snapshot, 'Manifest list size': inspector.cache[inspector.key(selected)]?.size } : selected.kind === 'file' ? selected.file : selected.kind === 'manifest' ? selected.manifest : { location: selected.snapshot['manifest-list'] }), 'Parent table': table, ...(selected.kind !== 'snapshot' ? { 'Snapshot ID': selected.snapshot['snapshot-id'] } : {}) } : table ? { Type: 'Table', ...overview } : namespace ? { Type: 'Namespace', Name: namespace.join('.'), ...properties } : { Type: 'Catalog', ...catalog };
   const focusTitle = selected ? selected.kind === 'snapshot' ? `Snapshot ${selected.snapshot['snapshot-id']}` : (selected.file?.location ?? selected.manifest?.location ?? selected.snapshot['manifest-list'] ?? '').split('/').pop() : table || namespace?.join('.') || 'Iceberg catalog';
-  return <Workbench resizableSidebar showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/manual/iceberg/" title="Iceberg Catalog" description="Create tables, inspect snapshots, manifests, and Parquet files from this catalog." auth="The Console uses its server-side bearer token. External clients use ICEBERG_TOKEN; there is no separate username or password." />} detail={<div aria-label="Iceberg properties" className="tw-space-y-4"><h2 className="tw-font-semibold">Properties</h2><div ref={setPropertyHost} /><Fields stacked values={selectedProperties} /></div>} sidebar={<>
+  return <Workbench resizableSidebar showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/manual/iceberg/" title="iceberg" auth="The Console uses its server-side bearer token. External clients use ICEBERG_TOKEN; there is no separate username or password." />} detail={<div aria-label="Iceberg properties" className="tw-space-y-4"><h2 className="tw-font-semibold">Properties</h2><div ref={setPropertyHost} /><Fields stacked values={selectedProperties} /></div>} sidebar={<>
     {busy && !catalog && <p role="status" className="tw-text-xs">Loading catalog…</p>}
     {catalog && <CatalogTree namespaces={namespaces} pages={namespacePages} namespace={namespace} table={table} loaded={loaded} inspector={inspector}
       onCatalog={selectCatalog} onNamespace={selectNamespace} onTable={selectTable}
       onPage={(ns, t, n) => void run(() => loadNamespace(ns, t, n), 'Namespace page loaded')}
       pagedNamespaces={pagedNamespaces} onFirstNamespaces={() => void run(() => loadNamespaces(), 'First namespaces loaded')} nextNamespaces={nextNamespaces} onNextNamespaces={() => void run(() => loadNamespaces(nextNamespaces!), 'Namespace page loaded')} />}
-    {catalog && !namespaces.length && <section aria-label="First success guide" className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-4 tw-space-y-3">
-      <h2 className="tw-font-semibold">Create your first Iceberg table</h2>
-      <p className="tw-text-sm tw-text-muted">The Catalog is healthy and available, but it has no namespaces yet. Run this from a client that can reach the Catalog, then refresh this page.</p>
-      <pre className="tw-overflow-x-auto tw-rounded tw-bg-bg tw-p-3 tw-text-xs">{`python -m pip install 'pyiceberg[pyarrow]' pandas
-# Set ICEBERG_TOKEN from the container credentials.
-import os
-from pyiceberg.catalog import load_catalog
-catalog = load_catalog('crowdb', type='rest', uri='http://127.0.0.1:9092', token=os.environ['ICEBERG_TOKEN'])
-from pyiceberg.schema import Schema
-from pyiceberg.types import NestedField, LongType
-catalog.create_namespace('demo')
-catalog.create_table('demo.events', schema=Schema(NestedField(1, 'id', LongType(), required=True)))
-# Use the host-mapped endpoint above; localhost:9092 only applies to the default mapping.`}</pre>
-      <a className="tw-text-sm tw-text-accent tw-underline" href="https://crowdb.dev/docs/quickstart/" target="_blank" rel="noreferrer">Open the Iceberg quick start</a>
-    </section>}
   </>}>
     <nav aria-label="Iceberg breadcrumbs" className="tw-flex tw-flex-wrap tw-items-center tw-gap-2 tw-text-xs tw-text-muted">
       <button onClick={selectCatalog}>Catalog</button>{namespace && <><span>/</span><button onClick={() => selectNamespace(namespace)}>{namespace.join('.')}</button></>}{table && <><span>/</span><button onClick={() => inspector.clear()}>{table}</button></>}{selected && <><span>/</span><span>{selectedType}</span></>}

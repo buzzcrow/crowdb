@@ -347,7 +347,17 @@ struct RpcChunkTransport::Impl
 
     static Status parse_chunk(const FBChunk *chunk, RemoteChunk *out)
     {
-        if (chunk == nullptr || chunk->id() == nullptr || chunk->strips() == nullptr) {
+        if (chunk == nullptr || chunk->id() == nullptr) {
+            return Status::corruption("ChunkDB returned malformed tree chunk metadata");
+        }
+        // ChunkDB keeps a Deleted tombstone after releasing the physical
+        // strips. Treat that state as an unavailable tree root instead of
+        // misclassifying the intentionally empty strips vector as malformed
+        // metadata. The owner can then repair or retire the assignment.
+        if (chunk->state() == crowdb::chunkdb::proto::FBChunkState_Deleted) {
+            return Status::unavailable("tree chunk is deleted");
+        }
+        if (chunk->strips() == nullptr) {
             return Status::corruption("ChunkDB returned malformed tree chunk metadata");
         }
         RemoteChunk parsed;

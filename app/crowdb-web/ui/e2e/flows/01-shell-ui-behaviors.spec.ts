@@ -203,8 +203,7 @@ test.describe('shell · UI behaviors', () => {
     await expect(node21c).toHaveAttribute('aria-selected', 'true');
   });
 
-  test('sidebar filter, header refresh, and health pill states', async ({ page, baseURL }) => {
-    // --- sidebar filter narrows tree and clearing restores all items ---
+  test('sidebar tree, header refresh, and health pill states', async ({ page, baseURL }) => {
     await step('shell: resetAll', () => resetAll(baseURL!));
     await step('shell: create racks', () => Promise.all([
       createRack(baseURL!, { id: 341, name: 'Alpha' }),
@@ -226,18 +225,6 @@ test.describe('shell · UI behaviors', () => {
     const rackC = page.getByRole('treeitem').filter({ hasText: 'R-343' });
 
     // All visible initially
-    await expect(rackA).toBeVisible({ timeout: 3_000 });
-    await expect(rackB).toBeVisible();
-    await expect(rackC).toBeVisible();
-
-    // Type filter "alpha"
-    await filterAside.getByPlaceholder('Filter...').fill('alpha');
-    await expect(rackA).toBeVisible({ timeout: 3_000 });
-    await expect(rackB).toHaveCount(0);
-    await expect(rackC).toHaveCount(0);
-
-    // Clear filter
-    await filterAside.getByPlaceholder('Filter...').fill('');
     await expect(rackA).toBeVisible({ timeout: 3_000 });
     await expect(rackB).toBeVisible();
     await expect(rackC).toBeVisible();

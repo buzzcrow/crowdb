@@ -6,11 +6,11 @@ import { configure, connections } from './native';
 import { getApiBase } from '../api';
 import { PanelDivider } from '../components/PanelDivider';
 import { ActivityLog } from '../panels/ActivityLog';
-import { BookOpen, ExternalLink } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 
 export const inputClass = 'tw-rounded tw-border tw-border-border tw-bg-bg tw-px-2 tw-py-1.5 tw-text-sm tw-text-text';
 export const buttonClass = 'tw-rounded tw-border tw-border-border tw-px-3 tw-py-1.5 tw-text-xs hover:tw-bg-accent/10 disabled:tw-opacity-40';
-export function DocsHelp({ href, title, description, auth }: { href: string; title: string; description: string; auth?: string }) {
+export function DocsHelp({ href, title, auth }: { href: string; title: string; auth?: string }) {
   const [credentials, setCredentials] = useState<string | null>(null);
   const [error, setError] = useState('');
   const reveal = async () => {
@@ -35,10 +35,9 @@ export function DocsHelp({ href, title, description, auth }: { href: string; tit
   const copy = () => { if (credentials) void navigator.clipboard?.writeText(credentials); };
   return <section aria-label={`${title} help`} className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-3 tw-space-y-2">
     <div className="tw-flex tw-items-center tw-justify-between tw-gap-2">
-      <div className="tw-flex tw-items-center tw-gap-2 tw-text-sm tw-font-semibold"><BookOpen className="tw-h-4 tw-w-4 tw-text-accent" />{title}</div>
+      <div className="tw-text-sm tw-font-semibold">{title}</div>
       <a className="tw-inline-flex tw-items-center tw-gap-1 tw-text-xs tw-text-accent tw-underline" href={href} target="_blank" rel="noreferrer">Help <ExternalLink className="tw-h-3 tw-w-3" /></a>
     </div>
-    <p className="tw-text-xs tw-text-muted">{description}</p>
     {auth && <details className="tw-text-xs tw-text-muted"><summary className="tw-cursor-pointer">Connection credentials</summary><p className="tw-mt-2">{auth}</p><div className="tw-mt-2 tw-flex tw-gap-2"><button type="button" className={buttonClass} onClick={() => void reveal()}>Show local credentials</button>{credentials && <button type="button" className={buttonClass} onClick={copy}>Copy env</button>}</div>{error && <p role="alert" className="tw-mt-2 tw-text-failed">{error}</p>}{credentials && <pre className="tw-mt-2 tw-max-h-40 tw-overflow-auto tw-whitespace-pre-wrap tw-break-all tw-rounded tw-bg-bg tw-p-2 tw-text-[10px]">{credentials}</pre>}</details>}
   </section>;
 }

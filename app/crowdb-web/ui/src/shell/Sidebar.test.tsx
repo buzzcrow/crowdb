@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, within } from '@testing-library/react';
 import { DomainProvider } from '../contexts/DomainContext';
 import { SelectionProvider } from '../contexts/SelectionContext';
@@ -124,6 +124,12 @@ describe('Sidebar · KV logical projection', () => {
     // No physical PKV-server or node items in the KV tree.
     expect(queryByText('PKV-10')).toBeNull();
     expect(queryByText('N-10')).toBeNull();
+  });
+
+  it('offers documentation beside the title and no KV add button', () => {
+    const { getByRole, queryByRole } = renderSidebar(Domain.KV, { onAdd: vi.fn() });
+    expect(getByRole('link', { name: 'Help' })).toHaveAttribute('href', 'https://crowdb.dev/docs/manual/console/ui/tab/kv/');
+    expect(queryByRole('button', { name: 'Add Store' })).toBeNull();
   });
 });
 

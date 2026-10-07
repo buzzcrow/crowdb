@@ -19,7 +19,6 @@ test.describe('cluster · rack + node CRUD', () => {
 
     await expect(page.getByTestId('domain-cluster')).toBeVisible({ timeout: 3_000 });
     await expect(page.getByTestId('domain-kv')).toBeVisible({ timeout: 3_000 });
-    await expect(page.getByPlaceholder('Filter...')).toBeVisible();
 
     const healthText = page.locator('header').getByText(/healthy|degraded|failed|unknown/i);
     await expect(healthText).toBeVisible({ timeout: 3_000 });

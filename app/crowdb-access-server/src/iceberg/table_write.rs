@@ -219,6 +219,7 @@ impl TableWrites {
         Ok((status, body))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn decorate_response(
         &self,
         status: u16,

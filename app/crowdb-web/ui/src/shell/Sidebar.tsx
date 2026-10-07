@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useState, useMemo } from 'react';
-import { Search, FolderTree, Monitor, Database, Boxes, HardDrive, Cog, Plus, Rocket, Building2 } from 'lucide-react';
+import { FolderTree, Monitor, Database, Boxes, HardDrive, Cog, Rocket, Building2, ExternalLink } from 'lucide-react';
 import { useDomain, useNavigationSnapshot } from '../contexts/DomainContext';
 import { Tree, TreeNode } from '../components/Tree';
 import { Button } from '../components/ui/Button';
@@ -14,6 +14,7 @@ import type { NodeDiskGroups } from '../data/useCapacityTree';
 import type { ServerSummary } from '../api';
 import { isAuxiliaryKind, serviceInstanceLabel } from '../services/client';
 import { serviceOrder, type NodeServicePlan, type ServiceKind } from '../services/useNodeServicePlans';
+import { domainTabs } from './domainTabs';
 
 /** Fixed UI-only datacenter root wrapping the rack/store children. */
 function datacenterRoot(children: TreeNode[]): TreeNode {
@@ -81,10 +82,9 @@ export function Sidebar({
   servicePlans = {},
 }: SidebarProps) {
   const { domain } = useDomain();
+  const help = domainTabs.find(tab => tab.domain === domain);
+  const helpTitle = domain === Domain.Cluster ? 'cluster' : domain === Domain.KV ? 'paxosKV' : 'capacity';
   const [expansions, setExpansions] = useState<Partial<Record<Domain, string[]>>>({});
-  const [filters, setFilters] = useState<Partial<Record<Domain, string>>>({});
-  const filterQuery = filters[domain] ?? '';
-  const setFilterQuery = (value: string) => setFilters(previous => ({ ...previous, [domain]: value }));
   const serverByNodeId = useMemo(() => crowdbKvServerByNodeId(servers), [servers]);
 
   const treeNodes = useMemo<TreeNode[]>(() => {
@@ -356,18 +356,6 @@ export function Sidebar({
     }))];
   }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans]);
 
-  const filtered = useMemo(() => {
-    if (!filterQuery.trim()) return treeNodes;
-    const q = filterQuery.toLowerCase();
-    const filterNode = (node: TreeNode): TreeNode | null => {
-      const matches = node.label.toLowerCase().includes(q) || node.id.toLowerCase().includes(q);
-      const kids = node.children?.map(filterNode).filter(Boolean) as TreeNode[] | undefined;
-      if (matches || (kids && kids.length > 0)) return { ...node, children: kids };
-      return null;
-    };
-    return treeNodes.map(filterNode).filter(Boolean) as TreeNode[];
-  }, [treeNodes, filterQuery]);
-
   const expandedIds = useMemo(() => {
     const ids: string[] = [];
     const collect = (ns: TreeNode[]) => {
@@ -376,73 +364,38 @@ export function Sidebar({
         if (n.children) collect(n.children);
       }
     };
-    collect(filtered);
+    collect(treeNodes);
     return ids;
-  }, [filtered, domain]);
+  }, [treeNodes, domain]);
 
   useNavigationSnapshot(domain, 'shared-sidebar', () => {
-    const source = domain; const expanded = [...(expansions[source] ?? expandedIds)]; const filter = filterQuery;
+    const source = domain; const expanded = [...(expansions[source] ?? expandedIds)];
     return () => {
       setExpansions(previous => ({ ...previous, [source]: expanded }));
-      setFilters(previous => ({ ...previous, [source]: filter }));
     };
   });
 
   return (
     <aside aria-label="Cluster tree sidebar" className="tw-h-[calc(100vh-3.5rem)] tw-mt-14 tw-border-r tw-border-border tw-bg-bg tw-flex tw-flex-col tw-overflow-hidden tw-fixed tw-left-0 tw-top-0" style={{ width }}>
-      <div className="tw-p-3 tw-border-b tw-border-border">
-        <div className="tw-relative">
-          <Search className="tw-absolute tw-left-3 tw-top-1/2 tw--translate-y-1/2 tw-h-4 tw-w-4 tw-text-muted" />
-          <input
-            type="text"
-            placeholder="Filter..."
-            value={filterQuery}
-            onChange={(e) => setFilterQuery(e.target.value)}
-            className="tw-w-full tw-pl-9 tw-pr-3 tw-py-2 tw-bg-panel tw-border tw-border-border tw-rounded-md tw-text-sm tw-text-text focus:tw-outline-none focus:tw-ring-2 focus:tw-ring-accent"
-          />
+      <div className="tw-m-3 tw-rounded tw-border tw-border-border tw-bg-panel tw-p-3">
+        <div className="tw-flex tw-items-center tw-justify-between tw-gap-2">
+          <h3 className="tw-text-sm tw-font-semibold tw-text-text">{helpTitle}</h3>
+          <div className="tw-flex tw-items-center tw-gap-2">
+            {help && <a className="tw-inline-flex tw-items-center tw-gap-1 tw-text-xs tw-text-accent tw-underline" href={help.docs} target="_blank" rel="noreferrer">Help <ExternalLink className="tw-h-3 tw-w-3" /></a>}
+          </div>
         </div>
       </div>
 
-      <div className="tw-flex tw-items-center tw-justify-between tw-px-3 tw-py-2 tw-border-b tw-border-border">
-        <h3 className="tw-text-xs tw-font-semibold tw-text-muted tw-uppercase tw-tracking-wider">
-          {domain === Domain.Cluster ? 'Cluster' : domain === Domain.KV ? 'KV' : 'Capacity'}
-        </h3>
-        {!readonly && onAdd && domain !== Domain.Capacity && (
-          domain === Domain.KV && !clusterInitialized ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={onAdd}
-              aria-label="Initialize Cluster"
-              className="tw-h-7 tw-px-2 tw-gap-1"
-            >
-              <Rocket className="tw-h-3.5 tw-w-3.5" />
-              <span className="tw-text-xs">Initialize</span>
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onAdd}
-              aria-label={domain === Domain.KV ? 'Add Store' : 'Add Rack'}
-              className="tw-h-7 tw-px-2"
-            >
-              <Plus className="tw-h-3.5 tw-w-3.5" />
-            </Button>
-          )
-        )}
-      </div>
-
-      {loading && filtered.length === 0 ? (
+      {loading && treeNodes.length === 0 ? (
         <div className="tw-p-4 tw-animate-pulse tw-space-y-2">
           <div className="tw-h-6 tw-bg-panel tw-rounded-md" />
           <div className="tw-h-6 tw-bg-panel tw-rounded-md tw-w-3/4" />
           <div className="tw-h-6 tw-bg-panel tw-rounded-md tw-w-1/2" />
         </div>
-      ) : filtered.length > 0 ? (
+      ) : treeNodes.length > 0 ? (
         <Tree
           key={domain}
-          nodes={filtered}
+          nodes={treeNodes}
           expandedIds={expansions[domain] ?? expandedIds}
           onExpansionChange={ids => setExpansions(previous => ({ ...previous, [domain]: ids }))}
           onNodeClick={onNodeClick}
@@ -450,24 +403,22 @@ export function Sidebar({
         />
       ) : (
         <div className="tw-flex tw-items-center tw-justify-center tw-flex-1 tw-text-sm tw-text-muted tw-px-4 tw-text-center">
-          {filterQuery
-            ? 'No matching items'
-            : domain === Domain.Cluster
+          {domain === Domain.Cluster
+            ? 'No racks registered'
+            : domain === Domain.Capacity
               ? 'No racks registered'
-              : domain === Domain.Capacity
-                ? 'No racks registered'
-                : clusterInitialized
-                  ? 'No stores yet'
-                  : (
-                    <div className="tw-space-y-3">
-                      <div>Cluster not initialized.</div>
-                      {!readonly && (
-                        <Button size="sm" onClick={onAdd} leftIcon={<Rocket className="tw-h-3.5 tw-w-3.5" />}>
-                          Initialize Cluster
-                        </Button>
-                      )}
-                    </div>
-                  )}
+              : clusterInitialized
+                ? 'No stores yet'
+                : (
+                  <div className="tw-space-y-3">
+                    <div>Cluster not initialized.</div>
+                    {!readonly && (
+                      <Button size="sm" onClick={onAdd} leftIcon={<Rocket className="tw-h-3.5 tw-w-3.5" />}>
+                        Initialize Cluster
+                      </Button>
+                    )}
+                  </div>
+                )}
         </div>
       )}
     </aside>

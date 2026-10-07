@@ -32,6 +32,10 @@ export interface FlowNodeData {
   layer: number;
   entity?: Omit<SelectedEntity, 'domain'>;
   isSelected?: boolean;
+  childCount?: number;
+  collapsed?: boolean;
+  /** Handles the card click before React Flow has finished wiring canvas events. */
+  onActivate?: () => void;
 }
 
 function mkNode(id: string, data: FlowNodeData): Node {

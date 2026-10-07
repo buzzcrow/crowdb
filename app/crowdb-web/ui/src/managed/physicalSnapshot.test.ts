@@ -27,6 +27,13 @@ describe('confirmed physical snapshot', () => {
     expect(snapshot.servers[0]).toMatchObject({ service_type: 'paxos-kv', mgmt_url: 'http://127.0.0.1:10000', health: 'up' });
     expect(snapshot.servers[0].rpc_url).toBeUndefined();
   });
+  it('uses the node reachability status for physical node health', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      source: 'group0', racks: [{ id: 1 }], nodes: [{ id: 7, rack_id: 1, status: 1 }], disk_groups: [], disks: [], services: [],
+    }))));
+    const snapshot = await physicalSnapshot();
+    expect(snapshot.nodes[0]).toMatchObject({ has_server: false, kv_server: { health: 'up', state: 'running' } });
+  });
   it('does not render a missing authority as a confirmed empty topology', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ source: 'local' }))));
     await expect(physicalSnapshot()).rejects.toThrow('Confirmed Group 0 snapshot unavailable');
@@ -39,5 +46,18 @@ describe('confirmed physical snapshot', () => {
     const snapshot = await physicalSnapshot();
     expect(snapshot.servers).toEqual([{ id: 'chunk-kv-9007199254740993', node_id: 7, service_type: 'chunk-kv',
       endpoint: '127.0.0.1:15201', rpc_url: '127.0.0.1:15201', mgmt_url: 'http://127.0.0.1:15101', health: 'unknown', pid: undefined }]);
+  });
+  it('projects access and web monitor services into the single-node topology', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      source: 'group0', racks: [{ id: 1 }], nodes: [{ id: 1, rack_id: 1 }], disk_groups: [], disks: [], services: [],
+      monitor: { services: {
+        access: { pid: 10, healthy: true }, web: { pid: 11, healthy: true },
+      } },
+    }))));
+    const snapshot = await physicalSnapshot();
+    expect(snapshot.servers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'access-server-1', node_id: 1, service_type: 'access-server', health: 'up', pid: 10 }),
+      expect.objectContaining({ id: 'web-1', node_id: 1, service_type: 'web', health: 'up', pid: 11 }),
+    ]));
   });
 });

@@ -28,7 +28,6 @@ test.describe('flow · full chain', () => {
     // --- Shell renders ---
     await expect(page.getByTestId('domain-cluster')).toBeVisible({ timeout: 3_000 });
     await expect(page.getByRole('button', { name: 'KV', exact: true })).toBeVisible();
-    await expect(page.getByPlaceholder('Filter...')).toBeVisible();
 
     const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 

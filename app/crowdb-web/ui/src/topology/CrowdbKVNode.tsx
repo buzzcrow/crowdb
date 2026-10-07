@@ -22,6 +22,7 @@ interface CrowdbKVNodeData {
   isSelected?: boolean;
   childCount?: number;
   collapsed?: boolean;
+  onActivate?: () => void;
 }
 
 const iconForKind: Record<CrowdbKVNodeData['kind'], typeof FolderTree> = {
@@ -82,6 +83,11 @@ function CrowdbKVNodeBase({ data }: NodeProps<CrowdbKVNodeData>) {
   return (
     <div
       title={data.childCount ? `${data.collapsed ? 'Expand' : 'Collapse'} ${data.label} · ${data.childCount} children` : data.label}
+      onClick={(event) => {
+        if (!data.onActivate) return;
+        event.stopPropagation();
+        data.onActivate();
+      }}
       className={cn(
         'tw-border tw-rounded-lg tw-px-3 tw-py-2 tw-min-w-[160px] tw-shadow-sm tw-transition-all',
         surface,

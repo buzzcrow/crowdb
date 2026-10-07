@@ -7,7 +7,7 @@ export type NodeId = number;
 export type StoreId = string;
 export type GroupId = string;
 export type ReplicaId = string;
-export type ServiceKind = 'paxos-kv' | 'diskdb' | 'chunkdb' | 'diskio' | 'chunk-kv' | 'access-server' | 'rpc';
+export type ServiceKind = 'paxos-kv' | 'diskdb' | 'chunkdb' | 'diskio' | 'chunk-kv' | 'access-server' | 'web' | 'rpc';
 
 // SSH Credentials
 export type SshCreds =

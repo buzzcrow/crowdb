@@ -24,6 +24,8 @@ pub enum KvBootstrapError {
     MonitorLog(#[from] MonitorLogError),
     #[error("KV bootstrap state is invalid: {0}")]
     Invalid(&'static str),
+    #[error("KV group leadership did not converge before the retry window")]
+    LeadershipDeadline,
 }
 
 #[derive(Deserialize)]
@@ -216,23 +218,24 @@ impl KvBootstrap {
         let deadline = Instant::now() + READY_DEADLINE;
         let path = format!("stores/{}/groups/{}/ready", group.store_id, group.group_id);
         loop {
-            let response = self.client.get(self.url(&path)).send().await?;
-            if response.status() == reqwest::StatusCode::OK {
-                let readiness: GroupReadiness = response.json().await?;
-                if readiness.ready
-                    && readiness.leader_id == group.replica_id
-                    && readiness.voting_replicas == 1
-                    && readiness.reachable_replicas == 1
-                {
-                    return Ok(());
+            if let Ok(response) = self.client.get(self.url(&path)).send().await {
+                if response.status() == reqwest::StatusCode::OK {
+                    let readiness: GroupReadiness = response.json().await?;
+                    if readiness.ready
+                        && readiness.leader_id == group.replica_id
+                        && readiness.voting_replicas == 1
+                        && readiness.reachable_replicas == 1
+                    {
+                        return Ok(());
+                    }
+                } else if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                    return Err(KvBootstrapError::Invalid(
+                        "KV group readiness endpoint is incompatible",
+                    ));
                 }
-            } else if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
-                return Err(KvBootstrapError::Invalid(
-                    "KV group readiness endpoint is incompatible",
-                ));
             }
             if Instant::now() >= deadline {
-                return Err(KvBootstrapError::Invalid("KV group leadership deadline expired"));
+                return Err(KvBootstrapError::LeadershipDeadline);
             }
             sleep(POLL_INTERVAL).await;
         }

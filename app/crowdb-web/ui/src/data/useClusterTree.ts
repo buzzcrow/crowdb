@@ -77,7 +77,9 @@ export function useClusterTree({
         const snapshot = await physicalSnapshot();
         if (controller.signal.aborted) return;
         setRacks(snapshot.racks); setNodes(snapshot.nodes); setManagedDiskGroups(snapshot.diskGroups); setServices(snapshot.servers);
-        setNodeStores({}); setNodeHealthById({}); setError(null);
+        setNodeStores({});
+        setNodeHealthById(Object.fromEntries(snapshot.nodes.map(node => [node.id, node.kv_server?.health ?? NodeHealth.Unknown])));
+        setError(null);
         return;
       }
       const racksData = await listRacks(recursive, options);

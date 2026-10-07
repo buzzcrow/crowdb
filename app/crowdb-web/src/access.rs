@@ -28,6 +28,7 @@ type ApiError = (StatusCode, Json<ErrorBody>);
 pub(crate) fn read_router() -> Router<AppState> {
     Router::new()
         .route("/api/access/connections", get(connections))
+        .route("/api/access/credentials", get(client_credentials))
         .route("/api/access/s3-inspect/locations", get(inspection::locations))
         .route("/api/access/:protocol", any(proxy))
         .route("/api/access/:protocol/", any(proxy))
@@ -86,6 +87,29 @@ pub(crate) async fn connections(State(state): State<AppState>) -> Result<Json<Va
     Ok(Json(json!({"iceberg":iceberg,"s3":origin(&state,"s3")?,
         "iceberg_ready":reader.is_some() && iceberg.is_some(),
         "configurable":!state.managed_mode,"max_request_bytes":BODY_LIMIT})))
+}
+
+pub(crate) async fn client_credentials(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let root = std::env::var_os("CROWDB_CONSOLE_CREDENTIAL_ROOT")
+        .map_or_else(|| state.runtime_root.as_ref().clone(), std::path::PathBuf::from);
+    let body = crowdb_monitor::show_client_credentials(&root).map_err(|err| err_502(err.to_string()))?;
+    let value = |name: &str| {
+        body.lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .map(str::to_owned)
+    };
+    Ok(Json(json!({
+        "s3": {
+            "endpoint": value("AWS_ENDPOINT_URL"),
+            "region": value("AWS_DEFAULT_REGION"),
+            "access_key_id": value("AWS_ACCESS_KEY_ID"),
+            "secret_access_key": value("AWS_SECRET_ACCESS_KEY")
+        },
+        "iceberg": {
+            "uri": value("ICEBERG_URI"),
+            "token": value("ICEBERG_TOKEN")
+        }
+    })))
 }
 
 #[derive(Deserialize)]
