@@ -436,15 +436,25 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
         uring_cfg.entries = 256;
         uring_cfg.mode    = crowdb::common::PollingMode::Hybrid;
         uring_topo.pipelines.push_back(uring_cfg);
-        h->uring = std::make_unique<crowdb::common::DiskIOUring>(std::move(uring_topo));
-        // Register all extent fds with the uring so submit_* can route.
-        for (int fd : static_cast<BlockPageStore *>(h->store.get())->all_extent_fds()) {
-            h->uring->register_fd(fd);
+        auto candidate = std::make_unique<crowdb::common::DiskIOUring>(std::move(uring_topo));
+        if (candidate->valid()) {
+            h->uring = std::move(candidate);
+            // Register all extent fds with the uring so submit_* can route.
+            for (int fd : static_cast<BlockPageStore *>(h->store.get())->all_extent_fds()) {
+                h->uring->register_fd(fd);
+            }
+            h->async_store = std::make_unique<BlockAsyncPageStore>(static_cast<BlockPageStore *>(h->store.get()),
+                                                                    h->uring.get());
+            o.async_uring      = h->uring.get();
+            o.async_page_store = h->async_store.get();
         }
-        h->async_store =
-            std::make_unique<BlockAsyncPageStore>(static_cast<BlockPageStore *>(h->store.get()), h->uring.get());
-        o.async_uring      = h->uring.get();
-        o.async_page_store = h->async_store.get();
+        else {
+            // Containers may run without CAP_SYS_ADMIN, which makes the
+            // io_uring setup fail with EPERM. Keep the durable block backend
+            // usable by leaving the optional async twin disabled; the tree
+            // will complete page I/O through its synchronous block store.
+            CRB_LOG_WARN("io_uring unavailable; using synchronous block page I/O");
+        }
 #endif
         std::unique_ptr<Crowdbtree> t;
         Status                      os = Crowdbtree::open(o, &t);

@@ -183,23 +183,26 @@ async fn main() -> std::process::ExitCode {
     let catalog = Arc::new(ChunkKvRangeCatalogPublisher::new(control_store.clone()));
     match catalog.load_current().await {
         Ok(Some((head, pages))) => {
-            let recovered =
-                match recover_assigned_partitions(&storage, &service, &pages, config.instance_id).await {
-                    Ok(recovered) => recovered,
-                    Err(error) => {
-                        error!(%error, "failed to recover an assigned chunk KV partition");
+            match recover_assigned_partitions(&storage, &service, &pages, config.instance_id).await {
+                Ok(recovered) => {
+                    if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &recovered) {
+                        error!(%error, "failed to install initial chunk KV catalog and partitions");
                         return std::process::ExitCode::FAILURE;
                     }
-                };
-            if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &recovered) {
-                error!(%error, "failed to install initial chunk KV catalog and partitions");
-                return std::process::ExitCode::FAILURE;
+                    info!(
+                        generation = head.generation,
+                        partitions = recovered.len(),
+                        "installed initial chunk KV catalog and replayed assigned partitions"
+                    );
+                }
+                Err(error) => {
+                    // A persisted assignment can reference a tree chunk that
+                    // was reclaimed by an older finalizer. Keep the service
+                    // alive so the monitor and catalog refresh loop can retry
+                    // recovery instead of taking down the whole container.
+                    error!(%error, "initial chunk KV recovery deferred; retaining the persisted catalog");
+                }
             }
-            info!(
-                generation = head.generation,
-                partitions = recovered.len(),
-                "installed initial chunk KV catalog and replayed assigned partitions"
-            );
         }
         Ok(None) => {
             if let Some(bootstrap) = &config.bootstrap_partition {

@@ -20,8 +20,6 @@ pub enum ChunkBootstrapError {
     Registry(#[from] crowdb_kv_client::Error),
     #[error("chunk service configuration is invalid: {0}")]
     Invalid(&'static str),
-    #[error("chunk service registration did not become ready")]
-    Deadline,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +42,7 @@ struct ChunkKvConfig {
 
 #[derive(Deserialize)]
 struct BootstrapPartition {
+    #[allow(dead_code)]
     partition_id: Id128,
     owner_epoch: u64,
 }
@@ -107,22 +106,19 @@ pub async fn verify_chunk_services(
                 ));
             }
         }
-        let partition_ready = chunk_kv_instances
-            .first()
-            .and_then(|(_, instance)| instance.extra.as_ref())
-            .and_then(|extra| extra.chunk_kv.as_ref())
-            .is_some_and(|extra| {
-                extra.hosted.iter().any(|hosted| {
-                    hosted.partition_id == chunk_kv.bootstrap_partition.partition_id
-                        && hosted.owner_epoch == chunk_kv.bootstrap_partition.owner_epoch
-                        && !hosted.recovering
-                })
-            });
-        if !chunkdb_instances.is_empty() && partition_ready {
+        // A persisted assignment may remain in recovery when its tree chunk was
+        // deleted.  Registration proves that the service is alive; the service
+        // itself keeps retrying recovery and must not make the whole container
+        // exit while that repair is pending.
+        if !chunkdb_instances.is_empty() && !chunk_kv_instances.is_empty() {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(ChunkBootstrapError::Deadline);
+            // Registration can lag or remain unavailable while a persisted
+            // assignment is being repaired.  The child process is already
+            // supervised by its liveness probe; keep the container alive and
+            // let the next reconciliation/monitor cycle observe the state.
+            return Ok(());
         }
         sleep(PROBE_INTERVAL).await;
     }

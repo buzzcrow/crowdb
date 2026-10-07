@@ -55,6 +55,11 @@ describe('Header', () => {
     expect(getByTestId('domain-s3')).toHaveTextContent('S3');
   });
 
+  it('does not render documentation icons beside domain tabs', () => {
+    const { queryByRole } = renderHeader();
+    expect(queryByRole('link', { name: /documentation/i })).toBeNull();
+  });
+
   it('marks the active domain button with aria-pressed=true', () => {
     const { getByTestId } = renderHeader({ initialDomain: Domain.KV });
     expect(getByTestId('domain-kv').getAttribute('aria-pressed')).toBe('true');

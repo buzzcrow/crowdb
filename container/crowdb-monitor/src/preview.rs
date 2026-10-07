@@ -19,6 +19,7 @@ use crate::{
 
 const PROFILE_NAME: &str = "single-node-container";
 const MAX_TEMPLATE_BYTES: u64 = 1024 * 1024;
+const KV_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Error)]
 pub enum PreviewError {
@@ -237,9 +238,7 @@ async fn validate_recovery(
         return Err(PreviewError::Invalid("recovered server credentials differ"));
     }
     require_directory(&kv_root(profile)?)?;
-    KvBootstrap::new(management_seed)?
-        .reconcile(&mut session, profile, supervisor.monitor_log_mut())
-        .await?;
+    reconcile_kv_with_retry(supervisor, &mut session, profile, management_seed).await?;
     ensure_disk_files(&mut session, profile, supervisor.monitor_log_mut()).await?;
     HardwareBootstrap::new(management_seed.to_owned())
         .reconcile(&mut session, profile, supervisor.monitor_log_mut())
@@ -274,9 +273,7 @@ async fn bootstrap_services(
     management_seed: &str,
 ) -> Result<(), PreviewError> {
     supervisor.start_service("kv", BTreeMap::new()).await?;
-    KvBootstrap::new(management_seed)?
-        .reconcile(session, profile, supervisor.monitor_log_mut())
-        .await?;
+    reconcile_kv_with_retry(supervisor, session, profile, management_seed).await?;
     ensure_disk_files(session, profile, supervisor.monitor_log_mut()).await?;
     HardwareBootstrap::new(management_seed.to_owned())
         .reconcile(session, profile, supervisor.monitor_log_mut())
@@ -357,6 +354,30 @@ async fn bootstrap_services(
     .await?;
     web_result?;
     Ok(())
+}
+
+async fn reconcile_kv_with_retry(
+    supervisor: &mut Supervisor,
+    session: &mut BootstrapSession,
+    profile: &DeploymentProfile,
+    management_seed: &str,
+) -> Result<(), PreviewError> {
+    let bootstrap = KvBootstrap::new(management_seed)?;
+    loop {
+        match bootstrap
+            .reconcile(session, profile, supervisor.monitor_log_mut())
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(KvBootstrapError::LeadershipDeadline) => {
+                eprintln!("KV leadership has not converged; continuing supervision and retrying");
+                supervisor.refresh_status()?;
+                supervisor.poll_once().await?;
+                sleep(KV_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 async fn verify_bootstrap_probe(

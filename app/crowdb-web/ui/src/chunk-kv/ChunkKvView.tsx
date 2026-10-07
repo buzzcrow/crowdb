@@ -88,7 +88,7 @@ export function ChunkKvView({ active, racks, nodes, servers, onChunk }: { onChun
     if (selected?.partition.id !== partition.id || selected.generation !== page!.generation) { checkpoint(); changeQuery(initialSplitQuery()); }
     setSelected({ partition, generation: page!.generation, catalogPage: page!.page, catalogOffset: page!.offset });
   };
-  return <Workbench showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/deploy/chunk/" title="ChunkKV" description="Inspect partition placement and the current catalog generation." />} detail={<div ref={setPropertyHost} aria-label="ChunkKV properties">{!selected && <p className="tw-text-sm tw-text-muted">Select a Split to inspect its properties.</p>}</div>} sidebar={<nav aria-label="Partition placement" className="tw--mx-4">
+  return <Workbench showActivity={false} help={<DocsHelp href="https://crowdb.dev/docs/deploy/chunk/" title="chunkKV" />} detail={<div ref={setPropertyHost} aria-label="ChunkKV properties">{!selected && <p className="tw-text-sm tw-text-muted">Select a Split to inspect its properties.</p>}</div>} sidebar={<nav aria-label="Partition placement" className="tw--mx-4">
     <Tree nodes={tree} expandedIds={expandedTree ?? expanded} onExpansionChange={setExpandedTree} onNodeClick={node => {
       if (node.type === 'Partition') {
         const entry = page?.entries.find(entry => entry.id === node.rawId);

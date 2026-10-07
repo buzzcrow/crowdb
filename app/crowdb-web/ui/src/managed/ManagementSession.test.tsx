@@ -6,9 +6,9 @@ import { describe, expect, it } from 'vitest';
 import { ManagementSession } from './ManagementSession';
 
 describe('managed container scope', () => {
-  it('labels simplified topology separately from monitor service health', () => {
+  it('does not add internal container diagnostics to the managed workspace', () => {
     render(<ManagementSession />);
-    expect(screen.getByTestId('managed-topology-scope')).toHaveTextContent('simplified view');
-    expect(screen.getByTestId('managed-readonly')).toHaveTextContent('read-only');
+    expect(screen.queryByTestId('managed-preview')).toBeNull();
+    expect(screen.queryByText(/Monitor service health/)).toBeNull();
   });
 });

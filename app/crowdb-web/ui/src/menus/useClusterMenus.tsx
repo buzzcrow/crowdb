@@ -14,7 +14,7 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
   /** Build per-layer context menu items for a normalized target. */
   return useCallback(
     (t: MenuTarget): MenuItemOrSeparator[] => {
-      if (readonly || (managed && domain !== Domain.KV) || (managed && !managementAuthorized)) return [];
+      if (readonly || managed || !managementAuthorized) return [];
       const items: MenuItemOrSeparator[] = [];
       const p = t.parentIds || {};
       if (physicalActive && t.type === 'Server' && isAuxiliaryKind(t.serviceType)) {
@@ -22,15 +22,25 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
         return serviceLifecycle(allServers?.find(server => server.id === id) ?? { id, node_id: Number(p.node_id), service_type: t.serviceType, health: 'unknown' }, runMutation, requestDelete);
       }
 
-      if (physicalActive) {
+      if (physicalActive || domain === Domain.KV) {
         if (t.type === 'Datacenter') {
-          // The default DC is immutable — only Add Rack is offered.
-          items.push({
-            id: 'add-rack',
-            label: 'Add Rack',
-            icon: <Plus className="tw-h-4 tw-w-4" />,
-            onSelect: () => setDialog((d) => ({ ...d, addRack: true })),
-          });
+          // The default DC is immutable. Physical view creates racks; PaxosKV
+          // creates a logical storage store from the same root context menu.
+          if (domain === Domain.KV) {
+            items.push({
+              id: 'add-store',
+              label: 'Add Storage',
+              icon: <Database className="tw-h-4 tw-w-4" />,
+              onSelect: () => setDialog((d) => ({ ...d, addStore: true })),
+            });
+          } else {
+            items.push({
+              id: 'add-rack',
+              label: 'Add Rack',
+              icon: <Plus className="tw-h-4 tw-w-4" />,
+              onSelect: () => setDialog((d) => ({ ...d, addRack: true })),
+            });
+          }
         } else if (t.type === 'Rack' && modules?.nodes !== false) {
           const rackId = Number(t.rawId ?? t.id);
           items.push({

@@ -8,10 +8,11 @@ import type { NodeDiskGroups } from '../data/useClusterTree';
 interface Snapshot {
   source: string;
   racks: Array<{ id: number; name?: string }>;
-  nodes: Array<{ id: number; rack_id: number; management_host?: string }>;
+  nodes: Array<{ id: number; rack_id: number; management_host?: string; status?: number }>;
   disk_groups: Array<{ rack_id: number; node_id: number; dg_id: number; value?: { name?: string } }>;
   disks: Array<{ rack_id: number; node_id: number; disk_group_id: number; disk_id: { high: string | number; low: string | number }; value: { capacity_units: number; zone_size_units: number; unit_size_bytes: number; disk_type: number; device_path: string } }>;
   services: Array<{ kind: string; instance_id?: string; node_id?: number; endpoint: string; http_endpoint?: string; monitor?: { healthy: boolean; pid: number | null } | null }>;
+  monitor?: { services?: Record<string, { healthy: boolean; pid: number | null }> } | null;
 }
 export async function physicalSnapshot() {
   const snapshot = await readJson<Snapshot>(await fetch(`${getApiBase()}/preview`, { cache: 'no-store' }));
@@ -19,11 +20,15 @@ export async function physicalSnapshot() {
   const nodes: Node[] = snapshot.nodes.map(node => {
     const server = snapshot.services.find(service => service.kind === 'paxos-kv' && service.node_id === node.id);
     const running = server?.monitor?.healthy;
+    // Group 0's node status is the authoritative reachability signal for the
+    // physical node. PaxosKV health is only the fallback when that field is
+    // absent from an older snapshot.
+    const reachable = node.status == null ? running : node.status === 1;
     const diskdb = snapshot.services.find(service => service.kind === 'diskdb' && service.node_id === node.id);
     return { id: node.id, rack_id: node.rack_id, host: node.management_host ?? '', ssh: { type: 'KeyDefault', user: '' },
-      ...(server ? { has_server: true, kv_server: { mgmt_url: server.endpoint, rpc_url: '', pid: server.monitor?.pid ?? undefined,
-        health: running === undefined ? NodeHealth.Unknown : running ? NodeHealth.Up : NodeHealth.Down,
-        state: running === undefined ? ProcState.Unknown : running ? ProcState.Running : ProcState.Failed, last_seen_ms: Date.now() } } : {}),
+      ...((server || node.status != null) ? { has_server: !!server, kv_server: { mgmt_url: server?.endpoint ?? '', rpc_url: '', pid: server?.monitor?.pid ?? undefined,
+        health: reachable === undefined ? NodeHealth.Unknown : reachable ? NodeHealth.Up : NodeHealth.Down,
+        state: reachable === undefined ? ProcState.Unknown : reachable ? ProcState.Running : ProcState.Failed, last_seen_ms: Date.now() } } : {}),
       ...(diskdb ? { diskdb_server: { endpoint: diskdb.endpoint, pid: diskdb.monitor?.pid ?? undefined,
         state: diskdb.monitor?.healthy ? ProcState.Running : ProcState.Unknown,
         health: diskdb.monitor?.healthy ? NodeHealth.Up : NodeHealth.Unknown } } : {}) };
@@ -48,5 +53,15 @@ export async function physicalSnapshot() {
     pid: service.monitor?.pid ?? undefined,
     health: service.monitor ? service.monitor.healthy ? 'up' : 'down' : 'unknown',
   }));
+  const monitorNodeId = nodes.length === 1 ? nodes[0].id : undefined;
+  for (const [monitorKind, serviceType] of [['access', 'access-server'], ['web', 'web']] as const) {
+    const status = snapshot.monitor?.services?.[monitorKind];
+    if (!status) continue;
+    servers.push({
+      id: `${serviceType}-1`, node_id: monitorNodeId, service_type: serviceType,
+      endpoint: undefined, mgmt_url: undefined, rpc_url: undefined,
+      pid: status.pid ?? undefined, health: status.healthy ? 'up' : 'down',
+    });
+  }
   return { racks, nodes, diskGroups, servers };
 }

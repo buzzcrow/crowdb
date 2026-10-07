@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -60,6 +60,34 @@ impl SnapshotFailure {
             Self::Monitor => "monitor_unavailable",
         }
     }
+}
+
+fn service_node_id(
+    kind: &str,
+    record: &crowdb_protocol::common::InstanceValue,
+    disk_group_nodes: &BTreeMap<u64, u64>,
+    fallback_node_id: Option<u64>,
+) -> Option<u64> {
+    let extra = record.extra.as_ref();
+    let explicit = extra
+        .and_then(|extra| extra.kv_server.as_ref().and_then(|server| server.node_id))
+        .or_else(|| extra.and_then(|extra| extra.diskdb.as_ref().and_then(|server| server.node_id)))
+        .or_else(|| extra.and_then(|extra| extra.chunk_kv.as_ref().and_then(|server| server.node_id)));
+    if explicit.is_some() {
+        return explicit;
+    }
+    if matches!(kind, "diskdb" | "diskio") {
+        let nodes = extra
+            .and_then(|extra| extra.diskdb.as_ref())
+            .into_iter()
+            .flat_map(|server| server.owned_dg_ids.iter())
+            .filter_map(|dg_id| disk_group_nodes.get(dg_id).copied())
+            .collect::<BTreeSet<_>>();
+        if nodes.len() == 1 {
+            return nodes.first().copied();
+        }
+    }
+    fallback_node_id
 }
 
 async fn monitor_status(path: PathBuf) -> Result<MonitorStatus, SnapshotFailure> {
@@ -139,6 +167,12 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
             return Err(crowdb_kv_client::Error::Topology("managed topology is incomplete".into()));
         }
 
+        let disk_group_nodes = disk_groups
+            .iter()
+            .map(|group| (group.dg_id, group.node_id))
+            .collect::<BTreeMap<_, _>>();
+        let fallback_node_id = (nodes.len() == 1).then_some(nodes[0].1);
+
         let mut groups = Vec::new();
         let mut replicas = Vec::new();
         for store in &stores {
@@ -157,7 +191,7 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
                 None
             };
             services.extend(instances.into_iter().map(|(instance_id, record)| ServiceView {
-                node_id: record.extra.as_ref().and_then(|extra| extra.kv_server.as_ref().and_then(|server| server.node_id).or_else(|| extra.diskdb.as_ref().and_then(|server| server.node_id)).or_else(|| extra.chunk_kv.as_ref().and_then(|server| server.node_id))),
+                node_id: service_node_id(kind, &record, &disk_group_nodes, fallback_node_id),
                 http_endpoint: record.extra.as_ref().and_then(|extra| extra.chunk_kv.as_ref()).and_then(|server| server.http_endpoint.clone()),
                 kind: if kind == "kv-server" { "paxos-kv" } else { kind },
                 instance_id: instance_id.to_string(),

@@ -5,13 +5,13 @@ import type { Node, Edge } from 'reactflow';
 import type { ServerSummary } from '../api';
 import { Domain, type Node as PhysicalNode } from '../types';
 import type { FlowNodeData } from '../topology/buildFlow';
-import { isAuxiliaryKind, serviceInstanceLabel } from './client';
+import { isTopologyServiceKind, serviceInstanceLabel } from './client';
 
 export function addServiceNodes(domain: Domain, flow: { nodes: Node[]; edges: Edge[] }, services: ServerSummary[], nodes: PhysicalNode[]) {
   if (domain !== Domain.Cluster) return flow;
   const physical = new Map(nodes.map(node => [node.id, node]));
   for (const service of services) {
-    if (!service.id || !isAuxiliaryKind(service.service_type) || service.node_id == null) continue;
+    if (!service.id || !isTopologyServiceKind(service.service_type) || service.node_id == null) continue;
     const owner = physical.get(service.node_id);
     if (!owner) continue;
     const id = `SERVICE-${service.id}`;

@@ -162,7 +162,7 @@ fence_listeners = ["127.0.0.1:15100", "127.0.0.1:15200"]
 config_template = "/opt/crowdb/etc/templates/chunk-kv.toml"
 [services.probe]
 kind = "http"
-target = "http://127.0.0.1:15100/ready"
+target = "http://127.0.0.1:15100/health"
 timeout_ms = 1000
 failure_threshold = 5
 [services.restart]

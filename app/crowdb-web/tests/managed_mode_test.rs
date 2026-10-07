@@ -307,6 +307,10 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
         .unwrap();
     assert_eq!(diskio["monitor"]["pid"], 123, "{snapshot}");
     assert_eq!(diskio["monitor"]["generation"], 2);
+    assert_eq!(
+        diskio["node_id"], 1,
+        "single-node services should attach to their container node"
+    );
     verify_chunk_kv_placement(&app, &sysmd).await;
     verify_managed_store_lifecycle(&app, &sysmd, &cluster.mgmt_endpoints[0]).await;
 

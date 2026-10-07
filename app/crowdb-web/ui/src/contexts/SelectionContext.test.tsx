@@ -18,14 +18,14 @@ function ScopeProbe() {
 describe('domain selection scope', () => {
   it('retains each domain selection and clears only the active domain', () => {
     render(<DomainProvider><SelectionProvider><ScopeProbe /></SelectionProvider></DomainProvider>);
-    fireEvent.click(screen.getByText('Select'));
-    fireEvent.click(screen.getByText('KV'));
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'KV' }));
     expect(screen.getByRole('status')).toHaveTextContent('empty');
-    fireEvent.click(screen.getByText('Select'));
-    fireEvent.click(screen.getByText('Cluster'));
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cluster' }));
     expect(screen.getByRole('status')).toHaveTextContent('node-1');
-    fireEvent.click(screen.getByText('Clear'));
-    fireEvent.click(screen.getByText('KV'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    fireEvent.click(screen.getByRole('button', { name: 'KV' }));
     expect(screen.getByRole('status')).toHaveTextContent('group-7');
   });
 });
