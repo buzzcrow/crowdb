@@ -9,7 +9,7 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R227** — R221 is reserved by another workstream.
+**Next R number: R228** — R221 is reserved by another workstream.
 
 ## Dataset and access
 
@@ -19,6 +19,10 @@ live in the linked document; implementation follows
 
 ## Console and service control
 
+- **[R227](R227-console-multi-node-deployment.md)** — multi-node discovery,
+  Group-0 bootstrap, shared UI authority and light-container deployment.
+  **Area:** monitor / console / deployment. **Complexity:** High.
+  **Dependencies:** existing Group 0; bootstrap and authorization decisions.
 - **[R210](R210-console-service-configuration-health.md)** — unified node service
   configuration and health. **Area:** console / deployment / FlatBuffer RPC.
   **Complexity:** High. **Dependencies:** none recorded.

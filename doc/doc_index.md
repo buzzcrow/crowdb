@@ -20,6 +20,7 @@ listed document or section needed by the task.
 | `doc/design/rpc/design-crowdb-rpc.md`                     | RPC engine, wire format, FFI, and transport.               |
 | `doc/design/console/design-crowdb-console.md`             | Console architecture and service lifecycle.                |
 | `doc/design/config/design-crowdb-config.md`               | Configuration ownership, precedence, validation, reload.   |
+| `doc/design/deploy/design-crowdb-deploy.md`               | Node discovery, Group-0 bootstrap, multi-node deployment.   |
 | `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, native Dataset access, and GPU delivery.      |
 
 ## Backlog (`doc/backlog/`)
