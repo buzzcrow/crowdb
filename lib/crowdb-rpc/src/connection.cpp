@@ -355,6 +355,9 @@ retry:
 
 void Connection::close()
 {
+    // Closing makes the connection eligible for removal by another worker.
+    // Keep its callbacks alive until this close notification has completed.
+    const auto keep_alive = weak_from_this().lock();
     if (!open_.exchange(false, std::memory_order_acq_rel)) {
         return; // already closed
     }

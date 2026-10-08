@@ -106,12 +106,15 @@ impl ChunkKvService {
             .activate_recovered(owner_epoch)
     }
 
-    /// Returns the catalog transition attached to one hosted assignment.
+    /// Returns the transition needed to prove a recovered overlay assignment.
+    /// A materialized split half can retain the pair's transition marker until
+    /// its sibling is materialized, but already uses independent recovery.
     #[must_use]
-    pub fn catalog_transition_id(&self, partition_id: Id128) -> Option<Id128> {
+    pub fn catalog_overlay_transition_id(&self, partition_id: Id128) -> Option<Id128> {
         self.catalog
             .load()
             .entry_for_partition(partition_id)
+            .filter(|entry| entry.artifact.tail_overlay.is_some())
             .and_then(|entry| entry.transition_id)
     }
 

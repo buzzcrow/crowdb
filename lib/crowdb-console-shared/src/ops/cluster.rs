@@ -28,7 +28,9 @@ use crate::ops::hardware::{self, AddDiskInput};
 use crate::ops::OpContext;
 
 mod bootstrap;
+mod storage_readiness;
 pub use bootstrap::{init, init_with_intent, InitSummary};
+use storage_readiness::wait_for_diskdb_registration;
 
 // Bootstrap runs before Group 0 registration exists, so its sealed intent
 // supplies the initial management endpoint for each selected node.
@@ -232,7 +234,26 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
         ServiceType::Chunkdb => 2,
         _ => 3,
     });
+    let diskio_count = services
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Diskio)
+        .count();
+    let diskdb_count = services
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Diskdb)
+        .count();
+    let mut storage_ready = false;
     for server in &services {
+        if !storage_ready && server.service_type == ServiceType::Chunkdb {
+            if diskio_count > 0 {
+                wait_for_fresh_service_registrations(ctx, "diskio", diskio_count, restart_epoch_ms).await?;
+            }
+            if diskdb_count > 0 {
+                wait_for_fresh_service_registrations(ctx, "diskdb", diskdb_count, restart_epoch_ms).await?;
+                wait_for_diskdb_registration(ctx, diskdb_count).await?;
+            }
+            storage_ready = true;
+        }
         let (old_pid, spec) = &launches[&server.id];
         let pid = lifecycle::restart_local_service(&server.id, *old_pid, spec).await?;
         if let Some(entry) = ctx
@@ -244,14 +265,6 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
             entry.pid = Some(pid);
         }
     }
-    let diskio_count = services
-        .iter()
-        .filter(|server| server.service_type == ServiceType::Diskio)
-        .count();
-    let diskdb_count = services
-        .iter()
-        .filter(|server| server.service_type == ServiceType::Diskdb)
-        .count();
     let chunkdb_count = services
         .iter()
         .filter(|server| server.service_type == ServiceType::Chunkdb)
@@ -375,6 +388,7 @@ pub struct LocalDiskdbDeployConfig {
     pub kv_client_rpc_workers: Option<u32>,
     pub free_batch_enabled: Option<bool>,
     pub free_flush_max_batch: Option<u32>,
+    pub keepalive_interval_secs: Option<u32>,
 }
 
 /// Summary of `ChunkDB` instances attached to a local deployment.
@@ -388,6 +402,7 @@ pub struct LocalChunkdbDeploySummary {
 pub struct LocalChunkdbDeployConfig {
     pub instance_count: usize,
     pub storage_groups: Vec<u64>,
+    pub dynamic_ownership: bool,
     pub allow_unsafe_ec: bool,
     pub rpc_workers: Option<u32>,
     pub diskio_rpc_workers: Option<u32>,
@@ -705,7 +720,7 @@ pub async fn local_deploy_chunkdb(
                 .join(format!("node{}", node.id))
                 .join(&server_id);
             let request = ChunkdbDeployRequest {
-                dynamic_ownership: false,
+                dynamic_ownership: config.dynamic_ownership,
                 server_id: server_id.clone(),
                 instance_id,
                 http_port: http_ports[index],
@@ -984,9 +999,16 @@ async fn provision_diskdb_topology(
                 hardware::add_disk_to_group0(ctx, node.id, disk_group_id, disk).await?;
             }
             let instance_id = 10_000 + node.id;
-            ctx.sysmd()
-                .set_owner(node.rack_id, node.id, disk_group_id, instance_id, lease_expiry_ms)
-                .await?;
+            if ctx
+                .sysmd()
+                .get_owner(node.rack_id, node.id, disk_group_id)
+                .await?
+                .is_none()
+            {
+                ctx.sysmd()
+                    .set_owner(node.rack_id, node.id, disk_group_id, instance_id, lease_expiry_ms)
+                    .await?;
+            }
             let data_group = cfg.data_groups[disk_group_count % cfg.data_groups.len()];
             if let Some(binding) = ctx.sysmd().get_bind(node.rack_id, node.id, disk_group_id).await? {
                 if binding.store_id != 0 || binding.group_id != data_group {
@@ -1053,7 +1075,7 @@ async fn deploy_diskdb_instances(
                 rpc_workers: config.rpc_workers,
                 kv_connections: config.kv_connections,
                 kv_client_rpc_workers: config.kv_client_rpc_workers,
-                keepalive_interval_secs: None,
+                keepalive_interval_secs: config.keepalive_interval_secs,
                 free_batch_enabled: config.free_batch_enabled,
                 free_flush_max_batch: config.free_flush_max_batch,
                 listen_port: ports.listen[index],
@@ -1086,28 +1108,6 @@ async fn deploy_diskdb_instances(
     }
     wait_for_diskdb_registration(ctx, nodes.len()).await?;
     Ok(())
-}
-
-async fn wait_for_diskdb_registration(ctx: &OpContext, expected: usize) -> Result<()> {
-    let discovery = ctx.discovery_or_error()?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        discovery.invalidate(Some("diskdb"));
-        if discovery
-            .discover_all("diskdb")
-            .await
-            .is_ok_and(|instances| instances.len() >= expected)
-        {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(Error::UpstreamRpc {
-                node_id: "group0-service-registry".into(),
-                status: format!("expected {expected} living diskdb instances before timeout"),
-            });
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
 }
 
 /// Deploy a local N-node KV cluster on `127.0.0.1`: creates rack 1,

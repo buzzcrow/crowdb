@@ -285,9 +285,14 @@ the namespace. If a recorded port is held by another owner, restart reports
 the conflict; it does not silently select a different endpoint.
 
 Disposable deployment and E2E fixtures use ephemeral namespaces with the
-same layout. All local CROWDB data, generated configuration, logs, benchmark
-output, and coordination state stay below this root; no default path uses the
-system temporary directory. Ordinary clean operations preserve persistent
+same layout. A saved CLI cluster inside an ephemeral fixture inherits that
+fixture's process and port ownership; its launcher may exit without releasing
+ports still used by the fixture. Process records remain outside disposable
+data so cleanup can terminate services even after data removal. Cleanup releases
+these nested claims along with the fixture. All local CROWDB data, generated
+configuration, logs, benchmark output, and coordination state stay below this
+root; no default path uses the system temporary directory. Ordinary clean
+operations preserve persistent
 namespaces.
 
 ## 5. Node Access Model

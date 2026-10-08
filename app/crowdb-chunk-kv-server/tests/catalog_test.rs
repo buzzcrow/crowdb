@@ -63,6 +63,70 @@ fn head(
 }
 
 #[tokio::test]
+async fn recovery_discards_obsolete_results_only_after_authoritative_publication_advances() {
+    for failed in [false, true] {
+        let store = Arc::new(MemoryChunkKvRangeCatalogStore::default());
+        let publisher = ChunkKvRangeCatalogPublisher::new(store);
+        let first = page(1, 1);
+        publisher
+            .publish(head(1, None, &first), vec![first])
+            .await
+            .unwrap();
+        let mut calls = 0;
+        let recovered = publisher
+            .recover_current(
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+                |pages| {
+                    calls += 1;
+                    let publisher = &publisher;
+                    async move {
+                        let epoch = pages[0].entries[0].owner_epoch;
+                        if epoch == 1 {
+                            let next = page(2, 2);
+                            publisher
+                                .publish(head(2, Some(1), &next), vec![next])
+                                .await
+                                .unwrap();
+                            if failed {
+                                return Err("old epoch fenced");
+                            }
+                        }
+                        Ok(epoch)
+                    }
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(recovered.0.generation, 2);
+        assert_eq!(recovered.2, 2);
+    }
+}
+
+#[tokio::test]
+async fn recovery_reports_unchanged_catalog_errors_without_repeating_recovery() {
+    let publisher = ChunkKvRangeCatalogPublisher::new(Arc::new(MemoryChunkKvRangeCatalogStore::default()));
+    let first = page(1, 1);
+    publisher
+        .publish(head(1, None, &first), vec![first])
+        .await
+        .unwrap();
+    let mut calls = 0;
+    let result = publisher
+        .recover_current(std::time::Instant::now(), |_| {
+            calls += 1;
+            async { Err::<(), _>("corrupt artifact") }
+        })
+        .await;
+    assert_eq!(calls, 1);
+    assert_eq!(
+        result.unwrap_err(),
+        ChunkKvRangeCatalogError::Unavailable("corrupt artifact".into())
+    );
+}
+
+#[tokio::test]
 async fn publisher_writes_pages_before_head_and_reuses_unchanged_pages() {
     let store = Arc::new(MemoryChunkKvRangeCatalogStore::default());
     let publisher = ChunkKvRangeCatalogPublisher::new(store.clone());

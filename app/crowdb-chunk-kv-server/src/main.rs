@@ -181,28 +181,28 @@ async fn main() -> std::process::ExitCode {
     }
 
     let catalog = Arc::new(ChunkKvRangeCatalogPublisher::new(control_store.clone()));
-    match catalog.load_current().await {
-        Ok(Some((head, pages))) => {
-            match recover_assigned_partitions(&storage, &service, &pages, config.instance_id).await {
-                Ok(recovered) => {
-                    if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &recovered) {
-                        error!(%error, "failed to install initial chunk KV catalog and partitions");
-                        return std::process::ExitCode::FAILURE;
-                    }
-                    info!(
-                        generation = head.generation,
-                        partitions = recovered.len(),
-                        "installed initial chunk KV catalog and replayed assigned partitions"
-                    );
-                }
-                Err(error) => {
-                    // A persisted assignment can reference a tree chunk that
-                    // was reclaimed by an older finalizer. Keep the service
-                    // alive so the monitor and catalog refresh loop can retry
-                    // recovery instead of taking down the whole container.
-                    error!(%error, "initial chunk KV recovery deferred; retaining the persisted catalog");
-                }
+    let recovery_storage = &storage;
+    let recovery_service = &service;
+    let instance_id = config.instance_id;
+    match catalog
+        .recover_current(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+            |pages| async move {
+                recover_assigned_partitions(recovery_storage, recovery_service, &pages, instance_id).await
+            },
+        )
+        .await
+    {
+        Ok(Some((head, pages, recovered))) => {
+            if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &recovered) {
+                error!(%error, "failed to install initial chunk KV catalog and partitions");
+                return std::process::ExitCode::FAILURE;
             }
+            info!(
+                generation = head.generation,
+                partitions = recovered.len(),
+                "installed initial chunk KV catalog and replayed assigned partitions"
+            );
         }
         Ok(None) => {
             if let Some(bootstrap) = &config.bootstrap_partition {
@@ -234,6 +234,9 @@ async fn main() -> std::process::ExitCode {
             } else {
                 warn!("chunk KV catalog is not published; service remains unready");
             }
+        }
+        Err(crowdb_chunk_kv_server::ChunkKvRangeCatalogError::Unavailable(error)) => {
+            error!(%error, "initial chunk KV recovery deferred; retaining the persisted catalog");
         }
         Err(error) => {
             error!(%error, "failed to load initial chunk KV catalog");
@@ -627,7 +630,7 @@ async fn activate_granted_assignment(
     service: &ChunkKvService,
     assignment: &crowdb_protocol::chunk_kv::ServingAssignment,
 ) -> Result<(), String> {
-    let Some(transition_id) = service.catalog_transition_id(assignment.partition_id) else {
+    let Some(transition_id) = service.catalog_overlay_transition_id(assignment.partition_id) else {
         return service
             .activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
             .map_err(|error| error.to_string());

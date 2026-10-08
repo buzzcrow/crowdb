@@ -124,11 +124,11 @@ async function verifyServices({ page, request, deployments }: UIContext) {
     await expect.poll(async () => (await (await request.get('/api/chunk-storage-readiness')).json()), { intervals: [100] }).toMatchObject({ ready: true });
     for (const kind of ['paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server']) {
       for (const id of [1, 2, 3]) {
-        await deployments.verify(id, kind);
         await expect.poll(async () => {
           const plans = await (await request.get('/api/service-plans')).json();
           return plans[id].steps[kind];
         }, { intervals: [100], message: `Node ${id}: ${kind} automatically deploys` }).toEqual({ state: 'deployed' });
+        await deployments.verify(id, kind);
       }
     }
     const servers = await (await request.get('/api/servers')).json();
@@ -160,7 +160,13 @@ async function s3RoundTrip({ page, request }: UIContext) {
     await page.getByText('Bucket actions', { exact: true }).click();
     await page.getByLabel('Object key', { exact: true }).fill('round-trip.txt');
     await page.getByLabel('Object file').setInputFiles({ name: 'round-trip.txt', mimeType: 'text/plain', buffer: Buffer.from(content) });
-    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await step('three-node: S3 upload mutation', async () => {
+      const uploaded = page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname === '/api/access/s3/ui-three-node/round-trip.txt');
+      await page.getByRole('button', { name: 'Upload', exact: true }).click();
+      const response = await uploaded;
+      expect(response.status(), response.statusText()).toBe(200);
+    });
     await page.getByRole('button', { name: 'round-trip.txt', exact: true }).click();
     await page.getByText('Object actions', { exact: true }).click();
     await page.getByRole('button', { name: 'Preview first 4 KiB', exact: true }).click();
@@ -207,6 +213,15 @@ async function teardown({ request, baseURL }: UIContext) {
         .map((server: { id: string }) => request.delete(`/api/services/${server.id}`)));
       for (const response of results) expect(response.ok(), await response.text()).toBe(true);
     }
+    await step('three-node: stop owned authority services', async () => {
+      for (const kind of ['diskdb', 'paxos-kv']) {
+        const stops = await Promise.all(servers.filter((server: { service_type: string; pid?: number }) => server.service_type === kind && server.pid)
+          .map((server: { node_id: number }) => request.post(`/api/nodes/${server.node_id}/${kind === 'diskdb' ? 'diskdb' : 'server'}/stop`)));
+        for (const response of stops) expect(response.ok(), await response.text()).toBe(true);
+      }
+      await expect.poll(async () => (await (await request.get('/api/servers')).json())
+        .filter((server: { pid?: number }) => server.pid).length, { intervals: [100] }).toBe(0);
+    });
     await resetAll(baseURL!);
   });
 }

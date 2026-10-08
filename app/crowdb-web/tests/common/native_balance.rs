@@ -19,6 +19,28 @@ use std::{
 pub(super) struct TestNativeBalance;
 
 impl TestNativeBalance {
+    pub(super) async fn settle_for_inspection(state: &AppState) {
+        let kv = state.kv_client().await;
+        let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv.clone()));
+        let registry = ServiceRegistryClient::from_shared(kv);
+        let client = ChunkKvClient::new(
+            ClientConfig::default(),
+            source.clone(),
+            Arc::new(ChunkKvRpcTransport::new(64, 1, 2)),
+        )
+        .unwrap();
+        for index in 0..512 {
+            assert!(client
+                .put(super::native_load::key(index), super::native_load::value(index))
+                .await
+                .unwrap()
+                .result
+                .is_ok());
+        }
+        wait_balanced(&source, &registry, Instant::now()).await;
+        verify_values(&client, &[]).await;
+    }
+
     pub(super) async fn verify(state: &AppState) {
         let kv = state.kv_client().await;
         let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv.clone()));

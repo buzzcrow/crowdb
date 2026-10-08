@@ -192,7 +192,10 @@ async fn start_access_with_fault(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "starts a complete simulated three-rack production storage stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "starts a complete simulated three-rack production storage stack"
+)]
 async fn combined_http_listeners_keep_protocol_chunk_policies_separate() {
     let dir = TestDir::new("access-protected-http-policy").unwrap();
     s3::start_protected_test_cluster(dir.path()).await.unwrap();
@@ -220,7 +223,10 @@ async fn combined_http_listeners_keep_protocol_chunk_policies_separate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "starts a complete simulated three-rack production storage stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "starts a complete simulated three-rack production storage stack"
+)]
 async fn terminal_s3_storage_failure_stops_both_access_listeners() {
     let dir = TestDir::new("access-storage-failure").unwrap();
     s3::start_protected_test_cluster(dir.path()).await.unwrap();
@@ -433,7 +439,10 @@ async fn assert_chunk_layouts(cluster: &ConsoleConfig) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "stops all real DiskIO processes in a simulated three-rack production cluster"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "stops all real DiskIO processes in a simulated three-rack production cluster"
+)]
 async fn protected_two_copy_write_stops_after_repair_and_chunk_rotation_fail() {
     let dir = TestDir::new("access-protected-mirror-failure").unwrap();
     s3::start_protected_test_cluster(dir.path()).await.unwrap();

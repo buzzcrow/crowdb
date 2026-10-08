@@ -109,6 +109,8 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
       if (!busy.current && input.current.enabled && !stopped.current) {
         busy.current = true;
         try {
+          await recovery.current;
+          if (disposed || stopped.current) return;
           for (const [key, initial] of Object.entries(plansRef.current)) {
             if (disposed || stopped.current) break;
             if (!serviceOrder.some(kind => ['pending', 'waiting'].includes(initial[kind].state))) continue;
@@ -182,6 +184,13 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 wakePending.current = true;
                 deploymentStarted = true;
               } catch (error) {
+                // Hardware can change between the readiness probe and mutation.
+                // A rejected prerequisite has not launched a service; keep it queued.
+                const dependency = String(error).match(/^Error: HTTP 409: (Waiting: .+)$/);
+                if (dependency && (kind === 'chunkdb' || kind === 'chunk-kv')) {
+                  await write(kind, { state: 'waiting', detail: dependency[1] });
+                  continue;
+                }
                 const listeners = Object.entries(overrides.current[id]?.[kind] ?? {}).map(([name, port]) => `${name}=${port}`).join(', ');
                 const detail = `${serviceLabels[kind]}${listeners ? ` (${listeners})` : ''}: ${String(error)}`.slice(0, 4096);
                 // A node without a fixed ChunkDB slot is valid. Keep it as a

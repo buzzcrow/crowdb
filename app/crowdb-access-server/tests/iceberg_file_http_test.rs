@@ -360,18 +360,19 @@ async fn thirty_two_concurrent_direct_puts() {
 #[ignore = "manual TPC-H and TPC-DS loader stress on the small cluster"]
 async fn tpc_loader_parallel_stress() {
     let (_stack, _process, client, _table) = setup().await;
-    let python = "/cpp/crowdb-tpc-loader/.venv/bin/python";
+    let python = std::env::var("CROWDB_TPC_LOADER_PYTHON")
+        .expect("set CROWDB_TPC_LOADER_PYTHON to the installed TPC loader environment");
     let endpoint = format!("http://{}", client.address);
     let mut commands = Vec::new();
     for (benchmark, workers) in [("tpch", "8"), ("tpcds", "24")] {
-        let mut command = tokio::process::Command::new("/home/cj/.pixi/bin/pixi");
+        let mut command = tokio::process::Command::new("pixi");
         command
             .args([
                 "run",
                 "-e",
                 "iceberg-e2e",
                 "--",
-                python,
+                &python,
                 "-m",
                 "crowdb_tpc_loader",
                 "load",

@@ -12,6 +12,65 @@ use crowdb_protocol::key::{ChunkServiceAuthorityKey, TextKey};
 use handoff_cluster::TestHandoffCluster;
 use std::{collections::HashMap, sync::Arc};
 
+#[tokio::test]
+async fn missing_cached_endpoint_refreshes_dynamic_owner_before_routing() {
+    let test = TestHandoffCluster::start().await;
+    let maps = ChunkSlotMapClient::new(Arc::clone(&test.kv));
+    maps.initialize_service_epochs().await.unwrap();
+    crowdb_kv_client::ServiceRegistryClient::from_shared(Arc::clone(&test.kv))
+        .register_chunkdb(2, "127.0.0.1:17002")
+        .await
+        .unwrap();
+    let before = maps.read_service_snapshot().await.unwrap();
+    let chunk = (0..1024)
+        .map(|low| crowdb_protocol::common::ChunkId { high: 0, low })
+        .find(|id| before.service().owner(ChunkSlot::for_chunk(id)) == 1)
+        .unwrap();
+    let slot = ChunkSlot::for_chunk(&chunk);
+    let routes = crowdb_kv_client::RangeBindingClient::from_shared(Arc::clone(&test.kv));
+    routes.refresh().await.unwrap();
+    assert!(matches!(
+        routes.route_slot(slot),
+        Err(crowdb_kv_client::RangeRouteError::NoEndpoint(1))
+    ));
+    let after = before.authority().reassign(&[(slot, 2)]).unwrap();
+    maps.publish_service_epochs(&after).await.unwrap();
+    let actual = routes.route(&chunk).await.unwrap();
+    assert_eq!(actual.instance_id, 2);
+    assert_eq!(actual.rpc_endpoint, "127.0.0.1:17002");
+}
+
+#[tokio::test]
+async fn stale_epoch_publications_are_conflicts_and_concurrent_regrants_preserve_all_slots() {
+    let test = TestHandoffCluster::start().await;
+    let client = ChunkSlotMapClient::new(Arc::clone(&test.kv));
+    client.initialize_service_epochs().await.unwrap();
+    let before = client.read_service_snapshot().await.unwrap();
+    let stale = before
+        .authority()
+        .reassign(&[(ChunkSlot::try_from(0).unwrap(), 3)])
+        .unwrap();
+    let (first, second) = tokio::join!(client.regrant_service_epochs(1), client.regrant_service_epochs(2));
+    first.unwrap();
+    second.unwrap();
+    assert!(matches!(
+        client.publish_service_epochs(&stale).await,
+        Err(crowdb_kv_client::Error::CasFailed { .. })
+    ));
+    let after = client.read_service_snapshot().await.unwrap();
+    assert_eq!(
+        after.service().head().generation,
+        before.service().head().generation + 2
+    );
+    for slot in ChunkSlot::all() {
+        assert_eq!(after.service().owner(slot), before.service().owner(slot));
+        assert_eq!(
+            after.authority().owner(slot).generation(),
+            before.authority().owner(slot).generation() + 1
+        );
+    }
+}
+
 fn epochs(
     service: &crowdb_protocol::chunk_slot::ChunkSlotMap<u64>,
     generation: u64,

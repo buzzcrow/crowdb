@@ -23,7 +23,7 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
   };
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  for (const [kind, label, prefix] of [['chunkdb', 'CDB (ChunkDB)', 'CDB'], ['diskio', 'DiskIO', 'DIO'], ['chunk-kv', 'Chunk-KV', 'CKV'], ['access-server', 'Access Server', 'AS']]) {
+  for (const [kind, label, prefix] of [['chunkdb', 'crowdb-chunk-db', 'CDB'], ['diskio', 'crowdb-disk-io', 'DIO'], ['chunk-kv', 'crowdb-chunk-kv', 'CKV'], ['access-server', 'crowdb-access-server', 'AS']]) {
     const original = (await list()).find((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === kind);
     expect(original.pid).toBeGreaterThan(0); expect(alive(original.pid)).toBe(true);
     const node = sidebar.getByRole('button', { name: 'N-1', exact: true });
@@ -31,7 +31,14 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
     await expect(item).toBeVisible();
     await node.click({ button: 'right' });
     await page.getByRole('menuitem', { name: `${prefix}-1 Running`, exact: true }).hover();
+    const stoppedObservation = page.waitForResponse(async response => {
+      if (new URL(response.url()).pathname !== '/api/servers' || !response.ok()) return false;
+      const rows = await response.json();
+      return rows.some((row: { id: string; pid?: number }) => row.id === original.id && !row.pid);
+    });
     await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
+    await stoppedObservation;
+    await expect(page.getByRole('button', { name: 'Refresh', exact: true }).locator('svg')).not.toHaveClass(/tw-animate-spin/);
     await expect.poll(() => alive(original.pid), { intervals: [100] }).toBe(false);
     await expect.poll(async () => {
       const stopped = (await list()).find((row: { id: string }) => row.id === original.id);
@@ -389,7 +396,7 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
   const servers = await serversResponse.json();
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  for (const [kind, label] of [['chunkdb', 'CDB (ChunkDB)'], ['diskio', 'DiskIO'], ['chunk-kv', 'Chunk-KV'], ['access-server', 'Access Server']]) {
+  for (const [kind, label] of [['chunkdb', 'crowdb-chunk-db'], ['diskio', 'crowdb-disk-io'], ['chunk-kv', 'crowdb-chunk-kv'], ['access-server', 'crowdb-access-server']]) {
     for (let reopen = 0; reopen < 2; reopen++) {
       await sidebar.getByRole('button', { name: 'N-1', exact: true }).click({ button: 'right' });
       await page.getByRole('menuitem', { name: `Deploy ${label}`, exact: true }).click();
@@ -417,7 +424,7 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
 // Baseline: 1.3s (2026-10-04); existing instances come from the owned fixture.
 test('native diagnostics: interrupted six-service plan reconciles without duplicate deployment', async ({ page, request }) => {
   test.skip(!!process.env.CROWDB_NATIVE_PLAN_PREREQUISITES, 'Requires the complete six-service fixture phase');
-  const kinds = ['kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
+  const kinds = ['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
   const servers = await request.get('/api/servers');
   expect(servers.ok()).toBe(true);
   const original = await servers.json();
@@ -427,9 +434,9 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
   for (const kind of kinds) expect(original.filter((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === kind)).toHaveLength(1);
   const saved = await request.put('/api/nodes/1/service-plan', { data: {
     revision: 0,
-    steps: Object.fromEntries(kinds.map(kind => [kind, { state: kind === 'kv' ? 'deployed' : kind === 'chunkdb' ? 'deploying' : 'pending' }])),
+    steps: Object.fromEntries(kinds.map(kind => [kind, { state: kind === 'paxos-kv' ? 'deployed' : kind === 'chunkdb' ? 'deploying' : 'pending' }])),
   } });
-  expect(saved.ok()).toBe(true);
+  expect(saved.ok(), await saved.text()).toBe(true);
   let deploymentRequests = 0;
   page.on('request', current => {
     if (current.method() === 'POST' && /\/api\/nodes\/\d+\/(server|diskdb|services)\/deploy$/.test(new URL(current.url()).pathname)) deploymentRequests++;
@@ -474,7 +481,7 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
 // Baseline: 7.6s (2026-10-04); prerequisite services are controlled through real lifecycle APIs.
 test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive', async ({ page, request }) => {
   test.skip(!process.env.CROWDB_NATIVE_PLAN_PREREQUISITES, 'Requires the partial deployment fixture phase');
-  const kinds = ['kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
+  const kinds = ['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
   const list = async () => {
     const response = await request.get('/api/servers');
     expect(response.ok()).toBe(true);
@@ -505,7 +512,7 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
         revision: 0,
         steps: Object.fromEntries(kinds.map(kind => [kind, { state: ['chunk-kv', 'access-server'].includes(kind) ? 'pending' : 'deployed' }])),
       } });
-      expect(saved.ok()).toBe(true);
+      expect(saved.ok(), await saved.text()).toBe(true);
       await page.goto('/?domain=Cluster');
       await open();
       await expect(dialog).toContainText('restart registered DiskIO services');

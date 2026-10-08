@@ -62,23 +62,34 @@ prune_ephemeral_claims() {
     local registry="$runtime_root/ports/claims.json"
     [ -f "$registry" ] || return 0
     local replacement="$registry.clean-$$"
+    local disposable_ids="$registry.disposable-$$"
+    {
+        if [ -d "$runtime_root/ephemeral" ]; then
+            while IFS= read -r -d '' manifest; do
+                jq -r '.id // empty' "$manifest"
+            done < <(find "$runtime_root/ephemeral" -type f -name namespace.json -print0)
+        fi
+    } | jq -Rsc 'split("\n") | map(select(length > 0))' >"$disposable_ids"
+    local retain='[.[] | select(.mode == "persistent" and
+        (.namespace_id as $id | $disposable[0] | index($id) | not))]'
     if command -v flock >/dev/null 2>&1; then
         exec 9<>"$registry"
         flock 9
-        jq '[.[] | select(.mode == "persistent")]' "$registry" >"$replacement"
+        jq --slurpfile disposable "$disposable_ids" "$retain" "$registry" >"$replacement"
         cat "$replacement" >"$registry"
         rm -f "$replacement"
         flock -u 9
         exec 9>&-
     else
-        jq '[.[] | select(.mode == "persistent")]' "$registry" >"$replacement"
+        jq --slurpfile disposable "$disposable_ids" "$retain" "$registry" >"$replacement"
         cat "$replacement" >"$registry"
         rm -f "$replacement"
     fi
+    rm -f "$disposable_ids"
 }
 
 terminate_recorded_processes
-rm -rf "$runtime_root/ephemeral"
 prune_ephemeral_claims
+rm -rf "$runtime_root/ephemeral"
 
 echo "[clean-env] removed disposable runtime state; preserved $runtime_root/persistent"

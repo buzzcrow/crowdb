@@ -14,18 +14,26 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     await page.goto('/?domain=Chunk-KV');
     const response = await catalogObservation;
     expect(response.ok(), await response.text()).toBe(true);
-    const catalog = await response.json();
-    // Earlier native cases can split the catalog; the first range need not
-    // contain this write. Select a current range with a real active journal.
-    let partition = null;
-    for (const entry of catalog.entries) {
-      if (entry.state !== 'Serving' || entry.transition_id !== null) continue;
-      const query = new URLSearchParams({ id: entry.id, epoch: entry.epoch, generation: catalog.generation, page: '0', offset: '0' });
-      const response = await request.get(`/api/chunk-kv/runtime?${query}`);
+    let catalog: CatalogPage = await response.json();
+    // Earlier native cases can split the catalog across multiple windows.
+    // Inspect every window until a current range has a real active journal.
+    let partition: Partition | null = null;
+    while (true) {
+      for (const entry of catalog.entries) {
+        if (entry.state !== 'Serving') continue;
+        const query = new URLSearchParams({ id: entry.id, epoch: entry.epoch, generation: catalog.generation, page: String(catalog.page), offset: String(catalog.offset) });
+        const response = await request.get(`/api/chunk-kv/runtime?${query}`);
+        expect(response.ok(), await response.text()).toBe(true);
+        if ((await response.json()).journal.active) { partition = entry; break; }
+      }
+      if (partition || !catalog.next) break;
+      const next = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
+      await page.getByRole('button', { name: 'Next partitions', exact: true }).click();
+      const response = await next;
       expect(response.ok(), await response.text()).toBe(true);
-      if ((await response.json()).journal.active) { partition = entry; break; }
+      catalog = await response.json();
     }
-    expect(partition).not.toBeNull();
+    if (!partition) throw new Error("No current catalog range has an active journal");
     const runtimeResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/runtime');
     await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${partition.id}`, exact: true }).click();
     const observed = await runtimeResponse;

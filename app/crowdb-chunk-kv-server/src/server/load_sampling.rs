@@ -90,10 +90,17 @@ async fn sample(partition: &Partition, epoch: u64, limit: usize) -> Result<Sampl
         }
     }
     // Unflushed small trees or cold indexes need only one bounded key window.
+    // One additional witness is enough when a large value fills the page.
     // No continuation loop: this work never scales with the partition's size.
-    let page = partition
+    let mut page = partition
         .scan_forward(epoch, None, None, limit.min(64), PAGE_BYTES, None)
         .await?;
+    if page.truncated && page.entries.len() == 1 && limit >= 2 {
+        let right = partition
+            .scan_forward_after(epoch, &page.entries[0].key, None, 1, PAGE_BYTES, None)
+            .await?;
+        page.entries.extend(right.entries);
+    }
     Ok(page
         .entries
         .into_iter()

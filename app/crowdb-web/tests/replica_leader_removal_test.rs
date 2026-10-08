@@ -82,11 +82,9 @@ fn tempdir(tag: &str) -> PathBuf {
 }
 
 #[allow(clippy::unused_async)]
-async fn spawn_upstream(node_id: u64, workspace: &std::path::Path) -> Option<Upstream> {
-    let bin = crowdb_kv_server_bin()?;
-    if !bin.exists() {
-        return None;
-    }
+async fn spawn_upstream(node_id: u64, workspace: &std::path::Path) -> Upstream {
+    let bin = crowdb_kv_server_bin().expect("build crowdb-kv-server before running this test");
+    assert!(bin.exists(), "KV server binary missing: {}", bin.display());
     let node = NodeEntry {
         id: node_id,
         rack_id: 1,
@@ -116,12 +114,12 @@ async fn spawn_upstream(node_id: u64, workspace: &std::path::Path) -> Option<Ups
     let deployed = lifecycle::deploy_local_in_dir(&req, &node, &node_dir)
         .await
         .expect("deploy_local_in_dir");
-    Some(Upstream {
+    Upstream {
         node_id,
         pid: deployed.pid,
         mgmt_url: deployed.mgmt_url,
         rpc_url: deployed.rpc_url,
-    })
+    }
 }
 
 async fn spawn_web(upstreams: &BTreeMap<u64, Upstream>) -> SocketAddr {
@@ -192,21 +190,15 @@ async fn spawn_web(upstreams: &BTreeMap<u64, Upstream>) -> SocketAddr {
 }
 
 #[allow(clippy::unused_async)]
-async fn spawn_five_node_cluster(test_name: &str) -> Option<Cluster> {
+async fn spawn_five_node_cluster(test_name: &str) -> Cluster {
     let workspace = tempdir(test_name);
     let mut nodes: BTreeMap<u64, Upstream> = BTreeMap::new();
     for id in 1u64..=5 {
-        let Some(node) = spawn_upstream(id, &workspace).await else {
-            for n in nodes.into_values() {
-                let _ = lifecycle::stop_pid_with_timeout(n.pid, Duration::from_secs(5));
-            }
-            eprintln!("skipping: crowdb-kv-server binary not built");
-            return None;
-        };
+        let node = spawn_upstream(id, &workspace).await;
         nodes.insert(id, node);
     }
     let web = spawn_web(&nodes).await;
-    Some(Cluster { nodes, web })
+    Cluster { nodes, web }
 }
 
 async fn create_five_node_group(cluster: &Cluster) {
@@ -386,11 +378,7 @@ async fn role_on_node(cluster: &Cluster, node_id: u64, rid: u64) -> Option<Strin
 
 #[tokio::test]
 async fn remove_leader_from_five_node_group_elects_new_leader() {
-    let Some(mut cluster) =
-        spawn_five_node_cluster("remove_leader_from_five_node_group_elects_new_leader").await
-    else {
-        return;
-    };
+    let mut cluster = spawn_five_node_cluster("remove_leader_from_five_node_group_elects_new_leader").await;
     create_five_node_group(&cluster).await;
 
     let (leader_rid, _leader_node) = wait_for_leader(&cluster, Duration::from_secs(10))
@@ -448,11 +436,7 @@ async fn remove_leader_from_five_node_group_elects_new_leader() {
 #[tokio::test]
 #[allow(clippy::unused_async)]
 async fn remove_unreachable_leader_retains_group0_membership() {
-    let Some(mut cluster) =
-        spawn_five_node_cluster("remove_unreachable_leader_retains_group0_membership").await
-    else {
-        return;
-    };
+    let mut cluster = spawn_five_node_cluster("remove_unreachable_leader_retains_group0_membership").await;
     create_five_node_group(&cluster).await;
 
     let (leader_rid, leader_node) = wait_for_leader(&cluster, Duration::from_secs(10))

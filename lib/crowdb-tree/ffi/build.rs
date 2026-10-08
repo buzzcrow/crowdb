@@ -79,14 +79,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "diskio.fbs",
         "chunkdb.fbs",
     ];
-    let mut flatc = Command::new("flatc");
+    let flatc_path = std::env::var_os("CONDA_PREFIX")
+        .map(PathBuf::from)
+        .map(|prefix| prefix.join("bin/flatc"))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            let path = repository.join(".pixi/envs/default/bin/flatc");
+            path.is_file().then_some(path)
+        })
+        .unwrap_or_else(|| PathBuf::from("flatc"));
+    let mut flatc = Command::new(&flatc_path);
     flatc.arg("--cpp").arg("-o").arg(&rpc_generated);
     for schema in schemas {
         let path = protocol_fbs.join(schema);
         flatc.arg(&path);
         println!("cargo:rerun-if-changed={}", path.display());
     }
-    if !flatc.status()?.success() {
+    if !flatc
+        .status()
+        .map_err(|error| format!("failed to run flatc at {}: {error}", flatc_path.display()))?
+        .success()
+    {
         return Err("flatc --cpp failed for crowdb-tree chunk RPC schemas".into());
     }
 

@@ -85,6 +85,17 @@ async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> Valu
 async fn deploy(app: &axum::Router, node: u64, kind: &str) {
     let defaults = call(app, "GET", "/api/deployment-defaults", Value::Null).await;
     let mut body = defaults[kind].clone();
+    // Each concurrent fixture reserves its listeners through the shared test allocator.
+    for field in ["http_port", "rpc_port", "s3_port", "health_port"] {
+        if body.get(field).is_some() {
+            let port = if kind == "diskdb" {
+                crowdb_protocol::port::alloc::alloc_test_port_range(crowdb_protocol::ServicePort::Web, 3)[2]
+            } else {
+                crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::Web)
+            };
+            body[field] = json!(port);
+        }
+    }
     let path = match kind {
         "paxos-kv" => {
             body = json!({"rest_port": body["http_port"], "rpc_port": body["rpc_port"]});
@@ -155,7 +166,7 @@ async fn assert_mixed_geometry_rejected(app: &axum::Router, state: &AppState) {
     );
 }
 
-async fn add_native_disk(app: &axum::Router, node: u64, root: &std::path::Path) {
+async fn add_native_disk(app: &axum::Router, node: u64, root: &std::path::Path, inspection_only: bool) {
     let device = root.join(format!("disk-{node}.img"));
     // Repeated production splits reserve whole 256-MiB mirrored Chunks.
     // Keep the ordinary browser geometry, but provision the slow fixture for
@@ -164,6 +175,8 @@ async fn add_native_disk(app: &axum::Router, node: u64, root: &std::path::Path) 
         256
     } else if node == 1 {
         80
+    } else if inspection_only {
+        256
     } else {
         8
     };
@@ -399,7 +412,10 @@ async fn assert_native_browser_diagnostics(app: axum::Router, chunks: Option<Val
 }
 
 #[tokio::test]
-#[ignore = "Requires installed native KV and DiskIO binaries"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "Requires installed native KV and DiskIO binaries"
+)]
 async fn node_diskio_discovers_disk_groups_created_after_deployment() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("late-diskio-groups");
     let state = AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned());
@@ -432,6 +448,9 @@ async fn node_diskio_discovers_disk_groups_created_after_deployment() {
     .await;
     let mut body =
         call(&app, "GET", "/api/deployment-defaults?node_id=1", Value::Null).await["diskio"].clone();
+    body["rpc_port"] = json!(crowdb_protocol::port::alloc::alloc_test_port(
+        crowdb_protocol::ServicePort::Web
+    ));
     body["kind"] = json!("diskio");
     call(&app, "POST", "/api/nodes/1/services/deploy", body).await;
     let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(state.kv_client().await);
@@ -496,13 +515,19 @@ async fn create_late_diskio_groups(app: &axum::Router) {
 }
 
 #[tokio::test]
-#[ignore = "Cold normal three-node chain; requires all six installed native server binaries"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "Cold normal three-node chain; requires all six installed native server binaries"
+)]
 async fn one_rack_three_nodes_provision_all_services_without_metadata_repairs() {
     native_cluster(false).await;
 }
 
 #[tokio::test]
-#[ignore = "Native Page and Iceberg inspection; requires all six installed server binaries"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "Native Page and Iceberg inspection; requires all six installed server binaries"
+)]
 async fn native_page_and_iceberg_inspection() {
     native_cluster(true).await;
 }
@@ -569,7 +594,7 @@ async fn native_cluster(inspection_only: bool) {
             json!({"id":node,"store_id":u64::from(node == 1),"group_id":1,"name":"storage"}),
         )
         .await;
-        add_native_disk(&app, node, root.path()).await;
+        add_native_disk(&app, node, root.path(), inspection_only).await;
     }
     assert_bound_groups(&app, &hardware).await;
     if std::env::var_os("CROWDB_NATIVE_MIXED_UNITS").is_some() {
@@ -586,7 +611,8 @@ async fn native_cluster(inspection_only: bool) {
         return;
     }
     if inspection_only {
-        let chunks = native_chunk_windows(&state).await;
+        native_balance::TestNativeBalance::settle_for_inspection(&state).await;
+        let chunks = Some(native_chunks::seed(&state).await);
         assert_native_browser_diagnostics(app.clone(), chunks).await;
         return;
     }

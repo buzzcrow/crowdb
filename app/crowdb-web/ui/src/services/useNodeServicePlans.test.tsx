@@ -19,6 +19,36 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('loads saved revisions before resuming waiting steps after reload', async () => {
+    let release!: (value: unknown) => void;
+    const saved = new Promise(resolve => { release = resolve; });
+    const request = vi.mocked(serviceRequest).getMockImplementation()!;
+    vi.mocked(serviceRequest).mockImplementation(async (path, method, body) =>
+      path === '/service-plans' ? saved : request(path, method, body));
+    const { result } = renderHook(() => useNodeServicePlans([], {}, async () => {}, true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(serviceRequest).toHaveBeenCalledTimes(1);
+    const steps = newPlan();
+    steps['paxos-kv'] = { state: 'deployed' };
+    await act(async () => { release({ 1: { revision: 7, steps } }); });
+    expect(result.current.plans[1].diskio.state).toBe('waiting');
+    expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/service-plan', 'PUT', expect.objectContaining({ revision: 7 }));
+  });
+  it('keeps a deployment queued when ownership changes after its readiness probe', async () => {
+    vi.mocked(listServers).mockResolvedValue([{ node_id: 1, service_type: 'diskio', pid: 10 }] as Awaited<ReturnType<typeof listServers>>);
+    let ownershipPublished = false;
+    const request = vi.mocked(serviceRequest).getMockImplementation()!;
+    vi.mocked(serviceRequest).mockImplementation(async (path, method, body) => {
+      if (path.endsWith('/services/deploy') && !ownershipPublished) throw new Error('HTTP 409: Waiting: every configured disk group needs live DiskIO ownership');
+      return request(path, method, body);
+    });
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => { await result.current.start(1, ['chunkdb']); });
+    expect(result.current.plans[1].chunkdb).toEqual({ state: 'waiting', detail: 'Waiting: every configured disk group needs live DiskIO ownership' });
+    ownershipPublished = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(result.current.plans[1].chunkdb.state).toBe('deployed');
+  });
   it('finishes every selected ChunkDB deployment before journal bootstrap can block the serial plan', async () => {
     const first = newPlan();
     const second = newPlan();

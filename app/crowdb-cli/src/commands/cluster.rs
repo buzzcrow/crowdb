@@ -338,6 +338,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     no_fsync: no_fsync.then_some(true),
                 };
                 let disk = crowdb_console_shared::ops::cluster::LocalDiskdbDeployConfig {
+                    keepalive_interval_secs: None,
                     disk_groups_per_node,
                     disks_per_group,
                     capacity_bytes: disk_capacity_bytes,
@@ -353,6 +354,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 let chunk = crowdb_console_shared::ops::cluster::LocalChunkdbDeployConfig {
                     instance_count: chunkdb_instances,
                     storage_groups: vec![1, 2, 3],
+                    dynamic_ownership: false,
                     allow_unsafe_ec,
                     rpc_workers: nonzero(rpc_workers),
                     diskio_rpc_workers: nonzero(diskio_rpc_workers),
@@ -490,6 +492,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 let workspace =
                     deploy_workspace(cli).unwrap_or_else(|| std::path::PathBuf::from("cli-deploy"));
                 let config = crowdb_console_shared::ops::cluster::LocalDiskdbDeployConfig {
+                    keepalive_interval_secs: None,
                     disk_groups_per_node,
                     disks_per_group,
                     capacity_bytes: disk_capacity_bytes,
@@ -531,6 +534,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 let chunk = crowdb_console_shared::ops::cluster::LocalChunkdbDeployConfig {
                     instance_count: chunkdb_instances,
                     storage_groups: vec![1, 2, 3],
+                    dynamic_ownership: false,
                     allow_unsafe_ec,
                     rpc_workers: nonzero(rpc_workers),
                     diskio_rpc_workers: nonzero(diskio_rpc_workers),

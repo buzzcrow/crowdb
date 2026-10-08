@@ -1453,7 +1453,7 @@ pub async fn http_add_disk(
     let entry = ops::hardware::add_disk(&ctx, node_id, dg_id, &input)
         .await
         .map_err(map_config_err)?;
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
+    crate::physical::disk::persist_added(&state, std::slice::from_ref(&entry))?;
     Ok((StatusCode::CREATED, Json(entry)))
 }
 
@@ -1492,7 +1492,7 @@ pub async fn http_add_disks_batch(
     let added = ops::hardware::add_disks_batch(&ctx, node_id, dg_id, &inputs)
         .await
         .map_err(map_config_err)?;
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
+    crate::physical::disk::persist_added(&state, &added)?;
     Ok((
         StatusCode::CREATED,
         Json(AddDisksBatchResult {

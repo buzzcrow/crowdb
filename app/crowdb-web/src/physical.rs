@@ -3,6 +3,7 @@
 
 //! Physical-tree per-node primitives and expanded views.
 
+pub(crate) mod disk;
 pub(crate) mod disk_group;
 pub mod node;
 pub mod view;

@@ -13,8 +13,24 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 fi
 
 pixi run clean-env
-cargo build -p crowdb-kv-server
+pixi run build-cpp
+pixi run install-ui-deps
+(cd app/crowdb-web/ui && npm run build)
+cargo build -p crowdb-web -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
 cargo test -p crowdb-console-shared --tests
 cargo test -p crowdb-cli --tests
-cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 cargo test -p crowdb-web --tests
+
+# These browser cases require distinct owned fixture phases.
+CROWDB_NATIVE_PLAN_PREREQUISITES=1 \
+    CROWDB_NATIVE_UI_E2E_GREP='native diagnostics: waiting plan resumes' \
+    cargo test -p crowdb-web --test native_cluster_provisioning_test \
+    one_rack_three_nodes_provision_all_services_without_metadata_repairs -- --exact --nocapture
+CROWDB_NATIVE_JOURNAL_WINDOWS=1 \
+    CROWDB_NATIVE_UI_E2E_GREP='native diagnostics: large Journal replaces' \
+    cargo test -p crowdb-web --test native_cluster_provisioning_test \
+    native_page_and_iceberg_inspection -- --exact --nocapture
+CROWDB_NATIVE_WEIGHTED_ACCEPTANCE=1 CROWDB_NATIVE_TRANSITION_ACCEPTANCE=1 \
+    CROWDB_NATIVE_UI_E2E_GREP='native diagnostics: production split displays' \
+    cargo test -p crowdb-web --test native_cluster_provisioning_test \
+    one_rack_three_nodes_provision_all_services_without_metadata_repairs -- --exact --nocapture

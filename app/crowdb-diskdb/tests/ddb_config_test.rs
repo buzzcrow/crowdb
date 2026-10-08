@@ -246,3 +246,16 @@ fn partial_heartbeat_override_retains_other_liveness_defaults() {
     );
     validate(&config).unwrap();
 }
+
+#[test]
+fn ownership_monitor_observes_fast_heartbeats_without_changing_failure_thresholds() {
+    let mut config = crowdb_diskdb::ddb_config::DdbConfig::default();
+    let ordinary = config.ownership_monitor_descriptor();
+    assert_eq!(ordinary.heartbeat_interval_ms, 5_000);
+    config.heartbeat.interval_secs = 1;
+    let accelerated = config.ownership_monitor_descriptor();
+    assert_eq!(accelerated.heartbeat_interval_ms, 1_000);
+    assert_eq!(accelerated.suspect_after_ms, ordinary.suspect_after_ms);
+    assert_eq!(accelerated.dead_after_ms, ordinary.dead_after_ms);
+    assert_eq!(accelerated.lease_duration_ms, ordinary.lease_duration_ms);
+}

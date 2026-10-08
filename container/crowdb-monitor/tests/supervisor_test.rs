@@ -196,13 +196,11 @@ async fn stable_health_resets_crash_loop_budget() {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
             let exited = if cfg!(target_os = "linux") {
-                fs::read_to_string(format!("/proc/{}/status", pid.as_raw_pid()))
-                    .map(|status| {
-                        status
-                            .lines()
-                            .any(|line| line.starts_with("State:") && line.contains('Z'))
-                    })
-                    .unwrap_or(true)
+                fs::read_to_string(format!("/proc/{}/status", pid.as_raw_pid())).map_or(true, |status| {
+                    status
+                        .lines()
+                        .any(|line| line.starts_with("State:") && line.contains('Z'))
+                })
             } else {
                 let output = Command::new("ps")
                     .args(["-p", &pid.as_raw_pid().to_string(), "-o", "stat="])

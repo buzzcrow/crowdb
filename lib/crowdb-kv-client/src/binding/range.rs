@@ -144,7 +144,10 @@ impl RangeBindingClient {
                 .await
                 .map_err(|error| RangeRouteError::Refresh(error.to_string()))?;
         }
-        self.route_slot(ChunkSlot::for_chunk(chunk_id))
+        match self.route_slot(ChunkSlot::for_chunk(chunk_id)) {
+            Err(RangeRouteError::NoEndpoint(_)) => self.refresh_and_route(chunk_id).await,
+            result => result,
+        }
     }
 
     /// Refresh after a rejected or stale-endpoint request, then resolve its owner.

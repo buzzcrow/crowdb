@@ -110,6 +110,57 @@ fn compatibility_allocator_shares_the_namespace_registry() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn descendant_launchers_record_processes_in_the_parent_namespace() {
+    use crowdb_protocol::port::namespace::record_workspace_process;
+    if let Some(workspace) = std::env::var_os("CROWDB_NAMESPACE_DESCENDANT_TEST_ROOT") {
+        let workspace = std::path::Path::new(&workspace);
+        let mut cluster = RuntimeNamespace::persistent(workspace, "descendant-cluster").unwrap();
+        cluster.assign_port(ServicePort::ChunkKvRpc, 0).unwrap();
+        record_workspace_process(workspace, std::process::id()).unwrap();
+        return;
+    }
+    let namespace = RuntimeNamespace::ephemeral("descendant-owner").unwrap();
+    let workspace = namespace.data_dir();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "descendant_launchers_record_processes_in_the_parent_namespace",
+            "--nocapture",
+        ])
+        .env("CROWDB_NAMESPACE_DESCENDANT_TEST_ROOT", workspace)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record = namespace
+        .root()
+        .join(format!("processes/{pid}/process-owner.json"));
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(record).unwrap()).unwrap();
+    assert_eq!(value["processes"][0]["pid"], pid);
+    let cluster = RuntimeNamespace::persistent(namespace.data_dir(), "descendant-cluster").unwrap();
+    let claims: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(crowdb_protocol::port::namespace::runtime_root().join("ports/claims.json")).unwrap(),
+    )
+    .unwrap();
+    let claim = claims
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|claim| claim["namespace_id"] == cluster.id())
+        .expect("child launcher claim survives until parent cleanup");
+    assert_eq!(claim["mode"], "ephemeral");
+    assert_eq!(claim["owner_pid"], std::process::id());
+}
+
+#[test]
 fn workspace_process_records_are_isolated_and_never_enroll_persistent_namespaces() {
     use crowdb_protocol::port::namespace::record_workspace_process;
     let namespace = RuntimeNamespace::ephemeral("workspace-owner").unwrap();

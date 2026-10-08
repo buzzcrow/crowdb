@@ -5,8 +5,8 @@
 #include "crowdb-rpc/pool.h"
 #include "crowdb-rpc/transport/socket_transport.h"
 
-#include <gtest/gtest.h>
 #include <fcntl.h>
+#include <gtest/gtest.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -46,6 +46,32 @@ void complete(uint64_t /*request_id*/, crowdb_rpc_buffer_t /*control*/, crowdb_r
     result->calls.fetch_add(1, std::memory_order_release);
 }
 } // namespace
+
+TEST(ClientDisconnectTest, CloseRetainsConnectionUntilBothCallbacksFinish)
+{
+    using namespace crowdb::rpc;
+    SystemBufferPool          pool;
+    auto                      connection = std::make_shared<Connection>(1, "closing", &pool);
+    std::weak_ptr<Connection> lifetime   = connection;
+    std::atomic<bool>         entered{false};
+    std::atomic<bool>         release{false};
+    std::atomic<int>          cleanups{0};
+    connection->set_on_rpc_close([&](Connection *) {
+        entered.store(true, std::memory_order_release);
+        entered.notify_one();
+        release.wait(false, std::memory_order_acquire);
+    });
+    connection->set_on_close([&](Connection *) { ++cleanups; });
+    std::thread closer([handle = connection.get()] { handle->close(); });
+    entered.wait(false, std::memory_order_acquire);
+    connection.reset();
+    EXPECT_FALSE(lifetime.expired());
+    release.store(true, std::memory_order_release);
+    release.notify_one();
+    closer.join();
+    EXPECT_EQ(cleanups.load(), 1);
+    EXPECT_TRUE(lifetime.expired());
+}
 
 TEST(ClientDisconnectTest, PeerCloseFailsSlabAndMapWithoutReaperAndPreservesOtherConnection)
 {

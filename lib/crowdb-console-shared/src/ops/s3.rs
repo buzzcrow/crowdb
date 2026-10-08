@@ -222,6 +222,7 @@ fn storage_configs(
         / (1024 * 1024)
         * (1024 * 1024);
     let disk = LocalDiskdbDeployConfig {
+        keepalive_interval_secs: protected_test.then_some(1),
         disk_groups_per_node: 1,
         disks_per_group: 1,
         capacity_bytes: per_node_capacity,
@@ -237,6 +238,7 @@ fn storage_configs(
     let chunk = LocalChunkdbDeployConfig {
         instance_count: 3,
         storage_groups: vec![1, 2, 3],
+        dynamic_ownership: protected_test,
         allow_unsafe_ec: !protected_test,
         rpc_workers: None,
         diskio_rpc_workers: None,
