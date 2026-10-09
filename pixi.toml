@@ -76,6 +76,7 @@ rclone = "==1.75.1"
 
 [feature.s3-e2e.tasks]
 test-boto3-e2e = { cmd = "bash tools/pixi-tasks/test-s3-e2e.sh" }
+test-boto3-copy-error = { cmd = "bash tools/pixi-tasks/test-boto3-copy-error.sh" }
 test-aws-cli-e2e = "bash tools/pixi-tasks/test-s3-client.sh aws"
 test-aws-cli-concurrent = "CROWDB_S3_CLIENT_CONCURRENCY=10 bash tools/pixi-tasks/test-s3-client.sh aws"
 test-rclone-e2e = "bash tools/pixi-tasks/test-s3-client.sh rclone"

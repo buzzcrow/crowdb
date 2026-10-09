@@ -18,3 +18,6 @@ for package in \
     crowdb-monitor; do
     cargo test -p "$package" --tests
 done
+
+# The SDK-only case is part of this task, with its pinned Python environment.
+pixi run -e s3-e2e test-boto3-copy-error

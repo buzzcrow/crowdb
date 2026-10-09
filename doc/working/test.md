@@ -40,14 +40,20 @@ Leave unexecuted packages in place with `—`; record elapsed time in seconds.
 | `test-cpp`         | 2026-10-09 | 942/942   | 131.26  | ✓                        |
 | `test-core`        | 2026-10-09 | 994/994   | ~140.23 | ✓                        |
 | `test-storage`     | 2026-10-09 | 841/841   | 916.53  | ✓                        |
-| `test-access`      | 2026-10-09 | 1036/1037 | 412.60  | ✓ 1 separately scheduled |
+| `test-access`      | 2026-10-09 | 1036/1037 | 412.60  | Pending: coverage gap    |
 | `test-console`     | 2026-10-09 | 350/350   | ~1588.1 | ✓                        |
 | `test-console-ui`  | 2026-10-09 | 229/229   | 307.40  | ✓                        |
 | `test-boto3-e2e`   | 2026-10-09 | 255/255   | 428.89  | ✓                        |
-| `test-iceberg-e2e` | 2026-10-09 | 29/32     | 789.37  | ✓ 3 separately scheduled |
+| `test-iceberg-e2e` | 2026-10-09 | 29/32     | 789.37  | Pending: coverage gap    |
 | `test-iceberg-sdk` | 2026-10-09 | 11/11     | 571.23  | ✓                        |
 
 Measurement notes for this host:
+
+- Access and Iceberg rows retain their earlier partial-run counts/times, but
+  are not complete task acceptance. The parent tasks must dispatch their SDK
+  cases automatically in one invocation; see
+  [task completeness plan](plan-test-task-completeness.md). Prior passing SDK
+  runs do not close those parent-task coverage gaps.
 
 - Latest complete Console gate passes 350 Rust test executions (including
   three dedicated phase wrapper reruns), zero failed/ignored. All 23 native

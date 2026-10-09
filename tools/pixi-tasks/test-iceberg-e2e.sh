@@ -6,3 +6,6 @@ cd "${PIXI_PROJECT_ROOT:?}"
 
 pixi run -e iceberg-e2e test-pyiceberg-e2e
 pixi run -e iceberg-e2e test-iceberg-native
+
+# Java FileIO cases require their own owned native cluster preparation.
+pixi run -e iceberg-e2e test-java-iceberg-fileio-e2e
