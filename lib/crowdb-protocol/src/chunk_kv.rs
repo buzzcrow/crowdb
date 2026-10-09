@@ -11,6 +11,8 @@ use thiserror::Error;
 
 use crate::chunk_stream::StreamName;
 
+pub mod balance;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Id128 {
     pub high: u64,
@@ -227,6 +229,10 @@ pub enum DomainFailurePolicy {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkKvRangeBalancePolicy {
+    #[serde(default = "balance::default_byte_weight_percent")]
+    pub byte_weight_percent: u32,
+    #[serde(default = "balance::default_tolerance_percent")]
+    pub imbalance_tolerance_percent: u32,
     pub target_partitions_per_owner: u32,
     pub target_partition_bytes: u64,
     pub minimum_weighted_improvement_percent: u32,
@@ -237,6 +243,8 @@ pub struct ChunkKvRangeBalancePolicy {
 impl Default for ChunkKvRangeBalancePolicy {
     fn default() -> Self {
         Self {
+            byte_weight_percent: balance::default_byte_weight_percent(),
+            imbalance_tolerance_percent: balance::default_tolerance_percent(),
             target_partitions_per_owner: 4,
             target_partition_bytes: 1 << 30,
             minimum_weighted_improvement_percent: 25,
@@ -253,7 +261,9 @@ impl ChunkKvRangeBalancePolicy {
     ///
     /// Returns an error for zero sizing/cooldown or a percentage above 100.
     pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
-        if self.target_partitions_per_owner == 0
+        if self.byte_weight_percent > 100
+            || self.imbalance_tolerance_percent > 100
+            || self.target_partitions_per_owner == 0
             || self.target_partition_bytes == 0
             || self.minimum_weighted_improvement_percent > 100
             || self.cooldown_ms == 0

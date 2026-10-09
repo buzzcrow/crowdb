@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Persisted automatic split and count-first placement planning.
+//! Persisted automatic split and unified-weight placement planning.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,7 +11,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState,
     DomainMonitorDescriptor, Id128, OwnerDescriptor, SplitPhase, TransferPhase, TransferTransition,
 };
-use crowdb_protocol::common::{ChunkKvExtra, InstanceValue};
+use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad, InstanceValue};
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
 use tracing::info;
 
@@ -21,6 +21,7 @@ use super::{
     catalog, operation_error, read_instances, read_splits, read_transfers, transfer_id, wall_time_ms,
 };
 
+mod observation;
 mod selection;
 mod split;
 
@@ -29,6 +30,9 @@ use split::split_transition;
 
 struct PlanningState {
     healthy: HashMap<u64, (InstanceValue, ChunkKvExtra)>,
+    partition_loads: HashMap<(u64, Id128), ChunkKvPartitionLoad>,
+    partition_bytes: HashMap<(u64, Id128), u64>,
+    hosted_epochs: HashMap<(u64, Id128), u64>,
     active_partitions: HashSet<Id128>,
     busy_owners: HashSet<u64>,
     last_changed_ms: HashMap<Id128, u64>,
@@ -86,12 +90,20 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
         return Ok(());
     };
     policy.validate().map_err(|error| error.to_string())?;
-    if plan_transfer(control, &entries, &state, policy, now_ms, true).await?
-        || plan_split(control, &entries, &state, policy, now_ms).await?
-    {
-        return Ok(());
+    let selection = choose_transfer(
+        &entries,
+        &state,
+        policy,
+        now_ms,
+        catalog.head.generation,
+        descriptor.suspect_after_ms,
+    );
+    if let Some((entry, target_id)) = selection.candidate {
+        plan_transfer(control, entry, target_id, &state, now_ms).await?;
+    } else {
+        plan_split(control, &entries, &state, policy, now_ms).await?;
     }
-    plan_transfer(control, &entries, &state, policy, now_ms, false).await?;
+    observation::publish(control, &selection.observation).await;
     Ok(())
 }
 
@@ -114,8 +126,39 @@ async fn planning_state(
         };
         healthy.insert(instance.instance_id, (instance, extra));
     }
+    let partition_loads = healthy
+        .iter()
+        .flat_map(|(id, (_, extra))| {
+            extra
+                .partition_loads
+                .iter()
+                .map(move |load| ((*id, load.partition_id), load.clone()))
+        })
+        .collect();
+    let partition_bytes = healthy
+        .iter()
+        .flat_map(|(id, (_, extra))| {
+            extra
+                .partition_loads
+                .iter()
+                .map(move |load| ((*id, load.partition_id), effective_bytes(load)))
+        })
+        .collect();
+    let hosted_epochs = healthy
+        .iter()
+        .flat_map(|(id, (_, extra))| {
+            extra
+                .hosted
+                .iter()
+                .filter(|hosted| !hosted.recovering)
+                .map(move |hosted| ((*id, hosted.partition_id), hosted.owner_epoch))
+        })
+        .collect();
     let mut state = PlanningState {
         healthy,
+        partition_loads,
+        partition_bytes,
+        hosted_epochs,
         active_partitions: HashSet::new(),
         busy_owners: HashSet::new(),
         last_changed_ms: HashMap::new(),
@@ -186,7 +229,7 @@ async fn plan_split(
         let Some(load) = partition_load(state, entry) else {
             continue;
         };
-        let effective_bytes = effective_bytes(load);
+        let effective_bytes = state.partition_bytes[&(entry.owner.instance_id, entry.partition_id)];
         if (count_shortfall || effective_bytes > policy.target_partition_bytes)
             && eligible(entry, state)
             && cooled_down(entry, &state.last_changed_ms, policy, now_ms)
@@ -230,18 +273,11 @@ async fn plan_split(
 
 async fn plan_transfer(
     control: &Group0ControlPlane,
-    entries: &[&ChunkKvRangeCatalogEntry],
+    entry: &ChunkKvRangeCatalogEntry,
+    target_id: u64,
     state: &PlanningState,
-    policy: &ChunkKvRangeBalancePolicy,
     now_ms: u64,
-    count_only: bool,
 ) -> Result<bool, String> {
-    let (counts, bytes) = owner_loads(entries, state);
-    let Some((entry, target_id)) =
-        choose_transfer(entries, state, policy, now_ms, &counts, &bytes, count_only)
-    else {
-        return Ok(false);
-    };
     let (target, _) = state
         .healthy
         .get(&target_id)
@@ -300,31 +336,6 @@ async fn plan_transfer(
 
 // Preparation and forwarding bounds are independent of placement pacing.
 const TRANSFER_SAFETY_WINDOW_MS: u64 = 10 * 60 * 1_000;
-
-fn owner_loads(
-    entries: &[&ChunkKvRangeCatalogEntry],
-    state: &PlanningState,
-) -> (HashMap<u64, usize>, HashMap<u64, u64>) {
-    let mut counts = state
-        .healthy
-        .keys()
-        .map(|owner| (*owner, 0_usize))
-        .collect::<HashMap<_, _>>();
-    let mut bytes = state
-        .healthy
-        .keys()
-        .map(|owner| (*owner, 0_u64))
-        .collect::<HashMap<_, _>>();
-    for entry in entries {
-        if counts.contains_key(&entry.owner.instance_id) {
-            *counts.entry(entry.owner.instance_id).or_default() += 1;
-            let load = partition_load(state, entry).map_or(0, effective_bytes);
-            let owner_bytes = bytes.entry(entry.owner.instance_id).or_default();
-            *owner_bytes = owner_bytes.saturating_add(load);
-        }
-    }
-    (counts, bytes)
-}
 
 async fn persist_new<T: serde::Serialize + PartialEq + serde::de::DeserializeOwned>(
     control: &Group0ControlPlane,

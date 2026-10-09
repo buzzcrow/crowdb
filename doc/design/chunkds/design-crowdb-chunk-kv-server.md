@@ -500,19 +500,99 @@ an unsplittable largest partition does not exclude the remaining candidates.
 Retained pack estimates use the opened manifest, including shared packs, rather
 than cumulative write counters. The estimate is deliberately coarse and can
 lag unsnapshotted mutations; observation does not scan remote metadata or data.
-The retained parent and new split child stay local. Once independently
-recoverable, count-correcting placement takes priority over further splitting;
-weighted placement follows eligible splits. Placement minimizes partition-count
-difference first, then durable-byte spread. A move must repair count imbalance
-or improve weighted spread by at least 25%. Request rate and target headroom are
-safety filters. A child with a parent-tail overlay is ineligible. The default
-per-partition cooldown is one minute. Split pacing includes recent splits and
-transfers; repeat-placement pacing includes only recent transfers, so a split
-does not postpone a child's first placement. An owner participates in at most
-one transition at a time. Transfer preparation, estimated catch-up and forwarding
-retain independent ten-minute safety windows. Healthy, independently recoverable
-partitions with capacity on an idle target must make actual balance progress
-within forty seconds; splitting alone is not placement progress.
+The retained parent and new split child stay local. Range splitting deliberately
+uses an approximate boundary and does not guarantee equal child sizes. Split
+sizing and minimum partition supply do not require exact placement equality.
+A move uses the resulting children's observed estimates; an indivisible range
+may prevent further useful balancing, in which case placement remains unchanged.
+
+### 8.1 Unified Weight
+
+For one complete catalog and fresh healthy-owner observation, let `N` be the
+number of eligible healthy owners, `P` the total assigned partition count, and
+`B` the sum of estimated bytes of those assignments. Empty healthy owners are
+included. Owner `i` has count `p_i` and estimated bytes `b_i`.
+`byte_weight_percent` and `count_weight_percent` are explicit nonnegative policy
+coefficients totaling 100; the count coefficient is the complement of the byte
+coefficient. Defaults are data/count 80/20, relative imbalance tolerance 20%,
+and minimum global-loss improvement 25%. With `a = byte_weight_percent / 100`:
+
+- When `B > 0`, `w_i = a * b_i / B + (1 - a) * p_i / P`.
+- When all known byte estimates are zero, `w_i = p_i / P`.
+- A partition's contribution is `a * estimated_bytes / B + (1 - a) / P`,
+  or `1 / P` in the known-zero-byte case. Contributions sum to its owner's
+  weight and global owner weights sum to one, up to fixed-point rounding.
+- An empty catalog has no move candidates. Unknown estimates are not zero.
+  Missing, stale or mismatched assignment observations defer load-based planning
+  and expose the unavailable reason; they do not make an owner appear empty.
+
+Estimates come from epoch/identity-matching cached partition metadata, retained
+pack estimates and bounded resident samples. Shared packs and delayed samples
+make these estimates approximate; weight is not an exact physical-capacity
+measurement. Capacity/headroom remains a separate safety filter. Aggregate each
+reported partition once per observation and reuse its estimate for candidates.
+Weight calculation never walks keys/data, counts the tree, flushes, checkpoints,
+or scans remote storage. Planning may iterate catalog/heartbeat metadata;
+heartbeat/request paths do not wait for planning or sampling.
+
+### 8.2 Tolerance and Move Selection
+
+Equal owner weight is `1 / N`. The observation's relative deviation is
+`D = max_i(abs(N * w_i - 1))`; `imbalance_tolerance_percent` bounds `100 * D`.
+Within tolerance, no load-balancing move is planned. Outside tolerance, evaluate
+candidate moves against the same global loss
+`L = sum_i((N * w_i - 1)^2)` before and after the move. Both the partition count
+contribution and its estimated bytes move together. The normalized denominators
+stay fixed for each candidate evaluation. Only the two affected owner terms
+change, so each candidate's loss delta requires constant arithmetic.
+
+A candidate must strictly reduce loss and meet
+`minimum_weighted_improvement_percent` of the current loss. Count difference
+alone cannot override a worsening unified score. Choose the greatest loss
+reduction among safe eligible candidates; stable partition/target identities
+break ties. Use validated bounded integer/fixed-point arithmetic, sufficient
+intermediate width, and conservative threshold comparisons; UI rounding does
+not decide eligibility. With unchanged observations, a reverse move increases
+the same loss and cannot qualify. Observation changes remain subject to
+thresholds and cooldown, rather than triggering actions for every small change.
+
+For example, two owners with weights 20% and 80% can move a partition whose
+contribution is 40 percentage points to obtain 60% and 40%. A relative tolerance
+of 20% includes that result because equal owner weight is 50%. This is an
+illustration of configured thresholds, not a promise that split yields two
+40-point children. When no safe indivisible candidate offers enough improvement,
+report no useful move and keep the placement.
+
+Request rate, target headroom, fresh health, exact assignment and independent
+recoverability are safety filters. A parent-tail overlay is ineligible. One
+partition and each participating owner have at most one active transition.
+Default per-partition cooldown is one minute; cooldown supplements scoring and
+tolerance. Split pacing includes recent splits and transfers; repeat-placement
+pacing includes only transfers, so split does not postpone first placement.
+Transfer preparation, estimated catch-up and forwarding retain independent
+ten-minute safety windows. A safe candidate outside tolerance that meets the
+improvement threshold must make placement progress within forty seconds when
+its cooldown has elapsed; splitting alone is not placement progress.
+
+### 8.3 Decision Observation
+
+The monitor's bounded decision observation identifies policy coefficients and
+thresholds, catalog generation, assignment/owner identities, observation time,
+source freshness, counts, estimated bytes, count/byte weight contributions,
+owner weights, deviation and loss. It records the selected or best rejected
+candidate's predicted weights and improvement, plus move/no-move reason:
+within tolerance, insufficient benefit, unavailable observation, cooldown,
+active transition, inherited overlay, unhealthy owner or capacity/rate limit.
+Policy version identifies the scoring formula. Diagnostics retain at most 256
+owners, 4096 partition contributions and 2 MiB, independently of the planner's
+complete metadata input. Omitted details display unavailable; they do not alter
+planning. Unchanged diagnostics are renewed within half their freshness window
+rather than written on every tick. Do not emit or persist all candidate pairs
+on every tick. This diagnostic
+observation is not catalog authority and does not advance catalog generation.
+Console uses this actual backend calculation and never normalizes weights from
+its visible catalog page. Catalog generation/identity mismatch remains explicit;
+UI refresh does not bypass stale cursor rejection.
 
 ## 9. Lifecycle and Observability
 

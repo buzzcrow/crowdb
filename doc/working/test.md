@@ -38,17 +38,40 @@ Leave unexecuted packages in place with `—`; record elapsed time in seconds.
 | Test package       | Date       | Tests     | Seconds | Status                   |
 | ------------------ | ---------- | --------- | ------- | ------------------------ |
 | `test-cpp`         | 2026-10-09 | 942/942   | 131.26  | ✓                        |
-| `test-core`        | 2026-10-09 | 987/987   | 126.92  | ✓                        |
-| `test-storage`     | 2026-10-09 | 839/839   | 828.45  | ✓                        |
+| `test-core`        | 2026-10-09 | 993/993   | 181.15  | ✓                        |
+| `test-storage`     | 2026-10-09 | 841/841   | 916.53  | ✓                        |
 | `test-access`      | 2026-10-09 | 1036/1037 | 412.60  | ✓ 1 separately scheduled |
-| `test-console`     | 2026-10-09 | 307/308   | 877.17  | X partial                |
-| `test-console-ui`  | 2026-10-09 | 225/225   | 306.98  | ✓                        |
+| `test-console`     | 2026-10-09 | 158/159   | 383.82  | X partial                |
+| `test-console-ui`  | 2026-10-09 | 227/227   | 343.12  | ✓                        |
 | `test-boto3-e2e`   | 2026-10-09 | 255/255   | 428.89  | ✓                        |
 | `test-iceberg-e2e` | 2026-10-09 | 29/32     | 789.37  | ✓ 3 separately scheduled |
 | `test-iceberg-sdk` | 2026-10-09 | 11/11     | 571.23  | ✓                        |
 
 Measurement notes for this host:
 
+- Latest balance implementation: Core 993/993, Storage 841/841 and full UI 227/227 pass, with
+  zero ignored cases. UI includes all 63 browser cases, including the original
+  six-service recovery and three-node real KV/S3/Iceberg flow. Logs are under
+  `.crowdb-runtime/artifacts/measure-tests/20261009T053116.399322Z/`.
+- Latest consistent Console attempt stops at the node-3 S3 outage test: large
+  object allocation contacts the stopped DiskDB endpoint and returns 503.
+  Its 158/159 count covers only the stages reached, not the full suite. Logs:
+  `.crowdb-runtime/artifacts/measure-tests/20261009T052410.043897Z/`;
+  service logs are preserved under
+  `.crowdb-runtime/artifacts/balance-policy-20261009/outage-3/`.
+  The preceding attempt mixed old/new diagnostic binaries during a field
+  addition and is not final acceptance evidence; it also observed an independent
+  empty multipart ListParts response after successful uploads. Both remain
+  investigation items, with no deadline increases or caller retries.
+- Isolated normal native restart/multipart acceptance passes in 24.03 seconds.
+  Dedicated weighted acceptance fails in 968.43 seconds: new acknowledged
+  writes do not update the opened manifest's retained-pack estimate without a
+  checkpoint, so the unified policy continues to observe tolerance rather than
+  the intended new imbalance. Its real split inherited/current Journal browser
+  case passes in 18.7 seconds. This is incomplete acceptance, not a Linux skip;
+  logs are in `.crowdb-runtime/artifacts/balance-policy-20261009/` and the
+  statistics boundary is recorded for review in `plan-chunk-kv-cutover.md`.
+- The following earlier measurements describe the pre-balance baseline.
 - Full UI passes 225/225 in 306.98 seconds after its topology preparation
   checks current complete membership and matching terms instead of caching an
   earlier leader seen while a new replica is unknown. The entire affected

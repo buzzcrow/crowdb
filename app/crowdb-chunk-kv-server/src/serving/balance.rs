@@ -1,11 +1,15 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_protocol::chunk_kv::{Id128, KeyRange};
+use crowdb_protocol::chunk_kv::{balance::BalanceWeights, ChunkKvRangeBalancePolicy, Id128, KeyRange};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BalanceConfig {
+    #[serde(default = "crowdb_protocol::chunk_kv::balance::default_byte_weight_percent")]
+    pub byte_weight_percent: u32,
+    #[serde(default = "crowdb_protocol::chunk_kv::balance::default_tolerance_percent")]
+    pub imbalance_tolerance_percent: u32,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub target_partitions_per_owner: usize,
@@ -19,6 +23,8 @@ impl Default for BalanceConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            byte_weight_percent: 80,
+            imbalance_tolerance_percent: 20,
             target_partitions_per_owner: 4,
             target_partition_bytes: 1 << 30,
             minimum_weighted_improvement_percent: 25,
@@ -112,22 +118,32 @@ pub fn choose_transfer(
     now_ms: u64,
     config: &BalanceConfig,
 ) -> Option<TransferProposal> {
-    let sources = owners
+    if !config.enabled {
+        return None;
+    }
+    let live: Vec<_> = owners.iter().filter(|owner| owner.healthy).collect();
+    let loads: Vec<_> = live
         .iter()
-        .filter(|owner| owner.healthy && !owner.transfer_active);
-    let targets: Vec<&OwnerLoad> = owners
-        .iter()
-        .filter(|owner| owner.healthy && !owner.transfer_active)
+        .map(|owner| (owner.partition_count as u64, owner.durable_bytes))
         .collect();
-    let mut best: Option<(bool, u128, &PartitionLoad, &OwnerLoad)> = None;
-    for source in sources {
+    let weights = BalanceWeights::new(&loads, config.byte_weight_percent)?;
+    let policy = ChunkKvRangeBalancePolicy {
+        byte_weight_percent: config.byte_weight_percent,
+        imbalance_tolerance_percent: config.imbalance_tolerance_percent,
+        minimum_weighted_improvement_percent: config.minimum_weighted_improvement_percent,
+        ..ChunkKvRangeBalancePolicy::default()
+    };
+    if policy.validate().is_err() || weights.within_tolerance(policy.imbalance_tolerance_percent) {
+        return None;
+    }
+    let mut best = None;
+    for source in live.iter().filter(|owner| !owner.transfer_active) {
         for partition in partitions.iter().filter(|partition| {
             partition.owner_instance_id == source.instance_id && eligible_partition(partition, now_ms, config)
         }) {
-            for target in targets
+            for target in live
                 .iter()
-                .copied()
-                .filter(|target| target.instance_id != source.instance_id)
+                .filter(|target| target.instance_id != source.instance_id && !target.transfer_active)
             {
                 if target.headroom_bytes < partition.durable_bytes
                     || config.max_owner_request_rate != 0
@@ -136,32 +152,34 @@ pub fn choose_transfer(
                 {
                     continue;
                 }
-                let fixes_count = source.partition_count > target.partition_count.saturating_add(1);
-                let old_spread = source.durable_bytes.abs_diff(target.durable_bytes);
-                let new_source = source.durable_bytes.saturating_sub(partition.durable_bytes);
-                let new_target = target.durable_bytes.saturating_add(partition.durable_bytes);
-                let new_spread = new_source.abs_diff(new_target);
-                let improvement = old_spread.saturating_sub(new_spread);
-                let weighted_qualifies = old_spread != 0
-                    && u128::from(improvement) * 100
-                        >= u128::from(old_spread) * u128::from(config.minimum_weighted_improvement_percent);
-                if !fixes_count && !weighted_qualifies {
+                let Some(improvement) = weights.improvement(
+                    (source.partition_count as u64, source.durable_bytes),
+                    (target.partition_count as u64, target.durable_bytes),
+                    partition.durable_bytes,
+                ) else {
                     continue;
-                }
-                let score = u128::from(improvement);
-                if best.as_ref().map_or(true, |(best_count, best_score, _, _)| {
-                    (fixes_count, score) > (*best_count, *best_score)
-                }) {
-                    best = Some((fixes_count, score, partition, target));
+                };
+                let score = (
+                    improvement,
+                    std::cmp::Reverse(partition.partition_id),
+                    std::cmp::Reverse(target.instance_id),
+                );
+                if weights.qualifies(improvement, &policy)
+                    && best.as_ref().map_or(true, |(prior, _)| score > *prior)
+                {
+                    best = Some((
+                        score,
+                        TransferProposal {
+                            partition_id: partition.partition_id,
+                            source_instance_id: source.instance_id,
+                            target_instance_id: target.instance_id,
+                        },
+                    ));
                 }
             }
         }
     }
-    best.map(|(_, _, partition, target)| TransferProposal {
-        partition_id: partition.partition_id,
-        source_instance_id: partition.owner_instance_id,
-        target_instance_id: target.instance_id,
-    })
+    best.map(|(_, proposal)| proposal)
 }
 
 fn eligible_partition(partition: &PartitionLoad, now_ms: u64, config: &BalanceConfig) -> bool {

@@ -550,6 +550,29 @@ Unsupported features are explicit rather than represented as working controls.
   Changed observations require an explicit root refresh. History retains path,
   fences, offset, selected entry and byte format, then revalidates on return.
 
+- **CKV-06:** Split properties and Overview display `Weight` on a separate row below
+  Range, as the partition's estimated contribution to global placement weight.
+  Long hex range bounds wrap independently; weight remains readable without
+  truncating or competing with the complete bounds. Server
+  graph cards display the owner's summed weight. Both are percentages supplied
+  by the backend's complete-catalog balance observation, not percentages of the
+  loaded window; label them as estimates. No key/data scan is triggered by viewing
+  weight. Graph size and catalog paging limits remain unchanged.
+- **CKV-07:** Balance details expose count, estimated bytes, count/byte
+  contributions, configured coefficients, tolerance, current deviation,
+  observation time/freshness, and the selected or best rejected move's expected
+  improvement and reason. Distinguish partition contribution from owner total.
+  Known-zero data may use count-only weight; unavailable data displays
+  `Unavailable` with a reason, never a fabricated 0%. Explain tolerance relative
+  to equal owner share so percentages are unambiguous.
+- **CKV-08:** Weight is a separate diagnostic observation bound to catalog
+  generation and assignment identities. A stale/mismatched response is labelled
+  stale and does not replace a current value or enable actions. UI displays the
+  backend decision without recomputing or querying every owner. Refresh replaces
+  bounded observation data; historical weight is not stored in navigation state.
+  Browser assertions cover a numeric estimated weight below Range, owner weight,
+  contribution/threshold explanation, unavailable state and generation mismatch.
+
 ## 21. Iceberg
 
 - **ICE-01:** The configured cluster Catalog loads automatically. Left shared

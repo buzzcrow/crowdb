@@ -286,7 +286,11 @@ async fn upload_native_multipart(app: &axum::Router, object: &str) -> Vec<u8> {
         .skip(1)
         .map(|part| part.split_once("</ETag>").unwrap().0)
         .collect();
-    assert_eq!(etags.len(), 2);
+    assert_eq!(
+        etags.len(),
+        2,
+        "ListParts response after two successful uploads: {parts}"
+    );
     let completion = format!("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>", etags[0], etags[1]);
     s3_request(
         app,

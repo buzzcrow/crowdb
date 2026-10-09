@@ -405,7 +405,9 @@ impl ChunkKvService {
         }
         for (id, partition) in partitions.iter() {
             let snapshot = partition.snapshot();
-            let durable_bytes = partition.estimated_bytes().unwrap_or_default();
+            let Ok(durable_bytes) = partition.estimated_bytes() else {
+                continue;
+            };
             let live_byte_samples =
                 if max_samples >= 2 && snapshot.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Serving {
                     self.load_sampling.samples(*id, snapshot.ownership_epoch)

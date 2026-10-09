@@ -25,7 +25,7 @@ impl TestNativeBalance {
     pub(super) async fn settle_for_inspection(state: &AppState) {
         let kv = state.kv_client().await;
         let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv.clone()));
-        let registry = ServiceRegistryClient::from_shared(kv);
+        let registry = ServiceRegistryClient::from_shared(kv.clone());
         let client = ChunkKvClient::new(
             ClientConfig::default(),
             source.clone(),
@@ -33,14 +33,14 @@ impl TestNativeBalance {
         )
         .unwrap();
         seed_values(&client).await;
-        wait_balanced(&source, &registry, Instant::now()).await;
+        wait_balanced(&source, &registry, &kv, Instant::now()).await;
         verify_values(&client, &[]).await;
     }
 
     pub(super) async fn verify(state: &AppState) {
         let kv = state.kv_client().await;
         let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv.clone()));
-        let registry = ServiceRegistryClient::from_shared(kv);
+        let registry = ServiceRegistryClient::from_shared(kv.clone());
         let client = ChunkKvClient::new(
             ClientConfig::default(),
             source.clone(),
@@ -51,11 +51,11 @@ impl TestNativeBalance {
         // The normal policy has a one-minute cooldown. This slow acceptance
         // observes that real horizon; it does not replace any request/lease budget.
         let started = Instant::now();
-        let catalog = wait_balanced(&source, &registry, started).await;
+        let catalog = wait_balanced(&source, &registry, &kv, started).await;
         verify_values(&client, &[]).await;
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         let mut report = Instant::now();
-        let hot_owner = catalog.entries()[0].owner.instance_id;
+        let hot_owner = largest_seeded_partition_owner(&catalog);
         let hot_keys: Vec<_> = (0..512)
             .filter(|index| {
                 catalog
@@ -108,6 +108,20 @@ impl TestNativeBalance {
     }
 }
 
+fn largest_seeded_partition_owner(catalog: &ChunkKvRangeCatalogMap) -> u64 {
+    // Count only the fixture's known input keys against the cached route map;
+    // do not scan the tree or change production observation/flush behavior.
+    let mut counts = BTreeMap::new();
+    for index in 0..512 {
+        let entry = catalog.route(&super::native_load::key(index)).unwrap();
+        *counts
+            .entry((entry.partition_id, entry.owner.instance_id))
+            .or_insert(0_usize) += 1;
+    }
+    let ((_, owner), _) = counts.into_iter().max_by_key(|(_, count)| *count).unwrap();
+    owner
+}
+
 async fn seed_values(client: &ChunkKvClient) {
     for batch in 0..32 {
         let items = (batch * 16..(batch + 1) * 16)
@@ -149,6 +163,7 @@ async fn verify_values(client: &ChunkKvClient, hot_keys: &[u64]) {
 async fn wait_balanced(
     source: &Group0ChunkKvRangeCatalogSource,
     registry: &ServiceRegistryClient,
+    kv: &crowdb_kv_client::CrowdbKvClient,
     started: Instant,
 ) -> ChunkKvRangeCatalogMap {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -200,7 +215,8 @@ async fn wait_balanced(
             report = Instant::now();
         }
         if counts.len() == 3
-            && counts.values().all(|count| *count == 4)
+            && catalog.entries().len() >= 12
+            && placement_ready(kv, catalog.generation()).await
             && catalog.entries().iter().all(|entry| {
                 entry.state == ChunkKvRangeCatalogPartitionState::Serving
                     && entry.transition_id.is_none()
@@ -211,10 +227,42 @@ async fn wait_balanced(
         }
         assert!(
             started.elapsed() < Duration::from_secs(10 * 60),
-            "normal count balance did not converge: {counts:?}"
+            "normal unified-weight placement did not converge: {counts:?}"
         );
         previous = Some(catalog);
     }
+}
+
+async fn placement_ready(kv: &crowdb_kv_client::CrowdbKvClient, generation: u64) -> bool {
+    use crowdb_protocol::chunk_kv::balance::{BalanceObservation, OBSERVATION_KEY};
+    let value = kv
+        .get(
+            0,
+            0,
+            OBSERVATION_KEY.as_bytes(),
+            crowdb_kv_client::ReadMode::Linearizable,
+            None,
+        )
+        .await
+        .unwrap();
+    let crowdb_kv_client::GetOutcome::Found { value, .. } = value else {
+        return false;
+    };
+    let observation: BalanceObservation = serde_json::from_slice(&value).unwrap();
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    observation.catalog_generation == generation
+        && now.saturating_sub(observation.observed_at_ms) <= observation.valid_for_ms
+        && (observation.reason == "within tolerance"
+            || observation.reason == "no useful safe move"
+                && observation.partitions.iter().all(|partition| {
+                    partition.reason == "no improving target" || partition.reason == "insufficient benefit"
+                }))
 }
 
 fn verify_transfer(
@@ -233,8 +281,8 @@ fn verify_transfer(
     }) else {
         return false;
     };
-    // Every owner had four partitions; a first transfer cannot fix count spread.
-    assert!(counts(before).values().all(|count| *count == 4));
+    // The initial placement was already accepted by the unified policy; new
+    // data must produce an actual ownership change, not only more local splits.
     let source_bytes = observed[&old.owner.instance_id].durable_bytes;
     let target_bytes = observed[&moved.owner.instance_id].durable_bytes;
     assert!(source_bytes > target_bytes, "actual transfer must leave the owner with more retained data: source={source_bytes}, target={target_bytes}");
@@ -274,9 +322,11 @@ async fn observe(registry: &ServiceRegistryClient) -> BTreeMap<u64, ChunkKvExtra
         .collect()
 }
 fn hot_value(index: u64) -> Vec<u8> {
-    let mut value = super::native_load::value(index);
-    value.extend(super::native_load::value(index + 512));
-    value.extend(super::native_load::value(index + 1024));
-    value.extend(super::native_load::value(index + 1536));
+    // Exercise the normal per-tree 16-MiB flush threshold as well as WAL-only
+    // growth; observing current data must not depend on a forced checkpoint.
+    let mut value = Vec::with_capacity(1024 * 1024);
+    for block in 0..16 {
+        value.extend(super::native_load::value(index + block * 512));
+    }
     value
 }

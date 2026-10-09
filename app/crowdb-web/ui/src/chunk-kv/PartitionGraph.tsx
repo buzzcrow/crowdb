@@ -9,7 +9,7 @@ import { Boxes, ChevronDown, ChevronRight, Cog, Database, FolderTree, ScanSearch
 import type { ServerSummary } from '../api';
 import { buttonClass } from '../access/Workbench';
 import { serviceInstanceLabel } from '../services/client';
-import { range, type Partition } from './catalog';
+import { range, weightPercent, type BalanceSummary, type Partition } from './catalog';
 
 const endpointKey = (value: string) => value.replace(/^[a-z]+:\/\//, '').replace(/\/$/, '');
 const SERVER_LIMIT = 8;
@@ -18,6 +18,7 @@ const SPLIT_LIMIT = 5;
 interface Card {
   label: string;
   subtitle: string;
+  weight?: string;
   title?: string;
   accessible?: string;
   selected?: boolean;
@@ -49,6 +50,7 @@ function GraphNode({ data }: NodeProps<Card>) {
           <span className="tw-block tw-text-sm tw-font-medium tw-truncate tw-text-text">{data.label}</span>
         </span>
         <span className="tw-block tw-mt-1 tw-text-[10px] tw-text-muted tw-truncate">{data.subtitle}</span>
+        {data.weight && <span className="tw-block tw-mt-1 tw-text-[10px] tw-text-muted">Weight {data.weight}</span>}
       </button>
       {data.kind === 'server' && data.click && <button className="nodrag tw-absolute tw-right-1 tw-top-1/2 tw-p-1 tw-text-muted hover:tw-text-text" style={{ transform: 'translateY(-50%)' }} title={data.collapsed ? `Expand ${data.label}` : `Collapse ${data.label}`} aria-label={data.collapsed ? `Expand ${data.label}` : `Collapse ${data.label}`} onClick={data.click}>
         {data.collapsed ? <ChevronRight className="tw-h-4 tw-w-4" /> : <ChevronDown className="tw-h-4 tw-w-4" />}
@@ -102,9 +104,9 @@ function GraphCanvas({ layout, edges, layoutKey }: { layout: Node<Card>[]; edges
   </ReactFlow>;
 }
 
-export function PartitionGraph({ entries, servers, selectedId, disabled, onSelect, onTree, query, onQuery }: {
+export function PartitionGraph({ balance, entries, servers, selectedId, disabled, onSelect, onTree, query, onQuery }: {
   query: GraphQuery; onQuery: (query: GraphQuery) => void;
-  entries: Partition[]; servers: ServerSummary[]; selectedId?: string; disabled: boolean;
+  balance?: BalanceSummary; entries: Partition[]; servers: ServerSummary[]; selectedId?: string; disabled: boolean;
   onSelect: (partition: Partition) => void; onTree: (partition: Partition) => void;
 }) {
   const { serverPage, offsets } = query;
@@ -113,6 +115,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
   const setOffsets = (update: (value: Record<string, number>) => Record<string, number>) => onQuery({ ...query, offsets: update(offsets) });
   const setCollapsed = (update: (value: Set<string>) => Set<string>) => onQuery({ ...query, collapsed: [...update(collapsed)] });
   const groups = servers.map(server => ({
+    endpoint: endpointKey(server.rpc_url ?? server.endpoint ?? ''),
     id: `server-${server.id ?? server.rpc_url ?? server.endpoint}`,
     label: serviceInstanceLabel('chunk-kv', server.id ?? String(server.node_id)),
     entries: entries.filter(entry => endpointKey(entry.endpoint) === endpointKey(server.rpc_url ?? server.endpoint ?? '')),
@@ -122,7 +125,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
     if (matched.has(entry.id)) continue;
     const id = `owner-${entry.owner_id}`;
     let group = groups.find(group => group.id === id);
-    if (!group) { group = { id, label: `CKV-${entry.owner_id}`, entries: [] }; groups.push(group); }
+    if (!group) { group = { id, endpoint: endpointKey(entry.endpoint), label: `CKV-${entry.owner_id}`, entries: [] }; groups.push(group); }
     group.entries.push(entry);
   }
   const page = Math.min(serverPage, Math.max(0, Math.ceil(groups.length / SERVER_LIMIT) - 1));
@@ -136,7 +139,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
     const children = collapsed.has(group.id) ? [] : group.entries.slice(offset, offset + SPLIT_LIMIT);
     const width = children.length ? (children.length - 1) * 195 + 160 : 160;
     nodes.push({ id: group.id, type: 'chunkKv', position: { x: x + (width - 160) / 2, y: layerY.server },
-      data: { kind: 'server', label: group.label, collapsed: collapsed.has(group.id), subtitle: `${group.entries.length} splits in window · ${collapsed.has(group.id) ? 'Expand' : 'Collapse'}`,
+      data: { kind: 'server', label: group.label, weight: weightPercent(balance?.owners?.find(owner => owner.instance_id === group.entries[0]?.owner_id || !!owner.rpc_endpoint && endpointKey(owner.rpc_endpoint) === group.endpoint)?.weight), collapsed: collapsed.has(group.id), subtitle: `${group.entries.length} splits in window · ${collapsed.has(group.id) ? 'Expand' : 'Collapse'}`,
         click: () => setCollapsed(previous => { const next = new Set(previous); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; }),
         previous: offset > 0 ? () => setOffsets(value => ({ ...value, [group.id]: offset - SPLIT_LIMIT })) : undefined,
         next: offset + SPLIT_LIMIT < group.entries.length ? () => setOffsets(value => ({ ...value, [group.id]: offset + SPLIT_LIMIT })) : undefined } });
@@ -144,7 +147,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
     children.forEach((entry, index) => {
       const id = `split-${entry.id}`;
       nodes.push({ id, type: 'chunkKv', position: { x: x + index * 195, y: layerY.split }, data: {
-        kind: 'split', label: `Split ${entry.id.slice(0, 4)}…${entry.id.slice(-4)}`, subtitle: entry.state,
+        kind: 'split', label: `Split ${entry.id.slice(0, 4)}…${entry.id.slice(-4)}`, subtitle: entry.state, weight: weightPercent(entry.balance?.partition.weight),
         accessible: `Partition ${entry.id}`, title: `${entry.id} · ${range(entry)}`, disabled, selected: entry.id === selectedId, click: () => onSelect(entry),
       } });
       nodes.push({ id: `tree-${entry.id}`, type: 'chunkKv', position: { x: x + index * 195, y: layerY.tree }, data: {

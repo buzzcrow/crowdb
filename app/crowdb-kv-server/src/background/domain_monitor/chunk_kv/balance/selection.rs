@@ -8,57 +8,142 @@ use crowdb_protocol::chunk_kv::{
 use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad};
 use std::collections::HashMap;
 
+mod candidates;
+mod diagnostics;
+use candidates::CandidateContext;
+
+pub(super) struct Selection<'a> {
+    pub candidate: Option<(&'a ChunkKvRangeCatalogEntry, u64)>,
+    pub observation: crowdb_protocol::chunk_kv::balance::BalanceObservation,
+}
+
 pub(super) fn choose_transfer<'a>(
     entries: &[&'a ChunkKvRangeCatalogEntry],
     state: &PlanningState,
     policy: &ChunkKvRangeBalancePolicy,
     now_ms: u64,
-    counts: &HashMap<u64, usize>,
-    bytes: &HashMap<u64, u64>,
-    count_only: bool,
-) -> Option<(&'a ChunkKvRangeCatalogEntry, u64)> {
+    generation: u64,
+    valid_for_ms: u64,
+) -> Selection<'a> {
+    use crowdb_protocol::chunk_kv::balance::{
+        BalancePartitionObservation, BalanceWeights, MAX_OBSERVED_OWNERS, MAX_OBSERVED_PARTITIONS,
+        WEIGHT_SCALE,
+    };
+    let mut result = Selection {
+        candidate: None,
+        observation: diagnostics::empty(policy, now_ms, generation, valid_for_ms),
+    };
+    let Some((counts, bytes)) = owner_loads(entries, state) else {
+        return result;
+    };
+    let loads: Vec<_> = counts.iter().map(|(id, count)| (*count, bytes[id])).collect();
+    let Some(weights) = BalanceWeights::new(&loads, policy.byte_weight_percent) else {
+        return result;
+    };
+    result.observation.deviation_percent_millionths =
+        u64::try_from(weights.deviation_units * 100_000_000 / u128::from(WEIGHT_SCALE)).unwrap_or(u64::MAX);
+    result.observation.loss_millionths =
+        Some(u64::try_from(weights.loss / 1_000_000_000_000).unwrap_or(u64::MAX));
+    let within = weights.within_tolerance(policy.imbalance_tolerance_percent);
+    result.observation.reason = if within {
+        "within tolerance"
+    } else {
+        "no useful safe move"
+    }
+    .into();
+    if counts.len() <= MAX_OBSERVED_OWNERS {
+        result.observation.owners = diagnostics::owners(&counts, &bytes, &weights, state);
+    }
+    let context = CandidateContext {
+        state,
+        policy,
+        weights: &weights,
+        counts: &counts,
+        bytes: &bytes,
+        now_ms,
+    };
     let mut best = None;
-    for entry in entries.iter().copied().filter(|entry| {
-        eligible(entry, state) && cooled_down(entry, &state.last_transferred_ms, policy, now_ms)
-    }) {
-        let source_id = entry.owner.instance_id;
-        let partition_bytes = partition_load(state, entry).map_or(0, effective_bytes);
-        for (&target_id, (_, target)) in &state.healthy {
-            if !target_accepts(state, policy, source_id, target_id, target, partition_bytes) {
-                continue;
-            }
-            let source_count = counts.get(&source_id).copied().unwrap_or_default();
-            let target_count = counts.get(&target_id).copied().unwrap_or_default();
-            let fixes_count = source_count > target_count.saturating_add(1);
-            if count_only && !fixes_count {
-                continue;
-            }
-            let source_bytes = bytes.get(&source_id).copied().unwrap_or_default();
-            let target_bytes = bytes.get(&target_id).copied().unwrap_or_default();
-            let old_spread = source_bytes.abs_diff(target_bytes);
-            let new_spread = source_bytes
-                .saturating_sub(partition_bytes)
-                .abs_diff(target_bytes.saturating_add(partition_bytes));
-            let improvement = old_spread.saturating_sub(new_spread);
-            let weighted = old_spread != 0
-                && u128::from(improvement) * 100
-                    >= u128::from(old_spread) * u128::from(policy.minimum_weighted_improvement_percent);
-            let score = (
-                fixes_count,
-                improvement,
-                std::cmp::Reverse(entry.partition_id),
-                std::cmp::Reverse(target_id),
-            );
-            if (fixes_count || weighted)
-                && best
-                    .as_ref()
-                    .map_or(true, |(best_score, _, _)| score > *best_score)
-            {
-                best = Some((score, entry, target_id));
-            }
+    let mut best_rejected = None;
+    for entry in entries.iter().copied() {
+        let partition_bytes = state.partition_bytes[&(entry.owner.instance_id, entry.partition_id)];
+        let (accepted, rejected, partition_reason) = context.assess(entry, within);
+        candidates::retain_best(&mut best, accepted);
+        candidates::retain_best(&mut best_rejected, rejected);
+        if entries.len() <= MAX_OBSERVED_PARTITIONS {
+            result.observation.partitions.push(BalancePartitionObservation {
+                partition_id: entry.partition_id,
+                instance_id: entry.owner.instance_id,
+                owner_epoch: entry.owner_epoch,
+                estimated_bytes: partition_bytes,
+                weight: weights.weight(1, partition_bytes),
+                reason: partition_reason.into(),
+            });
         }
     }
-    best.map(|(_, entry, target_id)| (entry, target_id))
+    if let Some((_, entry, target_id)) = best {
+        result.candidate = Some((entry, target_id));
+        result.observation.reason = "move selected".into();
+        if let Some(partition) = result
+            .observation
+            .partitions
+            .iter_mut()
+            .find(|partition| partition.partition_id == entry.partition_id)
+        {
+            partition.reason = "selected move".into();
+        }
+    }
+    result.observation.candidate = best
+        .or(best_rejected)
+        .map(|choice| diagnostics::candidate(choice, &context));
+    result
+}
+
+fn exclusion_reason(
+    entry: &ChunkKvRangeCatalogEntry,
+    state: &PlanningState,
+    policy: &ChunkKvRangeBalancePolicy,
+    now_ms: u64,
+) -> Option<&'static str> {
+    if entry.artifact.tail_overlay.is_some() {
+        Some("inherited overlay")
+    } else if state.busy_owners.contains(&entry.owner.instance_id)
+        || state.active_partitions.contains(&entry.partition_id)
+        || entry.transition_id.is_some()
+    {
+        Some("active transition")
+    } else if !eligible(entry, state) {
+        Some("not independently serving")
+    } else if !cooled_down(entry, &state.last_transferred_ms, policy, now_ms) {
+        Some("cooldown")
+    } else {
+        None
+    }
+}
+
+fn owner_loads(
+    entries: &[&ChunkKvRangeCatalogEntry],
+    state: &PlanningState,
+) -> Option<(HashMap<u64, u64>, HashMap<u64, u64>)> {
+    let mut counts: HashMap<_, _> = state.healthy.keys().map(|id| (*id, 0_u64)).collect();
+    let mut bytes = counts.clone();
+    for entry in entries {
+        if state
+            .hosted_epochs
+            .get(&(entry.owner.instance_id, entry.partition_id))
+            != Some(&entry.owner_epoch)
+        {
+            return None;
+        }
+        let count = counts.get_mut(&entry.owner.instance_id)?;
+        *count = count.checked_add(1)?;
+        let total_bytes = bytes.get_mut(&entry.owner.instance_id)?;
+        *total_bytes = total_bytes.checked_add(
+            *state
+                .partition_bytes
+                .get(&(entry.owner.instance_id, entry.partition_id))?,
+        )?;
+    }
+    Some((counts, bytes))
 }
 
 fn target_accepts(
@@ -80,17 +165,16 @@ pub(super) fn partition_load<'a>(
     entry: &ChunkKvRangeCatalogEntry,
 ) -> Option<&'a ChunkKvPartitionLoad> {
     state
-        .healthy
-        .get(&entry.owner.instance_id)?
-        .1
         .partition_loads
-        .iter()
-        .find(|load| load.partition_id == entry.partition_id)
+        .get(&(entry.owner.instance_id, entry.partition_id))
 }
 
 pub(super) fn effective_bytes(load: &ChunkKvPartitionLoad) -> u64 {
-    load.durable_bytes
-        .max(load.live_byte_samples.iter().map(|(_, bytes)| *bytes).sum())
+    load.durable_bytes.max(
+        load.live_byte_samples
+            .iter()
+            .fold(0_u64, |sum, (_, bytes)| sum.saturating_add(*bytes)),
+    )
 }
 
 pub(super) fn eligible(entry: &ChunkKvRangeCatalogEntry, state: &PlanningState) -> bool {
