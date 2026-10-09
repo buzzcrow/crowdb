@@ -17,6 +17,7 @@ pub mod chunk_kv_ordered_wire;
 pub mod chunk_kv_wire;
 pub mod chunk_stream;
 pub mod frame;
+pub mod kv_membership;
 
 pub mod common {
     pub use crate::types::common::*;

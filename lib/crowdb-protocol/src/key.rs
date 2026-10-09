@@ -50,4 +50,4 @@ pub use diskdb::{
     DISKDB_WATCH_PREFIXES,
 };
 pub use encoding::{BinaryKey, KeyError, TextKey, CROWDB_KEY_MAGIC};
-pub use kv_cluster::{KvGroupKey, KvReplicaKey, KvStoreKey};
+pub use kv_cluster::{KvGroupKey, KvGroupMembersKey, KvReplicaKey, KvStoreKey};

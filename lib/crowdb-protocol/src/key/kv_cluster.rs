@@ -92,6 +92,35 @@ impl KvGroupKey {
     }
 }
 
+/// Complete membership authority for one store/group.
+/// Text path: `/kv/members/<store_id>/<group_id>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KvGroupMembersKey {
+    pub store_id: StoreId,
+    pub group_id: GroupId,
+}
+
+impl TextKey for KvGroupMembersKey {
+    const PATH_MAGIC: &'static str = "/kv";
+    const PATH_TYPE: &'static str = "members";
+
+    fn encode_to_path(&self, out: &mut String) {
+        encode_path_header(out, Self::PATH_MAGIC, Self::PATH_TYPE);
+        encode_path_u64(out, self.store_id);
+        encode_path_u64(out, self.group_id);
+    }
+
+    fn decode_path(parts: &[&str]) -> Result<Self, KeyError> {
+        if parts.len() < 2 {
+            return Err(KeyError::ShortInput);
+        }
+        let store_id = decode_path_u64(parts[0])?;
+        let group_id = decode_path_u64(parts[1])?;
+        check_path_exact(parts, 2)?;
+        Ok(Self { store_id, group_id })
+    }
+}
+
 // ── KvReplicaKey ────────────────────────────────────────────────
 
 /// Key for a KV-cluster replica record.
