@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "crowdb-common/atomic_shared_ptr.h"
 #include "crowdb-tree/backend/page_purpose.h"
 #include "crowdb-tree/status.h"
 
@@ -17,37 +18,7 @@
 namespace crowdb::tree::detail
 {
 
-// libc++ versions shipped with macOS do not yet provide the C++20
-// std::atomic<std::shared_ptr<T>> specialization. The free atomic operations
-// on shared_ptr provide the same immutable-snapshot semantics and are
-// available since C++11.
-template <typename T> class AtomicSharedPtr
-{
-  public:
-    AtomicSharedPtr() = default;
-    explicit AtomicSharedPtr(std::shared_ptr<T> value) : value_(std::move(value))
-    {
-    }
-
-    std::shared_ptr<T> load(std::memory_order order = std::memory_order_seq_cst) const
-    {
-        return std::atomic_load_explicit(&value_, order);
-    }
-
-    void store(std::shared_ptr<T> value, std::memory_order order = std::memory_order_seq_cst)
-    {
-        std::atomic_store_explicit(&value_, std::move(value), order);
-    }
-
-    bool compare_exchange_weak(std::shared_ptr<T> &expected, std::shared_ptr<T> desired, std::memory_order success,
-                               std::memory_order failure)
-    {
-        return std::atomic_compare_exchange_weak_explicit(&value_, &expected, std::move(desired), success, failure);
-    }
-
-  private:
-    mutable std::shared_ptr<T> value_;
-};
+using common::AtomicSharedPtr;
 
 inline constexpr uint32_t kMaxMirrorCopies = 5;
 
@@ -154,9 +125,9 @@ class MemoryChunkTransport final : public ChunkTransport
 
     template <typename Mutation> Status mutate(ChunkId chunk_id, Mutation mutation);
 
-    std::atomic<uint64_t>                      next_chunk_id_{1};
+    std::atomic<uint64_t>         next_chunk_id_{1};
     AtomicSharedPtr<const Chunks> chunks_;
-    std::atomic<bool>                          unavailable_{false};
+    std::atomic<bool>             unavailable_{false};
 };
 
 } // namespace crowdb::tree::detail

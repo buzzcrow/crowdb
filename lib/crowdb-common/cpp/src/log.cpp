@@ -8,6 +8,7 @@
 
 #ifdef CROWDB_HAVE_SPDLOG
 
+#    include "crowdb-common/atomic_shared_ptr.h"
 #    include "crowdb-common/compressing_sink.h"
 
 #    include <pthread.h>
@@ -37,18 +38,18 @@ std::atomic<bool> g_enabled{true};
 } // namespace
 
 using ThreadNames = std::unordered_map<size_t, std::string>;
-std::shared_ptr<const ThreadNames> g_thread_names = std::make_shared<const ThreadNames>();
+AtomicSharedPtr<const ThreadNames> g_thread_names{std::make_shared<const ThreadNames>()};
 
 void set_current_thread_name(const char *name)
 {
     const size_t tid     = spdlog::details::os::thread_id();
-    auto         current = std::atomic_load_explicit(&g_thread_names, std::memory_order_acquire);
+    auto         current = g_thread_names.load(std::memory_order_acquire);
     for (;;) {
         auto next                                    = std::make_shared<ThreadNames>(*current);
         (*next)[tid]                                 = name;
         std::shared_ptr<const ThreadNames> published = std::move(next);
-        if (std::atomic_compare_exchange_weak_explicit(&g_thread_names, &current, published, std::memory_order_release,
-                                                       std::memory_order_acquire)) {
+        if (g_thread_names.compare_exchange_weak(current, std::move(published), std::memory_order_release,
+                                                 std::memory_order_acquire)) {
             break;
         }
     }
@@ -66,7 +67,7 @@ class thread_name_flag : public spdlog::custom_flag_formatter
   public:
     void format(const spdlog::details::log_msg &msg, const std::tm & /*tm*/, spdlog::memory_buf_t &dest) override
     {
-        auto names = std::atomic_load_explicit(&g_thread_names, std::memory_order_acquire);
+        auto names = g_thread_names.load(std::memory_order_acquire);
         if (auto it = names->find(msg.thread_id); it != names->end()) {
             dest.append(it->second.data(), it->second.data() + it->second.size());
         }

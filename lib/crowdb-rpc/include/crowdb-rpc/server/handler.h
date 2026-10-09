@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "crowdb-common/atomic_shared_ptr.h"
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/framing.h"
@@ -47,13 +48,13 @@ class HandlerRegistry
 
     void register_handler(uint16_t msg_type, HandlerFn handler)
     {
-        auto current = std::atomic_load_explicit(&handlers_, std::memory_order_acquire);
+        auto current = handlers_.load(std::memory_order_acquire);
         for (;;) {
             auto next                                     = std::make_shared<HandlerTable>(*current);
             (*next)[msg_type]                             = handler;
             std::shared_ptr<const HandlerTable> published = std::move(next);
-            if (std::atomic_compare_exchange_weak_explicit(&handlers_, &current, published, std::memory_order_release,
-                                                           std::memory_order_acquire)) {
+            if (handlers_.compare_exchange_weak(current, std::move(published), std::memory_order_release,
+                                                std::memory_order_acquire)) {
                 return;
             }
         }
@@ -61,7 +62,7 @@ class HandlerRegistry
 
     HandlerFn get_handler(uint16_t msg_type) const
     {
-        auto table = std::atomic_load_explicit(&handlers_, std::memory_order_acquire);
+        auto table = handlers_.load(std::memory_order_acquire);
         auto it    = table->find(msg_type);
         if (it != table->end()) {
             return it->second;
@@ -71,11 +72,11 @@ class HandlerRegistry
 
     void clear()
     {
-        std::atomic_store_explicit(&handlers_, std::make_shared<const HandlerTable>(), std::memory_order_release);
+        handlers_.store(std::make_shared<const HandlerTable>(), std::memory_order_release);
     }
 
   private:
-    std::shared_ptr<const HandlerTable> handlers_;
+    common::AtomicSharedPtr<const HandlerTable> handlers_;
 };
 
 } // namespace crowdb::rpc

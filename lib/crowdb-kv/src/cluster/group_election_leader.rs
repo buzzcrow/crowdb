@@ -376,11 +376,8 @@ impl PxGroup {
         // serve reads immediately. Multi-replica leaders must finish bulk
         // Phase 1 / the first heartbeat round before `leader_read_ready` is
         // set by those paths.
-        if self.quorum() == 1 {
-            self.leader_read_ready.store(true, Ordering::Release);
-        } else {
-            self.leader_read_ready.store(false, Ordering::Release);
-        }
+        self.leader_read_ready
+            .store(self.quorum() == 1, Ordering::Release);
 
         // Per-leadership-tenure cancel token. Cancelled by the step-down
         // sequence; aborts in-flight bulk Phase 1 and any future

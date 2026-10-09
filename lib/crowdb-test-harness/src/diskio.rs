@@ -4,7 +4,8 @@
 //! Diskio test harness: subprocess management, IO helpers, and
 //! binary discovery for disk-io E2E tests.
 
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -162,6 +163,34 @@ fn record_child(runtime: &mut crate::test_dirs::TestRuntime, child: &std::proces
         .unwrap_or_else(|error| panic!("record DiskIO process: {error}"));
 }
 
+fn wait_for_listening_port(child: &mut Child, log_path: &Path) -> i32 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut port = None;
+    while std::time::Instant::now() < deadline && port.is_none() {
+        std::thread::sleep(Duration::from_millis(50));
+        if let Ok(content) = std::fs::read_to_string(log_path) {
+            for line in content.lines() {
+                if let Some(idx) = line.find("listening on ") {
+                    let after = &line[idx + "listening on ".len()..];
+                    if let Some(colon) = after.find(':') {
+                        let rest = &after[colon + 1..];
+                        let port_str: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                        if let Ok(p) = port_str.parse::<i32>() {
+                            port = Some(p);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    port.unwrap_or_else(|| {
+        let _ = child.kill();
+        let log = std::fs::read_to_string(log_path).unwrap_or_default();
+        panic!("crowdb-diskio did not start. Log:\n{log}");
+    })
+}
+
 impl DiskioProcess {
     pub fn log_content(&self) -> String {
         std::fs::read_to_string(&self.log_path).unwrap_or_default()
@@ -262,34 +291,7 @@ impl DiskioProcess {
         record_child(runtime, &child);
         eprintln!("crowdb-diskio ({}) log: {}", opts.dummy_disk, log_path.display());
 
-        let observed_port = {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut port = None;
-            while std::time::Instant::now() < deadline && port.is_none() {
-                std::thread::sleep(Duration::from_millis(50));
-                if let Ok(content) = std::fs::read_to_string(&log_path) {
-                    for line in content.lines() {
-                        if let Some(idx) = line.find("listening on ") {
-                            let after = &line[idx + "listening on ".len()..];
-                            if let Some(colon) = after.find(':') {
-                                let rest = &after[colon + 1..];
-                                let port_str: String =
-                                    rest.chars().take_while(char::is_ascii_digit).collect();
-                                if let Ok(p) = port_str.parse::<i32>() {
-                                    port = Some(p);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            port.unwrap_or_else(|| {
-                let _ = child.kill();
-                let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-                panic!("crowdb-diskio did not start. Log:\n{log}");
-            })
-        };
+        let observed_port = wait_for_listening_port(&mut child, &log_path);
 
         assert_eq!(
             observed_port,
