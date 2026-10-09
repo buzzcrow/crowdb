@@ -75,11 +75,9 @@ test('native diagnostics: Chunk-KV actual Page observation', async ({ page, requ
   const catalog = await catalogResponse.json();
   const partition = catalog.entries.find((entry: { state: string; transition_id: string | null }) => entry.state === 'Serving' && entry.transition_id === null);
   expect(partition, 'inspect a current serving assignment').toBeDefined();
-  expect(partition.balance, 'current monitor weight for the inspected range').toBeTruthy();
   const tree = page.getByTestId('chunk-kv-graph').getByRole('button', { name: `KV Tree for ${partition.id}`, exact: true });
   await expect(tree).toHaveAttribute('title', 'Inspect base pages, checkpoint and counters.');
-  const ownerWeight = (Number(partition.balance.owner.weight.byte_units) + Number(partition.balance.owner.weight.count_units)) / 10_000_000;
-  await expect(page.getByTestId('chunk-kv-graph').getByRole('button', { name: `CKV-${partition.owner_id}`, exact: true })).toContainText(`Weight ${ownerWeight.toFixed(2)}% (estimated)`);
+  await expect(page.getByTestId('chunk-kv-graph')).not.toContainText('Weight');
   const pageObservation = page.waitForResponse(response => {
     const url = new URL(response.url());
     return url.pathname === '/api/chunk-kv/runtime' && url.searchParams.has('page_path');
@@ -89,15 +87,9 @@ test('native diagnostics: Chunk-KV actual Page observation', async ({ page, requ
   expect(response.ok(), await response.text()).toBeTruthy();
   const observation = await response.json();
   const properties = page.getByRole('region', { name: 'Split properties', exact: true });
-  const weight = (Number(partition.balance.partition.weight.byte_units) + Number(partition.balance.partition.weight.count_units)) / 10_000_000;
-  await expect(properties.locator('dt').filter({ hasText: /^Weight$/ }).locator('..').locator('dd')).toHaveText(`${weight.toFixed(2)}% (estimated)`);
-  const labels = await properties.locator('dt').allTextContents();
-  expect(labels.indexOf('Weight')).toBe(labels.indexOf('Range') + 1);
+  await expect(properties.locator('dt').filter({ hasText: /^Weight$/ })).toHaveCount(0);
   await page.getByRole('tab', { name: 'Overview', exact: true }).click();
-  const balance = page.getByRole('region', { name: 'Balance explanation', exact: true });
-  await expect(balance).toContainText('Coefficients: data 80% · count 20%');
-  await expect(balance).toContainText('Tolerance: 20% relative to equal owner share');
-  await expect(balance).toContainText('Owner weight');
+  await expect(page.getByRole('region', { name: 'Balance explanation', exact: true })).toHaveCount(0);
   await page.getByRole('tab', { name: 'Tree', exact: true }).click();
   expect(observation.page.rows.length).toBeLessThanOrEqual(20);
   const query = new URL(response.url()).searchParams;

@@ -32,7 +32,7 @@ CROWDB_NATIVE_JOURNAL_WINDOWS=1 \
     CROWDB_NATIVE_UI_E2E_GREP='native diagnostics: large Journal replaces' \
     cargo test -p crowdb-web --test native_cluster_provisioning_test \
     native_page_and_iceberg_inspection -- --exact --nocapture
-CROWDB_NATIVE_WEIGHTED_ACCEPTANCE=1 CROWDB_NATIVE_TRANSITION_ACCEPTANCE=1 \
+CROWDB_NATIVE_COUNT_ACCEPTANCE=1 CROWDB_NATIVE_TRANSITION_ACCEPTANCE=1 \
     CROWDB_NATIVE_UI_E2E_GREP='native diagnostics: production split displays' \
     cargo test -p crowdb-web --test native_cluster_provisioning_test \
     one_rack_three_nodes_provision_all_services_without_metadata_repairs -- --exact --nocapture

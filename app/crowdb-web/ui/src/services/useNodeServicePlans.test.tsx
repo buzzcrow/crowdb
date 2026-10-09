@@ -19,6 +19,50 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('does not publish failed progress when page unload cancels an observation', async () => {
+    const steps = newPlan();
+    for (const kind of serviceOrder) steps[kind] = { state: 'disabled' };
+    steps['chunk-kv'] = { state: 'waiting', detail: 'Waiting: initialize Group 0 in Paxos KV' };
+    let cancel!: (error: Error) => void;
+    vi.mocked(listServers).mockReturnValue(new Promise((_, reject) => { cancel = reject; }));
+    const request = vi.mocked(serviceRequest).getMockImplementation()!;
+    vi.mocked(serviceRequest).mockImplementation(async (path, method, body) => path === '/service-plans'
+      ? { 1: { revision: 8, steps } } : request(path, method, body));
+    const { result, unmount } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => {});
+    await act(async () => {
+      window.dispatchEvent(new Event('pagehide'));
+      cancel(new TypeError('Failed to fetch'));
+    });
+    expect(result.current.plans[1]['chunk-kv'].state).toBe('waiting');
+    expect(vi.mocked(serviceRequest).mock.calls.some(([, method]) => method === 'PUT')).toBe(false);
+    unmount();
+  });
+  it('observes registered DiskIO restart without waiting for Capacity data', async () => {
+    const steps = newPlan();
+    for (const kind of serviceOrder) steps[kind] = { state: 'disabled' };
+    steps['chunk-kv'] = { state: 'waiting' };
+    let restarted = false;
+    vi.mocked(listServers).mockImplementation(async () => [
+      { node_id: 1, service_type: 'chunkdb', pid: 12 },
+      { node_id: 1, service_type: 'diskio', pid: 13 },
+      { node_id: 2, service_type: 'diskio', pid: restarted ? 14 : undefined },
+    ] as Awaited<ReturnType<typeof listServers>>);
+    const request = vi.mocked(serviceRequest).getMockImplementation()!;
+    vi.mocked(serviceRequest).mockImplementation(async (path, method, body) => {
+      if (path === '/service-plans') return { 1: { revision: 1, steps } };
+      if (path === '/deployment-defaults') return { 'chunk-kv': { instance_id: '1', http_port: 12010, rpc_port: 12110 } };
+      return request(path, method, body);
+    });
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => {});
+    expect(result.current.plans[1]['chunk-kv'].detail).toContain('restart registered DiskIO services');
+    expect(serviceRequest).not.toHaveBeenCalledWith('/deployment-defaults', 'GET');
+    restarted = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(result.current.plans[1]['chunk-kv'].state).toBe('deployed');
+    expect(vi.mocked(serviceRequest).mock.calls.filter(([path, method]) => path.endsWith('/services/deploy') && method === 'POST')).toHaveLength(1);
+  });
   it('loads saved revisions before resuming waiting steps after reload', async () => {
     let release!: (value: unknown) => void;
     const saved = new Promise(resolve => { release = resolve; });

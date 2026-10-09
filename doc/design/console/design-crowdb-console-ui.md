@@ -334,9 +334,19 @@ provide observable capacity and bitmap fixtures.
 - **SVC-02:** Preserve desired configuration independently of PID. A restart
   retains endpoints, workspace, and data; refreshed properties show the new PID
   and separately observed readiness. Process identity is verified before signal.
+  Lifecycle acceptance first checks the submitted Start/Restart response, then
+  observes the new PID and process. An in-flight startup is not a completed
+  operation and must not trigger a duplicate cleanup restart.
+- Page unload stops its deployment runner. Cancellation of an old page's
+  observation or progress request cannot publish a service failure. The next
+  page reloads the persisted plan and reconciles interrupted deployments;
+  restoring a cached history page also reloads before resuming its runner.
 - **SVC-03:** Startup observes dependencies: Group 0 before dependent metadata
   services; valid disks/ownership for storage; journal/data prerequisites before
   Chunk-KV bootstrap; Chunk-KV catalog before Access startup.
+- Plans waiting for a registered DiskIO service to restart observe dependencies
+  every two seconds, including when Capacity data has not been loaded. The
+  ten-second missing-disk backoff applies only to other hardware waiting states.
 - Access provisioning durably records catalog initialization and activation
   request identities before issuing either mutation. Interrupted deployment
   reconciles committed state and resumes the same request. An existing catalog
@@ -448,6 +458,8 @@ plan, never edited out of this specification to make a run pass.
   PID, and readiness. All instance labels follow §4.
 - **A04 / KV:** verify Group 0 and ordinary Group 1 with three replicas; select
   a group, inspect membership, and perform bounded exact/scan data operations.
+  Add members to the same group sequentially, refreshing membership after
+  each result; independent group preparation may run concurrently.
 - **A05 / Capacity:** create/register DiskGroup and disk, inspect owner/binding;
   select a disk with more than 32 zones, page, select Zone, and verify inline
   bitmap, decode offsets, muted colors, and error handling for unavailable owner.
@@ -550,28 +562,15 @@ Unsupported features are explicit rather than represented as working controls.
   Changed observations require an explicit root refresh. History retains path,
   fences, offset, selected entry and byte format, then revalidates on return.
 
-- **CKV-06:** Split properties and Overview display `Weight` on a separate row below
-  Range, as the partition's estimated contribution to global placement weight.
-  Long hex range bounds wrap independently; weight remains readable without
-  truncating or competing with the complete bounds. Server
-  graph cards display the owner's summed weight. Both are percentages supplied
-  by the backend's complete-catalog balance observation, not percentages of the
-  loaded window; label them as estimates. No key/data scan is triggered by viewing
-  weight. Graph size and catalog paging limits remain unchanged.
-- **CKV-07:** Balance details expose count, estimated bytes, count/byte
-  contributions, configured coefficients, tolerance, current deviation,
-  observation time/freshness, and the selected or best rejected move's expected
-  improvement and reason. Distinguish partition contribution from owner total.
-  Known-zero data may use count-only weight; unavailable data displays
-  `Unavailable` with a reason, never a fabricated 0%. Explain tolerance relative
-  to equal owner share so percentages are unambiguous.
-- **CKV-08:** Weight is a separate diagnostic observation bound to catalog
-  generation and assignment identities. A stale/mismatched response is labelled
-  stale and does not replace a current value or enable actions. UI displays the
-  backend decision without recomputing or querying every owner. Refresh replaces
-  bounded observation data; historical weight is not stored in navigation state.
-  Browser assertions cover a numeric estimated weight below Range, owner weight,
-  contribution/threshold explanation, unavailable state and generation mismatch.
+- **CKV-06:** Split properties, Overview and graph cards do not display Weight.
+  Full Range bounds remain visible and wrap independently.
+- **CKV-07:** Weighted balance explanations and data/count contribution values
+  remain hidden until tree statistics can describe current range data reliably.
+  No tree statistics scan is triggered by opening or refreshing the console.
+- **CKV-08:** Count-based placement remains a backend policy. Existing bounded
+  observations retain catalog/epoch freshness fences, but are not presented as
+  data weights. Browser assertions verify that Weight and weighted explanations
+  are absent while tree/page inspection and range navigation remain functional.
 
 ## 21. Iceberg
 

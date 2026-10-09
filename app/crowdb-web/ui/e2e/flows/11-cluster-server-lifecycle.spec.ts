@@ -5,6 +5,7 @@
 import { test, expect } from '../fixtures/realBackend';
 import { apiContext, clusterInit, createNode, createRack, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
+import { observeDefaultDeployments } from '../fixtures/defaultDeployments';
 import { readFileSync } from 'node:fs';
 
 test('native diagnostics: auxiliary menus stop and restart the actual typed process', async ({ page, request }) => {
@@ -44,18 +45,31 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
       const stopped = (await list()).find((row: { id: string }) => row.id === original.id);
       return { id: stopped?.id, pid: stopped?.pid ?? null };
     }, { intervals: [100] }).toEqual({ id: original.id, pid: null });
+    let startSubmitted = false;
     try {
       await node.click({ button: 'right' });
       await page.getByRole('menuitem', { name: `${prefix}-1 Stopped`, exact: true }).hover();
-      await page.getByRole('menuitem', { name: `Start ${label}`, exact: true }).click();
-      await expect.poll(async () => {
+      // Native recovery previously reached its listener after 3.15s; keep a
+      // modest response budget while process and DOM assertions remain 3s.
+      const started = page.waitForResponse(response =>
+        new URL(response.url()).pathname === `/api/services/${original.id}/restart`
+        && response.request().method() === 'POST', { timeout: 5_000 });
+      const startAt = performance.now();
+      startSubmitted = true;
+      const response = await step(`native lifecycle: ${original.id} Start response`, async () => {
+        await page.getByRole('menuitem', { name: `Start ${label}`, exact: true }).click();
+        return started;
+      });
+      console.log(`[START] ${original.id}: ${(performance.now() - startAt).toFixed(0)}ms`);
+      expect(response.status(), await response.text()).toBe(200);
+      await step(`native lifecycle: ${original.id} new process`, () => expect.poll(async () => {
         const current = (await list()).find((row: { id: string }) => row.id === original.id);
         return current?.pid && current.pid !== original.pid && alive(current.pid);
-      }, { intervals: [100] }).toBe(true);
+      }, { intervals: [100] }).toBe(true));
       expect((await list()).filter((row: { id: string }) => row.id === original.id)).toHaveLength(1);
     } finally {
       const current = (await list()).find((row: { id: string }) => row.id === original.id);
-      if (!current?.pid) expect((await request.post(`/api/services/${original.id}/restart`, { data: {} })).ok()).toBe(true);
+      if (!startSubmitted && !current?.pid) expect((await request.post(`/api/services/${original.id}/restart`, { data: {} })).ok()).toBe(true);
     }
   }
   expect(await list()).toHaveLength(18);
@@ -482,6 +496,7 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
 test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive', async ({ page, request }) => {
   test.skip(!process.env.CROWDB_NATIVE_PLAN_PREREQUISITES, 'Requires the partial deployment fixture phase');
   const kinds = ['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
+  const deployments = observeDefaultDeployments(page);
   const list = async () => {
     const response = await request.get('/api/servers');
     expect(response.ok()).toBe(true);
@@ -533,6 +548,8 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
       expect(deploys).toEqual([]);
       expect((await request.post(`/api/services/${diskioIds[1]}/restart`, { data: {} })).ok()).toBe(true);
       await expect(dialog.getByRole('listitem').filter({ hasText: 'deploying' })).toHaveCount(1);
+      await deployments.verify(1, 'chunk-kv');
+      await deployments.verify(1, 'access-server');
       await expect.poll(async () => {
         const response = await request.get('/api/service-plans');
         expect(response.ok()).toBe(true);

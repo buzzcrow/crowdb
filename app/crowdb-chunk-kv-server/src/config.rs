@@ -136,7 +136,7 @@ impl ChunkKvServerConfig {
         self.monitor
             .validate()
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
-        if self.balance.byte_weight_percent > 100
+        if self.balance.byte_weight_percent != 0
             || self.balance.imbalance_tolerance_percent > 100
             || self.balance.target_partitions_per_owner == 0
             || self.balance.target_partition_bytes == 0

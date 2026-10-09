@@ -73,7 +73,7 @@ fn legacy_policy_decodes_explicit_new_defaults_and_rejects_invalid_percentages()
         .unwrap()
         .remove("imbalance_tolerance_percent");
     let policy: ChunkKvRangeBalancePolicy = serde_json::from_value(json).unwrap();
-    assert_eq!(policy.byte_weight_percent, 80);
+    assert_eq!(policy.byte_weight_percent, 0);
     assert_eq!(policy.imbalance_tolerance_percent, 20);
     assert!(policy.validate().is_ok());
     assert!(ChunkKvRangeBalancePolicy {
@@ -88,4 +88,12 @@ fn legacy_policy_decodes_explicit_new_defaults_and_rejects_invalid_percentages()
     }
     .validate()
     .is_err());
+}
+
+#[test]
+fn data_weight_cannot_be_enabled_before_tree_metrics() {
+    let mut policy = ChunkKvRangeBalancePolicy::default();
+    policy.validate().unwrap();
+    policy.byte_weight_percent = 80;
+    assert!(policy.validate().is_err());
 }

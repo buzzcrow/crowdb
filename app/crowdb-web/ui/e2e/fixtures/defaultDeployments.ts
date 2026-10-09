@@ -20,6 +20,14 @@ export function observeDefaultDeployments(page: Page) {
     if (identity) replies.set(identity, [...(replies.get(identity) ?? []), response]);
   });
   return {
+    async nextCompleted(nodes: number[], kind: string) {
+      const pending = new Set(nodes.map(node => `${node}:${kind}`));
+      const completed = nodes.find(node => replies.get(`${node}:${kind}`)?.some(response => response.status() === 201));
+      if (completed !== undefined) return completed;
+      const timeout = process.platform === 'darwin' ? 30_000 : 3_000;
+      const response = await page.waitForResponse(response => pending.has(key(response) ?? '') && response.status() === 201, { timeout });
+      return Number(key(response)!.split(':')[0]);
+    },
     async verify(node: number, kind: string) {
       const identity = `${node}:${kind}`;
       const timeout = process.platform === 'darwin' ? 30_000 : 3_000;

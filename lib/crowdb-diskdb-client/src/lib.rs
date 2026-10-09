@@ -23,6 +23,9 @@ use thiserror::Error;
 pub enum DiskdbClientError {
     #[error("diskdb has no space: {0}")]
     NoSpace(String),
+    /// Connection establishment failed before the request was submitted.
+    #[error("diskdb connection failed before send: {0}")]
+    ConnectFailed(String),
     #[error("diskdb server unreachable: {0}")]
     Unreachable(String),
     #[error("diskdb server does not own the requested resource: {0}")]

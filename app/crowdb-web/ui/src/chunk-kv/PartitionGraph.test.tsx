@@ -20,6 +20,7 @@ it('replaces bounded split windows and collapses only the selected server', asyn
     return <PartitionGraph entries={entries} servers={[{ id: 'chunk-kv-1', node_id: 1, rpc_url: '127.0.0.1:15201', service_type: 'chunk-kv', health: 'unknown' }]} disabled={false} onSelect={vi.fn()} onTree={vi.fn()} query={query} onQuery={onQuery} />;
   }
   render(<TestGraph />);
+  expect(screen.queryByText(/Weight/)).toBeNull();
   // jsdom has no layout: inspect real graph cards by their accessible labels.
   // The native browser case separately verifies measured cards are visible.
   const cards = (prefix: string) => screen.getByTestId('chunk-kv-graph').querySelectorAll(`button[aria-label^="${prefix}"]`);

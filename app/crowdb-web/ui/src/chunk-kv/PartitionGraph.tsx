@@ -9,7 +9,7 @@ import { Boxes, ChevronDown, ChevronRight, Cog, Database, FolderTree, ScanSearch
 import type { ServerSummary } from '../api';
 import { buttonClass } from '../access/Workbench';
 import { serviceInstanceLabel } from '../services/client';
-import { range, weightPercent, type BalanceSummary, type Partition } from './catalog';
+import { range, type BalanceSummary, type Partition } from './catalog';
 
 const endpointKey = (value: string) => value.replace(/^[a-z]+:\/\//, '').replace(/\/$/, '');
 const SERVER_LIMIT = 8;
@@ -18,7 +18,6 @@ const SPLIT_LIMIT = 5;
 interface Card {
   label: string;
   subtitle: string;
-  weight?: string;
   title?: string;
   accessible?: string;
   selected?: boolean;
@@ -50,7 +49,6 @@ function GraphNode({ data }: NodeProps<Card>) {
           <span className="tw-block tw-text-sm tw-font-medium tw-truncate tw-text-text">{data.label}</span>
         </span>
         <span className="tw-block tw-mt-1 tw-text-[10px] tw-text-muted tw-truncate">{data.subtitle}</span>
-        {data.weight && <span className="tw-block tw-mt-1 tw-text-[10px] tw-text-muted">Weight {data.weight}</span>}
       </button>
       {data.kind === 'server' && data.click && <button className="nodrag tw-absolute tw-right-1 tw-top-1/2 tw-p-1 tw-text-muted hover:tw-text-text" style={{ transform: 'translateY(-50%)' }} title={data.collapsed ? `Expand ${data.label}` : `Collapse ${data.label}`} aria-label={data.collapsed ? `Expand ${data.label}` : `Collapse ${data.label}`} onClick={data.click}>
         {data.collapsed ? <ChevronRight className="tw-h-4 tw-w-4" /> : <ChevronDown className="tw-h-4 tw-w-4" />}
@@ -104,7 +102,7 @@ function GraphCanvas({ layout, edges, layoutKey }: { layout: Node<Card>[]; edges
   </ReactFlow>;
 }
 
-export function PartitionGraph({ balance, entries, servers, selectedId, disabled, onSelect, onTree, query, onQuery }: {
+export function PartitionGraph({ entries, servers, selectedId, disabled, onSelect, onTree, query, onQuery }: {
   query: GraphQuery; onQuery: (query: GraphQuery) => void;
   balance?: BalanceSummary; entries: Partition[]; servers: ServerSummary[]; selectedId?: string; disabled: boolean;
   onSelect: (partition: Partition) => void; onTree: (partition: Partition) => void;
@@ -139,7 +137,7 @@ export function PartitionGraph({ balance, entries, servers, selectedId, disabled
     const children = collapsed.has(group.id) ? [] : group.entries.slice(offset, offset + SPLIT_LIMIT);
     const width = children.length ? (children.length - 1) * 195 + 160 : 160;
     nodes.push({ id: group.id, type: 'chunkKv', position: { x: x + (width - 160) / 2, y: layerY.server },
-      data: { kind: 'server', label: group.label, weight: weightPercent(balance?.owners?.find(owner => owner.instance_id === group.entries[0]?.owner_id || !!owner.rpc_endpoint && endpointKey(owner.rpc_endpoint) === group.endpoint)?.weight), collapsed: collapsed.has(group.id), subtitle: `${group.entries.length} splits in window · ${collapsed.has(group.id) ? 'Expand' : 'Collapse'}`,
+      data: { kind: 'server', label: group.label, collapsed: collapsed.has(group.id), subtitle: `${group.entries.length} splits in window · ${collapsed.has(group.id) ? 'Expand' : 'Collapse'}`,
         click: () => setCollapsed(previous => { const next = new Set(previous); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; }),
         previous: offset > 0 ? () => setOffsets(value => ({ ...value, [group.id]: offset - SPLIT_LIMIT })) : undefined,
         next: offset + SPLIT_LIMIT < group.entries.length ? () => setOffsets(value => ({ ...value, [group.id]: offset + SPLIT_LIMIT })) : undefined } });
@@ -147,7 +145,7 @@ export function PartitionGraph({ balance, entries, servers, selectedId, disabled
     children.forEach((entry, index) => {
       const id = `split-${entry.id}`;
       nodes.push({ id, type: 'chunkKv', position: { x: x + index * 195, y: layerY.split }, data: {
-        kind: 'split', label: `Split ${entry.id.slice(0, 4)}…${entry.id.slice(-4)}`, subtitle: entry.state, weight: weightPercent(entry.balance?.partition.weight),
+        kind: 'split', label: `Split ${entry.id.slice(0, 4)}…${entry.id.slice(-4)}`, subtitle: entry.state,
         accessible: `Partition ${entry.id}`, title: `${entry.id} · ${range(entry)}`, disabled, selected: entry.id === selectedId, click: () => onSelect(entry),
       } });
       nodes.push({ id: `tree-${entry.id}`, type: 'chunkKv', position: { x: x + index * 195, y: layerY.tree }, data: {

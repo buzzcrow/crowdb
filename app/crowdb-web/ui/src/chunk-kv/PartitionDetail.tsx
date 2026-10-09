@@ -1,11 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { BalanceDetails } from './BalanceDetails';
 import type { SplitQuery } from './query';
 import { createPortal } from 'react-dom';
 import { buttonClass } from '../access/Workbench';
-import { identity, range, weightPercent, type BalanceSummary, type Partition } from './catalog';
+import { identity, range, type BalanceSummary, type Partition } from './catalog';
 import { RuntimeObservation } from './RuntimeObservation';
 import { useRuntimeObservation } from './useRuntimeObservation';
 import { TreeStorage, JournalStorage } from './StorageObservation';
@@ -17,16 +16,15 @@ function Properties({ values, stacked = false }: { stacked?: boolean; values: Re
   </dl>;
 }
 
-export function PartitionDetail({ partition: p, generation, currentGeneration, active, catalogPage, catalogOffset, onBack, onChunk, propertyHost, query, onQuery, balance }: { balance?: BalanceSummary; query: SplitQuery; onQuery: (query: SplitQuery) => void; propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; partition: Partition; generation: string; currentGeneration?: string; active: boolean; catalogPage: number; catalogOffset: number; onBack: () => void }) {
+export function PartitionDetail({ partition: p, generation, currentGeneration, active, catalogPage, catalogOffset, onBack, onChunk, propertyHost, query, onQuery }: { balance?: BalanceSummary; query: SplitQuery; onQuery: (query: SplitQuery) => void; propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; partition: Partition; generation: string; currentGeneration?: string; active: boolean; catalogPage: number; catalogOffset: number; onBack: () => void }) {
   const tab = query.tab;
   const setTab = (tab: string) => onQuery({ ...query, tab });
   const overlay = p.artifact.tail_overlay;
-  const observedBalance = currentGeneration === generation && balance?.generation === generation ? p.balance : null;
   const runtime = useRuntimeObservation({ active, partition: p, generation, catalogPage, catalogOffset, cursor: query.stream, onCursor: stream => onQuery({ ...query, stream, extent: null }) });
   return <section aria-label="Partition detail" className="tw-space-y-4 tw-border-t tw-border-border tw-pt-4">
     {propertyHost && createPortal(<section aria-label="Split properties" className="tw-space-y-4">
       <h2 className="tw-font-semibold">Split properties</h2>
-      <Properties stacked values={{ 'Split ID': p.id, Range: range(p), Weight: weightPercent(observedBalance?.partition.weight), 'Assigned server': p.owner_id, Endpoint: p.endpoint, 'Owner epoch': p.epoch, 'Catalog state': p.state, Generation: generation, Transition: p.transition_id, 'Tree ID': p.artifact.tree_id, Stream: identity(p.artifact.stream_name) }} />
+      <Properties stacked values={{ 'Split ID': p.id, Range: range(p), 'Assigned server': p.owner_id, Endpoint: p.endpoint, 'Owner epoch': p.epoch, 'Catalog state': p.state, Generation: generation, Transition: p.transition_id, 'Tree ID': p.artifact.tree_id, Stream: identity(p.artifact.stream_name) }} />
     </section>, propertyHost)}
     <button className={buttonClass} onClick={onBack}>Back to range map</button>
     <h2 className="tw-text-lg tw-font-semibold tw-break-all">Partition {p.id}</h2>
@@ -35,7 +33,7 @@ export function PartitionDetail({ partition: p, generation, currentGeneration, a
     {propertyHost && createPortal(<RuntimeObservation active={active} {...runtime} />, propertyHost)}
     <div role="tablist" aria-label="Partition views" className="tw-flex tw-gap-2">{['Overview', 'Tree', 'Journal', 'Dependencies'].map(name => <button key={name} role="tab" aria-selected={tab === name} className={buttonClass} onClick={() => setTab(name)}>{name}</button>)}</div>
     <div role="tabpanel" aria-label={tab} className="tw-space-y-4">
-      {tab === 'Overview' && <><BalanceDetails partition={{ ...p, balance: observedBalance }} summary={balance} /><Properties values={{ Range: range(p), Weight: weightPercent(observedBalance?.partition.weight), 'Assigned server': p.owner_id, Endpoint: p.endpoint, 'Owner epoch': p.epoch, 'Catalog state': p.state, Transition: p.transition_id }} />
+      {tab === 'Overview' && <><Properties values={{ Range: range(p), 'Assigned server': p.owner_id, Endpoint: p.endpoint, 'Owner epoch': p.epoch, 'Catalog state': p.state, Transition: p.transition_id }} />
         <p className="tw-text-sm tw-text-muted">Catalog assignment and owner runtime are separate observations, checked against the same generation and owner epoch.</p></>}
       {tab === 'Tree' && <><Properties values={{ 'Tree ID': p.artifact.tree_id, 'Overlay base tree manifest': overlay?.base_tree_manifest ?? null, 'Overlay root generation': overlay?.base_root_manifest_generation ?? null, 'Overlay base applied sequence': overlay?.base_applied_seq ?? null }} />
         <PageExplorer active={active} partition={p} generation={generation} catalogPage={catalogPage} catalogOffset={catalogOffset} cursor={query.page ?? initialPageCursor()} onCursor={page => onQuery({ ...query, page })} propertyHost={propertyHost} /><TreeStorage value={runtime.value?.tree} /></>}

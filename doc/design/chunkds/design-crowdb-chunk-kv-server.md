@@ -231,15 +231,19 @@ the child WAL is empty. Final readiness records the exact boundary explicitly;
 published catalog recovery uses that boundary instead of rediscovering it from
 the current parent tail.
 
-The durable handoff status and continued-write replay boundary require explicit
-implementation verification; the gaps are recorded under Open Issues.
+The durable handoff proof is stored in the split transition while its phase is
+`ParentPreparing`. Revision CAS preserves an existing proof and reconciles an
+unknown write result by exact reread. Initial and final replay frontiers remain
+distinct; additional real-process crash windows are recorded under Open Issues.
 
 ### 6.2. Local execution and storage retention
 
 The split transition phase symbols are `Planned`, `ParentPreparing`,
 `ChildPrepared`, `CatalogCommitted`, and `Aborted`. A separately persisted
-handoff status must distinguish preparation from committed local handoff before
-final readiness; its concrete schema is an implementation gap. The server and
+`handoff_proof` distinguishes preparation from committed local handoff before
+final readiness. It binds the pinned tree base, original parent stream and
+initial inherited frontier while the transition remains `ParentPreparing`.
+Final readiness extends that frontier without replacing its base. The server and
 group-0 monitor advance them in this order:
 
 1. Group 0 persists the complete plan before local work begins. The existing
@@ -489,7 +493,7 @@ The balance invariants are:
 
 Balancing targets at least `live_owner_count * target_partitions_per_owner`,
 defaulting to four partitions per owner. Split chooses the largest eligible
-partition using approximate retained pack weights. A split boundary comes from
+partition using approximate retained pack estimates. A split boundary comes from
 a resident index separator or a bounded small key window; exact byte or key
 medians are unnecessary. Live-key witnesses establish nonempty children when
 the observation is made. Concurrent mutations can change that observation.
@@ -503,37 +507,27 @@ lag unsnapshotted mutations; observation does not scan remote metadata or data.
 The retained parent and new split child stay local. Range splitting deliberately
 uses an approximate boundary and does not guarantee equal child sizes. Split
 sizing and minimum partition supply do not require exact placement equality.
-A move uses the resulting children's observed estimates; an indivisible range
-may prevent further useful balancing, in which case placement remains unchanged.
+A move uses assigned partition counts; byte estimates remain capacity filters.
+An indivisible range may prevent further useful count balancing, in which case
+placement remains unchanged.
 
-### 8.1 Unified Weight
+### 8.1 Count-Based Placement
 
-For one complete catalog and fresh healthy-owner observation, let `N` be the
-number of eligible healthy owners, `P` the total assigned partition count, and
-`B` the sum of estimated bytes of those assignments. Empty healthy owners are
-included. Owner `i` has count `p_i` and estimated bytes `b_i`.
-`byte_weight_percent` and `count_weight_percent` are explicit nonnegative policy
-coefficients totaling 100; the count coefficient is the complement of the byte
-coefficient. Defaults are data/count 80/20, relative imbalance tolerance 20%,
-and minimum global-loss improvement 25%. With `a = byte_weight_percent / 100`:
+Placement currently uses assigned split count only: `w_i = p_i / P`, including
+healthy owners with zero assignments. `byte_weight_percent` is reserved and must
+be zero; nonzero settings are rejected until root/range statistics are available.
+The data contribution is disabled. Physical shared-pack bytes, memtable bytes,
+write counters and accumulated split ratios are not placement data weights.
+Tolerance defaults to 20% relative to equal owner share; minimum global-loss
+improvement defaults to 25%. Missing or epoch-mismatched assignment observations
+still defer planning. Capacity/headroom remains a separate safety filter.
 
-- When `B > 0`, `w_i = a * b_i / B + (1 - a) * p_i / P`.
-- When all known byte estimates are zero, `w_i = p_i / P`.
-- A partition's contribution is `a * estimated_bytes / B + (1 - a) / P`,
-  or `1 / P` in the known-zero-byte case. Contributions sum to its owner's
-  weight and global owner weights sum to one, up to fixed-point rounding.
-- An empty catalog has no move candidates. Unknown estimates are not zero.
-  Missing, stale or mismatched assignment observations defer load-based planning
-  and expose the unavailable reason; they do not make an owner appear empty.
-
-Estimates come from epoch/identity-matching cached partition metadata, retained
-pack estimates and bounded resident samples. Shared packs and delayed samples
-make these estimates approximate; weight is not an exact physical-capacity
-measurement. Capacity/headroom remains a separate safety filter. Aggregate each
-reported partition once per observation and reuse its estimate for candidates.
-Weight calculation never walks keys/data, counts the tree, flushes, checkpoints,
-or scans remote storage. Planning may iterate catalog/heartbeat metadata;
-heartbeat/request paths do not wait for planning or sampling.
+Tree statistics do not yet expose current root/range page, logical-byte or live-KV
+aggregates. Existing retained-pack estimates remain coarse inputs to automatic
+split sizing/candidate ranking and capacity checks; they can include shared packs
+and lag ordinary flushes. Count balancing does not make those estimates exact.
+The split execution, boundary sampling, recovery and publication contracts remain
+unchanged. Console does not display Weight or weighted balance explanations.
 
 ### 8.2 Tolerance and Move Selection
 
@@ -541,14 +535,14 @@ Equal owner weight is `1 / N`. The observation's relative deviation is
 `D = max_i(abs(N * w_i - 1))`; `imbalance_tolerance_percent` bounds `100 * D`.
 Within tolerance, no load-balancing move is planned. Outside tolerance, evaluate
 candidate moves against the same global loss
-`L = sum_i((N * w_i - 1)^2)` before and after the move. Both the partition count
-contribution and its estimated bytes move together. The normalized denominators
+`L = sum_i((N * w_i - 1)^2)` before and after the move. The partition count
+contribution moves; the byte contribution is zero. The normalized denominators
 stay fixed for each candidate evaluation. Only the two affected owner terms
 change, so each candidate's loss delta requires constant arithmetic.
 
 A candidate must strictly reduce loss and meet
-`minimum_weighted_improvement_percent` of the current loss. Count difference
-alone cannot override a worsening unified score. Choose the greatest loss
+`minimum_weighted_improvement_percent` of the current loss. A count difference
+does not authorize a move that worsens the global count score. Choose the greatest loss
 reduction among safe eligible candidates; stable partition/target identities
 break ties. Use validated bounded integer/fixed-point arithmetic, sufficient
 intermediate width, and conservative threshold comparisons; UI rounding does
@@ -590,9 +584,9 @@ planning. Unchanged diagnostics are renewed within half their freshness window
 rather than written on every tick. Do not emit or persist all candidate pairs
 on every tick. This diagnostic
 observation is not catalog authority and does not advance catalog generation.
-Console uses this actual backend calculation and never normalizes weights from
-its visible catalog page. Catalog generation/identity mismatch remains explicit;
-UI refresh does not bypass stale cursor rejection.
+The observation remains backend diagnostic metadata; Console currently hides
+Weight and balance explanations. Catalog generation/identity mismatch remains
+explicit; UI refresh does not bypass stale cursor rejection.
 
 ## 9. Lifecycle and Observability
 

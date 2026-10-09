@@ -9,7 +9,7 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R228** — R221 is reserved by another workstream.
+**Next R number: R230** — R221 is reserved by another workstream.
 
 ## Dataset and access
 
@@ -18,6 +18,11 @@ live in the linked document; implementation follows
   **Status:** Deferred until the core Dataset contract has workload measurements.
 
 ## Console and service control
+
+- **[R229](R229-kv-membership-conflict.md)** — complete members record with epoch CAS and
+  server submission protection; explicit conflicts across UI servers.
+  **Area:** KV client / KV server / Console. **Complexity:** Medium.
+  **Status:** Members/epoch CAS model approved; implementation pending.
 
 - **[R227](R227-console-multi-node-deployment.md)** — multi-node discovery,
   Group-0 bootstrap, shared UI authority and light-container deployment.
@@ -114,3 +119,7 @@ live in the linked document; implementation follows
 - **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — sibling-leaf readahead on
   cold scans. **Area:** crowdb-tree / scan / DiskIO. **Complexity:** Medium.
   **Status:** Deferred pending cold file/block-backed measurements.
+- **[R228](R228-tree-range-metrics.md)** — root/range page, logical-byte and live-KV
+  metrics for continuous split sizing and data-weight placement. **Area:** tree /
+  chunk-KV / console. **Complexity:** High. **Status:** Deferred implementation
+  pending statistics-format/performance review; count placement remains enabled.

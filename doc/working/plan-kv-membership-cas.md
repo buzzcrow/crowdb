@@ -7,6 +7,9 @@ Upstream: [R229](../backlog/R229-kv-membership-conflict.md).
 Goal: publish complete members through epoch CAS and reject concurrent/stale
 configuration submissions before they can change durable or running groups.
 
+Execution is deferred by the user on 2026-10-09. The first protocol/client task
+is committed as `339ef482`; do not resume the remaining tasks until requested.
+
 ## Protocol and shared authority
 
 - [x] **Implement record and KV client CAS**: add complete member/epoch/state

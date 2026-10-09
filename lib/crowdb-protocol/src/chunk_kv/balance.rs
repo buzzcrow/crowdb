@@ -15,7 +15,7 @@ pub const MAX_OBSERVED_OWNERS: usize = 256;
 
 #[must_use]
 pub const fn default_byte_weight_percent() -> u32 {
-    80
+    0
 }
 #[must_use]
 pub const fn default_tolerance_percent() -> u32 {

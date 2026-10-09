@@ -38,17 +38,87 @@ Leave unexecuted packages in place with `—`; record elapsed time in seconds.
 | Test package       | Date       | Tests     | Seconds | Status                   |
 | ------------------ | ---------- | --------- | ------- | ------------------------ |
 | `test-cpp`         | 2026-10-09 | 942/942   | 131.26  | ✓                        |
-| `test-core`        | 2026-10-09 | 993/993   | 181.15  | ✓                        |
+| `test-core`        | 2026-10-09 | 994/994   | ~140.23 | ✓                        |
 | `test-storage`     | 2026-10-09 | 841/841   | 916.53  | ✓                        |
 | `test-access`      | 2026-10-09 | 1036/1037 | 412.60  | ✓ 1 separately scheduled |
-| `test-console`     | 2026-10-09 | 158/159   | 383.82  | X partial                |
-| `test-console-ui`  | 2026-10-09 | 227/227   | 343.12  | ✓                        |
+| `test-console`     | 2026-10-09 | 350/350   | ~1588.1 | ✓                        |
+| `test-console-ui`  | 2026-10-09 | 229/229   | 307.40  | ✓                        |
 | `test-boto3-e2e`   | 2026-10-09 | 255/255   | 428.89  | ✓                        |
 | `test-iceberg-e2e` | 2026-10-09 | 29/32     | 789.37  | ✓ 3 separately scheduled |
 | `test-iceberg-sdk` | 2026-10-09 | 11/11     | 571.23  | ✓                        |
 
 Measurement notes for this host:
 
+- Latest complete Console gate passes 350 Rust test executions (including
+  three dedicated phase wrapper reruns), zero failed/ignored. All 23 native
+  browser cases pass: 20 in the main fixture, plus one in each dedicated
+  prerequisite-plan, journal interruption, and production split phase.
+  Dedicated wrapper times: 17.90s, 50.09s, 308.15s; final counts are 4/4/4
+  with complete acknowledged-data checks. The task interval is approximately
+  1588.13s from log creation to final write, not an independent wall timer.
+  Start samples across two fixtures: ChunkDB 215/255ms, DiskIO 366/466ms,
+  ChunkKV 789/3800ms, Access 178/148ms. Native Start response budget is 5s;
+  process/DOM assertions remain 3s. Core recovery is unchanged; fsync has
+  not been established as the delay source. Full log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/console-start-budget-final.out`.
+
+- Latest complete UI task passes 166 unit and all 63 browser cases (229/229),
+  measured independently at 307.40 seconds. Reload cancellation can no longer
+  publish failed progress from an old page; serial deployment completions and
+  bucket creation are asserted before their durable/DOM checks. Budgets and
+  real KV/S3/Iceberg data assertions are retained. Log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/ui-reload-acceptance-final.out`.
+- The three separately scheduled native phases now pass explicitly, zero
+  ignored: prerequisite-plan resumption 19.32s, journal interruption 54.26s,
+  production split/count convergence and complete data checks 350.85s (4/4/4).
+  Their logs are `native-plan-response-order.out`, `native-journal-final.out`,
+  and `native-count-final.out` in the balance-policy artifact directory.
+  These focused successes do not replace complete Console acceptance; native
+  Start timing follow-up passes: ChunkDB 215ms, DiskIO 366ms, ChunkKV 789ms,
+  Access 178ms (browser 9.2s, owned fixture 375.59s). The earlier recovery
+  reached its listener after 3.15s. User-authorized native Start response
+  budget is now 5s; process/DOM assertions remain 3s. Full Console rerun now passes; R228/R229 remain deferred. Timing log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/native-lifecycle-start-distribution.out`.
+
+- Previous full Console gate: 307 completed Rust cases pass, one native wrapper
+  fails (zero ignored Rust cases). Its browser phase passes 19, fails the
+  lifecycle case and schedules three cases separately. The gate stops before
+  those independent phases. S3 passes 8/8 again (159.10s). First lifecycle
+  divergence: Start is still restoring trees during the immediate 3s PID poll;
+  cleanup sends duplicate restart and reports 409. Test correction awaits and
+  asserts that original response before the unchanged process/DOM assertion.
+  Focused lifecycle acceptance also fails the unchanged 3s response budget
+  (345.63s fixture); core startup is unchanged and fsync is not yet established
+  as the cause. `~1111s` (Console) and `~371s` (UI) are
+  task-log creation-to-final-write intervals, not independent wall timers.
+  Complete log: `.crowdb-runtime/artifacts/balance-policy-20261009/count-only-console.out`.
+
+- Sequential same-group additions fix the topology fixture: its complete
+  spec passes 5/5 in 33.1s; original isolated case failed 2/3 ready groups.
+  Cross-UI/server conflict protection remains proposed in R229, not implemented.
+- Earlier count-only UI attempt: 164 unit tests and 62/63 browser tests pass.
+  Multi-rack topology leader election observes 2/3 ready groups within its
+  unchanged 10s budget; three-node real-data flow passes. Full task log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/count-only-ui.out`.
+- Approved allocation routing change passes both allocator regressions:
+  pre-send failure reroutes once; discarded post-allocation reply does not
+  replay (durable busy bytes checked). Complete serial S3 mini-cluster file
+  passes 8/8, zero ignored, in 183.98s after rebuilding services. Full Console
+  acceptance is pending.
+
+- Current count-only Core passes 994/994 with zero ignored. Its ~140.23s is
+  the complete task log's creation-to-final-write interval, not a separately
+  captured wall-clock timer. Log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/count-only-core.out`.
+  Actual native Page/hidden-Weight acceptance passes (browser 2.3s, owned
+  cluster 345.98s); data-weight placement is deferred to R228, not marked passed.
+- Current S3 outage reproduction: exact node-3 case passes in 36.20s; full
+  serial mini-cluster file fails 7/8 in 193.41s on node-1. Group 301 allocation
+  contacts removed endpoint 11200 after ownership recovery. This is a stale
+  DiskDB routing cache, not a crash/fsync timeout. Original runtime was
+  `.crowdb-runtime/ephemeral/s3-mini-protected-outage-1-2995274-5/`; full-gate
+  cleanup removed this disposable runtime. First-divergence details are retained.
+  Full Console still lacks final acceptance; no retry/readiness workaround added.
 - Latest balance implementation: Core 993/993, Storage 841/841 and full UI 227/227 pass, with
   zero ignored cases. UI includes all 63 browser cases, including the original
   six-service recovery and three-node real KV/S3/Iceberg flow. Logs are under

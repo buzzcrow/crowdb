@@ -161,54 +161,30 @@ async fn idle_owner_receives_a_partition_before_another_count_driven_split() {
 }
 
 #[tokio::test]
-async fn weighted_move_does_not_reverse_to_restore_equal_partition_counts() {
+async fn equal_counts_do_not_move_for_unequal_shared_pack_estimates() {
     use crowdb_protocol::chunk_kv::balance::{BalanceObservation, OBSERVATION_KEY};
-    let before = TestBalancePlanning::new().await;
-    let distribution = [(1, 60), (1, 30), (1, 30), (1, 20), (2, 5), (2, 5), (2, 5), (2, 5)];
-    balance_distribution::seed(&before.control, &distribution, 2).await;
-    before.tick().await;
-    let rows = before
-        .control
-        .scan_all_prefix(Bytes::from(ChunkKvTransferKey::text_prefix_all()), 16)
-        .await
-        .unwrap();
-    assert_eq!(rows.len(), 1);
-    let transfer: TransferTransition = serde_json::from_slice(&rows[0].value).unwrap();
-    assert_eq!(transfer.partition_id.low, 1);
-    assert_eq!((transfer.source.instance_id, transfer.target.instance_id), (1, 2));
-    let after = TestBalancePlanning::new().await;
-    let mut committed = distribution;
-    committed[0].0 = 2;
-    balance_distribution::seed(&after.control, &committed, 3).await;
-    // No cooldown/history hides a reverse proposal in this post-commit snapshot.
-    for _ in 0..3 {
-        after.tick().await;
-    }
-    assert!(after
+    let fixture = TestBalancePlanning::new().await;
+    balance_distribution::seed(
+        &fixture.control,
+        &[(1, 60), (1, 30), (1, 30), (1, 20), (2, 5), (2, 5), (2, 5), (2, 5)],
+        2,
+    )
+    .await;
+    fixture.tick().await;
+    assert!(fixture
         .control
         .scan_all_prefix(Bytes::from(ChunkKvTransferKey::text_prefix_all()), 16)
         .await
         .unwrap()
         .is_empty());
-    let observation = after.control.get(OBSERVATION_KEY.as_bytes()).await.unwrap();
-    let observation: BalanceObservation = serde_json::from_slice(&observation.value.unwrap()).unwrap();
+    let row = fixture.control.get(OBSERVATION_KEY.as_bytes()).await.unwrap();
+    let observation: BalanceObservation = serde_json::from_slice(&row.value.unwrap()).unwrap();
+    assert_eq!(observation.policy.byte_weight_percent, 0);
     assert_eq!(observation.reason, "within tolerance");
-    assert_eq!(
-        observation
-            .owners
-            .iter()
-            .map(|owner| owner.partition_count)
-            .collect::<Vec<_>>(),
-        vec![3, 5]
-    );
-    assert_eq!(
-        observation
-            .owners
-            .iter()
-            .map(|owner| owner.estimated_bytes)
-            .collect::<Vec<_>>(),
-        vec![80, 80]
-    );
+    assert!(observation
+        .owners
+        .iter()
+        .all(|owner| owner.weight.byte_units == 0));
 }
 
 #[tokio::test]

@@ -123,12 +123,18 @@ async function verifyServices({ page, request, deployments }: UIContext) {
   await step('three-node: all six services resume without Retry', async () => {
     await expect.poll(async () => (await (await request.get('/api/chunk-storage-readiness')).json()), { intervals: [100] }).toMatchObject({ ready: true });
     for (const kind of ['paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server']) {
-      for (const id of [1, 2, 3]) {
+      const pending = new Set([1, 2, 3]);
+      while (pending.size) {
+        // The serial plan may start any ready node first. Verify each actual
+        // completion before checking its durable progress, without charging
+        // earlier nodes' startup time to a later node's assertion.
+        const id = await deployments.nextCompleted([...pending], kind);
+        await deployments.verify(id, kind);
         await expect.poll(async () => {
           const plans = await (await request.get('/api/service-plans')).json();
           return plans[id].steps[kind];
         }, { intervals: [100], message: `Node ${id}: ${kind} automatically deploys` }).toEqual({ state: 'deployed' });
-        await deployments.verify(id, kind);
+        pending.delete(id);
       }
     }
     const servers = await (await request.get('/api/servers')).json();
@@ -155,7 +161,11 @@ async function s3RoundTrip({ page, request }: UIContext) {
     await page.getByTestId('domain-s3').click();
     await page.getByText('S3 actions', { exact: true }).click();
     await page.getByLabel('New bucket', { exact: true }).fill('ui-three-node');
+    const created = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/s3/ui-three-node'
+      && response.request().method() === 'PUT');
     await page.getByRole('button', { name: 'Create bucket', exact: true }).click();
+    const bucketResponse = await created;
+    expect(bucketResponse.status(), bucketResponse.statusText()).toBe(200);
     await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'ui-three-node', exact: true }).click();
     await page.getByText('Bucket actions', { exact: true }).click();
     await page.getByLabel('Object key', { exact: true }).fill('round-trip.txt');

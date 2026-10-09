@@ -12,9 +12,23 @@ Temporary plan: completed implementation detail is condensed below; historical
 source and evidence remain in local commits and the referenced artifacts.
 Delete this plan after the remaining audits and acceptance are complete.
 
+## Current placement decision — 2026-10-09
+
+- R228 and R229 are deferred by the user. Resume Console/native acceptance
+  and the cutover audits; do not continue membership implementation or metrics.
+- Data Weight is deferred to [tree range metrics](../backlog/R228-tree-range-metrics.md).
+  Placement uses split counts with existing tolerance/cooldown; byte coefficient
+  must be zero. Console Weight and weighted explanation are hidden.
+- Tree metrics implementation is not part of this cutover work. No tree writer,
+  split/move execution or recovery changes are authorized by this deferral.
+- Size-driven weighted acceptance is superseded by the deferred requirement,
+  not marked passed or ignored. Retain count convergence/data integrity coverage.
+- Existing automatic split has count-shortfall and coarse-pack size triggers;
+  the latter and size ranking require replacement after tree metrics acceptance.
+
 ## Status — 2026-10-09
 
-- Local commits: `1a471f43`, `407b5cab`, `a664e357`; no push performed.
+- Local commits: `1a471f43`, `407b5cab`, `a664e357`, `38389b0c`; no push performed.
 - Split retains the original parent tree/WAL and creates one child. Durable
   handoff precedes memory routing; catalog publication is the external cutover.
   Recovery opens the exact base, range-filters the inherited parent WAL, then
@@ -30,7 +44,8 @@ Delete this plan after the remaining audits and acceptance are complete.
   extra Rust Iceberg SDK passes 5/5.
   Baseline full UI passes 225/225, C++ 942/942, Core 987/987, Storage 839/839.
   Separately scheduled SDK cases ran and passed; no functional Linux skip is
-  accepted. Console remains incomplete. Exact counts/times are in `test.md`.
+  accepted. This historical baseline is superseded by the complete current
+  Console acceptance below. Exact counts/times are in `test.md`.
 - No new crash observed in the latest acceptance attempts. Previous crash
   investigation is retained under `/tmp/crowdb-core-investigation`.
 - File-backed simulated device sync delays are confirmed and accepted by the
@@ -51,130 +66,71 @@ Delete this plan after the remaining audits and acceptance are complete.
   Split/move execution, handoff and recovery changes still require prior review.
   No new hot-path locks or speculative cutover changes are authorized.
 
-## 1. Placement policy review and implementation
+## 1. Placement policy and deferred tree metrics
 
-Confirmed user direction:
-
-- Partition count and estimated data size contribute to one balance evaluation;
-  neither independently overrides the other in a later planning pass.
-- Use explicit coefficients and percentage-based tolerance. Small imbalance
-  alone does not trigger a move; a move must produce sufficient improvement.
-- Range split deliberately does not produce equal-sized children. Use their
-  observed estimates, and accept a placement when no worthwhile move exists.
-- Weight calculation uses existing cached metadata/retained-pack estimates and
-  bounded samples. Never iterate keys/data, count the tree, flush, or scan remote
-  storage for balance. Iterating reported partition metadata is permitted.
-- Explain weight and move/no-move decisions in UI using the backend's actual
-  calculation. Cooldown supplements tolerance; it does not ensure convergence.
-
-Current evidence and gap:
-
-- Both selectors now use the shared weighted score. The former independent
-  count correction could undo a weighted move; monitor regression covers the
-  replacement policy without relying on cooldown history.
-- Strict page cursor 409 after catalog publication is correct. A transient
-  4/4/4 observation does not promise stable catalog generation.
-- Browser ordering and continuous-generation readiness experiments failed and
-  were withdrawn. Do not make the page pass by ignoring 409 or disabling balance.
-
-- [x] **Specify unified score and UI contract**: design §8 defines 80/20 data/count
-  weight, 20% relative tolerance and 25% minimum global squared-loss improvement.
-  UI spec CKV-06–08 defines weight below Range, owner totals and explanations.
-  The user authorized balance/UI implementation; split/move execution stays intact.
-- [x] **Verify non-reversal with actual monitor**: a 4/4 placement at 140/20 bytes
-  selects the 60-byte partition; the resulting 3/5 at 80/80 stays within tolerance
-  across repeated monitor ticks without cooldown hiding a reverse proposal.
-  Missing assignment samples defer planning. Five monitor regressions pass;
-  this verifies the replacement policy, not the exact earlier runtime cycle.
-- [x] **Implement confirmed policy/configuration**: add validated
-  coefficients/tolerance/improvement fields with explicit legacy decoding and
-  persisted monitor-descriptor handling. Replace independent count-first and
-  weighted decisions with the same score before/after a candidate move; retain
-  safety filters, transfer bounds and deterministic ties. Reconcile split versus
-  placement scheduling without forcing equal split sizes or endless splitting.
-  Files: `lib/crowdb-protocol/src/chunk_kv.rs`,
-  `app/crowdb-kv-server/src/background/domain_monitor/chunk_kv/balance*`,
-  `app/crowdb-chunk-kv-server/src/serving/balance.rs`, deployment/config callers.
-- [x] **Keep observation cheap**: reuse existing heartbeat/cached partition
-  statistics, aggregate each reported load once, and avoid repeated sample sums
-  for every candidate. Specify missing/stale sample behavior and estimate error
-  tolerance; introduce no data scans or hot-path I/O/locks. Diagnostic metadata
-  publication is bounded, best effort, and runs after planning.
-  Files: monitor planning state and owner load aggregation, heartbeat producers.
-- [x] **Expose decision explanations**: report policy/version, observation age,
-  count/byte contributions, final owner weight, current imbalance, thresholds,
-  predicted candidate improvement, and safety/cooldown/no-benefit reasons.
-  Bound output to owner summaries and selected/best rejected candidates; do not
-  persist or emit all candidate combinations every tick. UI consumes the same
-  backend result rather than recomputing the policy.
-  Files: `lib/crowdb-protocol/src/chunk_kv/balance.rs`, monitor observation/API,
-  `app/crowdb-web/ui/src/` owning ChunkKV inspection components.
-- [~] **Verify policy and Console acceptance**: unit-test zero data, rounding,
-  tolerance edges, unequal splits and insufficient benefit; monitor-test repeated
-  decisions and estimate jitter without reverse moves. Preserve capacity/health/
-  overlay/cooldown limits and acknowledged data. Update native preparation to
-  approved policy readiness rather than exact counts; rerun dedicated real split/
-  weighted acceptance and strict native browser checks. Add UI assertions for
-  explanations when implemented. Files: selector tests, native balance fixture,
-  existing catalog/lifecycle browser specs; `doc/working/test.md`. UI spec is
-  `doc/design/console/design-crowdb-console-ui.md` §20; change it before UI code.
-  Focused Rust checks pass 51/51; UI unit tests, lint/build and workspace CI
-  clippy pass. Actual native Page test passes and its screenshot confirms Weight
-  below Range. Full Console verification remains active: one attempt mixed
-  binaries across an additive diagnostic field change, and multipart ListParts
-  separately returned zero entries after successful part uploads. Rebuild and
-  reproduce before attributing that failure to cutover or changing core logic.
-  Latest full UI passes 227/227, including all 63 browser cases; Core passes
-  993/993 and Storage 841/841, all with zero ignored cases. A subsequent
-  consistent full Console run stops earlier at the node-3 S3 outage test: large
-  object allocation connects to the stopped DiskDB endpoint and returns 503.
-  The pool refreshes after transport failure but deliberately does not replay an
-  ambiguous allocation. Diagnose this independently; do not add blind retries.
-  The consistent, isolated normal native restart/multipart case passes in
-  24.03 seconds; this does not yet classify its earlier parallel-suite failure.
-  The former fourfold hot-value load left retained estimates unchanged and
-  deviation at 10.83%, correctly within tolerance. Its attempt was interrupted,
-  not accepted or ignored. The fixture now grows the largest seeded range's
-  owner using 1-MiB values without forcing a checkpoint or changing production
-  observation. This run fails after 968.43 seconds: ordinary memtable flush does
-  not publish a checkpoint, and the opened manifest estimate stays unchanged.
-  Actual inherited/current Journal browser acceptance passes in 18.7 seconds.
-  Final workspace CI clippy passes. Weighted acceptance remains incomplete.
-- [ ] **Review current-data estimation boundary before tree changes**: the
-  unified policy correctly stops count-driven moves, which previously could
-  incidentally checkpoint later writes. `ChunkPageStore::estimated_bytes()`
-  reads the opened manifest; heartbeats can be current while this byte estimate
-  remains from an older checkpoint. Increasing fixture values alone does not
-  fix that boundary. Review a bounded, read-only estimate of current pending
-  data using cached allocation/page metadata; avoid cumulative write/WAL bytes,
-  tree walks, forced checkpoints, new locks or changes to split/move authority.
-  Any writer-side bookkeeping or checkpoint behavior change requires the user's
-  prior core-logic review. Do not claim this task is implemented.
-  Files: `lib/crowdb-tree/src/backend/chunk/chunk_page_store.*`,
-  `lib/crowdb-chunk-kv/src/partition/tree.rs`, owner load observation.
-  Evidence: `.crowdb-runtime/artifacts/balance-policy-20261009/` contains
-  `native-weighted-observed-load.out`, `weighted-observation.out` and owner
-  registry observations. No core split/move or checkpoint change was made.
+- [x] **Verify count-only placement and hidden Weight**: byte coefficient defaults
+  to zero and nonzero configurations are rejected. Both selectors retain shared
+  count scoring, 20% tolerance, 25% improvement, cooldown and safety filters.
+  Equal split counts must not move merely because shared-pack estimates differ.
+  Hide graph/property Weight and balance explanations; verify native Page flow.
+  Files: protocol/server config, balance tests, console components/catalog spec.
+  Verified: 24 focused Rust cases, 7 UI unit cases, Rust fmt/clippy, UI lint/build
+  pass. Actual native Page flow passes: browser 2.3s, owned cluster 345.98s;
+  zero ignored. Weight/property/explanation absence and Page inspection asserted.
+- [x] **Finish Console acceptance**: complete gate passes 350 Rust test
+  executions, zero failed/ignored, and all 23 native browser cases across four
+  fixture phases. Approved allocation fix reroutes only typed pre-send connection
+  failures to a changed owner endpoint once; ambiguous sent requests are never
+  replayed. Both regressions and all eight S3 cluster cases pass. Native Start
+  asserts the original response before process state and avoids duplicate cleanup
+  submissions. Measured ChunkKV Start is 789/3800ms; response budget is 5s,
+  process/DOM stays 3s. No core startup change. Full UI passes 229/229.
+  Evidence and matrix: `test.md`, balance-policy artifact directory.
+- Tree metrics/data-weight work is deferred to
+  [R228](../backlog/R228-tree-range-metrics.md), requiring core review before
+  implementation. Size-triggered split currently uses coarse pack estimates;
+  count-shortfall split remains available. No writer/checkpoint change here.
+- The previous size-weight acceptance failed at 968.43s because opened manifest
+  estimates did not update after ordinary flush. It is superseded by the deferred
+  metrics contract, not counted passed or ignored. Evidence remains under
+  `.crowdb-runtime/artifacts/balance-policy-20261009/`.
 
 ## 2. Remaining cutover boundary audits
 
 Only change behavior when a concrete regression proves a gap; any core fix
 requires the user's review. Existing durable handoff/replay contracts stay intact.
 
-- [ ] **Review publication boundaries**: compare S1–S6/T1–T8 with monitor and
+- [x] **Review publication boundaries**: compare S1–S6/T1–T8 with monitor and
   local publication, revision CAS, grants and startup. Distinguish initial
   unpublished handoff recovery from final published replay bounds.
   Files: monitor `chunk_kv/catalog.rs`, server `catalog/transition.rs`, design.
+  Both publish immutable pages before expected-head revision CAS and recognize
+  exact successor entries idempotently; phase persistence is a subsequent CAS.
+  The remaining startup/abort races below are not proven by that comparison.
 - [ ] **Recover release before publication**: prove old-source admission stays
   fenced by exact release/lease evidence and reconciliation can still start.
   Files: server `main.rs`, `catalog/recovery.rs`, `serving/transition_runtime.rs`.
+  Review finding: old Serving catalog plus old valid grant reaches generic
+  `activate_recovered_partition`; the source branch does not read transfer
+  release proof. `suspend_for_transfer` fences the live lifecycle in memory.
+  Need a controlled restart regression before changing activation; do not claim
+  this window safe from ordinary transfer/state-machine tests.
+  Proposed reviewed scope: load durable transfer evidence once on the grant/
+  recovery control path, match exact source instance/partition/epoch, and keep
+  recovered source non-serving after release even if old catalog/grant remains.
+  Retain transition processing so publication can finish. No per-request read,
+  lock, WAL rerouting or epoch change. Controlled restart regression must prove
+  old-source mutation rejection and eventual target recovery. Await approval.
 - [ ] **Repair publication before phase marker**: cover owner and Serving
   publication independently; exact catalog entries and proofs allow idempotent
   repair and cannot reactivate the source. Files: server `server/activation.rs`,
   monitor `chunk_kv/catalog.rs`, `catalog_transition_test.rs`, transfer recovery tests.
-- [ ] **Verify split abort**: reject abort after durable handoff or with stale
+- [x] **Verify split abort**: reject abort after durable handoff or with stale
   proof; preserve child WAL omitted by the old catalog and resume the same split.
   Files: server `serving/split.rs`, local split owner, split abort/recovery tests.
+  `control_store_test`, `split_prepare_retry_test` and handoff recovery tests pass;
+  committed proof cannot be cleared/replaced, unknown uncommitted status permits
+  exact abort, and committed dispatch resumes the same base.
 - [ ] **Reconcile published split before marker**: recover both exact successor
   assignments and matching authority; historical routing cannot select an old
   writer over the current assignment. Files: server activation/reconcile and
@@ -194,6 +150,37 @@ requires the user's review. Existing durable handoff/replay contracts stay intac
   are removed concurrently. Establish a failing regression before ownership changes.
   Files: `lib/crowdb-chunk-kv/src/partition/tree.rs`,
   `lib/crowdb-tree/ffi/src/tree.rs`, `lib/crowdb-tree/src/btree/memtable_sources.cpp`.
+  C++ stores a raw source-tree pointer; Rust's safe install method takes a
+  temporary borrow and does not retain source ownership. Normal successful
+  finalization clears the overlay, but failed finalization/source-handle loss
+  and readers concurrent with clear still need a lifetime regression. No new
+  crash has been observed and no ownership fix is applied.
+
+- Deferred **membership CAS contract (R229)**: exact UI topology reproduction
+  also fails (2/3 ready groups). User requires sequential UI additions and shared
+  KV-client/server protection with explicit rejection across UI servers.
+  Approved: one complete members record, epoch CAS, Installing/Ready completion
+  fencing, exact-epoch recovery, no separate operation ID or legacy compatibility.
+  Sequential topology fixture passes 5/5 (33.1s), with the original leader
+  assertions/budgets unchanged. Approved contract and recovery boundaries are in
+  [R229](../backlog/R229-kv-membership-conflict.md), executed through
+  [membership plan](plan-kv-membership-cas.md); no membership core change
+  is applied.
+
+Native lifecycle follow-up: recorded restart opens its first tree root at
+09:21:27.697, then three more roots at 09:21:30.298–30.485; the RPC listener
+starts at 09:21:30.532 (about 3.15s after process startup). Recovery is sequential
+and includes journal replay. These timestamps do not attribute the delay to
+fsync. The user authorized a measured, modest Start-response budget after
+reviewing timing distribution; 10s is not the default target. The focused run passes with a 5s response budget: ChunkDB 215ms, DiskIO
+366ms, ChunkKV 789ms, Access 178ms (browser 9.2s; owned fixture 375.59s).
+Full Console provides a second Start sample: ChunkDB 255ms, DiskIO 466ms,
+ChunkKV 3800ms, Access 148ms. Keep the 5s native response budget: 3s fails
+legitimate recovery, while these samples do not justify 10s. These samples
+and the prior 3.15s listener sample establish variation, not percentiles. Keep per-service millisecond output for full-suite verification. Process/DOM assertions stay at 3s. Recovery and
+readiness behavior are unchanged. Complete UI passes 229/229; the native
+full Console rerun passes (350 Rust executions, zero failed/ignored; all
+23 native browser cases, including the three dedicated phases).
 
 ## 3. Final verification and documentation
 
@@ -202,17 +189,54 @@ requires the user's review. Existing durable handoff/replay contracts stay intac
   both restarts. Assert exclusive ownership, WAL order, acknowledged values,
   exact-root lineage and eventual recovery. Capture authoritative metadata before
   teardown for any newly failing transition; retain actual crash/core evidence.
-- [ ] **Complete Console matrix**: rerun native inspection, journal interruption
-  and dedicated production split/weighted phases after confirmed changes. Eight
+- [x] **Complete Console matrix**: rerun native inspection, journal interruption
+  and dedicated production split/count-placement phases after confirmed changes. Eight
   independent tasks already pass; rerun them only where new diffs affect them.
-  Update actual timings/counts in `test.md`; account for Linux skips individually.
+  Complete task passes: 350 Rust executions, zero failed/ignored; all 23 native
+  browser cases run across four fixture phases. Updated `test.md` with the
+  approximate 1588.13s complete task interval and separate phase timings.
 - [ ] **Performance and quality gates**: inspect scans/serialization/locking and
   bound planning/diagnostic work. Run affected tests, fmt, clippy, relevant C++
   gates and UI lint/specs. Make performance claims only from measured workloads.
 - [ ] **Reconcile permanent docs**: formula, thresholds and UI contract are
-  updated. Resolve the current-data estimate boundary and remaining cutover
+  updated. Track deferred tree metrics separately and resolve remaining cutover
   Open Issues only after review and passing regressions; remove this plan after
   final acceptance.
+
+## Latest focused audit verification
+
+- Independent native phases now pass without ignored cases: prerequisite-plan
+  resumption 19.32s, journal owner interruption 54.26s, and production split/
+  count convergence with complete data checks 350.85s (4/4/4).
+  The plan fixture pauses after ChunkDB rather than before its three instances
+  exist. UI observes registered DiskIO restart every 2s when Capacity is not
+  loaded; 20 focused hook tests pass. Serial deployment responses are checked
+  separately before durable progress. Core storage/transition behavior is unchanged.
+  Logs: `native-plan-response-order.out`, `native-journal-final.out`, and
+  `native-count-final.out` under the balance-policy artifact directory.
+- Full workspace Rust clippy, fmt, CI task mapping and UI lint/build pass.
+  Complete UI passes 166 unit plus 63 browser cases (229/229), 307.40s.
+  An earlier complete rerun passed automatic service
+  deployment but failed bucket clicking because creation consumed 2.92s of the
+  same action window. The test now asserts the bucket creation response before
+  selecting its UI item; each original action/response budget remains 3s.
+- Reload failure is diagnosed separately: the old page's canceled server-list
+  fetch persisted `failed` over a saved `waiting` plan. Page unload now stops
+  the runner and guards cancellation paths before failure publication; cached
+  history restoration reloads persisted authority. The 21 hook tests and entire
+  eight-case rack/node spec pass (32.5s browser). Full UI acceptance passes
+  in `ui-reload-acceptance-final.out`; no timeout or assertion is weakened.
+- 21 server cases pass across catalog transition, control store, split recovery,
+  current assignment, transfer state machine and transfer storage.
+- 10 library cases pass across native split handoff, split handoff recovery,
+  ingress and prepared-candidate retry. Zero ignored. These are focused evidence,
+  not complete real-process coverage of every listed crash/race window.
+- Current count-only Core passes 994/994, zero ignored; UI passes 166 unit and
+  63/63 browser cases. Earlier Group 1990 replica 19902 remained unknown/term 1
+  while its leader was term 2 in a failed observation window. Preserved trace:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/ui-leader-election-failure/`.
+  Log: `.crowdb-runtime/artifacts/balance-policy-20261009/count-only-core.out`.
+  Tree metrics remain deferred to R228.
 
 ## Evidence and file inventory
 

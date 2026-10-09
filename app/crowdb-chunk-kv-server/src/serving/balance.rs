@@ -23,7 +23,7 @@ impl Default for BalanceConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            byte_weight_percent: 80,
+            byte_weight_percent: 0,
             imbalance_tolerance_percent: 20,
             target_partitions_per_owner: 4,
             target_partition_bytes: 1 << 30,
@@ -118,7 +118,7 @@ pub fn choose_transfer(
     now_ms: u64,
     config: &BalanceConfig,
 ) -> Option<TransferProposal> {
-    if !config.enabled {
+    if !config.enabled || config.byte_weight_percent != 0 {
         return None;
     }
     let live: Vec<_> = owners.iter().filter(|owner| owner.healthy).collect();

@@ -193,13 +193,12 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
       addGroup(apiBase, 901, 9003, 1, [200, 201, 202]),
     ]));
 
-    // Extend store 199 to nodes 192+193 via addReplica. Both calls
-    // are independent Paxos writes to group-0 sysdata — run them
-    // concurrently instead of serially.
-    await step('topology: addReplica x2', () => Promise.all([
-      addReplica(apiBase, 199, 1990, 192, 19901),
-      addReplica(apiBase, 199, 1990, 193, 19902),
-    ]));
+    // Each addition changes the same group's peer configuration. Follow
+    // the reconfiguration contract: finish one member before adding another.
+    await step('topology: addReplica x2', async () => {
+      await addReplica(apiBase, 199, 1990, 192, 19901);
+      await addReplica(apiBase, 199, 1990, 193, 19902);
+    });
 
     // Groups 1991/1992 span all 3 nodes — create after addReplica
     // extends store 199's node set.

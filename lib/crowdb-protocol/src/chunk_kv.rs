@@ -259,9 +259,9 @@ impl ChunkKvRangeBalancePolicy {
     ///
     /// # Errors
     ///
-    /// Returns an error for zero sizing/cooldown or a percentage above 100.
+    /// Returns an error for enabled data weighting, zero sizing/cooldown or invalid percentages.
     pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
-        if self.byte_weight_percent > 100
+        if self.byte_weight_percent != 0
             || self.imbalance_tolerance_percent > 100
             || self.target_partitions_per_owner == 0
             || self.target_partition_bytes == 0

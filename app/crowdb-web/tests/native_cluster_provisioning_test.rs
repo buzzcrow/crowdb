@@ -172,7 +172,7 @@ async fn add_native_disk(app: &axum::Router, node: u64, root: &std::path::Path, 
     // Repeated production splits reserve whole 256-MiB mirrored Chunks.
     // Keep the ordinary browser geometry, but provision the slow fixture for
     // every retained writer and its split/transfer preparation artifacts.
-    let gib = if std::env::var_os("CROWDB_NATIVE_WEIGHTED_ACCEPTANCE").is_some() {
+    let gib = if std::env::var_os("CROWDB_NATIVE_COUNT_ACCEPTANCE").is_some() {
         256
     } else if node == 1 {
         80
@@ -621,7 +621,7 @@ async fn native_cluster(inspection_only: bool) {
         assert_native_browser_diagnostics(app.clone(), chunks).await;
         return;
     }
-    if std::env::var_os("CROWDB_NATIVE_WEIGHTED_ACCEPTANCE").is_some() {
+    if std::env::var_os("CROWDB_NATIVE_COUNT_ACCEPTANCE").is_some() {
         assert_native_balance(&app, &state).await;
         return;
     }
@@ -886,7 +886,7 @@ async fn deploy_native_services(app: &axum::Router) -> bool {
         for node in 1..=3 {
             deploy(app, node, kind).await;
         }
-        if kind == "diskio" && std::env::var_os("CROWDB_NATIVE_PLAN_PREREQUISITES").is_some() {
+        if kind == "chunkdb" && std::env::var_os("CROWDB_NATIVE_PLAN_PREREQUISITES").is_some() {
             assert_native_browser_diagnostics(app.clone(), None).await;
             return false;
         }
