@@ -37,33 +37,58 @@ Leave unexecuted packages in place with `—`; record elapsed time in seconds.
 
 | Test package       | Date       | Tests     | Seconds | Status                   |
 | ------------------ | ---------- | --------- | ------- | ------------------------ |
-| `test-cpp`         | 2026-10-09 | 942/942   | 397.64  | ✓                        |
-| `test-core`        | 2026-10-09 | 983/983   | 173.61  | ✓                        |
-| `test-storage`     | 2026-10-09 | 179/180   | 271.55  | X partial; rerun pending |
-| `test-access`      | 2026-10-09 | 1036/1037 | 450.28  | ✓ 1 separately scheduled |
-| `test-console`     | 2026-10-08 | 307/308   | 885.01  | X                        |
-| `test-console-ui`  | 2026-10-09 | 225/225   | 336.89  | ✓                        |
-| `test-boto3-e2e`   | 2026-10-09 | 255/255   | 461.19  | ✓                        |
-| `test-iceberg-e2e` | 2026-10-08 | 29/32     | 740.87  | ✓ 3 separately scheduled |
-| `test-iceberg-sdk` | 2026-10-09 | 11/11     | 556.22  | ✓                        |
+| `test-cpp`         | 2026-10-09 | 942/942   | 131.26  | ✓                        |
+| `test-core`        | 2026-10-09 | 987/987   | 126.92  | ✓                        |
+| `test-storage`     | 2026-10-09 | 839/839   | 828.45  | ✓                        |
+| `test-access`      | 2026-10-09 | 1036/1037 | 412.60  | ✓ 1 separately scheduled |
+| `test-console`     | 2026-10-09 | 307/308   | 877.17  | X partial                |
+| `test-console-ui`  | 2026-10-09 | 225/225   | 306.98  | ✓                        |
+| `test-boto3-e2e`   | 2026-10-09 | 255/255   | 428.89  | ✓                        |
+| `test-iceberg-e2e` | 2026-10-09 | 29/32     | 789.37  | ✓ 3 separately scheduled |
+| `test-iceberg-sdk` | 2026-10-09 | 11/11     | 571.23  | ✓                        |
 
 Measurement notes for this host:
 
-- Final measurements are in progress after enabling ordinary native tests on
-  Linux and fixing the failures they exposed. Pending rows are not results
-  from the earlier code or the smaller test selection.
+- Full UI passes 225/225 in 306.98 seconds after its topology preparation
+  checks current complete membership and matching terms instead of caching an
+  earlier leader seen while a new replica is unknown. The entire affected
+  five-case spec also passes. Original six-service recovery and real three-node
+  KV/S3/Iceberg data assertions pass in both complete UI attempts.
+- Console remains failing. Serial Console-shared acceptance passes the S3
+  cluster cases; the full attempt still fails real Page observation with a
+  changed catalog generation before any browser lifecycle mutation. Ordering
+  alone does not establish a stable catalog. A stronger focused preparation
+  check requires one normal policy cooldown at the same complete generation;
+  it fails within the unchanged ten-minute preparation deadline because new
+  weighted transfers continue after reaching 4/4/4. Those unsuccessful
+  experiments are withdrawn and archived pending fixture-versus-convergence
+  review. The focused run takes 672.13 seconds including setup and teardown.
+  Logs are retained at
+  `.crowdb-runtime/artifacts/native-stable-catalog-focused.out` and
+  `.crowdb-runtime/artifacts/native-restart-failure-2545228/`.
+- Simultaneous S3 cluster startup previously failed during tree bootstrap.
+  Block WAL sync reached 2.13 seconds and leadership changed. The exact test
+  passes alone (31.12 seconds); all eight S3 cluster cases pass serially
+  (176.24 seconds). Console-shared acceptance now runs sequentially with every
+  case and durable sync retained.
+- Eight of the nine Linux tasks pass, with the additional Rust SDK task also
+  passing. Console remains incomplete at native catalog observation. Its latest
+  full attempt used the subsequently withdrawn ordering experiment; no complete
+  pass of the restored selection is claimed. The three later fixture phases
+  were not reached in that failed attempt. Final independent measurements are
+  retained in `.crowdb-runtime/artifacts/measure-tests/20261009T022131.804646Z/`.
 - The original Console source/root epoch failure has passing focused recovery
-  regressions and native split/transfer data checks. The latest native browser
-  selection with block defaults passes journal owner interruption, Iceberg
-  metadata inspection and S3 multipart pagination. The enclosing native case
-  passed in 398.17 seconds. This is not a full Console pass. Storage will be
-  measured again after the additional handoff
-  lost-response and abort regressions.
+  regressions and native split/transfer data checks. An earlier focused native
+  browser selection with block defaults passes journal owner interruption,
+  Iceberg metadata inspection and S3 multipart pagination. Its enclosing
+  native case passed in 398.17 seconds. This is not a full Console pass. Complete Storage
+  subsequently passes after the additional handoff lost-response and abort
+  regressions.
 - Seconds cover each complete Pixi task, including prerequisite builds.
-  The latest Storage task stopped at the real-service restart case: direct
-  block WAL reads returned EINVAL and replay skipped the segment. The fix
-  passes all 108 WAL tests and four stream restart tests; the full task is
-  being rerun and its partial failed measurement remains visible meanwhile.
+  An earlier Storage attempt stopped at the real-service restart case: direct
+  block WAL reads returned EINVAL and replay skipped the segment. Aligned reads
+  and narrowly scoped empty-tail cleanup fix recovery; all 118 group tests,
+  109 WAL tests and the complete 839-case Storage task now pass.
   Each Rust case is counted once per test binary; a later explicit run resolves
   its earlier ignored entry. SDK subprocess checks use their Rust harness
   cases. The child listener helper is invoked by its parent and is not counted
@@ -110,11 +135,11 @@ Measurement notes for this host:
   now matches without changing third-party dependencies; the version gate also
   rejects a stale fixture lock entry. The locked build passed.
 - The additional `test-rust-iceberg-e2e` task passed all 5 cases with no ignored
-  tests in 1373.56 seconds, including full native retirement grace, namespace
+  tests in 1376.40 seconds, including full native retirement grace, namespace
   and table lifecycle, lost replies across listeners and native storage restart.
   This separate Rust SDK task is not included in the Java SDK row above.
   Its final logs are in
-  `.crowdb-runtime/artifacts/measure-tests/20261008T150225.242092Z/`.
+  `.crowdb-runtime/artifacts/measure-tests/20261009T022131.804646Z/`.
 - Disposable CLI clusters inherit their outer test's port ownership. Process
   records survive data cleanup, and cleanup removes nested test claims while
   preserving operator namespaces. Earlier test claims exhausted the port range;

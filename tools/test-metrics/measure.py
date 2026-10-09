@@ -43,7 +43,7 @@ def test_counts(text):
             key = (binary, case[1])
             if "test-only child listener" in case[3]:
                 helpers.add(key)
-            if cases.get(key) != "ok":
+            if case[2] == "FAILED" or cases.get(key) != "ok":
                 cases[key] = case[2]
     cases = {key: state for key, state in cases.items() if key not in helpers}
     if cases:

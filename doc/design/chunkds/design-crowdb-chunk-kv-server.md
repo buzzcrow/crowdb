@@ -217,8 +217,19 @@ Crash recovery must distinguish these boundaries:
   pre-handoff abort may discard the pending candidate.
 - After publication but before `CatalogCommitted` persistence, prove the exact
   successor entries and finish the transition marker; do not roll back the split.
-- After publication, recover both assigned halves from base plus complete tails,
-  then require matching grants before admitting requests.
+- After publication, recover each assigned half's complete own WAL. The child
+  inherits only the parent prefix through the final readiness frontier `C2`
+  recorded in its catalog artifact, then replays its own WAL. This bound applies
+  even when the child WAL is empty: later retained-parent records belong to the
+  parent's next epoch and must not extend child inheritance. Require matching
+  grants before admitting requests.
+
+The initial handoff status fixes `C`, before the eventual in-memory dispatch
+frontier `C2`. While only that initial status exists, recovery derives `C2` from
+the first child record's sequence minus one, or inherits the parent tail when
+the child WAL is empty. Final readiness records the exact boundary explicitly;
+published catalog recovery uses that boundary instead of rediscovering it from
+the current parent tail.
 
 The durable handoff status and continued-write replay boundary require explicit
 implementation verification; the gaps are recorded under Open Issues.

@@ -17,7 +17,9 @@ pixi run build-cpp
 pixi run install-ui-deps
 (cd app/crowdb-web/ui && npm run build)
 cargo build -p crowdb-web -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
-cargo test -p crowdb-console-shared --tests
+# Complete simulated S3 clusters share host storage; run their lifecycle
+# cases sequentially so concurrent device sync cannot starve Paxos leases.
+cargo test -p crowdb-console-shared --tests -- --test-threads=1
 cargo test -p crowdb-cli --tests
 cargo test -p crowdb-web --tests
 

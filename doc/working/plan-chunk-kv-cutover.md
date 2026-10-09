@@ -31,13 +31,16 @@ no push is authorized. Remaining acceptance work is tracked below.
   remains enabled. The user accepted occasional slow file-simulation sync;
   its performance investigation is closed. Native fixture API preparation
   uses the documented independent budget, while UI actions remain at 3 seconds.
-- Seven measured suites passed before the latest common I/O change: Core,
-  Storage, Access, UI, Boto3, Iceberg E2E and Java SDK. C++ and Rust SDK also
-  passed earlier. These are intermediate measurements; the final nine-suite
-  matrix plus Rust SDK must run again after the remaining fix and diagnostics
-  cleanup. Update `test.md` only with actual final results.
+- Eight of the nine measured Linux tasks pass on the production fixes: C++,
+  Core, Storage, Access, UI, Boto3, Iceberg E2E and Java SDK. The additional Rust
+  SDK task passes 5/5 with the full native retirement grace. The latest full UI
+  task passes 225/225 after correcting its membership-readiness observation;
+  C++ passes 942/942. Console remains failing at native catalog inspection, so
+  production acceptance is not complete. Actual results are in `test.md`.
 - Temporary diagnostic instrumentation has been removed.
-- The current work was committed locally as `4e724903`; no push was performed.
+- The production split/block fixes were committed locally as `407b5cab`; no
+  push was performed. Verified follow-up acceptance changes are committed
+  separately after the independent matrix completes.
 - The full matrix found a separate block-WAL restart defect: direct reads
   did not align header/record buffers, returned EINVAL, and replay skipped the
   unreadable segment. Aligned reads and fail-closed replay fix the defect;
@@ -46,12 +49,50 @@ no push is authorized. Remaining acceptance work is tracked below.
   follow-up restricts cleanup to each disk's empty final segment and keeps
   nonempty unreadable segments and empty intermediate segments fail-closed.
   All 118 group tests and 109 WAL tests pass after this follow-up.
+  The complete Core task subsequently passes 987 cases with zero ignored
+  cases in 126.92 seconds. Complete Storage passes 839 cases with zero ignored
+  cases in 828.45 seconds. Access passes 1036 ordinary cases; its separately
+  scheduled Boto3 SDK case also passes. Native catalog observation is still
+  failing: moving read-only
+  checks ahead of process mutations was insufficient. The first Page request
+  can return 409 as automatic weighted transfers continue after a transient
+  4/4/4 snapshot. A stronger experimental preparation check required an unchanged
+  complete generation for a normal policy cooldown and failed within the
+  original ten-minute preparation deadline. Both unsuccessful experiments are
+  archived and withdrawn; original strict assertions remain. Review whether
+  inspection fixtures
+  should use stable placement or production balancing must converge; no
+  production policy change, stale-generation bypass or browser retry is made.
+  Console-shared simulated S3 cluster acceptance passes serially (8/8); parallel
+  startup previously hit 2.13-second block WAL sync and leadership churn.
+  The independent UI/SDK/C++ matrix is complete and passing; the Console scope
+  decision is pending.
 - Remaining work, in order: finish focused boundary/lifetime audits and add regressions
   for confirmed gaps; run final performance/review/lint gates and the complete
   measured matrix; reconcile permanent design documentation.
 - Transfer release/publication recovery, abort-versus-publication ordering and
   native overlay lifetime remain audit/coverage tasks. They are not confirmed
   defects and do not authorize speculative behavior changes or new hot-path locks.
+
+## Current acceptance boundary requiring review
+
+- A current Serving catalog is an observation, not a promise that its global
+  generation remains unchanged during page navigation. Exact cursor rejection
+  with 409 is correct after a new publication.
+- Default weighted placement continues after count balance reaches 4/4/4.
+  Reordering browser lifecycle cases does not make this fixture static.
+  Continuous catalog-generation readiness did not complete within the existing
+  ten-minute preparation bound; do not extend the bound or bypass 409.
+- Selection has a rule-level cycle risk requiring a real regression before a
+  production change: a 20-byte move between four-partition owners with total
+  weights 100 and 60 gives 3/5 partitions and weights 80/80. Count-first repair
+  can choose the same partition back, restoring 4/4 and weights 100/60. The
+  present runtime evidence shows repeated count-balanced and imbalanced states,
+  but does not yet prove this exact deterministic cycle.
+- Decide whether UI inspection should use an explicit stable placement fixture
+  with default weighted acceptance kept separate, or investigate convergence
+  under the existing default policy. The user's decision is pending. Production
+  selection, catalog fencing and handoff behavior remain unchanged.
 
 ## Constraints
 
@@ -100,6 +141,10 @@ behavior without a concrete failing regression and review.
   monitor publication implementations, transition revision CAS, serving grants
   and startup ordering. Record concrete counterexamples and required changes;
   do not infer safety from process-local handles.
+  Verified distinction: initial unpublished handoff recovery derives the
+  dispatch frontier from child WAL evidence or an empty child's parent tail;
+  published child recovery uses its final readiness/catalog frontier, including
+  when its own WAL is empty. Later next-epoch parent records are not inherited.
   Files: `app/crowdb-kv-server/src/background/domain_monitor/chunk_kv.rs`,
   `app/crowdb-kv-server/src/background/domain_monitor/chunk_kv/catalog.rs`,
   `app/crowdb-chunk-kv-server/src/catalog/transition.rs`,

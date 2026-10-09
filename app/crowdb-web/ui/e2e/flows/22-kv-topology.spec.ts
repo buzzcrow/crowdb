@@ -248,23 +248,29 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
         }
       });
 
-      // Monitor leader election via API polling.
-      // Three concurrent fresh elections (one per group) need a few
-      // election deadlines (default 4-8 s each) plus PreVote/RequestVote
-      // round-trip; 30 s gives headroom on a busy CI machine.
+      // Observe the current complete membership, not an earlier leader seen
+      // while a newly added replica was still unknown or catching up.
       const groups = [1990, 1991, 1992];
       const leaders = new Map<number, number>();
 
       // Poll until all groups have exactly one leader, or timeout.
       await step('multi-rack: poll leaders', () => expect.poll(async () => {
+        leaders.clear();
         for (const gid of groups) {
-          if (leaders.has(gid)) continue;
           const response = await api.get(`/api/stores/199/groups/${gid}`);
           if (!response.ok()) continue;
-          const detail: { replicas: Array<{ replica_id: number; role: string }> } = await response.json();
+          const detail: { replicas: Array<{
+            replica_id: number; role: string; state: string; engine_healthy: boolean;
+            election?: { current_term: number; lease_remaining_ms?: number; bulk_phase1_in_flight_slots: number };
+          }> } = await response.json();
           const leaderReplicas = detail.replicas.filter((r) => r.role === 'leader');
-          if (leaderReplicas.length === 1) {
-            leaders.set(gid, leaderReplicas[0].replica_id);
+          const leader = leaderReplicas.length === 1 ? leaderReplicas[0] : undefined;
+          if (leader && (leader.election?.lease_remaining_ms ?? 0) > 0
+            && detail.replicas.length === 3 && detail.replicas.every(replica =>
+              replica.state === 'running' && replica.engine_healthy
+              && replica.election?.current_term === leader.election?.current_term
+              && replica.election?.bulk_phase1_in_flight_slots === 0)) {
+            leaders.set(gid, leader.replica_id);
           }
         }
         return leaders.size;
