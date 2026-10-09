@@ -8,6 +8,7 @@
 
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <poll.h>
 #include <unistd.h>
 
 #include <array>
@@ -355,6 +356,41 @@ TEST(DiskIOUring, DestructorStopsThreadsCleanly)
 }
 
 // ── Hybrid mode ──────────────────────────────────────────────────
+
+TEST(DiskIOUring, HybridIdleCompletionWakesExternalReactor)
+{
+    std::string path = temp_path();
+    int         fd   = ::open(path.c_str(), O_RDWR);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(::ftruncate(fd, 4096), 0);
+    Topology       topo;
+    PipelineConfig cfg;
+    cfg.mode                    = PollingMode::Hybrid;
+    cfg.hybrid.busy_poll_budget = 0;
+    topo.pipelines.push_back(cfg);
+    DiskIOUring uring(std::move(topo));
+    ASSERT_TRUE(uring.valid());
+    uring.register_fd(fd);
+    int32_t event_fd = -1;
+    ASSERT_EQ(uring.eventfds(&event_fd, 1), 1U);
+    std::vector<uint8_t> buf(4096, 0x5A);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        std::atomic<bool> done{false};
+        uring.submit_write(fd, buf.data(), buf.size(), 0, [&](int res) {
+            EXPECT_EQ(res, static_cast<int>(buf.size()));
+            done.store(true, std::memory_order_release);
+        });
+        pollfd notification{.fd = event_fd, .events = POLLIN, .revents = 0};
+        EXPECT_EQ(::poll(&notification, 1, 25), 1);
+        EXPECT_TRUE(done.load(std::memory_order_acquire));
+        ASSERT_TRUE(wait_for([&] { return done.load(std::memory_order_acquire); }));
+        uint64_t notifications = 0;
+        EXPECT_EQ(::read(event_fd, &notifications, sizeof(notifications)), sizeof(notifications));
+    }
+    uring.unregister_fd(fd);
+    ::close(fd);
+    std::remove(path.c_str());
+}
 
 TEST(DiskIOUring, HybridModeSubmitWriteRoundTrips)
 {

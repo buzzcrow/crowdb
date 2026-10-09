@@ -3,19 +3,16 @@
 
 //! Production chunk-stream dependency assembly.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv::{
     MutationOperation, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange,
-    PreparedSplit, PreparedSplitWriterArtifact, RequestId, SplitArtifact, SplitChild, SplitPlan,
-    SplitWriterTarget, StreamPartitionJournal, TransitionId,
+    PartitionTree, PreparedSplit, PreparedSplitWriterArtifact, RequestId, SplitArtifact, SplitChild,
+    SplitPlan, SplitWriterTarget, StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
-use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, PartitionArtifact, SplitChildAssignment, SplitTransition, TailOverlayArtifact,
     TransferTransition,
@@ -23,11 +20,15 @@ use crowdb_protocol::chunk_kv::{
 use crowdb_protocol::chunk_stream::{StreamBinding, StreamBindingState};
 use crowdb_tree_ffi::{
     ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcTransportOptions, PageStore,
-    RootCatalogObject, RootCatalogStore,
 };
 use thiserror::Error;
 
 use crate::{BootstrapPartitionConfig, ChunkKvServerConfig};
+
+mod root_catalog;
+mod split_handoff;
+mod split_recovery;
+use root_catalog::KvRootCatalogStore;
 
 #[derive(Debug, Error)]
 pub enum StorageRuntimeError {
@@ -316,30 +317,35 @@ impl ChunkKvStorage {
             .tail_overlay
             .as_ref()
             .map_or(0, |overlay| overlay.base_root_manifest_generation);
-        let page_store = self
-            .open_durable_tree_page_store(
-                ChunkPageStoreOptions {
-                    tree_id: entry.artifact.tree_id,
-                    owner_epoch: entry.owner_epoch,
-                    open_generation,
-                    pack_bytes: 0,
-                    iu_size: 0,
-                    max_concurrent_packs: 0,
-                    materialization_bytes_per_pass: 0,
-                    mirror_copies: 0,
-                    max_chunk_bytes: 0,
-                },
-                binding.metadata_group_id,
-            )
-            .await?;
+        let options = ChunkPageStoreOptions {
+            tree_id: entry.artifact.tree_id,
+            owner_epoch: entry.owner_epoch,
+            open_generation,
+            pack_bytes: 0,
+            iu_size: 0,
+            max_concurrent_packs: 0,
+            materialization_bytes_per_pass: 0,
+            mirror_copies: 0,
+            max_chunk_bytes: 0,
+        };
+        let catalog = KvRootCatalogStore::for_assignment(
+            self.kv.clone(),
+            self.metadata_store_id,
+            binding.metadata_group_id,
+            entry,
+        )
+        .await?;
+        let page_store = self.open_tree_page_store(
+            options,
+            Arc::new(
+                ChunkRootCatalog::open_callback(Arc::new(catalog))
+                    .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
+            ),
+        )?;
         if let Some(overlay) = &entry.artifact.tail_overlay {
             let parent_stream = self
                 .streams
-                .open_read_only(
-                    overlay.source_stream_name,
-                    self.metadata_store_id,
-                    overlay.source_epoch,
-                )
+                .open_read_only_current(overlay.source_stream_name, self.metadata_store_id)
                 .await
                 .map_err(|error| {
                     StorageRuntimeError::Stream(format!(
@@ -391,6 +397,22 @@ impl ChunkKvStorage {
         target: &Partition,
         entry: &ChunkKvRangeCatalogEntry,
     ) -> Result<(), crate::MonitorError> {
+        KvRootCatalogStore::prepare(
+            self.kv.clone(),
+            self.metadata_store_id,
+            self.streams
+                .registry()
+                .load(entry.artifact.stream_name)
+                .await
+                .map_err(|error| storage_plan_error(&error.to_string()))?
+                .ok_or_else(|| storage_plan_error("target stream binding is absent"))?
+                .metadata_group_id,
+            entry,
+        )
+        .map_err(|error| storage_plan_error(&error.to_string()))?
+        .claim_published(true)
+        .await
+        .map_err(|error| storage_plan_error(&error.to_string()))?;
         let overlay = entry
             .artifact
             .tail_overlay
@@ -398,11 +420,7 @@ impl ChunkKvStorage {
             .ok_or_else(|| storage_plan_error("transfer target overlay is absent"))?;
         let parent_stream = self
             .streams
-            .open_read_only(
-                overlay.source_stream_name,
-                self.metadata_store_id,
-                overlay.source_epoch,
-            )
+            .open_read_only_current(overlay.source_stream_name, self.metadata_store_id)
             .await
             .map_err(|error| storage_plan_error(&error.to_string()))?;
         let parent_journal: Arc<dyn PartitionJournal> = Arc::new(
@@ -517,9 +535,8 @@ impl ChunkKvStorage {
 
     /// Rebuilds one durable split child from the retained authoritative parent.
     ///
-    /// Existing child streams and tree roots are reopened under the same
-    /// stable identities, so a `ParentPreparing` retry after restart replaces
-    /// incomplete preparation with a newly recorded common frontier.
+    /// A live retry reuses its exact pending base and WAL, including when its
+    /// handoff is now confirmed. Cold recovery reopens the recorded artifacts.
     ///
     /// # Errors
     ///
@@ -531,51 +548,55 @@ impl ChunkKvStorage {
         transition: &SplitTransition,
         max_catchup_lag_records: u64,
     ) -> Result<PreparedSplit, crate::MonitorError> {
-        let parent_binding = self
-            .streams
-            .registry()
-            .load(transition.parent_artifact.stream_name)
-            .await
-            .map_err(|error| storage_plan_error(&error.to_string()))?
-            .ok_or_else(|| storage_plan_error("split parent stream binding does not exist"))?;
-        let retained_parent = self
-            .split_target_artifact(
-                &transition.retained_parent_artifact,
-                transition.parent_next_epoch,
-                parent_binding.metadata_group_id,
-            )
-            .await
-            .map_err(|error| {
-                storage_plan_error(&format!(
-                    "retained split writer setup failed (tree_id={}, owner_epoch={}): {error}",
-                    transition.retained_parent_artifact.tree_id, transition.parent_next_epoch
-                ))
-            })?;
-        let child = self
-            .split_target(&transition.child, parent_binding.metadata_group_id)
-            .await
-            .map_err(|error| {
-                storage_plan_error(&format!(
-                    "child split writer setup failed (tree_id={}, owner_epoch={}): {error}",
-                    transition.child.artifact.tree_id, transition.child.owner_epoch
-                ))
-            })?;
+        let cached_child = parent
+            .pending_split_child_target(&split_plan(transition))
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
+        if transition.handoff_proof.is_some() && cached_child.is_none() {
+            return self.resume_split_handoff(parent, transition).await;
+        }
+        let store = Arc::new(crate::Group0ControlStore::from_client(self.kv.clone()));
+        let (current, _) = store
+            .load_split_transition(transition.transition_id)
+            .await?
+            .ok_or_else(|| storage_plan_error("split transition disappeared before preparation"))?;
+        if &current != transition {
+            return Err(storage_plan_error("split changed before preparation retry"));
+        }
+        let child = if let Some(child) = cached_child {
+            child
+        } else {
+            parent
+                .release_generation_pin(split_plan(transition).transition_id)
+                .map_err(|error| storage_plan_error(&error.to_string()))?;
+            let parent_binding = self
+                .streams
+                .registry()
+                .load(transition.parent_artifact.stream_name)
+                .await
+                .map_err(|error| storage_plan_error(&error.to_string()))?
+                .ok_or_else(|| storage_plan_error("split parent stream binding does not exist"))?;
+            let child = self
+                .split_target(&transition.child, parent_binding.metadata_group_id)
+                .await?;
+            if child.journal.tail() != 0 {
+                return Err(storage_plan_error(
+                    "nonempty child WAL has no committed handoff proof",
+                ));
+            }
+            crowdb_chunk_kv::CrowdbPartitionTree::open(child.tree_id, &child.tree_config)
+                .map_err(|error| storage_plan_error(&error.to_string()))?
+                .unpin_generation(split_plan(transition).transition_id)
+                .map_err(|error| storage_plan_error(&error.to_string()))?;
+            child
+        };
+        let handoff = Arc::new(split_handoff::SplitHandoffCommit {
+            store,
+            expected: transition.clone(),
+        });
         let prepared = parent
-            .prepare_split_session(
-                split_plan(transition),
-                crowdb_chunk_kv::SplitSessionTargets {
-                    retained_parent,
-                    child,
-                },
-                max_catchup_lag_records,
-            )
+            .prepare_split_child_session(split_plan(transition), child, max_catchup_lag_records, handoff)
             .await
-            .map_err(|error| {
-                storage_plan_error(&format!(
-                    "split session build failed (parent_tree_id={}, parent_stream={:?}): {error}",
-                    transition.parent_artifact.tree_id, transition.parent_artifact.stream_name,
-                ))
-            })?;
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
         validate_prepared_split(transition, &prepared.artifact)?;
         Ok(prepared)
     }
@@ -911,409 +932,18 @@ fn assignment_recovery_error(
     ))
 }
 
-struct KvRootCatalogStore {
+/// Opens the production root authority adapter without a chunk IO fixture.
+///
+/// # Errors
+///
+/// Returns a root identity, KV availability or stale authority error.
+#[cfg(feature = "test-util")]
+pub async fn open_root_catalog_for_tests(
     kv: Arc<CrowdbKvClient>,
-    runtime: tokio::runtime::Handle,
     store_id: u64,
     group_id: u64,
-    tree_id: u64,
-    owner_epoch: u64,
-    published_objects: ArcSwap<HashMap<Vec<u8>, Vec<u8>>>,
-}
-
-impl KvRootCatalogStore {
-    async fn claim(
-        kv: Arc<CrowdbKvClient>,
-        store_id: u64,
-        group_id: u64,
-        tree_id: u64,
-        owner_epoch: u64,
-    ) -> Result<Self, StorageRuntimeError> {
-        if group_id == 0 || tree_id == 0 || owner_epoch == 0 {
-            return Err(StorageRuntimeError::Tree(
-                "root catalog group, tree, and owner epoch must be nonzero".into(),
-            ));
-        }
-        let key = catalog_key(tree_id, b"authority", 0);
-        loop {
-            let (current_epoch, generation, revision) = match kv
-                .get(store_id, group_id, &key, ReadMode::Linearizable, None)
-                .await
-                .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?
-            {
-                GetOutcome::NotFound => (0, 0, 0),
-                GetOutcome::Found { value, revision } => {
-                    let (epoch, generation) = decode_authority(&value)
-                        .ok_or_else(|| StorageRuntimeError::Tree("invalid root authority record".into()))?;
-                    (epoch, generation, revision)
-                }
-            };
-            if current_epoch > owner_epoch {
-                return Err(StorageRuntimeError::Tree(format!(
-                    "tree root owner epoch is stale: tree_id={tree_id}, current_epoch={current_epoch}, requested_epoch={owner_epoch}"
-                )));
-            }
-            if current_epoch == owner_epoch {
-                break;
-            }
-            match kv
-                .put_cas(
-                    store_id,
-                    group_id,
-                    &key,
-                    &encode_authority(owner_epoch, generation),
-                    revision,
-                )
-                .await
-            {
-                Ok(_) => break,
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
-                Err(error) => return Err(StorageRuntimeError::Tree(error.to_string())),
-            }
-        }
-        Ok(Self {
-            kv,
-            runtime: tokio::runtime::Handle::current(),
-            store_id,
-            group_id,
-            tree_id,
-            owner_epoch,
-            published_objects: ArcSwap::from_pointee(HashMap::new()),
-        })
-    }
-
-    fn wait<F: std::future::Future>(&self, future: F) -> F::Output {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::block_in_place(|| self.runtime.block_on(future))
-        } else {
-            self.runtime.block_on(future)
-        }
-    }
-
-    async fn get(&self, key: &[u8]) -> Result<Option<(Bytes, u64)>, crowdb_kv_client::Error> {
-        self.kv
-            .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
-            .await
-            .map(|outcome| match outcome {
-                GetOutcome::Found { value, revision } => Some((value, revision)),
-                GetOutcome::NotFound => None,
-            })
-    }
-
-    fn remember_published(&self, key: &[u8], value: &[u8]) {
-        self.published_objects.rcu(|current| {
-            let mut next = HashMap::clone(current);
-            next.insert(key.to_vec(), value.to_vec());
-            next
-        });
-    }
-}
-
-impl RootCatalogStore for KvRootCatalogStore {
-    fn load(
-        &self,
-        tree_id: u64,
-        object: RootCatalogObject,
-    ) -> Result<Option<Vec<u8>>, crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id {
-            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
-        }
-        let key = object_key(tree_id, object);
-        if let Some(value) = self.published_objects.load().get(&key) {
-            return Ok(Some(value.clone()));
-        }
-        let value = self
-            .wait(self.get(&key))
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?;
-        if value.is_none() && object == RootCatalogObject::CurrentManifest {
-            let authority_key = catalog_key(tree_id, b"authority", 0);
-            if let Some((authority, _)) = self
-                .wait(self.get(&authority_key))
-                .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
-            {
-                let (_, generation) =
-                    decode_authority(&authority).ok_or(crowdb_tree_ffi::CtError::Corruption)?;
-                if generation != 0 {
-                    return Err(crowdb_tree_ffi::CtError::Corruption);
-                }
-            }
-        }
-        Ok(value.map(|(bytes, _)| bytes.to_vec()))
-    }
-
-    fn store(
-        &self,
-        tree_id: u64,
-        object: RootCatalogObject,
-        data: &[u8],
-    ) -> Result<(), crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id || !matches!(object, RootCatalogObject::ReferenceSegment(_)) {
-            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
-        }
-        let key = object_key(tree_id, object);
-        self.wait(self.kv.put(self.store_id, self.group_id, &key, data, None))
-            .map(|_| ())
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?;
-        self.remember_published(&key, data);
-        Ok(())
-    }
-
-    fn publish(
-        &self,
-        tree_id: u64,
-        expected_generation: u64,
-        owner_epoch: u64,
-        generation: u64,
-        manifest: &[u8],
-    ) -> Result<(), crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id || owner_epoch != self.owner_epoch || generation != expected_generation + 1
-        {
-            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
-        }
-        let authority_key = catalog_key(tree_id, b"authority", 0);
-        let Some((authority, revision)) = self
-            .wait(self.get(&authority_key))
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
-        else {
-            return Err(crowdb_tree_ffi::CtError::Unavailable);
-        };
-        if decode_authority(&authority) != Some((owner_epoch, expected_generation)) {
-            return Err(crowdb_tree_ffi::CtError::Unavailable);
-        }
-        let ops = [
-            BatchOp::Put {
-                key: Bytes::from(authority_key.clone()),
-                value: Bytes::copy_from_slice(&encode_authority(owner_epoch, generation)),
-            },
-            BatchOp::Put {
-                key: Bytes::from(catalog_key(tree_id, b"current", 0)),
-                value: Bytes::copy_from_slice(manifest),
-            },
-            BatchOp::Put {
-                key: Bytes::from(catalog_key(tree_id, b"manifest", generation)),
-                value: Bytes::copy_from_slice(manifest),
-            },
-        ];
-        self.wait(
-            self.kv
-                .batch_write_cas(self.store_id, self.group_id, &ops, &authority_key, revision),
-        )
-        .map(|_| ())
-        .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?;
-        self.remember_published(&catalog_key(tree_id, b"current", 0), manifest);
-        self.remember_published(&catalog_key(tree_id, b"manifest", generation), manifest);
-        Ok(())
-    }
-
-    fn allocate_reference_segment_id(&self, tree_id: u64) -> Result<u64, crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id {
-            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
-        }
-        let key = catalog_key(tree_id, b"next-reference", 0);
-        loop {
-            let (current, revision) = match self
-                .wait(self.get(&key))
-                .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
-            {
-                Some((value, revision)) => (
-                    decode_u64(&value).ok_or(crowdb_tree_ffi::CtError::Corruption)?,
-                    revision,
-                ),
-                None => (1, 0),
-            };
-            let next = current
-                .checked_add(1)
-                .ok_or(crowdb_tree_ffi::CtError::ResourceExhausted)?;
-            match self.wait(self.kv.put_cas(
-                self.store_id,
-                self.group_id,
-                &key,
-                &next.to_be_bytes(),
-                revision,
-            )) {
-                Ok(_) => return Ok(current),
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
-                Err(_) => return Err(crowdb_tree_ffi::CtError::Unavailable),
-            }
-        }
-    }
-
-    fn discard_reference_segments(&self, tree_id: u64, object_ids: &[u64]) -> u64 {
-        if tree_id != self.tree_id || object_ids.is_empty() {
-            return 0;
-        }
-        let ops = object_ids
-            .iter()
-            .map(|object_id| BatchOp::Delete {
-                key: Bytes::from(catalog_key(tree_id, b"reference", *object_id)),
-            })
-            .collect::<Vec<_>>();
-        self.wait(self.kv.batch_write(self.store_id, self.group_id, &ops))
-            .map_or(0, |_| object_ids.len() as u64)
-    }
-
-    fn reclaim_before(&self, tree_id: u64, generation: u64) -> u64 {
-        if tree_id != self.tree_id || generation <= 2 {
-            return 0;
-        }
-        let pin_prefix = catalog_pin_prefix(tree_id);
-        let pinned_generation = match self.wait(self.kv.scan(
-            self.store_id,
-            self.group_id,
-            &pin_prefix,
-            &[],
-            &[],
-            0,
-            ReadMode::Linearizable,
-            None,
-            false,
-            None,
-        )) {
-            Ok(outcome) => {
-                let mut oldest = None;
-                for (_, value) in outcome.items {
-                    let Some(pin) = decode_u64(&value) else {
-                        return 0;
-                    };
-                    oldest = Some(oldest.map_or(pin, |current: u64| current.min(pin)));
-                }
-                oldest
-            }
-            Err(_) => return 0,
-        };
-        let generation = pinned_generation.map_or(generation, |pin| generation.min(pin));
-        if generation <= 2 {
-            return 0;
-        }
-        let floor_key = catalog_key(tree_id, b"reclaim-floor", 0);
-        let (floor, revision) = match self.wait(self.get(&floor_key)) {
-            Ok(Some((value, revision))) => match decode_u64(&value) {
-                Some(floor) => (floor, revision),
-                None => return 0,
-            },
-            Ok(None) => (1, 0),
-            Err(_) => return 0,
-        };
-        let end = generation.saturating_sub(1).min(floor.saturating_add(128));
-        if floor >= end {
-            return 0;
-        }
-        let mut ops = (floor..end)
-            .map(|old_generation| BatchOp::Delete {
-                key: Bytes::from(catalog_key(tree_id, b"manifest", old_generation)),
-            })
-            .collect::<Vec<_>>();
-        ops.push(BatchOp::Put {
-            key: Bytes::from(floor_key.clone()),
-            value: Bytes::copy_from_slice(&end.to_be_bytes()),
-        });
-        self.wait(
-            self.kv
-                .batch_write_cas(self.store_id, self.group_id, &ops, &floor_key, revision),
-        )
-        .map_or(0, |_| end - floor)
-    }
-
-    fn pin_generation(
-        &self,
-        tree_id: u64,
-        transition_high: u64,
-        transition_low: u64,
-        generation: u64,
-    ) -> Result<(), crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id || (transition_high == 0 && transition_low == 0) || generation == 0 {
-            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
-        }
-        if self
-            .wait(self.get(&catalog_key(tree_id, b"manifest", generation)))
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
-            .is_none()
-        {
-            return Err(crowdb_tree_ffi::CtError::NotFound);
-        }
-        let key = catalog_pin_key(tree_id, transition_high, transition_low);
-        for _ in 0..3 {
-            if let Some((value, _)) = self
-                .wait(self.get(&key))
-                .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
-            {
-                return if decode_u64(&value) == Some(generation) {
-                    Ok(())
-                } else {
-                    Err(crowdb_tree_ffi::CtError::InvalidArgument)
-                };
-            }
-            match self.wait(
-                self.kv
-                    .put_cas(self.store_id, self.group_id, &key, &generation.to_be_bytes(), 0),
-            ) {
-                Ok(_) => return Ok(()),
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
-                Err(_) => return Err(crowdb_tree_ffi::CtError::Unavailable),
-            }
-        }
-        Err(crowdb_tree_ffi::CtError::Unavailable)
-    }
-
-    fn unpin_generation(
-        &self,
-        tree_id: u64,
-        transition_high: u64,
-        transition_low: u64,
-    ) -> Result<(), crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id || (transition_high == 0 && transition_low == 0) {
-            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
-        }
-        let key = catalog_pin_key(tree_id, transition_high, transition_low);
-        self.wait(self.kv.delete(self.store_id, self.group_id, &key, None))
-            .map(|_| ())
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)
-    }
-}
-
-fn catalog_key(tree_id: u64, kind: &[u8], object_id: u64) -> Vec<u8> {
-    let mut key = b"\0crowdb/chunk-kv/root/v1/".to_vec();
-    key.extend_from_slice(&tree_id.to_be_bytes());
-    key.push(b'/');
-    key.extend_from_slice(kind);
-    key.push(b'/');
-    key.extend_from_slice(&object_id.to_be_bytes());
-    key
-}
-
-fn catalog_pin_prefix(tree_id: u64) -> Vec<u8> {
-    let mut key = b"\0crowdb/chunk-kv/root/v1/".to_vec();
-    key.extend_from_slice(&tree_id.to_be_bytes());
-    key.extend_from_slice(b"/pin/");
-    key
-}
-
-fn catalog_pin_key(tree_id: u64, transition_high: u64, transition_low: u64) -> Vec<u8> {
-    let mut key = catalog_pin_prefix(tree_id);
-    key.extend_from_slice(&transition_high.to_be_bytes());
-    key.extend_from_slice(&transition_low.to_be_bytes());
-    key
-}
-
-fn object_key(tree_id: u64, object: RootCatalogObject) -> Vec<u8> {
-    match object {
-        RootCatalogObject::CurrentManifest => catalog_key(tree_id, b"current", 0),
-        RootCatalogObject::Manifest(generation) => catalog_key(tree_id, b"manifest", generation),
-        RootCatalogObject::ReferenceSegment(object_id) => catalog_key(tree_id, b"reference", object_id),
-    }
-}
-
-fn encode_authority(owner_epoch: u64, generation: u64) -> [u8; 16] {
-    let mut value = [0; 16];
-    value[..8].copy_from_slice(&owner_epoch.to_be_bytes());
-    value[8..].copy_from_slice(&generation.to_be_bytes());
-    value
-}
-
-fn decode_authority(value: &[u8]) -> Option<(u64, u64)> {
-    (value.len() == 16).then(|| (decode_u64(&value[..8]).unwrap(), decode_u64(&value[8..]).unwrap()))
-}
-
-fn decode_u64(value: &[u8]) -> Option<u64> {
-    value.try_into().ok().map(u64::from_be_bytes)
+    entry: &ChunkKvRangeCatalogEntry,
+) -> Result<Arc<dyn crowdb_tree_ffi::RootCatalogStore>, StorageRuntimeError> {
+    let catalog = KvRootCatalogStore::for_assignment(kv, store_id, group_id, entry).await?;
+    Ok(Arc::new(catalog))
 }

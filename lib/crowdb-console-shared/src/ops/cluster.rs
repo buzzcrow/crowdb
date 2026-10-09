@@ -1141,7 +1141,7 @@ pub struct KvDeployTunables {
     /// `None` leaves the spawned server's own default (`block`) in effect.
     pub kv_backend: Option<String>,
     /// `--wal-backend` value (e.g. `"file"`, `"mem-block"`, `"block-device"`).
-    /// `None` leaves the spawned server's own default in effect.
+    /// `None` leaves the spawned server's own default (`block-device`) in effect.
     pub wal_backend: Option<String>,
     /// `--no-fsync` flag. `None` leaves the spawned server's default (fsync on).
     pub no_fsync: Option<bool>,

@@ -260,6 +260,7 @@ fn split() -> SplitTransition {
         },
         planned_at_ms: 0,
         phase: SplitPhase::Planned,
+        handoff_proof: None,
         readiness_proof: None,
         failure: None,
     }
@@ -279,6 +280,151 @@ fn split_overlay(cutover_seq: u64) -> TailOverlayArtifact {
         cutover_seq,
         target_stream_start_seq: cutover_seq + 1,
     }
+}
+
+#[tokio::test]
+async fn split_handoff_survives_unknown_commit_and_cannot_be_discarded() {
+    let kv = Arc::new(TestKv::default());
+    let store = Group0ControlStore::new(kv.clone());
+    let mut machine = SplitStateMachine::restore(split()).unwrap();
+    machine.begin_parent_prepare().unwrap();
+    let preparing = machine.transition().clone();
+    let revision = store.persist_split_transition(&preparing, 0).await.unwrap();
+    let proof = split_overlay(41);
+    machine.record_handoff(proof.clone()).unwrap();
+    let committed = machine.transition().clone();
+    kv.inject(InjectedPut {
+        path: crowdb_protocol::key::ChunkKvSplitKey {
+            transition_id: committed.transition_id,
+        }
+        .to_path(),
+        error: Group0KvError::OutcomeUnknown,
+        commit: true,
+    })
+    .await;
+    let revision = store
+        .persist_split_transition(&committed, revision)
+        .await
+        .unwrap();
+    let (loaded, _) = store
+        .load_split_transition(committed.transition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.handoff_proof.as_ref(), Some(&proof));
+    assert!(loaded.readiness_proof.is_none());
+    assert_eq!(loaded.phase, SplitPhase::ParentPreparing);
+    let mut recovered = SplitStateMachine::restore(loaded).unwrap();
+    recovered.record_handoff(proof.clone()).unwrap();
+    assert!(recovered.abort("restart before catalog publication").is_err());
+    assert_eq!(recovered.transition(), &committed);
+    assert!(store
+        .persist_split_transition(&preparing, revision)
+        .await
+        .is_err());
+    let mut wrong_plan = committed.clone();
+    wrong_plan.child.artifact.stream_name.low += 1;
+    wrong_plan.validate().unwrap();
+    assert!(store
+        .persist_split_transition(&wrong_plan, revision)
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .load_split_transition(committed.transition_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .0,
+        committed
+    );
+    let mut conflicting = proof;
+    conflicting.base_root_manifest_generation += 1;
+    assert!(recovered.record_handoff(conflicting).is_err());
+}
+
+#[tokio::test]
+async fn split_handoff_unknown_without_commit_does_not_create_evidence() {
+    let kv = Arc::new(TestKv::default());
+    let store = Group0ControlStore::new(kv.clone());
+    let mut machine = SplitStateMachine::restore(split()).unwrap();
+    machine.begin_parent_prepare().unwrap();
+    let preparing = machine.transition().clone();
+    let revision = store.persist_split_transition(&preparing, 0).await.unwrap();
+    machine.record_handoff(split_overlay(41)).unwrap();
+    kv.inject(InjectedPut {
+        path: crowdb_protocol::key::ChunkKvSplitKey {
+            transition_id: preparing.transition_id,
+        }
+        .to_path(),
+        error: Group0KvError::OutcomeUnknown,
+        commit: false,
+    })
+    .await;
+    assert!(store
+        .persist_split_transition(machine.transition(), revision)
+        .await
+        .is_err());
+    let (loaded, _) = store
+        .load_split_transition(preparing.transition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded, preparing);
+    let mut recovered = SplitStateMachine::restore(loaded).unwrap();
+    recovered.abort("handoff was not committed").unwrap();
+}
+
+#[test]
+fn split_handoff_rejects_wrong_source_without_changing_machine() {
+    let mut machine = SplitStateMachine::restore(split()).unwrap();
+    machine.begin_parent_prepare().unwrap();
+    let preparing = machine.transition().clone();
+    let mut proof = split_overlay(41);
+    proof.source_epoch += 1;
+    assert!(machine.record_handoff(proof).is_err());
+    assert_eq!(machine.transition(), &preparing);
+    let mut legacy = serde_json::to_value(&preparing).unwrap();
+    legacy.as_object_mut().unwrap().remove("handoff_proof");
+    let decoded: SplitTransition = serde_json::from_value(legacy).unwrap();
+    assert_eq!(decoded, preparing);
+}
+
+#[test]
+fn split_readiness_extends_handoff_tail_without_replacing_base() {
+    let mut machine = SplitStateMachine::restore(split()).unwrap();
+    machine.begin_parent_prepare().unwrap();
+    machine.record_handoff(split_overlay(41)).unwrap();
+    let committed = machine.transition().clone();
+    let mut overlay = split_overlay(41);
+    overlay.cutover_seq = 43;
+    overlay.cutover_offset = 43;
+    overlay.target_stream_start_seq = 44;
+    let mut retained = committed.retained_parent_artifact.clone();
+    retained.tail_overlay = Some(overlay.clone());
+    let proof = SplitReadinessProof {
+        cutover_seq: 43,
+        parent_next_epoch: committed.parent_next_epoch,
+        retained_parent_artifact: retained,
+        retained_parent_tree_manifest: 1,
+        retained_parent_root_manifest_generation: 1,
+        retained_parent_applied_seq: 43,
+        child_applied_seq: 43,
+        child_tree_manifest: 1,
+        child_root_manifest_generation: 1,
+        retained_parent_tail_overlay: Some(overlay.clone()),
+        child_tail_overlay: overlay,
+    };
+    let mut wrong = proof.clone();
+    wrong.child_tail_overlay.base_root_manifest_generation += 1;
+    assert!(machine.record_child_ready(wrong).is_err());
+    assert_eq!(machine.transition(), &committed);
+    machine.record_child_ready(proof).unwrap();
+    assert_eq!(machine.transition().phase, SplitPhase::ChildPrepared);
+    assert!(committed.preserves_handoff(machine.transition()));
+    assert!(!machine.transition().preserves_handoff(&committed));
+    let recovered = SplitStateMachine::restore(machine.transition().clone()).unwrap();
+    assert_eq!(recovered.next_action(), SplitAction::PublishCatalog);
 }
 
 #[tokio::test]
@@ -468,7 +614,7 @@ async fn group0_split_store_resumes_prepared_child_before_catalog_cutover() {
             child_applied_seq: 41,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
-            retained_parent_tail_overlay,
+            retained_parent_tail_overlay: Some(retained_parent_tail_overlay),
             child_tail_overlay: split_overlay(41),
         })
         .unwrap();

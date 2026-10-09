@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 // Baseline: partition/overlay 1.4s, unavailable 0.208s, journal 0.534s, placement 0.321s (2026-10-03).
 import { test, expect } from '../fixtures/realBackend';
+import type { APIRequestContext, APIResponse, Page, Response } from '@playwright/test';
 import type { CatalogPage, Partition } from '../../src/chunk-kv/catalog';
 
 test('native diagnostics: journal identity survives Chunk navigation and owner interruption', async ({ page, request }) => {
@@ -14,30 +15,7 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     await page.goto('/?domain=Chunk-KV');
     const response = await catalogObservation;
     expect(response.ok(), await response.text()).toBe(true);
-    let catalog: CatalogPage = await response.json();
-    // Earlier native cases can split the catalog across multiple windows.
-    // Inspect every window until a current range has a real active journal.
-    let partition: Partition | null = null;
-    while (true) {
-      for (const entry of catalog.entries) {
-        if (entry.state !== 'Serving') continue;
-        const query = new URLSearchParams({ id: entry.id, epoch: entry.epoch, generation: catalog.generation, page: String(catalog.page), offset: String(catalog.offset) });
-        const response = await request.get(`/api/chunk-kv/runtime?${query}`);
-        expect(response.ok(), await response.text()).toBe(true);
-        if ((await response.json()).journal.active) { partition = entry; break; }
-      }
-      if (partition || !catalog.next) break;
-      const next = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
-      await page.getByRole('button', { name: 'Next partitions', exact: true }).click();
-      const response = await next;
-      expect(response.ok(), await response.text()).toBe(true);
-      catalog = await response.json();
-    }
-    if (!partition) throw new Error("No current catalog range has an active journal");
-    const runtimeResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/runtime');
-    await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${partition.id}`, exact: true }).click();
-    const observed = await runtimeResponse;
-    expect(observed.ok(), await observed.text()).toBe(true);
+    const { partition, observed } = await selectActiveJournal(page, request, await response.json());
     const runtime = await observed.json();
     expect(runtime.journal.active).not.toBeNull();
     await page.getByRole('tab', { name: 'Journal', exact: true }).click();
@@ -51,6 +29,9 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(runtime.journal.active.chunk_id);
     await page.goBack();
     await expect(journal).toBeVisible();
+    // Back navigation mounts a fresh runtime observation. Complete it before
+    // stopping its owner so the unavailable refresh starts from an idle view.
+    await expect(page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true })).toBeEnabled();
     const owner = `chunk-kv-${partition.owner_id}`;
     expect((await request.post(`/api/services/${owner}/stop`, { data: {} })).ok()).toBe(true);
     try {
@@ -62,8 +43,14 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     } finally {
       expect((await request.post(`/api/services/${owner}/restart`, { data: {} })).ok()).toBe(true);
     }
+    const refreshedMap = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
+    await page.getByRole('button', { name: 'Refresh catalog', exact: true }).click();
+    const mapResponse = await refreshedMap;
+    expect(mapResponse.ok(), await mapResponse.text()).toBe(true);
+    const restored = await selectActiveJournal(page, request, await mapResponse.json(), partition.id);
+    expect(restored.partition.id).toBe(partition.id);
+    await page.getByRole('tab', { name: 'Journal', exact: true }).click();
     const observation = page.getByRole('region', { name: 'Partition runtime', exact: true });
-    await observation.getByRole('button', { name: 'Refresh runtime', exact: true }).click();
     await expect(observation).not.toContainText('Runtime unavailable');
     await expect(journal.getByRole('heading', { name: 'Published extent index', exact: true })).toBeVisible();
     const stale = new URL(observed.url());
@@ -223,6 +210,10 @@ test('native diagnostics: production split displays actual inherited and current
   let current = catalog;
   await expect.poll(async () => {
     const response = await request.get('/api/chunk-kv/catalog?page=0&offset=0');
+    if (response.status() === 409) {
+      expect(await response.json()).toEqual({ error: 'Chunk-KV catalog changed during observation; refresh the range map' });
+      return catalog.generation;
+    }
     expect(response.ok(), await response.text()).toBe(true);
     current = await response.json();
     if (!current) throw new Error('Expected an observed catalog generation');
@@ -288,3 +279,49 @@ test('native diagnostics: large Journal replaces 100 extent fences with its rema
   await expect(fences).toHaveCount(100);
   await expect(journal).toContainText('offset 0');
 });
+
+async function selectActiveJournal(page: Page, request: APIRequestContext, initial: CatalogPage, partitionId?: string) {
+  let catalog = initial;
+  let selected: { partition: Partition; observed: Response } | null = null;
+  const refresh = async (action: () => Promise<unknown>) => {
+    const observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
+    await action();
+    const response = await observation;
+    expect(response.ok(), await response.text()).toBe(true);
+    catalog = await response.json();
+  };
+  const changed = async (response: APIResponse | Response) => {
+    if (response.status() !== 409) return false;
+    expect((await response.json()).error).toMatch(/^(Chunk-KV catalog changed; refresh the range map|Catalog changed during runtime observation|Owner, catalog or tree page observation changed; refresh the catalog or page root)$/);
+    await refresh(() => page.getByRole('button', { name: 'Refresh catalog', exact: true }).click());
+    return true;
+  };
+  // Observe a live journal from a coherent current map. A concurrent catalog
+  // publication explicitly invalidates the old selection and requires the UI refresh.
+  await expect.poll(async () => {
+    for (const entry of catalog.entries) {
+      if (partitionId && entry.id !== partitionId) continue;
+      if (entry.state !== 'Serving') continue;
+      const query = new URLSearchParams({ id: entry.id, epoch: entry.epoch, generation: catalog.generation, page: String(catalog.page), offset: String(catalog.offset) });
+      const response = await request.get(`/api/chunk-kv/runtime?${query}`);
+      if (await changed(response)) return false;
+      expect(response.ok(), await response.text()).toBe(true);
+      if (!(await response.json()).journal.active) continue;
+      await page.getByLabel('Partition range map').getByRole('button', { name: `Partition ${entry.id}`, exact: true }).click();
+      // Selecting the same partition leaves its identity unchanged. Explicitly
+      // refresh runtime so owner restart is observed even without a new catalog.
+      const observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/runtime');
+      await page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true }).click();
+      const observed = await observation;
+      if (await changed(observed)) return false;
+      expect(observed.ok(), await observed.text()).toBe(true);
+      selected = { partition: entry, observed };
+      return true;
+    }
+    if (!catalog.next) throw new Error('No current catalog range has an active journal');
+    await refresh(() => page.getByRole('button', { name: 'Next partitions', exact: true }).click());
+    return false;
+  }, { intervals: [100] }).toBe(true);
+  if (!selected) throw new Error('No coherent journal observation');
+  return selected as { partition: Partition; observed: Response };
+}

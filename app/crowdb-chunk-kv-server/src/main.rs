@@ -293,8 +293,18 @@ async fn main() -> std::process::ExitCode {
                 }
             };
             if grant_only {
-                install_latest_grant(&refresh_store, &refresh_service, &refresh_config).await;
-                continue;
+                let grant_generation =
+                    install_latest_grant(&refresh_store, &refresh_service, &refresh_config).await;
+                if grant_generation.map_or(true, |generation| {
+                    generation
+                        == refresh_service
+                            .health(refresh_service.monotonic_ms())
+                            .catalog_generation
+                }) {
+                    continue;
+                }
+                // A grant for a new catalog fences the old generation. Catch up
+                // immediately rather than leaving requests fenced until the poll.
             }
             match refresh_catalog.load_current().await {
                 Ok(Some((head, pages))) => {
@@ -594,7 +604,7 @@ async fn install_latest_grant(
     store: &Group0ControlStore,
     service: &ChunkKvService,
     config: &ChunkKvServerConfig,
-) {
+) -> Option<u64> {
     match store.load_serving_grant(config.instance_id).await {
         Ok(Some(grant)) => {
             let catalog_generation = grant.catalog_generation;
@@ -619,9 +629,16 @@ async fn install_latest_grant(
                     }
                 }
             }
+            Some(catalog_generation)
         }
-        Ok(None) => service.authority().clear(),
-        Err(error) => warn!(%error, "serving-grant refresh failed; retaining local lease deadline"),
+        Ok(None) => {
+            service.authority().clear();
+            None
+        }
+        Err(error) => {
+            warn!(%error, "serving-grant refresh failed; retaining local lease deadline");
+            None
+        }
     }
 }
 
@@ -631,6 +648,24 @@ async fn activate_granted_assignment(
     assignment: &crowdb_protocol::chunk_kv::ServingAssignment,
 ) -> Result<(), String> {
     let Some(transition_id) = service.catalog_overlay_transition_id(assignment.partition_id) else {
+        if service.needs_split_handoff_recovery(assignment.partition_id) {
+            let transitions = store
+                .list_split_transitions()
+                .await
+                .map_err(|error| error.to_string())?;
+            if transitions.iter().any(|(split, _)| {
+                split.parent_id == assignment.partition_id
+                    && split.parent_epoch == assignment.owner_epoch
+                    && split.handoff_proof.is_some()
+                    && matches!(
+                        split.phase,
+                        crowdb_protocol::chunk_kv::SplitPhase::ParentPreparing
+                            | crowdb_protocol::chunk_kv::SplitPhase::ChildPrepared
+                    )
+            }) {
+                return Ok(());
+            }
+        }
         return service
             .activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
             .map_err(|error| error.to_string());

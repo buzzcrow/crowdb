@@ -6,17 +6,21 @@
 //! [`tree`] (ordered storage).
 
 mod frame;
+mod ingress;
 mod journal;
 mod observation;
 mod split;
 mod transfer;
 mod tree;
+mod worker_sender;
 
 pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
+pub use ingress::SplitIngress;
 pub use journal::{PartitionJournal, StreamPartitionJournal};
 pub use observation::TreeObservation;
-pub use split::{PreparedSplit, PreparedSplitWriter, SplitSessionTargets, SplitWriterTarget};
+pub use split::{PreparedSplit, PreparedSplitWriter, SplitHandoffStore, SplitWriterTarget};
 pub use tree::{CrowdbPartitionTree, PartitionTree};
+use worker_sender::WorkerSender;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -138,7 +142,7 @@ struct MutationRequest {
 
 enum WorkerRequest {
     Mutation(MutationRequest),
-    SplitCutover(Box<split::SplitCutoverRequest>),
+    ChildSplitCutover(Box<split::stable_session::ChildSplitCutoverRequest>),
     TransferCatchUp(Box<transfer::TransferCatchUpRequest>),
     TransferAppend(Box<transfer::TransferAppendRequest>),
 }
@@ -151,7 +155,7 @@ pub struct Partition {
     lifecycle: Arc<AtomicU8>,
     journal: Arc<dyn PartitionJournal>,
     tree: Arc<dyn PartitionTree>,
-    sender: mpsc::Sender<WorkerRequest>,
+    sender: WorkerSender,
     queued_requests: Arc<AtomicUsize>,
     queued_bytes: Arc<AtomicU64>,
     journal_durable_seq: Arc<AtomicU64>,
@@ -165,6 +169,7 @@ pub struct Partition {
     admission_notify: Arc<Notify>,
     split_transition: Arc<Mutex<Option<SplitTransition>>>,
     split_ingress: Arc<ArcSwapOption<SplitIngress>>,
+    pending_child_preparation: Arc<ArcSwapOption<split::preparation::PendingChildPreparation>>,
     prepared_artifact: Arc<ArcSwapOption<PreparedSplitWriterArtifact>>,
     inherited_position: Arc<ArcSwapOption<JournalPosition>>,
     initialization: Shared<BoxFuture<'static, Result<()>>>,
@@ -227,47 +232,6 @@ struct ReplayState {
 struct SplitTransition {
     plan: SplitPlan,
     artifact: Option<SplitArtifact>,
-}
-
-/// Lock-free request routing installed once both split writers own live WALs
-/// and memtables at the ordered route frontier.
-/// The legacy parent handle remains valid while callers still hold it, but it
-/// no longer appends to its old WAL or memtable.
-#[derive(Clone)]
-pub struct SplitIngress {
-    split_key: Arc<[u8]>,
-    retained_parent: Partition,
-    child: Partition,
-}
-
-impl SplitIngress {
-    #[must_use]
-    pub fn retained_parent(&self) -> Partition {
-        self.retained_parent.clone()
-    }
-
-    #[must_use]
-    pub fn child(&self) -> Partition {
-        self.child.clone()
-    }
-
-    #[must_use]
-    pub fn writer_for_key(&self, key: &[u8]) -> Partition {
-        self.writer_for(key).clone()
-    }
-
-    #[must_use]
-    pub fn split_key(&self) -> &[u8] {
-        &self.split_key
-    }
-
-    fn writer_for(&self, key: &[u8]) -> &Partition {
-        if key < self.split_key.as_ref() {
-            &self.retained_parent
-        } else {
-            &self.child
-        }
-    }
 }
 
 struct PreparedMutation {
@@ -436,6 +400,7 @@ impl Partition {
         let seed = replay_suffix(
             partition_id,
             ownership_epoch,
+            &range,
             &checkpoint,
             config.retained_results,
             tree.as_ref(),
@@ -648,6 +613,7 @@ impl Partition {
         let seed = replay_suffix(
             artifact.partition_id,
             artifact.ownership_epoch,
+            &artifact.range,
             &checkpoint,
             config.retained_results,
             tree.as_ref(),
@@ -868,7 +834,7 @@ impl Partition {
             lifecycle,
             journal,
             tree,
-            sender,
+            sender: WorkerSender::owned(sender),
             queued_requests,
             queued_bytes,
             journal_durable_seq,
@@ -882,6 +848,7 @@ impl Partition {
             admission_notify,
             split_transition,
             split_ingress,
+            pending_child_preparation: Arc::new(ArcSwapOption::empty()),
             prepared_artifact,
             inherited_position,
             initialization,
@@ -1572,7 +1539,10 @@ impl Partition {
         let active = transition
             .as_mut()
             .ok_or_else(|| ChunkKvError::SplitRetry("no split transition is active".into()))?;
-        validate_split_artifact(&active.plan, &artifact, self.applied_seq.load(Ordering::Acquire))?;
+        if artifact.cutover_seq > self.applied_seq.load(Ordering::Acquire) {
+            return Err(ChunkKvError::ApplyStateUnknown);
+        }
+        validate_split_artifact(&active.plan, &artifact, artifact.cutover_seq)?;
         if let Some(previous) = active.artifact.as_ref() {
             if previous != &artifact {
                 return Err(ChunkKvError::SplitRetry(
@@ -1903,6 +1873,7 @@ impl Partition {
             PartitionLifecycle::SplitPreparing | PartitionLifecycle::SplitFinalizing => {}
             state => return Err(write_state_error(state)),
         }
+        self.discard_pending_child_preparation()?;
         *transition = None;
         self.split_ingress.store(None);
         self.lifecycle
@@ -2205,7 +2176,8 @@ fn validate_split_artifact(plan: &SplitPlan, artifact: &SplitArtifact, cutover_s
         || artifact.retained_parent.tree_id == 0
         || artifact.retained_parent.parent_id != plan.parent_id
         || artifact.retained_parent.parent_epoch != plan.parent_epoch
-        || artifact.retained_parent.base_applied_seq > cutover_seq
+        || (artifact.retained_parent.base_applied_seq > cutover_seq
+            && artifact.retained_parent.stream_name != artifact.retained_parent.parent_stream_name)
         || artifact.retained_parent.child_stream_start_seq != cutover_seq.checked_add(1).unwrap_or(0)
     {
         return Err(ChunkKvError::SplitRetry(
@@ -2373,6 +2345,7 @@ async fn replay_child_overlay(
 async fn replay_suffix(
     partition_id: PartitionId,
     ownership_epoch: u64,
+    range: &PartitionRange,
     checkpoint: &Checkpoint,
     retained_results: usize,
     tree: &dyn PartitionTree,
@@ -2406,7 +2379,10 @@ async fn replay_suffix(
                 break;
             };
             validate_replay_record(partition_id, ownership_epoch, &decoded.record)?;
-            replay.process(tree, frame_offset, decoded.record, true).await?;
+            let belongs = range.contains(decoded.record.operation.key());
+            replay
+                .process(tree, frame_offset, decoded.record, belongs)
+                .await?;
             let consumed = decoded.bytes_consumed;
             buffered.advance(consumed);
             frame_offset = frame_offset
@@ -2601,8 +2577,8 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             },
         };
         let first = match next {
-            WorkerRequest::SplitCutover(request) => {
-                split::install_split_cutover(&mut state, *request).await;
+            WorkerRequest::ChildSplitCutover(request) => {
+                split::stable_session::install_child_cutover(&mut state, *request).await;
                 continue;
             }
             WorkerRequest::TransferCatchUp(request) => {
@@ -2616,8 +2592,11 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             WorkerRequest::Mutation(request) => request,
         };
         if let Some(ingress) = state.split_ingress.load_full() {
-            forward_raced_mutation(&state, ingress.as_ref(), first).await;
-            continue;
+            let writer = ingress.writer_for(first.operation.key());
+            if !Arc::ptr_eq(&writer.queued_requests, &state.queued_requests) {
+                forward_raced_mutation(&state, ingress.as_ref(), first).await;
+                continue;
+            }
         }
         let lifecycle = lifecycle_from_code(state.lifecycle.load(Ordering::Acquire));
         if !worker_accepts_mutations(lifecycle) {
@@ -2632,13 +2611,22 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             };
             let request = match next {
                 WorkerRequest::Mutation(request) => request,
-                control @ (WorkerRequest::SplitCutover(_)
+                control @ (WorkerRequest::ChildSplitCutover(_)
                 | WorkerRequest::TransferCatchUp(_)
                 | WorkerRequest::TransferAppend(_)) => {
                     pending = Some(control);
                     break;
                 }
             };
+            if state.split_ingress.load().as_ref().is_some_and(|ingress| {
+                !Arc::ptr_eq(
+                    &ingress.writer_for(request.operation.key()).queued_requests,
+                    &state.queued_requests,
+                )
+            }) {
+                pending = Some(WorkerRequest::Mutation(request));
+                break;
+            }
             if bytes
                 .checked_add(request.reserved_bytes)
                 .is_some_and(|total| total <= state.config.batch_bytes)

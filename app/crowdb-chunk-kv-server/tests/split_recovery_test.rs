@@ -209,6 +209,7 @@ fn transition() -> SplitTransition {
         },
         planned_at_ms: 0,
         phase: SplitPhase::CatalogCommitted,
+        handoff_proof: None,
         readiness_proof: Some(SplitReadinessProof {
             cutover_seq: 1,
             parent_next_epoch: 2,
@@ -219,7 +220,7 @@ fn transition() -> SplitTransition {
             child_applied_seq: 1,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
-            retained_parent_tail_overlay: overlay.clone(),
+            retained_parent_tail_overlay: Some(overlay.clone()),
             child_tail_overlay: overlay,
         }),
         failure: None,

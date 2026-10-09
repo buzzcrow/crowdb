@@ -75,6 +75,10 @@ pub async fn replay_group(
     }
 
     all_segments.sort_by_key(|&(_, seg_id, _)| seg_id);
+    let mut disk_tails = vec![0_u64; disk_paths.len()];
+    for &(disk_idx, seg_id, _) in &all_segments {
+        disk_tails[disk_idx] = disk_tails[disk_idx].max(seg_id);
+    }
 
     debug!(
         group_id,
@@ -97,8 +101,14 @@ pub async fn replay_group(
         let mut reader = match SegmentReader::open(backend, &path).await {
             Ok(r) => r,
             Err(e) => {
-                error!(g = group_id, segment_id = seg_id, error = %e, "replay: skipping unreadable segment");
-                continue;
+                if seg_id == disk_tails[disk_idx] && remove_empty_segment(backend, &path).await? {
+                    continue;
+                }
+                error!(g = group_id, segment_id = seg_id, error = %e, "replay: unreadable segment prevents recovery");
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("cannot recover WAL segment {}: {e}", path.display()),
+                ));
             }
         };
 
@@ -200,4 +210,16 @@ pub async fn replay_group(
         current_term,
         voted_for,
     })
+}
+
+async fn remove_empty_segment(backend: &IoBackend, path: &std::path::Path) -> io::Result<bool> {
+    let mut file = backend.open(path, OpenOptions::read_only()).await?;
+    if file.len().await? != 0 {
+        return Ok(false);
+    }
+    drop(file);
+    // A crash can occur between creating a new tail and writing its header.
+    // It cannot contain acknowledged records; remove it before creating later segments.
+    backend.unlink(path).await?;
+    Ok(true)
 }

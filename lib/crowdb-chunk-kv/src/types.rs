@@ -109,34 +109,43 @@ pub enum PartitionLifecycle {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueRevision {
     pub revision: u64,
+    #[serde(with = "serde_bytes")]
     pub value: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompareCondition {
     Revision(u64),
-    Value(Vec<u8>),
+    Value(#[serde(with = "serde_bytes")] Vec<u8>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MutationOperation {
     Put {
+        #[serde(with = "serde_bytes")]
         key: Vec<u8>,
+        #[serde(with = "serde_bytes")]
         value: Vec<u8>,
     },
     Delete {
+        #[serde(with = "serde_bytes")]
         key: Vec<u8>,
     },
     PutIfAbsent {
+        #[serde(with = "serde_bytes")]
         key: Vec<u8>,
+        #[serde(with = "serde_bytes")]
         value: Vec<u8>,
     },
     CompareExchange {
+        #[serde(with = "serde_bytes")]
         key: Vec<u8>,
         condition: CompareCondition,
+        #[serde(with = "serde_bytes")]
         value: Vec<u8>,
     },
     ConditionalDelete {
+        #[serde(with = "serde_bytes")]
         key: Vec<u8>,
         condition: CompareCondition,
     },

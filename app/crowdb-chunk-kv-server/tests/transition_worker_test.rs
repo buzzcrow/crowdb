@@ -334,6 +334,7 @@ fn split_transition() -> SplitTransition {
         },
         planned_at_ms: 0,
         phase: SplitPhase::ParentPreparing,
+        handoff_proof: None,
         readiness_proof: None,
         failure: None,
     }
@@ -733,6 +734,7 @@ async fn repeated_local_split_uses_current_retained_writer() {
         },
         planned_at_ms: 0,
         phase: SplitPhase::ParentPreparing,
+        handoff_proof: None,
         readiness_proof: None,
         failure: None,
     };
@@ -879,4 +881,50 @@ async fn processor_resumes_planned_split_through_durable_readiness() {
     assert_eq!(stored.phase, SplitPhase::ChildPrepared);
     assert_eq!(stored.readiness_proof.unwrap().cutover_seq, 8);
     assert_eq!(revision, 3);
+}
+
+#[tokio::test]
+async fn failed_transfer_does_not_starve_independent_split_processing() {
+    let store = Arc::new(Group0ControlStore::new(Arc::new(MemoryKv::default())));
+    let mut failing = transfer(TransferPhase::SourcePreparing);
+    failing.partition_id = id(404);
+    store.persist_transfer_transition(&failing, 0).await.unwrap();
+    let mut split = split_transition();
+    split.phase = SplitPhase::Planned;
+    store.persist_split_transition(&split, 0).await.unwrap();
+    let parent = partition(
+        split.parent_id,
+        split.parent_range.clone(),
+        split.parent_epoch,
+        &split.parent_artifact,
+        false,
+    )
+    .await;
+    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    service.install_partition(&parent).unwrap();
+    let executor = Arc::new(
+        TransitionExecutor::with_storage(
+            1,
+            service,
+            Arc::new(FakeStorage {
+                recovered: partition(id(9), KeyRange::default(), 1, &artifact(99), true).await,
+                split: split_artifact(&split),
+                expected_split_parent_range: None,
+            }),
+            8,
+        )
+        .unwrap(),
+    );
+    let processor = TransitionProcessor::new(1, store.clone(), executor);
+    let failure = processor.tick().await.unwrap_err();
+    assert!(failure
+        .to_string()
+        .contains("transfer source partition is not hosted"));
+    let (stored, _) = store
+        .load_split_transition(split.transition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.phase, SplitPhase::ChildPrepared);
+    assert_eq!(stored.readiness_proof.unwrap().cutover_seq, 8);
 }

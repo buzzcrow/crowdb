@@ -31,8 +31,8 @@ namespace crowdb::common
 
 // Polling mode for each pipeline's event loop.
 enum class PollingMode {
-    // Classic: io_uring_submit_and_wait with a bounded timeout. One syscall
-    // per idle tick; completions wake the thread via the kernel's wait queue.
+    // Classic: event-wait with a bounded timeout. Submissions and kernel
+    // completions wake the poll thread through its private eventfd.
     Classic,
     // Hybrid: busy-poll via io_uring_peek_cqe while I/O is active (no
     // syscalls), transition to Classic event-wait when idle for
@@ -262,12 +262,9 @@ class DiskIOUring
     void poll_thread_run(PollThread &pt);
 
     // Mode-specific wait for one pipeline.
-    static bool wait_classic(Pipeline &p, struct io_uring_cqe *&cqe);
-    static bool wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &busy_poll_count);
-    static bool wait_sqpoll(Pipeline &p, struct io_uring_cqe *&cqe);
 
     // Drain all ready CQEs for one pipeline and dispatch callbacks.
-    void drain_cqes(Pipeline &p);
+    bool drain_cqes(Pipeline &p);
 
     // Wake a sleeping poll thread through its private eventfd. Pipeline
     // eventfds are reserved for external completion consumers.

@@ -389,6 +389,11 @@ impl Group0ControlStore {
             if current == *transition {
                 return Ok(revision);
             }
+            if !current.preserves_handoff(transition) {
+                return Err(MonitorError::PlanFailed(
+                    "committed split handoff cannot be replaced or cleared".into(),
+                ));
+            }
             if revision != expected_revision {
                 return Err(MonitorError::PlanFailed(
                     "split transition revision conflict".into(),

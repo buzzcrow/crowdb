@@ -4,11 +4,14 @@
 //! Slow acceptance of the persisted production balance policy and real data.
 
 use crowdb_chunk_kv_client::{
-    ChunkKvClient, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, ChunkKvRpcTransport, ClientConfig,
-    Group0ChunkKvRangeCatalogSource,
+    BatchItem, ChunkKvClient, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, ChunkKvRpcTransport,
+    ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_kv_client::ServiceRegistryClient;
-use crowdb_protocol::{chunk_kv::ChunkKvRangeCatalogPartitionState, common::ChunkKvExtra};
+use crowdb_protocol::{
+    chunk_kv::{ChunkKvRangeCatalogPartitionState, OperationResult, PointOperation},
+    common::ChunkKvExtra,
+};
 use crowdb_web::AppState;
 use std::{
     collections::BTreeMap,
@@ -29,14 +32,7 @@ impl TestNativeBalance {
             Arc::new(ChunkKvRpcTransport::new(64, 1, 2)),
         )
         .unwrap();
-        for index in 0..512 {
-            assert!(client
-                .put(super::native_load::key(index), super::native_load::value(index))
-                .await
-                .unwrap()
-                .result
-                .is_ok());
-        }
+        seed_values(&client).await;
         wait_balanced(&source, &registry, Instant::now()).await;
         verify_values(&client, &[]).await;
     }
@@ -51,17 +47,12 @@ impl TestNativeBalance {
             Arc::new(ChunkKvRpcTransport::new(64, 1, 2)),
         )
         .unwrap();
-        for index in 0..512 {
-            let result = client
-                .put(super::native_load::key(index), super::native_load::value(index))
-                .await
-                .unwrap();
-            assert!(result.result.is_ok());
-        }
+        seed_values(&client).await;
         // The normal policy has a one-minute cooldown. This slow acceptance
         // observes that real horizon; it does not replace any request/lease budget.
         let started = Instant::now();
         let catalog = wait_balanced(&source, &registry, started).await;
+        verify_values(&client, &[]).await;
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         let mut report = Instant::now();
         let hot_owner = catalog.entries()[0].owner.instance_id;
@@ -117,18 +108,41 @@ impl TestNativeBalance {
     }
 }
 
+async fn seed_values(client: &ChunkKvClient) {
+    for batch in 0..32 {
+        let items = (batch * 16..(batch + 1) * 16)
+            .map(|index| BatchItem {
+                request_id: None,
+                operation: PointOperation::Put {
+                    key: super::native_load::key(index),
+                    value: super::native_load::value(index),
+                },
+            })
+            .collect();
+        let outcomes = client.batch_mutate(items).await.unwrap();
+        assert_eq!(outcomes.len(), 16);
+        for outcome in outcomes {
+            assert!(matches!(
+                outcome.unwrap().result.unwrap(),
+                OperationResult::Mutation { applied: true, .. }
+            ));
+        }
+    }
+}
+
 async fn verify_values(client: &ChunkKvClient, hot_keys: &[u64]) {
     for index in 0..512 {
         let result = client.get(super::native_load::key(index), None).await.unwrap();
-        let crowdb_protocol::chunk_kv::OperationResult::Value(Some(record)) = result.result.unwrap() else {
-            panic!("native balance lost a record");
+        let operation = result.result.unwrap();
+        let crowdb_protocol::chunk_kv::OperationResult::Value(Some(record)) = operation else {
+            panic!("native balance lost record {index}: {operation:?}");
         };
         let expected = if hot_keys.contains(&index) {
             hot_value(index)
         } else {
             super::native_load::value(index)
         };
-        assert_eq!(record.value, expected);
+        assert_eq!(record.value, expected, "native balance record {index}");
     }
 }
 

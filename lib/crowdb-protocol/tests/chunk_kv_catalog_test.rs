@@ -225,6 +225,7 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         child: child(3, b"m", Some(b"z"), 7),
         planned_at_ms: 0,
         phase: SplitPhase::ParentPreparing,
+        handoff_proof: None,
         readiness_proof: None,
         failure: None,
     };
@@ -255,10 +256,12 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         child_applied_seq: 11,
         child_tree_manifest: 1,
         child_root_manifest_generation: 1,
-        retained_parent_tail_overlay: overlay.clone(),
+        retained_parent_tail_overlay: Some(overlay.clone()),
         child_tail_overlay: overlay,
     });
     transition.validate().unwrap();
+
+    verify_split_parent_recovery_formats(&mut transition);
 
     transition.child.range.start = b"n".to_vec();
     assert_eq!(
@@ -275,4 +278,41 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
             "child cutover frontier"
         ))
     );
+}
+
+fn verify_split_parent_recovery_formats(transition: &mut SplitTransition) {
+    let legacy_json = serde_json::to_value(&*transition).unwrap();
+    assert!(legacy_json["readiness_proof"]["retained_parent_tail_overlay"].is_object());
+    assert_eq!(
+        serde_json::from_value::<SplitTransition>(legacy_json).unwrap(),
+        *transition
+    );
+    transition.retained_parent_artifact = transition.parent_artifact.clone();
+    let proof = transition.readiness_proof.as_mut().unwrap();
+    proof.retained_parent_artifact = transition.retained_parent_artifact.clone();
+    proof.retained_parent_tail_overlay = None;
+    transition.validate().unwrap();
+    let mut stable_json = serde_json::to_value(&*transition).unwrap();
+    stable_json["readiness_proof"]
+        .as_object_mut()
+        .unwrap()
+        .remove("retained_parent_tail_overlay");
+    assert_eq!(
+        serde_json::from_value::<SplitTransition>(stable_json).unwrap(),
+        *transition
+    );
+    let mut invalid = transition.clone();
+    invalid
+        .readiness_proof
+        .as_mut()
+        .unwrap()
+        .retained_parent_tail_overlay = Some(
+        invalid
+            .readiness_proof
+            .as_ref()
+            .unwrap()
+            .child_tail_overlay
+            .clone(),
+    );
+    assert!(invalid.validate().is_err());
 }

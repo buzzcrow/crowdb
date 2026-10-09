@@ -80,11 +80,11 @@ pub struct Cli {
     #[arg(long, default_value = "block", value_parser = ["file", "block", "mem-block"])]
     pub kv_backend: String,
 
-    /// WAL storage backend. `file` (default) uses durable `tokio::fs` I/O;
+    /// WAL storage backend. `file` uses durable `tokio::fs` I/O;
     /// `uring` explicitly requests buffered-file `io_uring`; `mem-block` uses an in-memory block device (no
     /// alignment); `block-device` uses an aligned block device model
-    /// (SSD/NVMe, 4K I/O unit).
-    #[arg(long, default_value = "file", value_parser = ["file", "uring", "mem-block", "block-device"])]
+    /// (SSD/NVMe, 4K I/O unit, default).
+    #[arg(long, default_value = "block-device", value_parser = ["file", "uring", "mem-block", "block-device"])]
     pub wal_backend: String,
 
     /// Metrics flush interval in seconds. 0 disables metrics logging.

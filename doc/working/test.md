@@ -37,31 +37,43 @@ Leave unexecuted packages in place with `—`; record elapsed time in seconds.
 
 | Test package       | Date       | Tests     | Seconds | Status                   |
 | ------------------ | ---------- | --------- | ------- | ------------------------ |
-| `test-cpp`         | 2026-10-08 | 937/937   | 140.22  | ✓                        |
-| `test-core`        | 2026-10-08 | 983/983   | 140.55  | ✓                        |
-| `test-storage`     | 2026-10-08 | 820/820   | 686.02  | ✓                        |
-| `test-access`      | 2026-10-08 | 1036/1037 | 385.12  | ✓ 1 separately scheduled |
+| `test-cpp`         | 2026-10-09 | 942/942   | 397.64  | ✓                        |
+| `test-core`        | 2026-10-09 | 983/983   | 173.61  | ✓                        |
+| `test-storage`     | 2026-10-09 | 179/180   | 271.55  | X partial; rerun pending |
+| `test-access`      | 2026-10-09 | 1036/1037 | 450.28  | ✓ 1 separately scheduled |
 | `test-console`     | 2026-10-08 | 307/308   | 885.01  | X                        |
-| `test-console-ui`  | 2026-10-08 | 225/225   | 339.75  | ✓                        |
-| `test-boto3-e2e`   | 2026-10-08 | 255/255   | 413.49  | ✓                        |
+| `test-console-ui`  | 2026-10-09 | 225/225   | 336.89  | ✓                        |
+| `test-boto3-e2e`   | 2026-10-09 | 255/255   | 461.19  | ✓                        |
 | `test-iceberg-e2e` | 2026-10-08 | 29/32     | 740.87  | ✓ 3 separately scheduled |
-| `test-iceberg-sdk` | 2026-10-08 | 11/11     | 611.95  | ✓                        |
+| `test-iceberg-sdk` | 2026-10-09 | 11/11     | 556.22  | ✓                        |
 
 Measurement notes for this host:
 
 - Final measurements are in progress after enabling ordinary native tests on
   Linux and fixing the failures they exposed. Pending rows are not results
   from the earlier code or the smaller test selection.
-- The remaining Console inspection failure reproduces a Chunk-KV source
-  restart rejected by a tree owner epoch ahead of its catalog assignment.
-  Cutover recovery is tracked separately against
-  [the ownership design](../design/chunkds/design-crowdb-chunk-kv-server.md#7-child-balance-state-machine); independent fixes do
-  not resolve that failure or make the Console row a pass.
+- The original Console source/root epoch failure has passing focused recovery
+  regressions and native split/transfer data checks. The latest native browser
+  selection with block defaults passes journal owner interruption, Iceberg
+  metadata inspection and S3 multipart pagination. The enclosing native case
+  passed in 398.17 seconds. This is not a full Console pass. Storage will be
+  measured again after the additional handoff
+  lost-response and abort regressions.
 - Seconds cover each complete Pixi task, including prerequisite builds.
+  The latest Storage task stopped at the real-service restart case: direct
+  block WAL reads returned EINVAL and replay skipped the segment. The fix
+  passes all 108 WAL tests and four stream restart tests; the full task is
+  being rerun and its partial failed measurement remains visible meanwhile.
   Each Rust case is counted once per test binary; a later explicit run resolves
   its earlier ignored entry. SDK subprocess checks use their Rust harness
   cases. The child listener helper is invoked by its parent and is not counted
   as a separate acceptance case.
+- Cluster processes explicitly use block tree storage and block-device WAL;
+  these are also the system defaults. Durable synchronization remains enabled.
+  The user accepted occasional slow sync through file-backed device simulation
+  on 2026-10-09. Native API preparation requests use a separate ten-second
+  budget and cases allow three minutes; page actions and UI assertions retain
+  their three-second budgets. Ordinary UI tests retain their existing budgets.
 - Linux executes ordinary cluster, deployment and protocol tests. The macOS
   exceptions remain. Dedicated Iceberg native workloads run explicitly;
   Java and Boto3 SDK cases run in their respective environment tasks.

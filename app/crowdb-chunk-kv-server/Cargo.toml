@@ -10,6 +10,9 @@ description = "Range-partitioned chunk-backed KV service."
 [lints]
 workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 arc-swap = "1.7"
 async-trait = "0.1"
@@ -32,6 +35,8 @@ toml = "0.8"
 tracing = { workspace = true }
 
 [dev-dependencies]
+crowdb-chunk-kv-server = { path = ".", features = ["test-util"] }
+crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["kv-client"] }
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream", features = ["test-util"] }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }

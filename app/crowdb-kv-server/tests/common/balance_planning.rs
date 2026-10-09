@@ -192,6 +192,7 @@ pub async fn recent_split(control: &Group0ControlPlane) {
             .try_into()
             .unwrap(),
         phase: SplitPhase::Aborted,
+        handoff_proof: None,
         readiness_proof: None,
         failure: Some("split preparation aborted while the original source remains serving".into()),
     };

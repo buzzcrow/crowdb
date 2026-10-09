@@ -3,7 +3,8 @@
 
 use crowdb_chunk_kv::{
     canonical_operation_digest, decode_frame, encode_frame, CompareCondition, FrameDecode, MutationOperation,
-    MutationResult, PartitionId, PartitionRange, RequestId, SplitChild, SplitPlan, TransitionId, WalRecord,
+    MutationResult, PartitionId, PartitionRange, RequestId, SplitChild, SplitPlan, TransitionId,
+    ValueRevision, WalRecord,
 };
 fn record(operation: MutationOperation) -> WalRecord {
     WalRecord {
@@ -18,6 +19,136 @@ fn record(operation: MutationOperation) -> WalRecord {
         operation_digest: canonical_operation_digest(&operation),
         result: MutationResult::Applied { revision: 9 },
         operation,
+    }
+}
+
+#[derive(serde::Serialize)]
+enum TestLegacyOperation<'a> {
+    Put {
+        key: &'a Vec<u8>,
+        value: &'a Vec<u8>,
+    },
+    Delete {
+        key: &'a Vec<u8>,
+    },
+    PutIfAbsent {
+        key: &'a Vec<u8>,
+        value: &'a Vec<u8>,
+    },
+    CompareExchange {
+        key: &'a Vec<u8>,
+        condition: TestLegacyCondition<'a>,
+        value: &'a Vec<u8>,
+    },
+    ConditionalDelete {
+        key: &'a Vec<u8>,
+        condition: TestLegacyCondition<'a>,
+    },
+}
+
+#[derive(serde::Serialize)]
+enum TestLegacyCondition<'a> {
+    Revision(u64),
+    Value(&'a Vec<u8>),
+}
+
+#[derive(serde::Serialize)]
+enum TestLegacyResult<'a> {
+    Applied { revision: u64 },
+    ConditionFailed { observed: Option<(u64, &'a Vec<u8>)> },
+}
+
+fn legacy_condition(condition: &CompareCondition) -> TestLegacyCondition<'_> {
+    match condition {
+        CompareCondition::Revision(revision) => TestLegacyCondition::Revision(*revision),
+        CompareCondition::Value(value) => TestLegacyCondition::Value(value),
+    }
+}
+
+fn legacy_operation(operation: &MutationOperation) -> TestLegacyOperation<'_> {
+    match operation {
+        MutationOperation::Put { key, value } => TestLegacyOperation::Put { key, value },
+        MutationOperation::Delete { key } => TestLegacyOperation::Delete { key },
+        MutationOperation::PutIfAbsent { key, value } => TestLegacyOperation::PutIfAbsent { key, value },
+        MutationOperation::CompareExchange {
+            key,
+            condition,
+            value,
+        } => TestLegacyOperation::CompareExchange {
+            key,
+            condition: legacy_condition(condition),
+            value,
+        },
+        MutationOperation::ConditionalDelete { key, condition } => TestLegacyOperation::ConditionalDelete {
+            key,
+            condition: legacy_condition(condition),
+        },
+    }
+}
+
+#[test]
+fn bulk_byte_codec_preserves_legacy_wal_bytes_for_every_mutation() {
+    let operations = [
+        MutationOperation::Put {
+            key: b"k".to_vec(),
+            value: vec![37; 65_536],
+        },
+        MutationOperation::Delete { key: b"k".to_vec() },
+        MutationOperation::PutIfAbsent {
+            key: b"k".to_vec(),
+            value: vec![0, 255],
+        },
+        MutationOperation::CompareExchange {
+            key: b"k".to_vec(),
+            condition: CompareCondition::Revision(9),
+            value: vec![1, 255],
+        },
+        MutationOperation::CompareExchange {
+            key: b"k".to_vec(),
+            condition: CompareCondition::Value(vec![2, 255]),
+            value: vec![3, 255],
+        },
+        MutationOperation::ConditionalDelete {
+            key: b"k".to_vec(),
+            condition: CompareCondition::Value(vec![4, 255]),
+        },
+    ];
+    for operation in operations {
+        for result in [
+            MutationResult::Applied { revision: 9 },
+            MutationResult::ConditionFailed { observed: None },
+            MutationResult::ConditionFailed {
+                observed: Some(ValueRevision {
+                    revision: 7,
+                    value: vec![0, 255],
+                }),
+            },
+        ] {
+            let mut record = record(operation.clone());
+            record.result = result;
+            let result = match &record.result {
+                MutationResult::Applied { revision } => TestLegacyResult::Applied { revision: *revision },
+                MutationResult::ConditionFailed { observed } => TestLegacyResult::ConditionFailed {
+                    observed: observed.as_ref().map(|value| (value.revision, &value.value)),
+                },
+            };
+            let legacy = bincode::serialize(&(
+                record.partition_id,
+                record.ownership_epoch,
+                record.mutation_seq,
+                record.request_id,
+                record.operation_digest,
+                result,
+                legacy_operation(&record.operation),
+            ))
+            .unwrap();
+            let frame = encode_frame(&record).unwrap();
+            assert_eq!(&frame[12..], legacy, "WAL format must remain unchanged");
+            let FrameDecode::Complete(decoded) = decode_frame(&frame).unwrap() else {
+                panic!("complete legacy-compatible frame expected");
+            };
+            assert_eq!(decoded.record, record);
+        }
     }
 }
 

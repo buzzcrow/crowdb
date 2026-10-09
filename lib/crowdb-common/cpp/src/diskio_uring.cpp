@@ -120,6 +120,15 @@ DiskIOUring::DiskIOUring(Topology topo)
             CRB_LOG_ERROR("DiskIOUring: epoll_ctl add poll thread {} wake fd failed: {}", i, std::strerror(errno));
             return;
         }
+        for (size_t pi : pt->pipelines) {
+            int rc = ::io_uring_register_eventfd(&pipelines_[pi]->ring, pt->wake_fd);
+            if (rc < 0) {
+                CRB_LOG_ERROR("DiskIOUring: pipeline {} completion eventfd registration failed: {}", pi,
+                              std::strerror(-rc));
+                poll_threads_.push_back(std::move(pt));
+                return;
+            }
+        }
         poll_threads_.push_back(std::move(pt));
     }
 
@@ -153,6 +162,9 @@ DiskIOUring::~DiskIOUring()
     for (auto &pt : poll_threads_) {
         if (pt->thread.joinable()) {
             pt->thread.join();
+        }
+        for (size_t pi : pt->pipelines) {
+            (void)::io_uring_unregister_eventfd(&pipelines_[pi]->ring);
         }
         if (pt->epoll_fd >= 0) {
             ::close(pt->epoll_fd);
@@ -541,12 +553,7 @@ void DiskIOUring::poll_thread_run(PollThread &pt)
                 if (!p.valid) {
                     continue;
                 }
-                struct io_uring_cqe *cqe = nullptr;
-                ::io_uring_peek_cqe(&p.ring, &cqe);
-                if (cqe != nullptr) {
-                    dispatched_any = true;
-                }
-                drain_cqes(p);
+                dispatched_any = drain_cqes(p) || dispatched_any;
             }
             if (dispatched_any) {
                 pt.busy_poll_count = 0;
@@ -557,9 +564,8 @@ void DiskIOUring::poll_thread_run(PollThread &pt)
             }
         }
         else {
-            // Event-wait phase: wait for a new submission on the poll
-            // thread's private wake fd. Completion eventfds are consumed by
-            // external reactors and must not feed back into this loop.
+            // The private wake fd receives both submissions and kernel CQ
+            // completions. External reactors use separate completion fds.
             pt.thread_sleeping.store(true, std::memory_order_release);
             struct epoll_event events[16];
             int                n = ::epoll_wait(pt.epoll_fd, events, 16, 50); // 50ms timeout
@@ -571,9 +577,8 @@ void DiskIOUring::poll_thread_run(PollThread &pt)
             }
             // A producer can enqueue after the publish pass at the top of
             // this iteration while this thread is inside epoll_wait, or just
-            // after epoll_wait times out. Publish that work before waiting
-            // for its CQE; otherwise wait_cqe_timeout can sleep for 50ms on
-            // an empty ring and only the next iteration submits the request.
+            // after epoll_wait times out. Publish that work before draining
+            // completions so it does not wait for the next iteration.
             for (size_t pi : pt.pipelines) {
                 auto &p = *pipelines_[pi];
                 if (p.valid && p.pending_submit.exchange(false, std::memory_order_acq_rel)) {
@@ -586,20 +591,7 @@ void DiskIOUring::poll_thread_run(PollThread &pt)
                 if (!p.valid) {
                     continue;
                 }
-                // For Classic/Sqpoll, wait for at least one CQE.
-                if (p.mode == PollingMode::Classic) {
-                    struct io_uring_cqe *cqe = nullptr;
-                    if (wait_classic(p, cqe) && cqe != nullptr) {
-                        dispatched_any = true;
-                    }
-                }
-                else if (p.mode == PollingMode::Sqpoll) {
-                    struct io_uring_cqe *cqe = nullptr;
-                    if (wait_sqpoll(p, cqe) && cqe != nullptr) {
-                        dispatched_any = true;
-                    }
-                }
-                drain_cqes(p);
+                dispatched_any = drain_cqes(p) || dispatched_any;
             }
             if (dispatched_any) {
                 pt.busy_poll_count = 0;
@@ -620,49 +612,11 @@ void DiskIOUring::poll_thread_run(PollThread &pt)
     }
 }
 
-bool DiskIOUring::wait_classic(Pipeline &p, struct io_uring_cqe *&cqe)
-{
-    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000}; // 50ms
-    int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
-    return rc == 0;
-}
-
-bool DiskIOUring::wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &busy_poll_count)
-{
-    if (busy_poll_count < p.hybrid.busy_poll_budget) {
-        cqe = nullptr;
-        ::io_uring_peek_cqe(&p.ring, &cqe);
-        if (cqe != nullptr) {
-            busy_poll_count = 0;
-            return true;
-        }
-        ++busy_poll_count;
-        std::this_thread::yield();
-        return false;
-    }
-    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000};
-    int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
-    if (rc == 0) {
-        busy_poll_count = 0;
-        return true;
-    }
-    return false;
-}
-
-bool DiskIOUring::wait_sqpoll(Pipeline &p, struct io_uring_cqe *&cqe)
-{
-    if (p.ring.sq.kflags != nullptr && ((*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP) != 0U)) {
-        ::io_uring_enter(p.ring.ring_fd, 0, 0, IORING_ENTER_SQ_WAKEUP, nullptr);
-    }
-    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000};
-    int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
-    return rc == 0;
-}
-
-void DiskIOUring::drain_cqes(Pipeline &p)
+bool DiskIOUring::drain_cqes(Pipeline &p)
 {
     struct io_uring_cqe *cqe = nullptr;
     ::io_uring_peek_cqe(&p.ring, &cqe);
+    bool dispatched = cqe != nullptr;
     while (cqe != nullptr) {
         auto *entry = static_cast<CallbackEntry *>(::io_uring_cqe_get_data(cqe));
         int   res   = cqe->res;
@@ -684,6 +638,7 @@ void DiskIOUring::drain_cqes(Pipeline &p)
         cqe = nullptr;
         ::io_uring_peek_cqe(&p.ring, &cqe);
     }
+    return dispatched;
 }
 
 void DiskIOUring::wake_poll_thread(PollThread &pt)

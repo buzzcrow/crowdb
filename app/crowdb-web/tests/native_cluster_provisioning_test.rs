@@ -98,7 +98,8 @@ async fn deploy(app: &axum::Router, node: u64, kind: &str) {
     }
     let path = match kind {
         "paxos-kv" => {
-            body = json!({"rest_port": body["http_port"], "rpc_port": body["rpc_port"]});
+            body = json!({"rest_port": body["http_port"], "rpc_port": body["rpc_port"],
+                "kv_backend": "block", "wal_backend": "block-device"});
             format!("/api/nodes/{node}/server/deploy")
         }
         "diskdb" => {
