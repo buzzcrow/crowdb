@@ -83,7 +83,16 @@ jobs:
       with:
         name: runtime-cpp-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -127,7 +136,16 @@ jobs:
       with:
         name: runtime-unit-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -173,7 +191,16 @@ jobs:
       with:
         name: runtime-storage-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -219,7 +246,16 @@ jobs:
       with:
         name: runtime-access-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -266,7 +302,16 @@ jobs:
       with:
         name: runtime-s3-e2e-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -297,7 +342,16 @@ jobs:
       with:
         name: runtime-iceberge2e-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
           target/iceberg-rck/open-api/build/reports/tests/
           target/iceberg-rck/open-api/build/test-results/
         include-hidden-files: true
@@ -330,7 +384,16 @@ jobs:
       with:
         name: runtime-icebergsdk-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
           ${{ runner.temp }}/iceberg-rck/open-api/build/reports/tests/
           ${{ runner.temp }}/iceberg-rck/open-api/build/test-results/
         include-hidden-files: true
@@ -381,7 +444,17 @@ jobs:
       with:
         name: runtime-console-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
+          app/crowdb-web/ui/e2e/test-results/
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -433,7 +506,16 @@ jobs:
       with:
         name: runtime-ui-${{ github.run_attempt }}
         path: |
-          .crowdb-runtime/
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -445,6 +527,7 @@ jobs:
         path: |
           app/crowdb-web/ui/playwright-report
           app/crowdb-web/ui/test-results
+          app/crowdb-web/ui/e2e/test-results
         retention-days: 7
     - name: Clean subprocesses
       if: always()

@@ -192,7 +192,11 @@ async function icebergRoundTrip({ page, baseURL }: UIContext) {
     await page.getByTestId('domain-iceberg').click();
     await page.getByText('Catalog actions', { exact: true }).click();
     await page.getByLabel('Namespace name', { exact: true }).fill('ui_three_node');
+    const createdNamespace = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/iceberg/v1/namespaces' && response.request().method() === 'POST');
     await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
+    const namespaceResponse = await createdNamespace;
+    expect(namespaceResponse.status(), await namespaceResponse.text()).toBe(200);
+    expect((await namespaceResponse.json()).namespace).toEqual(['ui_three_node']);
     const tree = page.getByRole('navigation', { name: 'Iceberg tree' });
     await tree.getByRole('button', { name: 'ui_three_node', exact: true }).click();
     await page.getByText('Namespace actions', { exact: true }).click();

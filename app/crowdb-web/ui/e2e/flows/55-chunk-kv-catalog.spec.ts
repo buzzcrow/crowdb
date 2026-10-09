@@ -126,7 +126,7 @@ test('native diagnostics: Chunk-KV graph survives tab changes, refresh and resiz
   });
   const graph = page.getByTestId('chunk-kv-graph');
   const verify = async () => {
-    await expect(graph.getByRole('button', { name: 'Chunk-KV', exact: true })).toBeVisible();
+    await expect(graph.getByRole('button', { name: 'ChunkKV', exact: true })).toBeVisible();
     await expect(graph.getByRole('button', { name: /^CKV-/ })).toHaveCount(3);
     await expect(graph.getByRole('button', { name: /^Partition / })).toHaveCount(catalog.entries.length);
     await expect(graph.getByRole('button', { name: /^KV Tree for / })).toHaveCount(catalog.entries.length);
@@ -144,7 +144,7 @@ test('native diagnostics: Chunk-KV graph survives tab changes, refresh and resiz
   await step('native graph tab return', async () => {
     for (let index = 0; index < 3; index++) {
       await page.getByRole('button', { name: 'PaxosKV', exact: true }).click();
-      await observeCatalog(() => page.getByRole('button', { name: 'Chunk-KV', exact: true }).click());
+      await observeCatalog(() => page.getByRole('navigation', { name: 'Console domains' }).getByRole('button', { name: 'ChunkKV', exact: true }).click());
       await verify();
     }
   });

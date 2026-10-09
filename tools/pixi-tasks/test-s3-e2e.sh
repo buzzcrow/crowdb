@@ -5,7 +5,7 @@ set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
 pixi run -e default build-cpp
-pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
+pixi run -e default -- cargo build -p crowdb-web -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
 pixi run -e default -- cargo test -p crowdb-access-s3 --tests
 pixi run -e default -- cargo test -p crowdb-access-server --tests
 pixi run -e s3-e2e test-boto3-copy-error

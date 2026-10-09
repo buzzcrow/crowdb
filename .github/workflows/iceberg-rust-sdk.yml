@@ -34,7 +34,17 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: runtime-iceberg-rust-sdk-${{ github.run_attempt }}
-        path: .crowdb-runtime/
+        path: |
+          .crowdb-runtime/**/log/**
+          .crowdb-runtime/**/*.log
+          .crowdb-runtime/**/*.log.*
+          .crowdb-runtime/**/*.out
+          .crowdb-runtime/**/*.toml
+          .crowdb-runtime/**/*.json
+          .crowdb-runtime/**/*.png
+          .crowdb-runtime/**/*.md
+          .crowdb-runtime/**/*.html
+          .crowdb-runtime/**/trace.zip
         if-no-files-found: ignore
         retention-days: 7
     - name: Clean subprocesses

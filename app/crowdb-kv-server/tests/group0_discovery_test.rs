@@ -11,6 +11,43 @@ use serde_json::json;
 
 use common::process::{start_test_server, start_test_server_at};
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prebootstrap_registration_waits_for_election_before_admitting_writes() {
+    let server = start_test_server(&["--node-id", "2", "--keepalive-interval", "1"])
+        .await
+        .unwrap();
+    let http = reqwest::Client::new();
+    let response = http
+        .post(format!("{}/system/init", server.base_url()))
+        .json(&json!({"replica_id": 2, "start_election": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    // Leave bootstrap paused across two registration ticks. No write may
+    // enter the unwired group before its first election.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let topology: serde_json::Value = http
+            .get(format!("{}/topology", server.base_url()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let group = &topology["stores"][0]["groups"][0];
+        assert_eq!(group["leader_id"], 0);
+        assert_eq!(group["local_replica"]["role"], "follower");
+        assert_eq!(group["local_replica"]["election"]["current_term"], 0);
+        assert_eq!(group["inflight"]["total_enqueued"], 0);
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn wait_registered(service: &ServiceRegistryClient, endpoint: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
