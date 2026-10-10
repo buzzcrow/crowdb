@@ -567,7 +567,14 @@ Status Crowdbtree::prepare_snapshot_locked(PreparedSnapshot *out, std::vector<Pr
             }
         }
     }
-    refresh_subtree_summaries_locked(root_page_id_.load(std::memory_order_acquire));
+    bool mapping_dirty = false;
+    for (uint64_t seg_idx = 0; seg_idx < MappingTable::kMaxSegments && !mapping_dirty; ++seg_idx) {
+        auto *segment = mapping_.segment_at(seg_idx);
+        mapping_dirty = segment != nullptr && segment->is_dirty();
+    }
+    if (mapping_dirty) {
+        refresh_subtree_summaries_locked(root_page_id_.load(std::memory_order_acquire));
+    }
     Status pages = prepare_snapshot_pages_locked(ctx);
     if (!pages.ok()) {
         return pages;

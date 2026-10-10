@@ -159,7 +159,27 @@ impl Default for ChunkdbStartOptions {
 
 impl ChunkdbProcess {
     pub fn log_content(&self) -> String {
-        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+        let Some(log_dir) = self.log_path.parent() else {
+            return std::fs::read_to_string(&self.log_path).unwrap_or_default();
+        };
+        let mut paths = std::fs::read_dir(log_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .collect::<Vec<_>>();
+        paths.sort();
+        let mut content = String::new();
+        for path in paths {
+            if let Ok(log) = std::fs::read_to_string(&path) {
+                if !log.is_empty() {
+                    use std::fmt::Write as _;
+                    let _ = writeln!(content, "--- {} ---\n{log}", path.display());
+                }
+            }
+        }
+        content
     }
 
     /// Start crowdb-chunkdb with a generated config pointing at the

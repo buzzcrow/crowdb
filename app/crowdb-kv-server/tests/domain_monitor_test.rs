@@ -614,8 +614,8 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
                     partition_loads: vec![ChunkKvPartitionLoad {
                         partition_id,
                         durable_bytes: 600,
-                        logical_bytes: 0,
-                        logical_metrics_exact: false,
+                        logical_bytes: 600,
+                        logical_metrics_exact: true,
                         live_byte_samples: vec![
                             (b"a".to_vec(), 100),
                             (b"m".to_vec(), 400),

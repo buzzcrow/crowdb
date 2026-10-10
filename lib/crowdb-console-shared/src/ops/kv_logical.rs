@@ -638,21 +638,26 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
             voting: replica.voting,
         })
         .collect::<Vec<_>>();
+    // Step 0: verify the target is reachable and step it down if it is the
+    // leader before publishing the successor membership. A failed request
+    // must leave Group 0 membership unchanged.
+    let target_client = server_client(ctx, target_node).await?;
+    target_client
+        .step_down(
+            store_id,
+            group_id,
+            &StepDownRequest {
+                reason: format!("replica {replica_id} removal"),
+            },
+        )
+        .await
+        .map_err(|error| Error::UpstreamRpc {
+            node_id: target_node.to_string(),
+            status: format!("step down before replica removal: {error}"),
+        })?;
+
     let installing = begin_membership_change(ctx, store_id, group_id, &replicas, requested_members).await?;
     let expected_epoch = installing.record().epoch;
-
-    // Step 0: step down if this replica is the leader (best-effort).
-    if let Ok(client) = server_client(ctx, target_node).await {
-        let _ = client
-            .step_down(
-                store_id,
-                group_id,
-                &StepDownRequest {
-                    reason: format!("replica {replica_id} removal"),
-                },
-            )
-            .await;
-    }
 
     // Step 1: Deregister from every peer.
     for peer in &replicas {
@@ -671,8 +676,7 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
     }
 
     // Step 2: Delete the local group on the target node.
-    let client = server_client(ctx, target_node).await?;
-    if let Err(error) = client
+    if let Err(error) = target_client
         .remove_group_at_epoch(store_id, group_id, expected_epoch)
         .await
     {
