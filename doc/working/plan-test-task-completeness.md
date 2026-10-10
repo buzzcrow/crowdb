@@ -40,7 +40,7 @@ including environment-specific preparation, without manual follow-up or retries.
 - Check modified shell syntax through `pixi run bash -n <script>`.
 - Run `pixi run check-ci-test-tasks` after task dispatch changes.
 - Split/move recovery boundary regressions remain in the cutover plan and resume
-  after these two test-task coverage gaps are closed. R228/R229 remain deferred.
+  after these two test-task coverage gaps are closed. R228 remains deferred.
 
 ## Current verification
 

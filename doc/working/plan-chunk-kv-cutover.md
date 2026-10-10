@@ -14,8 +14,9 @@ Delete this plan after the remaining audits and acceptance are complete.
 
 ## Current placement decision — 2026-10-09
 
-- R228 and R229 are deferred by the user. Resume Console/native acceptance
-  and the cutover audits; do not continue membership implementation or metrics.
+- R228 remains deferred by the user. R229 membership CAS was completed
+  separately on 2026-10-10; continue only the Console/native acceptance and
+  cutover audits here.
 - Data Weight is deferred to [tree range metrics](../backlog/R228-tree-range-metrics.md).
   Placement uses split counts with existing tolerance/cooldown; byte coefficient
   must be zero. Console Weight and weighted explanation are hidden.
@@ -156,16 +157,12 @@ requires the user's review. Existing durable handoff/replay contracts stay intac
   and readers concurrent with clear still need a lifetime regression. No new
   crash has been observed and no ownership fix is applied.
 
-- Deferred **membership CAS contract (R229)**: exact UI topology reproduction
-  also fails (2/3 ready groups). User requires sequential UI additions and shared
-  KV-client/server protection with explicit rejection across UI servers.
-  Approved: one complete members record, epoch CAS, Installing/Ready completion
-  fencing, exact-epoch recovery, no separate operation ID or legacy compatibility.
-  Sequential topology fixture passes 5/5 (33.1s), with the original leader
-  assertions/budgets unchanged. Approved contract and recovery boundaries are in
-  [R229](../backlog/R229-kv-membership-conflict.md), executed through
-  [membership plan](plan-kv-membership-cas.md); no membership core change
-  is applied.
+- **Membership CAS contract (R229) completed 2026-10-10**: the complete members
+  record, epoch CAS, Installing/Ready fencing, exact-epoch recovery and shared
+  KV-client/server conflict protection are implemented. The sequential topology
+  fixture passes 5/5 (33.1s); the full UI run retains two unrelated timing/data
+  flow failures. The permanent reconfiguration design records the final
+  contract; this cutover plan no longer tracks membership implementation.
 
 Native lifecycle follow-up: recorded restart opens its first tree root at
 09:21:27.697, then three more roots at 09:21:30.298–30.485; the RPC listener
