@@ -79,6 +79,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 
 | Doc                                                                           | Read when working on                                    |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `doc/design/deploy/design-crowdb-oci-image.md`                                  | Pixi OCI build, Docker/containerd, CI and macOS slot.     |
 | `doc/design/kv/design-crowdb-kv-leader-election.md`                           | Election, lease, ReadIndex, step-down.                  |
 | `doc/design/kv/design-crowdb-kv-slot.md`                                      | Slot pipelining, gap repair, catch-up, coalescing.      |
 | `doc/design/kv/design-crowdb-kv-rpc.md`                                       | Paxos RPC transport, schema, and errors.                |

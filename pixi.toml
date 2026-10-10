@@ -139,6 +139,12 @@ maven = "3.9.*"
 test-iceberg-container-ecosystem = "bash container/single-node-container/tests/ecosystem/run.sh"
 
 [tasks]
+image-build = "bash container/oci-image/image-build.sh"
+image-inspect = "pixi run --manifest-path container/oci-image/pixi.toml inspect"
+image-import = "pixi run --manifest-path container/oci-image/pixi.toml import"
+image-ctl = "pixi run --manifest-path container/oci-image/pixi.toml -e runtime control"
+image-run = "pixi run --manifest-path container/oci-image/pixi.toml -e runtime run"
+test-oci-image = "pixi run --manifest-path container/oci-image/pixi.toml test"
 test-s3-java-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh java"
 test-s3-js-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh js"
 test-s3-go-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh go"

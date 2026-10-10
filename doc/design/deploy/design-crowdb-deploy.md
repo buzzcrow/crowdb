@@ -4,9 +4,10 @@
 # CROWDB - Design: Multi-node Deployment
 
 Node containers run discovery, SSH, monitor and Web before cluster creation.
-Group 0 owns confirmed topology and management operations. Standard Docker is
-the supported container runtime; containerd integration remains outside this
-implementation. The packaged image supports Linux amd64.
+Group 0 owns confirmed topology and management operations. Linux amd64 images
+are built by Pixi-managed standalone BuildKit and run on system Docker or
+containerd/nerdctl. The [OCI image design](design-crowdb-oci-image.md) defines
+construction, runtime resources and publication.
 
 The [console architecture](../console/design-crowdb-console.md) defines the
 shared operation layer; the [Group-0 architecture](../kv/design-crowdb-kv-group0.md)
@@ -416,9 +417,9 @@ Publish OCI images to Docker Hub or another OCI-compatible registry. The same
 image for a supported CPU architecture contains monitor/UI/server binaries and
 their dependencies. Node-local state and cluster identity are external mounts.
 Single-node and multi-node operation use the same image, monitor and UI.
-Single-node startup automatically creates virtual disks and initializes the
-cluster, then disables UI editing; multi-node startup awaits candidate selection
-and manual bootstrap. Startup policy and the UI editing capability differ,
+Default manual startup awaits candidate selection and bootstrap for one or more
+nodes. Explicit automatic single-node startup creates virtual disks and initializes
+the cluster, then disables UI editing. Startup policy and the UI editing capability differ,
 while identity, discovery, authority and managed-service behavior remain shared.
 Read-only single-node mode rejects UI management mutations in the backend as
 well as disabling editing controls.
@@ -426,16 +427,16 @@ Tags identify releases for humans; production plans pin immutable image digests.
 Architecture-specific builds may share a multi-platform image index only when
 their dependencies have been validated.
 
-The initial runtime is standard Docker using the system installation. The
-node monitor supervises local managed processes; an external Docker lifecycle
-manages the node container. Containerd and other OCI runtimes are deferred until
-Docker validation succeeds; their tools may be supplied through Pixi. Docker
-images already use OCI-compatible packaging: extending runtime support does
-not require changing node identity, discovery or cluster-management semantics.
+System Docker and Pixi-supplied containerd/nerdctl manage the node container.
+The monitor supervises local managed processes; external runtime lifecycle
+recovers the whole node. Standalone BuildKit explicitly exports and validates
+OCI media types and blob digests without Docker or containerd dependencies.
+The [OCI image design](design-crowdb-oci-image.md) defines shared construction,
+resource verification and publication without changing cluster semantics.
 
 ### 9.2 Production profile
 
-- Linux host, system Docker runtime and host networking.
+- Linux host, system Docker or rootful containerd runtime and host networking.
 - Each node runs its monitor and Web UI inside a CROWDB node container.
   The node container is the management boundary and controls managed services
   using explicit mounted resources and local process supervision. Application service containers
@@ -561,6 +562,5 @@ single-domain scalability.
 
 The discovery identity and monitor placement decisions are settled: durable
 UUIDs identify candidates, Group 0 owns admitted numeric IDs, and each node's
-monitor/UI run in its node container. No human decisions remain open in this design. Other OCI runtime lifecycle,
-additional architectures and Kubernetes integration remain outside the supported
-Docker deployment scope.
+monitor/UI run in its node container. No human decisions remain open in this design. Additional runtimes,
+architectures and Kubernetes orchestration remain outside this supported scope.

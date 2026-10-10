@@ -1,0 +1,40 @@
+[workspace]
+name = "crowdb-container"
+version = "0.1.0"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+preview = ["pixi-build"]
+
+[dependencies]
+python = "3.12.*"
+pyyaml = "6.0.*"
+runc = "==1.4.3"
+skopeo = "==1.24.1"
+
+[feature.builder.dependencies]
+crowdb-build-tools = { path = "packages/build-tools" }
+
+[feature.runtime.dependencies]
+crowdb-runtime-tools = { path = "packages/runtime-tools" }
+
+[feature.publisher.dependencies]
+crowdb-publish-tools = { path = "packages/publish-tools" }
+
+[environments]
+default = { features = ["builder"] }
+runtime = { features = ["runtime"] }
+publisher = { features = ["publisher"] }
+
+[tasks]
+build = "python build.py"
+inspect = { cmd = "python container/oci-image/artifact.py", cwd = "../.." }
+import = { cmd = "python container/oci-image/transfer.py import", cwd = "../.." }
+publish = "python transfer.py publish"
+test = "python -m unittest discover -s tests -p '*_test.py' -v"
+
+[feature.runtime.tasks]
+control = { cmd = "python container/oci-image/control.py", cwd = "../.." }
+run = { cmd = "python container/oci-image/run-node.py", cwd = "../.." }
+
+[feature.publisher.tasks]
+release = "python publish.py"

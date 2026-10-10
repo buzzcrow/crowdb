@@ -25,8 +25,22 @@ case "$(cat /proc/sys/kernel/core_pattern)" in
         ;;
 esac
 
-mode=${CROWDB_STARTUP_MODE:-single}
+mode=${CROWDB_STARTUP_MODE:-manual}
 case "$mode" in single|manual) ;; *) echo 'CROWDB_STARTUP_MODE must be single or manual' >&2; exit 1 ;; esac
+previous=
+if test -f /opt/crowdb/data/accepted-node.json; then
+    previous=manual
+elif test -f /opt/crowdb/data/bootstrap/manifest.json; then
+    previous=single
+fi
+if test -n "$previous" && test "$previous" != "$mode"; then
+    echo 'Startup mode differs from persistent node policy; restore the original mode.' >&2
+    exit 1
+fi
+if test "$mode" = manual && test -z "${CROWDB_PHYSICAL_HOST_ID:-}"; then
+    echo 'Manual mode requires CROWDB_PHYSICAL_HOST_ID' >&2
+    exit 1
+fi
 ssh_password_auth=yes
 if test -n "${CROWDB_SSH_PASSWORD_FILE:-}"; then
     test -f "$CROWDB_SSH_PASSWORD_FILE" || { echo 'SSH password file missing' >&2; exit 1; }

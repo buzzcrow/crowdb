@@ -15,7 +15,7 @@ for name in ["server.env", "client.env"]:
         "docker", "run", "--rm", "--network", "none", "--user", "root",
         "--mount", f"type=bind,source={root},target=/data,readonly",
         "--entrypoint", "/bin/cat",
-        os.environ.get("CROWDB_CONTAINER_IMAGE", "crowdb-iceberg-single-node:dev"),
+        os.environ.get("CROWDB_CONTAINER_IMAGE", "crowdb-node:dev"),
         f"/data/secrets/{name}",
     ], capture_output=True, check=True, timeout=30)
     for line in private.stdout.splitlines():

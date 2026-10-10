@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-image=${CROWDB_CONTAINER_IMAGE:-crowdb-iceberg-single-node:dev}
+image=${CROWDB_CONTAINER_IMAGE:-crowdb-node:dev}
 root=$(mktemp -d /tmp/crowdb-preview-e2e.XXXXXX)
 layout_binary=$(mktemp /tmp/crowdb-chunk-layout.XXXXXX)
 name="crowdb-preview-e2e-$$"
@@ -43,7 +43,7 @@ start_container() {
     if [[ "$storage_mode" == bind ]]; then
         mount_args=(--mount "type=bind,source=$root,target=/opt/crowdb/data")
     fi
-    docker run -d --name "$name" \
+    docker run -d --name "$name" -e CROWDB_STARTUP_MODE=single \
         "${mount_args[@]}" \
         -p 127.0.0.1:9092:9092 -p 127.0.0.1::9091 -p 127.0.0.1::9090 -p 127.0.0.1::9093 \
         "$image" >/dev/null
@@ -53,8 +53,7 @@ start_container() {
             docker logs "$name"
             return 1
         fi
-        health=$(docker inspect --format '{{.State.Health.Status}}' "$name")
-        if [[ "$health" == healthy ]]; then
+        if docker exec "$name" crowdb-monitor readiness; then
             return 0
         fi
         sleep 1
@@ -245,7 +244,7 @@ verify_invalid_manifest_rejected() {
         --mount "type=bind,source=$root,target=/data" \
         --entrypoint /bin/sh "$image" -c \
         'printf "invalid manifest" > /data/bootstrap/manifest.json'
-    docker run -d --name "$name" \
+    docker run -d --name "$name" -e CROWDB_STARTUP_MODE=single \
         --mount "type=bind,source=$root,target=/opt/crowdb/data" "$image" >/dev/null
     for attempt in $(seq 1 30); do
         if [[ $(docker inspect --format '{{.State.Status}}' "$name") == exited ]]; then
@@ -261,7 +260,7 @@ verify_invalid_manifest_rejected() {
 
 verify_invalid_profile_rejected() {
     printf 'invalid = true\n' >"$root/bad-profile.toml"
-    docker run -d --name "$name" \
+    docker run -d --name "$name" -e CROWDB_STARTUP_MODE=single \
         --mount "type=bind,source=$root/bad-profile.toml,target=/opt/crowdb/etc/profile.toml,readonly" \
         "$image" >/dev/null
     for attempt in $(seq 1 30); do
@@ -278,7 +277,7 @@ verify_invalid_profile_rejected() {
 
 verify_interrupted_bootstrap() {
     local manifest deployment_id completed_steps recovered
-    docker run -d --name "$name" \
+    docker run -d --name "$name" -e CROWDB_STARTUP_MODE=single \
         --mount "type=bind,source=$root,target=/opt/crowdb/data" \
         "$image" >/dev/null
     manifest=

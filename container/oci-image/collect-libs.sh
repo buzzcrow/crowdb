@@ -31,7 +31,7 @@ for binary in "$output"/bin/*; do
         cat "$output/dependencies.txt" >&2
         exit 1
     fi
-    while read -r name arrow path remainder; do
+    while read -r name arrow path _remainder; do
         if [[ "$arrow" != '=>' ]]; then
             continue
         fi

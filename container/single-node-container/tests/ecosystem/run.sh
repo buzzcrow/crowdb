@@ -3,7 +3,7 @@
 # Licensed under the Apache License, Version 2.0.
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
-image=${CROWDB_CONTAINER_IMAGE:-crowdb-iceberg-single-node:dev}
+image=${CROWDB_CONTAINER_IMAGE:-crowdb-node:dev}
 profile=${CROWDB_ECOSYSTEM_PROFILE:-all}
 [[ "$profile" == all || "$profile" == python ]] || { echo 'Expected all or python profile' >&2; exit 2; }
 docker image inspect "$image" >/dev/null
@@ -42,12 +42,12 @@ cleanup() {
 trap cleanup EXIT
 
 start() {
-    docker run -d --name "$name" \
+    docker run -d --name "$name" -e CROWDB_STARTUP_MODE=single \
         --mount "type=bind,source=$fixture/data,target=/opt/crowdb/data" \
         -p 127.0.0.1:9092:9092 -p 127.0.0.1::9091 -p 127.0.0.1::9090 "$image" >/dev/null
     for ((attempt=0; attempt<240; attempt++)); do
         [[ $(docker inspect --format '{{.State.Status}}' "$name") == running ]] || return 1
-        if [[ $(docker inspect --format '{{.State.Health.Status}}' "$name") == healthy ]]; then return 0; fi
+        if docker exec "$name" crowdb-monitor readiness; then return 0; fi
         sleep 1
     done
     echo 'Owned ecosystem container did not become healthy' >&2

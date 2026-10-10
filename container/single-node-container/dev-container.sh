@@ -6,7 +6,7 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 
-image=${CROWDB_CONTAINER_IMAGE:-crowdb-iceberg-single-node:dev}
+image=${CROWDB_CONTAINER_IMAGE:-crowdb-node:dev}
 name=${CROWDB_CONTAINER_NAME:-crowdb-single-node}
 
 usage() {
@@ -23,8 +23,7 @@ wait_until_healthy() {
             echo "Container $name stopped before becoming healthy" >&2
             return 1
         fi
-        status=$(docker inspect --format '{{.State.Health.Status}}' "$name")
-        if [[ "$status" == healthy ]]; then
+        if docker exec "$name" crowdb-monitor readiness; then
             echo "Container $name is healthy"
             return 0
         fi
@@ -45,7 +44,7 @@ start_container() {
         docker rm "$name" >/dev/null
     fi
 
-    if ! docker run --detach --name "$name" \
+    if ! docker run --detach --name "$name" -e CROWDB_STARTUP_MODE=single \
         --expose 9090 --expose 9091 --expose 9092 --expose 9093 --expose 9094 \
         "$image"; then
         if docker container inspect "$name" >/dev/null 2>&1; then

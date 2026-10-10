@@ -1,27 +1,21 @@
-name: Publish S3 and Iceberg containers
+name: Publish verified OCI container
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: crowdb-iceberg-${{ github.ref_name }}
+  group: crowdb-container-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  verify:
+  construct:
     runs-on: ubuntu-24.04
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     permissions:
       contents: read
-      actions: read
     outputs:
       version: ${{ steps.source.outputs.version }}
       revision: ${{ steps.source.outputs.revision }}
-      image_tag: ${{ steps.source.outputs.image_tag }}
-      runtime_sha256: ${{ steps.runtime_digest.outputs.sha256 }}
+      digest: ${{ steps.artifact.outputs.digest }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -30,56 +24,138 @@ jobs:
         submodules: true
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Install host test prerequisites
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-    - name: Verify release source
+        pixi-version: v0.77.0
+    - name: Validate release source
       id: source
       run: |
         pixi run bash -euc '
           [[ "$GITHUB_REPOSITORY" == buzzcrow/crowdb ]]
           [[ "$GITHUB_REF" =~ ^refs/heads/release/v?([0-9]+\.[0-9]+\.[0-9]+)$ ]]
-          branch_version=${BASH_REMATCH[1]}
           version=$(cat VERSION)
-          if [[ "$version" != "$branch_version" ]]; then
-            echo "::error::VERSION is $version but release branch requires $branch_version" >&2
-            exit 1
-          fi
+          [[ "$version" == "${BASH_REMATCH[1]}" ]]
           revision=$(git rev-parse HEAD)
           [[ "$revision" == "$GITHUB_SHA" ]]
-          printf "version=%s\nrevision=%s\nimage_tag=%s\n" "$version" "$revision" "$version" >> "$GITHUB_OUTPUT"
+          printf "version=%s\nrevision=%s\n" "$version" "$revision" >> "$GITHUB_OUTPUT"
         '
+    - name: Install compilation prerequisites and remove Docker
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+        pixi run sudo systemctl stop docker.service docker.socket containerd.service
+        pixi run sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        pixi run bash -euc '! command -v docker; test ! -S /var/run/docker.sock'
     - name: Free disk space
       run: |
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
-        sudo apt-get clean
-        df -h /
-    - name: Build and test image without publication credentials
-      env:
-        CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
-      run: pixi run test-single-node-container
-    - name: Archive verified runtime files
-      run: pixi run tar -C target/container-runtime -czf target/container-runtime.tar.gz .
-    - name: Record verified runtime digest
-      run: pixi run bash -euc 'printf "sha256=%s\n" "$(sha256sum target/container-runtime.tar.gz | cut -d " " -f1)" >> "$GITHUB_OUTPUT"'
-      id: runtime_digest
+        pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+        pixi run sudo apt-get clean
+        pixi run df -h /
+    - name: Stage runtime without a container daemon
+      run: pixi run stage-single-node-container
+    - name: Install locked standalone builder
+      run: pixi install --locked --manifest-path container/oci-image/pixi.toml
+    - name: Build OCI without Docker
+      run: |
+        pixi run sudo "$(command -v pixi)" run --as-is --manifest-path container/oci-image/pixi.toml build --privileged --context "$PWD/target/container-runtime" --output "$PWD/target/crowdb.oci.tar"
+        pixi run test-oci-image
+    - name: Record constructed digest
+      id: artifact
+      run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
     - uses: actions/upload-artifact@v4
       with:
-        name: verified-container-runtime
-        path: target/container-runtime.tar.gz
+        name: verified-oci-image
+        path: |
+          target/crowdb.oci.tar
+          target/crowdb.oci.tar.json
         compression-level: 0
         retention-days: 7
-    - name: Upload preview failure logs
-      if: failure()
-      uses: actions/upload-artifact@v4
+
+  verify:
+    needs: construct
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.artifact.outputs.digest }}
+    steps:
+    - uses: actions/checkout@v4
       with:
-        name: release-preview-${{ github.run_attempt }}
-        path: ${{ runner.temp }}/crowdb-preview-artifacts
+        ref: ${{ needs.construct.outputs.revision }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Import exact OCI artifact into Docker
+      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+    - name: Verify Docker startup and recovery
+      env:
+        CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+        pixi run install-ui-deps
+        pixi run clean-env
+        pixi run --skip-deps test-single-node-container
+        pixi run python container/single-node-container/tests/node-containers.py
+        pixi run python container/single-node-container/tests/host-node.py
+        pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
+        pixi run python container/oci-image/tests/containerd-cluster.py
+    - name: Record verified digest
+      id: artifact
+      run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: docker-acceptance-diagnostics
+        path: |
+          ${{ runner.temp }}/crowdb-preview-artifacts
+          .crowdb-runtime/artifacts
         if-no-files-found: ignore
-        retention-days: 7
+
+  containerd:
+    needs: construct
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.artifact.outputs.digest }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.construct.outputs.revision }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Remove Docker and install locked runtime tools
+      run: |
+        pixi run sudo systemctl stop docker.service docker.socket containerd.service
+        pixi run sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        pixi run bash -euc '! command -v docker; test ! -S /var/run/docker.sock'
+        pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
+    - name: Verify containerd host-network startup and recovery
+      run: |
+        set -o pipefail
+        pixi run sudo "$(command -v pixi)" run --as-is --manifest-path container/oci-image/pixi.toml -e runtime python container/oci-image/tests/containerd-host.py "$PWD/target/crowdb.oci.tar" 2>&1 | pixi run tee target/containerd-acceptance.log
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: containerd-acceptance-diagnostics
+        path: target/containerd-acceptance.log
+        if-no-files-found: ignore
+    - name: Record verified digest
+      id: artifact
+      run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
 
   publish:
-    needs: verify
+    needs: [construct, verify, containerd]
     runs-on: ubuntu-24.04
     environment: DockerHub
     permissions:
@@ -88,70 +164,20 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: ${{ needs.verify.outputs.revision }}
+        ref: ${{ needs.construct.outputs.revision }}
         fetch-depth: 0
-        submodules: true
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Require publication credentials and current release branch head
-      env:
-        IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
-        REVISION: ${{ needs.verify.outputs.revision }}
-        RELEASE_BRANCH: ${{ github.ref_name }}
-        DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
-        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      run: |
-        pixi run bash -euc '
-          [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]
-          [[ "$(git rev-parse HEAD)" == "$REVISION" ]]
-          [[ "$(git ls-remote origin "refs/heads/$RELEASE_BRANCH" | cut -f1)" == "$REVISION" ]]
-          [[ "$IMAGE_TAG" == "$(cat VERSION)" ]]
-        '
-    - uses: docker/setup-buildx-action@v4
+        pixi-version: v0.77.0
     - uses: actions/download-artifact@v4
       with:
-        name: verified-container-runtime
+        name: verified-oci-image
         path: target
-    - name: Extract verified runtime files
+    - name: Publish verified graph, sign and attest before moving tags
       env:
-        RUNTIME_SHA256: ${{ needs.verify.outputs.runtime_sha256 }}
-      run: |
-        pixi run bash -euc '[[ "$(sha256sum target/container-runtime.tar.gz | cut -d " " -f1)" == "$RUNTIME_SHA256" ]]'
-        pixi run bash -euc 'mkdir -p target/container-runtime && tar -C target/container-runtime -xzf target/container-runtime.tar.gz'
-        pixi run rm target/container-runtime.tar.gz
-    - uses: docker/login-action@v4
-      with:
-        username: ${{ vars.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-    - name: Confirm release branch head before image push
-      env:
-        REVISION: ${{ needs.verify.outputs.revision }}
-        RELEASE_BRANCH: ${{ github.ref_name }}
-      run: pixi run bash -euc '[[ "$(git ls-remote origin "refs/heads/$RELEASE_BRANCH" | cut -f1)" == "$REVISION" ]]'
-    - name: Build and replace release branch image with attestations
-      id: build
-      uses: docker/build-push-action@v7
-      with:
-        context: target/container-runtime
-        file: container/single-node-container/Dockerfile
-        platforms: linux/amd64
-        push: true
-        provenance: mode=max
-        sbom: true
-        build-args: |
-          SOURCE_REVISION=${{ needs.verify.outputs.revision }}
-          PREVIEW_VERSION=${{ needs.verify.outputs.version }}
-          RUNTIME_SHA256=${{ needs.verify.outputs.runtime_sha256 }}
-        tags: |
-          docker.io/crowdb/crowdb-iceberg:${{ needs.verify.outputs.image_tag }}
-          docker.io/crowdb/crowdb-iceberg:latest
-          docker.io/crowdb/crowdb-s3:${{ needs.verify.outputs.image_tag }}
-          docker.io/crowdb/crowdb-s3:latest
-    - uses: sigstore/cosign-installer@v4.1.2
-    - name: Sign published digest
-      env:
-        DIGEST: ${{ steps.build.outputs.digest }}
-      run: |
-        pixi run cosign sign --yes "docker.io/crowdb/crowdb-iceberg@$DIGEST"
-        pixi run cosign sign --yes "docker.io/crowdb/crowdb-s3@$DIGEST"
+        DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        DOCKER_VERIFIED_DIGEST: ${{ needs.verify.outputs.digest }}
+        CONTAINERD_VERIFIED_DIGEST: ${{ needs.containerd.outputs.digest }}
+        IMAGE_TAG: ${{ needs.construct.outputs.version }}
+      run: pixi run --manifest-path container/oci-image/pixi.toml -e publisher release "$PWD/target/crowdb.oci.tar" --tag "$IMAGE_TAG"

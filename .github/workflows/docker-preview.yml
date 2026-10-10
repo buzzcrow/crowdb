@@ -1,41 +1,153 @@
-name: DockerPreview
+name: ContainerPreview
 
 on:
   workflow_dispatch:
 
+concurrency:
+  group: crowdb-container-preview-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  DockerPreview:
+  construct:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      revision: ${{ steps.source.outputs.revision }}
+      digest: ${{ steps.artifact.outputs.digest }}
     steps:
     - uses: actions/checkout@v4
       with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
         submodules: true
-    - name: Free disk space
-      run: |
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
-        sudo apt-get clean
-        df -h /
     - uses: prefix-dev/setup-pixi@v0.8.1
       with:
-        pixi-version: latest
-    - name: Build and test single-node preview image
+        pixi-version: v0.77.0
+    - name: Validate release source
+      id: source
+      run: |
+        pixi run bash -euc '
+          [[ "$GITHUB_REPOSITORY" == buzzcrow/crowdb ]]
+          version=$(cat VERSION)
+          revision=$(git rev-parse HEAD)
+          [[ "$revision" == "$GITHUB_SHA" ]]
+          printf "version=%s\nrevision=%s\n" "$version" "$revision" >> "$GITHUB_OUTPUT"
+        '
+    - name: Install compilation prerequisites and remove Docker
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+        pixi run sudo systemctl stop docker.service docker.socket containerd.service
+        pixi run sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        pixi run bash -euc '! command -v docker; test ! -S /var/run/docker.sock'
+    - name: Free disk space
+      run: |
+        pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
+        pixi run sudo apt-get clean
+        pixi run df -h /
+    - name: Stage runtime without a container daemon
+      run: pixi run stage-single-node-container
+    - name: Install locked standalone builder
+      run: pixi install --locked --manifest-path container/oci-image/pixi.toml
+    - name: Build OCI without Docker
+      run: |
+        pixi run sudo "$(command -v pixi)" run --as-is --manifest-path container/oci-image/pixi.toml build --privileged --context "$PWD/target/container-runtime" --output "$PWD/target/crowdb.oci.tar"
+        pixi run test-oci-image
+    - name: Record constructed digest
+      id: artifact
+      run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
+    - uses: actions/upload-artifact@v4
+      with:
+        name: verified-oci-image
+        path: |
+          target/crowdb.oci.tar
+          target/crowdb.oci.tar.json
+        compression-level: 0
+        retention-days: 7
+
+  verify:
+    needs: construct
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.artifact.outputs.digest }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.construct.outputs.revision }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Import exact OCI artifact into Docker
+      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+    - name: Verify Docker startup and recovery
       env:
         CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
-      run: pixi run test-single-node-container
-    - name: Capture Docker diagnostics on failure
-      if: failure()
       run: |
-        docker ps -a
-        docker images
-        docker info
-        df -h
-    - name: Upload preview failure logs
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+        pixi run install-ui-deps
+        pixi run clean-env
+        pixi run --skip-deps test-single-node-container
+        pixi run python container/single-node-container/tests/node-containers.py
+        pixi run python container/single-node-container/tests/host-node.py
+        pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
+        pixi run python container/oci-image/tests/containerd-cluster.py
+    - name: Record verified digest
+      id: artifact
+      run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
+    - uses: actions/upload-artifact@v4
       if: failure()
-      uses: actions/upload-artifact@v4
       with:
-        name: docker-preview-${{ github.run_attempt }}
-        path: ${{ runner.temp }}/crowdb-preview-artifacts
+        name: docker-acceptance-diagnostics
+        path: |
+          ${{ runner.temp }}/crowdb-preview-artifacts
+          .crowdb-runtime/artifacts
         if-no-files-found: ignore
-        retention-days: 7
+
+  containerd:
+    needs: construct
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.artifact.outputs.digest }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.construct.outputs.revision }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Remove Docker and install locked runtime tools
+      run: |
+        pixi run sudo systemctl stop docker.service docker.socket containerd.service
+        pixi run sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        pixi run bash -euc '! command -v docker; test ! -S /var/run/docker.sock'
+        pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
+    - name: Verify containerd host-network startup and recovery
+      run: |
+        set -o pipefail
+        pixi run sudo "$(command -v pixi)" run --as-is --manifest-path container/oci-image/pixi.toml -e runtime python container/oci-image/tests/containerd-host.py "$PWD/target/crowdb.oci.tar" 2>&1 | pixi run tee target/containerd-acceptance.log
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: containerd-acceptance-diagnostics
+        path: target/containerd-acceptance.log
+        if-no-files-found: ignore
+    - name: Record verified digest
+      id: artifact
+      run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar

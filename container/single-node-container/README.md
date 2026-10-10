@@ -62,12 +62,12 @@ pixi run inject-container 172.17.0.2
 - The build stages release programs, their required shared libraries, UI and
   deployment files under `target/container-runtime`. Existing runtime data and
   credentials are never part of the Docker context.
-- Docker only packages these files into the pinned Ubuntu runtime image. It
+- Standalone Pixi-managed BuildKit packages these files into the pinned Ubuntu OCI image. It
   does not install Pixi or compilers, compile source, or use a custom base image.
 - Packaging checks dynamic linkage inside Ubuntu and verifies the staged
   revision/version against image metadata. A different host ABI must pass these
   checks and the container tests before its artifacts can be used.
-- The default local image is `crowdb-iceberg-single-node:dev`. Set
+- The default local image is `crowdb-node:dev`. Set
   `CROWDB_CONTAINER_IMAGE` to build and test a separate candidate tag.
 
 `pixi run stage-single-node-container` produces the runtime directory without
@@ -81,20 +81,23 @@ pixi run -- python tools/release.py --dry-run
 pixi run -- python tools/release.py --execute
 ```
 
-After the image passes container verification, publication updates four tags
+After the image passes container verification, publication updates eight tags
 to the same image digest:
 
+- `crowdb/crowdb-node:<version>` and `crowdb/crowdb-node:latest` (canonical).
 - `crowdb/crowdb-iceberg:<version>` and `crowdb/crowdb-iceberg:latest`.
 - `crowdb/crowdb-s3:<version>` and `crowdb/crowdb-s3:latest`.
+- `crowdb/crowdb-dataset:<version>` and `crowdb/crowdb-dataset:latest`.
 
-The repositories provide separate entry points for Iceberg and S3 users. Both
+The node repository is the default entry point for manual cluster setup.
+Iceberg, S3 and Dataset names are the single-node usage entry points. All four
 contain the same runtime, including one Access Server listening on Iceberg
 port 9092 and S3 port 9091. Publish the ports needed by the client; using both
 interfaces requires only one container. The container verification runs boto3,
 AWS CLI and PyIceberg clients against that runtime, including reads after recovery
 and persisted-volume restart.
 
-Rerunning publication from an older release branch also updates both `latest`
+Rerunning publication from an older release branch also updates all four `latest`
 tags, so use the newest release branch for moving tags.
 
 The script only dispatches the workflow; it does not change files or push.
@@ -103,13 +106,14 @@ The dry run does not contact GitHub.
 The workflow builds and tests the container, then waits for DockerHub environment approval.
 Before publishing, it checks that the remote branch still points to the same
 commit. A newer branch commit requires a new run. Each successful run replaces
-both repositories' version and `latest` tags and signs the digest in each
+all four repositories' version and `latest` tags and signs the digest in each
 repository. It does not
 create a Git tag or GitHub Release. Fix a failed candidate on the release
 branch and run the workflow again.
 
-The workflow archives the verified runtime, then packages those same files in
-its publish job without recompiling them.
+The workflow constructs one OCI artifact without Docker, verifies that artifact
+on Docker and containerd, then copies its exact graph to the registry. Publishing
+preserves the verified digest and attaches signatures, SBOM and provenance.
 
 ## Public ports
 
@@ -119,8 +123,9 @@ The default host mappings match the container listener ports:
 - S3: `9091:9091`.
 - Iceberg catalog and native FileIO: `9092:9092`.
 
-Port `9093` is reserved for future Dataset access; the current image does not
-listen on it.
+The `crowdb/crowdb-dataset` name reserves the single-node Dataset usage entry
+point. Port `9093` is reserved for future Dataset access; the current image does
+not listen on it. Publishing this alias does not enable a Dataset service.
 
 Publish only the interfaces needed by the client. The generated default client
 addresses use `localhost` with these ports. An Iceberg deployment with a different
@@ -134,12 +139,12 @@ loopback addresses then match the host mappings, including delegated Iceberg
 FileIO locations:
 
 ```sh
-docker run -d --name crowdb-iceberg \
+pixi run docker run -d --name crowdb-iceberg -e CROWDB_STARTUP_MODE=single \
   --mount type=volume,source=crowdb-iceberg-data,target=/opt/crowdb/data \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
   -p 127.0.0.1:9092:9092 \
-  crowdb/crowdb-iceberg:0.2.2
+  crowdb/crowdb-iceberg:latest
 ```
 
 For a different reachable address or a client on the same Docker network, set
@@ -148,21 +153,21 @@ passes those values to the access service instead of the profile defaults.
 
 ## S3 container usage
 
-Start the published S3 image with a named data volume and map host port 9091
+Start the S3 single-node entry point with a named data volume and map host port 9091
 to the container's S3 port 9091:
 
 ```sh
-docker run -d --name crowdb-s3 \
+pixi run docker run -d --name crowdb-s3 -e CROWDB_STARTUP_MODE=single \
   --mount type=volume,source=crowdb-s3-data,target=/opt/crowdb/data \
   -p 127.0.0.1:9091:9091 \
   crowdb/crowdb-s3:latest
-docker inspect --format '{{.State.Health.Status}}' crowdb-s3
+pixi run docker exec crowdb-s3 crowdb-monitor readiness
 ```
 
-Wait for `healthy`, then obtain the generated client credentials:
+Wait for the readiness probe to succeed, then obtain the generated client credentials:
 
 ```sh
-docker exec crowdb-s3 crowdb-monitor credentials show --format env
+pixi run docker exec crowdb-s3 crowdb-monitor credentials show --format env
 ```
 
 Configure boto3 with endpoint `http://127.0.0.1:9091`, the displayed AWS
@@ -185,7 +190,9 @@ print(client.get_object(Bucket="example", Key="hello.txt")["Body"].read())
 Set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_DEFAULT_REGION`
 in the client's environment using the displayed values before running this
 example. To use Iceberg from the same container, also map container port 9092.
-These published images use the single-node development profile described above.
+The single-node examples explicitly select the development profile described above.
+Image names do not change startup mode: use `CROWDB_STARTUP_MODE=single` for
+automatic initialization; the default is manual cluster setup.
 
 ## Tested S3 client recipes
 
@@ -333,8 +340,8 @@ and [Ubuntu Apport documentation](https://ubuntu.com/project/docs/contributors/d
 
 The same Linux amd64 image supports `CROWDB_STARTUP_MODE=manual`. Each node starts
 SSH on 2222, monitor discovery/control and Web on 9090. KV and application servers
-start through cluster preparation and shared management. Default startup remains
-single-node automatic initialization with virtual disks and disabled editing.
+start through cluster preparation and shared management. Default startup is manual for one or more nodes. Explicit `single` selects
+automatic initialization with virtual disks and disabled editing.
 
 For an isolated bridge test using the system Docker installation:
 
@@ -343,7 +350,7 @@ pixi run docker network create crowdb-nodes
 pixi run docker run -d --name node-one --network crowdb-nodes --cpus 2 --memory 1g \
   --mount type=volume,source=node-one-data,target=/opt/crowdb/data \
   -e CROWDB_STARTUP_MODE=manual -e CROWDB_PHYSICAL_HOST_ID=test-host \
-  -p 127.0.0.1:19090:9090 crowdb-iceberg-single-node:dev
+  -p 127.0.0.1:19090:9090 crowdb-node:dev
 ```
 
 Repeat with distinct names, volumes and published UI ports. No peer list is needed
@@ -373,8 +380,11 @@ access for container uid/gid 10001; configure that access on the host before lau
 validates Docker resources,
 image architecture/digest, mounts and credentials; no runtime socket is mounted
 inside nodes. Host networking uses UI port 9090 directly. Container recreation and
-image upgrades preserve the same persistent root. Runtime support currently covers
-system Docker; containerd/other OCI runtime lifecycle is deferred.
+image upgrades preserve the same persistent root. System Docker and Pixi-managed containerd/nerdctl use the same OCI image.
+See the [shared image guide](../oci-image/README.md) for Docker-free build,
+rootless host prerequisites, lightweight runtime startup and daemon supervision.
+Existing build/start helpers require system Docker for local import/start and
+explicitly select automatic single-node startup.
 
 Acceptance harnesses use the same pinned image:
 

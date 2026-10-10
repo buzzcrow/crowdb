@@ -1,0 +1,8 @@
+[package]
+name = "crowdb-build-tools"
+version = "0.34.0"
+
+[package.build.backend]
+name = "pixi-build-rattler-build"
+version = "==0.4.7"
+channels = ["conda-forge"]

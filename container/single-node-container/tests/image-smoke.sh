@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-image=${CROWDB_CONTAINER_IMAGE:-crowdb-iceberg-single-node:dev}
+image=${CROWDB_CONTAINER_IMAGE:-crowdb-node:dev}
 docker image inspect "$image" >/dev/null
 # Containerd includes both compressed content and unpacked snapshots in Size.
 # Keep the same layer-size bound on either Docker storage backend.

@@ -1,0 +1,23 @@
+package:
+  name: crowdb-build-tools
+  version: 0.34.0
+source:
+  - url: https://github.com/moby/buildkit/releases/download/v0.34.0/buildkit-v0.34.0.linux-amd64.tar.gz
+    sha256: 14813b1fb2a40082114e6d386c6fc5e7dd5298176ce7ee1a18bc33e73e109ac3
+    target_directory: buildkit
+  - url: https://github.com/rootless-containers/rootlesskit/releases/download/v3.2.0/rootlesskit-x86_64.tar.gz
+    sha256: ff612d1d35854a52569acc4a4e9152f41504e69dcc13ff4c94cc9040dc28b3d9
+    target_directory: rootlesskit
+build:
+  number: 0
+  script:
+    - mkdir -p "$PREFIX/bin"
+    - install -m 0755 buildkit/buildctl buildkit/buildkitd "$PREFIX/bin/"
+    - install -m 0755 rootlesskit/rootlesskit "$PREFIX/bin/"
+requirements:
+  run:
+    - __linux
+about:
+  license: Apache-2.0
+  summary: Pinned standalone BuildKit and RootlessKit for CROWDB OCI builds
+  homepage: https://github.com/moby/buildkit

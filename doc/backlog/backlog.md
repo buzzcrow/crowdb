@@ -9,7 +9,14 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R230** — R221 is reserved by another workstream.
+**Next R number: R231** — R221 is reserved by another workstream.
+
+## Test infrastructure and deployment acceptance
+
+- **[R230](R230-test-container-layer-e2e.md)** — shared container cluster fixtures,
+  isolated concurrent layer E2E, CI gates and gradual real-server test migration.
+  **Area:** test / container / CI. **Complexity:** High.
+  **Status:** Planned; Docker baseline first, OCI/containerd adapter follows.
 
 ## Dataset and access
 

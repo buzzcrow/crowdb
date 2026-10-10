@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-IMAGE = os.environ.get("CROWDB_CONTAINER_IMAGE", "crowdb-iceberg-single-node:dev")
+IMAGE = os.environ.get("CROWDB_CONTAINER_IMAGE", "crowdb-node:dev")
 PREFIX = "crowdb-node-test-" + uuid.uuid4().hex[:8]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 

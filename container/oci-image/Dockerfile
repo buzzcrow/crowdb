@@ -5,8 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && echo 'crowdb:crowdb' | chpasswd \
     && mkdir -p /run/sshd
 ARG SOURCE_REVISION
-ARG PREVIEW_VERSION
 ARG RUNTIME_SHA256
+ARG PREVIEW_VERSION
 RUN --mount=type=bind,source=.,target=/staged,ro \
     test -n "$SOURCE_REVISION" && test -n "$PREVIEW_VERSION" \
     && test "$(cat /staged/SOURCE_REVISION)" = "$SOURCE_REVISION" \
@@ -23,21 +23,22 @@ RUN --mount=type=bind,source=.,target=/staged,ro \
         if grep -Eq 'not found|undefined symbol' /tmp/dependencies.txt; then cat /tmp/dependencies.txt; exit 1; fi; \
     done && rm /tmp/dependencies.txt
 
-LABEL org.opencontainers.image.title="CROWDB Iceberg" \
-      org.opencontainers.image.description="Apache Iceberg REST catalog with native storage, in one container for development and testing." \
+LABEL org.opencontainers.image.title="CROWDB Node" \
+      org.opencontainers.image.description="CROWDB node with discovery, management UI and storage services." \
       org.opencontainers.image.url="https://crowdb.dev/" \
       org.opencontainers.image.source="https://github.com/buzzcrow/crowdb" \
       org.opencontainers.image.authors="Gian <crow.db@outlook.com>" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="$SOURCE_REVISION" \
       org.opencontainers.image.version="$PREVIEW_VERSION" \
-      org.crowdb.runtime.sha256="$RUNTIME_SHA256"
-ENV PATH="/opt/crowdb/bin:${PATH}" \
+      org.crowdb.runtime.sha256="$RUNTIME_SHA256" \
+      org.crowdb.startup.default="manual"
+ENV CROWDB_STARTUP_MODE="manual" \
+    PATH="/opt/crowdb/bin:${PATH}" \
     LD_LIBRARY_PATH="/opt/crowdb/lib" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"
 USER root
 VOLUME ["/opt/crowdb/data"]
 EXPOSE 9090 9091 9092 9095 2222
 STOPSIGNAL SIGTERM
-HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 CMD crowdb-monitor liveness && crowdb-monitor readiness
 ENTRYPOINT ["/opt/crowdb/bin/entrypoint"]
