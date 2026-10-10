@@ -91,6 +91,17 @@ pub(super) async fn add_store(
     State(state): State<RegistryArc>,
     Json(req): Json<AddStoreRequest>,
 ) -> Result<(StatusCode, Json<StoreSummary>), (StatusCode, Json<ErrorResponse>)> {
+    let _system_execution = if req.store_id == 0 {
+        Some(super::system_bootstrap::begin(&state)?)
+    } else {
+        None
+    };
+    if req.store_id == 0 && super::system_bootstrap::has_owner(&state)? {
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            "reserved system store must use identified system initialization",
+        ));
+    }
     if state.contains_store(req.store_id) {
         return Err(err_json(
             StatusCode::CONFLICT,

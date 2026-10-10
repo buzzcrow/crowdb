@@ -15,6 +15,7 @@ mod group_ops;
 pub mod operation_registry;
 mod replica_ops;
 mod store_ops;
+mod system_bootstrap;
 mod system_init;
 mod topology;
 
@@ -133,6 +134,7 @@ pub fn router(state: RegistryArc) -> Router {
     Router::new()
         .route("/health", get(system_init::health_check))
         .route("/system/init", post(system_init::system_init))
+        .route("/system/prepare", post(system_bootstrap::prepare))
         .route("/system/group0-discovery", post(discovery::update))
         .route("/stores", get(store_ops::list_stores).post(store_ops::add_store))
         .route(

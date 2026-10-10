@@ -61,7 +61,7 @@ operator browser
     -> any node's Web UI / shared console operations
     -> Group 0: committed topology and operation authority
     -> target node monitor
-    -> runtime and managed server processes
+    -> Docker node container and managed server processes
 
 node monitor <-> management-network discovery <-> peer node monitors
 ```
@@ -88,8 +88,13 @@ Persist node identity, cluster binding and accepted bootstrap information in
 the node's host-mounted state root. Persist Group-0 replica state through its
 existing WAL/storage contract. These identities are not image contents and are
 not derived from IP addresses. Existing protocol identifier types remain the
-canonical types; the exact allocation of pre-admission node identities must be
-resolved before changing the public schema.
+canonical types. Each node generates and persists a discovery UUID before
+admission. Candidates are identified by UUID; bootstrap fixes the UUID-to-numeric
+node-ID mapping in its accepted configuration. Subsequent admission allocates a
+numeric node ID through Group 0 and durably records the mapping. Allocation and
+mapping publication are conditional and idempotent under concurrent admission;
+IDs cannot collide or be silently reassigned. Endpoint and rack changes do not
+change either identity. Duplicate live UUID claims are identity conflicts.
 
 ## 3. Invariants
 
@@ -166,7 +171,35 @@ its topology is not imported automatically.
 
 Announcements are untrusted hints. The direct handshake and admission policy
 must validate the management peer before privileged actions. Never advertise
-credentials in TXT records. Trust provisioning remains a decision in section 13.
+credentials in TXT records. Admission requires explicit operator approval in the UI and authenticated
+management peers; discovery never automatically admits a node. The Cluster
+tab shows a separate Candidate Nodes list below its left-side cluster view.
+Moving a candidate into a cluster opens SSH access and rack selection. Before
+bootstrap this updates only the visibly uncommitted draft; afterward admission
+requires a committed Group-0 operation.
+
+All admitted nodes support mutual SSH access using Ed25519 keys. Each node
+creates and persists its own `id_ed25519` private key; only `id_ed25519.pub`
+is exchanged into the other nodes' `authorized_keys`. Private keys are never
+copied between nodes or published in Group 0. Joining uses username/password
+once when working key access has not already been provisioned. Verify SSH
+host identity and its association with the candidate monitor before exchanging
+keys. Install existing members' public keys on the candidate and its public
+key on every existing member, then verify bidirectional key access before
+confirming admission. Failed setup remains visibly pending and resumes the
+same admission operation without duplicating keys. Pending nodes cannot receive
+general deployments. Cancellation removes authorization entries installed by
+that operation without removing unrelated keys.
+
+The multi-node Docker test profile provides an SSH login account with default
+username/password `crowdb` / `crowdb`, prefilled by its UI. Production credentials
+are supplied explicitly. Initialization passwords are discarded after key
+setup and are not persisted in Group 0. Node keys, `authorized_keys` and SSH
+host keys survive container recreation in persistent storage. Runtime service
+accounts need not acquire an interactive shell merely to provide this login.
+Every management entry point uses the locally provisioned SSH identity; Group 0
+stores only nonsecret connection metadata and credential references. Mutual
+SSH access grants each node the configured login user's access to its peers.
 
 ## 5. Node and rack configuration
 
@@ -218,12 +251,26 @@ requires an explicit recovery/decommission procedure, not an automatic timeout.
 6. Persist/refresh cluster contact information for member UIs. Enable general
    deployment only after initial topology is confirmed.
 
-Replica startup coordination and interrupted preparation recovery must be
-specified before implementation. Durable per-node conflict rejection is
-necessary but alone does not establish a complete distributed bootstrap
-protocol. Two overlapping requests must never create incompatible groups;
-arbitrary disjoint selections can form distinct clusters and must not be
-advertised as one globally unique LAN cluster.
+Bootstrap exclusion is enforced by each target KV server before creating
+store 0 and covers the complete store-0/group-0 initialization sequence. The
+server atomically and durably accepts the first bootstrap operation identity
+and its fixed initial configuration. A conflicting operation is rejected before
+creating or reusing store 0. Retries of the accepted operation resume unfinished
+steps and verify existing content; an existing store 0 without group 0 is not
+permission for another operation to take over. Restart retains the accepted
+operation. Failure and timeout do not automatically release its ownership.
+Monitor preparation and KV-server acceptance refer to the same operation and
+configuration; neither UI-local state nor a generic store/group creation path
+may bypass the exclusion.
+
+Every selected member must durably accept the same operation and configuration
+before any initial replica becomes eligible for election or data publication.
+Overlapping requests cannot both obtain all required acceptances. They may each
+occupy part of their selected membership, in which case both remain incomplete
+and the UI exposes the conflict for explicit cleanup and retry. This mechanism
+guarantees per-node exclusion, not a globally unique cluster on the LAN.
+Disjoint selected memberships may create independent clusters; UIs display
+them separately and do not automatically merge their logs or topology.
 
 ### 6.3 Recovery and subsequent admission
 
@@ -237,7 +284,43 @@ operation binds it to the cluster and assigns its rack. Adding a deployment
 node does not automatically alter Group-0 quorum. Voting-member changes follow
 the existing reconfiguration contract.
 
+The UI supports Group-0 member management and explicit group/store deletion
+for bootstrap recovery. To consolidate independently initialized clusters, the
+operator selects the retained cluster, cleans the other cluster's group 0,
+store 0 and binding, then admits its cleaned nodes to the retained cluster.
+Voting additions use reconfiguration and catch-up, not merging independent
+Group-0 histories. Deleting a group or store alone does not silently release
+bootstrap ownership or cluster binding. Cleanup must fence delayed commands
+and prevent old replicas from restarting before allowing a new bootstrap;
+accepted operations retain durable terminal state so stale retries cannot
+recreate deleted resources. Unreachable nodes remain pending cleanup and are
+not eligible for reuse. Existing committed clusters require explicit destructive
+cleanup rather than cancellation of an uncommitted draft.
+
 ## 7. Shared UI and management operations
+
+The UI presents explicit lifecycle states:
+
+- **Unbound draft:** local temporary topology and a separate candidate list;
+  SSH preparation and rack edits do not constitute committed membership.
+- **Bootstrap in progress:** per-node store-0/group-0 progress and the fixed
+  submitted configuration. Later draft edits cannot alter that operation.
+  Failure offers resume of the same operation or explicit cleanup.
+- **Topology publishing:** quorum exists but initial publication is incomplete;
+  show initialization progress and keep general service deployment disabled.
+- **Active:** load confirmed Group-0 topology and replace the temporary view.
+  Subsequent changes use Group 0; unused drafts are never silently imported.
+- **Authority unavailable:** retain the last confirmed topology with an explicit
+  stale/unavailable indication and diagnostics. Disable authority-dependent
+  operations and never return a bound node to replacement-cluster creation.
+- **Multiple clusters discovered:** show distinct clusters and let the operator
+  select one to manage; neither independent topology nor drafts auto-merge.
+
+Admission with partial SSH setup is shown as joining/recovery required, with
+operation progress distinct from confirmed membership. Retry installs only
+missing authorization and resumes verification. Cancellation removes only
+public-key authorization installed by that operation, preserving pre-existing
+or concurrently required trust; failure to finish cleanup remains visible.
 
 All UIs invoke the same shared console operations and read confirmed state
 from Group 0. Consistent reads support action confirmation; watch/refresh keeps
@@ -278,9 +361,15 @@ No design claim of stale-node exclusion is valid until those enforcement
 details are resolved and tested.
 
 Monitors and UIs remain available for diagnostics during authority loss.
-The exact meaning of stopping an unauthorized node's existing data services
-is unresolved: management authorization does not automatically revoke every
-data group's independent Paxos authority. Section 13 makes that choice explicit.
+Group-0 unavailability does not by itself stop existing data services. Each
+data group continues only under its own Paxos authority and read/write rules.
+Operations requiring current Group-0 authority fail, including management
+mutations, keep-alive updates, ownership acquisition/renewal and ownership
+balancing. Failure to obtain ownership content is an authority-unavailable
+result, never an empty ownership set; it cannot trigger release or reassignment.
+Existing ownership remains subject to its own expiry and fencing contract;
+actions requiring renewed ownership stop when that authority expires. Cached
+ownership cannot extend its validity indefinitely.
 Group-0 replica processes must be allowed to recover quorum even while general
 deployment is gated; stopping all replicas on authority loss would prevent
 recovery.
@@ -292,19 +381,34 @@ recovery.
 Publish OCI images to Docker Hub or another OCI-compatible registry. The same
 image for a supported CPU architecture contains monitor/UI/server binaries and
 their dependencies. Node-local state and cluster identity are external mounts.
+Single-node and multi-node operation use the same image, monitor and UI.
+Single-node startup automatically creates virtual disks and initializes the
+cluster, then disables UI editing; multi-node startup awaits candidate selection
+and manual bootstrap. Startup policy and the UI editing capability differ,
+while identity, discovery, authority and managed-service behavior remain shared.
+Read-only single-node mode rejects UI management mutations in the backend as
+well as disabling editing controls.
 Tags identify releases for humans; production plans pin immutable image digests.
 Architecture-specific builds may share a multi-platform image index only when
 their dependencies have been validated.
 
-Docker and containerd consume these images. `nerdctl` is an operator CLI for
-containerd, not an additional daemon. Production monitor runtime control uses
-containerd APIs without depending on dockerd. See the
-[nerdctl reference](https://github.com/containerd/nerdctl) for CLI/runtime
-terminology; its CLI compatibility does not define CROWDB lifecycle semantics.
+The initial runtime is standard Docker using the system installation. The
+node monitor supervises local managed processes; an external Docker lifecycle
+manages the node container. Containerd and other OCI runtimes are deferred until
+Docker validation succeeds; their tools may be supplied through Pixi. Docker
+images already use OCI-compatible packaging: extending runtime support does
+not require changing node identity, discovery or cluster-management semantics.
 
 ### 9.2 Production profile
 
-- Linux host, containerd runtime and host networking.
+- Linux host, system Docker runtime and host networking.
+- Each node runs its monitor and Web UI inside a CROWDB node container.
+  The node container is the management boundary and controls managed services
+  using explicit mounted resources and local process supervision. Application service containers
+  do not inherit that runtime access. An external host/runtime startup mechanism
+  starts and recovers the node container itself; it cannot recover itself after
+  its own termination. Node identity, SSH identity and management state use
+  host-persistent mounts.
 - Explicit management/data-plane network selection; discovery uses management.
 - Stable disk/device identity and explicitly permitted block-device access.
 - Host-persistent config, node state, server state, logs and crash artifacts.
@@ -317,7 +421,13 @@ cache: the storage engine's raw-block/direct-I/O path defines that behavior.
 
 ### 9.3 Single-host test profile
 
-- One container per simulated node on a dedicated user-defined Docker bridge.
+- One CROWDB container per simulated node on a dedicated user-defined Docker
+  bridge, each running its own monitor, Web UI and SSH endpoint. Starting three
+  node containers enables mutual discovery without pre-entering peer addresses;
+  opening any published UI exposes the candidate list and cluster preparation.
+  Docker availability does not require an implicit runtime socket mount: the
+  monitor manages local processes for this profile, while future external runtime control
+  requires separately configured runtime access.
 - Unique persistent roots and identities; independent simulated disk files or
   loop devices, never overlapping writes to one backing disk.
 - Identical internal listener ports are allowed because network namespaces
@@ -400,7 +510,7 @@ diagnostics.
   deliver delayed/retried commands to verify stale-action rejection (I5).
 - Multiple virtual racks on one host preserve one physical failure-domain
   identity (I6).
-- Docker bridge and Linux containerd host-network profiles use the same image
+- Docker bridge and Linux Docker host-network profiles use the same image
   digest and exercise restart, persistent disk/state and resource boundaries
   (I7).
 - Existing Group-0 membership changes remain governed by reconfiguration;
@@ -412,24 +522,9 @@ single-domain scalability.
 
 ## 13. Decisions still required
 
-The architectural flow is settled; the following mechanisms need explicit
-agreement before their implementation:
-
-- **Bootstrap coordination:** one selected coordinator with durable monitor
-  preparation and resumable delivery, or a quorum/prepare protocol over fixed
-  selected membership. Define conflicts, cancellation and recovery; avoid
-  assuming local reservations alone establish global agreement.
-- **Strict node activity policy:** decide whether Group-0 authorization expiry
-  stops existing data-serving processes, including reads, or only gates
-  management/new deployment while data groups retain their own authority.
-  Define expiry bounds and fencing enforcement. Group-0 recovery and diagnostic
-  processes remain exempt from general deployment gating.
-- **Admission trust:** explicit UI approval with authenticated management peers,
-  or preprovisioned deployment credentials for automatic admission. Specify how
-  every authorized UI obtains access without public secret replication.
-- **Pre-admission identity allocation:** retain canonical numeric node IDs with
-  a defined collision/allocation scheme, or use a durable discovery identity
-  mapped to a confirmed node ID at admission. IP-derived identities are excluded.
-- **Monitor placement:** a host service controlling containers, or a dedicated
-  management container with narrowly scoped runtime access. Choose the production
-  recovery/security boundary independently of application image compatibility.
+The discovery identity and monitor placement decisions are settled: durable
+UUIDs identify candidates, Group 0 owns admitted numeric IDs, and each node's
+monitor/UI run in its node container. No human decisions remain open in this
+design. Implementation must still define and verify bounded management grants,
+fencing enforcement, conditional ID allocation and explicit runtime privileges
+within these contracts.

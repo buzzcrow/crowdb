@@ -16,6 +16,19 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the node discovery and read-only management endpoint.
+    Node {
+        #[arg(long)]
+        data_root: PathBuf,
+        #[arg(long, default_value = "0.0.0.0:9093")]
+        bind: std::net::SocketAddr,
+        #[arg(long, required = true)]
+        interface: Vec<String>,
+        #[arg(long, required = true)]
+        advertise: Vec<std::net::IpAddr>,
+        #[arg(long)]
+        physical_host_id: String,
+    },
     Run {
         #[arg(long, default_value = "/opt/crowdb/etc/profile.toml")]
         profile: PathBuf,
@@ -56,6 +69,30 @@ enum CredentialFormat {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Node {
+            data_root,
+            bind,
+            interface,
+            advertise,
+            physical_host_id,
+        } => {
+            let config = crowdb_monitor::DiscoveryConfig {
+                interfaces: interface,
+                addresses: advertise,
+                monitor_port: bind.port(),
+                cluster_id: None,
+            };
+            let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            crowdb_monitor::serve_node_management(&data_root, bind, &config, physical_host_id, async move {
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        if let Err(error) = result { eprintln!("node termination signal failed: {error}"); }
+                    }
+                    _ = terminate.recv() => {}
+                }
+            })
+            .await?;
+        }
         Command::Run { profile } => run_preview(&profile).await?,
         Command::Validate { profile } => {
             let profile = DeploymentProfile::load(profile)?;

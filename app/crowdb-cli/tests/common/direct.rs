@@ -156,6 +156,7 @@ pub async fn spawn_group0() -> Option<Group0> {
         .system_init(&crowdb_protocol::mgmt::SystemInitRequest {
             replica_id: 1,
             start_election: true,
+            bootstrap: None,
         })
         .await
         .expect("system_init");

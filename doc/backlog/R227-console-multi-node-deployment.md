@@ -34,8 +34,8 @@ Concrete scenarios:
 
 The target architecture is defined in the
 [multi-node deployment design](../design/deploy/design-crowdb-deploy.md).
-This requirement tracks its implementation and acceptance; unresolved decisions
-in that design must be settled before their dependent implementation begins.
+This requirement tracks implementation and acceptance of the approved decisions
+in that design. Docker is the initial runtime; other OCI runtimes are deferred.
 
 ### Architecture and authority
 
@@ -44,7 +44,7 @@ browser on any node
     -> local crowdb-web / shared console operations
     -> Group 0: confirmed topology and management authorization
     -> target crowdb-monitor
-    -> containerd / managed server processes
+    -> Docker node container / managed server processes
 
 before Group 0 exists:
 local UI -> local monitor discovery -> peer monitors -> bootstrap preparation
@@ -79,8 +79,8 @@ enabled only after Group 0 is ready and the initial topology is published.
   containers on one host do not become independent physical failure domains
   because their virtual rack labels differ.
 - **I7 — Portable image, explicit resources:** the same OCI image for a supported
-  OS/CPU architecture is used for single-host Docker tests and production
-  containerd deployment. Network, disks, persistent mounts and resource limits
+  OS/CPU architecture is used for Docker bridge and Docker host-network
+  deployment. Network, disks, persistent mounts and resource limits
   are runtime inputs, not baked cluster identity.
 
 ### Numbered work items
@@ -89,7 +89,12 @@ enabled only after Group 0 is ready and the initial topology is published.
    `crowdb-protocol` to expose stable node identity, monitor endpoint, protocol
    compatibility, optional rack hint, physical-host identity and cluster binding.
    Obtain full hardware/rack information through a direct monitor handshake.
-   A node can exist before any KV or application server is deployed.
+   A node can exist before any KV or application server is deployed. Generate
+   and persist a discovery UUID for candidate identity. Bootstrap fixes its
+   mapping to a canonical numeric node ID; later admission allocates the numeric
+   ID through conditional Group-0 state and durably publishes the mapping.
+   Concurrent admissions cannot allocate conflicting IDs; retries reuse the same
+   mapping. IP/rack changes preserve identity and duplicate UUID claims conflict.
 
 2. Add mDNS + DNS-SD announcement and continuous browsing to `crowdb-monitor`.
    Use a CROWDB node service type (proposed `_crowdb-node._tcp.local.`), SRV
@@ -110,20 +115,53 @@ enabled only after Group 0 is ready and the initial topology is published.
 
 3. Extend `crowdb-web` and `crowdb-console-shared` with a pre-bootstrap view:
    candidate nodes, editable virtual racks, node-to-rack assignments and Group-0
-   initialization. Node-supplied rack information is a hint, not immutable
+   initialization. The Cluster tab has a separate Candidate Nodes list below
+   its left-side cluster view. Moving a candidate into the cluster requires
+   SSH access setup and rack selection; before bootstrap it only edits the
+   uncommitted draft, afterward it requires committed admission.
+   Node-supplied rack information is a hint, not immutable
    placement. A pre-bootstrap draft is local and visibly uncommitted; differing
    drafts on different UIs do not constitute confirmed topology. Limit this
    stage to node/rack/bootstrap operations, excluding other server deployment.
 
+   Show unbound draft, bootstrap in progress, topology publishing, active and
+   authority-unavailable states explicitly. Bootstrap shows per-node store/group
+   progress and fixed submitted inputs; later draft edits cannot alter the
+   operation. Failures offer resume or explicit cleanup. Once publication is
+   complete, load confirmed Group-0 topology in place of the temporary view;
+   unused drafts are not automatically imported. Authority loss labels the last
+   confirmed view stale, preserves diagnostics and never enables replacement
+   bootstrap. Distinct discovered clusters are separately selectable, not merged.
+   Partial admission shows joining/recovery-required progress independently of
+   confirmed membership. Cancellation preserves pre-existing or concurrently
+   required SSH authorization; incomplete cleanup stays visible.
+
 4. Extend the existing shared `bootstrap_intent` and cluster operations to submit
-   one explicit initial Group-0 manifest: cluster identity, selected initial
-   replica members, reachable endpoints and confirmed node/rack draft. Peer
-   monitors persist compatible preparation before replica startup. Concurrent
-   incompatible requests must fail safely without constructing overlapping
-   conflicting groups. Partial preparation and initiator crashes must have an
-   explicit resume/abort procedure; an abort cannot erase a cluster that has
-   committed state. The coordination protocol is a human decision below, not an
-   assumption that multicast or smallest-node-ID election provides agreement.
+   one fixed initial configuration: cluster identity, operation identity,
+   selected initial replica members, reachable endpoints and node/rack draft.
+   Each target `crowdb-kv-server` atomically and durably accepts the first
+   operation before creating store 0. Exclusion covers store-0/group-0 creation;
+   conflicting operations cannot create or reuse either resource. Monitor
+   preparation and KV-server acceptance use the same identity/configuration.
+   Generic store/group creation cannot bypass this exclusion. Same-operation
+   retries verify existing state and resume unfinished steps after restart.
+   Failure, timeout or an existing store 0 without group 0 never permits another
+   operation to take over.
+
+   All selected members must accept the same operation before initial election
+   or publication. Overlapping requests can each occupy part of the membership;
+   expose incomplete/conflicting state and support explicit cleanup/retry rather
+   than promising that one always succeeds. Disjoint selections may create
+   independent clusters, displayed separately without automatic merge.
+
+   Provide UI Group-0 member management and explicit group/store deletion.
+   Recovery selects a retained cluster, cleans the other cluster's group 0,
+   store 0 and binding, then admits cleaned nodes and uses existing voting
+   reconfiguration/catch-up. Deleting group/store alone does not release binding
+   or operation ownership. Cleanup fences delayed commands, prevents old replica
+   restart and retains terminal operation state before permitting reuse.
+   Unreachable nodes remain pending and cannot be reused. Committed clusters
+   require explicit destructive cleanup; canceling a draft cannot erase them.
 
 5. Wait for a usable Group-0 leader/quorum, then publish the initial topology
    idempotently. Gate general deployment on both consensus readiness and
@@ -133,29 +171,59 @@ enabled only after Group 0 is ready and the initial topology is published.
    Newly discovered nodes remain candidates until a committed admission operation.
    Later Group-0 voting membership changes use the existing reconfiguration path.
 
+   Admission is explicitly approved in UI. Use username/password for initial
+   SSH setup unless key access is already provisioned. Each node generates and
+   persists its own `id_ed25519`; exchange only public keys into peer
+   `authorized_keys`, never private keys. Verify SSH host/candidate identity
+   and bidirectional key access with every existing member before confirming
+   admission. Partial setup stays pending, blocks deployment and supports
+   idempotent retry; cancellation removes only that operation's installed
+   authorization entries. Passwords are discarded after setup. Group 0 stores
+   nonsecret connection metadata and credential references, not passwords or
+   private keys. All admitted nodes can SSH to each other as the configured
+   login user. The multi-node Docker test profile supplies `crowdb` / `crowdb`
+   and prefills the UI; production credentials are explicit. Persist node keys,
+   authorized keys and host keys outside the container writable layer.
+
 6. Route rack changes and deployment mutations from every UI through shared
    console operations and Group 0. Use consistent reads where confirmation needs
    current authority, with watch/refresh for presentation. Record operation
    identity and execution state so UI retries or UI-node loss cannot duplicate a
    deployment. Monitor execution validates the current authorization and rejects
    stale commands. Group-0 unavailability leaves discovery/diagnostics available
-   but disables new cluster management mutations.
+   but disables new cluster management mutations. Existing data groups retain
+   their own Paxos authority. Group-0 keep-alive, ownership acquisition/renewal
+   and balancing fail when authority is unavailable. Unavailable ownership
+   content is not empty ownership and cannot trigger release/reassignment.
+   Existing ownership follows its own expiry/fencing contract; cached state
+   does not extend validity.
 
-7. Add a containerd-backed execution path to `crowdb-monitor` alongside existing
-   managed-process support. Production uses containerd APIs; nerdctl is an operator
-   tool, not a required per-command subprocess. Define image digest, CPU/memory
-   boundaries, host networking, persistent config/state/log mounts and permitted
-   disk/device inputs. No implicit privileged container or unrestricted host
-   device access is required. Preserve process-level liveness and explicit
-   start/stop/upgrade operations; do not add a general scheduler or automatic
-   global reconciliation loop.
+7. Implement standard Docker node containers first, with monitor-managed local
+   processes. Use the system Docker installation; do not install Docker through
+   Pixi or require a Docker socket inside every node. Validate image digest,
+   CPU/memory boundaries, explicit networking, persistent mounts and permitted
+   disk/device inputs. An external Docker lifecycle starts/recreates the node
+   container; monitor provides explicit managed-service start/stop/upgrade and
+   process health. Use the same image, monitor and UI for single-node and multi-node operation.
+   Single-node startup creates virtual disks and initializes its topology
+   automatically, then disables UI editing. Multi-node startup keeps topology
+   uninitialized for candidate/draft operations. These are startup policies, not
+   separate implementations or images; observation and service semantics remain
+   shared. UI disabling is backed by mutation rejection, not only hidden controls.
+   Defer containerd/other OCI runtime integration until Docker behavior passes;
+   future runtime tools may be packaged through Pixi. Docker images already use
+   OCI-compatible packaging; the deferred work is additional runtime support,
+   not conversion to a new image format.
 
 8. Extend `container/single-node-container` packaging/test infrastructure for
    multiple node containers from the same OCI image. Each gets an independent
    persistent root and simulated disk, joins one dedicated user-defined Docker
    bridge, and advertises its internally reachable monitor endpoint. Publish
    distinct host UI ports for browser access. Separate test networks bound the
-   discovery scope. Production uses host networking and real disks on supported
+   discovery scope. Each simulated node container runs monitor, UI and SSH;
+   three started containers discover each other and expose candidates from any
+   UI without a peer list. Docker tests can use local managed processes without
+   implicitly mounting a runtime socket. Production uses host networking and real disks on supported
    Linux hosts; discovery and cluster-management semantics stay identical.
    OCI compatibility does not claim complete Kubernetes lifecycle integration
    or unverified CPU/OS support.
@@ -178,7 +246,8 @@ enabled only after Group 0 is ready and the initial topology is published.
 - `/nv/cpp/adcp/topic/deploy.md` is discussion context for light-container
   deployment, not a portable repository dependency. The applicable resource and
   lifecycle choices are captured above.
-- Implementation must resolve the bootstrap and authorization decisions below.
+- Implementation must apply the accepted bootstrap and authority-loss rules above
+  within the approved Docker-first scope.
   Permanent console, Group-0, configuration and container documentation must be
   updated to the shipped behavior during implementation cleanup.
 
@@ -233,16 +302,68 @@ enabled only after Group 0 is ready and the initial topology is published.
     racks. Action: inspect placement inputs. Assertion: the shared physical
     failure domain remains visible and rack changes do not rewrite it (I6).
     Integration test.
-14. Setup: one supported-architecture OCI image digest. Action: launch multiple
-    Docker bridge nodes and Linux containerd host-network nodes with appropriate
+14. Setup: one supported-architecture Docker image digest. Action: launch multiple
+    Docker bridge nodes and Linux Docker host-network nodes with appropriate
     disks/mounts. Assertion: both discover/bootstrap/manage successfully, state
     survives replacement, internal advertised addresses are reachable and the
     simulated-disk run makes no production-performance claim (I1, I7).
     Integration test.
-15. Setup: containerd deployment with explicit devices/resources. Action: start,
+15. Setup: Docker deployment with explicit devices/resources. Action: start,
     stop, restart and upgrade through monitor. Assertion: requested resource
     limits and mounts are applied, process health is observable and restart
     preserves persistent state (I7). Integration test.
+
+16. Setup: candidates and an initialized cluster. Action: move a candidate from
+    the Cluster tab's separate list, provide SSH credentials and select its rack.
+    Assertion: host/monitor identity and mutual Ed25519 access are verified before
+    committed admission; partial failure remains pending and retry does not
+    duplicate keys; cancellation preserves unrelated authorization entries (I2,
+    I3). E2E test and Integration test.
+17. Setup: multi-node Docker test containers with `crowdb` / `crowdb` initial
+    access. Action: join nodes and recreate a container using its persistent root.
+    Assertion: node private keys are never exchanged, host/public-key trust
+    survives recreation and initialization passwords are not persisted (I1,
+    I7). Integration test.
+18. Setup: unavailable Group 0 and a data group with quorum. Action: perform
+    data operations and request keep-alive/ownership renewal/balance. Assertion:
+    data operations follow their group's Paxos rules; Group-0 operations fail
+    explicitly, unavailable ownership is not treated as empty, and ownership
+    dependent actions stop at their existing authority expiry (I5). Integration
+    test.
+
+19. Setup: concurrent conflicting bootstrap requests to one KV server. Action:
+    race store-0 creation, interrupt before group-0 creation and restart.
+    Assertion: only one operation owns store 0/group 0, conflicting takeover
+    fails and the accepted operation resumes idempotently (I4). Integration test.
+20. Setup: disjoint bootstrap member sets. Action: initialize both, select one
+    retained cluster in UI, clean the other and admit its nodes. Assertion:
+    clusters remain separate until explicit cleanup; delayed old commands cannot
+    recreate deleted resources, unreachable nodes cannot be reused, and added
+    voting replicas catch up through reconfiguration (I4). Integration test and
+    E2E test.
+
+21. Setup: independently initialized discovery UUIDs and concurrent admissions.
+    Action: bootstrap, admit nodes, retry and change rack/endpoints. Assertion:
+    numeric IDs and UUID mappings remain unique and stable; cloned UUIDs conflict
+    rather than merge (I1, I3). Integration test.
+22. Setup: three node containers on one discovery-capable Docker test bridge.
+    Action: start them without peer lists, open any UI, then recreate one node.
+    Assertion: each monitor discovers peers, each UI exposes candidates and
+    persistent identity survives external container recovery (I1, I2, I7).
+    Integration test and E2E test.
+
+23. Setup: local UI drafts and an interrupted bootstrap. Action: submit, edit
+    a draft, resume creation and delay topology publication. Assertion: submitted
+    inputs remain fixed, per-node progress and recovery actions are visible,
+    general deployment remains disabled until publication, then confirmed Group-0
+    topology replaces the draft without importing unrelated edits (I3, I4).
+    E2E test.
+24. Setup: active cluster, partial admission and another discovered cluster.
+    Action: lose Group-0 authority, retry/cancel admission and select a cluster.
+    Assertion: stale authority is explicit, diagnostics remain usable, replacement
+    bootstrap is disabled, clusters remain separate and cleanup preserves
+    unrelated or concurrently required SSH authorization (I2, I3, I4, I5).
+    E2E test.
 
 Implementation verification commands (these are required future gates, not
 claims that the new acceptance coverage already exists):
@@ -260,21 +381,5 @@ pixi run rs-lint
 
 ## Open Questions
 
-- Bootstrap coordination: use one explicitly selected initiating node with
-  durable reservations and resumable manifest delivery, or a quorum/prepare
-  protocol over a fixed selected membership. Choose recovery and conflict rules
-  before implementation. Neither option guarantees one cluster across arbitrary
-  disjoint selections without an explicit shared identity/admission boundary.
-- Authorization during Group-0 loss: new management writes stop in all cases.
-  Decide whether existing data services must also stop after bounded authority
-  expiry, or may continue under their own Paxos/data-plane authority. The former
-  matches a strict "only Group-0-authorized nodes are active" policy but couples
-  whole-cluster availability to Group 0. Specify lease timing, renewal, fencing
-  enforcement points and recovery before claiming that stricter policy.
-- Discovery admission trust: explicitly approve discovered candidates in UI,
-  or provision deployment credentials for automatic admission. Discovery packets
-  and rack hints alone are not authenticated authorization.
-- Production monitor location: host system service controlling light containers,
-  or a dedicated management container with narrowly scoped runtime access.
-  Choose privilege and recovery boundaries; do not expose the containerd socket
-  to every application/UI container by default.
+None. Discovery UUID/numeric-ID mapping and containerized monitor/UI placement
+are approved along with the bootstrap, authority-loss and admission contracts.

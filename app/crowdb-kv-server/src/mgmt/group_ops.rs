@@ -217,6 +217,17 @@ pub(super) async fn add_group(
     Path(sid): Path<u64>,
     Json(req): Json<AddGroupRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let _system_execution = if sid == 0 && req.group_id == 0 {
+        Some(super::system_bootstrap::begin(&state)?)
+    } else {
+        None
+    };
+    if sid == 0 && req.group_id == 0 && super::system_bootstrap::has_owner(&state)? {
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            "reserved system group must use identified system initialization",
+        ));
+    }
     let store = state
         .get_store(sid)
         .ok_or_else(|| err_json(StatusCode::NOT_FOUND, format!("store {sid} not found")))?;

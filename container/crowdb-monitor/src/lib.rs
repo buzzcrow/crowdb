@@ -8,6 +8,7 @@ mod layout;
 mod liveness;
 mod manifest;
 mod monitor_log;
+mod node;
 mod preview;
 mod probe;
 mod process;
@@ -28,6 +29,10 @@ pub use credentials::{show_client_credentials, ClientCredentials, CredentialErro
 pub use liveness::{probe_liveness, LivenessError, LivenessServer};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};
+pub use node::{
+    serve_node_management, CandidateCache, DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity,
+    NodeIdentityError, NodeManagementError, NODE_SERVICE_TYPE,
+};
 pub use preview::{run_preview, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};
 pub use process::{ProcessError, ProcessManager};

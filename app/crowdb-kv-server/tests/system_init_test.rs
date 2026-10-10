@@ -121,3 +121,104 @@ async fn system_init_group_visible_in_list() {
     let groups = resp.as_array().expect("groups array");
     assert!(groups.iter().any(|g| g["group_id"] == 0), "group 0 should exist");
 }
+
+fn identified_request(operation: &str) -> Value {
+    serde_json::json!({
+        "replica_id": 7,
+        "start_election": false,
+        "bootstrap": {
+            "cluster_id": "12345678-1234-4234-8234-123456789abc",
+            "operation_id": operation,
+            "configuration_digest": "a".repeat(64)
+        }
+    })
+}
+
+#[tokio::test]
+async fn prepared_store_ownership_survives_restart_and_rejects_takeover() {
+    let root = crowdb_test_harness::test_dirs::TestDir::new("system-bootstrap-owner").unwrap();
+    let request = identified_request("22345678-1234-4234-8234-123456789abc");
+    let competing = identified_request("32345678-1234-4234-8234-123456789abc");
+    let server = common::process::start_test_server_at(root.path(), &[], &[0])
+        .await
+        .unwrap();
+    let response = client()
+        .post(format!("{}/system/prepare", server.base_url()))
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let stores: Value = client()
+        .get(format!("{}/stores", server.base_url()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(stores["stores"].as_array().unwrap().is_empty());
+    drop(server);
+    let server = common::process::start_test_server_at(root.path(), &[], &[0])
+        .await
+        .unwrap();
+    for body in [&competing, &serde_json::json!({})] {
+        let response = client()
+            .post(format!("{}/system/init", server.base_url()))
+            .json(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 409);
+    }
+    let generic = client()
+        .post(format!("{}/stores", server.base_url()))
+        .json(&serde_json::json!({"store_id": 0}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(generic.status().as_u16(), 409);
+    let created = client()
+        .post(format!("{}/system/init", server.base_url()))
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let retried = client()
+        .post(format!("{}/system/init", server.base_url()))
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retried.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn competing_prepares_have_one_durable_winner() {
+    let server = start_test_server(&[]).await.unwrap();
+    let first = identified_request("42345678-1234-4234-8234-123456789abc");
+    let second = identified_request("52345678-1234-4234-8234-123456789abc");
+    let http = client();
+    let url = format!("{}/system/prepare", server.base_url());
+    let (first_reply, second_reply) = tokio::join!(
+        http.post(&url).json(&first).send(),
+        http.post(&url).json(&second).send()
+    );
+    let statuses = [
+        first_reply.unwrap().status().as_u16(),
+        second_reply.unwrap().status().as_u16(),
+    ];
+    assert!(statuses == [200, 409] || statuses == [409, 200]);
+    let winner = if statuses[0] == 200 { &first } else { &second };
+    assert_eq!(
+        http.post(&url)
+            .json(winner)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+}

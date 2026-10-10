@@ -97,9 +97,13 @@ pub(super) async fn system_init(
         SystemInitRequest {
             replica_id: 1,
             start_election: true,
+            bootstrap: None,
         },
         |Json(r)| r,
     );
+
+    let _execution = super::system_bootstrap::begin(&state)?;
+    super::system_bootstrap::accept(&state, req.replica_id, req.bootstrap.as_ref())?;
 
     // Create store 0 if it does not exist. Use the shared port resolver so
     // store 0 consumes the port pool port deterministically — using
@@ -146,7 +150,18 @@ pub(super) async fn system_init(
     })?;
 
     // Check if group 0 already exists.
-    if store.get_group(SYSTEM_GROUP_ID).is_some() {
+    if let Some(group) = store.get_group(SYSTEM_GROUP_ID) {
+        if req.bootstrap.is_some() && group.local_replica().id == req.replica_id {
+            return Ok((
+                StatusCode::OK,
+                Json(SystemInitResponse {
+                    store_id: 0,
+                    group_id: 0,
+                    replica_id: req.replica_id,
+                    listen_addr: store.listen_addr().map(|address| address.to_string()),
+                }),
+            ));
+        }
         return Err(err_json(
             StatusCode::CONFLICT,
             "group 0 already exists in store 0",

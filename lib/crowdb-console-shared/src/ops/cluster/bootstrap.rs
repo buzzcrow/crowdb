@@ -64,6 +64,39 @@ pub async fn init_with_intent(ctx: &OpContext, nodes: &[u64], path: &Path) -> Re
 /// [`Error::NodeUnreachable`] if a node is not reachable;
 /// [`Error::UpstreamRpc`] if `system/init` fails on a node.
 pub async fn init(ctx: &OpContext, nodes: &[u64]) -> Result<InitSummary> {
+    init_internal(ctx, nodes, None).await
+}
+
+/// Initialize only after every selected KV server accepts the same durable operation.
+/// The caller persists the identity and configuration before invoking this path.
+///
+/// # Errors
+/// Rejects empty/duplicate members, failed preparation or conflicting initialization.
+pub async fn init_prepared(
+    ctx: &OpContext,
+    nodes: &[u64],
+    identity: &crowdb_protocol::mgmt::SystemBootstrapIdentity,
+) -> Result<InitSummary> {
+    if nodes.is_empty()
+        || nodes
+            .iter()
+            .enumerate()
+            .any(|(index, node)| nodes[..index].contains(node))
+    {
+        return Err(Error::Validation {
+            field: "nodes".into(),
+            message: "bootstrap members must be nonempty and distinct".into(),
+        });
+    }
+    nodes::prepare(ctx, nodes, identity).await?;
+    init_internal(ctx, nodes, Some(identity)).await
+}
+
+async fn init_internal(
+    ctx: &OpContext,
+    nodes: &[u64],
+    identity: Option<&crowdb_protocol::mgmt::SystemBootstrapIdentity>,
+) -> Result<InitSummary> {
     if nodes.is_empty() {
         return Err(Error::Validation {
             field: "nodes".into(),
@@ -76,7 +109,7 @@ pub async fn init(ctx: &OpContext, nodes: &[u64]) -> Result<InitSummary> {
     target_nodes.retain(|nid| seen.insert(*nid));
     let single_node = target_nodes.len() == 1;
 
-    let succeeded = nodes::initialize(ctx, &target_nodes, single_node).await?;
+    let succeeded = nodes::initialize(ctx, &target_nodes, single_node, identity).await?;
     nodes::wire(ctx, &succeeded).await?;
 
     let store_nodes: Vec<u64> = succeeded.iter().map(|(n, _)| *n).collect();

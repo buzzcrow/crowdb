@@ -170,6 +170,7 @@ impl KvBootstrap {
                 .json(&SystemInitRequest {
                     replica_id: group.replica_id,
                     start_election: true,
+                    bootstrap: None,
                 })
                 .send()
                 .await

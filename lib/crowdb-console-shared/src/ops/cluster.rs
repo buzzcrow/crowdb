@@ -29,7 +29,7 @@ use crate::ops::OpContext;
 
 mod bootstrap;
 mod storage_readiness;
-pub use bootstrap::{init, init_with_intent, InitSummary};
+pub use bootstrap::{init, init_prepared, init_with_intent, InitSummary};
 use storage_readiness::wait_for_diskdb_registration;
 
 // Bootstrap runs before Group 0 registration exists, so its sealed intent

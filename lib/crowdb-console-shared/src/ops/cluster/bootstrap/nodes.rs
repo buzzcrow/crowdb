@@ -3,18 +3,25 @@
 
 //! Identity-checked initialization; failed attempts preserve groups for resume.
 
-use crowdb_protocol::mgmt::{RemoteReplicaInfo, SystemInitRequest};
+use crowdb_protocol::mgmt::{
+    RemoteReplicaInfo, SystemBootstrapIdentity, SystemInitRequest, SystemPrepareRequest,
+};
 
 use super::super::server_client;
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
-pub(super) async fn initialize(ctx: &OpContext, nodes: &[u64], single: bool) -> Result<Vec<(u64, u64)>> {
+pub(super) async fn initialize(
+    ctx: &OpContext,
+    nodes: &[u64],
+    single: bool,
+    bootstrap: Option<&SystemBootstrapIdentity>,
+) -> Result<Vec<(u64, u64)>> {
     let results = futures::future::join_all(
         nodes
             .iter()
             .enumerate()
-            .map(|(index, node)| initialize_node(ctx, *node, index as u64 + 1, single)),
+            .map(|(index, node)| initialize_node(ctx, *node, index as u64 + 1, single, bootstrap)),
     )
     .await;
     // A peer may already have committed or elected a leader. Removing Group 0
@@ -23,7 +30,13 @@ pub(super) async fn initialize(ctx: &OpContext, nodes: &[u64], single: bool) -> 
     results.into_iter().collect()
 }
 
-async fn initialize_node(ctx: &OpContext, node: u64, replica: u64, single: bool) -> Result<(u64, u64)> {
+async fn initialize_node(
+    ctx: &OpContext,
+    node: u64,
+    replica: u64,
+    single: bool,
+    bootstrap: Option<&SystemBootstrapIdentity>,
+) -> Result<(u64, u64)> {
     let client = server_client(ctx, node)?;
     client.health().await.map_err(|error| Error::NodeUnreachable {
         node_id: node.to_string(),
@@ -33,6 +46,7 @@ async fn initialize_node(ctx: &OpContext, node: u64, replica: u64, single: bool)
         .system_init(&SystemInitRequest {
             replica_id: replica,
             start_election: single,
+            bootstrap: bootstrap.cloned(),
         })
         .await;
     match result {
@@ -40,6 +54,7 @@ async fn initialize_node(ctx: &OpContext, node: u64, replica: u64, single: bool)
             Ok((node, replica))
         }
         Ok(_) => Err(identity_conflict(node, replica)),
+        Err(error) if bootstrap.is_some() => Err(error),
         Err(error) => {
             // A conflict or lost reply is not proof of the intended identity.
             // Read the actual process topology before accepting the retry.
@@ -110,6 +125,29 @@ pub(super) async fn wire(ctx: &OpContext, members: &[(u64, u64)]) -> Result<()> 
         server_client(ctx, *node)?
             .add_remote_replicas(0, 0, &remotes)
             .await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn prepare(
+    ctx: &OpContext,
+    nodes: &[u64],
+    identity: &SystemBootstrapIdentity,
+) -> Result<()> {
+    let results = futures::future::join_all(nodes.iter().enumerate().map(|(index, node)| async move {
+        let request = SystemPrepareRequest {
+            replica_id: index as u64 + 1,
+            bootstrap: identity.clone(),
+        };
+        let accepted = server_client(ctx, *node)?.system_prepare(&request).await?;
+        if accepted.replica_id != request.replica_id || accepted.bootstrap != request.bootstrap {
+            return Err(identity_conflict(*node, request.replica_id));
+        }
+        Ok(())
+    }))
+    .await;
+    for result in results {
+        result?;
     }
     Ok(())
 }
